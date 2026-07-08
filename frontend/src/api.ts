@@ -8,12 +8,13 @@ import { storage } from '@/src/utils/storage';
  * BASE URL del backend (producción HTTPS).
  *
  * Configuración estándar: lee directamente `EXPO_PUBLIC_BACKEND_URL`
- * inyectada por Expo desde `frontend/.env`. Debe apuntar al dominio
- * público con TLS (ej. `https://api.synco.mx`). Todas las peticiones
- * usan HTTPS y multipart/form-data estándar.
+ * inyectada por Expo desde `frontend/.env`. Puede apuntar al endpoint
+ * público con o sin `/api` final (ej. `https://apm-app.mx/api/`). Todas las
+ * peticiones usan HTTPS y multipart/form-data estándar.
  */
+const rawBackendUrl = (process.env.EXPO_PUBLIC_BACKEND_URL || '').replace(/\/$/, '');
 export const BASE: string =
-  (process.env.EXPO_PUBLIC_BACKEND_URL || '').replace(/\/$/, '') + '/api';
+  rawBackendUrl.endsWith('/api') ? rawBackendUrl : rawBackendUrl + '/api';
 
 export class ApiError extends Error {
   status: number;
