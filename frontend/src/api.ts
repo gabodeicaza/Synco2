@@ -191,7 +191,7 @@ async function nativeMultipartUpload<T>(
   // solo, significa que EXPO_PUBLIC_BACKEND_URL viene vacía en .env.
   if (!url || url === '/api' || url.startsWith('/api/')) {
     throw new ApiError(0,
-      `Backend no configurado. Define EXPO_PUBLIC_BACKEND_URL en frontend/.env (ej. https://api.synco.mx). url="${url}"`);
+      `Backend no configurado. Define EXPO_PUBLIC_BACKEND_URL en frontend/.env (ej. https://apm-app.mx). url="${url}"`);
   }
 
   const authHeaders = await authHeader();
