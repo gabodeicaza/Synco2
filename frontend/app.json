@@ -11,13 +11,15 @@
         "CAMERA",
         "READ_EXTERNAL_STORAGE",
         "WRITE_EXTERNAL_STORAGE",
+        "READ_MEDIA_IMAGES",
+        "READ_MEDIA_VIDEO",
         "ACCESS_FINE_LOCATION",
         "ACCESS_COARSE_LOCATION",
-        "RECEIVE_BOOT_COMPLETED",
+        "ACCESS_NETWORK_STATE",
         "VIBRATE",
         "POST_NOTIFICATIONS"
       ],
-      "usesCleartextTraffic": true
+      "usesCleartextTraffic": false
     },
     "experiments": {
       "typedRoutes": true
@@ -72,8 +74,14 @@
         "expo-build-properties",
         {
           "android": {
-            "usesCleartextTraffic": true
+            "usesCleartextTraffic": false
           }
+        }
+      ],
+      [
+        "expo-document-picker",
+        {
+          "iCloudContainerEnvironment": "Production"
         }
       ],
       [

@@ -2,31 +2,22 @@
 <!--
   Network Security Configuration for SynCo Android APK.
 
-  Motivo: Android 9+ (API 28) bloquea CLEARTEXT HTTP por defecto.
-  Necesitamos permitir tráfico HTTP explícitamente para el backend
-  self-hosted alcanzado por IP directa desde la APK compilada.
+  Política: HTTPS-only estricto en producción (base-config).
+  El backend de producción es https://apm-app.mx y usa TLS válido con
+  certificados del sistema, por lo tanto NO se requieren excepciones
+  cleartext para el tráfico de producción.
 
-  Whitelist:
-    - 201.132.19.135  → backend self-hosted (cleartext HTTP en puerto 8000)
-    - 10.0.2.2        → emulador Android → host loopback (dev builds)
-    - 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 → redes LAN privadas
-      (Metro bundler + dev-client durante builds internas)
+  Whitelist (SOLO desarrollo local):
+    - 10.0.2.2        → emulador Android → host loopback
+    - localhost / 127.0.0.1 → Metro bundler / dev-client
 
-  El resto del tráfico permanece bajo la política HTTPS-only estándar
-  (base-config con cleartextTrafficPermitted=false), preservando la
-  seguridad de las peticiones al preview HTTPS de Emergent.
+  Estas entradas son inofensivas en un APK release ya que las IPs
+  loopback no son ruteables públicamente. Se mantienen para permitir
+  builds internas contra Metro sin romper TLS estricto en producción.
 -->
 <network-security-config>
 
-    <!-- Whitelist explícita del backend de producción (IP fija) -->
-    <domain-config cleartextTrafficPermitted="true">
-        <domain includeSubdomains="true">201.132.19.135</domain>
-        <trust-anchors>
-            <certificates src="system" />
-        </trust-anchors>
-    </domain-config>
-
-    <!-- Rangos LAN / loopback para desarrollo (Metro, dev-client, emulador) -->
+    <!-- Rangos loopback SOLO para desarrollo (Metro, dev-client, emulador) -->
     <domain-config cleartextTrafficPermitted="true">
         <domain includeSubdomains="true">10.0.2.2</domain>
         <domain includeSubdomains="true">localhost</domain>
@@ -36,7 +27,7 @@
         </trust-anchors>
     </domain-config>
 
-    <!-- Política por defecto: HTTPS only + certificados del sistema -->
+    <!-- Política por defecto: HTTPS-only + certificados del sistema -->
     <base-config cleartextTrafficPermitted="false">
         <trust-anchors>
             <certificates src="system" />
