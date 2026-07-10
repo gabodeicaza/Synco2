@@ -1,8 +1,12 @@
 // SynCo v2.0 REST client.
 // Reads JWT from secure storage on every call.
-import { Platform } from 'react-native';
+import { Alert, Platform } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
 import { storage } from '@/src/utils/storage';
+
+// [DIAG 2026-07-08] Toggle para mostrar Alert diagnóstico en dispositivo
+// cuando falla un upload. Poner en `false` cuando termine la investigación.
+const UPLOAD_DIAG_ALERT = true;
 
 /**
  * BASE URL del backend (producción HTTPS).
@@ -15,6 +19,19 @@ import { storage } from '@/src/utils/storage';
 const rawBackendUrl = (process.env.EXPO_PUBLIC_BACKEND_URL || '').replace(/\/$/, '');
 export const BASE: string =
   rawBackendUrl.endsWith('/api') ? rawBackendUrl : rawBackendUrl + '/api';
+
+// [DIAG 2026-07-08] Log visible en Metro para verificar la URL en el APK.
+// Al abrir la app aparecerá en consola:
+//   [SynCo][BASE] rawEnv="<valor real>" BASE="<url final>"
+// Si rawEnv sale vacío o undefined → EAS/Emergent NO inyectó la .env.
+try {
+  // eslint-disable-next-line no-console
+  console.log(
+    `[SynCo][BASE] rawEnv="${process.env.EXPO_PUBLIC_BACKEND_URL ?? '<undefined>'}" BASE="${BASE}"`,
+  );
+} catch {
+  /* noop */
+}
 
 export class ApiError extends Error {
   status: number;
@@ -209,8 +226,22 @@ async function nativeMultipartUpload<T>(
     });
   } catch (err: any) {
     // Error DURANTE la subida (red rota, cert inválido, uri no legible).
+    const nativeMsg = err?.message || String(err);
+    // [DIAG 2026-07-08] Alert visible en dispositivo con toda la info de red.
+    // Nos permite discriminar entre: (a) env vacía, (b) URL relativa,
+    // (c) fallo TLS/handshake, (d) file:// mal formada, (e) timeout.
+    if (UPLOAD_DIAG_ALERT) {
+      try {
+        Alert.alert(
+          'DIAG upload',
+          `native="${nativeMsg}"\n\nurl="${url}"\n\nBASE="${BASE}"\nrawEnv="${process.env.EXPO_PUBLIC_BACKEND_URL ?? '<undefined>'}"\n\nlocalUri="${normalized.uri}"\nsize=${normalized.size}\nmime="${normalized.type}"\nplatform=${Platform.OS} ${Platform.Version}`,
+        );
+      } catch {
+        /* noop */
+      }
+    }
     throw new ApiError(0,
-      `uploadAsync falló → ${err?.message || String(err)}. ` +
+      `uploadAsync falló → ${nativeMsg}. ` +
       `url=${url} localUri=${normalized.uri} size=${normalized.size} mime=${normalized.type}`);
   }
 
