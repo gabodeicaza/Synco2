@@ -107,6 +107,10 @@ export function buildWhatsAppMessage(p: WhatsAppPayload): string {
     lines.push(p.areaOrPuesto.trim());
   }
   lines.push('');
+  // Contratista (Constructora) — se coloca ARRIBA del No. de contrato por
+  // requerimiento ejecutivo. Aparece HASTA ARRIBA del reporte, seguido del
+  // número de contrato. Se elimina de la sección final para evitar duplicado.
+  lines.push(`Constructora: ${(p.constructora || '').trim() || '—'}`);
   lines.push(`No de contrato: ${(p.contractNumber || '').trim()}`);
   if ((p.parentNodeName || '').trim()) {
     lines.push(`${p.parentNodeName.trim()}: ${(p.leafNodeName || '').trim()}`);
@@ -151,10 +155,9 @@ export function buildWhatsAppMessage(p: WhatsAppPayload): string {
     lines.push(obs);
   }
 
-  // Constructora (global, NO editable), Personal y Equipo
+  // Constructora se movió ARRIBA del reporte (junto al No. de contrato).
+  // Aquí solo listamos Personal y Equipo del reporte.
   lines.push('');
-  lines.push(`Constructora: ${(p.constructora || '').trim() || '—'}`);
-
   const personal = (p.personal || []).map((s) => s.trim()).filter(Boolean);
   lines.push('Personal:');
   if (personal.length) {
