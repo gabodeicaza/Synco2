@@ -10,7 +10,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator, Alert, FlatList, Image, Modal, Platform, Pressable, RefreshControl,
-  ScrollView, StatusBar, StyleSheet, Text, TouchableOpacity, View,
+  ScrollView, StatusBar, StyleSheet, Text, TextInput, TouchableOpacity, View,
 } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import * as Sharing from 'expo-sharing';
@@ -79,6 +79,8 @@ export default function SpecFeedScreen() {
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [sharingReportId, setSharingReportId] = useState<string | null>(null);
   const [previewItem, setPreviewItem] = useState<FeedItem | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedQuery, setDebouncedQuery] = useState('');
 
   // === Compartir reporte individual en WhatsApp =============================
   // Estrategia nativa (sin expo-print) con fallback a Collage 2x2:
@@ -199,7 +201,7 @@ export default function SpecFeedScreen() {
     }
   }, [sharingReportId]);
 
-  const load = useCallback(async (nextRange: RangeKey = range, silent = false) => {
+  const load = useCallback(async (nextRange: RangeKey = range, silent = false, q = debouncedQuery) => {
     if (!projectId) {
       setLoading(false);
       setError('Tu cuenta no está asociada a ningún proyecto. Pide a tu Coordinador General una invitación.');
@@ -210,7 +212,7 @@ export default function SpecFeedScreen() {
       if (!silent) setLoading(true);
       const [proj, f] = await Promise.all([
         project ? Promise.resolve(project) : api.getProject(projectId),
-        api.feed(projectId, nextRange, 100),
+        api.feed(projectId, nextRange, 100, q || undefined),
       ]);
       setProject(proj);
       setFeed(f);
@@ -221,13 +223,26 @@ export default function SpecFeedScreen() {
       setRefreshing(false);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId, range]);
+  }, [projectId, range, debouncedQuery]);
 
-  useEffect(() => { load(range, false); /* initial */ }, [projectId]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load(range, false, ''); /* initial */ }, [projectId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Debounce del input de búsqueda (350ms) — evita spam de requests.
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedQuery(searchQuery.trim()), 350);
+    return () => clearTimeout(t);
+  }, [searchQuery]);
+
+  // Cuando cambia el query debounced, recargamos el feed silenciosamente.
+  useEffect(() => {
+    if (!projectId) return;
+    load(range, true, debouncedQuery);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [debouncedQuery]);
 
   function onPickRange(r: RangeKey) {
     setRange(r);
-    load(r, true);
+    load(r, true, debouncedQuery);
   }
 
   async function onLogout() {
@@ -476,9 +491,33 @@ export default function SpecFeedScreen() {
           </ScrollView>
         </View>
 
+        {/* Barra de búsqueda por nombre de reporte / actividades / etc. */}
+        <View style={styles.searchWrap}>
+          <View style={styles.searchBox}>
+            <Ionicons name="search" size={18} color={colors.textMuted} />
+            <TextInput
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              placeholder="Buscar reporte por nombre, ubicación o texto…"
+              placeholderTextColor={colors.textMuted}
+              style={styles.searchInput}
+              autoCorrect={false}
+              autoCapitalize="none"
+              returnKeyType="search"
+            />
+            {searchQuery ? (
+              <Pressable hitSlop={8} onPress={() => setSearchQuery('')}>
+                <Ionicons name="close-circle" size={18} color={colors.textMuted} />
+              </Pressable>
+            ) : null}
+          </View>
+        </View>
+
         {/* Lista de actividad */}
         <View style={styles.feedHeaderRow}>
-          <Text style={styles.feedTitle}>Actividad reciente</Text>
+          <Text style={styles.feedTitle}>
+            {debouncedQuery ? 'Resultados' : 'Actividad reciente'}
+          </Text>
           {feed && reports.length > 0 ? (
             <Text style={styles.feedCount}>{reports.length}</Text>
           ) : null}
@@ -509,6 +548,20 @@ export default function SpecFeedScreen() {
               <Pressable style={styles.emptyBtn} onPress={() => setSelectedDate(null)}>
                 <Ionicons name="refresh" size={18} color="#fff" />
                 <Text style={styles.emptyBtnTxt}>Limpiar fecha</Text>
+              </Pressable>
+            </View>
+          ) : debouncedQuery ? (
+            <View style={styles.emptyBox}>
+              <View style={styles.emptyIcon}>
+                <Ionicons name="search-outline" size={28} color={colors.primary} />
+              </View>
+              <Text style={styles.emptyTitle}>Sin resultados</Text>
+              <Text style={styles.emptyMsg}>
+                No encontramos reportes que coincidan con “{debouncedQuery}”. Prueba con otras palabras.
+              </Text>
+              <Pressable style={styles.emptyBtn} onPress={() => setSearchQuery('')}>
+                <Ionicons name="close" size={18} color="#fff" />
+                <Text style={styles.emptyBtnTxt}>Limpiar búsqueda</Text>
               </Pressable>
             </View>
           ) : (
@@ -817,7 +870,11 @@ function FeedCard({
             </View>
           ) : null}
         </View>
-        <Text style={styles.feedCardTitle} numberOfLines={1}>{leafName}</Text>
+        {/* Nombre del reporte (fallback: fecha corta). Se muestra ARRIBA del
+            leaf/ubicación para que el usuario identifique rápido el reporte. */}
+        <Text style={styles.feedCardTitle} numberOfLines={1}>
+          {(item.title && item.title.trim()) || `Reporte del ${shortDate(item.created_at)}`}
+        </Text>
         <Text style={styles.feedCardSub} numberOfLines={1}>{subtitle}</Text>
         <View style={styles.feedMetaRow}>
           <Ionicons name="time-outline" size={12} color={colors.textMuted} />
@@ -905,6 +962,14 @@ function timeAgo(iso?: string | null): string {
   if (d < 7) return `Hace ${d} d`;
   const date = new Date(iso);
   return date.toLocaleDateString('es-MX', { day: '2-digit', month: 'short' });
+}
+
+// Fecha corta usada como fallback cuando el reporte no tiene título.
+function shortDate(iso?: string | null): string {
+  if (!iso) return 'sin fecha';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return 'sin fecha';
+  return d.toLocaleDateString('es-MX', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
 }
 
 function formatMeasurement(type?: string | null, v?: Record<string, any> | null): string {
@@ -1047,6 +1112,30 @@ const styles = StyleSheet.create({
   },
   chipTxt: { fontSize: 13, fontWeight: '700', color: colors.textBody },
   chipTxtActive: { color: '#fff' },
+
+  // Search bar
+  searchWrap: {
+    paddingHorizontal: spacing.md,
+    marginTop: spacing.md,
+  },
+  searchBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#fff',
+    borderRadius: radius.md,
+    paddingHorizontal: 12,
+    paddingVertical: Platform.OS === 'ios' ? 12 : 6,
+    borderWidth: 1,
+    borderColor: colors.border,
+    ...shadow.card,
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: 14,
+    color: colors.text,
+    paddingVertical: Platform.OS === 'android' ? 4 : 0,
+  },
 
   // Feed header
   feedHeaderRow: {

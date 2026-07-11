@@ -120,7 +120,10 @@ export default function InvitationsScreen() {
         name: name.trim(),
         role,
         puesto: role === ROLE_ESP ? (puesto.trim() || null) : null,
-        area_id: role === ROLE_ESP ? areaId : null,
+        // area_id se envía para ESP (obligatorio) y para SUB (opcional).
+        // En Sub-coord define la disciplina bajo la que se agruparán sus
+        // reportes en los exports ejecutivos (PDF/PPTX). Sin área: "Obra Civil".
+        area_id: role === ROLE_ESP ? areaId : (role === ROLE_SUB ? areaId : null),
         scope_node_id: role === ROLE_SUB ? scopeNodeId : null,
         scope_node_ids: role === ROLE_ESP ? scopeNodeIds : [],
       };
@@ -266,6 +269,9 @@ export default function InvitationsScreen() {
                       tree={tree}
                       selected={scopeNodeId}
                       onSelect={setScopeNodeId}
+                      areas={areas}
+                      areaId={areaId}
+                      onArea={setAreaId}
                     />
                   ) : (
                     <StepScopeMulti
@@ -546,9 +552,10 @@ function StepIdentity({
 }
 
 function StepScopeSingle({
-  tree, selected, onSelect,
+  tree, selected, onSelect, areas, areaId, onArea,
 }: {
   tree: LocationNodeTree[]; selected: string | null; onSelect: (id: string) => void;
+  areas: Area[]; areaId: string | null; onArea: (id: string | null) => void;
 }) {
   if (tree.length === 0) {
     return (
@@ -559,11 +566,49 @@ function StepScopeSingle({
     );
   }
   return (
-    <View style={{ gap: 8 }}>
+    <View style={{ gap: 14 }}>
       <Text style={styles.stepTitle}>Alcance del Sub-Coordinador</Text>
       <Text style={styles.stepSub}>Selecciona el nodo del árbol que supervisará. Tendrá acceso a ese nodo y a todos sus descendientes.</Text>
       <View style={styles.treeBox}>
         {tree.map((n) => <TreeRow key={n.id} node={n} selected={selected} onSelect={onSelect} mode="single" />)}
+      </View>
+
+      {/* Disciplina / Área (opcional) — se usa en exports ejecutivos. */}
+      <View style={{ marginTop: 4 }}>
+        <Text style={styles.label}>Disciplina / Área (opcional)</Text>
+        <Text style={[styles.stepSub, { marginBottom: 6 }]}>
+          Bajo esta disciplina se agruparán los reportes del Sub-Coordinador en las exportaciones ejecutivas (PDF/PPTX). Si no eliges, se usa &ldquo;Obra Civil&rdquo; por defecto.
+        </Text>
+        {areas.length === 0 ? (
+          <View style={styles.warnBlock}>
+            <Ionicons name="information-circle" size={18} color={colors.warning} />
+            <Text style={styles.warnText}>No hay áreas configuradas. Los reportes se agruparán como &ldquo;Obra Civil&rdquo;.</Text>
+          </View>
+        ) : (
+          <View style={styles.areaRow}>
+            <Pressable
+              onPress={() => onArea(null)}
+              style={[styles.areaPill, !areaId && styles.areaPillOn]}
+            >
+              <View style={[styles.areaDot, { backgroundColor: '#6B7280' }]} />
+              <Text style={[styles.areaText, !areaId && { color: colors.primary, fontWeight: '800' }]}>
+                Obra Civil (por defecto)
+              </Text>
+            </Pressable>
+            {areas.map((a) => (
+              <Pressable
+                key={a.id}
+                onPress={() => onArea(a.id)}
+                style={[styles.areaPill, areaId === a.id && styles.areaPillOn]}
+              >
+                <View style={[styles.areaDot, { backgroundColor: a.color }]} />
+                <Text style={[styles.areaText, areaId === a.id && { color: colors.primary, fontWeight: '800' }]}>
+                  {a.name}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+        )}
       </View>
     </View>
   );
@@ -647,6 +692,13 @@ function StepReview({
         {role === ROLE_ESP && puesto ? <ReviewRow icon="briefcase-outline" label="Puesto" value={puesto} /> : null}
         {role === ROLE_ESP && areaName ? <ReviewRow icon="color-palette-outline" label="Área" value={areaName} /> : null}
         {role === ROLE_SUB && scopeNodeName ? <ReviewRow icon="git-network-outline" label="Alcance" value={scopeNodeName} /> : null}
+        {role === ROLE_SUB ? (
+          <ReviewRow
+            icon="color-palette-outline"
+            label="Disciplina"
+            value={areaName || 'Obra Civil (por defecto)'}
+          />
+        ) : null}
         {role === ROLE_ESP && scopeNames.length > 0 ? (
           <ReviewRow icon="flag-outline" label={`Hojas (${scopeNames.length})`} value={scopeNames.join(', ')} />
         ) : null}

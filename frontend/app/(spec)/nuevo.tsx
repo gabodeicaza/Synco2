@@ -100,6 +100,7 @@ export default function SpecCaptureScreen() {
   const [path, setPath] = useState<LocationNodeTree[]>([]);
 
   // ----- Form --------------------------------------------------------------
+  const [title, setTitle] = useState('');
   const [actividades, setActividades] = useState('');
   const [observaciones, setObservaciones] = useState('');
   const [incidencias, setIncidencias] = useState('');
@@ -645,6 +646,7 @@ export default function SpecCaptureScreen() {
         project_id: project.id,
         node_id: leafNode.id,
         measurement_value: measurement,
+        title: title.trim() || null,
         notes: actividades.trim() || null, // legacy notes = actividades
         // [P0 FIX] avance ahora envía el string calculado + unidad (no actividades).
         avance: avanceStr != null ? `${avanceStr} ${unidad}` : null,
@@ -700,6 +702,7 @@ export default function SpecCaptureScreen() {
   }
 
   function clearFormAndCloseSuccess() {
+    setTitle('');
     setActividades('');
     setObservaciones('');
     setPrimeraLectura('');
@@ -854,6 +857,26 @@ export default function SpecCaptureScreen() {
         nestedScrollEnabled
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} />}
       >
+        {/* Nombre del reporte (opcional) — HASTA ARRIBA, primer campo. */}
+        <SectionCard
+          icon="pricetag-outline"
+          title="Nombre del reporte"
+          subtitle="Opcional. Se usará para buscarlo desde el inicio."
+        >
+          <Field label="Nombre">
+            <TextInput
+              placeholder="Ej. Inspección diaria de armado — C-15"
+              placeholderTextColor={colors.textMuted}
+              value={title}
+              onChangeText={setTitle}
+              style={[styles.input, { paddingVertical: 12 }]}
+              maxLength={120}
+              returnKeyType="next"
+              autoCapitalize="sentences"
+            />
+          </Field>
+        </SectionCard>
+
         {/* AUTO-DATA (read-only) */}
         <SectionCard
           icon="information-circle-outline"

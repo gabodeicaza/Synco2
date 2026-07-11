@@ -335,6 +335,9 @@ class ReportIn(BaseModel):
     node_id: str  # debe ser hoja
     # Valor de medición (formato depende del measurement_type del nodo)
     measurement_value: dict  # ej: {"lat": 19.43, "lon": -99.13} | {"cadenamiento": "5+100"} | {"eje": "A"} | {"nivel": 12.45}
+    # Título/nombre del reporte (opcional). Si viene vacío, en el frontend
+    # se muestra un fallback tipo "Reporte del <fecha>". Se indexa para búsqueda.
+    title: Optional[str] = None
     area_id: Optional[str] = None
     notes: Optional[str] = None
     avance: Optional[str] = None
@@ -364,6 +367,7 @@ class ReportOut(BaseModel):
     node_path_ids: List[str] = Field(default_factory=list)  # ids ancestrales para filtros
     measurement_type: str
     measurement_value: dict
+    title: Optional[str] = None
     area_id: Optional[str] = None
     area_name: Optional[str] = None
     notes: Optional[str] = None
@@ -1924,6 +1928,13 @@ async def create_invite(pid: str, body: InvitationIn, user: dict = Depends(requi
         node = await db.location_nodes.find_one({"id": body.scope_node_id, "project_id": pid})
         if not node:
             raise HTTPException(404, "scope_node_id inválido")
+        # Área/disciplina opcional del sub-coordinador — se usa en los exports
+        # ejecutivos (PDF/PPTX) para etiquetar los reportes bajo esta disciplina.
+        # Si NO se asigna, exports usan "Obra Civil" como fallback.
+        if body.area_id:
+            area = await db.areas.find_one({"id": body.area_id, "project_id": pid})
+            if not area:
+                raise HTTPException(404, "area_id inválido para sub-coordinador")
     elif body.role == "especialista":
         if not body.area_id:
             raise HTTPException(400, "Especialista requiere area_id")
@@ -2198,6 +2209,7 @@ async def create_report(body: ReportIn, user: dict = Depends(current_user)):
         ),
         "area_id": body.area_id or user.get("area_id"),
         "area_name": area_name,
+        "title": (body.title or "").strip()[:200] or None,
         "notes": (body.notes or "").strip() or None,
         "avance": (body.avance or "").strip() or None,
         "observaciones": (body.observaciones or "").strip() or None,
@@ -2406,6 +2418,7 @@ async def reports_feed(
     pid: str,
     range: str = "today",
     limit: int = 50,
+    q: Optional[str] = None,
     user: dict = Depends(current_user),
 ):
     """Feed consolidado para Especialistas / Sub-Coordinadores.
@@ -2413,21 +2426,42 @@ async def reports_feed(
     Devuelve estadísticas (total, mine, others) y la lista de reportes recientes
     livianos (solo primera imagen como thumbnail, conteo del resto).
     Aplica el mismo scope RBAC que list_reports.
+
+    Búsqueda inteligente (`q`): filtra reportes cuyo `title`, `notes`,
+    `observaciones`, `incidencias`, `contratista`, `captured_by_name` o
+    cualquier segmento de `node_path_names` contenga el texto (case-insensitive).
     """
     await ensure_project_access(user, pid)
-    q: dict = {"project_id": pid}
+    query: dict = {"project_id": pid}
     if user["role"] == ROLE_ESPECIALISTA:
         scope = user.get("scope_node_ids") or []
-        q["node_id"] = {"$in": scope}
+        query["node_id"] = {"$in": scope}
     # Sub-coordinador: feed GLOBAL del proyecto (sin restricción de scope).
 
     start = _feed_range_start(range)
     if start is not None:
-        q["created_at"] = {"$gte": start}
+        query["created_at"] = {"$gte": start}
+
+    # Búsqueda inteligente por texto libre — regex case-insensitive sobre
+    # múltiples campos. Se escapan meta-caracteres regex para evitar errores
+    # cuando el usuario escribe símbolos.
+    q_txt = (q or "").strip()
+    if q_txt:
+        import re as _re
+        pat = _re.escape(q_txt)
+        query["$or"] = [
+            {"title": {"$regex": pat, "$options": "i"}},
+            {"notes": {"$regex": pat, "$options": "i"}},
+            {"observaciones": {"$regex": pat, "$options": "i"}},
+            {"incidencias": {"$regex": pat, "$options": "i"}},
+            {"contratista": {"$regex": pat, "$options": "i"}},
+            {"captured_by_name": {"$regex": pat, "$options": "i"}},
+            {"node_path_names": {"$regex": pat, "$options": "i"}},
+        ]
 
     # Conteos agregados por captured_by (con un solo round trip).
     pipeline = [
-        {"$match": q},
+        {"$match": query},
         {"$group": {"_id": "$captured_by", "count": {"$sum": 1}}},
     ]
     groups = await db.reports.aggregate(pipeline).to_list(length=10000)
@@ -2437,7 +2471,7 @@ async def reports_feed(
 
     # Lista de items livianos (orden desc, limit).
     safe_limit = max(1, min(int(limit or 50), 200))
-    cursor = db.reports.find(q).sort("created_at", -1).limit(safe_limit)
+    cursor = db.reports.find(query).sort("created_at", -1).limit(safe_limit)
     raw_items = await cursor.to_list(length=safe_limit)
 
     # Mapa de áreas (para color y nombre real).
@@ -2459,6 +2493,7 @@ async def reports_feed(
             "node_path_names": it.get("node_path_names") or [],
             "measurement_type": it.get("measurement_type"),
             "measurement_value": it.get("measurement_value") or {},
+            "title": it.get("title"),
             "area_id": area_id,
             "area_name": (area_info or {}).get("name") or it.get("area_name"),
             "area_color": (area_info or {}).get("color"),
@@ -3676,6 +3711,7 @@ async def export_reports_xlsx(pid: str, user: dict = Depends(current_user)):
                 _excel_safe(_normalize_area_name(
                     r.get("area_name") or (areas_by_id.get(r.get("area_id"), {}) or {}).get("name"),
                     user_role=user.get("role"),
+                    user_area=user.get("area"),
                 )),
                 _excel_safe(r.get("captured_by_name")),
                 _excel_safe(r.get("created_at")),
@@ -4035,17 +4071,21 @@ def _strip_b64_prefix(s: str) -> str:
 # disciplina "Obra Civil" en las exportaciones ejecutivas. Cualquier variante
 # ortográfica (con/sin espacio, tildes, plural, mayúsculas) cae en la regla.
 #
-# Además, cuando el usuario que EXPORTA tiene rol `sub_coordinador`, TODOS
-# los reportes se etiquetan como "OBRA CIVIL" en la salida ejecutiva
-# (requerimiento de negocio 2026-07 — hardcoded para el rol Sub-Coord).
+# Cuando el usuario que EXPORTA tiene rol `sub_coordinador`, TODOS los reportes
+# se etiquetan bajo la disciplina que el Coordinador General le ASIGNÓ en la
+# invitación (`user["area"]`). Si el sub-coordinador NO tiene área asignada,
+# se usa "OBRA CIVIL" como fallback histórico (v2026-07).
 # ============================================================================
 def _normalize_area_name(
     area_name: Optional[str],
     user_role: Optional[str] = None,
+    user_area: Optional[str] = None,
 ) -> str:
-    # [Regla dura] Sub-coordinador exportando → siempre "OBRA CIVIL".
+    # [Regla dura] Sub-coordinador exportando → usa su disciplina asignada;
+    # si no tiene, cae al fallback histórico "OBRA CIVIL".
     if user_role == ROLE_SUB:
-        return "OBRA CIVIL"
+        assigned = (user_area or "").strip()
+        return assigned.upper() if assigned else "OBRA CIVIL"
     raw = (area_name or "").strip()
     if not raw:
         return "SIN ÁREA"
@@ -4879,7 +4919,7 @@ async def export_reports_pdf(
             coordenada Y que usa el título "REPORTE X" en la portada principal
             (PH * 0.32 + 1.6cm) para preservar coherencia visual con la
             jerarquía institucional."""
-            title = _normalize_area_name(area_name or "SIN ÁREA", user_role=user.get("role")).upper()
+            title = _normalize_area_name(area_name or "SIN ÁREA", user_role=user.get("role"), user_area=user.get("area")).upper()
             size = 34  # mismo tamaño que "REPORTE X" en la portada
             while c.stringWidth(title, "Helvetica-Bold", size) > PW - 3.0 * cm and size > 18:
                 size -= 2
@@ -5029,7 +5069,7 @@ async def export_reports_pdf(
                 if not _aid:
                     return "SIN ÁREA"
                 _a = areas_by_id.get(_aid) or {}
-                return _normalize_area_name(_a.get("name"), user_role=user.get("role"))
+                return _normalize_area_name(_a.get("name"), user_role=user.get("role"), user_area=user.get("area"))
 
             reports_by_area: Dict[str, list] = {}
             for r in node_reps:
@@ -5660,7 +5700,7 @@ async def export_reports_docx(
             a_lbl.font.size = Pt(11)
             a_lbl.font.color.rgb = BRAND_RGB
             a_val = area_p.add_run(_normalize_area_name(
-                r.get("area_name"), user_role=user.get("role"),
+                r.get("area_name"), user_role=user.get("role"), user_area=user.get("area"),
             ))
             a_val.font.size = Pt(11)
             a_val.font.color.rgb = TEXT_RGB
@@ -6177,6 +6217,7 @@ async def export_reports_pptx(
                     _bk = _normalize_area_name(
                         (areas_by_id.get(_aid_r) or {}).get("name"),
                         user_role=user.get("role"),
+                        user_area=user.get("area"),
                     )
                 reps_by_area.setdefault(_bk, []).append(r)
             _sorted_area_ids = sorted(reps_by_area.keys(), key=lambda a: a.lower())

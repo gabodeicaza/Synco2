@@ -133,7 +133,9 @@ export function ReportPreviewSheet({
     }
   }, [reportId, fullReport, draftCaps]);
 
-  const title =
+  // Título: si el reporte fue creado con nombre, lo priorizamos; si no,
+  // fallback al nombre del leaf node (comportamiento previo).
+  const title = ((it.title && it.title.trim()) as string | undefined) ||
     (it.node_path_names && it.node_path_names.slice(-1)[0]) || 'Reporte';
   const path = (it.node_path_names || []).join(' › ') || '—';
   const author =

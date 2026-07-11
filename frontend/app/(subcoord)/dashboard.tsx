@@ -13,6 +13,7 @@ import {
   StatusBar,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
@@ -83,6 +84,14 @@ export default function SubCoordDashboard() {
   const [expAreas, setExpAreas] = useState<{ id: string; name: string; color?: string }[]>([]);
   const [expAreaId, setExpAreaId] = useState<string | null>(null); // null = "Todas las áreas"
 
+  // Búsqueda inteligente del feed (nombre, ubicación, texto).
+  const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedQuery, setDebouncedQuery] = useState('');
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedQuery(searchQuery.trim()), 350);
+    return () => clearTimeout(t);
+  }, [searchQuery]);
+
   const loadProjects = useCallback(async () => {
     try {
       const list = await api.listProjects();
@@ -100,14 +109,14 @@ export default function SubCoordDashboard() {
       setError(null);
       const [ns, feed] = await Promise.all([
         api.listNodes(projectId),
-        api.feed(projectId, period, 200),
+        api.feed(projectId, period, 200, debouncedQuery || undefined),
       ]);
       setNodes(ns || []);
       setReports(feed?.reports || []);
     } catch (e: any) {
       setError(e?.message || 'No se pudo cargar la información');
     }
-  }, [period]);
+  }, [period, debouncedQuery]);
 
   useEffect(() => {
     (async () => {
@@ -853,8 +862,30 @@ export default function SubCoordDashboard() {
             </View>
 
             {/* Reportes Recientes con botón compartir WhatsApp */}
+            <View style={styles.subSearchWrap}>
+              <View style={styles.subSearchBox}>
+                <Ionicons name="search" size={17} color={colors.textMuted} />
+                <TextInput
+                  value={searchQuery}
+                  onChangeText={setSearchQuery}
+                  placeholder="Buscar reporte por nombre, ubicación o texto…"
+                  placeholderTextColor={colors.textMuted}
+                  style={styles.subSearchInput}
+                  autoCorrect={false}
+                  autoCapitalize="none"
+                  returnKeyType="search"
+                />
+                {searchQuery ? (
+                  <Pressable hitSlop={8} onPress={() => setSearchQuery('')}>
+                    <Ionicons name="close-circle" size={17} color={colors.textMuted} />
+                  </Pressable>
+                ) : null}
+              </View>
+            </View>
             <View style={styles.feedHeaderRow}>
-              <Text style={styles.feedTitle}>Reportes Recientes</Text>
+              <Text style={styles.feedTitle}>
+                {debouncedQuery ? 'Resultados' : 'Reportes Recientes'}
+              </Text>
               {todayReports.length > 0 ? (
                 <Text style={styles.feedCount}>{todayReports.length}</Text>
               ) : null}
@@ -863,11 +894,19 @@ export default function SubCoordDashboard() {
             {todayReports.length === 0 ? (
               <View style={styles.emptyBox}>
                 <View style={styles.emptyIcon}>
-                  <Ionicons name="time-outline" size={26} color={colors.primary} />
+                  <Ionicons
+                    name={debouncedQuery ? 'search-outline' : 'time-outline'}
+                    size={26}
+                    color={colors.primary}
+                  />
                 </View>
-                <Text style={styles.emptyTitle}>Aún sin reportes hoy</Text>
+                <Text style={styles.emptyTitle}>
+                  {debouncedQuery ? 'Sin resultados' : 'Aún sin reportes hoy'}
+                </Text>
                 <Text style={styles.emptyMsg}>
-                  Cuando tu equipo capture actividad, aparecerá aquí.
+                  {debouncedQuery
+                    ? `No encontramos reportes que coincidan con “${debouncedQuery}”.`
+                    : 'Cuando tu equipo capture actividad, aparecerá aquí.'}
                 </Text>
               </View>
             ) : (
@@ -921,7 +960,7 @@ export default function SubCoordDashboard() {
                           <Text style={styles.feedTime}>{formatTime(r.created_at)}</Text>
                         </View>
                         <Text style={styles.feedCardTitle} numberOfLines={1}>
-                          {leafName}
+                          {(r.title && r.title.trim()) || leafName}
                         </Text>
                         <Text style={styles.feedCardSub} numberOfLines={1}>
                           {subtitle}
@@ -1513,6 +1552,26 @@ const styles = StyleSheet.create({
     marginBottom: spacing.sm,
   },
   feedTitle: { fontSize: 15, fontWeight: '800', color: colors.text },
+  subSearchWrap: {
+    marginBottom: spacing.sm,
+  },
+  subSearchBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#fff',
+    borderRadius: radius.md,
+    paddingHorizontal: 12,
+    paddingVertical: Platform.OS === 'ios' ? 10 : 4,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  subSearchInput: {
+    flex: 1,
+    fontSize: 14,
+    color: colors.text,
+    paddingVertical: Platform.OS === 'android' ? 4 : 0,
+  },
   feedCount: {
     fontSize: 11,
     fontWeight: '800',

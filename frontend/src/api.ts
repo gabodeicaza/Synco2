@@ -373,6 +373,7 @@ export interface Report {
   node_path_ids?: string[];
   measurement_type: string;
   measurement_value: Record<string, any>;
+  title?: string | null;
   area_id?: string | null;
   area_name?: string | null;
   notes?: string | null;
@@ -402,6 +403,7 @@ export interface FeedItem {
   node_path_names: string[];
   measurement_type: string;
   measurement_value: Record<string, any>;
+  title?: string | null;
   area_id?: string | null;
   area_name?: string | null;
   area_color?: string | null;
@@ -1014,6 +1016,8 @@ export const api = {
     project_id: string;
     node_id: string;
     measurement_value: Record<string, any>;
+    /** Nombre/título opcional del reporte (max 200 chars). */
+    title?: string | null;
     area_id?: string | null;
     notes?: string | null;
     avance?: string | null;
@@ -1058,8 +1062,16 @@ export const api = {
       };
     }>('GET', `/projects/${pid}/nodes/${nid}/history`),
   listReports: (pid: string) => request<Report[]>('GET', `/projects/${pid}/reports`),
-  feed: (pid: string, range: 'today' | 'week' | 'month' | 'all' = 'today', limit = 50) =>
-    request<FeedResponse>('GET', `/projects/${pid}/reports/feed?range=${range}&limit=${limit}`),
+  feed: (
+    pid: string,
+    range: 'today' | 'week' | 'month' | 'all' = 'today',
+    limit = 50,
+    q?: string,
+  ) => {
+    const params = new URLSearchParams({ range, limit: String(limit) });
+    if (q && q.trim()) params.set('q', q.trim());
+    return request<FeedResponse>('GET', `/projects/${pid}/reports/feed?${params.toString()}`);
+  },
   getReport: (rid: string) => request<Report>('GET', `/reports/${rid}`),
 
   // ---- AI Summary (Resumen Ejecutivo con IA) ------------------------------
