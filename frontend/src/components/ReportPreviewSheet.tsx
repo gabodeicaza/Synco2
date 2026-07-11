@@ -33,6 +33,8 @@ interface ReportPreviewSheetProps {
   onClose: () => void;
   /** Optional share-via-WhatsApp callback. If omitted, the share button is hidden. */
   onShare?: (item: FeedItem) => void | Promise<void>;
+  /** Cuando true, deshabilita el botón "Compartir" y muestra spinner. */
+  sharing?: boolean;
 }
 
 export function ReportPreviewSheet({
@@ -40,6 +42,7 @@ export function ReportPreviewSheet({
   item,
   onClose,
   onShare,
+  sharing = false,
 }: ReportPreviewSheetProps) {
   // Defensive: tolerate legacy/alt field names from the backend.
   const it = (item ?? {}) as Record<string, any>;
@@ -296,18 +299,28 @@ export function ReportPreviewSheet({
               {onShare ? (
                 <Pressable
                   onPress={() => {
-                    if (item && onShare) {
+                    if (item && onShare && !sharing) {
                       onClose();
                       setTimeout(() => onShare(item), 220);
                     }
                   }}
+                  disabled={sharing}
                   style={({ pressed }) => [
                     styles.waBtn,
-                    pressed && { opacity: 0.85 },
+                    sharing && { opacity: 0.6 },
+                    pressed && !sharing && { opacity: 0.85 },
                   ]}
+                  accessibilityLabel="Compartir por WhatsApp"
+                  accessibilityState={{ disabled: sharing }}
                 >
-                  <Ionicons name="logo-whatsapp" size={18} color="#FFFFFF" />
-                  <Text style={styles.waTxt}>Compartir</Text>
+                  {sharing ? (
+                    <ActivityIndicator size="small" color="#FFFFFF" />
+                  ) : (
+                    <Ionicons name="logo-whatsapp" size={18} color="#FFFFFF" />
+                  )}
+                  <Text style={styles.waTxt}>
+                    {sharing ? 'Compartiendo…' : 'Compartir'}
+                  </Text>
                 </Pressable>
               ) : null}
               <Pressable

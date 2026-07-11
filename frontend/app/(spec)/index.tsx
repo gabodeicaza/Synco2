@@ -24,6 +24,7 @@ import { colors, radius, shadow, spacing, areaTone } from '@/src/theme';
 import { confirm } from '@/src/utils/confirm';
 import { api, FeedItem, FeedResponse, Project } from '@/src/api';
 import { storage } from '@/src/utils/storage';
+import { shareWithAutoRecover } from '@/src/utils/share';
 import { ReportPeriod } from '@/src/components/PeriodSheet';
 import { downloadBlob } from '@/src/utils/downloadBlob';
 import { DailyGoalsPanel } from '@/src/components/DailyGoalsPanel';
@@ -131,7 +132,7 @@ export default function SpecFeedScreen() {
         await FileSystem.writeAsStringAsync(txtUri, caption, {
           encoding: FileSystem.EncodingType.UTF8,
         });
-        await Sharing.shareAsync(txtUri, {
+        await shareWithAutoRecover(txtUri, {
           mimeType: 'text/plain',
           dialogTitle: 'Compartir reporte',
           UTI: 'public.plain-text',
@@ -149,7 +150,7 @@ export default function SpecFeedScreen() {
           encoding: FileSystem.EncodingType.Base64,
         });
         try { await Clipboard.setStringAsync(caption); } catch {}
-        await Sharing.shareAsync(oneUri, {
+        await shareWithAutoRecover(oneUri, {
           mimeType: 'image/jpeg',
           dialogTitle: 'Compartir reporte',
           UTI: 'public.jpeg',
@@ -176,7 +177,7 @@ export default function SpecFeedScreen() {
             encoding: FileSystem.EncodingType.Base64,
           });
           try { await Clipboard.setStringAsync(caption); } catch {}
-          await Sharing.shareAsync(oneUri, {
+          await shareWithAutoRecover(oneUri, {
             mimeType: 'image/jpeg',
             dialogTitle: 'Compartir reporte',
             UTI: 'public.jpeg',
@@ -186,7 +187,7 @@ export default function SpecFeedScreen() {
         throw new Error('No se pudo generar el collage.');
       }
       try { await Clipboard.setStringAsync(caption); } catch {}
-      await Sharing.shareAsync(dl.uri, {
+      await shareWithAutoRecover(dl.uri, {
         mimeType: 'image/jpeg',
         dialogTitle: 'Compartir reporte',
         UTI: 'public.jpeg',
@@ -728,6 +729,7 @@ export default function SpecFeedScreen() {
         item={previewItem}
         onClose={() => setPreviewItem(null)}
         onShare={shareReportWhatsApp}
+        sharing={!!previewItem && sharingReportId === previewItem.id}
       />
     </View>
   );

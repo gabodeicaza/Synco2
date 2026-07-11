@@ -31,6 +31,7 @@ import { NodeProgressPanel } from '@/src/components/NodeProgressPanel';
 import { ReportPreviewSheet } from '@/src/components/ReportPreviewSheet';
 import { HistoryCalendarModal } from '@/src/components/HistoryCalendarModal';
 import { toISODateCDMX } from '@/src/utils/tz';
+import { shareWithAutoRecover } from '@/src/utils/share';
 
 type ProgressRow = {
   node: LocationNode;
@@ -298,7 +299,7 @@ export default function SubCoordDashboard() {
         // Copiar texto al portapapeles antes de abrir el share sheet,
         // así el usuario puede pegarlo como caption en WhatsApp.
         try { await Clipboard.setStringAsync(caption); } catch {}
-        await Sharing.shareAsync(fileUri, {
+        await shareWithAutoRecover(fileUri, {
           mimeType: 'image/jpeg',
           dialogTitle: 'Compartir reporte',
           UTI: 'public.jpeg',
@@ -309,7 +310,7 @@ export default function SubCoordDashboard() {
         await FileSystem.writeAsStringAsync(fileUri, caption, {
           encoding: FileSystem.EncodingType.UTF8,
         });
-        await Sharing.shareAsync(fileUri, {
+        await shareWithAutoRecover(fileUri, {
           mimeType: 'text/plain',
           dialogTitle: 'Compartir reporte',
           UTI: 'public.plain-text',
@@ -1050,6 +1051,7 @@ export default function SubCoordDashboard() {
         item={previewItem}
         onClose={() => setPreviewItem(null)}
         onShare={shareReportWhatsApp}
+        sharing={!!previewItem && sharingReportId === previewItem.id}
       />
 
       {/* ===== Modal: Calendario histórico ===== */}

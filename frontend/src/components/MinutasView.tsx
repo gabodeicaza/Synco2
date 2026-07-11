@@ -33,7 +33,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { api, Area, Minuta, User } from '@/src/api';
+import { api, Area, LocationNode, Minuta, User } from '@/src/api';
 import { useAuth } from '@/src/auth-context';
 import { colors, radius, shadow, spacing } from '@/src/theme';
 import { confirm } from '@/src/utils/confirm';
@@ -125,9 +125,12 @@ export default function MinutasView({
   const [mine, setMine] = useState(false);
   const [q, setQ] = useState('');
   const [areaFilter, setAreaFilter] = useState<string[]>([]);
+  // Filtro por ubicación (nodo del proyecto) — 2026-07.
+  const [ubicacionFilter, setUbicacionFilter] = useState<string[]>([]);
 
   const [minutas, setMinutas] = useState<Minuta[]>([]);
   const [areas, setAreas] = useState<Area[]>([]);
+  const [nodes, setNodes] = useState<LocationNode[]>([]);
   const [members, setMembers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -140,19 +143,22 @@ export default function MinutasView({
       if (!pid) return;
       if (!opts?.silent) setLoading(true);
       try {
-        const [ms, ars, mbs] = await Promise.all([
+        const [ms, ars, mbs, nds] = await Promise.all([
           api.listMinutas(pid, {
             status: tab,
             mine,
             q,
             area_ids: areaFilter,
+            ubicacion_ids: ubicacionFilter,
           }),
           areas.length ? Promise.resolve(areas) : api.listAreas(pid),
           members.length ? Promise.resolve(members) : api.listProjectMembers(pid),
+          nodes.length ? Promise.resolve(nodes) : api.listNodes(pid),
         ]);
         setMinutas(ms);
         if (!areas.length) setAreas(ars);
         if (!members.length) setMembers(mbs);
+        if (!nodes.length) setNodes(nds);
       } catch (e: any) {
         Alert.alert('Error', e?.message || 'No se pudo cargar el módulo de minutas');
       } finally {
@@ -161,13 +167,13 @@ export default function MinutasView({
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [pid, tab, mine, q, areaFilter.join(',')],
+    [pid, tab, mine, q, areaFilter.join(','), ubicacionFilter.join(',')],
   );
 
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, mine, areaFilter.join(',')]);
+  }, [tab, mine, areaFilter.join(','), ubicacionFilter.join(',')]);
 
   useFocusEffect(
     useCallback(() => {
@@ -185,6 +191,11 @@ export default function MinutasView({
 
   const onToggleArea = (aid: string) => {
     setAreaFilter((prev) => (prev.includes(aid) ? prev.filter((x) => x !== aid) : [...prev, aid]));
+  };
+  const onToggleUbicacion = (nid: string) => {
+    setUbicacionFilter((prev) =>
+      prev.includes(nid) ? prev.filter((x) => x !== nid) : [...prev, nid],
+    );
   };
 
   const onToggleAcuerdo = async (m: Minuta, aid: string, next: boolean) => {
@@ -351,6 +362,53 @@ export default function MinutasView({
             )}
           </ScrollView>
         )}
+
+        {/* Filtro por Ubicación (nodos del proyecto) — 2026-07 */}
+        {nodes.length > 0 && (
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.chipsRow}
+          >
+            {nodes.map((n) => {
+              const active = ubicacionFilter.includes(n.id);
+              return (
+                <Pressable
+                  key={n.id}
+                  onPress={() => onToggleUbicacion(n.id)}
+                  style={[
+                    styles.chip,
+                    active && { backgroundColor: colors.primary, borderColor: colors.primary },
+                  ]}
+                >
+                  <Ionicons
+                    name="location-outline"
+                    size={12}
+                    color={active ? '#fff' : colors.textMuted}
+                  />
+                  <Text
+                    style={[
+                      styles.chipTxt,
+                      active && { color: '#fff', fontWeight: '800' },
+                    ]}
+                    numberOfLines={1}
+                  >
+                    {n.name}
+                  </Text>
+                </Pressable>
+              );
+            })}
+            {ubicacionFilter.length > 0 && (
+              <Pressable
+                onPress={() => setUbicacionFilter([])}
+                style={[styles.chip, styles.chipClear]}
+              >
+                <Ionicons name="close" size={12} color={colors.textMuted} />
+                <Text style={[styles.chipTxt, { color: colors.textMuted }]}>Limpiar</Text>
+              </Pressable>
+            )}
+          </ScrollView>
+        )}
       </View>
 
       {/* Lista */}
@@ -410,6 +468,7 @@ export default function MinutasView({
           }}
           projectId={pid}
           areas={areas}
+          nodes={nodes}
           members={members}
         />
       )}
@@ -474,6 +533,26 @@ function MinutaCard({
         <Text style={styles.cardTitle} numberOfLines={2}>
           {minuta.titulo}
         </Text>
+        {minuta.ubicacion_name ? (
+          <View
+            style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 4,
+              marginTop: 4,
+            }}
+          >
+            <Ionicons name="location" size={11} color={colors.primary} />
+            <Text
+              numberOfLines={1}
+              style={{ color: colors.text, fontSize: 12, fontWeight: '600' }}
+            >
+              {minuta.ubicacion_path_names && minuta.ubicacion_path_names.length > 0
+                ? minuta.ubicacion_path_names.join(' › ')
+                : minuta.ubicacion_name}
+            </Text>
+          </View>
+        ) : null}
         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 4 }}>
           {minuta.area_names.map((n, i) => (
             <View key={i} style={styles.areaChip}>
@@ -622,6 +701,7 @@ function CreateMinutaModal({
   onCreated,
   projectId,
   areas,
+  nodes,
   members,
 }: {
   visible: boolean;
@@ -629,6 +709,7 @@ function CreateMinutaModal({
   onCreated: () => void;
   projectId: string;
   areas: Area[];
+  nodes: LocationNode[];
   members: User[];
 }) {
   const insets = useSafeAreaInsets();
@@ -636,6 +717,9 @@ function CreateMinutaModal({
   const [descripcion, setDescripcion] = useState('');
   const [fechaReunion, setFechaReunion] = useState(todayISO());
   const [selAreas, setSelAreas] = useState<string[]>([]);
+  // Ubicación (nodo del proyecto) — obligatorio. Un solo nodo por minuta.
+  const [ubicacionId, setUbicacionId] = useState<string>('');
+  const [ubicacionPickerOpen, setUbicacionPickerOpen] = useState(false);
   const [involvedIds, setInvolvedIds] = useState<string[]>([]);
   const [involvedPickerOpen, setInvolvedPickerOpen] = useState(false);
   const [acuerdos, setAcuerdos] = useState<DraftAcuerdo[]>([
@@ -662,6 +746,10 @@ function CreateMinutaModal({
   const onSave = async () => {
     if (!titulo.trim()) {
       Alert.alert('Falta el título', 'La minuta requiere un título.');
+      return;
+    }
+    if (!ubicacionId) {
+      Alert.alert('Falta la ubicación', 'Selecciona la ubicación (nodo del proyecto).');
       return;
     }
     if (acuerdos.length === 0) {
@@ -691,6 +779,7 @@ function CreateMinutaModal({
         area_ids: selAreas,
         involved_ids: involvedIds,
         fecha_reunion: fechaReunion,
+        ubicacion_id: ubicacionId,
         acuerdos: acuerdos.map((a) => ({
           descripcion: a.descripcion.trim(),
           responsable_id: a.responsable_id,
@@ -707,6 +796,10 @@ function CreateMinutaModal({
 
   const memberName = (uid: string) =>
     members.find((m) => m.id === uid)?.name || 'Seleccionar responsable';
+
+  const ubicacionLabel = ubicacionId
+    ? nodes.find((n) => n.id === ubicacionId)?.name || 'Ubicación'
+    : 'Seleccionar ubicación…';
 
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose} transparent>
@@ -753,6 +846,39 @@ function CreateMinutaModal({
                 placeholder="YYYY-MM-DD"
                 placeholderTextColor={colors.textMuted}
               />
+
+              {/* Ubicación (nodo del proyecto) — obligatorio 2026-07 */}
+              <Text style={styles.label}>Ubicación *</Text>
+              <Pressable
+                onPress={() => setUbicacionPickerOpen(true)}
+                style={[
+                  styles.input,
+                  {
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                  },
+                ]}
+              >
+                <View style={{ flexDirection: 'row', alignItems: 'center', flexShrink: 1 }}>
+                  <Ionicons
+                    name="location-outline"
+                    size={16}
+                    color={ubicacionId ? colors.primary : colors.textMuted}
+                    style={{ marginRight: 6 }}
+                  />
+                  <Text
+                    numberOfLines={1}
+                    style={{
+                      color: ubicacionId ? colors.text : colors.textMuted,
+                      flexShrink: 1,
+                    }}
+                  >
+                    {ubicacionLabel}
+                  </Text>
+                </View>
+                <Ionicons name="chevron-down" size={16} color={colors.textMuted} />
+              </Pressable>
 
               <Text style={styles.label}>Áreas involucradas</Text>
               <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
@@ -978,6 +1104,62 @@ function CreateMinutaModal({
                               {m.role.replace('_', ' ')}
                             </Text>
                           </View>
+                        </Pressable>
+                      );
+                    })
+                  )}
+                </ScrollView>
+              </View>
+            </View>
+          </Modal>
+        )}
+
+        {/* Picker de Ubicación (selección única entre nodos del proyecto) */}
+        {ubicacionPickerOpen && (
+          <Modal
+            transparent
+            animationType="fade"
+            visible={ubicacionPickerOpen}
+            onRequestClose={() => setUbicacionPickerOpen(false)}
+          >
+            <View style={styles.pickerBackdrop}>
+              <View style={styles.pickerSheet}>
+                <View style={{
+                  flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+                  padding: 8, borderBottomWidth: 1, borderBottomColor: colors.border,
+                }}>
+                  <Text style={styles.pickerTitle}>Ubicación</Text>
+                  <Pressable onPress={() => setUbicacionPickerOpen(false)} hitSlop={8}>
+                    <Text style={{ color: colors.primary, fontWeight: '800' }}>Cerrar</Text>
+                  </Pressable>
+                </View>
+                <ScrollView style={{ maxHeight: 420 }}>
+                  {nodes.length === 0 ? (
+                    <Text style={{ padding: 16, color: colors.textMuted }}>
+                      El proyecto aún no tiene ubicaciones. Pídele al coordinador que las cree.
+                    </Text>
+                  ) : (
+                    nodes.map((n) => {
+                      const on = ubicacionId === n.id;
+                      return (
+                        <Pressable
+                          key={n.id}
+                          onPress={() => {
+                            setUbicacionId(n.id);
+                            setUbicacionPickerOpen(false);
+                          }}
+                          style={[styles.pickerRow, on && { backgroundColor: colors.bg }]}
+                        >
+                          <Ionicons
+                            name="location"
+                            size={16}
+                            color={on ? colors.primary : colors.textMuted}
+                            style={{ marginRight: 8 }}
+                          />
+                          <View style={{ flex: 1 }}>
+                            <Text style={{ fontWeight: '700', color: colors.text }}>{n.name}</Text>
+                          </View>
+                          {on && <Ionicons name="checkmark-circle" size={18} color={colors.primary} />}
                         </Pressable>
                       );
                     })

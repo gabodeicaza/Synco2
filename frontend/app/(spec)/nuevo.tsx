@@ -1052,29 +1052,9 @@ export default function SpecCaptureScreen() {
           </SectionCard>
         ) : null}
 
-        {/* Reporte: Actividades / Observaciones / Contratista */}
+        {/* Reporte: Actividades / Observaciones / Incidencias / Severidad */}
         {leafNode ? (
-          <SectionCard icon="document-text-outline" title="Reporte" subtitle="Actividades, observaciones y contratista.">
-            <Field label="Contratista">
-              <TextInput
-                placeholder="Nombre del contratista"
-                placeholderTextColor={colors.textMuted}
-                style={styles.input}
-                value={contratistaText}
-                onChangeText={setContratistaText}
-              />
-            </Field>
-
-            <Field label="No. de contrato">
-              <TextInput
-                placeholder="Ej. CONT-2026-001"
-                placeholderTextColor={colors.textMuted}
-                style={styles.input}
-                value={contratoText}
-                onChangeText={setContratoText}
-              />
-            </Field>
-
+          <SectionCard icon="document-text-outline" title="Reporte" subtitle="Actividades y observaciones del día.">
             <Field label="Actividades">
               <TextInput
                 placeholder="Describe las actividades del día…"
@@ -1159,6 +1139,37 @@ export default function SpecCaptureScreen() {
             onChangeDesc={(id, t) => updateItem('personal', id, { desc: t })}
             onChangeQty={(id, q) => updateItem('personal', id, { qty: q })}
           />
+        ) : null}
+
+        {/* Contratación (Contratista → Contrato) — se muestra INMEDIATAMENTE
+            debajo de Personal por requisito ejecutivo (Personal → Contratista
+            → Contrato). Antes vivían en la sección "Reporte" arriba. */}
+        {leafNode ? (
+          <SectionCard
+            icon="briefcase-outline"
+            title="Contratación"
+            subtitle="Contratista y número de contrato."
+          >
+            <Field label="Contratista">
+              <TextInput
+                placeholder="Nombre del contratista"
+                placeholderTextColor={colors.textMuted}
+                style={styles.input}
+                value={contratistaText}
+                onChangeText={setContratistaText}
+              />
+            </Field>
+
+            <Field label="No. de contrato">
+              <TextInput
+                placeholder="Ej. CONT-2026-001"
+                placeholderTextColor={colors.textMuted}
+                style={styles.input}
+                value={contratoText}
+                onChangeText={setContratoText}
+              />
+            </Field>
+          </SectionCard>
         ) : null}
 
         {/* Equipo dinámico */}

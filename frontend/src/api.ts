@@ -470,6 +470,10 @@ export interface Minuta {
   involved_ids?: string[];
   involved_names?: string[];
   fecha_reunion: string;
+  // Ubicación (nodo del proyecto) — requerida desde 2026-07.
+  ubicacion_id?: string | null;
+  ubicacion_name?: string | null;
+  ubicacion_path_names?: string[];
   author_id: string;
   author_name: string;
   author_role?: string;
@@ -1246,13 +1250,21 @@ export const api = {
   // ---- Minutas (Hub de acuerdos) -----------------------------------------
   listMinutas: (
     pid: string,
-    opts: { status?: 'all' | 'pending' | 'done'; mine?: boolean; q?: string; area_ids?: string[] } = {},
+    opts: {
+      status?: 'all' | 'pending' | 'done';
+      mine?: boolean;
+      q?: string;
+      area_ids?: string[];
+      ubicacion_ids?: string[];
+    } = {},
   ) => {
     const qs = new URLSearchParams();
     if (opts.status) qs.set('status', opts.status);
     if (opts.mine) qs.set('mine', '1');
     if (opts.q && opts.q.trim()) qs.set('q', opts.q.trim());
     if (opts.area_ids && opts.area_ids.length) qs.set('area_ids', opts.area_ids.join(','));
+    if (opts.ubicacion_ids && opts.ubicacion_ids.length)
+      qs.set('ubicacion_ids', opts.ubicacion_ids.join(','));
     const suffix = qs.toString();
     return request<Minuta[]>('GET', `/projects/${pid}/minutas${suffix ? `?${suffix}` : ''}`);
   },
@@ -1264,6 +1276,7 @@ export const api = {
       area_ids?: string[];
       involved_ids?: string[];
       fecha_reunion?: string;
+      ubicacion_id: string;   // requerido — node_id del árbol de ubicaciones
       acuerdos: { descripcion: string; responsable_id: string; fecha_limite: string }[];
     },
   ) => request<Minuta>('POST', `/projects/${pid}/minutas`, payload),

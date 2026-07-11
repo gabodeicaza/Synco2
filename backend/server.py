@@ -3673,7 +3673,10 @@ async def export_reports_xlsx(pid: str, user: dict = Depends(current_user)):
                 _excel_safe(personnel),
                 _excel_safe(equipment),
                 _excel_safe(r.get("notes")),
-                _excel_safe(r.get("area_name") or (areas_by_id.get(r.get("area_id"), {}) or {}).get("name") or ""),
+                _excel_safe(_normalize_area_name(
+                    r.get("area_name") or (areas_by_id.get(r.get("area_id"), {}) or {}).get("name"),
+                    user_role=user.get("role"),
+                )),
                 _excel_safe(r.get("captured_by_name")),
                 _excel_safe(r.get("created_at")),
                 r.get("id"),
@@ -4031,8 +4034,18 @@ def _strip_b64_prefix(s: str) -> str:
 # Regla de negocio: los reportes de "Sub supervisores" se agrupan bajo la
 # disciplina "Obra Civil" en las exportaciones ejecutivas. Cualquier variante
 # ortográfica (con/sin espacio, tildes, plural, mayúsculas) cae en la regla.
+#
+# Además, cuando el usuario que EXPORTA tiene rol `sub_coordinador`, TODOS
+# los reportes se etiquetan como "OBRA CIVIL" en la salida ejecutiva
+# (requerimiento de negocio 2026-07 — hardcoded para el rol Sub-Coord).
 # ============================================================================
-def _normalize_area_name(area_name: Optional[str]) -> str:
+def _normalize_area_name(
+    area_name: Optional[str],
+    user_role: Optional[str] = None,
+) -> str:
+    # [Regla dura] Sub-coordinador exportando → siempre "OBRA CIVIL".
+    if user_role == ROLE_SUB:
+        return "OBRA CIVIL"
     raw = (area_name or "").strip()
     if not raw:
         return "SIN ÁREA"
@@ -4866,7 +4879,7 @@ async def export_reports_pdf(
             coordenada Y que usa el título "REPORTE X" en la portada principal
             (PH * 0.32 + 1.6cm) para preservar coherencia visual con la
             jerarquía institucional."""
-            title = _normalize_area_name(area_name or "SIN ÁREA").upper()
+            title = _normalize_area_name(area_name or "SIN ÁREA", user_role=user.get("role")).upper()
             size = 34  # mismo tamaño que "REPORTE X" en la portada
             while c.stringWidth(title, "Helvetica-Bold", size) > PW - 3.0 * cm and size > 18:
                 size -= 2
@@ -5016,7 +5029,7 @@ async def export_reports_pdf(
                 if not _aid:
                     return "SIN ÁREA"
                 _a = areas_by_id.get(_aid) or {}
-                return _normalize_area_name(_a.get("name"))
+                return _normalize_area_name(_a.get("name"), user_role=user.get("role"))
 
             reports_by_area: Dict[str, list] = {}
             for r in node_reps:
@@ -5646,7 +5659,9 @@ async def export_reports_docx(
             a_lbl.bold = True
             a_lbl.font.size = Pt(11)
             a_lbl.font.color.rgb = BRAND_RGB
-            a_val = area_p.add_run(str(r.get("area_name") or "—"))
+            a_val = area_p.add_run(_normalize_area_name(
+                r.get("area_name"), user_role=user.get("role"),
+            ))
             a_val.font.size = Pt(11)
             a_val.font.color.rgb = TEXT_RGB
 
@@ -6160,7 +6175,8 @@ async def export_reports_pptx(
                     _bk = "SIN ÁREA"
                 else:
                     _bk = _normalize_area_name(
-                        (areas_by_id.get(_aid_r) or {}).get("name")
+                        (areas_by_id.get(_aid_r) or {}).get("name"),
+                        user_role=user.get("role"),
                     )
                 reps_by_area.setdefault(_bk, []).append(r)
             _sorted_area_ids = sorted(reps_by_area.keys(), key=lambda a: a.lower())
@@ -6489,6 +6505,10 @@ class MinutaIn(BaseModel):
     area_ids: List[str] = Field(default_factory=list)
     involved_ids: List[str] = Field(default_factory=list)
     fecha_reunion: Optional[str] = None  # ISO date; default hoy CDMX
+    # Ubicación de la minuta: id de un nodo del árbol de ubicaciones del proyecto.
+    # Requerido a nivel de negocio (validado en el endpoint), opcional en el modelo
+    # para no romper minutas creadas antes del 2026-07 (backfill = null).
+    ubicacion_id: Optional[str] = None
     acuerdos: List[AcuerdoIn] = Field(default_factory=list)
 
 
@@ -6533,6 +6553,28 @@ async def create_minuta(pid: str, body: MinutaIn, user: dict = Depends(current_u
         raise HTTPException(400, "Descripción máximo 4000 caracteres")
     area_ids, area_names = await _resolve_areas_for_minuta(pid, body.area_ids or [])
     fecha_reunion = (body.fecha_reunion or "").strip() or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    # Ubicación (nodo del proyecto) — REQUERIDA por regla de negocio 2026-07.
+    # Guardamos id + name + path para poder mostrar breadcrumb sin joins extra.
+    ubicacion_raw = (body.ubicacion_id or "").strip()
+    if not ubicacion_raw:
+        raise HTTPException(400, "Ubicación requerida")
+    ubi_doc = await db.location_nodes.find_one({"project_id": pid, "id": ubicacion_raw})
+    if not ubi_doc:
+        raise HTTPException(400, f"Ubicación inválida: {ubicacion_raw}")
+    ubicacion_id = ubi_doc["id"]
+    ubicacion_name = ubi_doc.get("name") or ""
+    # Breadcrumb legible tipo "Torre A > Piso 3 > Zona Sur" caminando parent_id.
+    ubicacion_path_names: List[str] = []
+    _cur = ubi_doc
+    _guard = 0
+    while _cur and _guard < 50:
+        ubicacion_path_names.insert(0, _cur.get("name") or "")
+        parent_id = _cur.get("parent_id")
+        if not parent_id:
+            break
+        _cur = await db.location_nodes.find_one({"project_id": pid, "id": parent_id})
+        _guard += 1
 
     # Involucrados (opcional) — usuarios extra que ven la minuta en "Mis Minutas".
     involved_ids: List[str] = []
@@ -6604,6 +6646,9 @@ async def create_minuta(pid: str, body: MinutaIn, user: dict = Depends(current_u
         "descripcion": descripcion,
         "area_ids": area_ids,
         "area_names": area_names,
+        "ubicacion_id": ubicacion_id,
+        "ubicacion_name": ubicacion_name,
+        "ubicacion_path_names": ubicacion_path_names,
         "involved_ids": involved_ids,
         "involved_names": involved_names,
         "fecha_reunion": fecha_reunion,
@@ -6625,6 +6670,7 @@ async def list_minutas(
     mine: int = 0,
     q: Optional[str] = None,
     area_ids: Optional[str] = None,  # CSV
+    ubicacion_ids: Optional[str] = None,  # CSV — filtra por node_id (regla 2026-07)
     user: dict = Depends(current_user),
 ):
     await ensure_project_access(user, pid)
@@ -6633,6 +6679,10 @@ async def list_minutas(
         wanted = [a.strip() for a in area_ids.split(",") if a.strip()]
         if wanted:
             query["area_ids"] = {"$in": wanted}
+    if ubicacion_ids:
+        wanted_ubi = [a.strip() for a in ubicacion_ids.split(",") if a.strip()]
+        if wanted_ubi:
+            query["ubicacion_id"] = {"$in": wanted_ubi}
     if q:
         rx = re.escape(q.strip())
         if rx:
