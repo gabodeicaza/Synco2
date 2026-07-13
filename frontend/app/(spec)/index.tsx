@@ -161,8 +161,7 @@ export default function SpecFeedScreen() {
       }
 
       // 5) CASO 2+ fotos → descargamos el collage 2x2 del backend.
-      const base = (process.env.EXPO_PUBLIC_BACKEND_URL || '').replace(/\/$/, '');
-      const collageUrl = `${base}/api/reports/${item.id}/collage.jpg`;
+      const collageUrl = `https://apm-app.mx/api/reports/${item.id}/collage.jpg`;
       const tok = await storage.secureGet<string>('syncsite_token', '');
       const collageUri = `${FileSystem.cacheDirectory}SynCo_collage_${item.id.slice(0, 8)}.jpg`;
       const dl = await FileSystem.downloadAsync(collageUrl, collageUri, {

@@ -149,14 +149,12 @@ export default function InvitationsScreen() {
     notify('Copiado', 'Token copiado al portapapeles');
   }
   async function copyLink(token: string) {
-    const base = (process.env.EXPO_PUBLIC_BACKEND_URL || '').replace(/\/$/, '');
-    const url = `${base}/invite/${token}`;
+    const url = `https://apm-app.mx/invite/${token}`;
     await Clipboard.setStringAsync(url);
     notify('Copiado', 'Enlace copiado al portapapeles');
   }
   async function shareInvite(inv: Invitation) {
-    const base = (process.env.EXPO_PUBLIC_BACKEND_URL || '').replace(/\/$/, '');
-    const url = `${base}/invite/${inv.token}`;
+    const url = `https://apm-app.mx/invite/${inv.token}`;
     const msg = `Hola ${inv.name}, te invito a unirte al proyecto "${inv.project_name}" en SynCo como ${roleLabel(inv.role)}.\n\nAbre este enlace o usa el token:\n${url}\n\nToken: ${inv.token}`;
     try { await Share.share({ message: msg }); } catch {}
   }

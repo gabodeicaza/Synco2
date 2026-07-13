@@ -11,33 +11,21 @@ const UPLOAD_DIAG_ALERT = true;
 /**
  * BASE URL del backend (producción HTTPS).
  *
- * [BYPASS 2026-07-11] El pipeline de EAS Build de Emergent NO inyecta
- * variables de entorno del `.env` (el pipeline hace un auto-commit y `.env`
- * está en `.gitignore`, por lo que jamás llega a la nube). Mientras Soporte
- * resuelve el flujo de secretos, hardcodeamos el fallback a producción para
- * desbloquear el APK. Precedencia:
- *   1. process.env.EXPO_PUBLIC_BACKEND_URL (si Expo/EAS inyecta algo)
- *   2. Fallback duro a https://apm-app.mx (dominio propio del cliente)
+ * [HARDCODE 2026-07-11] Se eliminó completamente la dependencia de
+ * `process.env.EXPO_PUBLIC_BACKEND_URL` porque el pipeline de EAS Build de
+ * Emergent NO inyecta variables de entorno del `.env` en los APKs físicos
+ * (el pipeline hace un auto-commit y `.env` está en `.gitignore`, por lo que
+ * jamás llega a la nube). Todo el frontend apunta estáticamente a
+ * `https://apm-app.mx` (dominio propio del cliente en producción).
  *
- * El sufijo `/api` se agrega automáticamente si no viene incluido en la URL.
+ * El sufijo `/api` se agrega automáticamente.
  */
-const FALLBACK_BACKEND_URL = 'https://apm-app.mx';
-const rawBackendUrl = ((process.env.EXPO_PUBLIC_BACKEND_URL || '').trim() || FALLBACK_BACKEND_URL)
-  .replace(/\/$/, '');
-export const BASE: string =
-  rawBackendUrl.endsWith('/api') ? rawBackendUrl : rawBackendUrl + '/api';
+export const BACKEND_URL = 'https://apm-app.mx';
+export const BASE: string = BACKEND_URL + '/api';
 
-// [DIAG 2026-07-08] Log visible en Metro para verificar la URL en el APK.
-// Al abrir la app aparecerá en consola:
-//   [SynCo][BASE] rawEnv="<valor real>" BASE="<url final>" fallbackUsed=<bool>
-// Si rawEnv sale vacío → EAS/Emergent NO inyectó la .env y estamos usando el
-// FALLBACK hardcoded (comportamiento intencional post-bypass 2026-07-11).
+// [DIAG 2026-07-11] Log visible en Metro/logcat para verificar la URL final.
 try {
-  const _rawEnv = process.env.EXPO_PUBLIC_BACKEND_URL ?? '<undefined>';
-  const _fallback = !(process.env.EXPO_PUBLIC_BACKEND_URL || '').trim();
-  console.log(
-    `[SynCo][BASE] rawEnv="${_rawEnv}" BASE="${BASE}" fallbackUsed=${_fallback}`,
-  );
+  console.log(`[SynCo][BASE] BASE="${BASE}" (hardcoded)`);
 } catch {
   /* noop */
 }
@@ -213,11 +201,12 @@ async function nativeMultipartUpload<T>(
     throw new ApiError(0, `Falló la preparación del archivo: ${err?.message || err}`);
   }
 
-  // Paso 2: verificar que la URL sea absoluta. Si BASE terminó con "/api"
-  // solo, significa que EXPO_PUBLIC_BACKEND_URL viene vacía en .env.
+  // Paso 2: verificar que la URL sea absoluta. Como BASE está hardcodeado a
+  // https://apm-app.mx/api esto nunca debería fallar, pero mantenemos el
+  // guardarraíl por si alguien reintroduce configuración dinámica.
   if (!url || url === '/api' || url.startsWith('/api/')) {
     throw new ApiError(0,
-      `Backend no configurado. Define EXPO_PUBLIC_BACKEND_URL en frontend/.env (ej. https://apm-app.mx). url="${url}"`);
+      `Backend no configurado. BASE debe ser absoluto (esperado https://apm-app.mx/api). url="${url}"`);
   }
 
   const authHeaders = await authHeader();
@@ -243,7 +232,7 @@ async function nativeMultipartUpload<T>(
       try {
         Alert.alert(
           'DIAG upload',
-          `native="${nativeMsg}"\n\nurl="${url}"\n\nBASE="${BASE}"\nrawEnv="${process.env.EXPO_PUBLIC_BACKEND_URL ?? '<undefined>'}"\n\nlocalUri="${normalized.uri}"\nsize=${normalized.size}\nmime="${normalized.type}"\nplatform=${Platform.OS} ${Platform.Version}`,
+          `native="${nativeMsg}"\n\nurl="${url}"\n\nBASE="${BASE}"\n\nlocalUri="${normalized.uri}"\nsize=${normalized.size}\nmime="${normalized.type}"\nplatform=${Platform.OS} ${Platform.Version}`,
         );
       } catch {
         /* noop */
