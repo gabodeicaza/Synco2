@@ -11,23 +11,32 @@ const UPLOAD_DIAG_ALERT = true;
 /**
  * BASE URL del backend (producción HTTPS).
  *
- * Configuración estándar: lee directamente `EXPO_PUBLIC_BACKEND_URL`
- * inyectada por Expo desde `frontend/.env`. Puede apuntar al endpoint
- * público con o sin `/api` final (ej. `https://apm-app.mx/api/`). Todas las
- * peticiones usan HTTPS y multipart/form-data estándar.
+ * [BYPASS 2026-07-11] El pipeline de EAS Build de Emergent NO inyecta
+ * variables de entorno del `.env` (el pipeline hace un auto-commit y `.env`
+ * está en `.gitignore`, por lo que jamás llega a la nube). Mientras Soporte
+ * resuelve el flujo de secretos, hardcodeamos el fallback a producción para
+ * desbloquear el APK. Precedencia:
+ *   1. process.env.EXPO_PUBLIC_BACKEND_URL (si Expo/EAS inyecta algo)
+ *   2. Fallback duro a https://apm-app.mx (dominio propio del cliente)
+ *
+ * El sufijo `/api` se agrega automáticamente si no viene incluido en la URL.
  */
-const rawBackendUrl = (process.env.EXPO_PUBLIC_BACKEND_URL || '').replace(/\/$/, '');
+const FALLBACK_BACKEND_URL = 'https://apm-app.mx';
+const rawBackendUrl = ((process.env.EXPO_PUBLIC_BACKEND_URL || '').trim() || FALLBACK_BACKEND_URL)
+  .replace(/\/$/, '');
 export const BASE: string =
   rawBackendUrl.endsWith('/api') ? rawBackendUrl : rawBackendUrl + '/api';
 
 // [DIAG 2026-07-08] Log visible en Metro para verificar la URL en el APK.
 // Al abrir la app aparecerá en consola:
-//   [SynCo][BASE] rawEnv="<valor real>" BASE="<url final>"
-// Si rawEnv sale vacío o undefined → EAS/Emergent NO inyectó la .env.
+//   [SynCo][BASE] rawEnv="<valor real>" BASE="<url final>" fallbackUsed=<bool>
+// Si rawEnv sale vacío → EAS/Emergent NO inyectó la .env y estamos usando el
+// FALLBACK hardcoded (comportamiento intencional post-bypass 2026-07-11).
 try {
-  // eslint-disable-next-line no-console
+  const _rawEnv = process.env.EXPO_PUBLIC_BACKEND_URL ?? '<undefined>';
+  const _fallback = !(process.env.EXPO_PUBLIC_BACKEND_URL || '').trim();
   console.log(
-    `[SynCo][BASE] rawEnv="${process.env.EXPO_PUBLIC_BACKEND_URL ?? '<undefined>'}" BASE="${BASE}"`,
+    `[SynCo][BASE] rawEnv="${_rawEnv}" BASE="${BASE}" fallbackUsed=${_fallback}`,
   );
 } catch {
   /* noop */
