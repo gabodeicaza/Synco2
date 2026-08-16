@@ -819,6 +819,117 @@ export interface SesionPendiente {
   convencion_usada: ConvencionDecimal | null;
 }
 
+// ---- Programa desglosado (Etapa 2 de la Ampliación del Catálogo) ----------
+// Segundo destino del MISMO wizard de importación (subir -> hoja -> mapear ->
+// validar/preview -> commit) — no crea/edita conceptos, adjunta una
+// distribución mensual a conceptos que YA existen (emparejados por clave),
+// agrupada en una ProgramaVersion versionada. Ver server.py, sección
+// "PROGRAMA DESGLOSADO".
+export interface ProgramaImportMapping {
+  codigo?: string;
+  importe?: string;
+  inicio?: string;
+  fin?: string;
+  meses: string[];
+}
+
+export interface ProgramaImportHeadersResponse {
+  sheet: string;
+  header_row_index: number;
+  headers: string[];
+  suggested_mapping: { codigo?: string; importe?: string; inicio?: string; fin?: string; meses: string[] };
+  fila_rango_fechas: any[];
+  sample_rows: any[][];
+  total_rows: number;
+  convencion_detectada: ConvencionDecimal | null;
+  preview_rows: any[][];
+}
+
+// tipo: 'importe_ilegible' | 'concepto_no_encontrado' | 'celda_mes_ilegible' | 'distribucion_no_cuadra'
+export interface ProgramaImportProblema {
+  tipo: string;
+  campo: string | null;
+  motivo: string;
+  importe_concepto?: string;
+  suma_distribucion?: string;
+  diferencia?: string;
+}
+
+export type ProgramaImportEstadoFila = 'ok' | 'error' | 'descartado' | 'sin_distribucion';
+
+export interface ProgramaImportMes {
+  fecha_inicio: string | null;
+  fecha_fin: string | null;
+  importe: string;
+}
+
+export interface ProgramaImportFila {
+  fila: number;
+  clave: string;
+  concepto_id: string | null;
+  importe_concepto: string;
+  fecha_inicio_contractual: string | null;
+  fecha_fin_contractual: string | null;
+  tiene_distribucion_propia: boolean;
+  meses: ProgramaImportMes[];
+  problemas: ProgramaImportProblema[];
+  correccion: { descartar?: boolean } | null;
+  estado: ProgramaImportEstadoFila;
+}
+
+export interface ProgramaImportResumen {
+  total: number;
+  ok: number;
+  error: number;
+  descartado: number;
+  sin_distribucion: number;
+}
+
+export interface ProgramaImportValidateResult {
+  resumen: ProgramaImportResumen;
+  etiqueta: string;
+}
+
+export interface ProgramaImportPreviewResponse {
+  resumen: ProgramaImportResumen;
+  filas: ProgramaImportFila[];
+  page: number;
+  page_size: number;
+  total_pages: number;
+  total_rows: number;
+  sheet: string | null;
+  etiqueta: string | null;
+  convencion_usada: ConvencionDecimal | null;
+}
+
+export interface ProgramaImportCommitResult {
+  version_id: string;
+  conceptos_importados: number;
+  sin_distribucion: number;
+}
+
+export interface ProgramaSesionPendiente {
+  import_id: string;
+  filename: string | null;
+  created_at: string;
+  sheet_names: string[];
+  validado: boolean;
+  validated_sheet: string | null;
+  validated_header_row_index: number | null;
+  validated_mapping: ProgramaImportMapping | null;
+  convencion_usada: ConvencionDecimal | null;
+}
+
+export interface ProgramaVersion {
+  id: string;
+  project_id: string;
+  etiqueta: string;
+  fecha_importacion: string;
+  vigente: boolean;
+  creado_por: string;
+  filename: string | null;
+}
+
 // ---- API client -----------------------------------------------------------
 export const api = {
   login: (email: string, password: string) =>
@@ -1466,6 +1577,69 @@ export const api = {
   // todo lo necesario ya quedó confirmado en la sesión de staging.
   importCatalogoCommit: (pid: string, importId: string) =>
     request<ImportCommitResult>('POST', `/projects/${pid}/conceptos/import/${importId}/commit`),
+
+  // ---- Programa desglosado — mismo wizard, segundo destino -----------------
+  programaImportSesionPendiente: (pid: string) =>
+    request<ProgramaSesionPendiente | null>('GET', `/projects/${pid}/programa/import/pendiente`),
+  programaImportDescartarSesion: (pid: string, importId: string) =>
+    request<{ ok: boolean }>('DELETE', `/projects/${pid}/programa/import/${importId}`),
+  programaImportUploadSheets: async (
+    pid: string,
+    file: { uri: string; name: string; mimeType?: string | null },
+  ): Promise<ImportSheetsResponse> => {
+    if (!file || !file.uri) throw new ApiError(0, 'Archivo o URI no proporcionado');
+    const isWeb = Platform.OS === 'web';
+    const fileName = file.name || 'programa.xlsx';
+    const mime = file.mimeType || 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    const url = `${BASE}/projects/${pid}/programa/import/sheets`;
+
+    if (!isWeb) {
+      return nativeMultipartUpload<ImportSheetsResponse>(url, file.uri, fileName, mime, 'import_programa');
+    }
+    const form = new FormData();
+    const resBlob = await fetch(file.uri);
+    const blob = await resBlob.blob();
+    try {
+      const f = new File([blob], fileName, { type: mime });
+      form.append('file', f);
+    } catch {
+      form.append('file', blob, fileName);
+    }
+    const headers = await authHeader();
+    const res = await fetch(url, { method: 'POST', headers, body: form as any });
+    const text = await res.text();
+    const data = text ? safeJson(text) : null;
+    if (!res.ok) {
+      const msg = (data && (data as any).detail) || `HTTP ${res.status}`;
+      throw new ApiError(res.status, typeof msg === 'string' ? msg : JSON.stringify(msg));
+    }
+    return data as ImportSheetsResponse;
+  },
+  programaImportHeaders: (importId: string, sheet?: string, headerRowIndex?: number) => {
+    const qs = new URLSearchParams();
+    if (sheet) qs.set('sheet', sheet);
+    if (headerRowIndex !== undefined) qs.set('header_row_index', String(headerRowIndex));
+    const suffix = qs.toString();
+    return request<ProgramaImportHeadersResponse>('GET', `/programa/import/${importId}/headers${suffix ? `?${suffix}` : ''}`);
+  },
+  programaImportValidate: (pid: string, importId: string, payload: {
+    sheet: string; header_row_index?: number; mapping: ProgramaImportMapping; convencion?: ConvencionDecimal; etiqueta?: string;
+  }) => request<ProgramaImportValidateResult>('POST', `/projects/${pid}/programa/import/${importId}/validate`, payload),
+  programaImportPreview: (importId: string, opts: { page?: number; page_size?: number } = {}) => {
+    const qs = new URLSearchParams();
+    if (opts.page) qs.set('page', String(opts.page));
+    if (opts.page_size) qs.set('page_size', String(opts.page_size));
+    const suffix = qs.toString();
+    return request<ProgramaImportPreviewResponse>('GET', `/programa/import/${importId}/preview${suffix ? `?${suffix}` : ''}`);
+  },
+  // Única corrección posible en este wizard: descartar una fila (no crea ni
+  // edita conceptos, solo adjunta una distribución a uno existente).
+  programaImportCorrectRow: (importId: string, fila: number, descartar: boolean) =>
+    request<{ fila: ProgramaImportFila; resumen: ProgramaImportResumen }>('PUT', `/programa/import/${importId}/rows/${fila}`, { descartar }),
+  programaImportCommit: (pid: string, importId: string) =>
+    request<ProgramaImportCommitResult>('POST', `/projects/${pid}/programa/import/${importId}/commit`),
+  programaListVersiones: (pid: string) =>
+    request<ProgramaVersion[]>('GET', `/projects/${pid}/programa/versiones`),
 
   // "Registrar avance" es de uso diario en campo — mismo criterio offline-first
   // que createReport: si no hay señal (o el POST falla por error de red crudo),
