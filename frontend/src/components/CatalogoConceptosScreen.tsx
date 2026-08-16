@@ -531,6 +531,13 @@ function NuevaPartidaModal({
   }
 
   return (
+    // Este título y el texto del botón que abre este modal (PartidasList,
+    // "Nueva {nivel}") usaban antes palabras distintas — commit 632f3d9
+    // los unificó bajo nombreNivel(). Ese commit es el primero de este
+    // archivo en git (nunca estuvo versionado), así que revertirlo
+    // arrastra también el resto del wiring de nombres configurables de
+    // la pantalla, no solo esta corrección — no se pudo aislar línea por
+    // línea, solo a nivel de commit.
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <View style={styles.nuevaPartidaBackdrop}>
         <View style={styles.nuevaPartidaCard}>
