@@ -683,6 +683,10 @@ async def startup_event():
     # archivo y nunca terminó el wizard) se purgan solas a las 24h — evita
     # que catalogo_import_sessions crezca indefinidamente con huérfanas.
     await db.catalogo_import_sessions.create_index("created_at", expireAfterSeconds=86400)
+    # Mismo criterio para las sesiones de importación del Programa desglosado
+    # (colección propia — el destino final de este wizard no es el mismo que
+    # el del catálogo, ver sección "PROGRAMA DESGLOSADO" más abajo).
+    await db.programa_import_sessions.create_index("created_at", expireAfterSeconds=86400)
     # Índice en `id` (UUID propio, no el `_id` de Mongo) para las colecciones
     # consultadas por id en el hot path de navegación (abrir nodo/área/canal/
     # evento/minuta/reporte individual, editar catálogo) — sin esto cada
@@ -700,6 +704,11 @@ async def startup_event():
     await db.conceptos.create_index("id")
     await db.registros_avance.create_index("id")
     await db.catalogo_import_sessions.create_index("id")
+    await db.programa_import_sessions.create_index("id")
+    await db.programa_versiones.create_index("id")
+    await db.programa_versiones.create_index([("project_id", 1), ("vigente", 1)])
+    await db.programa_distribucion.create_index("id")
+    await db.programa_distribucion.create_index([("programa_version_id", 1)])
 
     # --- Migración one-shot: asegurar canal General + asignar channel_id a
     # mensajes legacy creados antes del refactor de canales.
@@ -12808,6 +12817,549 @@ async def export_catalogo_pdf(pid: str, user: dict = Depends(current_user)):
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{fname}"'},
     )
+
+
+# === PROGRAMA DESGLOSADO — wizard de importación y versionado ==============
+# Segundo destino del MISMO wizard de importación (subir -> hoja -> mapear ->
+# validar/preview -> commit) que ya existe para el catálogo. Sesión propia
+# (`programa_import_sessions`) porque el resultado no crea/edita conceptos:
+# adjunta una distribución mensual (ProgramaDistribucion) a conceptos que YA
+# existen en el catálogo, agrupada en una ProgramaVersion versionada — los
+# programas se reprograman, nunca se sobrescriben ni se borran avances.
+
+class ProgramaImportMappingIn(BaseModel):
+    codigo: Optional[str] = None
+    importe: Optional[str] = None
+    inicio: Optional[str] = None
+    fin: Optional[str] = None
+    # Nombre de columna de cada Mes N, EN ORDEN — no hay un patrón fijo de
+    # nombre entre archivos, así que se mapean por nombre de encabezado como
+    # el resto de los campos, no por índice fijo.
+    meses: List[str] = Field(default_factory=list)
+
+
+class ProgramaImportValidateIn(BaseModel):
+    sheet: str
+    header_row_index: int = 0
+    mapping: ProgramaImportMappingIn
+    convencion: Optional[ConvencionDecimal] = None
+    etiqueta: str = ""
+
+
+class ProgramaRowCorrectionIn(BaseModel):
+    descartar: bool = True
+
+
+class ProgramaVersionOut(BaseModel):
+    id: str
+    project_id: str
+    etiqueta: str
+    fecha_importacion: datetime
+    vigente: bool
+    creado_por: str
+    filename: Optional[str] = None
+
+
+class ProgramaDistribucionMesOut(BaseModel):
+    fecha_inicio: Optional[str] = None
+    fecha_fin: Optional[str] = None
+    importe: str
+
+
+class ProgramaDistribucionOut(BaseModel):
+    id: str
+    project_id: str
+    programa_version_id: str
+    concepto_id: str
+    clave: str
+    fecha_inicio_contractual: Optional[str] = None
+    fecha_fin_contractual: Optional[str] = None
+    importe_concepto: str
+    meses: List[ProgramaDistribucionMesOut]
+
+
+_MAPPING_KEYWORDS_PROGRAMA = {
+    "codigo": ("codigo", "código", "clave"),
+    "importe": ("importe",),
+    "inicio": ("inicio",),
+    "fin": ("fin", "termino", "término"),
+}
+
+
+def _propose_mapping_programa(headers: List[str]) -> dict:
+    """Espejo de _propose_mapping (catálogo) para los campos fijos, más
+    detección de columnas "Mes N" por patrón — esas SÍ pueden proponerse
+    automáticamente porque su nombre es predecible, a diferencia de
+    clave/descripción del catálogo que varían por archivo."""
+    normalized = [_normalize_text(h) for h in headers]
+    mapping: dict = {}
+    used_idx: set = set()
+    for target, keywords in _MAPPING_KEYWORDS_PROGRAMA.items():
+        best_idx = None
+        for idx, h in enumerate(normalized):
+            if idx in used_idx or not h:
+                continue
+            if any(kw in h for kw in keywords):
+                best_idx = idx
+                break
+        if best_idx is not None:
+            mapping[target] = headers[best_idx]
+            used_idx.add(best_idx)
+    meses = [
+        headers[idx] for idx, h in enumerate(normalized)
+        if idx not in used_idx and re.match(r"^mes\s*\d+", h)
+    ]
+    mapping["meses"] = meses
+    return mapping
+
+
+def _validar_archivo_programa_completo(
+    rows: List[list],
+    header_row_index: int,
+    mapping: "ProgramaImportMappingIn",
+    convencion: Optional[ConvencionDecimal],
+    conceptos_by_clave: dict,
+) -> List[dict]:
+    """Procesa TODO el archivo del programa desglosado UNA vez — puro, mismo
+    criterio que _validar_archivo_completo del catálogo: el resultado es
+    inmutable, las correcciones (solo "descartar" aquí — este importador no
+    edita cantidad/PU/unidad, solo adjunta una distribución a un concepto
+    que YA existe) viven aparte como overlay en _calcular_vista_programa.
+
+    header_row_index es la fila de encabezados (Código/Descripción/.../
+    Mes N); header_row_index+1 es la fila de RANGO DE FECHAS de cada Mes N
+    (no de datos); los conceptos empiezan en header_row_index+2."""
+    if len(rows) <= header_row_index + 1:
+        raise HTTPException(400, "header_row_index fuera de rango (no hay fila de rangos de fecha ni datos después)")
+    headers = [str(c) if c is not None else "" for c in rows[header_row_index]]
+
+    def col(header_name: Optional[str]):
+        if not header_name or header_name not in headers:
+            return None
+        return headers.index(header_name)
+
+    idx_codigo = col(mapping.codigo)
+    idx_importe = col(mapping.importe)
+    idx_inicio = col(mapping.inicio)
+    idx_fin = col(mapping.fin)
+    idx_meses = [col(m) for m in mapping.meses]
+    if idx_codigo is None or idx_importe is None:
+        raise HTTPException(400, "El mapeo debe incluir al menos código e importe")
+    if any(i is None for i in idx_meses):
+        raise HTTPException(400, "Alguna columna de mes mapeada no existe en el encabezado elegido")
+
+    fila_rangos = rows[header_row_index + 1]
+    rangos_mes = [parse_rango_fechas_mes(fila_rangos[i] if i < len(fila_rangos) else None) for i in idx_meses]
+
+    data_rows = rows[header_row_index + 2:]
+    bloques = agrupar_bloques_programa(data_rows, idx_codigo)
+
+    filas: List[dict] = []
+    for bloque in bloques:
+        fila_datos = bloque["fila_datos"]
+        codigo_raw = fila_datos[idx_codigo] if idx_codigo < len(fila_datos) else None
+        clave = str(codigo_raw).strip() if codigo_raw not in (None, "") else None
+        if not clave:
+            continue  # fila de relleno, se ignora silenciosamente (igual que el import de catálogo)
+
+        problemas: List[dict] = []
+        importe_raw = fila_datos[idx_importe] if idx_importe < len(fila_datos) else None
+        try:
+            importe_concepto = _parse_celda_numerica(importe_raw, convencion)
+        except ValueError as e:
+            importe_concepto = to_decimal("0")
+            problemas.append({"tipo": "importe_ilegible", "campo": "importe", "motivo": str(e)})
+
+        concepto_existente = conceptos_by_clave.get(clave)
+        if not concepto_existente:
+            problemas.append({
+                "tipo": "concepto_no_encontrado", "campo": "codigo",
+                "motivo": f"No existe ningún concepto con clave '{clave}' en el catálogo de este proyecto",
+            })
+
+        inicio = _fecha_excel_a_iso(fila_datos[idx_inicio]) if idx_inicio is not None and idx_inicio < len(fila_datos) else None
+        fin = _fecha_excel_a_iso(fila_datos[idx_fin]) if idx_fin is not None and idx_fin < len(fila_datos) else None
+
+        valores_mensuales, errores_mes = extraer_distribucion_mensual_bloque(bloque["fila_importes"], idx_meses, convencion)
+        for err in errores_mes:
+            problemas.append({"tipo": "celda_mes_ilegible", "campo": "meses", "motivo": err})
+
+        tiene_distribucion_propia = bloque["fila_importes"] is not None
+        if tiene_distribucion_propia:
+            problema_cuadre = validar_cuadre_distribucion(importe_concepto, valores_mensuales)
+            if problema_cuadre:
+                problemas.append(problema_cuadre)
+
+        meses_out = [
+            {
+                "fecha_inicio": rangos_mes[i][0] if rangos_mes[i] else None,
+                "fecha_fin": rangos_mes[i][1] if rangos_mes[i] else None,
+                "importe": dec_to_str(valores_mensuales[i]),
+            }
+            for i in range(len(idx_meses))
+        ]
+
+        filas.append({
+            "fila": header_row_index + 2 + bloque["fila_datos_idx"],
+            "clave": clave,
+            "concepto_id": concepto_existente["id"] if concepto_existente else None,
+            "importe_concepto": dec_to_str(importe_concepto),
+            "fecha_inicio_contractual": inicio,
+            "fecha_fin_contractual": fin,
+            "tiene_distribucion_propia": tiene_distribucion_propia,
+            "meses": meses_out,
+            "problemas": problemas,
+        })
+    return filas
+
+
+_TIPOS_ERROR_PROGRAMA = {"importe_ilegible", "concepto_no_encontrado", "distribucion_no_cuadra", "celda_mes_ilegible"}
+
+
+def _calcular_vista_programa(filas: List[dict], correcciones: dict) -> List[dict]:
+    """Overlay de correcciones sobre el resultado inmutable de
+    _validar_archivo_programa_completo — recalculado en cada lectura, mismo
+    criterio que _calcular_vista_filas del catálogo."""
+    vista: List[dict] = []
+    for row in filas:
+        correccion = correcciones.get(str(row["fila"])) or {}
+        descartado = bool(correccion.get("descartar"))
+        if descartado:
+            estado = "descartado"
+        elif not row["tiene_distribucion_propia"]:
+            # Renglón de nivel superior sin distribución propia: no es un
+            # error (su curva se calcula sumando la de sus hijos, nunca se
+            # importa) pero tampoco entra al commit como "ok".
+            estado = "sin_distribucion"
+        else:
+            tipos = {p["tipo"] for p in row["problemas"]}
+            estado = "error" if (tipos & _TIPOS_ERROR_PROGRAMA) else "ok"
+        vista.append({**row, "correccion": correccion or None, "estado": estado})
+    return vista
+
+
+def _resumen_de_vista_programa(vista: List[dict]) -> dict:
+    resumen = {"total": len(vista), "ok": 0, "error": 0, "descartado": 0, "sin_distribucion": 0}
+    for row in vista:
+        resumen[row["estado"]] = resumen.get(row["estado"], 0) + 1
+    return resumen
+
+
+async def _ejecutar_commit_programa_con_compensacion(
+    versiones_col,
+    distribucion_col,
+    sessions_col,
+    log_bitacora: Callable[..., Any],
+    pid: str,
+    import_id: str,
+    etiqueta: str,
+    vista: List[dict],
+    versiones_vigentes_anteriores: List[dict],
+    user: dict,
+    filename: Optional[str],
+) -> dict:
+    """Crea una nueva ProgramaVersion (NUNCA sobrescribe ni borra una
+    anterior — los programas se REPROGRAMAN) y un ProgramaDistribucion por
+    cada fila 'ok' de la vista ya validada. Mismo patrón de compensación
+    manual que _ejecutar_commit_con_compensacion del catálogo (no hay
+    certeza de replica set en el Mongo de producción — ver ese docstring
+    para el detalle completo del razonamiento)."""
+    filas_importables = [f for f in vista if f["estado"] == "ok"]
+    if not filas_importables:
+        raise HTTPException(
+            400,
+            "Ningún concepto del archivo quedó en estado 'ok' para importar "
+            "(revisa errores o filas sin distribución propia en la vista previa)",
+        )
+
+    version_id = str(uuid.uuid4())
+    version_doc = {
+        "id": version_id, "project_id": pid, "etiqueta": etiqueta,
+        "fecha_importacion": datetime.now(timezone.utc), "vigente": True,
+        "creado_por": user["id"], "filename": filename,
+    }
+    compensacion_log: List[dict] = []
+
+    async def _compensar():
+        for entry in reversed(compensacion_log):
+            try:
+                if entry["tipo"] == "version_creada":
+                    await versiones_col.delete_one({"id": entry["id"]})
+                elif entry["tipo"] == "version_desactivada":
+                    await versiones_col.update_one({"id": entry["id"]}, {"$set": {"vigente": True}})
+                elif entry["tipo"] == "distribucion_creada":
+                    await distribucion_col.delete_one({"id": entry["id"]})
+            except Exception as comp_err:
+                log.error("[programa_import_commit] fallo compensando %s: %s", entry, comp_err)
+
+    try:
+        for v in versiones_vigentes_anteriores:
+            compensacion_log.append({"tipo": "version_desactivada", "id": v["id"]})
+            await sessions_col.update_one({"id": import_id}, {"$set": {"compensacion_log": compensacion_log}})
+            await versiones_col.update_one({"id": v["id"]}, {"$set": {"vigente": False}})
+
+        compensacion_log.append({"tipo": "version_creada", "id": version_id})
+        await sessions_col.update_one({"id": import_id}, {"$set": {"compensacion_log": compensacion_log}})
+        await versiones_col.insert_one(version_doc)
+
+        creados = 0
+        for fila in filas_importables:
+            dist_id = str(uuid.uuid4())
+            dist_doc = {
+                "id": dist_id, "project_id": pid, "programa_version_id": version_id,
+                "concepto_id": fila["concepto_id"], "clave": fila["clave"],
+                "fecha_inicio_contractual": fila["fecha_inicio_contractual"],
+                "fecha_fin_contractual": fila["fecha_fin_contractual"],
+                "importe_concepto": fila["importe_concepto"], "meses": fila["meses"],
+            }
+            compensacion_log.append({"tipo": "distribucion_creada", "id": dist_id})
+            await sessions_col.update_one({"id": import_id}, {"$set": {"compensacion_log": compensacion_log}})
+            await distribucion_col.insert_one(dist_doc)
+            creados += 1
+    except Exception as e:
+        log.error("[programa_import_commit] fallo a mitad del commit, compensando %d escrituras: %s", len(compensacion_log), e)
+        await _compensar()
+        raise HTTPException(500, f"La importación del programa falló a mitad de camino y se revirtió automáticamente (no se guardó nada): {e}")
+
+    await log_bitacora(
+        pid, "import_programa", "programa_version", version_id, None, None,
+        f"versión '{etiqueta}' creada desde importación ({filename}), {creados} conceptos", user,
+    )
+    return {
+        "version_id": version_id,
+        "conceptos_importados": creados,
+        "sin_distribucion": sum(1 for f in vista if f["estado"] == "sin_distribucion"),
+    }
+
+
+@api.post("/projects/{pid}/programa/import/sheets")
+async def programa_import_upload_sheets(pid: str, file: UploadFile = File(...), user: dict = Depends(require_role(ROLE_SUB, ROLE_COORD))):
+    """Paso 1 — mismo criterio que el import de catálogo, sesión propia
+    (`programa_import_sessions`, no comparte colección con el catálogo
+    porque el destino final es distinto)."""
+    await ensure_project_access(user, pid)
+    content = await file.read()
+    if len(content) > 15 * 1024 * 1024:
+        raise HTTPException(400, "Archivo demasiado grande (máx. 15MB)")
+    sheets = _read_workbook_sheets(file.filename or "archivo.xlsx", content)
+    candidatos = [cell for rows in sheets.values() for row in rows for cell in row]
+    convencion_detectada = detectar_convencion(candidatos)
+
+    import_id = str(uuid.uuid4())
+    await db.programa_import_sessions.insert_one({
+        "id": import_id, "project_id": pid, "user_id": user["id"],
+        "filename": file.filename, "sheets": {name: rows for name, rows in sheets.items()},
+        "convencion_decimal": convencion_detectada, "created_at": datetime.now(timezone.utc),
+    })
+    return {
+        "import_id": import_id, "sheet_names": list(sheets.keys()),
+        "requiere_seleccion_hoja": len(sheets) > 1, "convencion_detectada": convencion_detectada,
+    }
+
+
+@api.get("/projects/{pid}/programa/import/pendiente")
+async def programa_import_sesion_pendiente(pid: str, user: dict = Depends(require_role(ROLE_SUB, ROLE_COORD))):
+    """Espejo de import_sesion_pendiente (catálogo) — sesión sin terminar
+    más reciente de este usuario en este proyecto, si existe."""
+    await ensure_project_access(user, pid)
+    session = await db.programa_import_sessions.find_one(
+        {"project_id": pid, "user_id": user["id"]},
+        sort=[("created_at", -1)],
+    )
+    if not session:
+        return None
+    return {
+        "import_id": session["id"], "filename": session.get("filename"),
+        "created_at": session["created_at"], "sheet_names": list(session.get("sheets", {}).keys()),
+        "validado": session.get("validated_rows") is not None,
+        "validated_sheet": session.get("validated_sheet"),
+        "validated_header_row_index": session.get("validated_header_row_index"),
+        "validated_mapping": session.get("validated_mapping"),
+        "convencion_usada": session.get("convencion_usada") or session.get("convencion_decimal"),
+    }
+
+
+@api.delete("/projects/{pid}/programa/import/{import_id}")
+async def programa_import_descartar_sesion(pid: str, import_id: str, user: dict = Depends(require_role(ROLE_SUB, ROLE_COORD))):
+    await ensure_project_access(user, pid)
+    await db.programa_import_sessions.delete_one({"id": import_id, "project_id": pid})
+    return {"ok": True}
+
+
+@api.get("/programa/import/{import_id}/headers")
+async def programa_import_headers(
+    import_id: str,
+    sheet: Optional[str] = None,
+    header_row_index: Optional[int] = None,
+    user: dict = Depends(require_role(ROLE_SUB, ROLE_COORD)),
+):
+    """Paso 2 — igual que import_headers del catálogo, pero escanea una
+    ventana más ancha buscando la fila de encabezado (el archivo real trae
+    membrete/datos de proyecto arriba y el encabezado hasta la fila 19)."""
+    session = await db.programa_import_sessions.find_one({"id": import_id})
+    if not session:
+        raise HTTPException(404, "Sesión de importación no existe o expiró")
+    await ensure_project_access(user, session["project_id"])
+    sheet_name = sheet or next(iter(session["sheets"].keys()))
+    if sheet_name not in session["sheets"]:
+        raise HTTPException(400, f"La hoja '{sheet_name}' no existe en este archivo")
+    rows = session["sheets"][sheet_name]
+    if not rows:
+        raise HTTPException(400, "La hoja está vacía")
+
+    if header_row_index is None:
+        header_row_index = next((i for i, r in enumerate(rows[:30]) if _fila_parece_encabezado(r)), 0)
+    if header_row_index >= len(rows):
+        raise HTTPException(400, "header_row_index fuera de rango")
+
+    headers = [str(c) if c is not None else "" for c in rows[header_row_index]]
+    fila_rangos = rows[header_row_index + 1] if header_row_index + 1 < len(rows) else []
+    return {
+        "sheet": sheet_name,
+        "header_row_index": header_row_index,
+        "headers": headers,
+        "suggested_mapping": _propose_mapping_programa(headers),
+        "fila_rango_fechas": fila_rangos,
+        "sample_rows": rows[header_row_index + 2: header_row_index + 7],
+        "total_rows": max(len(rows) - header_row_index - 2, 0),
+        "convencion_detectada": session.get("convencion_decimal"),
+        "preview_rows": rows[: min(len(rows), 30)],
+    }
+
+
+@api.post("/projects/{pid}/programa/import/{import_id}/validate")
+async def programa_import_validate(pid: str, import_id: str, body: ProgramaImportValidateIn, user: dict = Depends(require_role(ROLE_SUB, ROLE_COORD))):
+    """Paso 3 — valida TODO el archivo una sola vez y guarda el resultado en
+    la sesión de staging. Volver a llamarlo (cambiar convención, ajustar
+    mapeo) recalcula `validated_rows` desde cero, pero nunca toca
+    `correcciones` (mismo criterio que import_validate del catálogo)."""
+    await ensure_project_access(user, pid)
+    session = await db.programa_import_sessions.find_one({"id": import_id, "project_id": pid})
+    if not session:
+        raise HTTPException(404, "Sesión de importación no existe o expiró")
+    if body.sheet not in session["sheets"]:
+        raise HTTPException(400, f"La hoja '{body.sheet}' no existe en este archivo")
+
+    conceptos_docs = await db.conceptos.find({"project_id": pid, "activo": True}).to_list(length=100000)
+    conceptos_by_clave = {c["clave"]: c for c in conceptos_docs}
+    convencion = body.convencion or session.get("convencion_decimal")
+
+    filas = _validar_archivo_programa_completo(
+        session["sheets"][body.sheet], body.header_row_index, body.mapping, convencion, conceptos_by_clave,
+    )
+
+    etiqueta = body.etiqueta.strip() or f"Programa importado {datetime.now(timezone.utc).strftime('%Y-%m-%d')}"
+    await db.programa_import_sessions.update_one(
+        {"id": import_id},
+        {"$set": {
+            "validated_rows": filas, "validated_sheet": body.sheet,
+            "validated_header_row_index": body.header_row_index,
+            "validated_mapping": body.mapping.model_dump(),
+            "convencion_usada": convencion, "etiqueta": etiqueta,
+            "correcciones": session.get("correcciones") or {},
+        }},
+    )
+    vista = _calcular_vista_programa(filas, session.get("correcciones") or {})
+    return {"resumen": _resumen_de_vista_programa(vista), "etiqueta": etiqueta}
+
+
+@api.get("/programa/import/{import_id}/preview")
+async def programa_import_preview(import_id: str, page: int = 1, page_size: int = 50, user: dict = Depends(require_role(ROLE_SUB, ROLE_COORD))):
+    session = await db.programa_import_sessions.find_one({"id": import_id})
+    if not session:
+        raise HTTPException(404, "Sesión de importación no existe o expiró")
+    await ensure_project_access(user, session["project_id"])
+    validated_rows = session.get("validated_rows")
+    if validated_rows is None:
+        raise HTTPException(400, "Todavía no se valida esta importación. Llama primero a /validate.")
+
+    correcciones = session.get("correcciones") or {}
+    vista = _calcular_vista_programa(validated_rows, correcciones)
+    resumen = _resumen_de_vista_programa(vista)
+
+    page = max(page, 1)
+    page_size = max(1, min(page_size, 200))
+    start = (page - 1) * page_size
+    pagina = vista[start:start + page_size]
+    total_pages = max(1, (len(vista) + page_size - 1) // page_size)
+
+    return {
+        "resumen": resumen, "filas": pagina, "page": page, "page_size": page_size,
+        "total_pages": total_pages, "total_rows": len(vista),
+        "sheet": session.get("validated_sheet"), "etiqueta": session.get("etiqueta"),
+        "convencion_usada": session.get("convencion_usada"),
+    }
+
+
+@api.put("/programa/import/{import_id}/rows/{fila}")
+async def programa_import_correct_row(import_id: str, fila: int, body: ProgramaRowCorrectionIn, user: dict = Depends(require_role(ROLE_SUB, ROLE_COORD))):
+    """Única corrección posible en este importador: descartar una fila (no
+    edita cantidad/PU/unidad — este wizard no crea ni edita conceptos)."""
+    session = await db.programa_import_sessions.find_one({"id": import_id})
+    if not session:
+        raise HTTPException(404, "Sesión de importación no existe o expiró")
+    await ensure_project_access(user, session["project_id"])
+    validated_rows = session.get("validated_rows") or []
+    if not any(r["fila"] == fila for r in validated_rows):
+        raise HTTPException(404, f"Fila {fila} no existe en esta validación")
+
+    correcciones = session.get("correcciones") or {}
+    if body.descartar:
+        correcciones[str(fila)] = {"descartar": True}
+    else:
+        correcciones.pop(str(fila), None)
+    await db.programa_import_sessions.update_one({"id": import_id}, {"$set": {"correcciones": correcciones}})
+
+    vista = _calcular_vista_programa(validated_rows, correcciones)
+    fila_actualizada = next((r for r in vista if r["fila"] == fila), None)
+    return {"fila": fila_actualizada, "resumen": _resumen_de_vista_programa(vista)}
+
+
+@api.post("/projects/{pid}/programa/import/{import_id}/commit")
+async def programa_import_commit(pid: str, import_id: str, user: dict = Depends(require_role(ROLE_SUB, ROLE_COORD))):
+    """Paso 4 — no recibe body, todo lo necesario ya quedó confirmado en la
+    sesión de staging. Marca las versiones vigentes anteriores como no
+    vigentes (nunca las borra) y crea la nueva versión + su distribución."""
+    await ensure_project_access(user, pid)
+    session = await db.programa_import_sessions.find_one({"id": import_id, "project_id": pid})
+    if not session:
+        raise HTTPException(404, "Sesión de importación no existe o expiró")
+    validated_rows = session.get("validated_rows")
+    if validated_rows is None:
+        raise HTTPException(400, "Todavía no se valida esta importación. Llama primero a /validate.")
+
+    correcciones = session.get("correcciones") or {}
+    vista = _calcular_vista_programa(validated_rows, correcciones)
+    etiqueta = session.get("etiqueta") or f"Programa importado {datetime.now(timezone.utc).strftime('%Y-%m-%d')}"
+    versiones_vigentes = await db.programa_versiones.find({"project_id": pid, "vigente": True}).to_list(length=100)
+
+    try:
+        resultado = await _ejecutar_commit_programa_con_compensacion(
+            db.programa_versiones, db.programa_distribucion, db.programa_import_sessions, _log_bitacora,
+            pid, import_id, etiqueta, vista, versiones_vigentes, user, session.get("filename"),
+        )
+    finally:
+        await db.programa_import_sessions.delete_one({"id": import_id})
+    return resultado
+
+
+@api.get("/projects/{pid}/programa/versiones", response_model=List[ProgramaVersionOut])
+async def programa_list_versiones(pid: str, user: dict = Depends(current_user)):
+    """Historial de versiones del programa — nunca se borra al reimportar,
+    solo se desmarca `vigente`. Más reciente primero."""
+    await ensure_project_access(user, pid)
+    docs = await db.programa_versiones.find({"project_id": pid}).sort("fecha_importacion", -1).to_list(length=1000)
+    return [ProgramaVersionOut(**d) for d in docs]
+
+
+@api.get("/projects/{pid}/programa/versiones/{version_id}/distribucion", response_model=List[ProgramaDistribucionOut])
+async def programa_get_distribucion(pid: str, version_id: str, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    version = await db.programa_versiones.find_one({"id": version_id, "project_id": pid})
+    if not version:
+        raise HTTPException(404, "Versión de programa no existe en este proyecto")
+    docs = await db.programa_distribucion.find({"programa_version_id": version_id}).to_list(length=100000)
+    return [ProgramaDistribucionOut(**d) for d in docs]
 
 
 # === MOUNT ==================================================================
