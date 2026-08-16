@@ -1,0 +1,12380 @@
+"""SynCo v2.0 — SaaS Multiproyecto para reportes de obra.
+
+Arquitectura:
+- Coordinador General (god mode): único que crea proyectos, árbol de nodos,
+  áreas e invitaciones.
+- Sub-Coordinador: scope_node_id (un nodo del árbol; ve todo lo que cuelga).
+- Especialista: area + puesto + scope_node_ids (hojas autorizadas a capturar).
+- Sin auto-registro. Acceso 100% por token de invitación.
+"""
+import os
+import re
+import io
+import csv
+import math
+import uuid
+import logging
+import secrets
+import asyncio
+import unicodedata
+from pathlib import Path
+from datetime import datetime, timezone, timedelta
+from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
+from typing import List, Optional, Literal, Any, Callable, Tuple, Dict
+try:
+    from zoneinfo import ZoneInfo  # Python 3.9+
+    MX_TZ = ZoneInfo("America/Mexico_City")
+except Exception:  # pragma: no cover
+    MX_TZ = timezone(timedelta(hours=-6))  # fallback CST
+
+import jwt
+import bcrypt
+import openpyxl
+from dotenv import load_dotenv
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Query, UploadFile, File
+from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from starlette.middleware.cors import CORSMiddleware
+from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo.errors import DuplicateKeyError
+from pydantic import BaseModel, Field, EmailStr, field_validator
+
+ROOT_DIR = Path(__file__).parent
+load_dotenv(ROOT_DIR / ".env")
+
+MONGO_URL = os.environ["MONGO_URL"]
+DB_NAME = os.environ["DB_NAME"]
+JWT_SECRET = os.environ["JWT_SECRET"]
+JWT_ALGORITHM = os.environ.get("JWT_ALGORITHM", "HS256")
+JWT_EXPIRE_MINUTES = int(os.environ.get("JWT_EXPIRE_MINUTES", "10080"))
+BOOTSTRAP_SECRET = os.environ.get("BOOTSTRAP_SECRET", "synco_bootstrap_2026_change_me")
+EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
+# Resumen Ejecutivo con IA: llamada directa a Gemini desde el BACKEND (nunca
+# desde el cliente — la key nunca se expone en el app). Modelo configurable
+# vía env var para poder actualizarlo sin tocar código si Google deprecia
+# una versión (usar un alias "latest" como default minimiza ese riesgo).
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
+
+client = AsyncIOMotorClient(MONGO_URL, serverSelectionTimeoutMS=5000)
+db = client[DB_NAME]
+
+app = FastAPI(title="SynCo v2.0 API")
+api = APIRouter(prefix="/api")
+bearer = HTTPBearer(auto_error=False)
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+log = logging.getLogger("synco")
+
+
+# Handler temporal para diagnosticar 422 (validation errors). Registra el
+# path y los errores exactos que Pydantic devuelve para que sea trivial
+# depurar payloads inválidos desde el frontend.
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+
+@app.exception_handler(RequestValidationError)
+async def _log_422(request, exc: RequestValidationError):
+    try:
+        body_len = 0
+        try:
+            _b = await request.body()
+            body_len = len(_b or b"")
+        except Exception:
+            body_len = -1
+        # Sólo registramos loc/msg/type (no el input crudo, que puede
+        # contener imágenes base64 gigantes). Suficiente para diagnóstico.
+        compact = [
+            {"loc": e.get("loc"), "msg": e.get("msg"), "type": e.get("type")}
+            for e in (exc.errors() or [])
+        ]
+        log.warning(
+            "[422] path=%s body_bytes=%d errors=%s",
+            request.url.path, body_len, compact,
+        )
+    except Exception as _e:
+        log.warning("[422 handler] logging failed: %s", _e)
+    return JSONResponse(status_code=422, content={"detail": exc.errors()})
+
+
+# Handler temporal para diagnosticar 500 (excepciones no controladas).
+# Antes, cualquier error no capturado devolvía un 500 genérico sin cuerpo
+# (el default de Starlette), lo que hacía imposible saber la causa desde el
+# cliente o desde los logs del cliente móvil. Registra el traceback completo
+# server-side y expone tipo+mensaje en `detail` (mismo criterio que el
+# handler de 422 de arriba: este es un proyecto interno, no hay datos de
+# terceros expuestos en un stacktrace de Python propio).
+import traceback
+
+
+@app.exception_handler(Exception)
+async def _log_500(request, exc: Exception):
+    tb = traceback.format_exc()
+    log.error("[500] path=%s error=%s\n%s", request.url.path, exc, tb)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"{type(exc).__name__}: {exc}"},
+    )
+
+
+# === Constants =============================================================
+ROLE_COORD = "coordinador_general"
+ROLE_JEFE = "jefe_proyecto"  # Jefe de Proyecto: lectura global (read-only)
+ROLE_SUB = "sub_coordinador"
+ROLE_ESPECIALISTA = "especialista"
+VALID_ROLES = {ROLE_COORD, ROLE_JEFE, ROLE_SUB, ROLE_ESPECIALISTA}
+# Roles que sólo pueden LEER (no escribir / crear / editar nada).
+READ_ONLY_ROLES = {ROLE_JEFE}
+
+
+def _assert_write_allowed(user: dict) -> None:
+    """Bloquea operaciones de escritura para roles de sólo lectura.
+    Llama esta función al inicio de cualquier endpoint POST/PUT/PATCH/DELETE
+    que use `current_user` directamente (sin `require_role`)."""
+    if user.get("role") in READ_ONLY_ROLES:
+        raise HTTPException(403, "Tu rol es solo de lectura; no puedes realizar esta acción")
+
+MEASUREMENT_TYPES = {"coord_latlon", "cadenamiento", "eje", "nivel"}
+
+
+def _sanitize_reference_files(items) -> list:
+    """Valida y limpia la lista de archivos de referencia.
+    Espera una lista de dicts con 'name' y 'url'.
+    Descarta entradas vacías o malformadas. Máximo 50 elementos."""
+    if not items or not isinstance(items, list):
+        return []
+    cleaned = []
+    for it in items[:50]:
+        if not isinstance(it, dict):
+            continue
+        name = (it.get("name") or "").strip()
+        url = (it.get("url") or "").strip()
+        if not name or not url:
+            continue
+        # Limitar tamaños para evitar payloads abusivos
+        cleaned.append({"name": name[:200], "url": url[:1000]})
+    return cleaned
+
+# Colecciones del esquema v2
+COLLECTIONS_V2 = [
+    "users", "projects", "location_nodes", "areas", "invitations", "reports", "announcements", "messages", "events", "channels",
+    "partidas", "conceptos", "registros_avance", "catalogo_bitacora",
+]
+
+# Colecciones legacy a eliminar en startup
+COLLECTIONS_LEGACY = [
+    "activities", "reference_points", "chat_messages", "chat_areas", "chat_area_messages",
+    "documents", "site_config", "report_history",
+]
+
+
+# === Models =================================================================
+class Token(BaseModel):
+    token: str
+    user: dict
+
+
+class LoginIn(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class BootstrapIn(BaseModel):
+    secret: str
+    email: EmailStr
+    password: str
+    name: str
+
+
+class UserOut(BaseModel):
+    id: str
+    email: EmailStr
+    name: str
+    role: str
+    area: Optional[str] = None
+    area_id: Optional[str] = None
+    puesto: Optional[str] = None
+    scope_node_id: Optional[str] = None
+    scope_node_ids: List[str] = Field(default_factory=list)
+    project_ids: List[str] = Field(default_factory=list)
+    expo_push_tokens: List[str] = Field(default_factory=list)
+    created_at: datetime
+
+
+class PushTokenIn(BaseModel):
+    """Payload del cliente Expo para registrar / des-registrar un push token."""
+    token: str
+    platform: Optional[str] = None  # 'ios' | 'android' | 'web' (informativo)
+
+
+class ProjectIn(BaseModel):
+    name: str
+    constructora: str
+    contract_number: str
+    objeto_contrato: Optional[str] = None  # Descripción institucional del objeto del contrato
+    cliente_principal: Optional[str] = None  # Cliente / dependencia que contrata (aparece en portada)
+    color_tema: Optional[str] = None  # Color institucional del proyecto (#RRGGBB). Default #003366
+    report_text_color: Optional[str] = None  # Color del pie de foto en reportes ejecutivos (#RRGGBB). Default #0F172A
+    start_date: Optional[str] = None  # ISO date "2026-01-15"
+    end_date: Optional[str] = None
+    description: Optional[str] = None
+    reference_files: Optional[List[dict]] = None  # [{"name": str, "url": str}]
+    contratistas_list: Optional[List[str]] = None  # Catálogo dinámico de contratistas
+    contratos_list: Optional[List[str]] = None  # Catálogo dinámico de números de contrato
+    categorias_personal: Optional[List[str]] = None  # Catálogo de categorías de personal
+    categorias_equipo: Optional[List[str]] = None  # Catálogo de categorías de equipo
+    constructora_logo: Optional[str] = None  # Base64 (data URI o crudo) del logo institucional
+    # Prefijo institucional para el código de minutas (ej. "CL4 OBRA"). Solo
+    # editable por Coordinador General; se antepone a fecha+letra en cada
+    # minuta (ver `create_minuta`).
+    minuta_code_prefix: Optional[str] = None
+
+
+class ProjectPatch(BaseModel):
+    """PUT parcial — todos los campos opcionales. No exige name/constructora/contract_number."""
+    name: Optional[str] = None
+    constructora: Optional[str] = None
+    contract_number: Optional[str] = None
+    objeto_contrato: Optional[str] = None
+    cliente_principal: Optional[str] = None
+    color_tema: Optional[str] = None
+    report_text_color: Optional[str] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    description: Optional[str] = None
+    reference_files: Optional[List[dict]] = None
+    contratistas_list: Optional[List[str]] = None
+    contratos_list: Optional[List[str]] = None
+    categorias_personal: Optional[List[str]] = None
+    categorias_equipo: Optional[List[str]] = None
+    constructora_logo: Optional[str] = None
+    minuta_code_prefix: Optional[str] = None
+
+
+class ProjectOut(BaseModel):
+    id: str
+    name: str
+    constructora: str
+    contract_number: str
+    objeto_contrato: Optional[str] = None
+    cliente_principal: Optional[str] = None
+    color_tema: Optional[str] = None
+    report_text_color: Optional[str] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    description: Optional[str] = None
+    reference_files: List[dict] = Field(default_factory=list)
+    contratistas_list: List[str] = Field(default_factory=list)
+    contratos_list: List[str] = Field(default_factory=list)
+    categorias_personal: List[str] = Field(default_factory=list)
+    categorias_equipo: List[str] = Field(default_factory=list)
+    minuta_code_prefix: Optional[str] = None
+    # Plantillas de exportación (rutas relativas dentro del backend). None si no hay.
+    template_pdf: Optional[str] = None
+    template_docx: Optional[str] = None
+    template_pptx: Optional[str] = None
+    template_map: Optional[str] = None
+    # Sección "Datos Generales" (ex-Mapa): array de imágenes base64 que se
+    # renderizan como slides/páginas dedicadas al inicio de las exportaciones
+    # (presupuesto, programa, planos, etc.). Reemplaza al single `template_map`.
+    general_data_images: List[str] = Field(default_factory=list)
+    created_by: str
+    created_at: datetime
+    archived: bool = False
+
+
+class LocationNodeIn(BaseModel):
+    project_id: str
+    parent_id: Optional[str] = None
+    name: str
+    order: int = 0
+    is_leaf: bool = False
+    measurement_type: Optional[Literal["coord_latlon", "cadenamiento", "eje", "nivel"]] = None
+    # Coordenadas objetivo dictadas por el Coordinador desde oficina (sólo aplican
+    # a nodos hoja con measurement_type == "coord_latlon"). El Especialista las
+    # ve en modo solo-lectura al capturar.
+    target_lat: Optional[float] = None
+    target_lon: Optional[float] = None
+    target_elev: Optional[float] = None
+    # Meta/objetivo numérico del nodo (p.ej. metros lineales, puntos, etc.).
+    # Se utiliza para calcular % de avance vs. última lectura registrada.
+    meta: Optional[float] = None
+    # Estatus de acceso al predio y situación social/liberación física, capturados
+    # a nivel de nodo (vigentes al momento de consulta, no por reporte/período).
+    # Usados en la página de resumen por subtramo del export PDF/PPTX.
+    acceso_predio: Optional[str] = None
+    situacion_social: Optional[str] = None
+
+
+class LocationNodeOut(BaseModel):
+    id: str
+    project_id: str
+    parent_id: Optional[str] = None
+    name: str
+    depth: int
+    order: int
+    is_leaf: bool
+    measurement_type: Optional[str] = None
+    target_lat: Optional[float] = None
+    target_lon: Optional[float] = None
+    target_elev: Optional[float] = None
+    meta: Optional[float] = None
+    acceso_predio: Optional[str] = None
+    situacion_social: Optional[str] = None
+    avance_actual: float = 0.0
+    # Portada institucional del nodo (foto de render/arquitectura). Se usa como
+    # fondo de la "Portadilla de Nodo" dinámica en el PDF exportado.
+    # Se almacena como data URL base64 (image/jpeg, image/png, image/webp).
+    cover_image: Optional[str] = None
+    metadata: Optional[dict] = None
+    path: List[str] = Field(default_factory=list)  # cadena de ids desde raíz hasta self
+
+
+class AreaIn(BaseModel):
+    project_id: str
+    name: str
+    color: Optional[str] = "#1E40AF"
+
+
+class AreaOut(BaseModel):
+    id: str
+    project_id: str
+    name: str
+    color: str
+    created_at: datetime
+
+
+class InvitationIn(BaseModel):
+    project_id: str
+    email: EmailStr
+    name: str
+    role: Literal["sub_coordinador", "especialista", "jefe_proyecto"]
+    # Sub-coordinador: scope_node_id (un nodo padre)
+    scope_node_id: Optional[str] = None
+    # Especialista: area_id, puesto, scope_node_ids (lista de hojas)
+    area_id: Optional[str] = None
+    puesto: Optional[str] = None
+    scope_node_ids: List[str] = Field(default_factory=list)
+
+
+class InvitationOut(BaseModel):
+    id: str
+    token: str
+    project_id: str
+    project_name: str
+    email: EmailStr
+    name: str
+    role: str
+    area_id: Optional[str] = None
+    puesto: Optional[str] = None
+    scope_node_id: Optional[str] = None
+    scope_node_ids: List[str] = Field(default_factory=list)
+    status: str  # "pending" | "accepted" | "revoked"
+    created_at: datetime
+    expires_at: datetime
+
+
+class AcceptInviteIn(BaseModel):
+    token: str
+    password: str
+
+
+_VALID_SEVERIDADES = ("informativo", "diario", "importante", "urgente")
+
+
+def _normalize_severidad_list(raw: Any) -> List[str]:
+    """Normaliza la severidad de un reporte a una lista de valores válidos.
+
+    Acepta tanto un string único (compatibilidad con clientes/datos viejos,
+    donde `severidad` era escalar) como una lista (selección múltiple de
+    jerarquías, p.ej. ["diario", "urgente"] para que el mismo reporte
+    aparezca en el informe Diario Y en el Mensual). "informativo" es
+    excluyente: si aparece junto con otras, se descartan las demás, porque
+    un reporte informativo no debe entrar a ningún informe categorizado.
+    """
+    if raw is None:
+        items = []
+    elif isinstance(raw, str):
+        items = [raw]
+    elif isinstance(raw, (list, tuple, set)):
+        items = list(raw)
+    else:
+        items = []
+    out: List[str] = []
+    for v in items:
+        v = (v or "").strip().lower()
+        if v in _VALID_SEVERIDADES and v not in out:
+            out.append(v)
+    if not out:
+        return ["informativo"]
+    if "informativo" in out and len(out) > 1:
+        out = [v for v in out if v != "informativo"]
+    return out
+
+
+class ReportIn(BaseModel):
+    project_id: str
+    node_id: str  # debe ser hoja
+    # Valor de medición (formato depende del measurement_type del nodo)
+    measurement_value: dict  # ej: {"lat": 19.43, "lon": -99.13} | {"cadenamiento": "5+100"} | {"eje": "A"} | {"nivel": 12.45}
+    # Título/nombre del reporte (opcional). Si viene vacío, en el frontend
+    # se muestra un fallback tipo "Reporte del <fecha>". Se indexa para búsqueda.
+    title: Optional[str] = None
+    area_id: Optional[str] = None
+    actividades: Optional[str] = None
+    notes: Optional[str] = None
+    avance: Optional[str] = None
+    observaciones: Optional[str] = None
+    incidencias: Optional[str] = None  # Notas sobre eventos/desviaciones del día
+    # Acepta un string único (legacy) o una lista (selección múltiple de
+    # jerarquías: p.ej. ["diario", "urgente"]). Se normaliza con
+    # `_normalize_severidad_list` antes de guardar.
+    severidad: Optional[Any] = "informativo"
+    contratista: Optional[str] = None
+    personnel: List[str] = Field(default_factory=list)
+    equipment: List[str] = Field(default_factory=list)
+    images: List[str] = Field(default_factory=list)  # base64
+    # Descripciones individuales por foto (foto 1 → captions[0], foto 2 → captions[1]).
+    # Fallback al campo `observaciones` general si no se rellena.
+    photo_captions: List[str] = Field(default_factory=list)
+    files: List[dict] = Field(default_factory=list)  # [{filename, mime, data_base64}]
+    # Lecturas numéricas (P/U) – específicas del flujo Especialista v2.
+    primera_lectura: Optional[float] = None
+    ultima_lectura: Optional[float] = None
+    # Unidad de las lecturas (km | m | cm). Default = "m".
+    unidad: Optional[str] = "m"
+    # [OFFLINE 2026-08-07] Id de idempotencia generado en el cliente al
+    # encolar un reporte sin conexion. Permite deduplicar si el mismo
+    # reporte se reintenta (ver db.reports índice único sparse sobre esto).
+    client_id: Optional[str] = None
+
+
+class ReportOut(BaseModel):
+    id: str
+    project_id: str
+    node_id: str
+    node_path_names: List[str]
+    node_path_ids: List[str] = Field(default_factory=list)  # ids ancestrales para filtros
+    measurement_type: str
+    measurement_value: dict
+    title: Optional[str] = None
+    area_id: Optional[str] = None
+    area_name: Optional[str] = None
+    actividades: Optional[str] = None
+    observaciones: Optional[str] = None
+    incidencias: Optional[str] = None
+    severidad: List[str] = Field(default_factory=lambda: ["informativo"])
+
+    @field_validator("severidad", mode="before")
+    @classmethod
+    def _v_severidad(cls, v: Any) -> List[str]:
+        # Normaliza datos legacy: reportes viejos guardaron `severidad` como
+        # string único en Mongo; esto lo convierte a lista en la respuesta
+        # sin necesidad de migrar la colección completa.
+        return _normalize_severidad_list(v)
+    contratista: Optional[str] = None
+    personnel: List[str] = Field(default_factory=list)
+    equipment: List[str] = Field(default_factory=list)
+    images: List[str] = Field(default_factory=list)
+    photo_captions: List[str] = Field(default_factory=list)
+    files: List[dict] = Field(default_factory=list)
+    primera_lectura: Optional[float] = None
+    ultima_lectura: Optional[float] = None
+    unidad: Optional[str] = "m"
+    captured_by: str
+    captured_by_name: str
+    created_at: datetime
+
+
+# === Helpers ================================================================
+def hash_pw(pw: str) -> str:
+    return bcrypt.hashpw(pw.encode(), bcrypt.gensalt(rounds=10)).decode()
+
+
+def verify_pw(pw: str, h: str) -> bool:
+    try:
+        return bcrypt.checkpw(pw.encode(), h.encode())
+    except Exception:
+        return False
+
+
+def make_token(user_id: str) -> str:
+    exp = datetime.now(timezone.utc) + timedelta(minutes=JWT_EXPIRE_MINUTES)
+    return jwt.encode({"sub": user_id, "exp": exp}, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
+async def current_user(creds: Optional[HTTPAuthorizationCredentials] = Depends(bearer)) -> dict:
+    if not creds:
+        raise HTTPException(401, "Token requerido")
+    try:
+        payload = jwt.decode(creds.credentials, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        uid = payload.get("sub")
+    except jwt.PyJWTError:
+        raise HTTPException(401, "Token inválido")
+    u = await db.users.find_one({"id": uid})
+    if not u:
+        raise HTTPException(401, "Usuario no existe")
+    u.pop("_id", None)
+    u.pop("password", None)
+    return u
+
+
+def require_role(*allowed_roles: str):
+    async def dep(user: dict = Depends(current_user)) -> dict:
+        if user["role"] not in allowed_roles:
+            raise HTTPException(403, f"Rol no autorizado: {user['role']}")
+        return user
+    return dep
+
+
+def user_to_out(u: dict) -> dict:
+    return {
+        "id": u["id"],
+        "email": u["email"],
+        "name": u["name"],
+        "role": u["role"],
+        "area": u.get("area"),
+        "area_id": u.get("area_id"),
+        "puesto": u.get("puesto"),
+        "scope_node_id": u.get("scope_node_id"),
+        "scope_node_ids": u.get("scope_node_ids") or [],
+        "project_ids": u.get("project_ids") or [],
+        "expo_push_tokens": u.get("expo_push_tokens") or [],
+        "created_at": u.get("created_at", datetime.now(timezone.utc)),
+    }
+
+
+async def ensure_project_access(user: dict, project_id: str) -> dict:
+    """Valida que el usuario tenga acceso a un proyecto; devuelve el proyecto."""
+    p = await db.projects.find_one({"id": project_id, "archived": {"$ne": True}})
+    if not p:
+        raise HTTPException(404, "Proyecto no existe")
+    if user["role"] in (ROLE_COORD, ROLE_JEFE):
+        return p  # acceso global (Coordinador General y Jefe de Proyecto)
+    if project_id not in (user.get("project_ids") or []):
+        raise HTTPException(403, "Sin acceso a este proyecto")
+    return p
+
+
+async def build_node_path(node: dict) -> List[str]:
+    """Devuelve la cadena de IDs desde raíz hasta self (incluido)."""
+    path = [node["id"]]
+    cur = node
+    while cur.get("parent_id"):
+        parent = await db.location_nodes.find_one({"id": cur["parent_id"]})
+        if not parent:
+            break
+        path.insert(0, parent["id"])
+        cur = parent
+    return path
+
+
+async def node_path_names(node_id: str) -> List[str]:
+    node = await db.location_nodes.find_one({"id": node_id})
+    if not node:
+        return []
+    ids = await build_node_path(node)
+    names: List[str] = []
+    for nid in ids:
+        n = await db.location_nodes.find_one({"id": nid})
+        if n:
+            names.append(n["name"])
+    return names
+
+
+async def descendants_ids(root_id: str) -> List[str]:
+    """Devuelve TODOS los descendientes (incluyendo root_id) de un nodo."""
+    out = [root_id]
+    queue = [root_id]
+    while queue:
+        pid = queue.pop(0)
+        children = await db.location_nodes.find({"parent_id": pid}).to_list(length=10000)
+        for c in children:
+            out.append(c["id"])
+            queue.append(c["id"])
+    return out
+
+
+# === Startup: wipe legacy ===================================================
+@app.on_event("startup")
+async def startup_event():
+    # Eliminar colecciones legacy de la versión anterior
+    existing = await db.list_collection_names()
+    for c in COLLECTIONS_LEGACY:
+        if c in existing:
+            await db[c].drop()
+            log.info(f"[wipe] Dropped legacy collection: {c}")
+    # Indexes esenciales
+    await db.users.create_index("email", unique=True)
+    await db.users.create_index("id", unique=True)
+    await db.projects.create_index("id", unique=True)
+    await db.invitations.create_index("token", unique=True)
+    await db.location_nodes.create_index([("project_id", 1), ("parent_id", 1)])
+    await db.reports.create_index([("project_id", 1), ("created_at", -1)])
+    # Soporta el MAX(ultima_lectura) agrupado por node_id que arma el árbol de
+    # nodos (list_nodes) — antes escaneaba todo el historial de reportes del
+    # proyecto sin índice en cada carga del hub.
+    await db.reports.create_index([("project_id", 1), ("node_id", 1), ("ultima_lectura", 1)])
+    await db.daily_goals.create_index("project_id")
+    # TTL: "Metas del día" caducan solas a las 24h de creadas — antes se
+    # quedaban visibles para siempre, contradiciendo su propio nombre.
+    await db.daily_goals.create_index("created_at", expireAfterSeconds=86400)
+    await db.actividades_curadas.create_index([("project_id", 1), ("area_id", 1)])
+    await db.actividades_curadas.create_index("reporte_origen_id")
+    await db.actividades_curadas.create_index("id")
+    # [OFFLINE 2026-08-07] sparse=True: reportes sin client_id (clientes viejos)
+    # no deben colisionar entre si en el índice único.
+    await db.reports.create_index("client_id", unique=True, sparse=True)
+    await db.announcements.create_index([("project_id", 1), ("pinned", -1), ("created_at", -1)])
+    # TTL: Mongo purga automaticamente noticias vencidas (expires_at en el pasado).
+    await db.announcements.create_index("expires_at", expireAfterSeconds=0)
+    await db.minutas.create_index([("project_id", 1), ("created_at", -1)])
+    await db.minutas.create_index([("project_id", 1), ("acuerdos.responsable_id", 1)])
+    await db.minutas.create_index([("project_id", 1), ("involved_ids", 1)])
+    await db.messages.create_index([("project_id", 1), ("created_at", -1)])
+    await db.messages.create_index([("channel_id", 1), ("created_at", -1)])
+    await db.events.create_index([("project_id", 1), ("start_at", 1)])
+    await db.channels.create_index([("project_id", 1), ("type", 1)])
+    await db.channels.create_index([("project_id", 1), ("type", 1), ("area_id", 1)])
+    await db.channels.create_index([("project_id", 1), ("type", 1), ("member_ids", 1)])
+    # TTL: sesiones de importación de catálogo abandonadas (usuario subió un
+    # archivo y nunca terminó el wizard) se purgan solas a las 24h — evita
+    # que catalogo_import_sessions crezca indefinidamente con huérfanas.
+    await db.catalogo_import_sessions.create_index("created_at", expireAfterSeconds=86400)
+    # Índice en `id` (UUID propio, no el `_id` de Mongo) para las colecciones
+    # consultadas por id en el hot path de navegación (abrir nodo/área/canal/
+    # evento/minuta/reporte individual, editar catálogo) — sin esto cada
+    # find_one({"id": ...}) hacía COLLSCAN completo de la colección.
+    # No se usa unique=True: no hay forma de verificar aquí en startup que
+    # los datos existentes no tengan duplicados legacy, y una violación
+    # tumbaría el arranque del server.
+    await db.location_nodes.create_index("id")
+    await db.reports.create_index("id")
+    await db.areas.create_index("id")
+    await db.channels.create_index("id")
+    await db.events.create_index("id")
+    await db.minutas.create_index("id")
+    await db.partidas.create_index("id")
+    await db.conceptos.create_index("id")
+    await db.registros_avance.create_index("id")
+    await db.catalogo_import_sessions.create_index("id")
+
+    # --- Migración one-shot: asegurar canal General + asignar channel_id a
+    # mensajes legacy creados antes del refactor de canales.
+    try:
+        legacy_msgs = await db.messages.count_documents({"channel_id": {"$exists": False}})
+        if legacy_msgs:
+            log.info(f"[migrate] {legacy_msgs} mensajes legacy sin channel_id → asignando a General de cada proyecto")
+            project_ids = await db.messages.distinct("project_id", {"channel_id": {"$exists": False}})
+            for pid in project_ids:
+                if not pid:
+                    continue
+                await _ensure_default_channels(pid)
+                g = await db.channels.find_one({"project_id": pid, "type": "general"})
+                if g:
+                    await db.messages.update_many(
+                        {"project_id": pid, "channel_id": {"$exists": False}},
+                        {"$set": {"channel_id": g["id"]}},
+                    )
+            log.info("[migrate] mensajes legacy migrados al canal General")
+    except Exception as e:
+        log.warning(f"[migrate] error migrando mensajes legacy: {e}")
+
+    # --- Migración one-shot: noticias creadas antes de la expiración de 24h
+    # no tienen `expires_at`. Se les asigna created_at + 24h para que dejen
+    # de acumularse indefinidamente (el índice TTL las purgará después).
+    try:
+        legacy_ann = await db.announcements.count_documents({"expires_at": {"$exists": False}})
+        if legacy_ann:
+            log.info(f"[migrate] {legacy_ann} noticias legacy sin expires_at → backfill")
+            cursor = db.announcements.find({"expires_at": {"$exists": False}}, {"id": 1, "created_at": 1})
+            async for doc in cursor:
+                created = doc.get("created_at") or datetime.now(timezone.utc)
+                if isinstance(created, str):
+                    created = datetime.fromisoformat(created)
+                await db.announcements.update_one(
+                    {"id": doc["id"]},
+                    {"$set": {"expires_at": created + timedelta(hours=ANNOUNCEMENT_TTL_HOURS)}},
+                )
+            log.info("[migrate] expires_at backfill de noticias legacy completado")
+    except Exception as e:
+        log.warning(f"[migrate] error en backfill de expires_at de noticias: {e}")
+    log.info("[startup] SynCo v2.0 ready")
+
+
+# === ROOT / HEALTH ==========================================================
+@api.get("/")
+async def root():
+    return {"name": "SynCo v2.0", "status": "ok"}
+
+
+@api.get("/health")
+async def health():
+    return {"ok": True, "ts": datetime.now(timezone.utc).isoformat()}
+
+
+# === BOOTSTRAP (idempotente) ================================================
+@api.post("/admin/bootstrap")
+async def bootstrap(body: BootstrapIn):
+    if body.secret != BOOTSTRAP_SECRET:
+        raise HTTPException(403, "Secret inválido")
+    existing = await db.users.find_one({"email": body.email.lower()})
+    if existing:
+        # Idempotente: si ya existe y es coordinador_general, OK
+        if existing.get("role") != ROLE_COORD:
+            raise HTTPException(409, "Email existe con otro rol")
+        return {"ok": True, "user": user_to_out(existing), "created": False}
+    uid = str(uuid.uuid4())
+    user = {
+        "id": uid,
+        "email": body.email.lower(),
+        "password": hash_pw(body.password),
+        "name": body.name,
+        "role": ROLE_COORD,
+        "created_at": datetime.now(timezone.utc),
+        "project_ids": [],
+    }
+    await db.users.insert_one(user)
+    log.info(f"[bootstrap] Created coordinador_general {body.email}")
+    return {"ok": True, "user": user_to_out(user), "created": True}
+
+
+# === COORDINADORES GENERALES (gestión por pares) ============================
+class CoordinatorCreateIn(BaseModel):
+    name: str
+    email: EmailStr
+    password: str
+
+
+@api.get("/admin/coordinators")
+async def list_coordinators(user: dict = Depends(require_role(ROLE_COORD))):
+    """Lista todos los Coordinadores Generales. Sólo accesible por otro
+    Coordinador General. Devuelve el directorio con email, nombre y fecha
+    de alta para auditoría."""
+    items = await db.users.find({"role": ROLE_COORD}).sort("created_at", 1).to_list(length=500)
+    return [user_to_out(u) for u in items]
+
+
+@api.post("/admin/coordinators")
+async def create_coordinator(
+    body: CoordinatorCreateIn,
+    user: dict = Depends(require_role(ROLE_COORD)),
+):
+    """Crea un nuevo Coordinador General. Sólo un Coordinador General
+    autenticado puede ejecutar esta acción. El nuevo usuario hereda los
+    mismos privilegios globales (gobierna cualquier proyecto)."""
+    name = (body.name or "").strip()
+    email = (body.email or "").strip().lower()
+    pw = (body.password or "").strip()
+    if not name:
+        raise HTTPException(400, "Nombre requerido")
+    if len(name) > 80:
+        raise HTTPException(400, "Nombre máximo 80 caracteres")
+    if not email:
+        raise HTTPException(400, "Email requerido")
+    if len(pw) < 6:
+        raise HTTPException(400, "Contraseña mínima de 6 caracteres")
+    if await db.users.find_one({"email": email}):
+        raise HTTPException(409, "Ya existe un usuario con ese email")
+    uid = str(uuid.uuid4())
+    doc = {
+        "id": uid,
+        "email": email,
+        "password": hash_pw(pw),
+        "name": name,
+        "role": ROLE_COORD,
+        "created_at": datetime.now(timezone.utc),
+        "project_ids": [],
+        "created_by": user["id"],
+    }
+    await db.users.insert_one(doc)
+    log.info(f"[admin] Coord {user['email']} created new coordinador_general {email}")
+    return user_to_out(doc)
+
+
+# === AUTH ===================================================================
+@api.post("/auth/login", response_model=Token)
+async def login(body: LoginIn):
+    u = await db.users.find_one({"email": body.email.lower()})
+    if not u or not verify_pw(body.password, u["password"]):
+        raise HTTPException(401, "Credenciales inválidas")
+    return {"token": make_token(u["id"]), "user": user_to_out(u)}
+
+
+@api.get("/auth/me")
+async def me(user: dict = Depends(current_user)):
+    return user_to_out(user)
+
+
+# === PUSH NOTIFICATIONS (Expo) ==============================================
+import httpx  # local import is safe — module-level top imports remain authoritative
+
+EXPO_PUSH_API_URL = "https://exp.host/--/api/v2/push/send"
+
+
+def _is_valid_expo_token(token: str) -> bool:
+    """
+    Valida el formato de un Expo push token.
+    Formato oficial: 'ExponentPushToken[xxxxxxxxxxxxxxxxxxxxxx]' o 'ExpoPushToken[...]'.
+    """
+    if not token or not isinstance(token, str):
+        return False
+    t = token.strip()
+    if not (t.startswith("ExponentPushToken[") or t.startswith("ExpoPushToken[")):
+        return False
+    if not t.endswith("]"):
+        return False
+    if len(t) > 200:  # defensive cap
+        return False
+    return True
+
+
+@api.post("/users/push-token")
+async def register_push_token(
+    body: PushTokenIn,
+    user: dict = Depends(current_user),
+):
+    """
+    Registra un Expo Push Token en el perfil del usuario autenticado.
+    - Usa $addToSet para evitar duplicados.
+    - Limita el array a 10 tokens (FIFO) para no acumular dispositivos viejos.
+    """
+    token = (body.token or "").strip()
+    if not _is_valid_expo_token(token):
+        raise HTTPException(400, "Token de Expo inválido")
+
+    # Add to set (no duplicates).
+    await db.users.update_one(
+        {"id": user["id"]},
+        {"$addToSet": {"expo_push_tokens": token}},
+    )
+
+    # FIFO cap @ 10 tokens — keep only the most recent ones.
+    fresh = await db.users.find_one(
+        {"id": user["id"]}, {"_id": 0, "expo_push_tokens": 1}
+    )
+    tokens_list = (fresh or {}).get("expo_push_tokens") or []
+    if len(tokens_list) > 10:
+        trimmed = tokens_list[-10:]
+        await db.users.update_one(
+            {"id": user["id"]},
+            {"$set": {"expo_push_tokens": trimmed}},
+        )
+        tokens_list = trimmed
+
+    logger_count = len(tokens_list)
+    log.info(
+        "[push] token registered user=%s platform=%s total_tokens=%d",
+        user.get("email"),
+        body.platform or "unknown",
+        logger_count,
+    )
+    return {"ok": True, "count": logger_count}
+
+
+@api.delete("/users/push-token")
+async def unregister_push_token(
+    body: PushTokenIn,
+    user: dict = Depends(current_user),
+):
+    """Elimina un Expo push token del perfil del usuario (logout / device removal)."""
+    token = (body.token or "").strip()
+    if not token:
+        raise HTTPException(400, "Token vacío")
+    await db.users.update_one(
+        {"id": user["id"]},
+        {"$pull": {"expo_push_tokens": token}},
+    )
+    return {"ok": True}
+
+
+async def send_push_notification(
+    user_id: str,
+    title: str,
+    body: str,
+    data: Optional[dict] = None,
+    sound: Optional[str] = "default",
+    priority: str = "high",
+) -> dict:
+    """
+    Envía una notificación push a TODOS los Expo push tokens registrados del usuario.
+
+    Esta función está **definida y lista para usarse**, pero NO se vincula a ningún
+    evento todavía. Es responsabilidad del feature que la consuma (e.g. nuevo reporte,
+    mensaje en chat, asignación de tarea) llamarla.
+
+    Args:
+        user_id: ID del usuario destinatario.
+        title:   Título de la notificación.
+        body:    Cuerpo / mensaje principal.
+        data:    Payload opcional para deep-linking (e.g. {"report_id": "..."}).
+        sound:   'default' o None.
+        priority: 'default' | 'normal' | 'high'.
+
+    Returns:
+        dict con shape:
+        {
+          "ok": bool,
+          "sent": int,            # cuántos mensajes se intentaron enviar
+          "failed_tokens": [str], # tokens que Expo reportó como inválidos
+          "response": <expo raw json or error string>,
+        }
+    """
+    u = await db.users.find_one({"id": user_id}, {"_id": 0, "expo_push_tokens": 1})
+    tokens: list = (u or {}).get("expo_push_tokens") or []
+    if not tokens:
+        return {"ok": False, "sent": 0, "failed_tokens": [], "response": "no tokens"}
+
+    # Build the Expo push message batch (Expo accepts a JSON array).
+    messages = []
+    for t in tokens:
+        if not _is_valid_expo_token(t):
+            continue
+        msg = {
+            "to": t,
+            "title": title,
+            "body": body,
+            "priority": priority,
+        }
+        if sound:
+            msg["sound"] = sound
+        if data:
+            msg["data"] = data
+        messages.append(msg)
+
+    if not messages:
+        return {"ok": False, "sent": 0, "failed_tokens": tokens, "response": "no valid tokens"}
+
+    headers = {
+        "Accept": "application/json",
+        "Accept-Encoding": "gzip, deflate",
+        "Content-Type": "application/json",
+    }
+
+    failed_tokens: list = []
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.post(EXPO_PUSH_API_URL, json=messages, headers=headers)
+            try:
+                payload = r.json()
+            except Exception:
+                payload = {"raw": r.text}
+
+            # Expo returns {"data": [{"status":"ok"|"error","id":"...","message":"...","details":{"error":"DeviceNotRegistered"}}, ...]}
+            results = (payload or {}).get("data") or []
+            for idx, item in enumerate(results):
+                if isinstance(item, dict) and item.get("status") == "error":
+                    err = (item.get("details") or {}).get("error", "")
+                    if err in ("DeviceNotRegistered", "InvalidCredentials"):
+                        if idx < len(messages):
+                            failed_tokens.append(messages[idx]["to"])
+
+            # Auto-clean: remove invalid tokens from user's profile.
+            if failed_tokens:
+                await db.users.update_one(
+                    {"id": user_id},
+                    {"$pull": {"expo_push_tokens": {"$in": failed_tokens}}},
+                )
+
+            return {
+                "ok": r.status_code < 400,
+                "sent": len(messages),
+                "failed_tokens": failed_tokens,
+                "response": payload,
+            }
+    except Exception as exc:  # pragma: no cover - defensive
+        log.exception("[push] send_push_notification failed: %s", exc)
+        return {
+            "ok": False,
+            "sent": 0,
+            "failed_tokens": [],
+            "response": f"exception: {exc}",
+        }
+
+
+# === PROJECTS ===============================================================
+def _sanitize_str_list(items, max_items: int = 200, max_len: int = 200) -> list:
+    """Limpia listas de strings (contratistas / contratos). Dedup case-insensitive."""
+    if not items or not isinstance(items, list):
+        return []
+    out: list = []
+    seen: set = set()
+    for it in items:
+        if not isinstance(it, str):
+            continue
+        s = it.strip()
+        if not s:
+            continue
+        if len(s) > max_len:
+            s = s[:max_len]
+        key = s.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(s)
+        if len(out) >= max_items:
+            break
+    return out
+
+
+def _sanitize_color_hex(value: Optional[str]) -> Optional[str]:
+    """Valida un color hex `#RRGGBB` o `#RGB`. Devuelve `#RRGGBB` en mayúsculas o None."""
+    if not value or not isinstance(value, str):
+        return None
+    s = value.strip().lstrip("#")
+    if len(s) == 3 and all(ch in "0123456789abcdefABCDEF" for ch in s):
+        s = "".join(ch * 2 for ch in s)
+    if len(s) != 6 or any(ch not in "0123456789abcdefABCDEF" for ch in s):
+        return None
+    return "#" + s.upper()
+
+
+@api.get("/projects")
+async def list_projects(user: dict = Depends(current_user)):
+    # La lista solo pinta nombre/constructora/contrato — excluir binarios
+    # pesados (logo y galería de datos generales, hasta 30 imágenes de 5MB
+    # c/u por proyecto) que solo hacen falta en el detalle de un proyecto.
+    projection = {"constructora_logo": 0, "general_data_images": 0}
+    if user["role"] in (ROLE_COORD, ROLE_JEFE):
+        # Coordinador General y Jefe de Proyecto: acceso global a todos los proyectos.
+        cursor = db.projects.find({"archived": {"$ne": True}}, projection).sort("created_at", -1)
+    else:
+        pids = user.get("project_ids") or []
+        cursor = db.projects.find({"id": {"$in": pids}, "archived": {"$ne": True}}, projection).sort("created_at", -1)
+    items = await cursor.to_list(length=500)
+    for it in items:
+        it.pop("_id", None)
+        it.setdefault("contratistas_list", [])
+        it.setdefault("contratos_list", [])
+        it.setdefault("minuta_code_prefix", None)
+    return items
+
+
+@api.post("/projects")
+async def create_project(body: ProjectIn, user: dict = Depends(require_role(ROLE_COORD))):
+    pid = str(uuid.uuid4())
+    doc = {
+        "id": pid,
+        "name": body.name.strip(),
+        "constructora": body.constructora.strip(),
+        "contract_number": body.contract_number.strip(),
+        "objeto_contrato": (body.objeto_contrato or "").strip() or None,
+        "cliente_principal": (body.cliente_principal or "").strip() or None,
+        "color_tema": _sanitize_color_hex(body.color_tema) or "#003366",
+        "report_text_color": _sanitize_color_hex(body.report_text_color) or "#0F172A",
+        "start_date": body.start_date,
+        "end_date": body.end_date,
+        "description": (body.description or "").strip() or None,
+        "reference_files": _sanitize_reference_files(body.reference_files),
+        "contratistas_list": _sanitize_str_list(body.contratistas_list),
+        "contratos_list": _sanitize_str_list(body.contratos_list),
+        "categorias_personal": _sanitize_str_list(body.categorias_personal),
+        "categorias_equipo": _sanitize_str_list(body.categorias_equipo),
+        "created_by": user["id"],
+        "created_at": datetime.now(timezone.utc),
+        "archived": False,
+    }
+    await db.projects.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api.get("/projects/{pid}")
+async def get_project(pid: str, user: dict = Depends(current_user)):
+    p = await ensure_project_access(user, pid)
+    p.pop("_id", None)
+    p.setdefault("reference_files", [])
+    p.setdefault("contratistas_list", [])
+    p.setdefault("contratos_list", [])
+    p.setdefault("categorias_personal", [])
+    p.setdefault("categorias_equipo", [])
+    p.setdefault("objeto_contrato", None)
+    p.setdefault("cliente_principal", None)
+    p.setdefault("color_tema", "#003366")
+    p.setdefault("report_text_color", "#0F172A")
+    p.setdefault("general_data_images", [])
+    p.setdefault("minuta_code_prefix", None)
+    return p
+
+
+@api.put("/projects/{pid}")
+async def update_project(pid: str, body: ProjectPatch, user: dict = Depends(require_role(ROLE_COORD))):
+    """PATCH parcial: sólo actualiza los campos enviados.
+
+    Permite, por ejemplo, actualizar únicamente `objeto_contrato` o catálogos
+    sin tener que reenviar name/constructora/contract_number.
+    """
+    existing = await db.projects.find_one({"id": pid})
+    if not existing:
+        raise HTTPException(404, "Proyecto no existe")
+
+    upd: dict = {}
+    if body.name is not None:
+        n = body.name.strip()
+        if n:
+            upd["name"] = n
+    if body.constructora is not None:
+        upd["constructora"] = body.constructora.strip()
+    if body.contract_number is not None:
+        upd["contract_number"] = body.contract_number.strip()
+    if body.objeto_contrato is not None:
+        upd["objeto_contrato"] = body.objeto_contrato.strip() or None
+    if body.cliente_principal is not None:
+        upd["cliente_principal"] = body.cliente_principal.strip() or None
+    if body.color_tema is not None:
+        upd["color_tema"] = _sanitize_color_hex(body.color_tema) or "#003366"
+    if body.report_text_color is not None:
+        upd["report_text_color"] = _sanitize_color_hex(body.report_text_color) or "#0F172A"
+    if body.start_date is not None:
+        upd["start_date"] = body.start_date
+    if body.end_date is not None:
+        upd["end_date"] = body.end_date
+    if body.description is not None:
+        upd["description"] = body.description.strip() or None
+    if body.reference_files is not None:
+        upd["reference_files"] = _sanitize_reference_files(body.reference_files)
+    if body.contratistas_list is not None:
+        upd["contratistas_list"] = _sanitize_str_list(body.contratistas_list)
+    if body.contratos_list is not None:
+        upd["contratos_list"] = _sanitize_str_list(body.contratos_list)
+    if body.categorias_personal is not None:
+        upd["categorias_personal"] = _sanitize_str_list(body.categorias_personal)
+    if body.categorias_equipo is not None:
+        upd["categorias_equipo"] = _sanitize_str_list(body.categorias_equipo)
+    if body.constructora_logo is not None:
+        # Aceptamos cadena vacía para "limpiar" el logo
+        upd["constructora_logo"] = body.constructora_logo or None
+    if body.minuta_code_prefix is not None:
+        upd["minuta_code_prefix"] = body.minuta_code_prefix.strip() or None
+
+    if upd:
+        await db.projects.update_one({"id": pid}, {"$set": upd})
+
+    p = await db.projects.find_one({"id": pid})
+    return _project_public(p)
+
+
+def _project_public(p: dict) -> dict:
+    """Serializa un doc de proyecto para exponer al frontend con defaults."""
+    if not p:
+        return p
+    p = dict(p)  # copia superficial para no mutar el original
+    p.pop("_id", None)
+    p.setdefault("reference_files", [])
+    p.setdefault("contratistas_list", [])
+    p.setdefault("contratos_list", [])
+    p.setdefault("categorias_personal", [])
+    p.setdefault("categorias_equipo", [])
+    p.setdefault("objeto_contrato", None)
+    p.setdefault("cliente_principal", None)
+    p.setdefault("color_tema", "#003366")
+    p.setdefault("report_text_color", "#0F172A")
+    p.setdefault("general_data_images", [])
+    p.setdefault("template_pdf", None)
+    p.setdefault("template_docx", None)
+    p.setdefault("template_pptx", None)
+    p.setdefault("template_map", None)
+    p.setdefault("minuta_code_prefix", None)
+    return p
+
+
+@api.put("/projects/{pid}/catalogos")
+async def set_project_catalogos(
+    pid: str,
+    body: dict,
+    user: dict = Depends(require_role(ROLE_COORD)),
+):
+    """Actualiza catálogos dinámicos del proyecto:
+    contratistas_list, contratos_list, categorias_personal y categorias_equipo.
+    Sólo Coordinador General puede modificarlos."""
+    upd: dict = {}
+    if isinstance(body.get("contratistas_list"), list):
+        upd["contratistas_list"] = _sanitize_str_list(body.get("contratistas_list"))
+    if isinstance(body.get("contratos_list"), list):
+        upd["contratos_list"] = _sanitize_str_list(body.get("contratos_list"))
+    if isinstance(body.get("categorias_personal"), list):
+        upd["categorias_personal"] = _sanitize_str_list(body.get("categorias_personal"))
+    if isinstance(body.get("categorias_equipo"), list):
+        upd["categorias_equipo"] = _sanitize_str_list(body.get("categorias_equipo"))
+    if not upd:
+        raise HTTPException(400, "Nada para actualizar")
+    r = await db.projects.update_one({"id": pid}, {"$set": upd})
+    if r.matched_count == 0:
+        raise HTTPException(404, "Proyecto no existe")
+    p = await db.projects.find_one({"id": pid})
+    return _project_public(p)
+
+
+@api.delete("/projects/{pid}")
+async def archive_project(pid: str, user: dict = Depends(require_role(ROLE_COORD))):
+    await db.projects.update_one({"id": pid}, {"$set": {"archived": True}})
+    return {"ok": True, "archived": True}
+
+
+class ReferenceFilesIn(BaseModel):
+    reference_files: List[dict] = Field(default_factory=list)
+
+
+@api.put("/projects/{pid}/reference-files")
+async def set_reference_files(
+    pid: str,
+    body: ReferenceFilesIn,
+    user: dict = Depends(require_role(ROLE_COORD)),
+):
+    """Actualiza la lista completa de Archivos de Consulta del proyecto.
+    Sólo Coordinador General puede modificar esta lista."""
+    cleaned = _sanitize_reference_files(body.reference_files)
+    r = await db.projects.update_one(
+        {"id": pid}, {"$set": {"reference_files": cleaned}}
+    )
+    if r.matched_count == 0:
+        raise HTTPException(404, "Proyecto no existe")
+    return {"ok": True, "reference_files": cleaned}
+
+
+# === LOCATION NODES (Árbol Recursivo) =======================================
+def _acceso_predio_efectivo(node: dict) -> bool:
+    """Si nadie decidió explícitamente `acceso_predio_habilitado` para este
+    nodo, el default histórico era "solo Subtramo" (depth==1) — antes
+    estaba hardcodeado así en el frontend (AccesoPredioManager filtraba
+    `depth === 1` a secas); ahora el Coordinador/Sub-Coordinador puede
+    habilitarlo/deshabilitarlo nodo por nodo, a cualquier profundidad."""
+    habilitado = node.get("acceso_predio_habilitado")
+    return habilitado if habilitado is not None else (node.get("depth") == 1)
+
+
+@api.get("/projects/{pid}/nodes")
+async def list_nodes(pid: str, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    items = await db.location_nodes.find({"project_id": pid}).sort([("depth", 1), ("order", 1)]).to_list(length=10000)
+
+    # --- FIX AMNESIA DE ESTADO: usar MAX(ultima_lectura) numérica, no SUM(avance) texto ---
+    pipeline = [
+        {"$match": {"project_id": pid, "ultima_lectura": {"$ne": None}}},
+        {"$group": {"_id": "$node_id", "total_avance": {"$max": "$ultima_lectura"}}},
+    ]
+    aggr = await db.reports.aggregate(pipeline).to_list(length=10000)
+    avances_dict = {doc["_id"]: float(doc.get("total_avance") or 0.0) for doc in aggr}
+    # -------------------------------------------------------------------------------------
+
+    # Filtrado por scope (Sub-coordinador AHORA tiene scope GLOBAL, igual que Coordinador).
+    role = user.get("role")
+    if role == ROLE_ESPECIALISTA and (user.get("scope_node_ids") or []):
+        allowed_leaves = set(user.get("scope_node_ids") or [])
+        # incluir ancestros para que el árbol sea navegable
+        ancestors: set = set()
+        # construir mapa id->parent
+        all_nodes = await db.location_nodes.find({"project_id": pid}).to_list(length=10000)
+        parent_of = {n["id"]: n.get("parent_id") for n in all_nodes}
+        for leaf in allowed_leaves:
+            cur = leaf
+            while cur:
+                ancestors.add(cur)
+                cur = parent_of.get(cur)
+        items = [it for it in items if it["id"] in ancestors]
+        
+    for it in items:
+        it.pop("_id", None)
+        # Inyectamos el acumulado al nodo
+        it["avance_actual"] = avances_dict.get(it["id"], 0.0)
+        it["acceso_predio_efectivo"] = _acceso_predio_efectivo(it)
+
+    return items
+
+
+@api.get("/projects/{pid}/nodes/tree")
+async def get_tree(pid: str, user: dict = Depends(current_user)):
+    """Devuelve el árbol completo como estructura jerárquica."""
+    await ensure_project_access(user, pid)
+    items = await db.location_nodes.find({"project_id": pid}).sort([("depth", 1), ("order", 1)]).to_list(length=10000)
+    
+    # --- FIX AMNESIA DE ESTADO: usar MAX(ultima_lectura) numérica, no SUM(avance) texto ---
+    pipeline = [
+        {"$match": {"project_id": pid, "ultima_lectura": {"$ne": None}}},
+        {"$group": {"_id": "$node_id", "total_avance": {"$max": "$ultima_lectura"}}},
+    ]
+    aggr = await db.reports.aggregate(pipeline).to_list(length=10000)
+    avances_dict = {doc["_id"]: float(doc.get("total_avance") or 0.0) for doc in aggr}
+    # -------------------------------------------------------------------------------------
+
+    # Filtrado por scope (Sub-coordinador AHORA tiene scope GLOBAL, igual que Coordinador).
+    role = user.get("role")
+    if role == ROLE_ESPECIALISTA and (user.get("scope_node_ids") or []):
+        allowed_leaves = set(user.get("scope_node_ids") or [])
+        ancestors: set = set()
+        parent_of = {n["id"]: n.get("parent_id") for n in items}
+        for leaf in allowed_leaves:
+            cur = leaf
+            while cur:
+                ancestors.add(cur)
+                cur = parent_of.get(cur)
+        items = [it for it in items if it["id"] in ancestors]
+        
+    by_id = {}
+    for it in items:
+        it.pop("_id", None)
+        # Inyectamos el acumulado al nodo antes de anidarlo
+        it["avance_actual"] = avances_dict.get(it["id"], 0.0)
+        it["children"] = []
+        by_id[it["id"]] = it
+        
+    roots = []
+    # Para sub-coord/especialista, "root" debe ser el primer nodo cuyo padre no está en el set filtrado
+    for it in items:
+        if it.get("parent_id") and it["parent_id"] in by_id:
+            by_id[it["parent_id"]]["children"].append(it)
+        else:
+            roots.append(it)
+    return roots
+
+
+@api.post("/projects/{pid}/nodes")
+async def create_node(pid: str, body: LocationNodeIn, user: dict = Depends(require_role(ROLE_COORD))):
+    if body.project_id != pid:
+        raise HTTPException(400, "project_id mismatch")
+    await ensure_project_access(user, pid)
+    parent = None
+    depth = 0
+    if body.parent_id:
+        parent = await db.location_nodes.find_one({"id": body.parent_id, "project_id": pid})
+        if not parent:
+            raise HTTPException(404, "Nodo padre no existe")
+        depth = parent["depth"] + 1
+        # Si el padre era hoja, deja de serlo automáticamente.
+        if parent.get("is_leaf"):
+            await db.location_nodes.update_one(
+                {"id": parent["id"]},
+                {"$set": {"is_leaf": False, "measurement_type": None, "target_lat": None, "target_lon": None, "target_elev": None}},
+            )
+    if body.is_leaf and body.measurement_type not in MEASUREMENT_TYPES:
+        raise HTTPException(400, "Nodos hoja requieren measurement_type válido")
+    nid = str(uuid.uuid4())
+    # Coordenadas objetivo: sólo aplican a hojas coord_latlon.
+    is_coord_leaf = body.is_leaf and body.measurement_type == "coord_latlon"
+    doc = {
+        "id": nid,
+        "project_id": pid,
+        "parent_id": body.parent_id,
+        "name": body.name.strip(),
+        "depth": depth,
+        "order": body.order,
+        "is_leaf": body.is_leaf,
+        "measurement_type": body.measurement_type if body.is_leaf else None,
+        "target_lat": body.target_lat if is_coord_leaf else None,
+        "target_lon": body.target_lon if is_coord_leaf else None,
+        "target_elev": body.target_elev if is_coord_leaf else None,
+        "meta": body.meta if body.is_leaf else None,
+        "acceso_predio": body.acceso_predio,
+        "situacion_social": body.situacion_social,
+        "created_at": datetime.now(timezone.utc),
+    }
+    await db.location_nodes.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+class NodePatch(BaseModel):
+    name: Optional[str] = None
+    order: Optional[int] = None
+    is_leaf: Optional[bool] = None
+    measurement_type: Optional[Literal["coord_latlon", "cadenamiento", "eje", "nivel"]] = None
+    target_lat: Optional[float] = None
+    target_lon: Optional[float] = None
+    target_elev: Optional[float] = None
+    meta: Optional[float] = None
+    acceso_predio: Optional[str] = None
+    situacion_social: Optional[str] = None
+    # None = no tocar (deja el default: antes fijo a "solo Subtramo,
+    # depth==1"); True/False = decisión explícita de si ESTE nodo (a
+    # cualquier profundidad) participa en Acceso al Predio.
+    acceso_predio_habilitado: Optional[bool] = None
+
+
+@api.patch("/nodes/{nid}")
+async def update_node(nid: str, body: NodePatch, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB))):
+    node = await db.location_nodes.find_one({"id": nid})
+    if not node:
+        raise HTTPException(404, "Nodo no existe")
+    upd: dict = {}
+    if body.name is not None:
+        upd["name"] = body.name.strip()
+    if body.order is not None:
+        upd["order"] = body.order
+    if body.is_leaf is not None:
+        if body.is_leaf:
+            # Para convertirse en hoja no debe tener hijos
+            has_children = await db.location_nodes.find_one({"parent_id": nid})
+            if has_children:
+                raise HTTPException(400, "No se puede marcar como hoja: tiene hijos")
+            if body.measurement_type not in MEASUREMENT_TYPES:
+                raise HTTPException(400, "Hoja requiere measurement_type")
+            upd["is_leaf"] = True
+            upd["measurement_type"] = body.measurement_type
+        else:
+            upd["is_leaf"] = False
+            upd["measurement_type"] = None
+            upd["target_lat"] = None
+            upd["target_lon"] = None
+            upd["target_elev"] = None
+    elif body.measurement_type is not None:
+        if not node.get("is_leaf"):
+            raise HTTPException(400, "measurement_type solo aplica a hojas")
+        if body.measurement_type not in MEASUREMENT_TYPES:
+            raise HTTPException(400, "measurement_type inválido")
+        upd["measurement_type"] = body.measurement_type
+        # Si cambia el tipo y deja de ser coord_latlon, limpia coords objetivo.
+        if body.measurement_type != "coord_latlon":
+            upd["target_lat"] = None
+            upd["target_lon"] = None
+            upd["target_elev"] = None
+    # Coordenadas objetivo (sólo válidas en hojas coord_latlon — usar valor final).
+    final_is_leaf = upd.get("is_leaf", node.get("is_leaf"))
+    final_mtype = upd.get("measurement_type", node.get("measurement_type"))
+    is_coord_leaf = bool(final_is_leaf and final_mtype == "coord_latlon")
+    for fld, val in (("target_lat", body.target_lat), ("target_lon", body.target_lon), ("target_elev", body.target_elev)):
+        if val is not None and is_coord_leaf:
+            upd[fld] = val
+    # Meta numérica: válida sólo para nodos hoja; si se manda en no-hoja se ignora.
+    if body.meta is not None:
+        if final_is_leaf:
+            upd["meta"] = float(body.meta)
+        # Si el nodo deja de ser hoja, limpiamos meta más abajo.
+    if upd.get("is_leaf") is False:
+        upd["meta"] = None
+    if body.acceso_predio is not None:
+        upd["acceso_predio"] = body.acceso_predio.strip()
+    if body.situacion_social is not None:
+        upd["situacion_social"] = body.situacion_social.strip()
+    if body.acceso_predio_habilitado is not None:
+        upd["acceso_predio_habilitado"] = body.acceso_predio_habilitado
+    if upd:
+        await db.location_nodes.update_one({"id": nid}, {"$set": upd})
+    out = await db.location_nodes.find_one({"id": nid})
+    out.pop("_id", None)
+    return out
+
+
+@api.delete("/nodes/{nid}")
+async def delete_node(nid: str, user: dict = Depends(require_role(ROLE_COORD))):
+    node = await db.location_nodes.find_one({"id": nid})
+    if not node:
+        raise HTTPException(404, "Nodo no existe")
+    ids_to_delete = await descendants_ids(nid)
+    await db.location_nodes.delete_many({"id": {"$in": ids_to_delete}})
+    # NO borramos reportes huérfanos automáticamente (preservación). Marcar como huérfanos:
+    await db.reports.update_many(
+        {"node_id": {"$in": ids_to_delete}}, {"$set": {"node_orphan": True}}
+    )
+    return {"ok": True, "deleted_count": len(ids_to_delete)}
+
+
+# === PORTADILLA POR NODO (cover_image) =====================================
+# Se almacena como data URL base64 en el propio documento del nodo.
+# Usado por el motor PDF para renderizar la "Portadilla de Nodo" dinámica:
+#   fondo con color institucional + nombre del nodo (grande) + imagen incrustada.
+_NODE_COVER_MIME = {"image/jpeg", "image/jpg", "image/png", "image/webp"}
+_NODE_COVER_MAX_BYTES = 8 * 1024 * 1024  # 8 MB por portada
+
+
+@api.post("/projects/{pid}/nodes/{nid}/cover")
+async def upload_node_cover(
+    pid: str,
+    nid: str,
+    file: UploadFile = File(...),
+    user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB)),
+):
+    """Sube (o reemplaza) la portada institucional de un nodo.
+    Acepta JPG/PNG/WebP hasta 8 MB. Devuelve el nodo actualizado."""
+    node = await db.location_nodes.find_one({"id": nid, "project_id": pid})
+    if not node:
+        raise HTTPException(404, "Nodo no existe")
+    content_type = (file.content_type or "").lower()
+    if content_type and content_type not in _NODE_COVER_MIME:
+        raise HTTPException(415, f"Formato no soportado: {content_type}. Usa JPG/PNG/WebP.")
+    raw = await file.read(_NODE_COVER_MAX_BYTES + 1)
+    if len(raw) > _NODE_COVER_MAX_BYTES:
+        raise HTTPException(413, f"Imagen demasiado grande (máx {_NODE_COVER_MAX_BYTES // (1024*1024)} MB).")
+    # Serializar como data URL base64
+    import base64 as _b64
+    mime = content_type or "image/jpeg"
+    b64_str = _b64.b64encode(raw).decode("ascii")
+    data_url = f"data:{mime};base64,{b64_str}"
+    await db.location_nodes.update_one({"id": nid}, {"$set": {"cover_image": data_url}})
+    updated = await db.location_nodes.find_one({"id": nid})
+    updated.pop("_id", None)
+    return updated
+
+
+@api.delete("/projects/{pid}/nodes/{nid}/cover")
+async def delete_node_cover(
+    pid: str,
+    nid: str,
+    user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB)),
+):
+    """Elimina la portada institucional del nodo (vuelve a la portadilla genérica)."""
+    node = await db.location_nodes.find_one({"id": nid, "project_id": pid})
+    if not node:
+        raise HTTPException(404, "Nodo no existe")
+    await db.location_nodes.update_one({"id": nid}, {"$set": {"cover_image": None}})
+    updated = await db.location_nodes.find_one({"id": nid})
+    updated.pop("_id", None)
+    return updated
+
+
+# === BULK UPLOAD GENÉRICO DE NODOS DESDE EXCEL/CSV =========================
+# Columnas reconocidas dinámicamente:
+#   - Nombre del nodo: "nombre", "nodo", "nombre del nodo", "nombre del poste"
+#     (case-insensitive, sin acentos). Si no se encuentra, se usa la 1ra columna.
+#   - Padre (opcional, jerarquía): "padre", "nodo padre", "parent"
+#   - Resto de columnas: se guardan tal cual dentro de `metadata` (dict).
+#
+# Reglas:
+#   - Filas con nombre vacío se ignoran.
+#   - Upsert por (project_id, name) case-insensitive. Si existe -> actualiza
+#     metadata y parent_id; si no -> crea como nodo no-hoja.
+#   - Las filas se procesan en orden: primero los nodos sin padre, después
+#     los hijos (dos pasadas) para resolver referencias forward.
+
+_NODE_NAME_CANDIDATES = {
+    "nombre", "nodo", "nombre del nodo", "nombre del poste",
+    "name", "node", "node name",
+}
+_NODE_PARENT_CANDIDATES = {
+    "padre", "nodo padre", "parent", "padre id", "parent id",
+}
+
+
+def _normalize_col(s: str) -> str:
+    """Normaliza un encabezado para comparación (lower, sin acentos, sin espacios extra)."""
+    if not isinstance(s, str):
+        return ""
+    s = s.strip().lower()
+    repl = {"á": "a", "é": "e", "í": "i", "ó": "o", "ú": "u", "ñ": "n"}
+    for k, v in repl.items():
+        s = s.replace(k, v)
+    return s
+
+
+def _coerce_cell(v):
+    """Convierte celdas de pandas en algo serializable y limpio.
+    Ignora NaN/None, recorta strings."""
+    try:
+        import math
+        if v is None:
+            return None
+        if isinstance(v, float) and math.isnan(v):
+            return None
+    except Exception:
+        pass
+    if isinstance(v, str):
+        s = v.strip()
+        return s if s else None
+    return v
+
+
+@api.get("/projects/{pid}/nodes/bulk-upload/template")
+async def bulk_upload_template(
+    pid: str,
+    user: dict = Depends(require_role(ROLE_COORD)),
+):
+    """Devuelve una plantilla .xlsx de ejemplo para carga masiva de nodos.
+
+    Columnas:
+      - Nombre: nombre del nodo (obligatorio)
+      - Padre: nombre del nodo padre (opcional; deja vacío para nodos raíz)
+      - Coordenada X, Coordenada Y, Elevación (TN), Dirección: ejemplos de metadatos.
+    """
+    await ensure_project_access(user, pid)
+    try:
+        import pandas as pd  # noqa: WPS433
+    except Exception as e:  # pragma: no cover
+        raise HTTPException(500, f"pandas no disponible: {e}")
+
+    sample = [
+        {
+            "Nombre": "Tramo 1",
+            "Padre": "",
+            "Coordenada X": "",
+            "Coordenada Y": "",
+            "Elevación (TN)": "",
+            "Dirección": "Tronco principal",
+        },
+        {
+            "Nombre": "P-101",
+            "Padre": "Tramo 1",
+            "Coordenada X": 19.432608,
+            "Coordenada Y": -99.133209,
+            "Elevación (TN)": 2240.5,
+            "Dirección": "Av. Reforma 100",
+        },
+        {
+            "Nombre": "P-102",
+            "Padre": "Tramo 1",
+            "Coordenada X": 19.433100,
+            "Coordenada Y": -99.134000,
+            "Elevación (TN)": 2241.0,
+            "Dirección": "Av. Reforma 120",
+        },
+        {
+            "Nombre": "Tramo 2",
+            "Padre": "",
+            "Coordenada X": "",
+            "Coordenada Y": "",
+            "Elevación (TN)": "",
+            "Dirección": "Ramal secundario",
+        },
+        {
+            "Nombre": "P-201",
+            "Padre": "Tramo 2",
+            "Coordenada X": 19.440100,
+            "Coordenada Y": -99.145000,
+            "Elevación (TN)": 2245.2,
+            "Dirección": "Calz. Tlalpan 500",
+        },
+    ]
+    df = pd.DataFrame(sample)
+
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        df.to_excel(writer, sheet_name="Nodos", index=False)
+        # Ajustar ancho de columnas para que sea legible
+        ws = writer.sheets["Nodos"]
+        widths = {"A": 22, "B": 22, "C": 16, "D": 16, "E": 18, "F": 32}
+        for col, w in widths.items():
+            ws.column_dimensions[col].width = w
+    buf.seek(0)
+
+    headers = {
+        "Content-Disposition": 'attachment; filename="plantilla_nodos_synco.xlsx"',
+    }
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers=headers,
+    )
+
+
+@api.post("/projects/{pid}/nodes/bulk-upload")
+async def bulk_upload_nodes(
+    pid: str,
+    file: UploadFile = File(...),
+    user: dict = Depends(require_role(ROLE_COORD)),
+):
+    """Carga masiva genérica de nodos desde un archivo .xlsx o .csv.
+
+    Devuelve resumen: {created, updated, skipped, errors, total}.
+    """
+    await ensure_project_access(user, pid)
+    proj = await db.projects.find_one({"id": pid})
+    if not proj:
+        raise HTTPException(404, "Proyecto no existe")
+    try:
+        raw = await file.read()
+    except Exception as e:
+        raise HTTPException(400, f"No se pudo leer el archivo: {e}")
+    if not raw:
+        raise HTTPException(400, "Archivo vacío")
+    return await _process_nodes_bulk_upload(pid, raw, file.filename or "")
+
+
+async def _process_nodes_bulk_upload(pid: str, raw: bytes, filename: str) -> dict:
+    """Núcleo reutilizable de la carga masiva de nodos.
+
+    Recibe el contenido binario y el nombre original del archivo y devuelve el
+    resumen `{total_rows, created, updated, skipped, errors, ...}`. Es invocado
+    por:
+      - POST /projects/{pid}/nodes/bulk-upload  (endpoint dedicado)
+      - POST /projects/{pid}/upload-file        (router genérico)
+    """
+    fname = (filename or "").lower()
+    try:
+        import pandas as pd  # noqa: WPS433
+    except Exception as e:  # pragma: no cover
+        raise HTTPException(500, f"pandas no disponible: {e}")
+
+    try:
+        if fname.endswith(".csv"):
+            df = pd.read_csv(io.BytesIO(raw), dtype=object, keep_default_na=True)
+        elif fname.endswith(".xlsx") or fname.endswith(".xls"):
+            df = pd.read_excel(io.BytesIO(raw), dtype=object, engine="openpyxl")
+        else:
+            # Intento auto: primero xlsx, después csv
+            try:
+                df = pd.read_excel(io.BytesIO(raw), dtype=object, engine="openpyxl")
+            except Exception:
+                df = pd.read_csv(io.BytesIO(raw), dtype=object, keep_default_na=True)
+    except Exception as e:
+        raise HTTPException(400, f"No se pudo parsear el archivo: {e}")
+
+    if df is None or df.empty:
+        raise HTTPException(400, "El archivo no contiene filas")
+
+    # Identificar columna de nombre
+    cols = list(df.columns)
+    norm_to_orig = {_normalize_col(str(c)): c for c in cols}
+
+    name_col = None
+    for cand in _NODE_NAME_CANDIDATES:
+        if cand in norm_to_orig:
+            name_col = norm_to_orig[cand]
+            break
+    if name_col is None and cols:
+        name_col = cols[0]  # fallback: primera columna
+
+    parent_col = None
+    for cand in _NODE_PARENT_CANDIDATES:
+        if cand in norm_to_orig:
+            parent_col = norm_to_orig[cand]
+            break
+
+    if name_col is None:
+        raise HTTPException(400, "No se pudo identificar la columna de nombre")
+
+    # Cargar nodos existentes del proyecto en memoria (map por nombre-lower)
+    existing_docs = await db.location_nodes.find({"project_id": pid}).to_list(length=10000)
+    by_name_lower: dict = {}
+    for n in existing_docs:
+        key = (n.get("name") or "").strip().lower()
+        if key:
+            by_name_lower[key] = n
+
+    # Calcular siguiente "order" para raíces nuevas
+    existing_roots = [n for n in existing_docs if not n.get("parent_id")]
+    next_order = max([n.get("order", 0) for n in existing_roots], default=-1) + 1
+
+    summary = {
+        "total_rows": int(len(df)),
+        "created": 0,
+        "updated": 0,
+        "skipped": 0,
+        "errors": [],
+        "name_column": str(name_col),
+        "parent_column": str(parent_col) if parent_col else None,
+        "metadata_columns": [str(c) for c in cols if c != name_col and c != parent_col],
+    }
+
+    # Procesamos en 2 pasadas para resolver referencias de padre forward.
+    rows = df.to_dict(orient="records")
+
+    async def upsert_row(row: dict, second_pass: bool = False):
+        nonlocal next_order
+        raw_name = _coerce_cell(row.get(name_col))
+        if raw_name is None or str(raw_name).strip() == "":
+            summary["skipped"] += 1
+            return
+        name = str(raw_name).strip()
+        # Resolver padre por nombre (si la columna existe)
+        parent_doc = None
+        if parent_col:
+            raw_parent = _coerce_cell(row.get(parent_col))
+            if raw_parent:
+                pname = str(raw_parent).strip().lower()
+                parent_doc = by_name_lower.get(pname)
+                if not parent_doc and not second_pass:
+                    # Diferimos: el padre puede aparecer más adelante.
+                    return "defer"
+        # Construir metadata con resto de columnas
+        metadata: dict = {}
+        for c in cols:
+            if c == name_col or c == parent_col:
+                continue
+            val = _coerce_cell(row.get(c))
+            if val is None:
+                continue
+            # Convertir tipos no-JSON-serializables
+            try:
+                import numpy as np  # noqa: WPS433
+                if isinstance(val, (np.integer,)):
+                    val = int(val)
+                elif isinstance(val, (np.floating,)):
+                    val = float(val)
+            except Exception:
+                pass
+            if isinstance(val, (datetime,)):
+                val = val.isoformat()
+            metadata[str(c)] = val
+
+        key = name.lower()
+        existing = by_name_lower.get(key)
+        if existing:
+            # Update: refrescamos metadata y parent_id (si vino padre)
+            upd: dict = {"metadata": metadata}
+            if parent_doc:
+                upd["parent_id"] = parent_doc["id"]
+                upd["depth"] = int(parent_doc.get("depth", 0)) + 1
+            await db.location_nodes.update_one({"id": existing["id"]}, {"$set": upd})
+            existing["metadata"] = metadata
+            if parent_doc:
+                existing["parent_id"] = parent_doc["id"]
+                existing["depth"] = upd["depth"]
+            summary["updated"] += 1
+        else:
+            nid = str(uuid.uuid4())
+            parent_id = parent_doc["id"] if parent_doc else None
+            depth = (int(parent_doc.get("depth", 0)) + 1) if parent_doc else 0
+            order_val = 0 if parent_doc else next_order
+            if not parent_doc:
+                next_order += 1
+            doc = {
+                "id": nid,
+                "project_id": pid,
+                "parent_id": parent_id,
+                "name": name,
+                "depth": depth,
+                "order": order_val,
+                "is_leaf": False,
+                "measurement_type": None,
+                "target_lat": None,
+                "target_lon": None,
+                "target_elev": None,
+                "meta": None,
+                "metadata": metadata,
+                "created_at": datetime.now(timezone.utc),
+            }
+            # Si tiene padre que era hoja, ya no lo es
+            if parent_doc and parent_doc.get("is_leaf"):
+                await db.location_nodes.update_one(
+                    {"id": parent_doc["id"]},
+                    {"$set": {
+                        "is_leaf": False, "measurement_type": None,
+                        "target_lat": None, "target_lon": None, "target_elev": None,
+                    }},
+                )
+                parent_doc["is_leaf"] = False
+            await db.location_nodes.insert_one(doc)
+            doc_clean = {k: v for k, v in doc.items() if k != "_id"}
+            by_name_lower[key] = doc_clean
+            summary["created"] += 1
+        return None
+
+    # Pasada 1
+    deferred: list = []
+    for idx, row in enumerate(rows):
+        try:
+            r = await upsert_row(row, second_pass=False)
+            if r == "defer":
+                deferred.append((idx, row))
+        except Exception as e:
+            summary["errors"].append({"row": idx + 2, "error": str(e)})
+
+    # Pasada 2 (resuelve padres que se crearon después)
+    for idx, row in deferred:
+        try:
+            await upsert_row(row, second_pass=True)
+        except Exception as e:
+            summary["errors"].append({"row": idx + 2, "error": str(e)})
+
+    return summary
+
+
+# === UPLOAD GENÉRICO DE ARCHIVOS DEL PROYECTO ===============================
+UPLOADS_DIR = Path(os.environ.get("UPLOADS_DIR", str(ROOT_DIR / "uploads")))
+try:
+    UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+except Exception as _exc:  # pragma: no cover
+    log.warning("[uploads] no se pudo crear %s: %s", UPLOADS_DIR, _exc)
+
+# Conjuntos de tipos para enrutar la lógica.
+_NODES_EXTS = {".xlsx", ".xls", ".csv"}
+_NODES_MIMES = {
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.ms-excel",
+    "text/csv",
+    "application/csv",
+}
+# PDF / Word / Excel (binarios que solo se guardan en disco).
+_ALLOWED_DOC_MIMES = {
+    "application/pdf",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.ms-excel",
+    "text/csv",
+}
+_MAX_FILE_BYTES = 20 * 1024 * 1024  # 20 MB (límite acordado para subidas en campo)
+
+
+def _safe_filename(name: str) -> str:
+    base = re.sub(r"[^A-Za-z0-9._-]+", "_", (name or "archivo")).strip("._")
+    return base[:120] or "archivo"
+
+
+@api.post("/projects/{pid}/upload-file")
+async def upload_project_file(
+    pid: str,
+    file: UploadFile = File(...),
+    user: dict = Depends(require_role(ROLE_COORD, ROLE_JEFE)),
+):
+    """
+    Router de archivos del proyecto. Acepta multipart/form-data.
+
+    - Si el archivo es Excel/CSV de coordenadas (xlsx, xls, csv) → ejecuta el
+      pipeline de carga masiva de nodos y devuelve el resumen.
+    - Si es PDF/Word u otro documento permitido → lo guarda en `uploads/{pid}/`
+      y lo añade a `project.reference_files`. Devuelve el registro creado.
+
+    Limite por archivo: 25 MB. Solo Coordinador / Jefe de Proyecto.
+    """
+    await ensure_project_access(user, pid)
+    proj = await db.projects.find_one({"id": pid})
+    if not proj:
+        raise HTTPException(404, "Proyecto no existe")
+
+    try:
+        raw = await file.read()
+    except Exception as e:
+        raise HTTPException(400, f"No se pudo leer el archivo: {e}")
+    if not raw:
+        raise HTTPException(400, "Archivo vacío")
+    if len(raw) > _MAX_FILE_BYTES:
+        raise HTTPException(
+            413,
+            f"Archivo demasiado grande ({len(raw)//1024//1024} MB). Máx {_MAX_FILE_BYTES//1024//1024} MB.",
+        )
+
+    orig = file.filename or "archivo"
+    ext = (Path(orig).suffix or "").lower()
+    ctype = (file.content_type or "").lower().split(";", 1)[0].strip()
+
+    is_nodes = ext in _NODES_EXTS or ctype in _NODES_MIMES
+    if is_nodes:
+        try:
+            summary = await _process_nodes_bulk_upload(pid, raw, orig)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            log.exception("[upload-file] bulk_upload falló: %s", exc)
+            raise HTTPException(400, f"No se pudo procesar el archivo de nodos: {exc}")
+        return {
+            "type": "nodes_bulk",
+            "filename": orig,
+            "mime_type": ctype or "application/octet-stream",
+            "size": len(raw),
+            "summary": summary,
+        }
+
+    # Documento (PDF/Word/etc.) → persistir en disco.
+    if ctype and ctype not in _ALLOWED_DOC_MIMES:
+        # No bloqueamos por extensión si el MIME es genérico, pero sí lo registramos.
+        log.info("[upload-file] MIME no-listado pero aceptado: %s (%s)", ctype, orig)
+
+    safe_name = _safe_filename(orig)
+    file_id = uuid.uuid4().hex
+    proj_dir = UPLOADS_DIR / pid
+    try:
+        proj_dir.mkdir(parents=True, exist_ok=True)
+        on_disk = proj_dir / f"{file_id}__{safe_name}"
+        on_disk.write_bytes(raw)
+    except Exception as exc:
+        log.exception("[upload-file] no se pudo escribir en disco: %s", exc)
+        raise HTTPException(500, f"No se pudo guardar el archivo: {exc}")
+
+    record = {
+        "file_id": file_id,
+        "name": Path(orig).stem or orig,
+        "original_name": orig,
+        "mime_type": ctype or "application/octet-stream",
+        "size": len(raw),
+        "url": f"/api/projects/{pid}/files/{file_id}",
+        "path": str(on_disk),
+        "uploaded_by": user.get("id"),
+        "uploaded_by_name": user.get("name"),
+        "uploaded_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    await db.projects.update_one(
+        {"id": pid},
+        {"$push": {"reference_files": record}},
+    )
+
+    return {
+        "type": "stored",
+        "filename": orig,
+        "mime_type": record["mime_type"],
+        "size": record["size"],
+        "file": record,
+    }
+
+
+@api.get("/projects/{pid}/files/{file_id}")
+async def download_project_file(
+    pid: str,
+    file_id: str,
+    user: dict = Depends(current_user),
+):
+    """Descarga un archivo previamente subido al proyecto.
+
+    Requiere acceso al proyecto (rol/scope).
+    """
+    await ensure_project_access(user, pid)
+    proj = await db.projects.find_one({"id": pid}, {"_id": 0, "reference_files": 1})
+    if not proj:
+        raise HTTPException(404, "Proyecto no existe")
+    refs = (proj or {}).get("reference_files") or []
+    rec = next((f for f in refs if (f or {}).get("file_id") == file_id), None)
+    if not rec:
+        raise HTTPException(404, "Archivo no encontrado")
+    on_disk = Path(rec.get("path") or "")
+    if not on_disk.exists():
+        raise HTTPException(404, "Archivo no disponible en disco")
+    return FileResponse(
+        path=str(on_disk),
+        media_type=rec.get("mime_type") or "application/octet-stream",
+        filename=rec.get("original_name") or on_disk.name,
+    )
+
+
+@api.delete("/projects/{pid}/files/{file_id}")
+async def delete_project_file(
+    pid: str,
+    file_id: str,
+    user: dict = Depends(require_role(ROLE_COORD, ROLE_JEFE)),
+):
+    """Elimina un archivo adjunto del proyecto (registro + binario en disco)."""
+    await ensure_project_access(user, pid)
+    proj = await db.projects.find_one({"id": pid}, {"_id": 0, "reference_files": 1})
+    if not proj:
+        raise HTTPException(404, "Proyecto no existe")
+    refs = (proj or {}).get("reference_files") or []
+    rec = next((f for f in refs if (f or {}).get("file_id") == file_id), None)
+    if not rec:
+        raise HTTPException(404, "Archivo no encontrado")
+    # Quitar de la BD primero (la verdad de origen).
+    await db.projects.update_one(
+        {"id": pid},
+        {"$pull": {"reference_files": {"file_id": file_id}}},
+    )
+    # Best-effort: borrar binario.
+    try:
+        on_disk = Path(rec.get("path") or "")
+        if on_disk.exists():
+            on_disk.unlink()
+    except Exception as exc:
+        log.warning("[upload-file] no se pudo borrar binario: %s", exc)
+    return {"ok": True, "file_id": file_id}
+
+
+# === AREAS (por proyecto) ===================================================
+@api.get("/projects/{pid}/areas")
+async def list_areas(pid: str, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    items = await db.areas.find({"project_id": pid}).sort("name", 1).to_list(length=200)
+    for it in items:
+        it.pop("_id", None)
+    return items
+
+
+@api.post("/projects/{pid}/areas")
+async def create_area(pid: str, body: AreaIn, user: dict = Depends(require_role(ROLE_COORD))):
+    if body.project_id != pid:
+        raise HTTPException(400, "project_id mismatch")
+    await ensure_project_access(user, pid)
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(400, "Nombre requerido")
+    existing = await db.areas.find_one({"project_id": pid, "name": name})
+    if existing:
+        raise HTTPException(409, "Área ya existe en este proyecto")
+    doc = {
+        "id": str(uuid.uuid4()),
+        "project_id": pid,
+        "name": name,
+        "color": body.color or "#1E40AF",
+        "created_at": datetime.now(timezone.utc),
+    }
+    await db.areas.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api.delete("/areas/{aid}")
+async def delete_area(aid: str, user: dict = Depends(require_role(ROLE_COORD))):
+    a = await db.areas.find_one({"id": aid})
+    if not a:
+        raise HTTPException(404, "Área no existe")
+    await db.areas.delete_one({"id": aid})
+    return {"ok": True}
+
+
+# === INVITATIONS ============================================================
+@api.get("/projects/{pid}/invitations")
+async def list_invites(pid: str, user: dict = Depends(require_role(ROLE_COORD))):
+    await ensure_project_access(user, pid)
+    items = await db.invitations.find({"project_id": pid}).sort("created_at", -1).to_list(length=500)
+    for it in items:
+        it.pop("_id", None)
+    return items
+
+
+@api.post("/projects/{pid}/invitations")
+async def create_invite(pid: str, body: InvitationIn, user: dict = Depends(require_role(ROLE_COORD))):
+    if body.project_id != pid:
+        raise HTTPException(400, "project_id mismatch")
+    project = await ensure_project_access(user, pid)
+    email = body.email.lower()
+    # Validaciones por rol (deben ejecutarse antes del auto-link para validar pertenencia al proyecto)
+    if body.role == "sub_coordinador":
+        if not body.scope_node_id:
+            raise HTTPException(400, "Sub-coordinador requiere scope_node_id")
+        node = await db.location_nodes.find_one({"id": body.scope_node_id, "project_id": pid})
+        if not node:
+            raise HTTPException(404, "scope_node_id inválido")
+        # Área/disciplina opcional del sub-coordinador — se usa en los exports
+        # ejecutivos (PDF/PPTX) para etiquetar los reportes bajo esta disciplina.
+        # Si NO se asigna, exports usan "Obra Civil" como fallback.
+        if body.area_id:
+            area = await db.areas.find_one({"id": body.area_id, "project_id": pid})
+            if not area:
+                raise HTTPException(404, "area_id inválido para sub-coordinador")
+    elif body.role == "especialista":
+        if not body.area_id:
+            raise HTTPException(400, "Especialista requiere area_id")
+        area = await db.areas.find_one({"id": body.area_id, "project_id": pid})
+        if not area:
+            raise HTTPException(404, "area_id inválido")
+        if not body.scope_node_ids:
+            raise HTTPException(400, "Especialista requiere al menos 1 scope_node_id")
+        # Todos deben ser hojas del proyecto
+        nodes = await db.location_nodes.find(
+            {"id": {"$in": body.scope_node_ids}, "project_id": pid}
+        ).to_list(length=1000)
+        if len(nodes) != len(body.scope_node_ids):
+            raise HTTPException(400, "scope_node_ids contiene IDs inválidos")
+        for n in nodes:
+            if not n.get("is_leaf"):
+                raise HTTPException(400, f"Nodo '{n['name']}' no es hoja")
+    # ====================================================================
+    # REGLA GLOBAL: 1 USUARIO = 1 PROYECTO
+    # --------------------------------------------------------------------
+    # Un mismo correo NO puede ser invitado ni dado de alta en más de un
+    # proyecto. Si ya existe como usuario en ANY proyecto, o si tiene una
+    # invitación pendiente en OTRO proyecto, rechazamos con 400.
+    # ====================================================================
+    existing_user = await db.users.find_one({"email": email})
+    if existing_user:
+        raise HTTPException(400, "Este usuario ya está asignado a otro proyecto")
+    pending_in_other = await db.invitations.find_one({
+        "email": email,
+        "status": "pending",
+        "project_id": {"$ne": pid},
+    })
+    if pending_in_other:
+        raise HTTPException(400, "Este usuario ya está asignado a otro proyecto")
+    tok = secrets.token_urlsafe(24)
+    doc = {
+        "id": str(uuid.uuid4()),
+        "token": tok,
+        "project_id": pid,
+        "project_name": project["name"],
+        "email": email,
+        "name": body.name.strip(),
+        "role": body.role,
+        "area_id": body.area_id,
+        "puesto": (body.puesto or "").strip() or None,
+        "scope_node_id": body.scope_node_id,
+        "scope_node_ids": body.scope_node_ids or [],
+        "status": "pending",
+        "created_at": datetime.now(timezone.utc),
+        "expires_at": datetime.now(timezone.utc) + timedelta(days=30),
+    }
+    await db.invitations.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api.delete("/invitations/{iid}")
+async def revoke_invite(iid: str, user: dict = Depends(require_role(ROLE_COORD))):
+    r = await db.invitations.update_one({"id": iid, "status": "pending"}, {"$set": {"status": "revoked"}})
+    if r.matched_count == 0:
+        raise HTTPException(404, "Invitación no pendiente")
+    return {"ok": True}
+
+
+@api.get("/invitations/by-token/{tok}")
+async def invite_preview(tok: str):
+    inv = await db.invitations.find_one({"token": tok})
+    if not inv:
+        raise HTTPException(404, "Invitación inválida")
+    if inv["status"] != "pending":
+        raise HTTPException(410, f"Invitación {inv['status']}")
+    exp = inv["expires_at"]
+    if exp.tzinfo is None:
+        exp = exp.replace(tzinfo=timezone.utc)
+    if exp < datetime.now(timezone.utc):
+        raise HTTPException(410, "Invitación expirada")
+    inv.pop("_id", None)
+    area_name = None
+    if inv.get("area_id"):
+        area = await db.areas.find_one({"id": inv["area_id"]})
+        if area:
+            area_name = area.get("name")
+    return {
+        "project_name": inv["project_name"],
+        "email": inv["email"],
+        "name": inv["name"],
+        "role": inv["role"],
+        "puesto": inv.get("puesto"),
+        "area_name": area_name,
+    }
+
+
+@api.post("/invitations/accept", response_model=Token)
+async def accept_invite(body: AcceptInviteIn):
+    inv = await db.invitations.find_one({"token": body.token})
+    if not inv:
+        raise HTTPException(404, "Invitación inválida")
+    if inv["status"] != "pending":
+        raise HTTPException(410, f"Invitación {inv['status']}")
+    exp = inv["expires_at"]
+    if exp.tzinfo is None:
+        exp = exp.replace(tzinfo=timezone.utc)
+    if exp < datetime.now(timezone.utc):
+        raise HTTPException(410, "Invitación expirada")
+    if len(body.password) < 6:
+        raise HTTPException(400, "Password mínimo 6 caracteres")
+    existing = await db.users.find_one({"email": inv["email"]})
+    if existing:
+        raise HTTPException(400, "Este usuario ya está asignado a otro proyecto")
+    uid = str(uuid.uuid4())
+    # Obtener nombre del área si aplica
+    area_name = None
+    if inv.get("area_id"):
+        a = await db.areas.find_one({"id": inv["area_id"]})
+        if a:
+            area_name = a["name"]
+    user_doc = {
+        "id": uid,
+        "email": inv["email"],
+        "password": hash_pw(body.password),
+        "name": inv["name"],
+        "role": inv["role"],
+        "area": area_name,
+        "area_id": inv.get("area_id"),
+        "puesto": inv.get("puesto"),
+        "scope_node_id": inv.get("scope_node_id"),
+        "scope_node_ids": inv.get("scope_node_ids") or [],
+        "project_ids": [inv["project_id"]],
+        "created_at": datetime.now(timezone.utc),
+    }
+    await db.users.insert_one(user_doc)
+    await db.invitations.update_one(
+        {"id": inv["id"]}, {"$set": {"status": "accepted", "accepted_at": datetime.now(timezone.utc), "accepted_user_id": uid}}
+    )
+    return {"token": make_token(uid), "user": user_to_out(user_doc)}
+
+
+# === REPORTS ================================================================
+def validate_measurement_value(mtype: str, value: dict):
+    if mtype == "coord_latlon":
+        lat, lon = value.get("lat"), value.get("lon")
+        if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+            raise HTTPException(400, "coord_latlon requiere lat y lon numéricos")
+        # Nota: en obra civil usamos UTM (X/Y en cientos de miles o millones),
+        # por lo que NO aplicamos restricción geográfica -90/90, -180/180.
+    elif mtype == "cadenamiento":
+        v = value.get("cadenamiento") or value.get("value")
+        if not isinstance(v, str) or not re.match(r"^\d+\+\d{1,4}(\.\d+)?$", v):
+            raise HTTPException(400, "cadenamiento formato '5+100' o '5+100.50'")
+    elif mtype == "eje":
+        v = value.get("eje") or value.get("value")
+        if not isinstance(v, str) or not v.strip():
+            raise HTTPException(400, "eje requiere texto")
+    elif mtype == "nivel":
+        v = value.get("nivel") if "nivel" in value else value.get("value")
+        if not isinstance(v, (int, float)):
+            raise HTTPException(400, "nivel requiere número decimal")
+    else:
+        raise HTTPException(400, f"measurement_type desconocido: {mtype}")
+
+
+@api.post("/reports")
+async def create_report(body: ReportIn, user: dict = Depends(current_user)):
+    if user["role"] not in (ROLE_ESPECIALISTA, ROLE_COORD, ROLE_SUB, ROLE_JEFE):
+        raise HTTPException(403, "Tu rol no puede capturar reportes")
+    # [OFFLINE 2026-08-07] Idempotencia: si este client_id ya se insertó (ej.
+    # el cliente reintentó tras perder la respuesta), devolvemos el existente
+    # en vez de crear un reporte duplicado. Corta antes de validar nodo/
+    # ubicación para no repetir ese trabajo en cada reintento.
+    if body.client_id:
+        existing = await db.reports.find_one({"client_id": body.client_id})
+        if existing:
+            existing.pop("_id", None)
+            return existing
+    await ensure_project_access(user, body.project_id)
+    node = await db.location_nodes.find_one({"id": body.node_id, "project_id": body.project_id})
+    if not node:
+        raise HTTPException(404, "Nodo no existe en este proyecto")
+    if not node.get("is_leaf"):
+        raise HTTPException(400, "Solo se puede capturar en nodos hoja")
+    if user["role"] == ROLE_ESPECIALISTA:
+        if body.node_id not in (user.get("scope_node_ids") or []):
+            raise HTTPException(403, "Nodo no está en tu scope autorizado")
+    # Sub-coordinador: scope GLOBAL (puede capturar en cualquier hoja del proyecto).
+    # ====================================================================
+    # FALLBACK DE COORDENADAS DESDE metadata DEL NODO (pre-validación)
+    # --------------------------------------------------------------------
+    # Si el nodo es coord_latlon y el cliente NO mandó lat/lon válidos,
+    # intentamos inyectar X/Y desde node.metadata ANTES de validar para que
+    # la captura no falle cuando el Coordinador ya cargó coords vía Excel.
+    # El cliente conserva el control: si manda valores, esos se respetan.
+    # ====================================================================
+    pre_mv = dict(body.measurement_value or {})
+    if node.get("measurement_type") == "coord_latlon":
+        pre_lat = pre_mv.get("lat")
+        pre_lon = pre_mv.get("lon")
+        client_valid = (
+            isinstance(pre_lat, (int, float)) and isinstance(pre_lon, (int, float))
+            and not (pre_lat == 0 and pre_lon == 0)
+        )
+        if not client_valid:
+            node_meta = node.get("metadata") or {}
+            inh_x = None
+            inh_y = None
+            if isinstance(node_meta, dict):
+                for k, v in node_meta.items():
+                    if v is None or not isinstance(k, str):
+                        continue
+                    kn = k.strip().lower()
+                    for src, dst in (("á","a"),("é","e"),("í","i"),("ó","o"),("ú","u")):
+                        kn = kn.replace(src, dst)
+                    if kn in {"x", "coordenada x", "coord x"} and inh_x is None:
+                        try: inh_x = float(v)
+                        except Exception: pass
+                    elif kn in {"y", "coordenada y", "coord y"} and inh_y is None:
+                        try: inh_y = float(v)
+                        except Exception: pass
+            if inh_x is not None and inh_y is not None:
+                pre_mv["lat"] = inh_y
+                pre_mv["lon"] = inh_x
+                # marcamos source para que el cierre sepa que fue fallback
+                pre_mv["coord_source"] = "node_metadata"
+                body.measurement_value = pre_mv
+
+    validate_measurement_value(node["measurement_type"], body.measurement_value)
+    path_names = await node_path_names(body.node_id)
+    area_name = None
+    if body.area_id:
+        a = await db.areas.find_one({"id": body.area_id, "project_id": body.project_id})
+        if a:
+            area_name = a["name"]
+    elif user.get("area"):
+        area_name = user["area"]
+    # Persistimos lecturas P/U también dentro de measurement_value para que el
+    # endpoint /history pueda devolverlas a la siguiente captura del nodo.
+    mv = dict(body.measurement_value or {})
+    if body.primera_lectura is not None:
+        mv["primera_lectura"] = body.primera_lectura
+    if body.ultima_lectura is not None:
+        mv["ultima_lectura"] = body.ultima_lectura
+
+    # ====================================================================
+    # Trace de fuente de coordenadas (para auditoría).
+    # Si pre-validación ya marcó coord_source=node_metadata, se mantiene.
+    # En caso contrario, asumimos user_input.
+    # ====================================================================
+    if node.get("measurement_type") == "coord_latlon" and "coord_source" not in mv:
+        mv["coord_source"] = "user_input"
+    inherited_target = None
+    if mv.get("coord_source") == "node_metadata":
+        inherited_target = {"lat": mv.get("lat"), "lon": mv.get("lon"), "elev": None}
+
+    # ====================================================================
+    # Normalizar severidad (informativo / diario / importante / urgente).
+    # Ahora acepta selección múltiple: un reporte puede pertenecer a varios
+    # informes a la vez (p.ej. Diario + Mensual). Default = ["informativo"]
+    # (no escala a supervisores en exportaciones).
+    # ====================================================================
+    sev_list = _normalize_severidad_list(body.severidad)
+
+    # Lista de ids ancestrales (incluye el propio nodo) — para filtros y
+    # vinculación de noticias a ancestros en la exportación.
+    node_path_ids = list(node.get("path") or [])
+    if body.node_id not in node_path_ids:
+        node_path_ids.append(body.node_id)
+
+    # Thumbnail comprimido persistido: evita transferir el base64 original completo
+    # en el feed. Se calcula en un thread aparte por ser CPU-bound (Pillow).
+    thumbnail_b64 = None
+    if body.images:
+        thumbnail_b64 = await asyncio.to_thread(_compress_image_b64, body.images[0])
+
+    doc = {
+        "id": str(uuid.uuid4()),
+        "project_id": body.project_id,
+        "node_id": body.node_id,
+        "node_path_names": path_names,
+        "node_path_ids": node_path_ids,
+        "measurement_type": node["measurement_type"],
+        "measurement_value": mv,
+        "node_target": inherited_target if inherited_target is not None else (
+            {
+                "lat": node.get("target_lat"),
+                "lon": node.get("target_lon"),
+                "elev": node.get("target_elev"),
+            } if node.get("measurement_type") == "coord_latlon" else None
+        ),
+        "area_id": body.area_id or user.get("area_id"),
+        "area_name": area_name,
+        "title": (body.title or "").strip()[:200] or None,
+        "actividades": (body.actividades or "").strip() or None,
+        "notes": (body.notes or "").strip() or None,
+        "avance": (body.avance or "").strip() or None,
+        "observaciones": (body.observaciones or "").strip() or None,
+        "incidencias": (body.incidencias or "").strip() or None,
+        "severidad": sev_list,
+        "contratista": (body.contratista or "").strip() or None,
+        "personnel": body.personnel,
+        "equipment": body.equipment,
+        "images": body.images,
+        "thumbnail_base64": thumbnail_b64,
+        "photo_captions": (body.photo_captions or [])[:len(body.images or [])],
+        "files": body.files,
+        "primera_lectura": body.primera_lectura,
+        "ultima_lectura": body.ultima_lectura,
+        "unidad": (body.unidad or "m").strip() or "m",
+        "captured_by": user["id"],
+        "captured_by_name": user["name"],
+        "created_at": datetime.now(timezone.utc),
+    }
+    if body.client_id:
+        # Solo se agrega si hay valor: el índice es sparse, y una clave con
+        # `None` explícito en todos los docs rompería esa exclusión.
+        doc["client_id"] = body.client_id
+    try:
+        await db.reports.insert_one(doc)
+    except DuplicateKeyError:
+        # Dos reintentos casi simultáneos con el mismo client_id (ej. flush
+        # automático y un tap manual de "reintentar" a la vez).
+        existing = await db.reports.find_one({"client_id": body.client_id})
+        if existing:
+            existing.pop("_id", None)
+            return existing
+        raise
+    doc.pop("_id", None)
+
+    # ====================================================================
+    # PUSH NOTIFICATION DISPATCH (background, fire-and-forget)
+    # --------------------------------------------------------------------
+    # Notifica a los supervisores del proyecto (Coordinador General y Jefe
+    # de Proyecto) cuando se captura un nuevo reporte. Se ejecuta como
+    # tarea en segundo plano con asyncio.create_task() para no bloquear
+    # la respuesta al especialista.
+    # ====================================================================
+    try:
+        project = await db.projects.find_one(
+            {"id": body.project_id},
+            {"_id": 0, "name": 1},
+        )
+        project_name = (project or {}).get("name") or "el proyecto"
+        node_name = (path_names[-1] if path_names else None) or node.get("name") or "nodo"
+        asyncio.create_task(
+            _notify_supervisors_new_report(
+                project_id=body.project_id,
+                project_name=project_name,
+                node_name=node_name,
+                report_id=doc["id"],
+                author_id=user["id"],
+                author_name=user.get("name") or "Especialista",
+            )
+        )
+    except Exception as exc:  # defensive: nunca rompemos el return del reporte.
+        log.exception("[push] no se pudo agendar la notificación: %s", exc)
+
+    return doc
+
+
+async def _notify_supervisors_new_report(
+    project_id: str,
+    project_name: str,
+    node_name: str,
+    report_id: str,
+    author_id: str,
+    author_name: str,
+) -> None:
+    """
+    Carga a los supervisores del proyecto (coordinador_general + jefe_proyecto)
+    y dispara `send_push_notification` para cada uno. Se excluye al autor del
+    reporte para que no se auto-notifique cuando él mismo lo captura.
+
+    Esta función es defensiva: si un envío falla, se loguea y se continúa con
+    el siguiente destinatario.
+    """
+    try:
+        cursor = db.users.find(
+            {
+                "project_ids": project_id,
+                "role": {"$in": [ROLE_COORD, ROLE_JEFE]},
+            },
+            {"_id": 0, "id": 1, "name": 1, "role": 1, "expo_push_tokens": 1},
+        )
+        recipients = [u async for u in cursor]
+    except Exception as exc:
+        log.exception("[push] no se pudo cargar destinatarios: %s", exc)
+        return
+
+    if not recipients:
+        log.info(
+            "[push] sin destinatarios (proyecto=%s, autor=%s)",
+            project_id,
+            author_name,
+        )
+        return
+
+    title = f"Nuevo reporte en {project_name}"
+    body_text = f"{author_name} registró un avance en {node_name}."
+    payload = {
+        "type": "new_report",
+        "project_id": project_id,
+        "report_id": report_id,
+        "node_name": node_name,
+    }
+
+    for recipient in recipients:
+        if recipient.get("id") == author_id:
+            continue  # Skip self-notification.
+        if not (recipient.get("expo_push_tokens") or []):
+            continue  # Skip users without registered devices.
+        try:
+            result = await send_push_notification(
+                user_id=recipient["id"],
+                title=title,
+                body=body_text,
+                data=payload,
+            )
+            log.info(
+                "[push] new_report → user=%s sent=%d ok=%s",
+                recipient.get("name"),
+                result.get("sent", 0),
+                result.get("ok"),
+            )
+        except Exception as exc:
+            log.exception(
+                "[push] envío falló user=%s: %s",
+                recipient.get("name"),
+                exc,
+            )
+
+
+@api.get("/projects/{pid}/nodes/{nid}/history")
+async def node_history(pid: str, nid: str, user: dict = Depends(current_user)):
+    """Devuelve el último reporte del nodo para que el especialista pueda ver
+    la lectura previa registrada (helper "Última lectura registrada en este
+    nodo: [valor]"). Aplica el mismo RBAC que /reports.
+    """
+    await ensure_project_access(user, pid)
+    node = await db.location_nodes.find_one({"id": nid, "project_id": pid})
+    if not node:
+        raise HTTPException(404, "Nodo no existe en este proyecto")
+    if user["role"] == ROLE_ESPECIALISTA:
+        if nid not in (user.get("scope_node_ids") or []):
+            raise HTTPException(403, "Nodo no está en tu scope autorizado")
+    # Sub-coordinador: acceso GLOBAL (sin restricción de scope).
+
+    last = await db.reports.find_one(
+        {"project_id": pid, "node_id": nid},
+        sort=[("created_at", -1)],
+    )
+    if not last:
+        return {
+            "node_id": nid,
+            "measurement_type": node.get("measurement_type"),
+            "has_previous": False,
+            "last_report": None,
+        }
+    last.pop("_id", None)
+    mv = last.get("measurement_value") or {}
+    return {
+        "node_id": nid,
+        "measurement_type": node.get("measurement_type"),
+        "has_previous": True,
+        "last_report": {
+            "id": last.get("id"),
+            "created_at": last.get("created_at"),
+            "captured_by_name": last.get("captured_by_name"),
+            "measurement_value": mv,
+            "primera_lectura": mv.get("primera_lectura"),
+            "ultima_lectura": mv.get("ultima_lectura"),
+            "avance": last.get("avance"),
+            "notes": last.get("notes"),
+        },
+    }
+
+
+@api.get("/projects/{pid}/reports")
+async def list_reports(pid: str, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    q: dict = {"project_id": pid}
+    if user["role"] == ROLE_ESPECIALISTA:
+        scope = user.get("scope_node_ids") or []
+        q["node_id"] = {"$in": scope}
+    # Sub-coordinador: acceso GLOBAL al listado de reportes (sin filtro de scope).
+    items = await db.reports.find(q).sort("created_at", -1).to_list(length=2000)
+    for it in items:
+        it.pop("_id", None)
+        it["severidad"] = _normalize_severidad_list(it.get("severidad"))
+    return items
+
+
+# ---- FEED endpoint (Specialist Dashboard) ---------------------------------
+def _compress_image_b64(b64_str: Optional[str], max_dim: int = 320, quality: int = 55) -> Optional[str]:
+    """Genera un thumbnail JPEG comprimido (base64) a partir de una imagen base64 original.
+
+    Usado para mantener el feed liviano sin transferir el base64 completo de la foto
+    en cada respuesta. Devuelve None si la imagen es inválida o Pillow no está disponible.
+    Es una función bloqueante (CPU-bound): debe invocarse vía asyncio.to_thread.
+    """
+    if not b64_str:
+        return None
+    try:
+        import base64 as _b64
+        from PIL import Image as _PILImage
+        from PIL.ImageOps import exif_transpose as _pil_exif_transpose
+        raw = _b64.b64decode(b64_str.split(",", 1)[-1])
+        img = _PILImage.open(io.BytesIO(raw))
+        img = _pil_exif_transpose(img) or img
+        img = img.convert("RGB")
+        img.thumbnail((max_dim, max_dim))
+        out = io.BytesIO()
+        img.save(out, format="JPEG", quality=quality, optimize=True)
+        return _b64.b64encode(out.getvalue()).decode("ascii")
+    except Exception:
+        log.warning("No se pudo generar thumbnail comprimido", exc_info=True)
+        return None
+
+
+def _compress_missing_thumbnails(raw_items: List[dict]) -> dict:
+    """Calcula en batch (bloqueante) los thumbnails de items legacy sin `thumbnail_base64`
+    persistido, a partir de la primera imagen de su array `images`. Se ejecuta una sola
+    vez vía asyncio.to_thread para no bloquear el event loop por cada item individual."""
+    out: dict = {}
+    for it in raw_items:
+        if it.get("thumbnail_base64"):
+            continue
+        imgs = it.get("images") or []
+        if not imgs:
+            continue
+        thumb = _compress_image_b64(imgs[0])
+        if thumb:
+            out[it["id"]] = thumb
+    return out
+
+
+def _feed_day_bounds(date_str: str) -> Optional[tuple]:
+    """Convierte 'YYYY-MM-DD' (día natural CDMX) en (inicio, fin) UTC."""
+    try:
+        y, m, d = (int(x) for x in date_str.split("-"))
+        start_mx = datetime(y, m, d, 0, 0, 0, tzinfo=MX_TZ)
+    except Exception:
+        return None
+    end_mx = start_mx + timedelta(days=1)
+    return start_mx.astimezone(timezone.utc), end_mx.astimezone(timezone.utc)
+
+
+def _feed_range_start(rng: str) -> Optional[datetime]:
+    """Devuelve el inicio del rango en UTC.
+
+    today  → hoy 00:00 CDMX
+    week   → inicio de la semana natural (Domingo) CDMX
+    month  → día 1 del mes actual CDMX
+    all/None → None (sin filtro temporal)
+    """
+    now_utc = datetime.now(timezone.utc)
+    now_mx = now_utc.astimezone(MX_TZ)
+    rng = (rng or "today").lower()
+
+    if rng == "today":
+        start_mx = now_mx.replace(hour=0, minute=0, second=0, microsecond=0)
+        return start_mx.astimezone(timezone.utc)
+
+    if rng == "week":
+        # [FIX] Semana natural inicia en Domingo
+        # weekday(): 0=Mon, ..., 6=Sun
+        days_to_sunday = (now_mx.weekday() + 1) % 7
+        start_mx = now_mx.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days_to_sunday)
+        return start_mx.astimezone(timezone.utc)
+
+    if rng == "month":
+        # [FIX] Mes natural (día 1)
+        start_mx = now_mx.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        return start_mx.astimezone(timezone.utc)
+
+    return None
+
+
+@api.get("/projects/{pid}/reports/feed")
+async def reports_feed(
+    pid: str,
+    range: str = "today",
+    limit: int = 50,
+    skip: int = 0,
+    q: Optional[str] = None,
+    node: Optional[str] = None,
+    area: Optional[str] = None,
+    date: Optional[str] = None,
+    since: Optional[str] = None,
+    user: dict = Depends(current_user),
+):
+    """Feed consolidado para Especialistas / Sub-Coordinadores / Coordinadores.
+
+    Devuelve estadísticas (total, mine, others) y una página de reportes recientes
+    livianos (thumbnail comprimido, conteo del resto de imágenes). Soporta
+    paginación real vía `skip`/`limit` para scroll infinito sin cargar todo el
+    historial en memoria. Aplica el mismo scope RBAC que list_reports.
+
+    Búsqueda inteligente (`q`): filtra reportes cuyo `title`, `notes`,
+    `observaciones`, `incidencias`, `contratista`, `captured_by_name` o
+    cualquier segmento de `node_path_names` contenga el texto (case-insensitive).
+
+    `node`/`area`: filtran por el nombre exacto del nodo raíz (Tramo) o del área.
+    `date`: filtra un día natural CDMX exacto ('YYYY-MM-DD'), con prioridad sobre `range`.
+    `since`: chequeo ligero de reportes nuevos — filtra `created_at` estrictamente
+    posterior al ISO datetime dado, ignora `skip`/`range`/`date` y ordena desc.
+    """
+    await ensure_project_access(user, pid)
+    query: dict = {"project_id": pid}
+    if user["role"] == ROLE_ESPECIALISTA:
+        scope = user.get("scope_node_ids") or []
+        query["node_id"] = {"$in": scope}
+    # Sub-coordinador/Coordinador: feed GLOBAL del proyecto (sin restricción de scope).
+
+    since_dt: Optional[datetime] = None
+    if since:
+        try:
+            since_dt = datetime.fromisoformat(since.replace("Z", "+00:00"))
+        except Exception:
+            since_dt = None
+
+    if since_dt is not None:
+        query["created_at"] = {"$gt": since_dt}
+    else:
+        day_bounds = _feed_day_bounds(date) if date else None
+        if day_bounds is not None:
+            query["created_at"] = {"$gte": day_bounds[0], "$lt": day_bounds[1]}
+        else:
+            start = _feed_range_start(range)
+            if start is not None:
+                query["created_at"] = {"$gte": start}
+
+    if node:
+        query["node_path_names.0"] = node
+    if area:
+        query["area_name"] = area
+
+    # Búsqueda inteligente por texto libre — regex case-insensitive sobre
+    # múltiples campos. Se escapan meta-caracteres regex para evitar errores
+    # cuando el usuario escribe símbolos.
+    q_txt = (q or "").strip()
+    if q_txt:
+        import re as _re
+        pat = _re.escape(q_txt)
+        query["$or"] = [
+            {"title": {"$regex": pat, "$options": "i"}},
+            {"notes": {"$regex": pat, "$options": "i"}},
+            {"observaciones": {"$regex": pat, "$options": "i"}},
+            {"incidencias": {"$regex": pat, "$options": "i"}},
+            {"contratista": {"$regex": pat, "$options": "i"}},
+            {"captured_by_name": {"$regex": pat, "$options": "i"}},
+            {"node_path_names": {"$regex": pat, "$options": "i"}},
+        ]
+
+    # Conteos agregados por captured_by (con un solo round trip). Refleja el
+    # total real de TODA la query (no solo la página), útil para badges "Todos (N)".
+    pipeline = [
+        {"$match": query},
+        {"$group": {"_id": "$captured_by", "count": {"$sum": 1}}},
+    ]
+    groups = await db.reports.aggregate(pipeline).to_list(length=10000)
+    total = sum(int(g.get("count", 0)) for g in groups)
+    mine = sum(int(g.get("count", 0)) for g in groups if g.get("_id") == user["id"])
+    others = total - mine
+
+    # Página de items livianos (orden desc, skip/limit reales de Mongo).
+    safe_limit = max(1, min(int(limit or 50), 200))
+    safe_skip = max(0, int(skip or 0))
+    if since_dt is not None:
+        # Chequeo ligero de "nuevos desde X": sin paginar, tope razonable.
+        safe_skip = 0
+        safe_limit = min(safe_limit, 50)
+    # Nunca traer el array `images` completo (fotos base64, hasta ~8MB c/u):
+    # el feed solo necesita un thumbnail y el conteo. Se recorta a la
+    # primera imagen (insumo del fallback de thumbnail legacy de abajo) y el
+    # conteo real se computa en Mongo antes del recorte, no en Python.
+    pipeline_items = [
+        {"$match": query},
+        {"$sort": {"created_at": -1}},
+        {"$skip": safe_skip},
+        {"$limit": safe_limit},
+        {"$addFields": {
+            "images_count": {"$size": {"$ifNull": ["$images", []]}},
+            "images": {"$slice": [{"$ifNull": ["$images", []]}, 1]},
+        }},
+    ]
+    raw_items = await db.reports.aggregate(pipeline_items).to_list(length=safe_limit)
+
+    # Fallback: thumbnails de reportes legacy sin `thumbnail_base64` persistido.
+    # Bloqueante (Pillow) — se ejecuta una sola vez en un thread aparte para
+    # no trabar el event loop por cada item individual.
+    fallback_thumbs = await asyncio.to_thread(_compress_missing_thumbnails, raw_items)
+    # Se persiste de inmediato para que las próximas cargas del feed reutilicen
+    # el thumbnail ya calculado en vez de re-decodificar la imagen original
+    # completa cada vez (esto era lo que relentizaba el feed progresivamente
+    # a medida que crecía el número de reportes legacy sin thumbnail).
+    if fallback_thumbs:
+        for rid, thumb in fallback_thumbs.items():
+            await db.reports.update_one({"id": rid}, {"$set": {"thumbnail_base64": thumb}})
+
+    # Mapa de áreas (para color y nombre real).
+    area_ids = {it.get("area_id") for it in raw_items if it.get("area_id")}
+    areas_by_id: dict = {}
+    if area_ids:
+        async for a in db.areas.find({"id": {"$in": list(area_ids)}}):
+            areas_by_id[a["id"]] = {"name": a.get("name"), "color": a.get("color")}
+
+    items_out = []
+    for it in raw_items:
+        area_id = it.get("area_id")
+        area_info = areas_by_id.get(area_id) if area_id else None
+        items_out.append({
+            "id": it["id"],
+            "project_id": it["project_id"],
+            "node_id": it["node_id"],
+            "node_path_names": it.get("node_path_names") or [],
+            "measurement_type": it.get("measurement_type"),
+            "measurement_value": it.get("measurement_value") or {},
+            "title": it.get("title"),
+            "area_id": area_id,
+            "area_name": (area_info or {}).get("name") or it.get("area_name"),
+            "area_color": (area_info or {}).get("color"),
+            "avance": it.get("avance"),
+            "contratista": it.get("contratista"),
+            "incidencias": it.get("incidencias"),
+            "severidad": _normalize_severidad_list(it.get("severidad")),
+            "personnel": it.get("personnel") or [],
+            "equipment": it.get("equipment") or [],
+            "captured_by": it.get("captured_by"),
+            "captured_by_name": it.get("captured_by_name"),
+            "actividades": it.get("actividades"),
+            "notes": it.get("notes"),
+            "observaciones": it.get("observaciones"),
+            "is_mine": it.get("captured_by") == user["id"],
+            "images_count": it.get("images_count", 0),
+            "thumbnail_base64": it.get("thumbnail_base64") or fallback_thumbs.get(it["id"]),
+            "created_at": it.get("created_at"),
+        })
+
+    return {
+        "range": range,
+        "skip": safe_skip,
+        "has_more": len(raw_items) == safe_limit,
+        "stats": {"total": total, "mine": mine, "others": others},
+        "reports": items_out,
+    }
+
+
+@api.get("/reports/{rid}")
+async def get_report(rid: str, user: dict = Depends(current_user)):
+    r = await db.reports.find_one({"id": rid})
+    if not r:
+        raise HTTPException(404, "Reporte no existe")
+    await ensure_project_access(user, r["project_id"])
+    # Scope check
+    if user["role"] == ROLE_ESPECIALISTA:
+        if r["node_id"] not in (user.get("scope_node_ids") or []):
+            raise HTTPException(403, "Sin acceso a este reporte")
+    # Sub-coordinador: acceso GLOBAL (sin filtro de scope).
+    r.pop("_id", None)
+    r["severidad"] = _normalize_severidad_list(r.get("severidad"))
+    return r
+
+
+# ---------------------------------------------------------------------------
+# COLLAGE 2x2 (Fallback nativo para compartir en WhatsApp / mensajeros)
+# ---------------------------------------------------------------------------
+@api.get("/reports/{rid}/collage.jpg")
+async def get_report_collage(rid: str, user: dict = Depends(current_user)):
+    """Devuelve un JPEG con un collage 2x2 de hasta 4 fotos del reporte.
+    Diseñado como fallback de compartir nativo: una sola imagen unificada
+    incluye todo el material fotográfico clave del reporte.
+    """
+    r = await db.reports.find_one({"id": rid})
+    if not r:
+        raise HTTPException(404, "Reporte no existe")
+    await ensure_project_access(user, r["project_id"])
+    if user["role"] == ROLE_ESPECIALISTA:
+        if r["node_id"] not in (user.get("scope_node_ids") or []):
+            raise HTTPException(403, "Sin acceso a este reporte")
+    imgs = (r.get("images") or [])[:4]
+    if not imgs:
+        raise HTTPException(404, "El reporte no tiene fotografías")
+
+    from PIL import Image, ImageDraw, ImageFont  # noqa: WPS433
+
+    # Lienzo final 1600x1600 (cuadrado, compatible con previews de WhatsApp).
+    CANVAS = 1600
+    GAP = 16
+    CELL = (CANVAS - 3 * GAP) // 2  # 784 px por celda
+    canvas = Image.new("RGB", (CANVAS, CANVAS), (245, 246, 250))
+
+    # Cargar y normalizar cada imagen como un cuadrado CELL x CELL (cover).
+    cells = []
+    for b64 in imgs:
+        try:
+            raw = base64.b64decode(_strip_b64_prefix(b64))
+            im = Image.open(io.BytesIO(raw)).convert("RGB")
+            # Cover crop: escalar y recortar al centro
+            iw, ih = im.size
+            ratio = max(CELL / iw, CELL / ih)
+            new_w, new_h = int(iw * ratio), int(ih * ratio)
+            im = im.resize((new_w, new_h), Image.LANCZOS)
+            left = (new_w - CELL) // 2
+            top = (new_h - CELL) // 2
+            im = im.crop((left, top, left + CELL, top + CELL))
+            cells.append(im)
+        except Exception:
+            placeholder = Image.new("RGB", (CELL, CELL), (220, 220, 220))
+            cells.append(placeholder)
+
+    positions = [
+        (GAP, GAP),
+        (GAP * 2 + CELL, GAP),
+        (GAP, GAP * 2 + CELL),
+        (GAP * 2 + CELL, GAP * 2 + CELL),
+    ]
+    for i, cell in enumerate(cells):
+        if i >= 4:
+            break
+        canvas.paste(cell, positions[i])
+
+    # Marca SynCo discreta en la esquina inferior derecha
+    try:
+        draw = ImageDraw.Draw(canvas)
+        try:
+            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 22)
+        except Exception:
+            font = ImageFont.load_default()
+        stamp = f"SynCo · {len(cells)} foto{'s' if len(cells) != 1 else ''}"
+        bbox = draw.textbbox((0, 0), stamp, font=font)
+        w = bbox[2] - bbox[0]
+        h = bbox[3] - bbox[1]
+        pad = 10
+        x0 = CANVAS - w - 2 * pad - GAP
+        y0 = CANVAS - h - 2 * pad - GAP
+        draw.rectangle([x0, y0, x0 + w + 2 * pad, y0 + h + 2 * pad],
+                       fill=(15, 23, 42))
+        draw.text((x0 + pad, y0 + pad), stamp, fill=(255, 255, 255), font=font)
+    except Exception:
+        pass
+
+    buf = io.BytesIO()
+    canvas.save(buf, format="JPEG", quality=88, optimize=True)
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="image/jpeg",
+        headers={"Content-Disposition": f'inline; filename="collage_{rid[:8]}.jpg"'},
+    )
+
+
+
+
+@api.delete("/reports/{rid}")
+async def delete_report(rid: str, user: dict = Depends(current_user)):
+    r = await db.reports.find_one({"id": rid})
+    if not r:
+        raise HTTPException(404, "Reporte no existe")
+    if user["role"] != ROLE_COORD and r["captured_by"] != user["id"]:
+        raise HTTPException(403, "Solo el autor o un Coordinador General puede borrar")
+    await db.reports.delete_one({"id": rid})
+    return {"ok": True}
+
+
+# --- Edición de descripciones individuales por foto ------------------------
+# Endpoint quirúrgico que sólo permite modificar `photo_captions` sin tocar
+# ningún otro dato del reporte. Cualquier miembro con acceso al proyecto y
+# que sea el autor (o Coordinador General / Jefe de Proyecto) puede editar.
+class ReportCaptionsPatch(BaseModel):
+    photo_captions: List[str] = Field(default_factory=list)
+
+
+@api.patch("/reports/{rid}/captions", response_model=ReportOut)
+async def patch_report_captions(
+    rid: str,
+    body: ReportCaptionsPatch,
+    user: dict = Depends(current_user),
+):
+    r = await db.reports.find_one({"id": rid})
+    if not r:
+        raise HTTPException(404, "Reporte no existe")
+    # Autorización: autor original o roles supervisores.
+    if user.get("role") not in (ROLE_COORD, ROLE_JEFE) and r.get("captured_by") != user["id"]:
+        raise HTTPException(403, "Solo el autor o un Coordinador puede editar descripciones")
+    # Sanitizamos: máximo 160 chars por caption y sólo se guardan hasta el
+    # número real de imágenes que tiene el reporte (tope duro = 2 en export).
+    raw_caps = body.photo_captions or []
+    total_imgs = len(r.get("images") or [])
+    cleaned = []
+    for i, c in enumerate(raw_caps[:total_imgs]):
+        s = (c or "").strip()
+        if len(s) > 160:
+            s = s[:160]
+        cleaned.append(s)
+    await db.reports.update_one(
+        {"id": rid},
+        {"$set": {"photo_captions": cleaned}},
+    )
+    updated = await db.reports.find_one({"id": rid}, {"_id": 0})
+    return updated
+
+
+# --- Edición de severidad del reporte ---------------------------------------
+class ReportSeverityPatch(BaseModel):
+    # Acepta un string único (legacy) o una lista (selección múltiple).
+    severidad: Any
+
+
+@api.patch("/reports/{rid}/severity", response_model=ReportOut)
+async def patch_report_severity(
+    rid: str,
+    body: ReportSeverityPatch,
+    user: dict = Depends(current_user),
+):
+    r = await db.reports.find_one({"id": rid})
+    if not r:
+        raise HTTPException(404, "Reporte no existe")
+    # Autorización: Autor original, Sub-coordinador, Coordinador General o Jefe de Proyecto.
+    is_author = r.get("captured_by") == user["id"]
+    is_mgmt = user.get("role") in (ROLE_COORD, ROLE_JEFE, ROLE_SUB)
+
+    if not (is_author or is_mgmt):
+        raise HTTPException(403, "No tienes permiso para cambiar la severidad de este reporte")
+
+    sev_list = _normalize_severidad_list(body.severidad)
+    await db.reports.update_one(
+        {"id": rid},
+        {"$set": {"severidad": sev_list}},
+    )
+    updated = await db.reports.find_one({"id": rid}, {"_id": 0})
+    return updated
+
+
+# --- Edición de una entrada de Fuerza de Trabajo/Maquinaria -----------------
+class ReportWorkforceEntryPatch(BaseModel):
+    field: Literal["personnel", "equipment"]
+    index: int
+    value: Optional[str] = None  # vacío/None => elimina la entrada
+
+
+@api.patch("/reports/{rid}/workforce-entry", response_model=ReportOut)
+async def patch_report_workforce_entry(
+    rid: str,
+    body: ReportWorkforceEntryPatch,
+    user: dict = Depends(current_user),
+):
+    """Edita (o elimina, si `value` viene vacío) una entrada individual de
+    `personnel`/`equipment` de un reporte — usado desde la tabla de Fuerza
+    de Trabajo. Edición reservada a Coordinador General y Sub-Coordinador."""
+    if user.get("role") not in (ROLE_COORD, ROLE_SUB):
+        raise HTTPException(403, "Solo Coordinador General o Sub-Coordinador pueden editar la Fuerza de Trabajo")
+    r = await db.reports.find_one({"id": rid})
+    if not r:
+        raise HTTPException(404, "Reporte no existe")
+    entries = list(r.get(body.field) or [])
+    if body.index < 0 or body.index >= len(entries):
+        raise HTTPException(400, "Índice fuera de rango")
+    value = (body.value or "").strip()
+    if value:
+        entries[body.index] = value[:120]
+    else:
+        entries.pop(body.index)
+    await db.reports.update_one({"id": rid}, {"$set": {body.field: entries}})
+    updated = await db.reports.find_one({"id": rid}, {"_id": 0})
+    return updated
+
+
+# === USERS (admin) ==========================================================
+@api.get("/projects/{pid}/users")
+async def list_project_users(pid: str, user: dict = Depends(current_user)):
+    """Lista usuarios miembros del proyecto. Cualquier miembro puede consultarla
+    (usado para el selector de Mensajes Directos).
+
+    Regla asimétrica: los Especialistas NO ven a los Coordinadores Generales en
+    el directorio (no pueden iniciar chats con ellos).
+    """
+    await ensure_project_access(user, pid)
+    # Incluye también a los Coord Generales y Jefes de Proyecto (que tienen
+    # acceso global y pueden no estar en project_ids del documento).
+    items = await db.users.find(
+        {"$or": [
+            {"project_ids": pid},
+            {"role": {"$in": [ROLE_COORD, ROLE_JEFE]}},
+        ]}
+    ).to_list(length=1000)
+    if user.get("role") == ROLE_ESPECIALISTA:
+        items = [u for u in items if u.get("role") != ROLE_COORD]
+    return [user_to_out(u) for u in items]
+
+
+@api.get("/projects/{pid}/members")
+async def list_project_members(pid: str, user: dict = Depends(current_user)):
+    """Alias semántico de /users — lista miembros del proyecto."""
+    await ensure_project_access(user, pid)
+    items = await db.users.find(
+        {"$or": [
+            {"project_ids": pid},
+            {"role": {"$in": [ROLE_COORD, ROLE_JEFE]}},
+        ]}
+    ).to_list(length=1000)
+    if user.get("role") == ROLE_ESPECIALISTA:
+        items = [u for u in items if u.get("role") != ROLE_COORD]
+    return [user_to_out(u) for u in items]
+
+
+# === ANNOUNCEMENTS (Noticias) ==============================================
+# Toda noticia (fijada o no) vence 24h después de creada. El fijado solo
+# controla el orden mientras está vigente; no extiende su vida.
+ANNOUNCEMENT_TTL_HOURS = 24
+
+
+class AnnouncementIn(BaseModel):
+    title: str
+    body: str
+    pinned: bool = False
+    jerarquia: Optional[str] = None  # 'urgente' | 'importante' | 'informativo' | None
+    severidad: Optional[str] = None  # alias front-end de jerarquia
+    audiencia: Optional[str] = None  # 'general' o area_id
+    node_id: Optional[str] = None    # nodo al que se vincula la noticia (cualquier nivel)
+
+
+class AnnouncementPatch(BaseModel):
+    title: Optional[str] = None
+    body: Optional[str] = None
+    pinned: Optional[bool] = None
+    jerarquia: Optional[str] = None
+    severidad: Optional[str] = None
+    audiencia: Optional[str] = None
+    node_id: Optional[str] = None  # "" o null para desvincular
+
+
+def _announcement_out(doc: dict) -> dict:
+    doc.pop("_id", None)
+    return doc
+
+
+@api.get("/projects/{pid}/announcements")
+async def list_announcements(pid: str, user: dict = Depends(current_user)):
+    """Lista noticias del proyecto. Cualquier miembro del proyecto puede leer.
+
+    Orden: pinned primero, luego más recientes primero.
+    """
+    await ensure_project_access(user, pid)
+    now = datetime.now(timezone.utc)
+    cursor = db.announcements.find(
+        {"project_id": pid, "expires_at": {"$gt": now}}
+    ).sort([("pinned", -1), ("created_at", -1)])
+    items = await cursor.to_list(length=500)
+    return [_announcement_out(it) for it in items]
+
+
+@api.post("/projects/{pid}/announcements")
+async def create_announcement(
+    pid: str,
+    body: AnnouncementIn,
+    user: dict = Depends(current_user),
+):
+    """Cualquier miembro del proyecto puede publicar una noticia."""
+    await ensure_project_access(user, pid)
+    title = (body.title or "").strip()
+    text = (body.body or "").strip()
+    if not title:
+        raise HTTPException(400, "Título requerido")
+    if not text:
+        raise HTTPException(400, "Cuerpo requerido")
+    if len(title) > 140:
+        raise HTTPException(400, "Título máximo 140 caracteres")
+    if len(text) > 4000:
+        raise HTTPException(400, "Cuerpo máximo 4000 caracteres")
+    # Normaliza severidad/jerarquía (acepta ambos nombres).
+    sev_raw = (body.severidad or body.jerarquia or "").strip().lower() or None
+    if sev_raw and sev_raw not in ("urgente", "importante", "informativo"):
+        raise HTTPException(400, "Severidad inválida")
+    jerarquia = sev_raw
+    # Audiencia: "general" (proyecto completo) o area_id
+    audiencia = (body.audiencia or "").strip() or "general"
+    if audiencia != "general":
+        area = await db.areas.find_one({"id": audiencia, "project_id": pid})
+        if not area:
+            raise HTTPException(400, "Audiencia (área) inválida")
+    # Vínculo opcional a nodo (cualquier nivel). Calculamos node_path_ids para
+    # que el filtro por ancestros en la exportación sea O(1) en lectura.
+    node_id = (body.node_id or "").strip() or None
+    node_path_ids: list[str] = []
+    node_name: Optional[str] = None
+    if node_id:
+        node = await db.location_nodes.find_one({"id": node_id, "project_id": pid})
+        if not node:
+            raise HTTPException(400, "Nodo no existe en este proyecto")
+        node_path_ids = list(node.get("path") or [])
+        if node_id not in node_path_ids:
+            node_path_ids.append(node_id)
+        node_name = node.get("name")
+    now = datetime.now(timezone.utc)
+    doc = {
+        "id": str(uuid.uuid4()),
+        "project_id": pid,
+        "title": title,
+        "body": text,
+        "pinned": bool(body.pinned),
+        "jerarquia": jerarquia,
+        "audiencia": audiencia,
+        "node_id": node_id,
+        "node_path_ids": node_path_ids,
+        "node_name": node_name,
+        "author_id": user["id"],
+        "author_name": user["name"],
+        "author_role": user["role"],
+        "created_at": now,
+        "updated_at": now,
+        # Toda noticia vence 24h después de publicada, fijada o no (índice TTL
+        # la purga físicamente; el listado también filtra por si el barrido
+        # de Mongo aún no corrió).
+        "expires_at": now + timedelta(hours=ANNOUNCEMENT_TTL_HOURS),
+        "intranet": False,
+    }
+    await db.announcements.insert_one(doc)
+    return _announcement_out(doc)
+
+
+@api.patch("/announcements/{aid}")
+async def update_announcement(
+    aid: str,
+    body: AnnouncementPatch,
+    user: dict = Depends(current_user),
+):
+    """Editable por el autor o por cualquier Coordinador General."""
+    a = await db.announcements.find_one({"id": aid})
+    if not a:
+        raise HTTPException(404, "Noticia no existe")
+    await ensure_project_access(user, a["project_id"])
+    is_author = a.get("author_id") == user["id"]
+    is_coord = user["role"] == ROLE_COORD
+    if not (is_author or is_coord):
+        raise HTTPException(403, "Sólo el autor o un Coordinador puede editar")
+    update: dict = {}
+    if body.title is not None:
+        t = body.title.strip()
+        if not t:
+            raise HTTPException(400, "Título no puede estar vacío")
+        if len(t) > 140:
+            raise HTTPException(400, "Título máximo 140 caracteres")
+        update["title"] = t
+    if body.body is not None:
+        b = body.body.strip()
+        if not b:
+            raise HTTPException(400, "Cuerpo no puede estar vacío")
+        if len(b) > 4000:
+            raise HTTPException(400, "Cuerpo máximo 4000 caracteres")
+        update["body"] = b
+    if body.pinned is not None:
+        # El autor puede fijar/desfijar su propia noticia; un Coordinador
+        # puede hacerlo sobre cualquiera. El fijado nunca extiende
+        # `expires_at`: como máximo dura lo que le quede de vida a la noticia
+        # (máx. 24h desde su creación).
+        if not (is_author or is_coord):
+            raise HTTPException(403, "Sólo el autor o un Coordinador puede fijar esta noticia")
+        update["pinned"] = bool(body.pinned)
+    if body.jerarquia is not None or body.severidad is not None:
+        j_raw = body.severidad if body.severidad is not None else body.jerarquia
+        j = (j_raw or "").strip().lower()
+        if j == "":
+            update["jerarquia"] = None
+        elif j in ("urgente", "importante", "informativo"):
+            update["jerarquia"] = j
+        else:
+            raise HTTPException(400, "Severidad inválida")
+    if body.audiencia is not None:
+        aud = (body.audiencia or "").strip() or "general"
+        if aud != "general":
+            area = await db.areas.find_one({"id": aud, "project_id": a["project_id"]})
+            if not area:
+                raise HTTPException(400, "Audiencia (área) inválida")
+        update["audiencia"] = aud
+    if body.node_id is not None:
+        nid = (body.node_id or "").strip()
+        if not nid:
+            update["node_id"] = None
+            update["node_path_ids"] = []
+            update["node_name"] = None
+        else:
+            node = await db.location_nodes.find_one({"id": nid, "project_id": a["project_id"]})
+            if not node:
+                raise HTTPException(400, "Nodo no existe en este proyecto")
+            path_ids = list(node.get("path") or [])
+            if nid not in path_ids:
+                path_ids.append(nid)
+            update["node_id"] = nid
+            update["node_path_ids"] = path_ids
+            update["node_name"] = node.get("name")
+    if not update:
+        return _announcement_out(a)
+    update["updated_at"] = datetime.now(timezone.utc)
+    await db.announcements.update_one({"id": aid}, {"$set": update})
+    a = await db.announcements.find_one({"id": aid})
+    return _announcement_out(a)
+
+
+@api.delete("/announcements/{aid}")
+async def delete_announcement(aid: str, user: dict = Depends(current_user)):
+    """Eliminable por el autor o por cualquier Coordinador General."""
+    a = await db.announcements.find_one({"id": aid})
+    if not a:
+        raise HTTPException(404, "Noticia no existe")
+    await ensure_project_access(user, a["project_id"])
+    is_author = a.get("author_id") == user["id"]
+    is_coord = user["role"] == ROLE_COORD
+    if not (is_author or is_coord):
+        raise HTTPException(403, "Sólo el autor o un Coordinador puede eliminar")
+    await db.announcements.delete_one({"id": aid})
+    return {"ok": True}
+
+
+# === CHANNELS + MESSAGES (Chat con canales: General / Áreas / Directos) =====
+class MessageIn(BaseModel):
+    text: str
+
+
+def _message_out(doc: dict) -> dict:
+    doc.pop("_id", None)
+    return doc
+
+
+def _channel_out(doc: dict) -> dict:
+    doc.pop("_id", None)
+    return doc
+
+
+# Tipos de canal soportados
+CHANNEL_TYPES = ("general", "area", "direct")
+
+
+async def _ensure_default_channels(pid: str) -> None:
+    """Crea (idempotentemente) el canal General y un canal por cada área del proyecto."""
+    proj = await db.projects.find_one({"id": pid})
+    if not proj:
+        return
+    # General
+    g = await db.channels.find_one({"project_id": pid, "type": "general"})
+    now = datetime.now(timezone.utc)
+    if not g:
+        await db.channels.insert_one({
+            "id": str(uuid.uuid4()),
+            "project_id": pid,
+            "type": "general",
+            "name": "General",
+            "area_id": None,
+            "color": None,
+            "member_ids": None,
+            "created_at": now,
+        })
+    # Per-area
+    areas = await db.areas.find({"project_id": pid}).to_list(length=200)
+    for area in areas:
+        existing = await db.channels.find_one({
+            "project_id": pid, "type": "area", "area_id": area["id"],
+        })
+        if not existing:
+            await db.channels.insert_one({
+                "id": str(uuid.uuid4()),
+                "project_id": pid,
+                "type": "area",
+                "name": area["name"],
+                "area_id": area["id"],
+                "color": area.get("color"),
+                "member_ids": None,
+                "created_at": now,
+            })
+        else:
+            # Sincroniza nombre/color con el área (por si Coord la renombró)
+            patch = {}
+            if existing.get("name") != area["name"]:
+                patch["name"] = area["name"]
+            if existing.get("color") != area.get("color"):
+                patch["color"] = area.get("color")
+            if patch:
+                await db.channels.update_one({"id": existing["id"]}, {"$set": patch})
+
+
+def _can_access_channel(user: dict, ch: dict) -> bool:
+    pid = ch["project_id"]
+    project_ids = user.get("project_ids") or []
+    # ===== Roles gerenciales con acceso TRANSVERSAL al proyecto =====
+    # Coordinador General y Jefe de Proyecto tienen acceso GLOBAL a todos los
+    # proyectos (no dependen de project_ids). Sub-coordinador requiere
+    # pertenencia explícita al proyecto.
+    if user["role"] == ROLE_COORD or user["role"] == ROLE_JEFE:
+        if ch["type"] == "direct":
+            return user["id"] in (ch.get("member_ids") or [])
+        return True
+    if user["role"] == ROLE_SUB:
+        if pid not in project_ids:
+            return False
+        if ch["type"] == "direct":
+            return user["id"] in (ch.get("member_ids") or [])
+        return True
+    # ===== Especialistas =====
+    if pid not in project_ids:
+        return False
+    if ch["type"] == "general":
+        return True
+    if ch["type"] == "area":
+        # Especialistas con area_id que coincide.
+        return user.get("area_id") and user.get("area_id") == ch.get("area_id")
+    if ch["type"] == "direct":
+        return user["id"] in (ch.get("member_ids") or [])
+    return False
+
+
+def _direct_peer_role(user_id: str, ch: dict, peer_role_cache: dict) -> Optional[str]:
+    """Helper sync — devuelve el rol del 'otro' miembro de un canal directo,
+    si ya está cacheado. Pensado para usarse dentro de funciones async donde
+    el caller hace la carga del peer."""
+    other_id = next((mid for mid in (ch.get("member_ids") or []) if mid != user_id), None)
+    return peer_role_cache.get(other_id) if other_id else None
+
+
+async def _check_direct_send_rule(sender: dict, ch: dict) -> None:
+    """Aplica la regla asimétrica de mensajería del Coordinador General:
+      - Coord General puede ENVIAR a cualquier rol.
+      - Coord General sólo puede RECIBIR de Jefe de Proyecto y Sub-coordinador.
+      - Por tanto, un Especialista NO puede enviar mensajes a un Coord General
+        en un canal directo.
+    Lanza HTTPException(403) si el envío es inválido. Sólo aplica a canales 'direct'.
+    """
+    if ch.get("type") != "direct":
+        return
+    if sender.get("role") != ROLE_ESPECIALISTA:
+        return
+    other_id = next(
+        (mid for mid in (ch.get("member_ids") or []) if mid != sender["id"]),
+        None,
+    )
+    if not other_id:
+        return
+    other = await db.users.find_one({"id": other_id}, {"role": 1})
+    if other and other.get("role") == ROLE_COORD:
+        raise HTTPException(
+            403,
+            "Los especialistas no pueden enviar mensajes al Coordinador General. "
+            "Contacta a tu Jefe de Proyecto o Sub-coordinador.",
+        )
+
+
+async def _general_channel_id(pid: str) -> str:
+    await _ensure_default_channels(pid)
+    g = await db.channels.find_one({"project_id": pid, "type": "general"})
+    return g["id"] if g else ""
+
+
+@api.get("/projects/{pid}/channels")
+async def list_channels(pid: str, user: dict = Depends(current_user)):
+    """Lista los canales accesibles del proyecto para el usuario actual.
+    Crea automáticamente los canales por defecto (General + uno por área) si faltan.
+    Cada canal trae su último mensaje (preview) para la lista estilo Slack/WhatsApp."""
+    await ensure_project_access(user, pid)
+    await _ensure_default_channels(pid)
+    raw = await db.channels.find({"project_id": pid}).to_list(length=500)
+    out: list = []
+    for ch in raw:
+        if not _can_access_channel(user, ch):
+            continue
+        # Para directos: nombre dinámico = nombre del otro usuario
+        display_name = ch.get("name") or ""
+        peer = None
+        if ch["type"] == "direct":
+            other_id = next(
+                (mid for mid in (ch.get("member_ids") or []) if mid != user["id"]),
+                None,
+            )
+            if other_id:
+                other = await db.users.find_one({"id": other_id})
+                if other:
+                    display_name = other.get("name") or display_name
+                    peer = {
+                        "id": other.get("id"),
+                        "name": other.get("name"),
+                        "role": other.get("role"),
+                    }
+        # Último mensaje
+        last_doc = await db.messages.find({"channel_id": ch["id"]}).sort("created_at", -1).limit(1).to_list(length=1)
+        last_msg = None
+        if last_doc:
+            lm = last_doc[0]
+            last_msg = {
+                "id": lm["id"],
+                "text": (lm.get("text") or "")[:140],
+                "user_id": lm.get("user_id"),
+                "user_name": lm.get("user_name"),
+                "created_at": lm.get("created_at"),
+            }
+        out.append({
+            "id": ch["id"],
+            "project_id": ch["project_id"],
+            "type": ch["type"],
+            "name": display_name,
+            "area_id": ch.get("area_id"),
+            "color": ch.get("color"),
+            "member_ids": ch.get("member_ids"),
+            "peer": peer,
+            "last_message": last_msg,
+            "created_at": ch.get("created_at"),
+        })
+    # Orden: general primero, luego áreas, luego directos por last_message desc
+    type_order = {"general": 0, "area": 1, "direct": 2}
+
+    def _sort_key(c):
+        t = type_order.get(c["type"], 9)
+        last_dt = (c.get("last_message") or {}).get("created_at")
+        # Más reciente primero dentro del mismo grupo
+        ts = last_dt.timestamp() if isinstance(last_dt, datetime) else 0
+        return (t, -ts, (c.get("name") or "").lower())
+
+    out.sort(key=_sort_key)
+    return out
+
+
+class DirectChannelIn(BaseModel):
+    target_user_id: str
+
+
+@api.post("/projects/{pid}/channels/direct")
+async def create_direct_channel(pid: str, body: DirectChannelIn, user: dict = Depends(current_user)):
+    """Crea (o devuelve si ya existe) un canal directo 1-a-1 entre el usuario actual y target_user_id."""
+    await ensure_project_access(user, pid)
+    if body.target_user_id == user["id"]:
+        raise HTTPException(400, "No puedes iniciar un chat contigo mismo")
+    target = await db.users.find_one({"id": body.target_user_id})
+    if not target:
+        raise HTTPException(404, "Usuario no existe")
+    # Coord General y Jefe de Proyecto tienen acceso global a todos los proyectos,
+    # por lo que su pertenencia se asume sin necesidad de project_ids.
+    if target.get("role") not in (ROLE_COORD, ROLE_JEFE):
+        if pid not in (target.get("project_ids") or []):
+            raise HTTPException(404, "Ese usuario no pertenece al proyecto")
+    # Regla asimétrica: un Especialista NO puede iniciar un chat con un Coordinador
+    # General. El Coord General sí puede iniciar chats con cualquiera.
+    if user.get("role") == ROLE_ESPECIALISTA and target.get("role") == ROLE_COORD:
+        raise HTTPException(
+            403,
+            "Los especialistas no pueden iniciar chats con la Coordinación General. "
+            "Contacta a tu Jefe de Proyecto o Sub-coordinador.",
+        )
+    members = sorted([user["id"], body.target_user_id])
+    existing = await db.channels.find_one({
+        "project_id": pid, "type": "direct", "member_ids": members,
+    })
+    if existing:
+        existing.pop("_id", None)
+        # Devuelve con nombre del peer
+        existing["name"] = target.get("name") or "DM"
+        existing["peer"] = {
+            "id": target.get("id"), "name": target.get("name"), "role": target.get("role"),
+        }
+        return existing
+    doc = {
+        "id": str(uuid.uuid4()),
+        "project_id": pid,
+        "type": "direct",
+        "name": "DM",  # se reemplaza por el nombre del peer en la respuesta
+        "area_id": None,
+        "color": None,
+        "member_ids": members,
+        "created_at": datetime.now(timezone.utc),
+    }
+    await db.channels.insert_one(doc)
+    doc.pop("_id", None)
+    doc["name"] = target.get("name") or "DM"
+    doc["peer"] = {
+        "id": target.get("id"), "name": target.get("name"), "role": target.get("role"),
+    }
+    return doc
+
+
+@api.get("/channels/{cid}")
+async def get_channel(cid: str, user: dict = Depends(current_user)):
+    ch = await db.channels.find_one({"id": cid})
+    if not ch:
+        raise HTTPException(404, "Canal no existe")
+    if not _can_access_channel(user, ch):
+        raise HTTPException(403, "Sin acceso a este canal")
+    ch.pop("_id", None)
+    if ch["type"] == "direct":
+        other_id = next((mid for mid in (ch.get("member_ids") or []) if mid != user["id"]), None)
+        if other_id:
+            other = await db.users.find_one({"id": other_id})
+            if other:
+                ch["name"] = other.get("name") or ch.get("name")
+                ch["peer"] = {
+                    "id": other.get("id"), "name": other.get("name"), "role": other.get("role"),
+                }
+    return ch
+
+
+@api.get("/channels/{cid}/messages")
+async def list_channel_messages(
+    cid: str,
+    since: Optional[str] = None,
+    before: Optional[str] = None,
+    limit: int = 100,
+    user: dict = Depends(current_user),
+):
+    ch = await db.channels.find_one({"id": cid})
+    if not ch:
+        raise HTTPException(404, "Canal no existe")
+    if not _can_access_channel(user, ch):
+        raise HTTPException(403, "Sin acceso a este canal")
+    q: dict = {"channel_id": cid}
+    if since:
+        try:
+            ts = datetime.fromisoformat(since.replace("Z", "+00:00"))
+            q["created_at"] = {"$gt": ts}
+        except Exception:
+            pass
+    if before:
+        try:
+            ts = datetime.fromisoformat(before.replace("Z", "+00:00"))
+            q.setdefault("created_at", {})["$lt"] = ts
+        except Exception:
+            pass
+    safe_limit = max(1, min(int(limit or 100), 200))
+    cursor = db.messages.find(q).sort("created_at", -1).limit(safe_limit)
+    raw = await cursor.to_list(length=safe_limit)
+    raw.reverse()
+    return [_message_out(it) for it in raw]
+
+
+@api.post("/channels/{cid}/messages")
+async def post_channel_message(cid: str, body: MessageIn, user: dict = Depends(current_user)):
+    ch = await db.channels.find_one({"id": cid})
+    if not ch:
+        raise HTTPException(404, "Canal no existe")
+    if not _can_access_channel(user, ch):
+        raise HTTPException(403, "Sin acceso a este canal")
+    # Regla asimétrica del Coordinador General (sólo aplica en directos).
+    await _check_direct_send_rule(user, ch)
+    text = (body.text or "").strip()
+    if not text:
+        raise HTTPException(400, "Mensaje vacío")
+    if len(text) > 2000:
+        raise HTTPException(400, "Mensaje máximo 2000 caracteres")
+    doc = {
+        "id": str(uuid.uuid4()),
+        "channel_id": cid,
+        "project_id": ch["project_id"],
+        "user_id": user["id"],
+        "user_name": user["name"],
+        "user_role": user["role"],
+        "user_area": user.get("area"),
+        "text": text,
+        "created_at": datetime.now(timezone.utc),
+    }
+    await db.messages.insert_one(doc)
+    return _message_out(doc)
+
+
+# ---- Endpoints LEGACY: redirigen al canal General para mantener compatibilidad
+@api.get("/projects/{pid}/messages")
+async def list_messages_legacy(
+    pid: str,
+    since: Optional[str] = None,
+    before: Optional[str] = None,
+    limit: int = 100,
+    user: dict = Depends(current_user),
+):
+    """Compat: lista mensajes del canal General del proyecto."""
+    await ensure_project_access(user, pid)
+    cid = await _general_channel_id(pid)
+    if not cid:
+        return []
+    return await list_channel_messages(cid, since=since, before=before, limit=limit, user=user)
+
+
+@api.post("/projects/{pid}/messages")
+async def create_message_legacy(
+    pid: str,
+    body: MessageIn,
+    user: dict = Depends(current_user),
+):
+    """Compat: publica en el canal General del proyecto."""
+    await ensure_project_access(user, pid)
+    cid = await _general_channel_id(pid)
+    if not cid:
+        raise HTTPException(500, "No se pudo asegurar el canal general")
+    return await post_channel_message(cid, body, user)
+
+
+@api.delete("/messages/{mid}")
+async def delete_message(mid: str, user: dict = Depends(current_user)):
+    """El autor o cualquier Coordinador General del proyecto puede eliminar."""
+    m = await db.messages.find_one({"id": mid})
+    if not m:
+        raise HTTPException(404, "Mensaje no existe")
+    is_author = m["user_id"] == user["id"]
+    is_coord = user["role"] == ROLE_COORD and m["project_id"] in (user.get("project_ids") or [])
+    if not (is_author or is_coord):
+        raise HTTPException(403, "Sin permiso para eliminar este mensaje")
+    await db.messages.delete_one({"id": mid})
+    return {"ok": True}
+
+
+# === MENSAJES NO LEÍDOS (badges en picker de proyectos) ====================
+@api.post("/projects/{pid}/messages/seen")
+async def mark_project_messages_seen(pid: str, user: dict = Depends(current_user)):
+    """Marca como leídos todos los mensajes del proyecto para el usuario actual.
+    Persiste `last_read_at = now()` en la colección `channel_reads`.
+    """
+    await ensure_project_access(user, pid)
+    now = datetime.now(timezone.utc)
+    await db.channel_reads.update_one(
+        {"user_id": user["id"], "project_id": pid},
+        {"$set": {"last_read_at": now}},
+        upsert=True,
+    )
+    return {"ok": True, "last_read_at": now.isoformat()}
+
+
+@api.get("/messages/unread_counts")
+async def messages_unread_counts(user: dict = Depends(current_user)):
+    """Devuelve `{project_id: count}` con el total de mensajes no leídos por
+    proyecto para el usuario actual. Sólo cuenta mensajes ajenos (no enviados
+    por el propio usuario).
+
+    Optimizado para tableros: una sola pasada por todos los proyectos del
+    usuario y un agregado en MongoDB por proyecto.
+    """
+    role = user.get("role")
+    # 1) Determinar la lista de proyectos accesibles para el usuario.
+    if role in (ROLE_COORD, ROLE_JEFE):
+        projects = await db.projects.find({}, {"id": 1}).to_list(length=1000)
+        pids = [p["id"] for p in projects]
+    else:
+        pids = list(user.get("project_ids") or [])
+    if not pids:
+        return {}
+    # 2) Cargar last_read_at por proyecto en bloque.
+    reads_cur = db.channel_reads.find(
+        {"user_id": user["id"], "project_id": {"$in": pids}},
+        {"project_id": 1, "last_read_at": 1, "_id": 0},
+    )
+    reads = {r["project_id"]: r.get("last_read_at") for r in await reads_cur.to_list(length=2000)}
+    out: dict = {pid: 0 for pid in pids}
+
+    # 3) Un solo round trip para TODOS los canales de TODOS los proyectos
+    # (antes: un find() por proyecto, 2×N round trips totales con el count
+    # de abajo — ahora 2 en total sin importar cuántos proyectos haya).
+    all_channels = await db.channels.find({"project_id": {"$in": pids}}).to_list(length=200 * len(pids))
+    project_of_channel: dict = {}
+    for c in all_channels:
+        if _can_access_channel(user, c):
+            project_of_channel[c["id"]] = c["project_id"]
+    ch_ids = list(project_of_channel.keys())
+    if not ch_ids:
+        return out
+
+    # 4) Un solo round trip para los mensajes candidatos de todos esos canales;
+    # el umbral last_read_at difiere por proyecto, así que se filtra en
+    # memoria (payload liviano: solo channel_id/created_at, no el cuerpo).
+    msgs_cur = db.messages.find(
+        {"channel_id": {"$in": ch_ids}, "user_id": {"$ne": user["id"]}},
+        {"channel_id": 1, "created_at": 1, "_id": 0},
+    )
+    async for m in msgs_cur:
+        pid = project_of_channel.get(m["channel_id"])
+        if pid is None:
+            continue
+        last_read = reads.get(pid)
+        if last_read and m.get("created_at") and m["created_at"] <= last_read:
+            continue
+        out[pid] = out.get(pid, 0) + 1
+    return out
+
+
+# === EVENTS (Calendario compartido) ========================================
+class EventIn(BaseModel):
+    title: str
+    description: Optional[str] = None
+    location: Optional[str] = None
+    start_at: str  # ISO 8601
+    end_at: Optional[str] = None
+    area_id: Optional[str] = None
+
+
+class EventPatch(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    location: Optional[str] = None
+    start_at: Optional[str] = None
+    end_at: Optional[str] = None
+    area_id: Optional[str] = None
+
+
+def _event_out(doc: dict) -> dict:
+    doc.pop("_id", None)
+    return doc
+
+
+async def _enrich_event_with_area(doc: dict) -> dict:
+    """Adjunta area_name + area_color leyendo la colección areas (si hay area_id)."""
+    aid = doc.get("area_id")
+    if aid:
+        a = await db.areas.find_one({"id": aid})
+        if a:
+            doc["area_name"] = a.get("name")
+            doc["area_color"] = a.get("color")
+        else:
+            doc["area_name"] = None
+            doc["area_color"] = None
+    else:
+        doc["area_name"] = None
+        doc["area_color"] = None
+    return doc
+
+
+def _parse_iso(s: str) -> datetime:
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except Exception:
+        raise HTTPException(400, f"Fecha inválida: {s}")
+
+
+@api.get("/projects/{pid}/events")
+async def list_events(
+    pid: str,
+    range: str = "upcoming",  # upcoming | past | all
+    limit: int = 500,
+    user: dict = Depends(current_user),
+):
+    """Lista eventos. Cualquier miembro del proyecto puede leer."""
+    await ensure_project_access(user, pid)
+    q: dict = {"project_id": pid}
+    now = datetime.now(timezone.utc)
+    if range == "upcoming":
+        # eventos desde inicio del día actual (UTC) en adelante
+        start_today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        q["start_at"] = {"$gte": start_today}
+    elif range == "past":
+        q["start_at"] = {"$lt": now.replace(hour=0, minute=0, second=0, microsecond=0)}
+    # 'all' → sin filtro
+
+    sort_dir = 1 if range != "past" else -1
+    safe_limit = max(1, min(int(limit or 500), 1000))
+    cursor = db.events.find(q).sort("start_at", sort_dir).limit(safe_limit)
+    items = await cursor.to_list(length=safe_limit)
+    # Enriquecer con area_name + area_color (en batch).
+    area_ids = {it.get("area_id") for it in items if it.get("area_id")}
+    areas_by_id: dict = {}
+    if area_ids:
+        async for a in db.areas.find({"id": {"$in": list(area_ids)}}):
+            areas_by_id[a["id"]] = {"name": a.get("name"), "color": a.get("color")}
+    out = []
+    for it in items:
+        it = _event_out(it)
+        aid = it.get("area_id")
+        info = areas_by_id.get(aid) if aid else None
+        it["area_name"] = (info or {}).get("name")
+        it["area_color"] = (info or {}).get("color")
+        out.append(it)
+    return out
+
+
+@api.post("/projects/{pid}/events")
+async def create_event(
+    pid: str,
+    body: EventIn,
+    user: dict = Depends(current_user),
+):
+    """Cualquier miembro del proyecto puede crear eventos."""
+    await ensure_project_access(user, pid)
+    title = (body.title or "").strip()
+    if not title:
+        raise HTTPException(400, "Título requerido")
+    if len(title) > 140:
+        raise HTTPException(400, "Título máximo 140 caracteres")
+    start = _parse_iso(body.start_at)
+    end = _parse_iso(body.end_at) if body.end_at else None
+    if end and end < start:
+        raise HTTPException(400, "La fecha de fin no puede ser anterior al inicio")
+    desc = (body.description or "").strip() or None
+    loc = (body.location or "").strip() or None
+    if desc and len(desc) > 2000:
+        raise HTTPException(400, "Descripción máximo 2000 caracteres")
+    if loc and len(loc) > 200:
+        raise HTTPException(400, "Ubicación máximo 200 caracteres")
+    area_id_val = (body.area_id or None) or None
+    if area_id_val:
+        a = await db.areas.find_one({"id": area_id_val, "project_id": pid})
+        if not a:
+            raise HTTPException(400, "Área inválida para este proyecto")
+    now = datetime.now(timezone.utc)
+    doc = {
+        "id": str(uuid.uuid4()),
+        "project_id": pid,
+        "title": title,
+        "description": desc,
+        "location": loc,
+        "start_at": start,
+        "end_at": end,
+        "area_id": area_id_val,
+        "author_id": user["id"],
+        "author_name": user["name"],
+        "author_role": user["role"],
+        "created_at": now,
+        "updated_at": now,
+    }
+    await db.events.insert_one(doc)
+    return await _enrich_event_with_area(_event_out(doc))
+
+
+@api.patch("/events/{eid}")
+async def update_event(
+    eid: str,
+    body: EventPatch,
+    user: dict = Depends(current_user),
+):
+    """Editable por el autor o por cualquier Coordinador General."""
+    e = await db.events.find_one({"id": eid})
+    if not e:
+        raise HTTPException(404, "Evento no existe")
+    await ensure_project_access(user, e["project_id"])
+    is_author = e.get("author_id") == user["id"]
+    is_coord = user["role"] == ROLE_COORD
+    if not (is_author or is_coord):
+        raise HTTPException(403, "Sólo el autor o un Coordinador puede editar")
+    update: dict = {}
+    if body.title is not None:
+        t = body.title.strip()
+        if not t:
+            raise HTTPException(400, "Título no puede estar vacío")
+        if len(t) > 140:
+            raise HTTPException(400, "Título máximo 140 caracteres")
+        update["title"] = t
+    if body.description is not None:
+        d = body.description.strip()
+        if d and len(d) > 2000:
+            raise HTTPException(400, "Descripción máximo 2000 caracteres")
+        update["description"] = d or None
+    if body.location is not None:
+        loc = body.location.strip()
+        if loc and len(loc) > 200:
+            raise HTTPException(400, "Ubicación máximo 200 caracteres")
+        update["location"] = loc or None
+    if body.start_at is not None:
+        update["start_at"] = _parse_iso(body.start_at)
+    if body.end_at is not None:
+        update["end_at"] = _parse_iso(body.end_at) if body.end_at else None
+    if body.area_id is not None:
+        aid = (body.area_id or None) or None
+        if aid:
+            a = await db.areas.find_one({"id": aid, "project_id": e["project_id"]})
+            if not a:
+                raise HTTPException(400, "Área inválida para este proyecto")
+        update["area_id"] = aid
+    start_final = update.get("start_at", e["start_at"])
+    end_final = update.get("end_at", e.get("end_at"))
+    if end_final and end_final < start_final:
+        raise HTTPException(400, "La fecha de fin no puede ser anterior al inicio")
+    if not update:
+        return await _enrich_event_with_area(_event_out(e))
+    update["updated_at"] = datetime.now(timezone.utc)
+    await db.events.update_one({"id": eid}, {"$set": update})
+    e = await db.events.find_one({"id": eid})
+    return await _enrich_event_with_area(_event_out(e))
+
+
+@api.delete("/events/{eid}")
+async def delete_event(eid: str, user: dict = Depends(current_user)):
+    """Eliminable por el autor o por cualquier Coordinador General."""
+    e = await db.events.find_one({"id": eid})
+    if not e:
+        raise HTTPException(404, "Evento no existe")
+    await ensure_project_access(user, e["project_id"])
+    is_author = e.get("author_id") == user["id"]
+    is_coord = user["role"] == ROLE_COORD
+    if not (is_author or is_coord):
+        raise HTTPException(403, "Sólo el autor o un Coordinador puede eliminar")
+    await db.events.delete_one({"id": eid})
+    return {"ok": True}
+
+
+# === EXPORT (Excel "sábana plana" jerárquica) ===============================
+def _flatten_tree_in_order(nodes_by_id: dict, root_ids: list, *, leaves_only: bool = True) -> list:
+    """Devuelve los nodos en pre-order (raíz → hijos por order), aplanando el árbol.
+    Por defecto (`leaves_only=True`) sólo retorna nodos hoja (los que pueden
+    tener reportes asociados) — comportamiento histórico, todos los
+    llamadores existentes lo usan así. `leaves_only=False` devuelve TODOS
+    los nodos (Tramo, Subtramo, hoja) en el mismo pre-order — usado por el
+    nivel de agregación configurable de Recuento General
+    (`_recuento_general_grouping_nodes`), que necesita ordenar nodos
+    intermedios, no solo hojas, sin asumir una profundidad fija."""
+    out: list = []
+    def visit(nid: str):
+        n = nodes_by_id.get(nid)
+        if not n:
+            return
+        if leaves_only:
+            if n.get("is_leaf"):
+                out.append(n)
+        else:
+            out.append(n)
+        # Recorre hijos ordenados
+        children = sorted(
+            [c for c in nodes_by_id.values() if c.get("parent_id") == nid],
+            key=lambda x: (x.get("order", 0), x.get("name", "")),
+        )
+        for c in children:
+            visit(c["id"])
+    for rid in root_ids:
+        visit(rid)
+    return out
+
+
+def _root_id_for(node_id: str, nodes_by_id: dict) -> str:
+    """Sube por `parent_id` hasta el nodo raíz (Tramo) que contiene a `node_id`."""
+    cur = nodes_by_id.get(node_id)
+    if not cur:
+        return node_id
+    seen = {cur["id"]}
+    while cur.get("parent_id"):
+        parent = nodes_by_id.get(cur["parent_id"])
+        if not parent or parent["id"] in seen:
+            break
+        cur = parent
+        seen.add(cur["id"])
+    return cur["id"]
+
+
+def _subtramo_id_for(node_id: str, nodes_by_id: dict) -> str:
+    """Sube por `parent_id` hasta el nodo a profundidad 1 (Subtramo — hijo
+    directo de la raíz del proyecto) que contiene a `node_id`. Si `node_id`
+    ya es una raíz de proyecto (depth 0), no tiene subtramo propiamente
+    dicho: se devuelve tal cual como fallback."""
+    cur = nodes_by_id.get(node_id)
+    if not cur:
+        return node_id
+    seen = {cur["id"]}
+    while cur.get("depth", 0) > 1 and cur.get("parent_id"):
+        parent = nodes_by_id.get(cur["parent_id"])
+        if not parent or parent["id"] in seen:
+            break
+        cur = parent
+        seen.add(cur["id"])
+    return cur["id"]
+
+
+_QTY_DESC_RE = re.compile(r"^\s*(\d+)\s+(.*)$")
+
+
+def _parse_qty_desc(s: str) -> tuple:
+    """Separa una entrada `personnel`/`equipment` (ej. '3 Ayudante (S2)') en
+    (cantidad, descripción). Si no hay cantidad numérica al inicio, asume 1."""
+    m = _QTY_DESC_RE.match(s or "")
+    if m:
+        return int(m.group(1)), m.group(2).strip()
+    return 1, (s or "").strip()
+
+
+_DIAS_ES = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
+_MESES_ES = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"]
+
+
+def _fmt_day_label_es(dt: datetime) -> str:
+    return f"{_DIAS_ES[dt.weekday()]} {dt.day:02d} {_MESES_ES[dt.month - 1]}"
+
+
+def _week_bounds_for(d) -> tuple:
+    """Domingo..sábado de la semana natural que contiene la fecha `d` (date)."""
+    days_since_sunday = (d.weekday() + 1) % 7  # datetime.weekday(): Lunes=0..Domingo=6
+    start = d - timedelta(days=days_since_sunday)
+    end = start + timedelta(days=6)
+    return start, end
+
+
+def _fmt_week_label_es(start, end) -> str:
+    if start.month == end.month:
+        return f"Semana del {start.day:02d} al {end.day:02d} {_MESES_ES[end.month - 1]}"
+    return f"Semana del {start.day:02d} {_MESES_ES[start.month - 1]} al {end.day:02d} {_MESES_ES[end.month - 1]}"
+
+
+def _workforce_rows_by_root(reports_by_node: dict, nodes_by_id: dict) -> dict:
+    """Arma, por Tramo (nodo raíz) y por categoría (personal/maquinaria), las
+    filas detalladas (autor, ubicación, entrada del reporte) agrupadas por
+    día calendario CDMX, con subtotal por día y total del periodo — insumo
+    compartido de la tabla en la UI móvil y de las tablas PDF/PPTX.
+
+    Forma de retorno: {root_id: {"personal": {day_key: {label, rows[], subtotal{}}},
+                                  "maquinaria": {...}}}
+    """
+    out: dict = {}
+    for node_id, reps in reports_by_node.items():
+        root_id = _root_id_for(node_id, nodes_by_id)
+        bucket = out.setdefault(root_id, {"personal": {}, "maquinaria": {}})
+        for r in reps:
+            created = r.get("created_at")
+            if isinstance(created, datetime):
+                dt = created if created.tzinfo else created.replace(tzinfo=timezone.utc)
+                dt_mx = dt.astimezone(MX_TZ)
+                day_key = dt_mx.date().isoformat()
+                day_label = _fmt_day_label_es(dt_mx)
+            else:
+                day_key, day_label = "—", "—"
+            autor = r.get("captured_by_name") or "Especialista"
+            # Último nodo de la ruta = el nodo hijo (hoja) elegido al capturar
+            # el reporte, no el Tramo raíz.
+            ubicacion = (r.get("node_path_names") or ["—"])[-1]
+            for field, cat in (("personnel", "personal"), ("equipment", "maquinaria")):
+                for s in (r.get(field) or []):
+                    qty, desc = _parse_qty_desc(s)
+                    if not desc:
+                        continue
+                    day_bucket = bucket[cat].setdefault(
+                        day_key, {"label": day_label, "rows": [], "subtotal": {}}
+                    )
+                    day_bucket["rows"].append({"autor": autor, "ubicacion": ubicacion, "texto": s.strip()})
+                    day_bucket["subtotal"][desc] = day_bucket["subtotal"].get(desc, 0) + qty
+    return out
+
+
+def _workforce_table_data(day_buckets: dict, group_by: str = "day") -> dict:
+    """Convierte `{day_key: {label, rows[], subtotal{}}}` en la forma final
+    lista para render: grupos ordenados cronológicamente + total del periodo
+    (solo relevante si hay más de un grupo).
+
+    Cascada de agregación (regla de negocio): Diario es la base absoluta
+    (reportes crudos); Semanal resume EXCLUSIVAMENTE los reportes diarios de
+    esa semana (`group_by="day"`, un grupo por día dentro de la semana);
+    Mensual resume EXCLUSIVAMENTE los reportes semanales de ese mes
+    (`group_by="week"` — los días se re-agrupan primero en semanas
+    naturales, y cada semana es un grupo con su propio subtotal)."""
+    if group_by == "week":
+        week_buckets: dict = {}
+        for day_key in sorted(day_buckets.keys()):
+            b = day_buckets[day_key]
+            try:
+                d = datetime.strptime(day_key, "%Y-%m-%d").date()
+                wk_start, wk_end = _week_bounds_for(d)
+                wk_key, wk_label = wk_start.isoformat(), _fmt_week_label_es(wk_start, wk_end)
+            except ValueError:
+                wk_key, wk_label = day_key, b["label"]
+            wb = week_buckets.setdefault(wk_key, {"label": wk_label, "rows": [], "subtotal": {}})
+            wb["rows"].extend(b["rows"])
+            for desc, qty in b["subtotal"].items():
+                wb["subtotal"][desc] = wb["subtotal"].get(desc, 0) + qty
+        source = week_buckets
+    else:
+        source = day_buckets
+
+    groups = []
+    total: dict = {}
+    for key in sorted(source.keys()):
+        b = source[key]
+        subtotal_items = sorted(b["subtotal"].items(), key=lambda kv: kv[0])
+        groups.append({"label": b["label"], "rows": b["rows"], "subtotal": subtotal_items})
+        for desc, qty in b["subtotal"].items():
+            total[desc] = total.get(desc, 0) + qty
+    return {"groups": groups, "total": sorted(total.items(), key=lambda kv: kv[0])}
+
+
+def _workforce_export_data(reports_by_node: dict, nodes_by_id: dict, group_by: str = "day") -> dict:
+    """Por Tramo (nodo raíz): {"personal": table_data, "maquinaria": table_data}
+    listos para dibujar (ver `_workforce_table_data`)."""
+    rows_by_root = _workforce_rows_by_root(reports_by_node, nodes_by_id)
+    out: dict = {}
+    for root_id, bucket in rows_by_root.items():
+        out[root_id] = {
+            "personal": _workforce_table_data(bucket["personal"], group_by),
+            "maquinaria": _workforce_table_data(bucket["maquinaria"], group_by),
+        }
+    return out
+
+
+def _workforce_consolidated_by_subtramo(reports_by_node: dict, nodes_by_id: dict) -> dict:
+    """Por Subtramo (nodo a profundidad 1) y categoría (personal/maquinaria):
+    resumen CONSOLIDADO de todo el período — agrega por (descripción,
+    ubicación) y suma cantidades, sin desglose por día ni por autor.
+
+    Usado exclusivamente por la página de resumen por subtramo del PPTX
+    ejecutivo (ver `draw_subtramo_summary_slide`). El PDF usa en su lugar
+    `_workforce_raw_rows_by_subtramo` (sin agrupar — ver esa función para el
+    porqué). No toca `_workforce_rows_by_root`/`_workforce_table_data`/
+    `_workforce_export_data` porque esas alimentan también la UI móvil.
+
+    Forma de retorno: {subtramo_id: {"personal": [{"desc","ubicacion","qty"}, ...],
+                                       "maquinaria": [...]}}
+    Filas ordenadas por cantidad descendente y, a igualdad, alfabéticamente.
+    """
+    raw: dict = {}
+    for node_id, reps in reports_by_node.items():
+        subtramo_id = _subtramo_id_for(node_id, nodes_by_id)
+        bucket = raw.setdefault(subtramo_id, {"personal": {}, "maquinaria": {}})
+        for r in reps:
+            ubicacion = (r.get("node_path_names") or ["—"])[-1]
+            for field, cat in (("personnel", "personal"), ("equipment", "maquinaria")):
+                for s in (r.get(field) or []):
+                    qty, desc = _parse_qty_desc(s)
+                    if not desc:
+                        continue
+                    key = (desc, ubicacion)
+                    bucket[cat][key] = bucket[cat].get(key, 0) + qty
+
+    out: dict = {}
+    for subtramo_id, bucket in raw.items():
+        out[subtramo_id] = {}
+        for cat, kv in bucket.items():
+            rows = [
+                {"desc": desc, "ubicacion": ubic, "qty": qty}
+                for (desc, ubic), qty in kv.items()
+            ]
+            rows.sort(key=lambda r: (-r["qty"], r["desc"].lower()))
+            out[subtramo_id][cat] = rows
+    return out
+
+
+def _workforce_raw_rows_by_subtramo(reports_by_node: dict, nodes_by_id: dict) -> dict:
+    """Por Subtramo (nodo a profundidad 1) y categoría (personal/maquinaria):
+    TODAS las capturas individuales, SIN agrupar ni sumar por descripción —
+    cada entrada tal como fue registrada, en orden cronológico de captura
+    (por `created_at` del reporte que la contiene).
+
+    Usado exclusivamente por las tablas FUERZA DE TRABAJO / MAQUINARIA Y
+    EQUIPO de `draw_subtramo_summary_page` (PDF). A diferencia de
+    `_workforce_consolidated_by_subtramo` (usada por el PPTX), aquí dos
+    capturas de "Ayudante" (3 y 2) quedan como DOS filas separadas — es una
+    decisión de producto explícita para el rediseño de esas tablas: no
+    deduplicar, conservar el orden de captura original.
+
+    Forma de retorno: {subtramo_id: {"personal": [{"desc","ubicacion","qty"}, ...],
+                                       "maquinaria": [...]}}
+    """
+    def _created_at_key(r: dict) -> datetime:
+        c = r.get("created_at")
+        if isinstance(c, datetime):
+            return c if c.tzinfo else c.replace(tzinfo=timezone.utc)
+        return datetime.min.replace(tzinfo=timezone.utc)
+
+    raw: dict = {}
+    for node_id, reps in reports_by_node.items():
+        subtramo_id = _subtramo_id_for(node_id, nodes_by_id)
+        bucket = raw.setdefault(subtramo_id, {"personal": [], "maquinaria": []})
+        for r in reps:
+            ubicacion = (r.get("node_path_names") or ["—"])[-1]
+            created = _created_at_key(r)
+            for field, cat in (("personnel", "personal"), ("equipment", "maquinaria")):
+                for s in (r.get(field) or []):
+                    qty, desc = _parse_qty_desc(s)
+                    if not desc:
+                        continue
+                    bucket[cat].append((created, {"desc": desc, "ubicacion": ubicacion, "qty": qty}))
+
+    out: dict = {}
+    for subtramo_id, bucket in raw.items():
+        out[subtramo_id] = {
+            cat: [row for _, row in sorted(items, key=lambda t: t[0])]
+            for cat, items in bucket.items()
+        }
+    return out
+
+
+NIVEL_RECUENTO_TRAMO = "tramo"
+NIVEL_RECUENTO_SUBTRAMO = "subtramo"
+NIVEL_RECUENTO_HOJA = "hoja"
+NIVEL_RECUENTO_PERSONALIZADO = "personalizado"
+NIVELES_RECUENTO = (NIVEL_RECUENTO_TRAMO, NIVEL_RECUENTO_SUBTRAMO, NIVEL_RECUENTO_HOJA, NIVEL_RECUENTO_PERSONALIZADO)
+
+
+def _node_path_names_sync(node_id: str, nodes_by_id: dict) -> List[str]:
+    """Equivalente síncrono/puro de `node_path_names` (que consulta Mongo) —
+    sube por `parent_id` desde `node_id` hasta la raíz usando el `nodes_by_id`
+    ya cargado en memoria. Usado por `_recuento_general_by_nodo` para
+    calcular la ruta institucional del nodo de agrupación (Tramo/Subtramo/
+    personalizado), no la de un reporte puntual."""
+    names: List[str] = []
+    cur = nodes_by_id.get(node_id)
+    seen: set = set()
+    while cur:
+        if cur["id"] in seen:
+            break
+        names.append(cur.get("name") or "Nodo")
+        seen.add(cur["id"])
+        pid = cur.get("parent_id")
+        cur = nodes_by_id.get(pid) if pid else None
+    return list(reversed(names))
+
+
+def _recuento_general_grouping_nodes(nivel: str, node_ids: Optional[List[str]],
+                                      nodes_by_id: dict, root_ids: list) -> list:
+    """Nodos que definen "una tabla de Recuento General" para el nivel de
+    agregación elegido, en el mismo orden Tramo→Subtramo→Poste que el resto
+    del documento (`_flatten_tree_in_order`, sin asumir profundidad fija):
+      - tramo: nodos raíz del proyecto (depth 0).
+      - subtramo: nodos a profundidad 1 (Estación/Subtramo).
+      - hoja: nodos hoja (comportamiento histórico, 1 tabla por poste).
+      - personalizado: exactamente los `node_ids` marcados por el usuario,
+        cualquiera sea su profundidad — permite mezclar, en el mismo
+        proyecto, estaciones que merecen tabla propia con postes sueltos
+        que también la merecen, sin forzar una profundidad uniforme."""
+    todos = _flatten_tree_in_order(nodes_by_id, root_ids, leaves_only=False)
+    if nivel == NIVEL_RECUENTO_TRAMO:
+        return [n for n in todos if (n.get("depth") or 0) == 0]
+    if nivel == NIVEL_RECUENTO_SUBTRAMO:
+        return [n for n in todos if (n.get("depth") or 0) == 1]
+    if nivel == NIVEL_RECUENTO_PERSONALIZADO:
+        wanted = set(node_ids or [])
+        return [n for n in todos if n["id"] in wanted]
+    return _flatten_tree_in_order(nodes_by_id, root_ids)  # NIVEL_RECUENTO_HOJA
+
+
+def _leaves_under_node(node_id: str, nodes_by_id: dict, all_leaves_in_order: list) -> list:
+    """Ids de las hojas descendientes de `node_id` (o `[node_id]` si el
+    propio nodo ya es hoja), preservando el orden de `all_leaves_in_order`
+    (ya aplanado en pre-order por `_flatten_tree_in_order`)."""
+    node = nodes_by_id.get(node_id)
+    if node and node.get("is_leaf"):
+        return [node_id]
+    out = []
+    for leaf in all_leaves_in_order:
+        cur = leaf
+        seen: set = set()
+        while cur:
+            if cur["id"] == node_id:
+                out.append(leaf["id"])
+                break
+            if cur["id"] in seen:
+                break
+            seen.add(cur["id"])
+            pid = cur.get("parent_id")
+            cur = nodes_by_id.get(pid) if pid else None
+    return out
+
+
+def _resolve_recuento_config(proj: dict, nivel_param: Optional[str], node_ids_param: Optional[str],
+                              sin_datos_param: Optional[str]) -> tuple:
+    """Resuelve (nivel, node_ids, incluir_sin_datos) para Recuento General:
+    parámetros explícitos de la request de export > preferencia guardada en
+    el proyecto (`proj["recuento_config"]`) > default institucional
+    (Subtramo, omitir nodos sin datos en el período)."""
+    saved = (proj or {}).get("recuento_config") or {}
+    nivel = (nivel_param or saved.get("nivel") or NIVEL_RECUENTO_SUBTRAMO).strip().lower()
+    if nivel not in NIVELES_RECUENTO:
+        nivel = NIVEL_RECUENTO_SUBTRAMO
+    if node_ids_param is not None:
+        node_ids = [x.strip() for x in node_ids_param.split(",") if x.strip()]
+    else:
+        node_ids = list(saved.get("node_ids") or [])
+    sin_datos_modo = (sin_datos_param or saved.get("sin_datos_modo") or "omitir").strip().lower()
+    incluir_sin_datos = sin_datos_modo == "leyenda"
+    return nivel, node_ids, incluir_sin_datos
+
+
+def _recuento_general_by_nodo(reports_by_node: dict, nodes_by_id: dict, root_ids: list, *,
+                               nivel: str = NIVEL_RECUENTO_SUBTRAMO,
+                               node_ids: Optional[List[str]] = None,
+                               incluir_sin_datos: bool = False) -> list:
+    """Recuento general de TODO el período, agrupado por el NIVEL DE
+    AGREGACIÓN elegido (ver `_recuento_general_grouping_nodes`) y categoría
+    (personal/maquinaria) — suma cantidades por descripción (que para
+    `personnel` ES el puesto/rol, ej. "ING. Civil", ya que las entradas se
+    capturan como "3 ING. Civil" y no existe un campo estructurado de
+    puesto separado; ver `_parse_qty_desc`).
+
+    Cuando el nodo de agrupación NO es una hoja (tramo/subtramo/
+    personalizado sobre un nodo intermedio), cada fila lleva además
+    `"poste"` con el nombre de la hoja de origen — sin esa columna, sumar
+    cantidades de postes distintos bajo el mismo renglón perdería la
+    trazabilidad de dónde salió cada dato. Las cantidades NUNCA se suman
+    entre postes distintos (solo dentro del mismo poste, como antes); la
+    columna es lo que hace posible agrupar sin perder esa precisión. Si el
+    nodo de agrupación YA es una hoja (nivel="hoja", o "personalizado" con
+    un poste marcado), no hay columna "poste" (sería redundante).
+
+    `incluir_sin_datos`: si True, los nodos de agrupación sin ningún
+    personal/maquinaria en el período SÍ generan una entrada
+    (`"sin_datos": True`, ambas listas vacías) para que el renderer imprima
+    la leyenda "Sin actividad en el periodo" en vez de omitir la tabla. Si
+    False (default), esos nodos se omiten — comportamiento histórico.
+
+    Orden: `_flatten_tree_in_order` (Tramo → Subtramo → Poste), igual que
+    el resto del documento. Forma de retorno: lista de {"node_id",
+    "nodo_name", "nodo_path", "sin_datos", "tiene_columna_poste",
+    "personal": [{"desc","qty"[,"poste"]}, ...], "maquinaria": [...]}."""
+    all_leaves_in_order = _flatten_tree_in_order(nodes_by_id, root_ids)
+    grouping_nodes = _recuento_general_grouping_nodes(nivel, node_ids, nodes_by_id, root_ids)
+
+    out = []
+    for g in grouping_nodes:
+        g_id = g["id"]
+        tiene_columna_poste = not g.get("is_leaf", False)
+        leaves = _leaves_under_node(g_id, nodes_by_id, all_leaves_in_order)
+        poste_name_by_id: Dict[str, str] = {leaf_id: (nodes_by_id.get(leaf_id) or {}).get("name") or "Nodo"
+                                             for leaf_id in leaves}
+        poste_order_by_id = {leaf_id: i for i, leaf_id in enumerate(leaves)}
+
+        bucket: Dict[str, Dict] = {"personal": {}, "maquinaria": {}}
+        any_reps = False
+        for leaf_id in leaves:
+            reps = reports_by_node.get(leaf_id) or []
+            if not reps:
+                continue
+            any_reps = True
+            for r in reps:
+                for field, cat in (("personnel", "personal"), ("equipment", "maquinaria")):
+                    for s in (r.get(field) or []):
+                        qty, desc = _parse_qty_desc(s)
+                        if not desc:
+                            continue
+                        key = desc if not tiene_columna_poste else (leaf_id, desc)
+                        bucket[cat][key] = bucket[cat].get(key, 0) + qty
+
+        path_names = _node_path_names_sync(g_id, nodes_by_id)
+        nodo_name = path_names[-1] if path_names else (g.get("name") or "Nodo")
+        nodo_path = " › ".join(path_names) if path_names else nodo_name
+
+        if not any_reps or (not bucket["personal"] and not bucket["maquinaria"]):
+            if not incluir_sin_datos:
+                continue
+            out.append({
+                "node_id": g_id, "nodo_name": nodo_name, "nodo_path": nodo_path,
+                "sin_datos": True, "tiene_columna_poste": tiene_columna_poste,
+                "personal": [], "maquinaria": [],
+            })
+            continue
+
+        entry: dict = {
+            "node_id": g_id, "nodo_name": nodo_name, "nodo_path": nodo_path,
+            "sin_datos": False, "tiene_columna_poste": tiene_columna_poste,
+        }
+        for cat in ("personal", "maquinaria"):
+            rows = []
+            for key, qty in bucket[cat].items():
+                if tiene_columna_poste:
+                    leaf_id, desc = key
+                    rows.append({"desc": desc, "qty": qty, "poste": poste_name_by_id.get(leaf_id, "—"),
+                                 "_orden_poste": poste_order_by_id.get(leaf_id, 0)})
+                else:
+                    rows.append({"desc": key, "qty": qty})
+            if tiene_columna_poste:
+                rows.sort(key=lambda r: (r["_orden_poste"], -r["qty"], r["desc"].lower()))
+                for r in rows:
+                    r.pop("_orden_poste", None)
+            else:
+                rows.sort(key=lambda r: (-r["qty"], r["desc"].lower()))
+            entry[cat] = rows
+        out.append(entry)
+    return out
+
+
+def _actividades_by_subtramo(reports_by_node: dict, nodes_by_id: dict) -> dict:
+    """Por Subtramo (nodo a profundidad 1): lista de textos `actividades`
+    (campo libre ya existente en `ReportOut`) recolectados de todos los
+    reportes de los postes que cuelgan de ese subtramo, en orden cronológico,
+    sin duplicados consecutivos. Usado en la sección "ACTIVIDADES" de la
+    página de resumen por subtramo."""
+    def _created_at_key(r: dict) -> datetime:
+        c = r.get("created_at")
+        if isinstance(c, datetime):
+            return c if c.tzinfo else c.replace(tzinfo=timezone.utc)
+        return datetime.min.replace(tzinfo=timezone.utc)
+
+    out: dict = {}
+    for node_id, reps in reports_by_node.items():
+        subtramo_id = _subtramo_id_for(node_id, nodes_by_id)
+        bucket = out.setdefault(subtramo_id, [])
+        for r in sorted(reps, key=_created_at_key):
+            texto = (r.get("actividades") or "").strip()
+            if texto and (not bucket or bucket[-1] != texto):
+                bucket.append(texto)
+    return out
+
+
+def _us_aqi_label(aqi: Optional[float]) -> str:
+    """Categoría EPA para un valor de US AQI (0-500)."""
+    if aqi is None:
+        return "—"
+    v = float(aqi)
+    if v <= 50:
+        return "Buena"
+    if v <= 100:
+        return "Moderada"
+    if v <= 150:
+        return "Dañina (grupos sensibles)"
+    if v <= 200:
+        return "Dañina"
+    if v <= 300:
+        return "Muy dañina"
+    return "Peligrosa"
+
+
+async def _fetch_weather_for_export(lat: Optional[float], lon: Optional[float]) -> Optional[dict]:
+    """Consulta Open-Meteo (forecast + air-quality) para la sección "ESTADO
+    DEL TIEMPO" de la página de resumen por subtramo del export PDF/PPTX.
+
+    Replica en el servidor lo que hoy solo hace el cliente
+    (`frontend/src/components/WeatherWidget.tsx`), agregando viento,
+    precipitación y calidad del aire (escala US AQI 0-500) que el cliente no
+    consulta. Reusa las coordenadas ya cargadas en `nodes_by_id` durante
+    `_gather_export_data` — no requiere query nueva a Mongo.
+
+    Devuelve None si faltan coordenadas o la consulta falla (timeout, etc.)
+    — el llamador debe tolerar la ausencia de datos de clima (celdas "—")."""
+    if lat is None or lon is None:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            fc_resp, aq_resp = await asyncio.gather(
+                client.get(
+                    "https://api.open-meteo.com/v1/forecast",
+                    params={
+                        "latitude": lat,
+                        "longitude": lon,
+                        "current": "temperature_2m,wind_speed_10m,precipitation,weather_code",
+                        "timezone": "auto",
+                    },
+                ),
+                client.get(
+                    "https://air-quality-api.open-meteo.com/v1/air-quality",
+                    params={"latitude": lat, "longitude": lon, "current": "us_aqi"},
+                ),
+                return_exceptions=True,
+            )
+        weather: dict = {}
+        if isinstance(fc_resp, httpx.Response) and fc_resp.status_code == 200:
+            cur = (fc_resp.json() or {}).get("current") or {}
+            weather["temperature_c"] = cur.get("temperature_2m")
+            weather["wind_kmh"] = cur.get("wind_speed_10m")
+            weather["precipitation_mm"] = cur.get("precipitation")
+            weather["weather_code"] = cur.get("weather_code")
+        if isinstance(aq_resp, httpx.Response) and aq_resp.status_code == 200:
+            cur = (aq_resp.json() or {}).get("current") or {}
+            weather["us_aqi"] = cur.get("us_aqi")
+        return weather or None
+    except Exception:
+        return None
+
+
+def _weather_coords_for_subtramo(subtramo_id: Optional[str], nodes_by_id: dict, reports_by_node: dict) -> tuple:
+    """Coordenadas a usar para el clima de un Subtramo: la primera hoja
+    (poste) que cuelgue de él con coordenadas disponibles — ya sea
+    `target_lat`/`target_lon` (dictadas por el Coordinador) o, si no, las
+    coordenadas capturadas en campo en el `measurement_value` de alguno de
+    sus reportes (`{"lat":.., "lon":..}`, nodos `coord_latlon`).
+
+    FIX 2026-08-11: los nodos Subtramo/Tramo (no-hoja) NUNCA tienen
+    target_lat/lon en este modelo de datos — el backend solo los acepta en
+    hojas `coord_latlon` (ver `update_node`) — así que la versión anterior
+    (que buscaba coords en el propio nodo Subtramo o, si no, en la raíz del
+    proyecto, replicando el criterio de `WeatherWidget.tsx`) casi nunca
+    encontraba nada y el bloque de clima salía siempre vacío ("—")."""
+    if not subtramo_id:
+        return None, None
+    for node_id, node in nodes_by_id.items():
+        if not node.get("is_leaf"):
+            continue
+        if _subtramo_id_for(node_id, nodes_by_id) != subtramo_id:
+            continue
+        if node.get("target_lat") is not None and node.get("target_lon") is not None:
+            return node["target_lat"], node["target_lon"]
+        for r in (reports_by_node.get(node_id) or []):
+            mv = r.get("measurement_value") or {}
+            lat, lon = mv.get("lat"), mv.get("lon")
+            if isinstance(lat, (int, float)) and isinstance(lon, (int, float)) and not (lat == 0 and lon == 0):
+                return lat, lon
+    return None, None
+
+
+def _format_workforce_desc(desc: str) -> tuple:
+    """Separa una descripción de recurso en (línea_principal, serie_opcional).
+
+    El equipo se captura como "Tipo :: Marca :: Modelo :: Serie" (segmentos
+    vacíos permitidos, ej. "Martillo ::  ::  :: ::"). Convierte a texto
+    natural uniendo los segmentos con espacios y separa el ÚLTIMO segmento
+    no vacío como "serie" (se dibuja aparte, más chico y en gris). El
+    personal (sin " :: ") se devuelve tal cual, sin segunda línea."""
+    if " :: " not in (desc or ""):
+        return (desc or "").strip(), None
+    # Segmentos vacíos (o compuestos solo de ':'/espacios, ej. un "::" suelto
+    # que sobrevive al split por espaciado irregular) se descartan igual.
+    parts = [p.strip() for p in desc.split(" :: ") if p.strip(" :")]
+    if not parts:
+        return (desc or "").strip(" :"), None
+    if len(parts) == 1:
+        return parts[0], None
+    *head, serie = parts
+    return " ".join(head), serie
+
+
+def _blend_hex_with_white(hex_color: str, white_frac: float) -> str:
+    """Aclara un color #RRGGBB mezclándolo con blanco (`white_frac` = 0..1,
+    1.0 = blanco puro). Usado para el tinte suave de la fila TOTAL derivado
+    del color primario del proyecto, sin hardcodear ningún hex nuevo."""
+    h = (hex_color or "#000000").lstrip("#")
+    if len(h) != 6:
+        return "#F1F5F9"
+    try:
+        r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    except ValueError:
+        return "#F1F5F9"
+    r = round(r + (255 - r) * white_frac)
+    g = round(g + (255 - g) * white_frac)
+    b = round(b + (255 - b) * white_frac)
+    return f"#{r:02X}{g:02X}{b:02X}"
+
+
+def _blend_hex_with_black(hex_color: str, black_frac: float) -> str:
+    """Oscurece un color #RRGGBB mezclándolo con negro (`black_frac` = 0..1).
+    Usado para el acento/sombra del encabezado de tabla, derivado del color
+    primario del proyecto (nunca un hex fijo)."""
+    h = (hex_color or "#000000").lstrip("#")
+    if len(h) != 6:
+        return "#0F172A"
+    try:
+        r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    except ValueError:
+        return "#0F172A"
+    r = round(r * (1 - black_frac))
+    g = round(g * (1 - black_frac))
+    b = round(b * (1 - black_frac))
+    return f"#{r:02X}{g:02X}{b:02X}"
+
+
+def _hex_luminance(hex_color: str) -> float:
+    """Luminancia relativa (0=negro, 1=blanco) de un color #RRGGBB."""
+    h = (hex_color or "").lstrip("#")
+    if len(h) != 6:
+        return 0.0
+    try:
+        r, g, b = int(h[0:2], 16) / 255.0, int(h[2:4], 16) / 255.0, int(h[4:6], 16) / 255.0
+    except ValueError:
+        return 0.0
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def _readable_dark_hex(hex_color: Optional[str], fallback: str = "#333333") -> str:
+    """Devuelve un color derivado de `hex_color` garantizado legible como
+    texto/relleno con texto blanco sobre fondo blanco: si es demasiado claro
+    (luminancia > 0.6 — p.ej. el color de marca del proyecto es un pastel),
+    se oscurece progresivamente; si aun así no alcanza, cae a `fallback`
+    (gris oscuro neutro). Usado en la página de resumen por subtramo para
+    que nunca se repita el bug de "texto invisible" cuando `color_tema` del
+    proyecto es claro o no está definido."""
+    base = _sanitize_color_hex(hex_color) or fallback
+    if _hex_luminance(base) <= 0.6:
+        return base
+    darkened = _blend_hex_with_black(base, 0.55)
+    if _hex_luminance(darkened) <= 0.6:
+        return darkened
+    return fallback
+
+
+def _excel_safe(value) -> object:
+    """Convierte valores no-nativos a algo que openpyxl pueda escribir."""
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        # openpyxl no admite datetime tz-aware -- hay que quitarle el tzinfo,
+        # pero ANTES de quitarlo hay que convertir a CDMX (hora institucional).
+        # Antes se hacía `.replace(tzinfo=None)` directo sobre el UTC crudo
+        # almacenado en Mongo: la columna de fecha/hora del Excel salía en
+        # UTC, no en CDMX -- hasta 6-7h de diferencia y, en capturas de
+        # noche, literalmente el día calendario equivocado.
+        return value.astimezone(MX_TZ).replace(tzinfo=None) if value.tzinfo else value
+    if isinstance(value, (list, tuple)):
+        return ", ".join(str(v) for v in value if v is not None and str(v).strip())
+    if isinstance(value, dict):
+        # Aplana dict simple
+        return ", ".join(f"{k}={v}" for k, v in value.items() if v is not None)
+    return value
+
+
+@api.get("/projects/{pid}/export/reports.xlsx")
+async def export_reports_xlsx(pid: str, user: dict = Depends(current_user)):
+    """Exporta TODOS los reportes del proyecto en una sábana Excel plana,
+    iterando los nodos en orden jerárquico (Tramo → Estación → Poste).
+    Incluye ruta del nodo y coordenadas dictadas (X, Y, Z). Acceso para
+    cualquier rol que pertenezca al proyecto (ensure_project_access)."""
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment
+    except Exception as e:
+        raise HTTPException(500, f"openpyxl no instalado: {e}")
+
+    await ensure_project_access(user, pid)
+    proj = await db.projects.find_one({"id": pid})
+    if not proj:
+        raise HTTPException(404, "Proyecto no existe")
+
+    # Carga árbol completo del proyecto
+    nodes_raw = await db.location_nodes.find({"project_id": pid}).to_list(length=10000)
+    nodes_by_id = {n["id"]: n for n in nodes_raw}
+    root_ids = [n["id"] for n in nodes_raw if not n.get("parent_id")]
+    # Ordena raíces por (order, name)
+    root_ids.sort(key=lambda nid: (nodes_by_id[nid].get("order", 0), nodes_by_id[nid].get("name", "")))
+    leaf_nodes = _flatten_tree_in_order(nodes_by_id, root_ids)
+    leaf_ids = [n["id"] for n in leaf_nodes]
+    leaf_index = {nid: i for i, nid in enumerate(leaf_ids)}
+
+    # Trae todos los reportes y agrúpalos por node_id
+    reports = await db.reports.find({"project_id": pid}).to_list(length=20000)
+
+    # Áreas para resolver nombres
+    areas = await db.areas.find({"project_id": pid}).to_list(length=500)
+    areas_by_id = {a["id"]: a for a in areas}
+
+    # Construir workbook
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Reportes"
+
+    headers = [
+        "Orden",                   # índice de orden jerárquico del nodo hoja
+        "Tipo de medición",
+        "Ruta completa",            # Tramo > Estación > Poste
+        "Nodo (hoja)",
+        "Latitud objetivo (X)",
+        "Longitud objetivo (Y)",
+        "Elevación objetivo (Z)",
+        "Valor capturado",          # measurement_value (string)
+        "Avance",
+        "Contratista",
+        "Personal",
+        "Equipo",
+        "Notas / Observaciones",
+        "Área",
+        "Capturado por",
+        "Fecha de captura",
+        "ID Reporte",
+    ]
+    ws.append(headers)
+
+    # Estilo cabecera
+    header_fill = PatternFill(start_color="1E3A8A", end_color="1E3A8A", fill_type="solid")
+    header_font = Font(color="FFFFFF", bold=True)
+    for col_idx in range(1, len(headers) + 1):
+        c = ws.cell(row=1, column=col_idx)
+        c.fill = header_fill
+        c.font = header_font
+        c.alignment = Alignment(horizontal="center", vertical="center")
+    ws.freeze_panes = "A2"
+
+    # Recorre los nodos hoja en orden y escribe sus reportes
+    for n in leaf_nodes:
+        node_reports = [r for r in reports if r.get("node_id") == n["id"]]
+        # Orden secundario: por fecha de captura descendente
+        node_reports.sort(key=lambda r: r.get("created_at") or datetime.min, reverse=True)
+        full_path = " > ".join((await node_path_names(n["id"])))
+        target_lat = n.get("target_lat")
+        target_lon = n.get("target_lon")
+        target_elev = n.get("target_elev")
+        if not node_reports:
+            # Aún así dejamos una fila por nodo hoja (vacía) para mantener trazabilidad.
+            ws.append([
+                leaf_index[n["id"]] + 1,
+                n.get("measurement_type") or "",
+                full_path,
+                n.get("name"),
+                target_lat if target_lat is not None else "",
+                target_lon if target_lon is not None else "",
+                target_elev if target_elev is not None else "",
+                "(sin reporte)",
+                "", "", "", "", "", "", "", "", "",
+            ])
+            continue
+        for r in node_reports:
+            personnel = r.get("personnel") or []
+            equipment = r.get("equipment") or []
+            ws.append([
+                leaf_index[n["id"]] + 1,
+                r.get("measurement_type") or n.get("measurement_type") or "",
+                full_path,
+                n.get("name"),
+                _excel_safe(target_lat),
+                _excel_safe(target_lon),
+                _excel_safe(target_elev),
+                _excel_safe(r.get("measurement_value")),
+                _excel_safe(r.get("avance")),
+                _excel_safe(r.get("contratista")),
+                _excel_safe(personnel),
+                _excel_safe(equipment),
+                _excel_safe(r.get("notes")),
+                _excel_safe(_normalize_area_name(
+                    r.get("area_name") or (areas_by_id.get(r.get("area_id"), {}) or {}).get("name"),
+                    user_role=user.get("role"),
+                    user_area=user.get("area"),
+                )),
+                _excel_safe(r.get("captured_by_name")),
+                _excel_safe(r.get("created_at")),
+                r.get("id"),
+            ])
+
+    # Anchos de columna
+    widths = [7, 18, 44, 22, 16, 16, 16, 24, 14, 18, 30, 26, 36, 18, 22, 22, 38]
+    for i, w in enumerate(widths, start=1):
+        ws.column_dimensions[ws.cell(row=1, column=i).column_letter].width = w
+    # Wrap en columnas largas
+    wrap_cols = {3, 11, 12, 13}  # Ruta, Personal, Equipo, Notas
+    for row in ws.iter_rows(min_row=2):
+        for cell in row:
+            if cell.column in wrap_cols:
+                cell.alignment = Alignment(wrap_text=True, vertical="top")
+
+    # Cabecera del archivo: nombre del proyecto y fecha
+    ws.insert_rows(1)
+    ws.cell(row=1, column=1, value=f"SynCo · {proj.get('name','Proyecto')} · Reporte exportado {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(headers))
+    title_cell = ws.cell(row=1, column=1)
+    title_cell.font = Font(bold=True, size=12, color="1E3A8A")
+    title_cell.alignment = Alignment(horizontal="left", vertical="center")
+    ws.freeze_panes = "A3"
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    safe_name = re.sub(r"[^A-Za-z0-9_-]+", "_", proj.get("name", "proyecto"))[:60] or "proyecto"
+    fname = f"synco_{safe_name}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M')}.xlsx"
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
+# === PDF EXPORT (Motor paramétrico unificado v2) =============================
+# Reglas:
+#   - COORDINADOR: ve TODOS los reportes del proyecto.
+#   - ESPECIALISTA: sólo ve los reportes que ÉL capturó (captured_by == user.id).
+#   - SUB-COORDINADOR: ve sólo reportes cuyos nodos caen dentro de su scope_node_ids.
+#   - Período: today | yesterday | week | month (ventana móvil sobre created_at).
+#   - "Mes" = Mes-a-la-fecha (día 1 → ahora). NO últimos 30 días.
+#   - Render reportlab CPU-bound se ejecuta en thread aparte (asyncio.to_thread)
+#     para no bloquear el event loop de uvicorn en "week"/"month".
+#   - Cálculo de Avance: por cada reporte → (Última lectura - Primera lectura),
+#     donde Primera lectura = último valor capturado en el reporte anterior del
+#     mismo nodo (o 0 si es el primer reporte histórico).
+#   - Layout exacto por reporte: Fecha · Nombre · Actividad · No. De Contrato ·
+#     Contratista · Ubicación · Reporte de avance · Personal · Equipo · Observaciones.
+
+LOGO_PATH = Path(__file__).resolve().parent / "assets" / "logo_dirac.png"
+
+_MESES_ES = [
+    "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+    "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre",
+]
+
+_MEASUREMENT_LABELS_ES = {
+    "coord_latlon": "Coordenadas (Lat/Lon)",
+    "cadenamiento": "Cadenamiento",
+    "eje": "Eje",
+    "nivel": "Nivel",
+}
+
+
+def _measurement_label(mtype: str) -> str:
+    return _MEASUREMENT_LABELS_ES.get(mtype or "", mtype or "—")
+
+
+def _fmt_fecha_es(dt: datetime) -> str:
+    """Formato ej. '16 de Junio del 2026' en zona horaria America/Mexico_City."""
+    try:
+        if not isinstance(dt, datetime):
+            return "—"
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.astimezone(MX_TZ)
+        return f"{dt.day} de {_MESES_ES[dt.month - 1]} del {dt.year}"
+    except Exception:
+        return dt.strftime("%Y-%m-%d") if isinstance(dt, datetime) else "—"
+
+
+def _fmt_fecha_dd_mm_yyyy(dt) -> str:
+    """Formato corto DD-MM-YYYY en zona horaria America/Mexico_City.
+
+    Nunca regresa palabras como "Hoy" o "Ayer" — es el formato institucional
+    requerido en exportaciones."""
+    try:
+        if not isinstance(dt, datetime):
+            return "—"
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.astimezone(MX_TZ)
+        return dt.strftime("%d-%m-%Y")
+    except Exception:
+        return "—"
+
+
+def _fmt_fecha_dd_mm_yyyy_hhmm(dt) -> str:
+    """Formato DD-MM-YYYY HH:MM en zona horaria America/Mexico_City."""
+    try:
+        if not isinstance(dt, datetime):
+            return "—"
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.astimezone(MX_TZ)
+        return dt.strftime("%d-%m-%Y %H:%M")
+    except Exception:
+        return "—"
+
+
+_SEVERIDAD_ORDER = {"urgente": 0, "importante": 1, "informativo": 2}
+
+
+def _severidad_label(sev: Optional[str]) -> str:
+    s = (sev or "informativo").lower()
+    return {"urgente": "Urgente", "importante": "Importante", "informativo": "Informativo"}.get(s, "Informativo")
+
+
+def _severidad_hex(sev: Optional[str]) -> str:
+    s = (sev or "informativo").lower()
+    # Semáforo institucional: rojo / ámbar / azul.
+    return {"urgente": "#DC2626", "importante": "#D97706", "informativo": "#1D4ED8"}.get(s, "#1D4ED8")
+
+
+def _export_severity_filter(role: str) -> set:
+    """Severidades incluidas en el documento exportado según rol del usuario.
+
+    - Especialista: Importante + Urgente (excluye Informativo).
+    - Supervisor (sub-coord, jefe, coord): Importante + Urgente.
+    - Esta regla aplica a reportes Y noticias inyectadas."""
+    return {"importante", "urgente"}
+
+
+async def _announcements_for_node(
+    pid: str,
+    node_path_ids: List[str],
+    start_dt: datetime,
+    end_dt: datetime,
+) -> List[dict]:
+    """Devuelve noticias vinculadas al nodo o cualquiera de sus ancestros,
+    con severidad Importante/Urgente, en el rango [start_dt, end_dt]."""
+    if not node_path_ids:
+        return []
+    q = {
+        "project_id": pid,
+        "jerarquia": {"$in": ["importante", "urgente"]},
+        "$or": [
+            {"node_id": {"$in": node_path_ids}},
+            {"node_path_ids": {"$elemMatch": {"$in": node_path_ids}}},
+        ],
+        "created_at": {"$gte": start_dt, "$lte": end_dt},
+    }
+    items = await db.announcements.find(q).sort("created_at", -1).to_list(length=200)
+    return items
+
+
+def _extract_numeric_reading(report: dict) -> Optional[float]:
+    """Extrae el valor numérico capturado en el reporte según measurement_type.
+    Retorna None si no se puede convertir a número (ej. 'eje', coordenadas)."""
+    if not report:
+        return None
+    mtype = report.get("measurement_type")
+    val = report.get("measurement_value") or {}
+    try:
+        if mtype == "nivel":
+            v = val.get("nivel") if "nivel" in val else val.get("value")
+            return float(v) if v is not None else None
+        if mtype == "cadenamiento":
+            v = val.get("cadenamiento") or val.get("value")
+            if isinstance(v, str) and "+" in v:
+                parts = v.split("+", 1)
+                km = float(parts[0])
+                m = float(parts[1])
+                return km * 1000.0 + m
+            return float(v) if v is not None else None
+        # eje / coord_latlon → no numérico
+        return None
+    except Exception:
+        return None
+
+
+def _fmt_reading(v: Optional[float]) -> str:
+    """Formato profesional con máximo 2 decimales (sin ceros sobrantes)."""
+    if v is None:
+        return "—"
+    try:
+        f = float(v)
+    except Exception:
+        return "—"
+    if abs(f - round(f)) < 1e-9:
+        return f"{int(round(f))}"
+    s = f"{f:.2f}"
+    # Quita ceros sobrantes a la derecha (p.ej. 12.50 → 12.5) pero respeta el
+    # punto decimal: 12.00 ya quedaría como entero por la rama anterior.
+    if "." in s:
+        s = s.rstrip("0").rstrip(".") if s.endswith("0") else s
+    return s
+
+
+def _format_measurement_for_display(report: dict) -> str:
+    """Cuando no hay valor numérico (ej. eje, coord), devolvemos representación legible."""
+    mtype = (report or {}).get("measurement_type")
+    val = (report or {}).get("measurement_value") or {}
+    if mtype == "eje":
+        return str(val.get("eje") or val.get("value") or "—")
+    if mtype == "coord_latlon":
+        lat = val.get("lat"); lon = val.get("lon")
+        if lat is None or lon is None:
+            return "—"
+        try:
+            return f"{float(lat):.6f}, {float(lon):.6f}"
+        except Exception:
+            return f"{lat}, {lon}"
+    if mtype == "cadenamiento":
+        return str(val.get("cadenamiento") or val.get("value") or "—")
+    if mtype == "nivel":
+        v = val.get("nivel") if "nivel" in val else val.get("value")
+        return _fmt_reading(float(v)) if v is not None else "—"
+    return "—"
+
+
+def _period_range(period: str) -> tuple:
+    """Devuelve (start_utc, end_utc, etiqueta_legible).
+
+    Los rangos se calculan en horario local America/Mexico_City y se
+    convierten a UTC para consultar Mongo. Esto garantiza:
+      - "Hoy" = desde 00:00:00 CDMX del día actual.
+      - "Ayer" = el día calendario anterior (00:00–24:00 CDMX).
+      - "Mes" = REGLA ESTRICTA: día 1 del mes calendario actual CDMX 00:00:00 → ahora.
+    """
+    now_utc = datetime.now(timezone.utc)
+    now_mx = now_utc.astimezone(MX_TZ)
+    p = (period or "today").lower().strip()
+    if p in ("today", "hoy"):
+        start_mx = now_mx.replace(hour=0, minute=0, second=0, microsecond=0)
+        return start_mx.astimezone(timezone.utc), now_utc, "Hoy"
+    if p in ("yesterday", "ayer"):
+        end_mx = now_mx.replace(hour=0, minute=0, second=0, microsecond=0)
+        start_mx = end_mx - timedelta(days=1)
+        return start_mx.astimezone(timezone.utc), end_mx.astimezone(timezone.utc), "Ayer"
+    if p in ("week", "semana", "semanal"):
+        # [FIX] Bloque fijo de semana natural (Domingo a Sábado)
+        days_to_sunday = (now_mx.weekday() + 1) % 7
+        start_mx = now_mx.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days_to_sunday)
+        return start_mx.astimezone(timezone.utc), now_utc, "Semana natural"
+    if p in ("month", "mes", "mensual"):
+        # REGLA ESTRICTA: Día 1 del mes calendario CDMX 00:00 → ahora.
+        start_mx = now_mx.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        return start_mx.astimezone(timezone.utc), now_utc, "Mes a la fecha"
+    start_mx = now_mx.replace(hour=0, minute=0, second=0, microsecond=0)
+    return start_mx.astimezone(timezone.utc), now_utc, "Hoy"
+
+
+# ============================================================================
+# Categorización de reportes (Diario / Semanal / Mensual).
+# ----------------------------------------------------------------------------
+# Regla de negocio (Agosto 2026): la jerarquía (severidad) elegida al
+# capturar el reporte determina a QUÉ informe llega, de forma excluyente:
+#   * severidad "diario"      → SOLO informe Diario.
+#   * severidad "importante"  → SOLO informe Semanal (etiqueta UI: "Semanal").
+#   * severidad "urgente"     → SOLO informe Mensual (etiqueta UI: "Mensual").
+#   * severidad "informativo" → NUNCA llega a ningún informe.
+# El rango de fechas de cada informe (diario = hoy+ayer, semanal = semana
+# natural, mensual = mes calendario en curso) es independiente de esta regla;
+# ver `_period_range_for_type`. La lógica de filtrado es exclusivamente de
+# datos; el motor de renderizado (`_clone_membrete`, escalado, márgenes)
+# permanece intocado.
+# ============================================================================
+_PERIOD_TYPE_ALIASES = {
+    "diario", "daily", "dia", "día",
+    "semanal", "weekly",
+    "mensual", "monthly", "mes",
+}
+
+
+def _normalize_period_type(period_type: Optional[str]) -> Optional[str]:
+    """Normaliza el parámetro `period_type` a diario/semanal/mensual o None."""
+    if not period_type:
+        return None
+    v = period_type.strip().lower()
+    if v in ("diario", "daily", "dia", "día"):
+        return "diario"
+    if v in ("semanal", "weekly"):
+        return "semanal"
+    if v in ("mensual", "monthly", "mes"):
+        return "mensual"
+    return None
+
+
+def _period_range_for_type(period_type: str) -> tuple:
+    """Rango temporal `(start_utc, end_utc, etiqueta)` para cada categoría."""
+    now_utc = datetime.now(timezone.utc)
+    now_mx = now_utc.astimezone(MX_TZ)
+    pt = _normalize_period_type(period_type)
+    if pt == "diario":
+        # Hoy + ayer: desde ayer 00:00 CDMX hasta ahora.
+        today_start_mx = now_mx.replace(hour=0, minute=0, second=0, microsecond=0)
+        start_mx = today_start_mx - timedelta(days=1)
+        return (
+            start_mx.astimezone(timezone.utc),
+            now_utc,
+            "Reporte Diario (hoy y ayer)",
+        )
+    if pt == "semanal":
+        # [FIX] Bloque fijo de semana natural (Domingo a Sábado)
+        days_to_sunday = (now_mx.weekday() + 1) % 7
+        start_mx = now_mx.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days_to_sunday)
+        return (
+            start_mx.astimezone(timezone.utc),
+            now_utc,
+            "Reporte Semanal (semana en curso)",
+        )
+    if pt == "mensual":
+        # Mes calendario en curso (día 1 CDMX → ahora).
+        start_mx = now_mx.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        return (
+            start_mx.astimezone(timezone.utc),
+            now_utc,
+            "Reporte Mensual (mes en curso)",
+        )
+    # Fallback prudente: hoy.
+    start_mx = now_mx.replace(hour=0, minute=0, second=0, microsecond=0)
+    return start_mx.astimezone(timezone.utc), now_utc, "Hoy"
+
+
+def _severity_set_for_period_type(
+    period_type: Optional[str],
+    default_set: set,
+) -> set:
+    """Devuelve el set de severidades permitidas para el `period_type`.
+
+    Política institucional (Agosto 2026 · ruteo de informes por jerarquía):
+      - "informativo" NUNCA se incluye en ningún informe categorizado.
+      - Diario   → SOLO severidad "diario".
+      - Semanal  → SOLO severidad "importante" (etiqueta UI: "Semanal").
+      - Mensual  → SOLO severidad "urgente" (etiqueta UI: "Mensual").
+      - None (comportamiento clásico, sin `period_type`) → `default_set`
+        por rol vía `_export_severity_filter`.
+    Cada severidad llega a UN SOLO tipo de informe (particiones excluyentes),
+    no se acumulan entre categorías.
+    """
+    pt = _normalize_period_type(period_type)
+    if pt == "diario":
+        return {"diario"}
+    if pt == "semanal":
+        return {"importante"}
+    if pt == "mensual":
+        return {"urgente"}
+    return default_set
+
+
+def _strip_b64_prefix(s: str) -> str:
+    if not isinstance(s, str):
+        return ""
+    if s.startswith("data:") and "," in s:
+        return s.split(",", 1)[1]
+    return s
+
+
+# ============================================================================
+# Regla de negocio: los reportes de "Sub supervisores" se agrupan bajo la
+# disciplina "Obra Civil" en las exportaciones ejecutivas. Cualquier variante
+# ortográfica (con/sin espacio, tildes, plural, mayúsculas) cae en la regla.
+#
+# Cuando el usuario que EXPORTA tiene rol `sub_coordinador`, TODOS los reportes
+# se etiquetan bajo la disciplina que el Coordinador General le ASIGNÓ en la
+# invitación (`user["area"]`). Si el sub-coordinador NO tiene área asignada,
+# se usa "OBRA CIVIL" como fallback histórico (v2026-07).
+# ============================================================================
+def _normalize_area_name(
+    area_name: Optional[str],
+    user_role: Optional[str] = None,
+    user_area: Optional[str] = None,
+) -> str:
+    # [Regla dura] Sub-coordinador exportando → usa su disciplina asignada;
+    # si no tiene, cae al fallback histórico "OBRA CIVIL".
+    if user_role == ROLE_SUB:
+        assigned = (user_area or "").strip()
+        return assigned.upper() if assigned else "OBRA CIVIL"
+    raw = (area_name or "").strip()
+    if not raw:
+        return "SIN ÁREA"
+    _lower = raw.lower()
+    # Normalizar tildes y colapsar espacios/guiones
+    import unicodedata as _ud
+    _flat = "".join(
+        ch for ch in _ud.normalize("NFD", _lower) if _ud.category(ch) != "Mn"
+    )
+    _flat = _flat.replace("-", " ").replace("_", " ")
+    _flat = " ".join(_flat.split())  # colapsa espacios múltiples
+    # Cubre: "sub supervisor", "sub supervisores", "subsupervisor",
+    # "subsupervisores", "sub-supervisor", etc.
+    if _flat in ("sub supervisor", "sub supervisores",
+                 "subsupervisor", "subsupervisores"):
+        return "OBRA CIVIL"
+    if _flat.startswith("sub supervisor") or _flat.startswith("subsupervisor"):
+        return "OBRA CIVIL"
+    return raw
+
+
+
+# ============================================================================
+# Logo institucional por defecto (DIRAC) — cache en memoria.
+# Si el proyecto NO tiene `constructora_logo` configurado, las exportaciones
+# usan el logo DIRAC para que la cabecera/portada nunca quede vacía.
+# ============================================================================
+_DIRAC_LOGO_URL = (
+    "https://customer-assets.emergentagent.com/"
+    "job_offline-report-sync/artifacts/k58zlgpr_Logo%20dirac%20.png"
+)
+_DIRAC_LOGO_LOCAL = Path(__file__).resolve().parent / "assets" / "logo_dirac.png"
+_DIRAC_LOGO_CACHE: dict = {"bytes": None, "tried": False}
+
+
+def _get_default_logo_bytes() -> Optional[bytes]:
+    """Devuelve los bytes del logo DIRAC (logotipo institucional con triángulo
+    verde). Prioriza el archivo local en `backend/assets/logo_dirac.png` y, si
+    no existe, intenta una descarga remota como fallback.
+
+    Si todo falla, devuelve None y los exports renderizan sin logo.
+    """
+    if _DIRAC_LOGO_CACHE["bytes"] is not None:
+        return _DIRAC_LOGO_CACHE["bytes"]
+    if _DIRAC_LOGO_CACHE["tried"]:
+        return None
+    _DIRAC_LOGO_CACHE["tried"] = True
+    # 1) Archivo local — preferido por confiabilidad y por evitar dependencias de red.
+    try:
+        if _DIRAC_LOGO_LOCAL.exists():
+            data = _DIRAC_LOGO_LOCAL.read_bytes()
+            if data:
+                _DIRAC_LOGO_CACHE["bytes"] = data
+                return data
+    except Exception as e:  # pragma: no cover
+        logging.warning("No se pudo leer logo DIRAC local: %s", e)
+    # 2) Fallback remoto.
+    try:
+        import requests as _http
+        resp = _http.get(_DIRAC_LOGO_URL, timeout=6)
+        if resp.status_code == 200 and resp.content:
+            _DIRAC_LOGO_CACHE["bytes"] = resp.content
+            return resp.content
+    except Exception as e:  # pragma: no cover
+        logging.warning("No se pudo descargar logo DIRAC: %s", e)
+    return None
+
+
+def _resolve_export_logo_bytes(proj_logo_b64: Optional[str]) -> Optional[bytes]:
+    """Devuelve los bytes del logo institucional priorizando el del proyecto.
+
+    1) Si el proyecto tiene `constructora_logo` (base64), lo usa.
+    2) Si no, cae al logo DIRAC por defecto (cacheado).
+    3) Si todo falla, retorna None y las exportaciones omiten el logo.
+    """
+    import base64 as _b64
+    if proj_logo_b64:
+        try:
+            return _b64.b64decode(_strip_b64_prefix(proj_logo_b64))
+        except Exception:
+            pass
+    return _get_default_logo_bytes()
+
+
+# ─── Plantillas de exportación (custom templates) ────────────────────────────
+# El coordinador puede subir plantillas base institucionales (PDF/DOCX/PPTX).
+# El motor de exportación las utiliza como fondo/base al construir el documento.
+TEMPLATES_ROOT = UPLOADS_DIR / "templates"
+TEMPLATES_ROOT.mkdir(parents=True, exist_ok=True)
+
+_TEMPLATE_KIND_EXT = {
+    "pdf": ".pdf",
+    "docx": ".docx",
+    "pptx": ".pptx",
+    # Imagen de mapa/ubicación institucional (para PPTX narrativo).
+    # Se preserva la extensión original del archivo subido.
+    "map": ".img",
+}
+_TEMPLATE_KIND_MIME = {
+    "pdf": {"application/pdf"},
+    "docx": {
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/msword",
+    },
+    "pptx": {
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "application/vnd.ms-powerpoint",
+    },
+    "map": {
+        "image/jpeg",
+        "image/jpg",
+        "image/png",
+        "image/webp",
+    },
+}
+_TEMPLATE_KIND_FIELD = {
+    "pdf": "template_pdf",
+    "docx": "template_docx",
+    "pptx": "template_pptx",
+    "map": "template_map",
+}
+
+
+def _template_path_for(pid: str, kind: str, ext_override: Optional[str] = None) -> Path:
+    ext = ext_override or _TEMPLATE_KIND_EXT[kind]
+    return TEMPLATES_ROOT / pid / f"template{ext}"
+
+
+def _get_project_template(project: dict, kind: str) -> Optional[str]:
+    """Devuelve ruta absoluta a la plantilla si existe físicamente en disco."""
+    field = _TEMPLATE_KIND_FIELD.get(kind)
+    if not field:
+        return None
+    rel = (project or {}).get(field)
+    if not rel:
+        return None
+    p = Path(rel) if os.path.isabs(rel) else (TEMPLATES_ROOT.parent.parent / rel)
+    return str(p) if p.exists() else None
+
+
+@api.post("/projects/{pid}/template/{kind}", response_model=ProjectOut)
+async def upload_project_template(
+    pid: str,
+    kind: str,
+    file: UploadFile = File(...),
+    user: dict = Depends(current_user),
+):
+    """Sube una plantilla PDF/DOCX/PPTX/MAP para un proyecto.
+    - pdf/docx/pptx: se usan como fondo/base para exportaciones.
+    - map: imagen (jpg/png/webp) que se incrustará en la slide 'Mapa/Ubicación' del PPTX
+      narrativo, en la shape llamada 'MAPA' (o como fondo si no existe).
+    Solo Coordinador General o Jefe de Proyecto.
+    """
+    kind = (kind or "").lower()
+    if kind not in _TEMPLATE_KIND_EXT:
+        raise HTTPException(400, "kind debe ser 'pdf', 'docx', 'pptx' o 'map'")
+    if user.get("role") not in ("coordinador_general", "jefe_proyecto"):
+        raise HTTPException(403, "Solo Coordinador o Jefe de Proyecto pueden subir plantillas")
+    proj = await db.projects.find_one({"id": pid})
+    if not proj:
+        raise HTTPException(404, "Proyecto no existe")
+
+    content_type = (file.content_type or "").lower()
+    allowed = _TEMPLATE_KIND_MIME[kind]
+    if content_type and content_type not in allowed:
+        raise HTTPException(415, f"Content-Type inválido para {kind}: {content_type}")
+
+    # Para "map", preservar la extensión original (jpg/png/webp)
+    if kind == "map":
+        orig_name = (file.filename or "map.jpg").lower()
+        ext = ".jpg"
+        for cand in (".jpg", ".jpeg", ".png", ".webp"):
+            if orig_name.endswith(cand):
+                ext = cand
+                break
+        # Eliminar cualquier plantilla map previa (extensión distinta) para evitar residuos
+        for cand_ext in (".jpg", ".jpeg", ".png", ".webp", ".img"):
+            try:
+                _template_path_for(pid, "map", cand_ext).unlink(missing_ok=True)
+            except Exception:
+                pass
+        dest_path = _template_path_for(pid, "map", ext)
+    else:
+        dest_path = _template_path_for(pid, kind)
+
+    dest_dir = TEMPLATES_ROOT / pid
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    # Escribir en disco (streaming, sin cargar todo en memoria)
+    max_bytes = 25 * 1024 * 1024  # 25 MB duro
+    total = 0
+    tmp_path = dest_path.with_suffix(dest_path.suffix + ".tmp")
+    with open(tmp_path, "wb") as out:
+        while True:
+            chunk = await file.read(1024 * 512)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > max_bytes:
+                out.close()
+                tmp_path.unlink(missing_ok=True)
+                raise HTTPException(413, f"Plantilla demasiado grande (máx {max_bytes // (1024 * 1024)} MB)")
+            out.write(chunk)
+    tmp_path.replace(dest_path)
+
+    field = _TEMPLATE_KIND_FIELD[kind]
+    rel_path = str(dest_path)  # ruta absoluta local; se resuelve dinámicamente en lectura
+    await db.projects.update_one({"id": pid}, {"$set": {field: rel_path}})
+    updated = await db.projects.find_one({"id": pid})
+    return _project_public(updated)
+
+
+@api.delete("/projects/{pid}/template/{kind}", response_model=ProjectOut)
+async def delete_project_template(pid: str, kind: str, user: dict = Depends(current_user)):
+    """Elimina la plantilla asociada al proyecto (borra archivo físico y campo en DB)."""
+    kind = (kind or "").lower()
+    if kind not in _TEMPLATE_KIND_EXT:
+        raise HTTPException(400, "kind inválido")
+    if user.get("role") not in ("coordinador_general", "jefe_proyecto"):
+        raise HTTPException(403, "Solo Coordinador o Jefe de Proyecto")
+    proj = await db.projects.find_one({"id": pid})
+    if not proj:
+        raise HTTPException(404, "Proyecto no existe")
+    try:
+        if kind == "map":
+            for cand_ext in (".jpg", ".jpeg", ".png", ".webp", ".img"):
+                try:
+                    _template_path_for(pid, "map", cand_ext).unlink(missing_ok=True)
+                except Exception:
+                    pass
+        else:
+            _template_path_for(pid, kind).unlink(missing_ok=True)
+    except Exception:
+        pass
+    field = _TEMPLATE_KIND_FIELD[kind]
+    await db.projects.update_one({"id": pid}, {"$set": {field: None}})
+    updated = await db.projects.find_one({"id": pid})
+    return _project_public(updated)
+
+
+# ============================================================================
+# DATOS GENERALES (ex-Mapa) — múltiples imágenes por proyecto.
+# El campo `general_data_images` guarda un array de strings base64 (data URLs).
+# Se renderizan como slides/páginas dedicadas al inicio de las exportaciones
+# PPTX/PDF (presupuesto, programa, planos, mapa, etc.).
+# ============================================================================
+_GENERAL_DATA_MAX = 30           # tope de imágenes por proyecto
+_GENERAL_DATA_MAX_BYTES = 5_000_000  # ~5 MB decoded por imagen
+
+
+class GeneralDataImageIn(BaseModel):
+    image: str  # data URL base64 (data:image/jpeg;base64,...)
+
+
+class GeneralDataReplaceIn(BaseModel):
+    images: List[str]  # reemplazo completo del array
+
+
+@api.post("/projects/{pid}/general-data-images", response_model=ProjectOut)
+async def add_general_data_image(
+    pid: str,
+    body: GeneralDataImageIn,
+    user: dict = Depends(current_user),
+):
+    """Agrega UNA imagen a la sección Datos Generales del proyecto.
+    Para múltiples imágenes, el frontend hace N POSTs (o usa PUT de reemplazo)."""
+    if user.get("role") not in ("coordinador_general", "jefe_proyecto"):
+        raise HTTPException(403, "Solo Coordinador o Jefe de Proyecto")
+    proj = await db.projects.find_one({"id": pid})
+    if not proj:
+        raise HTTPException(404, "Proyecto no existe")
+    b64 = (body.image or "").strip()
+    if not b64.startswith("data:image/"):
+        raise HTTPException(400, "Formato inválido: se espera data URL base64 de imagen")
+    # Validación de tamaño (aprox por len del base64)
+    try:
+        payload = b64.split(",", 1)[1] if "," in b64 else b64
+        approx_bytes = (len(payload) * 3) // 4
+        if approx_bytes > _GENERAL_DATA_MAX_BYTES:
+            raise HTTPException(413, f"Imagen demasiado grande (máx {_GENERAL_DATA_MAX_BYTES // 1_000_000} MB)")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(400, "Base64 inválido")
+    current = (proj.get("general_data_images") or [])
+    if len(current) >= _GENERAL_DATA_MAX:
+        raise HTTPException(400, f"Máximo {_GENERAL_DATA_MAX} imágenes por proyecto")
+    current = current + [b64]
+    await db.projects.update_one({"id": pid}, {"$set": {"general_data_images": current}})
+    updated = await db.projects.find_one({"id": pid})
+    return _project_public(updated)
+
+
+@api.post("/projects/{pid}/general-data-images/upload-file", response_model=ProjectOut)
+async def upload_general_data_image_file(
+    pid: str,
+    file: UploadFile = File(...),
+    user: dict = Depends(current_user),
+):
+    """Agrega UNA imagen a Datos Generales usando **multipart/form-data**
+    (en vez de JSON base64). Es el path recomendado para dispositivos
+    móviles: evita el bug "Network Request Failed" en Android por payloads
+    JSON gigantes y libera el hilo principal del iPhone.
+
+    - Acepta JPG/PNG/WebP hasta ~5 MB.
+    - El backend genera internamente el `data URL base64` y lo persiste.
+    - Devuelve el proyecto actualizado (mismo shape que el POST JSON).
+    """
+    if user.get("role") not in ("coordinador_general", "jefe_proyecto"):
+        raise HTTPException(403, "Solo Coordinador o Jefe de Proyecto")
+    proj = await db.projects.find_one({"id": pid})
+    if not proj:
+        raise HTTPException(404, "Proyecto no existe")
+    content_type = (file.content_type or "").lower() or "image/jpeg"
+    if content_type not in _NODE_COVER_MIME:  # reutilizamos JPG/PNG/WebP
+        raise HTTPException(415, f"Formato no soportado: {content_type}. Usa JPG/PNG/WebP.")
+    raw = await file.read(_GENERAL_DATA_MAX_BYTES + 1)
+    if len(raw) > _GENERAL_DATA_MAX_BYTES:
+        raise HTTPException(413, f"Imagen demasiado grande (máx {_GENERAL_DATA_MAX_BYTES // 1_000_000} MB)")
+    current = (proj.get("general_data_images") or [])
+    if len(current) >= _GENERAL_DATA_MAX:
+        raise HTTPException(400, f"Máximo {_GENERAL_DATA_MAX} imágenes por proyecto")
+    import base64 as _b64
+    b64_str = _b64.b64encode(raw).decode("ascii")
+    data_url = f"data:{content_type};base64,{b64_str}"
+    current = current + [data_url]
+    await db.projects.update_one({"id": pid}, {"$set": {"general_data_images": current}})
+    updated = await db.projects.find_one({"id": pid})
+    return _project_public(updated)
+
+
+# === UPLOAD GENÉRICO DE FOTO (para reportes) ===============================
+# Preferido en móvil sobre el JSON base64 dentro de `POST /reports`.
+# Devuelve un `data_url` que el frontend usa como identificador dentro del
+# array `images` del reporte al crearlo. El backend almacena finalmente ese
+# mismo data URL en Mongo (paridad con el flujo previo).
+_REPORT_PHOTO_MAX_BYTES = 6_000_000  # ~6 MB decoded (~8 MB JPEG comprimido)
+
+
+@api.post("/upload/photo")
+async def upload_photo_multipart(
+    file: UploadFile = File(...),
+    user: dict = Depends(current_user),
+):
+    """Sube UNA foto (JPG/PNG/WebP) y devuelve `{data_url: "data:image/..."}`
+    para que el cliente lo referencie en `POST /reports` u otros flujos.
+
+    Ventajas vs. base64 en JSON:
+      - Android: usa la stack nativa (OkHttp), sin el bug "Network Request
+        Failed" que sufre `fetch+FormData` con URIs de expo-image-picker.
+      - iOS: usa NSURLSession, no bloquea el hilo principal ni infla la
+        memoria del bridge con strings enormes.
+    """
+    content_type = (file.content_type or "").lower() or "image/jpeg"
+    if content_type not in _NODE_COVER_MIME:
+        raise HTTPException(415, f"Formato no soportado: {content_type}. Usa JPG/PNG/WebP.")
+    raw = await file.read(_REPORT_PHOTO_MAX_BYTES + 1)
+    if len(raw) > _REPORT_PHOTO_MAX_BYTES:
+        raise HTTPException(413, f"Foto demasiado grande (máx {_REPORT_PHOTO_MAX_BYTES // 1_000_000} MB)")
+    if not raw:
+        raise HTTPException(400, "Archivo vacío")
+    import base64 as _b64
+    b64_str = _b64.b64encode(raw).decode("ascii")
+    return {"data_url": f"data:{content_type};base64,{b64_str}"}
+
+
+@api.put("/projects/{pid}/general-data-images", response_model=ProjectOut)
+async def replace_general_data_images(
+    pid: str,
+    body: GeneralDataReplaceIn,
+    user: dict = Depends(current_user),
+):
+    """Reemplaza el array completo de imágenes de Datos Generales.
+    Útil para reordenar o eliminar múltiples en batch desde el frontend."""
+    if user.get("role") not in ("coordinador_general", "jefe_proyecto"):
+        raise HTTPException(403, "Solo Coordinador o Jefe de Proyecto")
+    proj = await db.projects.find_one({"id": pid})
+    if not proj:
+        raise HTTPException(404, "Proyecto no existe")
+    imgs = body.images or []
+    if len(imgs) > _GENERAL_DATA_MAX:
+        raise HTTPException(400, f"Máximo {_GENERAL_DATA_MAX} imágenes por proyecto")
+    for im in imgs:
+        if not isinstance(im, str) or not im.startswith("data:image/"):
+            raise HTTPException(400, "Cada imagen debe ser data URL base64 (data:image/...)")
+    await db.projects.update_one({"id": pid}, {"$set": {"general_data_images": imgs}})
+    updated = await db.projects.find_one({"id": pid})
+    return _project_public(updated)
+
+
+@api.delete("/projects/{pid}/general-data-images/{index}", response_model=ProjectOut)
+async def delete_general_data_image(
+    pid: str,
+    index: int,
+    user: dict = Depends(current_user),
+):
+    """Elimina la imagen `index` (0-based) del array de Datos Generales."""
+    if user.get("role") not in ("coordinador_general", "jefe_proyecto"):
+        raise HTTPException(403, "Solo Coordinador o Jefe de Proyecto")
+    proj = await db.projects.find_one({"id": pid})
+    if not proj:
+        raise HTTPException(404, "Proyecto no existe")
+    imgs = list(proj.get("general_data_images") or [])
+    if index < 0 or index >= len(imgs):
+        raise HTTPException(404, "Índice fuera de rango")
+    imgs.pop(index)
+    await db.projects.update_one({"id": pid}, {"$set": {"general_data_images": imgs}})
+    updated = await db.projects.find_one({"id": pid})
+    return _project_public(updated)
+
+
+
+
+@api.get("/projects/{pid}/export/reports.pdf")
+async def export_reports_pdf(
+    pid: str,
+    period: str = Query("today", description="today|yesterday|week|month"),
+    period_type: Optional[str] = Query(
+        None,
+        description="diario | semanal | mensual · categoría de reporte. "
+                    "Si se envía, sobrescribe `period` y aplica la política "
+                    "de severidad correspondiente.",
+    ),
+    area_id: Optional[str] = Query(None, description="Filtro por área (opcional)"),
+    scope: Optional[str] = Query(None, description="mine|area (para especialistas)"),
+    recuento_nivel: Optional[str] = Query(
+        None, description="tramo|subtramo|hoja|personalizado — nivel de agregación del Recuento "
+                           "General. Si se omite, usa la preferencia guardada del proyecto o "
+                           "'subtramo' por defecto.",
+    ),
+    recuento_node_ids: Optional[str] = Query(
+        None, description="IDs de nodo separados por coma — solo aplica si recuento_nivel="
+                           "personalizado. Si se omite, usa la preferencia guardada del proyecto.",
+    ),
+    recuento_sin_datos: Optional[str] = Query(
+        None, description="omitir|leyenda — qué hacer con nodos de agregación sin actividad en "
+                           "el período. Si se omite, usa la preferencia guardada del proyecto o "
+                           "'omitir' por defecto.",
+    ),
+    user: dict = Depends(current_user),
+):
+    """Motor PDF paramétrico.
+
+    Filtros aplicados automáticamente (no negociables):
+      - Severidad: SOLO Importante + Urgente (excluye Informativo).
+      - Área: si `area_id` se especifica, filtra por esa área.
+      - Especialistas con toggle `scope=mine` ven solo sus reportes.
+    Render bloqueante (reportlab) en thread aparte."""
+    try:
+        import base64
+        from reportlab.lib.pagesizes import A4, landscape
+        from reportlab.lib.units import cm
+        from reportlab.lib.colors import HexColor
+        from reportlab.lib.utils import ImageReader
+        from reportlab.pdfgen import canvas as _canvas
+        from reportlab.platypus import Table, TableStyle, Paragraph
+        from reportlab.lib.styles import ParagraphStyle
+        from reportlab.lib.enums import TA_CENTER
+        from xml.sax.saxutils import escape as _xml_escape
+    except Exception as e:
+        raise HTTPException(500, f"reportlab no instalado: {e}")
+
+    # Pillow: usado para crop-to-fill de fotos respetando EXIF-rotation.
+    # Si no está disponible se hace fallback a preserveAspectRatio letterbox.
+    try:
+        from PIL import Image as _PILImage
+        from PIL.ImageOps import exif_transpose as _pil_exif_transpose
+        _HAS_PIL = True
+    except Exception:
+        _HAS_PIL = False
+
+    scope_mine_only = (scope or "").lower() == "mine"
+    data = await _gather_export_data(
+        pid, period, user,
+        area_id=area_id,
+        scope_mine_only=scope_mine_only,
+        period_type=period_type,
+    )
+    proj = data["proj"]
+    leaf_nodes = data["leaf_nodes"]
+    reports_by_node = data["reports_by_node"]
+    announcements_by_node = data["announcements_by_node"]
+    path_cache = data["path_cache"]
+    start_dt = data["start_dt"]
+    end_dt = data["end_dt"]
+    prev_reading_by_node = data["prev_reading_by_node"]
+    cover_ancestor_by_node = data.get("cover_ancestor_by_node", {})
+    areas_by_id = data.get("areas_by_id", {})
+    nodes_by_id = data.get("nodes_by_id") or {}
+    root_ids = data.get("root_ids") or []
+    workforce_reports_by_node = data.get("reports_by_node_workforce") or reports_by_node
+    # Página de resumen por Subtramo (nodo a profundidad 1): actividades,
+    # clima y filas de Fuerza de Trabajo/Maquinaria SIN agrupar (cada
+    # captura individual es su propia fila — ver `_workforce_raw_rows_by_subtramo`).
+    resource_raw_rows_by_subtramo = _workforce_raw_rows_by_subtramo(workforce_reports_by_node, nodes_by_id)
+    actividades_by_subtramo = _actividades_by_subtramo(workforce_reports_by_node, nodes_by_id)
+    # Página(s) de cierre "RECUENTO GENERAL": consolidado del período
+    # completo, agrupado por el nivel de agregación configurado (parámetros
+    # de la request > preferencia guardada del proyecto > 'subtramo' por
+    # defecto — ver `_resolve_recuento_config`), con desglose por
+    # puesto/descripción y su cantidad total.
+    recuento_nivel_eff, recuento_node_ids_eff, recuento_incluir_sin_datos = _resolve_recuento_config(
+        proj, recuento_nivel, recuento_node_ids, recuento_sin_datos,
+    )
+    recuento_general_rows = _recuento_general_by_nodo(
+        workforce_reports_by_node, nodes_by_id, root_ids,
+        nivel=recuento_nivel_eff, node_ids=recuento_node_ids_eff,
+        incluir_sin_datos=recuento_incluir_sin_datos,
+    )
+    # Resumen de Actividades Generales CURADAS (hub Actividades Generales),
+    # por Área, para insertar dentro de cada bloque de Área del cuerpo del
+    # PDF — misma fuente que ve el hub (ediciones/ocultamientos aplicados),
+    # nunca el texto crudo del reporte. Un solo prefetch para todo el
+    # proyecto/rango, ANTES del render bloqueante (requiere Mongo).
+    actividades_curadas_idx = await _actividades_curadas_resumen_por_area(pid, start_dt, end_dt, user)
+    # Clima: una consulta por cada combinación de coordenadas distinta que
+    # aparezca entre los subtramos con datos (cacheada para no repetir
+    # llamadas idénticas cuando varios subtramos comparten coords de raíz).
+    weather_by_subtramo: dict = {}
+    _weather_cache: dict = {}
+    for _subtramo_id in resource_raw_rows_by_subtramo.keys():
+        _lat, _lon = _weather_coords_for_subtramo(_subtramo_id, nodes_by_id, workforce_reports_by_node)
+        _cache_key = (_lat, _lon)
+        if _cache_key not in _weather_cache:
+            _weather_cache[_cache_key] = await _fetch_weather_for_export(_lat, _lon)
+        weather_by_subtramo[_subtramo_id] = _weather_cache[_cache_key]
+
+    role = user["role"]
+
+    # Snapshot inmutable para el thread bloqueante
+    project_name = proj.get("name", "Proyecto")
+    project_contract = proj.get("contract_number") or "—"
+    project_constructora = proj.get("constructora") or "—"
+    project_objeto = proj.get("objeto_contrato") or None
+    project_cliente = (proj.get("cliente_principal") or "").strip() or None
+    project_color = _sanitize_color_hex(proj.get("color_tema")) or "#003366"
+    # Color configurable del pie de foto (texto de observaciones bajo la imagen).
+    # Fallback: negro. Usuario puede setear cualquier hex (#RRGGBB).
+    report_text_color = _sanitize_color_hex(proj.get("report_text_color")) or "#0F172A"
+    constructora_logo_b64 = (proj.get("constructora_logo") or "").strip() or None
+    user_name = user.get("name", "")
+    user_email = user.get("email", "")
+    role_label = (
+        "Coordinador" if role == ROLE_COORD
+        else ("Especialista" if role == ROLE_ESPECIALISTA else "Sub-Coordinador")
+    )
+    # Etiqueta de área seleccionada (para portada)
+    area_label = "Todas las áreas"
+    if area_id:
+        area = await db.areas.find_one({"id": area_id, "project_id": pid})
+        if area:
+            area_label = f"Área: {area.get('name', '—')}"
+
+    # Rango DD-MM-YYYY (sin "Hoy"/"Ayer")
+    fechas_label = f"{_fmt_fecha_dd_mm_yyyy(start_dt)} a {_fmt_fecha_dd_mm_yyyy(end_dt)}"
+
+    # ========================================================================
+    # DIMENSIONES DINÁMICAS DEL CANVAS
+    # Si el proyecto tiene plantilla PDF, adoptamos EXACTAMENTE las
+    # dimensiones (width × height en puntos) de su primera página. Esto
+    # garantiza que el overlay posterior sea pixel-perfect independientemente
+    # de si la plantilla es apaisada, vertical, tabloide o formato custom.
+    # Si no hay plantilla → fallback a landscape(A4).
+    # ========================================================================
+    tpl_pdf_path = _get_project_template(proj, "pdf")
+    tpl_page_w: Optional[float] = None
+    tpl_page_h: Optional[float] = None
+    if tpl_pdf_path:
+        try:
+            from pypdf import PdfReader as _PdfReaderProbe
+            _probe = _PdfReaderProbe(io.BytesIO(Path(tpl_pdf_path).read_bytes()))
+            if _probe.pages:
+                _mb = _probe.pages[0].mediabox
+                tpl_page_w = float(_mb.width)
+                tpl_page_h = float(_mb.height)
+                log.info(
+                    "[pdf] canvas dinámico adoptado desde plantilla: "
+                    "%.1f x %.1f pts (%.2f x %.2f cm)",
+                    tpl_page_w, tpl_page_h,
+                    tpl_page_w / cm, tpl_page_h / cm,
+                )
+        except Exception as _e:
+            log.warning("[pdf] no se pudo leer dimensiones de plantilla PDF: %s", _e)
+            tpl_page_w = tpl_page_h = None
+
+    # ========================================================================
+    # GENERACIÓN BLOQUEANTE (CPU-bound) → asyncio.to_thread
+    # ========================================================================
+    def _build_pdf_blocking() -> tuple:
+        """Genera el PDF y devuelve (bytes, section_page_indices).
+        `section_page_indices` es la lista de índices 0-based en el PDF que
+        corresponden a páginas 'Separadoras de Sección/Nodo' (una por nodo).
+        Estas páginas se reemplazan por la página 2 del template PDF durante
+        la fusión de superposición, si el usuario subió una plantilla PDF."""
+        section_page_indices: List[int] = []
+        buf = io.BytesIO()
+        # Adopta las dimensiones exactas de la plantilla si existe;
+        # caso contrario usa landscape(A4) = 29.7 × 21 cm.
+        if tpl_page_w and tpl_page_h and tpl_page_w > 0 and tpl_page_h > 0:
+            PAGE = (tpl_page_w, tpl_page_h)
+        else:
+            PAGE = landscape(A4)
+        PW, PH = PAGE
+        c = _canvas.Canvas(buf, pagesize=PAGE)
+
+        BRAND = HexColor(project_color)
+        MUTED = HexColor("#64748B")
+        BORDER = HexColor("#E2E8F0")
+        TEXT = HexColor("#0F172A")
+        WHITE = HexColor("#FFFFFF")
+
+        # Logos institucionales: purgados. La plantilla PDF (páginas 0 y 1)
+        # YA los trae impresos en su fondo. Cualquier logo programático
+        # generaba "ghost images" (X rojas) al fusionar con la plantilla.
+        logo_bytes = None  # noqa: F841
+        logo_reader = None  # noqa: F841
+
+        def _draw_logo(x, y, max_w, max_h):
+            """DEPRECATED · no-op: la plantilla PDF trae los logos incrustados."""
+            return False
+
+        def draw_header(page_num: int):
+            """DEPRECATED · no-op.
+
+            La plantilla PDF (página 2 = membrete "ACTIVIDADES GENERALES")
+            ya trae logos, banda superior y demás elementos institucionales.
+            Cualquier decoración programática se solapaba con el membrete y
+            dejaba "ghost images". Se conserva la firma por compatibilidad.
+            """
+            return
+
+        # Márgenes protegidos para no invadir el membrete del template PDF.
+        # TOP_MARGIN_PDF reserva la banda superior donde el template imprime
+        # logos y encabezado. BOTTOM_MARGIN_PDF reserva la banda inferior.
+        TOP_MARGIN_PDF = 4.0 * cm
+        BOTTOM_MARGIN_PDF = 2.0 * cm
+        total_reportes = sum(len(v) for v in reports_by_node.values())
+
+        # --- PORTADA INSTITUCIONAL ----------------------------------------
+        # La página 0 del template PDF aporta el diseño y los logos. Aquí
+        # inyectamos SOLO los textos ejecutivos (tipo de reporte, período,
+        # proyecto), respetando la plantilla del cliente.
+        #
+        # IMPORTANTE (paridad con PPTX):
+        #   • Fallback obligatorio de título → "REPORTE" si `period_type` viene vacío.
+        #   • Los textos se dibujan AL FINAL del canvas actual, DESPUÉS del
+        #     `setFillColor(WHITE)`, y con showPage al terminar. Como el
+        #     `merge_page` en la etapa de fusión pinta el contenido SynCo
+        #     ENCIMA del template (foreground), quedan visibles sobre el
+        #     fondo magenta.
+        page_num = 1
+        _period_titles = {
+            "diario": "REPORTE DIARIO",
+            "semanal": "REPORTE SEMANAL",
+            "mensual": "REPORTE MENSUAL",
+        }
+        # Fallback institucional: "REPORTE" si no hay period_type.
+        _report_title = _period_titles.get((period_type or "").lower(), "REPORTE")
+        try:
+            _date_range_txt = f"{_fmt_fecha_dd_mm_yyyy(data['start_dt'])} a {_fmt_fecha_dd_mm_yyyy(data['end_dt'])}"
+        except Exception:
+            _date_range_txt = ""
+        _proj_upper = (project_name or "").upper()
+
+        # Layout de la portada (alineado a la izquierda como el PPTX).
+        # Coordenadas en el sistema de reportlab (Y=0 en la BASE).
+        _cover_x_left = 1.5 * cm
+        _cover_w_full = PW - 3.0 * cm
+        # Bloque de textos centrado verticalmente en el TERCIO INFERIOR
+        # de la portada (no invade el logo/encabezado del template).
+        _cover_block_top_y = PH * 0.55  # baseline superior del bloque
+        # Título "REPORTE" (grande, blanco, izquierda).
+        _title_size = 44
+        while c.stringWidth(_report_title, "Helvetica-Bold", _title_size) > _cover_w_full and _title_size > 20:
+            _title_size -= 2
+        c.setFillColor(WHITE)
+        c.setFont("Helvetica-Bold", _title_size)
+        c.drawString(_cover_x_left, _cover_block_top_y, _report_title)
+        # Rango de fechas (medio, blanco).
+        _dates_y = _cover_block_top_y - 1.6 * cm
+        if _date_range_txt:
+            c.setFont("Helvetica-Bold", 20)
+            c.drawString(_cover_x_left, _dates_y, _date_range_txt)
+        # Nombre del proyecto (grande, blanco, hasta 2 líneas si es muy largo).
+        _proj_y = _dates_y - 1.8 * cm
+        if _proj_upper:
+            _proj_size = 26
+            while c.stringWidth(_proj_upper, "Helvetica-Bold", _proj_size) > _cover_w_full and _proj_size > 14:
+                _proj_size -= 1
+            c.setFont("Helvetica-Bold", _proj_size)
+            # Si aún no cabe → envolver en máx 2 líneas por palabras (word-wrap inline).
+            if c.stringWidth(_proj_upper, "Helvetica-Bold", _proj_size) > _cover_w_full:
+                _words = _proj_upper.split()
+                _cover_lines: List[str] = []
+                _cur = ""
+                for _w in _words:
+                    _cand = (_cur + " " + _w).strip() if _cur else _w
+                    if c.stringWidth(_cand, "Helvetica-Bold", _proj_size) <= _cover_w_full:
+                        _cur = _cand
+                    else:
+                        if _cur:
+                            _cover_lines.append(_cur)
+                        _cur = _w
+                        if len(_cover_lines) >= 2:
+                            break
+                if _cur and len(_cover_lines) < 2:
+                    _cover_lines.append(_cur)
+                _lh = _proj_size * 1.15
+                _ly = _proj_y
+                for _ln in _cover_lines[:2]:
+                    c.drawString(_cover_x_left, _ly, _ln)
+                    _ly -= _lh
+            else:
+                c.drawString(_cover_x_left, _proj_y, _proj_upper)
+        c.showPage()
+        page_num += 1
+
+        # --- PÁGINAS DE DATOS GENERALES (ex-Mapa: array de imágenes) -----
+        # Cada imagen del array `general_data_images` genera UNA página
+        # dedicada usando el mismo membrete institucional (página 1+ del
+        # template). Retro-compat: si el array está vacío pero existe el
+        # legacy `template_map`, se emite ese archivo como única página.
+        _gd_images: List[str] = list(proj.get("general_data_images") or [])
+        _legacy_map_path = _get_project_template(proj, "map") if not _gd_images else None
+
+        def _draw_gd_image(img_bytes: bytes) -> bool:
+            try:
+                _img = ImageReader(io.BytesIO(img_bytes))
+                _map_x = 1.5 * cm
+                _map_y = BOTTOM_MARGIN_PDF
+                _map_h = PH - TOP_MARGIN_PDF - BOTTOM_MARGIN_PDF
+                _map_w = PW - 3.0 * cm
+                c.drawImage(
+                    _img, _map_x, _map_y,
+                    width=_map_w, height=_map_h,
+                    preserveAspectRatio=True, anchor='c', mask='auto',
+                )
+                return True
+            except Exception:
+                return False
+
+        if _gd_images:
+            _gd_page_count = len(_gd_images)
+            for _b64 in _gd_images:
+                try:
+                    raw = base64.b64decode(_strip_b64_prefix(_b64))
+                except Exception:
+                    raw = b""
+                _draw_gd_image(raw)
+                c.showPage()
+                page_num += 1
+        elif _legacy_map_path:
+            _gd_page_count = 1
+            try:
+                _draw_gd_image(Path(_legacy_map_path).read_bytes())
+            except Exception:
+                pass
+            c.showPage()
+            page_num += 1
+        else:
+            _gd_page_count = 1
+            c.setFillColor(MUTED)
+            c.setFont("Helvetica-Oblique", 12)
+            c.drawCentredString(PW / 2, PH / 2,
+                                "Sube imágenes de Datos Generales para el proyecto (presupuesto, programa, planos, mapa…).")
+            c.showPage()
+            page_num += 1
+
+        if total_reportes == 0:
+            c.setFillColor(MUTED)
+            c.setFont("Helvetica-Oblique", 14)
+            c.drawCentredString(PW / 2, PH / 2, "No hay reportes para el período seleccionado.")
+            c.showPage()
+            c.save()
+            return buf.getvalue(), section_page_indices, [], _gd_page_count
+
+        # =====================================================================
+        # LAYOUT EJECUTIVO (P0 REFACTOR 2026-07):
+        #   1. Portadilla de Nodo (ya renderizada arriba en el bucle).
+        #   2. Portadilla de Área (NUEVA) - clonada del fondo de portada.
+        #   3. Slides de reporte: 2 fotos apaisadas (13.37 × 10 cm) lado a
+        #      lado, con caption (máx 4 líneas) DEBAJO de cada foto.
+        #   · Eliminado: tablas de campos, banner de severidad, "Notas y
+        #     noticias". La densidad se movió al PDF ejecutivo.
+        # =====================================================================
+        area_page_indices: List[int] = []
+
+        # Dimensiones del layout ejecutivo (2 fotos por página)
+        EXEC_PHOTO_W = 13.37 * cm
+        EXEC_PHOTO_H = 10.0 * cm
+        EXEC_GAP_X   = 0.6 * cm       # separación horizontal entre fotos
+        EXEC_CAPTION_H = 3.8 * cm     # alto del cuadro de observaciones (más aire)
+        EXEC_CAPTION_LEADING = 17
+        EXEC_CAPTION_SIZE = 14
+        CAPTION_COLOR = HexColor(report_text_color)
+
+        def _wrap_lines(txt: str, max_w: float, font: str, size: float, max_lines: int):
+            """Word-wrap simple truncado a `max_lines` líneas.
+            Devuelve lista de strings ya envueltos."""
+            out = []
+            words = (txt or "").strip().split()
+            current = ""
+            for w in words:
+                cand = (current + " " + w).strip() if current else w
+                if c.stringWidth(cand, font, size) <= max_w:
+                    current = cand
+                else:
+                    if current:
+                        out.append(current)
+                        current = w
+                    else:
+                        # palabra sola más ancha que la caja → truncar
+                        out.append(w)
+                        current = ""
+                    if len(out) >= max_lines:
+                        break
+            if current and len(out) < max_lines:
+                out.append(current)
+            # Última línea con elipsis si aún queda texto
+            if len(out) == max_lines:
+                cw = c.stringWidth(out[-1], font, size)
+                remaining_words = len(words) - sum(len(l.split()) for l in out)
+                if remaining_words > 0:
+                    ellipsis = "…"
+                    # recortar hasta que quepa
+                    while cw + c.stringWidth(ellipsis, font, size) > max_w and out[-1]:
+                        out[-1] = out[-1][:-1]
+                        cw = c.stringWidth(out[-1], font, size)
+                    out[-1] = out[-1] + ellipsis
+            return out
+
+
+        def draw_dynamic_cover_page(cover_name: str, cover_b64: str, page_num_val: int) -> None:
+            """Portadilla de Nodo — LIMPIA sobre el membrete del template PDF.
+
+            Contenido inyectado (SOLO esto, sin fondos ni bordes ni logos):
+              1) `cover_image` del nodo (grande, centrada, aspect-ratio
+                 preservado, dentro del área útil del membrete).
+              2) Título del nodo (path institucional) debajo de la cover.
+            El fondo y el membrete institucional los aporta la plantilla
+            PDF durante la fusión posterior.
+            """
+            title_h = 1.2 * cm
+            title_gap = 0.4 * cm
+            avail_top = PH - TOP_MARGIN_PDF
+            avail_bot = BOTTOM_MARGIN_PDF
+            avail_h = avail_top - avail_bot - title_h - title_gap
+            avail_w = PW - 3.0 * cm
+            target_ratio = 4.0 / 3.0
+            w_from_h = avail_h * target_ratio
+            if w_from_h <= avail_w:
+                img_w = w_from_h
+                img_h = avail_h
+            else:
+                img_w = avail_w
+                img_h = avail_w / target_ratio
+            img_x = (PW - img_w) / 2
+            img_y = avail_bot + title_h + title_gap + (avail_h - img_h) / 2
+            drawn = False
+            try:
+                _b64_data = _strip_b64_prefix(cover_b64) if cover_b64 else None
+                if _b64_data:
+                    raw = base64.b64decode(_b64_data)
+                    img = ImageReader(io.BytesIO(raw))
+                    c.drawImage(
+                        img, img_x, img_y, width=img_w, height=img_h,
+                        preserveAspectRatio=True, anchor='c', mask='auto',
+                    )
+                    drawn = True
+            except Exception:
+                drawn = False
+            _title = (cover_name or "SECCIÓN").upper()
+            _size = 18
+            while c.stringWidth(_title, "Helvetica-Bold", _size) > PW - 3 * cm and _size > 10:
+                _size -= 1
+            # Paridad PPTX: NODE_TITLE_COLOR = azul-oscuro casi negro para
+            # que resalte sobre el fondo BLANCO del membrete (antes se usaba
+            # `BRAND` magenta claro que quedaba ilegible sobre blanco).
+            c.setFillColor(HexColor("#0F172A"))
+            c.setFont("Helvetica-Bold", _size)
+            title_y = img_y - title_gap - title_h / 2 if drawn else avail_bot + avail_h / 2
+            c.drawCentredString(PW / 2, title_y, _title)
+
+        def draw_area_cover_page(area_name: str) -> None:
+            """Portadilla de Área — SÓLO el nombre del área centrado en blanco
+            sobre el fondo magenta de la portada. Se coloca en la MISMA
+            coordenada Y que usa el título "REPORTE X" en la portada principal
+            (PH * 0.32 + 1.6cm) para preservar coherencia visual con la
+            jerarquía institucional."""
+            title = _normalize_area_name(area_name or "SIN ÁREA", user_role=user.get("role"), user_area=user.get("area")).upper()
+            size = 34  # mismo tamaño que "REPORTE X" en la portada
+            while c.stringWidth(title, "Helvetica-Bold", size) > PW - 3.0 * cm and size > 18:
+                size -= 2
+            c.setFillColor(WHITE)
+            c.setFont("Helvetica-Bold", size)
+            _y = PH * 0.32 + 1.6 * cm
+            c.drawCentredString(PW / 2, _y, title)
+
+        _ACCESO_PREDIO_COLORS = {
+            "con acceso": "#16A34A", "permitido": "#16A34A", "acceso permitido": "#16A34A",
+            "liberado": "#16A34A", "libre": "#16A34A", "si": "#16A34A", "sí": "#16A34A",
+            "sin acceso": "#DC2626", "bloqueado": "#DC2626", "denegado": "#DC2626", "no": "#DC2626",
+            "parcial": "#D97706", "restringido": "#D97706",
+        }
+
+        def draw_subtramo_summary_page(subtramo_node: dict, personal_rows: list, maquinaria_rows: list,
+                                        actividades: list, situacion_social: Optional[str],
+                                        acceso_predio: Optional[str], weather: Optional[dict]) -> None:
+            """Página de resumen por Subtramo — layout de 2 columnas separadas
+            por una línea vertical delgada (color de marca):
+
+            IZQUIERDA: título (ícono de estructura + nombre en mayúsculas),
+            "ACCESO AL PREDIO" (caja de color SEMÁNTICO fijo — verde/rojo/
+            ámbar/gris, con nota de vigencia), "SITUACIÓN SOCIAL-LIBERACIÓN
+            FÍSICA DEL PREDIO" (viñetas) y "ACTIVIDADES" (viñetas).
+
+            DERECHA: "ESTADO DEL TIEMPO" (ícono sol/nube + cuadrícula 2x2:
+            temperatura/viento/precipitación/calidad del aire) y dos mini-
+            tablas lado a lado FUERZA DE TRABAJO / MAQUINARIA Y EQUIPO con
+            fila TOTAL en negritas.
+
+            Página FIJA (una sola, sin paginación adicional): el contenido
+            que no cabe se trunca con "…" — decisión de producto para
+            mantener el layout visual exacto solicitado. Se emite una vez
+            por cada cambio de Subtramo al iterar los reportes (ver
+            `_emit_subtramo_summary` en el loop principal).
+
+            FIX 2026-08-11 · CONTRASTE Y ESTRUCTURA
+            ─────────────────────────────────────────────────────────
+            Si el color de marca del proyecto (`color_tema`) es claro
+            (pastel) o inválido, usar BRAND directo dejaba título/headers
+            casi ilegibles (texto claro sobre blanco, o blanco sobre
+            relleno claro). `BRAND` aquí se sombrea LOCALMENTE con
+            `_readable_dark_hex` para garantizar contraste mínimo en toda
+            la página, sin tocar el BRAND real usado en el resto del PDF.
+            Las tablas de recursos ahora se dibujan con un `Table` de
+            reportlab (grid real) en vez de rects manuales, y las viñetas
+            usan `Paragraph` en vez de texto suelto envuelto a mano."""
+            nonlocal page_num
+
+            MARGIN_X = 1.5 * cm
+            GUTTER = 0.9 * cm
+            content_w = PW - 2 * MARGIN_X
+            col_w = (content_w - GUTTER) / 2.0
+            left_x = MARGIN_X
+            right_x = MARGIN_X + col_w + GUTTER
+            divider_x = MARGIN_X + col_w + GUTTER / 2.0
+            top_y = PH - TOP_MARGIN_PDF
+            bottom_y = BOTTOM_MARGIN_PDF
+
+            # Sombra local: garantiza contraste mínimo sin alterar el BRAND
+            # usado en el resto del documento (título, Acceso al Predio,
+            # Situación Social, Actividades, Estado del Tiempo — el rediseño
+            # de las tablas de recursos usa su propio color crudo, ver más
+            # abajo).
+            BRAND = HexColor(_readable_dark_hex(project_color))
+
+            BADGE_R = 0.42 * cm
+            subtramo_name = (subtramo_node or {}).get("name") or "Subtramo"
+
+            BULLET_STYLE = ParagraphStyle(
+                "SubtramoBullet", fontName="Helvetica", fontSize=8.3, leading=10.5,
+                textColor=TEXT, leftIndent=0.32 * cm, bulletIndent=0, spaceAfter=1,
+            )
+            BULLET_EMPTY_STYLE = ParagraphStyle(
+                "SubtramoBulletEmpty", fontName="Helvetica-Oblique", fontSize=8.3, leading=10.5, textColor=MUTED,
+            )
+            BULLET_MORE_STYLE = ParagraphStyle(
+                "SubtramoBulletMore", fontName="Helvetica-Oblique", fontSize=7.5, leading=9.5, textColor=MUTED,
+                leftIndent=0.32 * cm,
+            )
+
+            def _draw_person_icon(cx: float, cy: float, r: float) -> None:
+                c.setFillColor(WHITE)
+                c.circle(cx, cy + r * 0.30, r * 0.30, stroke=0, fill=1)
+                c.ellipse(cx - r * 0.54, cy - r * 0.62, cx + r * 0.54, cy + r * 0.02, stroke=0, fill=1)
+
+            def _draw_gear_icon(cx: float, cy: float, r: float) -> None:
+                c.setFillColor(WHITE)
+                c.circle(cx, cy, r * 0.52, stroke=0, fill=1)
+                tooth_w, tooth_h, n_teeth = r * 0.24, r * 0.30, 8
+                for i in range(n_teeth):
+                    angle = (2 * math.pi / n_teeth) * i
+                    c.saveState()
+                    c.translate(cx + math.cos(angle) * r * 0.58, cy + math.sin(angle) * r * 0.58)
+                    c.rotate(math.degrees(angle))
+                    c.rect(-tooth_w / 2, -tooth_h / 2, tooth_w, tooth_h, stroke=0, fill=1)
+                    c.restoreState()
+                c.setFillColor(BRAND)
+                c.circle(cx, cy, r * 0.20, stroke=0, fill=1)
+
+            def _draw_structure_icon(cx: float, cy: float, r: float) -> None:
+                top, bl, br = (cx, cy + r * 0.40), (cx - r * 0.42, cy - r * 0.35), (cx + r * 0.42, cy - r * 0.35)
+                c.setStrokeColor(WHITE)
+                c.setLineWidth(1.0)
+                c.line(top[0], top[1], bl[0], bl[1])
+                c.line(top[0], top[1], br[0], br[1])
+                c.setFillColor(WHITE)
+                for (nx, ny) in (top, bl, br):
+                    c.circle(nx, ny, r * 0.16, stroke=0, fill=1)
+
+            def _draw_weather_icon(cx: float, cy: float, r: float) -> None:
+                c.setFillColor(WHITE)
+                c.circle(cx - r * 0.12, cy + r * 0.15, r * 0.36, stroke=0, fill=1)
+                c.ellipse(cx - r * 0.56, cy - r * 0.32, cx + r * 0.56, cy + r * 0.08, stroke=0, fill=1)
+
+            _ICON_FNS = {
+                "person": _draw_person_icon, "gear": _draw_gear_icon,
+                "structure": _draw_structure_icon, "weather": _draw_weather_icon,
+            }
+
+            def _draw_badge_icon(cx: float, cy: float, r: float, kind: str) -> None:
+                c.setFillColor(BRAND)
+                c.circle(cx, cy, r, stroke=0, fill=1)
+                _ICON_FNS[kind](cx, cy, r)
+
+            def _section_title(x: float, y: float, w: float, text: str) -> float:
+                c.setFillColor(BRAND)
+                c.setFont("Helvetica-Bold", 10.5)
+                c.drawString(x, y - 0.36 * cm, text.upper())
+                return y - 0.58 * cm
+
+            def _draw_bullets(x: float, y_top: float, w: float, items: list, avail_h: float, max_items: int) -> float:
+                """Lista de viñetas real (`Paragraph` con `bulletText='•'`,
+                wrapping automático) — sustituye el texto suelto envuelto a
+                mano. Trunca por CANTIDAD de ítems (`max_items`) y por alto
+                disponible (`avail_h`): página fija, sin paginación."""
+                if not items:
+                    p = Paragraph("Sin información registrada", BULLET_EMPTY_STYLE)
+                    _, h = p.wrapOn(c, w, avail_h)
+                    p.drawOn(c, x, y_top - h)
+                    return y_top - h
+
+                y = y_top
+                shown_h = 0.0
+                n_shown = 0
+                for text in items[:max_items]:
+                    p = Paragraph(f"•  {_xml_escape((text or '').strip())}", BULLET_STYLE)
+                    _, h = p.wrapOn(c, w, avail_h - shown_h)
+                    if shown_h + h > avail_h and n_shown > 0:
+                        break
+                    p.drawOn(c, x, y - h)
+                    y -= h
+                    shown_h += h
+                    n_shown += 1
+                overflow = len(items) - n_shown
+                if overflow > 0 and (avail_h - shown_h) > 0:
+                    p = Paragraph(f"+ {overflow} más…", BULLET_MORE_STYLE)
+                    _, h = p.wrapOn(c, w, avail_h - shown_h)
+                    p.drawOn(c, x, y - h)
+                    y -= h
+                return y
+
+            # =================================================================
+            # COLUMNA IZQUIERDA
+            # =================================================================
+            y = top_y
+            _draw_badge_icon(left_x + BADGE_R, y - BADGE_R - 0.05 * cm, BADGE_R, "structure")
+            c.setFillColor(BRAND)
+            c.setFont("Helvetica-Bold", 15)
+            title_txt = subtramo_name.upper()
+            while c.stringWidth(title_txt, "Helvetica-Bold", 15) > col_w - (2 * BADGE_R + 0.3 * cm) and len(title_txt) > 8:
+                title_txt = title_txt[:-2] + "…"
+            c.drawString(left_x + 2 * BADGE_R + 0.3 * cm, y - BADGE_R - 0.05 * cm - 15 * 0.32, title_txt)
+            y -= 1.35 * cm
+            c.setStrokeColor(BRAND)
+            c.setLineWidth(1.4)
+            c.line(left_x, y, left_x + col_w, y)
+            y -= 0.35 * cm
+
+            # --- ACCESO AL PREDIO -------------------------------------------
+            y = _section_title(left_x, y, col_w, "Acceso al Predio")
+            box_h = 0.85 * cm
+            acceso_color = HexColor(_ACCESO_PREDIO_COLORS.get((acceso_predio or "").strip().lower(), "#94A3B8"))
+            c.setFillColor(acceso_color)
+            c.rect(left_x, y - box_h, col_w, box_h, fill=1, stroke=0)
+            c.setFillColor(WHITE)
+            c.setFont("Helvetica-Bold", 11)
+            status_label = (acceso_predio or "Sin especificar").strip().upper()
+            c.drawCentredString(left_x + col_w / 2, y - box_h / 2 - 0.14 * cm, status_label)
+            y -= box_h + 0.18 * cm
+            c.setFillColor(MUTED)
+            c.setFont("Helvetica-Oblique", 6.8)
+            for ln in _wrap_lines(
+                "Refleja el estatus vigente al momento de exportar, no necesariamente el del período de este reporte.",
+                col_w, "Helvetica-Oblique", 6.8, 2,
+            ):
+                c.drawString(left_x, y, ln)
+                y -= 0.3 * cm
+            y -= 0.18 * cm
+
+            # --- SITUACIÓN SOCIAL --------------------------------------------
+            y = _section_title(left_x, y, col_w, "Situación Social - Liberación Física del Predio")
+            situ_items = [ln.strip() for ln in (situacion_social or "").splitlines() if ln.strip()]
+            situ_h = min(3.4 * cm, max(1.2 * cm, y - bottom_y))
+            y = _draw_bullets(left_x, y, col_w, situ_items, situ_h, max_items=5)
+            y -= 0.28 * cm
+
+            # --- ACTIVIDADES ---------------------------------------------------
+            y = _section_title(left_x, y, col_w, "Actividades")
+            act_h = max(1.0 * cm, y - bottom_y)
+            _draw_bullets(left_x, y, col_w, actividades or [], act_h, max_items=6)
+
+            # =================================================================
+            # LÍNEA DIVISORIA VERTICAL (delgada, color de marca)
+            # =================================================================
+            c.setStrokeColor(BRAND)
+            c.setLineWidth(1.1)
+            c.line(divider_x, top_y, divider_x, bottom_y)
+
+            # =================================================================
+            # COLUMNA DERECHA
+            # =================================================================
+            y = top_y
+            _draw_badge_icon(right_x + BADGE_R, y - BADGE_R - 0.05 * cm, BADGE_R, "weather")
+            c.setFillColor(BRAND)
+            c.setFont("Helvetica-Bold", 12)
+            c.drawString(right_x + 2 * BADGE_R + 0.3 * cm, y - BADGE_R - 0.05 * cm - 12 * 0.32, "ESTADO DEL TIEMPO")
+            y -= 1.1 * cm
+
+            w = weather or {}
+            temp = w.get("temperature_c")
+            wind = w.get("wind_kmh")
+            precip = w.get("precipitation_mm")
+            aqi = w.get("us_aqi")
+            cells = [
+                ("TEMPERATURA", f"{temp:.0f}°C" if temp is not None else "—"),
+                ("VIENTO", f"{wind:.0f} km/h" if wind is not None else "—"),
+                ("PRECIPITACIÓN", f"{precip:.1f} mm" if precip is not None else "—"),
+                ("CALIDAD DEL AIRE", f"{int(aqi)} · {_us_aqi_label(aqi)}" if aqi is not None else "—"),
+            ]
+            cell_w, cell_h = col_w / 2.0, 1.35 * cm
+            grid_top = y
+            for i, (label, val) in enumerate(cells):
+                row, colx = divmod(i, 2)
+                cx = right_x + colx * cell_w
+                cy = grid_top - row * cell_h
+                c.setStrokeColor(BORDER)
+                c.setLineWidth(0.75)
+                c.rect(cx, cy - cell_h, cell_w, cell_h, fill=0, stroke=1)
+                c.setFillColor(MUTED)
+                c.setFont("Helvetica-Bold", 7)
+                c.drawString(cx + 0.2 * cm, cy - 0.38 * cm, label)
+                c.setFillColor(TEXT)
+                c.setFont("Helvetica-Bold", 12.5)
+                c.drawString(cx + 0.2 * cm, cy - cell_h + 0.32 * cm, val)
+            y = grid_top - 2 * cell_h - 0.4 * cm
+
+            # --- TABLAS GEMELAS FUERZA DE TRABAJO | MAQUINARIA Y EQUIPO -----
+            # FIX 2026-08-11 · REDISEÑO SEGÚN SPEC DE PRODUCTO
+            # ─────────────────────────────────────────────────────────
+            # Tablas reales (Table/TableStyle): encabezado con el color de
+            # identidad CRUDO del proyecto (sin oscurecer — texto blanco u
+            # oscuro según contraste calculado, único uso del color en este
+            # bloque: fondo de encabezado, título de sección e ícono). Filas
+            # SIN deduplicar (`_workforce_raw_rows_by_subtramo`, cada captura
+            # es su propia fila en orden cronológico). Relleno con un mínimo
+            # de `MIN_ROWS` filas vacías y alturas de fila COMPARTIDAS entre
+            # ambas tablas para que terminen siempre alineadas al mismo
+            # nivel. Nombres largos hacen wrap real vía `Paragraph` (nunca
+            # truncados con "…"); solo si ni el relleno mínimo ni los
+            # registros reales caben en la página se trunca con "+N más".
+            tbl_gutter = 12  # pt, spec: ~12pt entre las dos tablas
+            tbl_w = (col_w - tbl_gutter) / 2.0
+
+            _raw_brand_hex = _sanitize_color_hex(project_color) or "#003366"
+            WF_BRAND = HexColor(_raw_brand_hex)
+            WF_HEADER_TEXT = WHITE if _hex_luminance(_raw_brand_hex) <= 0.6 else HexColor("#1A1A1A")
+            LINE_GRAY = HexColor("#D0D0D0")
+            CONTENT_GRAY = HexColor("#333333")
+            MIN_ROWS = 14
+            TABLE_HEADER_H = 22
+            BASE_ROW_H = 18
+            TOTAL_ROW_H = 22
+            ROW_FONT_SIZE = 9
+            NAME_PAD_L, NAME_PAD_R = 6, 4
+            NAME_COL_FRAC, QTY_COL_FRAC = 0.70, 0.30
+
+            NAME_STYLE = ParagraphStyle(
+                "WFRowName", fontName="Helvetica", fontSize=ROW_FONT_SIZE,
+                leading=ROW_FONT_SIZE * 1.3, textColor=CONTENT_GRAY,
+            )
+            QTY_STYLE = ParagraphStyle(
+                "WFRowQty", fontName="Helvetica", fontSize=ROW_FONT_SIZE,
+                leading=ROW_FONT_SIZE * 1.3, textColor=CONTENT_GRAY, alignment=TA_CENTER,
+            )
+            HEADER_STYLE = ParagraphStyle(
+                "WFHeader", fontName="Helvetica-Bold", fontSize=ROW_FONT_SIZE,
+                leading=11, textColor=WF_HEADER_TEXT, alignment=TA_CENTER,
+            )
+            TOTAL_LABEL_STYLE = ParagraphStyle(
+                "WFTotalLabel", fontName="Helvetica-Bold", fontSize=ROW_FONT_SIZE,
+                leading=ROW_FONT_SIZE * 1.3, textColor=CONTENT_GRAY, alignment=TA_CENTER,
+            )
+            OVERFLOW_STYLE = ParagraphStyle(
+                "WFOverflow", fontName="Helvetica-Oblique", fontSize=ROW_FONT_SIZE,
+                leading=ROW_FONT_SIZE * 1.3, textColor=CONTENT_GRAY,
+            )
+
+            def _draw_section_title(x: float, y_top: float, title: str, icon_kind: str) -> float:
+                r = 0.32 * cm
+                cx, cy = x + r, y_top - r - 0.04 * cm
+                c.setFillColor(WF_BRAND)
+                c.circle(cx, cy, r, stroke=0, fill=1)
+                _ICON_FNS[icon_kind](cx, cy, r)
+                if icon_kind == "gear":
+                    # El engrane pinta su punto central con el BRAND
+                    # (oscurecido) del resto de la página — lo repintamos
+                    # con el color crudo para que el ícono sea consistente.
+                    c.setFillColor(WF_BRAND)
+                    c.circle(cx, cy, r * 0.20, stroke=0, fill=1)
+                # FIX 2026-08-13 · el título va en el BRAND OSCURECIDO (texto
+                # sobre fondo blanco), no en WF_BRAND crudo — WF_BRAND es
+                # correcto para el fondo del badge/encabezado de tabla, pero
+                # como texto sobre blanco queda casi invisible si el color de
+                # marca del proyecto es un pastel (mismo bug que ya resolvía
+                # el resto de los títulos de esta página, ver `BRAND` arriba).
+                c.setFillColor(BRAND)
+                c.setFont("Helvetica-Bold", 11)
+                c.drawString(x + 2 * r + 0.2 * cm, cy - 11 * 0.32, title.upper())
+                return y_top - 2 * r - 0.04 * cm - 8  # ~8pt antes de la tabla
+
+            def _measure_rows(rows: list, name_w: float, qty_w: float) -> list:
+                items = []
+                for r in rows:
+                    qty = r.get("qty")
+                    qty = qty if isinstance(qty, (int, float)) else 1
+                    # `desc` de equipment viene "Tipo :: Marca :: Modelo :: Serie"
+                    # (ver `_format_workforce_desc`) — sin esto se imprimía el
+                    # separador " :: " literal en la tabla.
+                    main_desc, _ = _format_workforce_desc(str(r.get("desc") or "—"))
+                    name_p = Paragraph(_xml_escape(main_desc or "—"), NAME_STYLE)
+                    qty_p = Paragraph(str(qty), QTY_STYLE)
+                    _, name_h = name_p.wrap(name_w, 10000)
+                    _, qty_h = qty_p.wrap(qty_w, 10000)
+                    h = max(name_h, qty_h, ROW_FONT_SIZE * 1.3) + 6
+                    items.append({"name_p": name_p, "qty_p": qty_p, "qty": qty, "h": max(h, BASE_ROW_H)})
+                return items
+
+            name_w = tbl_w * NAME_COL_FRAC - NAME_PAD_L - NAME_PAD_R
+            qty_w = tbl_w * QTY_COL_FRAC - 8
+            personal_items = _measure_rows(personal_rows, name_w, qty_w)
+            maquinaria_items = _measure_rows(maquinaria_rows, name_w, qty_w)
+            personal_total = sum(it["qty"] for it in personal_items)
+            maquinaria_total = sum(it["qty"] for it in maquinaria_items)
+
+            title_y_left = _draw_section_title(right_x, y, "Fuerza de Trabajo", "person")
+            title_y_right = _draw_section_title(right_x + tbl_w + tbl_gutter, y, "Maquinaria y Equipo", "gear")
+            table_top = min(title_y_left, title_y_right)
+            tbl_avail_h = table_top - bottom_y
+
+            n_rows = max(MIN_ROWS, len(personal_items), len(maquinaria_items))
+            min_rows_needed = max(len(personal_items), len(maquinaria_items))
+
+            def _shared_row_heights(n: int) -> list:
+                heights = []
+                for i in range(n):
+                    ph = personal_items[i]["h"] if i < len(personal_items) else BASE_ROW_H
+                    mh = maquinaria_items[i]["h"] if i < len(maquinaria_items) else BASE_ROW_H
+                    heights.append(max(ph, mh))
+                return heights
+
+            def _total_h(n: int) -> float:
+                return TABLE_HEADER_H + sum(_shared_row_heights(n)) + TOTAL_ROW_H
+
+            # Reduce primero filas de relleno (hasta el mínimo real); si aun
+            # así no cabe, trunca filas reales (con "+N más") — página fija.
+            while n_rows > min_rows_needed and _total_h(n_rows) > tbl_avail_h:
+                n_rows -= 1
+            while n_rows > 1 and _total_h(n_rows) > tbl_avail_h:
+                n_rows -= 1
+
+            personal_shown, personal_overflow = personal_items, 0
+            maquinaria_shown, maquinaria_overflow = maquinaria_items, 0
+            if n_rows < len(personal_items):
+                personal_overflow = len(personal_items) - (n_rows - 1)
+                personal_shown = personal_items[:n_rows - 1]
+            if n_rows < len(maquinaria_items):
+                maquinaria_overflow = len(maquinaria_items) - (n_rows - 1)
+                maquinaria_shown = maquinaria_items[:n_rows - 1]
+
+            row_heights = _shared_row_heights(n_rows)
+
+            def _draw_resource_table(x: float, col1_header: str, items: list,
+                                      overflow: int, total_qty) -> None:
+                data = [[Paragraph(col1_header, HEADER_STYLE), Paragraph("CANTIDAD", HEADER_STYLE)]]
+                for i in range(n_rows):
+                    if i < len(items):
+                        data.append([items[i]["name_p"], items[i]["qty_p"]])
+                    elif overflow > 0 and i == n_rows - 1:
+                        data.append([Paragraph(f"+ {overflow} más…", OVERFLOW_STYLE), ""])
+                    else:
+                        data.append(["", ""])
+                data.append([
+                    Paragraph("TOTAL", TOTAL_LABEL_STYLE),
+                    Paragraph(str(total_qty), TOTAL_LABEL_STYLE),
+                ])
+                total_row_idx = n_rows + 1
+
+                tbl = Table(
+                    data, colWidths=[tbl_w * NAME_COL_FRAC, tbl_w * QTY_COL_FRAC],
+                    rowHeights=[TABLE_HEADER_H] + row_heights + [TOTAL_ROW_H],
+                )
+                style = [
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("ALIGN", (0, 0), (-1, 0), "CENTER"),
+                    ("ALIGN", (1, 1), (1, -1), "CENTER"),
+                    ("LEFTPADDING", (0, 1), (0, total_row_idx - 1), NAME_PAD_L),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), NAME_PAD_R),
+                    ("TOPPADDING", (0, 0), (-1, -1), 3),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                    # Encabezado: color de identidad crudo, 100% opaco, sin
+                    # bordes internos (el relleno define el bloque). Padding
+                    # horizontal reducido para que "CANTIDAD" (~9pt bold)
+                    # quepa en una sola línea dentro del ~30% de ancho.
+                    ("BACKGROUND", (0, 0), (-1, 0), WF_BRAND),
+                    ("LEFTPADDING", (0, 0), (-1, 0), 2),
+                    ("RIGHTPADDING", (0, 0), (-1, 0), 2),
+                    # Borde exterior + separadores 0.5pt gris claro.
+                    ("BOX", (0, 0), (-1, -1), 0.5, LINE_GRAY),
+                    ("LINEAFTER", (0, 1), (0, total_row_idx), 0.5, LINE_GRAY),
+                    ("LINEBELOW", (0, 1), (-1, total_row_idx - 2), 0.5, LINE_GRAY),
+                    # TOTAL: borde superior más marcado, sin fondo de color.
+                    ("LINEABOVE", (0, total_row_idx), (-1, total_row_idx), 0.75, LINE_GRAY),
+                ]
+                tbl.setStyle(TableStyle(style))
+                tw, th = tbl.wrapOn(c, tbl_w, tbl_avail_h)
+                tbl.drawOn(c, x, table_top - th)
+
+            _draw_resource_table(right_x, "PERSONAL", personal_shown, personal_overflow, personal_total)
+            _draw_resource_table(right_x + tbl_w + tbl_gutter, "MAQUINARIA Y EQUIPO", maquinaria_shown, maquinaria_overflow, maquinaria_total)
+
+        def _emit_recuento_general() -> None:
+            """Página(s) de cierre "RECUENTO GENERAL": una por Tramo (y tantas
+            adicionales como haga falta si las filas no caben en una sola —
+            a diferencia del resumen por Subtramo, aquí NUNCA se trunca con
+            "+N más", se pagina). Mismo formato de tablas gemelas PERSONAL /
+            MAQUINARIA Y EQUIPO que `draw_subtramo_summary_page`, pero a
+            tamaño mayor y centradas en el ancho completo de la página
+            (en vez de confinadas a la mitad derecha de un layout a 2
+            columnas)."""
+            nonlocal page_num
+            if not recuento_general_rows:
+                return
+
+            MARGIN_X = 2.0 * cm
+            content_w = PW - 2 * MARGIN_X
+            top_y = PH - TOP_MARGIN_PDF
+            bottom_y = BOTTOM_MARGIN_PDF
+
+            # Igual que `draw_subtramo_summary_page`: el título/subtítulo (sobre
+            # fondo blanco) usa el brand OSCURECIDO para garantizar contraste
+            # mínimo; el fondo del encabezado de tabla usa el color CRUDO del
+            # proyecto (con texto blanco/oscuro elegido por luminancia), nunca
+            # el oscurecido — mezclarlos deja texto oscuro sobre fondo oscuro
+            # cuando el brand del proyecto ya es un tono pastel/claro.
+            _raw_brand_hex = _sanitize_color_hex(project_color) or "#003366"
+            RG_TITLE = HexColor(_readable_dark_hex(project_color))
+            RG_BRAND = HexColor(_raw_brand_hex)
+            RG_HEADER_TEXT = WHITE if _hex_luminance(_raw_brand_hex) <= 0.6 else HexColor("#1A1A1A")
+            LINE_GRAY = HexColor("#D0D0D0")
+            CONTENT_GRAY = HexColor("#333333")
+
+            # ~45% más grande que las tablas gemelas del resumen por Subtramo
+            # (ROW_FONT_SIZE 9→13, TABLE_HEADER_H 22→32, etc.) y centradas.
+            ROW_FONT_SIZE = 13
+            TABLE_HEADER_H = 32
+            BASE_ROW_H = 26
+            TOTAL_ROW_H = 32
+            NAME_PAD_L, NAME_PAD_R = 8, 6
+            NAME_COL_FRAC, QTY_COL_FRAC = 0.70, 0.30
+            tbl_gutter = 24
+            pair_w = content_w * 0.85
+            tbl_w = (pair_w - tbl_gutter) / 2.0
+            pair_x = MARGIN_X + (content_w - pair_w) / 2.0
+
+            NAME_STYLE = ParagraphStyle(
+                "RGRowName", fontName="Helvetica", fontSize=ROW_FONT_SIZE,
+                leading=ROW_FONT_SIZE * 1.3, textColor=CONTENT_GRAY,
+            )
+            QTY_STYLE = ParagraphStyle(
+                "RGRowQty", fontName="Helvetica", fontSize=ROW_FONT_SIZE,
+                leading=ROW_FONT_SIZE * 1.3, textColor=CONTENT_GRAY, alignment=TA_CENTER,
+            )
+            HEADER_STYLE = ParagraphStyle(
+                "RGHeader", fontName="Helvetica-Bold", fontSize=ROW_FONT_SIZE,
+                leading=ROW_FONT_SIZE * 1.2, textColor=RG_HEADER_TEXT, alignment=TA_CENTER,
+            )
+            TOTAL_LABEL_STYLE = ParagraphStyle(
+                "RGTotalLabel", fontName="Helvetica-Bold", fontSize=ROW_FONT_SIZE,
+                leading=ROW_FONT_SIZE * 1.3, textColor=CONTENT_GRAY, alignment=TA_CENTER,
+            )
+
+            # Fracciones de columna: con columna POSTE (nivel de agregación
+            # por encima de hoja — ver `_recuento_general_by_nodo`) el ancho
+            # se reparte en 3, sin ella en 2 (comportamiento histórico).
+            POSTE_COL_FRAC, NAME_COL_FRAC_P, QTY_COL_FRAC_P = 0.30, 0.45, 0.25
+
+            def _col_fracs(tiene_poste: bool) -> tuple:
+                return (POSTE_COL_FRAC, NAME_COL_FRAC_P, QTY_COL_FRAC_P) if tiene_poste \
+                    else (0.0, NAME_COL_FRAC, QTY_COL_FRAC)
+
+            def _measure(rows: list, tiene_poste: bool) -> list:
+                poste_frac, name_frac, qty_frac = _col_fracs(tiene_poste)
+                poste_w = tbl_w * poste_frac - NAME_PAD_L - NAME_PAD_R
+                name_w = tbl_w * name_frac - NAME_PAD_L - NAME_PAD_R
+                qty_w = tbl_w * qty_frac - 10
+                items = []
+                for r in rows:
+                    qty = r.get("qty")
+                    qty = qty if isinstance(qty, (int, float)) else 1
+                    # `desc` de equipment viene "Tipo :: Marca :: Modelo :: Serie"
+                    # (ver `_format_workforce_desc`) — sin esto se imprimía el
+                    # separador " :: " literal en Recuento General.
+                    main_desc, _ = _format_workforce_desc(str(r.get("desc") or "—"))
+                    name_p = Paragraph(_xml_escape(main_desc or "—"), NAME_STYLE)
+                    qty_p = Paragraph(str(qty), QTY_STYLE)
+                    _, name_h = name_p.wrap(name_w, 10000)
+                    _, qty_h = qty_p.wrap(qty_w, 10000)
+                    h = max(name_h, qty_h, ROW_FONT_SIZE * 1.3) + 8
+                    item = {"name_p": name_p, "qty_p": qty_p, "qty": qty, "h": max(h, BASE_ROW_H)}
+                    if tiene_poste:
+                        poste_p = Paragraph(_xml_escape(str(r.get("poste") or "—")), NAME_STYLE)
+                        _, poste_h = poste_p.wrap(poste_w, 10000)
+                        item["poste_p"] = poste_p
+                        item["h"] = max(item["h"], poste_h + 8, BASE_ROW_H)
+                    items.append(item)
+                return items
+
+            def _draw_table(x: float, y_top: float, avail_h: float, col1_header: str,
+                             items: list, row_heights: list, draw_total: bool, total_qty,
+                             tiene_poste: bool) -> None:
+                # `row_heights` es el número de filas de ESTA página, compartido
+                # entre PERSONAL y MAQUINARIA para que ambas tablas queden
+                # alineadas — puede exceder `len(items)` cuando una categoría
+                # tiene menos filas que la otra en el mismo tramo de paginación,
+                # así que se rellena con filas en blanco hasta igualar `n`
+                # (si no, `data` y `rowHeights` quedan desalineados y reportlab
+                # revienta con "N rows in data but M row heights").
+                n = len(row_heights)
+                poste_frac, name_frac, qty_frac = _col_fracs(tiene_poste)
+                if tiene_poste:
+                    header_row = [Paragraph("POSTE", HEADER_STYLE), Paragraph(col1_header, HEADER_STYLE),
+                                  Paragraph("CANTIDAD", HEADER_STYLE)]
+                    col_widths = [tbl_w * poste_frac, tbl_w * name_frac, tbl_w * qty_frac]
+                    blank_row = ["", "", ""]
+                else:
+                    header_row = [Paragraph(col1_header, HEADER_STYLE), Paragraph("CANTIDAD", HEADER_STYLE)]
+                    col_widths = [tbl_w * name_frac, tbl_w * qty_frac]
+                    blank_row = ["", ""]
+                data = [header_row]
+                for i in range(n):
+                    if i < len(items):
+                        it = items[i]
+                        row = [it["poste_p"], it["name_p"], it["qty_p"]] if tiene_poste \
+                            else [it["name_p"], it["qty_p"]]
+                        data.append(row)
+                    else:
+                        data.append(list(blank_row))
+                heights = [TABLE_HEADER_H] + row_heights
+                if draw_total:
+                    total_row = [Paragraph("TOTAL", TOTAL_LABEL_STYLE), "", Paragraph(str(total_qty), TOTAL_LABEL_STYLE)] \
+                        if tiene_poste else [Paragraph("TOTAL", TOTAL_LABEL_STYLE), Paragraph(str(total_qty), TOTAL_LABEL_STYLE)]
+                    data.append(total_row)
+                    heights.append(TOTAL_ROW_H)
+                total_row_idx = n + 1
+                name_col_idx = 1 if tiene_poste else 0
+                tbl = Table(data, colWidths=col_widths, rowHeights=heights)
+                style = [
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("ALIGN", (0, 0), (-1, 0), "CENTER"),
+                    ("ALIGN", (-1, 1), (-1, -1), "CENTER"),
+                    ("LEFTPADDING", (0, 1), (name_col_idx, -1), NAME_PAD_L),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), NAME_PAD_R),
+                    ("TOPPADDING", (0, 0), (-1, -1), 4),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                    ("BACKGROUND", (0, 0), (-1, 0), RG_BRAND),
+                    ("LEFTPADDING", (0, 0), (-1, 0), 3),
+                    ("RIGHTPADDING", (0, 0), (-1, 0), 3),
+                    ("BOX", (0, 0), (-1, -1), 0.75, LINE_GRAY),
+                    ("LINEAFTER", (0, 1), (0, -1), 0.75, LINE_GRAY),
+                ]
+                if tiene_poste:
+                    style.append(("LINEAFTER", (1, 1), (1, -1), 0.75, LINE_GRAY))
+                    if draw_total:
+                        style.append(("SPAN", (0, total_row_idx), (1, total_row_idx)))
+                if n >= 1:
+                    last_item_row = (total_row_idx - 1) if draw_total else total_row_idx
+                    style.append(("LINEBELOW", (0, 1), (-1, last_item_row), 0.5, LINE_GRAY))
+                if draw_total:
+                    style.append(("LINEABOVE", (0, total_row_idx), (-1, total_row_idx), 1.0, LINE_GRAY))
+                tbl.setStyle(TableStyle(style))
+                tw, th = tbl.wrapOn(c, tbl_w, avail_h)
+                tbl.drawOn(c, x, y_top - th)
+
+            def _draw_titulo_subtitulo(nodo_name: str, nodo_path: str, page_n: int) -> float:
+                nonlocal is_first_page_ever
+                y = top_y
+                if is_first_page_ever:
+                    c.setFillColor(RG_TITLE)
+                    c.setFont("Helvetica-Bold", 28)
+                    c.drawCentredString(PW / 2, y, "RECUENTO GENERAL")
+                    y -= 28 * 1.4
+                    is_first_page_ever = False
+                c.setFillColor(TEXT)
+                c.setFont("Helvetica-Bold", 18)
+                subtitle = nodo_name.upper()
+                if page_n > 1:
+                    subtitle += f"  (CONTINÚA · PÁG. {page_n})"
+                c.drawCentredString(PW / 2, y, subtitle)
+                y -= 18 * 1.35
+                if nodo_path and nodo_path.upper() != nodo_name.upper():
+                    path_size = 10.5
+                    while c.stringWidth(nodo_path, "Helvetica", path_size) > content_w and path_size > 7:
+                        path_size -= 0.5
+                    c.setFillColor(MUTED)
+                    c.setFont("Helvetica", path_size)
+                    c.drawCentredString(PW / 2, y, nodo_path)
+                y -= 10.5 * 1.6
+                return y
+
+            is_first_page_ever = True
+            for entry in recuento_general_rows:
+                nodo_name = (entry.get("nodo_name") or "Nodo").strip()
+                nodo_path = (entry.get("nodo_path") or nodo_name).strip()
+                tiene_poste = bool(entry.get("tiene_columna_poste"))
+
+                if entry.get("sin_datos"):
+                    # Nodo de agregación sin personal/maquinaria en el período
+                    # (`incluir_sin_datos=True`): leyenda, nunca tabla vacía.
+                    y = _draw_titulo_subtitulo(nodo_name, nodo_path, 1)
+                    c.setFillColor(MUTED)
+                    c.setFont("Helvetica-Oblique", 12)
+                    c.drawCentredString(PW / 2, y - 0.3 * cm, "Sin actividad en el periodo")
+                    c.showPage()
+                    page_num += 1
+                    continue
+
+                personal_items = _measure(entry.get("personal") or [], tiene_poste)
+                maquinaria_items = _measure(entry.get("maquinaria") or [], tiene_poste)
+                personal_total = sum(it["qty"] for it in personal_items)
+                maquinaria_total = sum(it["qty"] for it in maquinaria_items)
+                n_total = max(len(personal_items), len(maquinaria_items))
+                shared_heights = [
+                    max(
+                        personal_items[i]["h"] if i < len(personal_items) else BASE_ROW_H,
+                        maquinaria_items[i]["h"] if i < len(maquinaria_items) else BASE_ROW_H,
+                    )
+                    for i in range(n_total)
+                ]
+
+                idx = 0
+                page_in_tramo = 0
+                while idx < n_total or page_in_tramo == 0:
+                    page_in_tramo += 1
+                    y = _draw_titulo_subtitulo(nodo_name, nodo_path, page_in_tramo)
+
+                    table_top = y
+                    avail_h_for_rows = (table_top - bottom_y) - TABLE_HEADER_H - TOTAL_ROW_H
+
+                    cnt = 0
+                    h_acc = 0.0
+                    for i in range(idx, n_total):
+                        rh = shared_heights[i]
+                        if cnt > 0 and h_acc + rh > avail_h_for_rows:
+                            break
+                        h_acc += rh
+                        cnt += 1
+                    cnt = max(cnt, 1) if n_total > 0 else 0
+                    chunk_end = idx + cnt
+                    is_last_chunk = chunk_end >= n_total
+                    chunk_heights = shared_heights[idx:chunk_end]
+
+                    _draw_table(
+                        pair_x, table_top, table_top - bottom_y, "PERSONAL",
+                        personal_items[idx:chunk_end], chunk_heights, is_last_chunk, personal_total, tiene_poste,
+                    )
+                    _draw_table(
+                        pair_x + tbl_w + tbl_gutter, table_top, table_top - bottom_y, "MAQUINARIA Y EQUIPO",
+                        maquinaria_items[idx:chunk_end], chunk_heights, is_last_chunk, maquinaria_total, tiene_poste,
+                    )
+
+                    idx = chunk_end
+                    c.showPage()
+                    page_num += 1
+
+        def _emit_actividades_area(area_name: str, node_path: str, items: List[str]) -> None:
+            """Página(s) "RESUMEN DE ACTIVIDADES" insertadas justo después de
+            la portadilla de Área — actividades CURADAS del hub Actividades
+            Generales aplicables a esta Área en este nodo (Generales + Por
+            Estación + Por Poste, ver `_actividades_resumen_para_bloque`),
+            nunca el texto crudo del reporte. No-op si `items` viene vacío
+            (Área sin actividades curadas en el período). Pagina igual que
+            `_emit_recuento_general`: nunca trunca con "+N más" porque es un
+            resumen institucional, no una vista rápida de UI."""
+            nonlocal page_num
+            if not items:
+                return
+
+            MARGIN_X = 2.2 * cm
+            content_w = PW - 2 * MARGIN_X
+            top_y = PH - TOP_MARGIN_PDF
+            bottom_y = BOTTOM_MARGIN_PDF
+
+            _raw_brand_hex = _sanitize_color_hex(project_color) or "#003366"
+            AA_TITLE = HexColor(_readable_dark_hex(project_color))
+            AA_BRAND = HexColor(_raw_brand_hex)
+            AA_HEADER_TEXT = WHITE if _hex_luminance(_raw_brand_hex) <= 0.6 else HexColor("#1A1A1A")
+            LINE_GRAY = HexColor("#D0D0D0")
+            CONTENT_GRAY = HexColor("#333333")
+
+            ROW_FONT_SIZE = 11
+            TABLE_HEADER_H = 26
+            BASE_ROW_H = 20
+            PAD_L, PAD_R = 10, 8
+
+            ROW_STYLE = ParagraphStyle(
+                "AAAreaRow", fontName="Helvetica", fontSize=ROW_FONT_SIZE,
+                leading=ROW_FONT_SIZE * 1.3, textColor=CONTENT_GRAY,
+            )
+            HEADER_STYLE = ParagraphStyle(
+                "AAAreaHeader", fontName="Helvetica-Bold", fontSize=ROW_FONT_SIZE,
+                leading=ROW_FONT_SIZE * 1.2, textColor=AA_HEADER_TEXT,
+            )
+
+            tbl_w = content_w
+            row_w = tbl_w - PAD_L - PAD_R
+
+            measured = []
+            for texto in items:
+                p = Paragraph(f"•  {_xml_escape(texto)}", ROW_STYLE)
+                _, h = p.wrap(row_w, 10000)
+                measured.append({"p": p, "h": max(h + 6, BASE_ROW_H)})
+
+            def _draw_table(y_top: float, avail_h: float, chunk: list) -> None:
+                n = len(chunk)
+                data = [[Paragraph("ACTIVIDADES", HEADER_STYLE)]]
+                row_heights = [TABLE_HEADER_H]
+                for it in chunk:
+                    data.append([it["p"]])
+                    row_heights.append(it["h"])
+                tbl = Table(data, colWidths=[tbl_w], rowHeights=row_heights)
+                tbl.setStyle(TableStyle([
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), PAD_L),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), PAD_R),
+                    ("TOPPADDING", (0, 0), (-1, -1), 4),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                    ("BACKGROUND", (0, 0), (-1, 0), AA_BRAND),
+                    ("BOX", (0, 0), (-1, -1), 0.75, LINE_GRAY),
+                    ("LINEBELOW", (0, 1), (-1, n), 0.5, LINE_GRAY),
+                ]))
+                tw, th = tbl.wrapOn(c, tbl_w, avail_h)
+                tbl.drawOn(c, MARGIN_X, y_top - th)
+
+            idx = 0
+            page_in_area = 0
+            n_total = len(measured)
+            while idx < n_total or page_in_area == 0:
+                page_in_area += 1
+                y = top_y
+                c.setFillColor(AA_TITLE)
+                c.setFont("Helvetica-Bold", 20)
+                title = "RESUMEN DE ACTIVIDADES"
+                if page_in_area > 1:
+                    title += f"  (CONTINÚA · PÁG. {page_in_area})"
+                c.drawCentredString(PW / 2, y, title)
+                y -= 20 * 1.4
+                c.setFillColor(TEXT)
+                c.setFont("Helvetica-Bold", 14)
+                area_title = area_name.upper()
+                while c.stringWidth(area_title, "Helvetica-Bold", 14) > content_w and len(area_title) > 8:
+                    area_title = area_title[:-2] + "…"
+                c.drawCentredString(PW / 2, y, area_title)
+                y -= 14 * 1.35
+                if node_path:
+                    path_size = 9.5
+                    while c.stringWidth(node_path, "Helvetica", path_size) > content_w and path_size > 7:
+                        path_size -= 0.5
+                    c.setFillColor(MUTED)
+                    c.setFont("Helvetica", path_size)
+                    c.drawCentredString(PW / 2, y, node_path)
+                y -= 9.5 * 1.6
+
+                table_top = y
+                avail_h_for_rows = (table_top - bottom_y) - TABLE_HEADER_H
+
+                cnt = 0
+                h_acc = 0.0
+                for i in range(idx, n_total):
+                    rh = measured[i]["h"]
+                    if cnt > 0 and h_acc + rh > avail_h_for_rows:
+                        break
+                    h_acc += rh
+                    cnt += 1
+                cnt = max(cnt, 1)
+                chunk_end = idx + cnt
+                _draw_table(table_top, table_top - bottom_y, measured[idx:chunk_end])
+                idx = chunk_end
+                c.showPage()
+                page_num += 1
+
+        def _crop_to_fill_bytes(b64_img: str, target_w: float, target_h: float) -> Optional[bytes]:
+            """Crop-to-fill: recorta la imagen conservando su aspect-ratio para
+            llenar EXACTAMENTE una caja de `target_w × target_h` (en pts).
+            - Respeta EXIF orientation (fotos móviles rotadas).
+            - Devuelve bytes JPEG listos para `drawImage(..., preserveAspectRatio=False)`.
+            - Si Pillow no está o la imagen es inválida → None.
+            """
+            if not _HAS_PIL or not b64_img:
+                return None
+            try:
+                raw = base64.b64decode(_strip_b64_prefix(b64_img))
+                pil = _PILImage.open(io.BytesIO(raw))
+                pil = _pil_exif_transpose(pil)  # respeta rotación EXIF
+                if pil.mode not in ("RGB", "L"):
+                    pil = pil.convert("RGB")
+                iw, ih = pil.size
+                if iw <= 0 or ih <= 0:
+                    return None
+                target_ratio = float(target_w) / float(target_h)
+                cur_ratio = iw / ih
+                if abs(cur_ratio - target_ratio) > 1e-3:
+                    if cur_ratio > target_ratio:
+                        # más ancha que la caja → recortar horizontal
+                        new_w = int(round(ih * target_ratio))
+                        x0 = max(0, (iw - new_w) // 2)
+                        pil = pil.crop((x0, 0, x0 + new_w, ih))
+                    else:
+                        # más alta que la caja → recortar vertical
+                        new_h = int(round(iw / target_ratio))
+                        y0 = max(0, (ih - new_h) // 2)
+                        pil = pil.crop((0, y0, iw, y0 + new_h))
+                out = io.BytesIO()
+                pil.save(out, format="JPEG", quality=88, optimize=True)
+                return out.getvalue()
+            except Exception:
+                return None
+
+        def draw_photo_with_caption(x: float, y_photo: float,
+                                    b64_img: Optional[str],
+                                    caption: str) -> None:
+            """Dibuja UNA foto apaisada 13.37×10 cm en (x, y_photo) con su
+            caption (máx 4 líneas) DEBAJO. `y_photo` es la esquina inferior-
+            izquierda de la foto. El caption va inmediatamente debajo.
+
+            La foto se pinta con estrategia CROP-TO-FILL: llena exactamente
+            la caja 13.37×10 cm conservando el aspect-ratio original y
+            recortando el excedente (centrado). Nunca se deforma."""
+            drawn = False
+            if b64_img:
+                # 1) Preferido: crop-to-fill con Pillow (llena la caja).
+                cropped = _crop_to_fill_bytes(b64_img, EXEC_PHOTO_W, EXEC_PHOTO_H)
+                if cropped is not None:
+                    try:
+                        img = ImageReader(io.BytesIO(cropped))
+                        c.drawImage(
+                            img, x, y_photo,
+                            width=EXEC_PHOTO_W, height=EXEC_PHOTO_H,
+                            preserveAspectRatio=False, anchor='c', mask='auto',
+                        )
+                        drawn = True
+                    except Exception:
+                        drawn = False
+                # 2) Fallback: sin Pillow / error → preservar aspect (letterbox).
+                if not drawn:
+                    try:
+                        raw = base64.b64decode(_strip_b64_prefix(b64_img))
+                        img = ImageReader(io.BytesIO(raw))
+                        c.drawImage(
+                            img, x, y_photo,
+                            width=EXEC_PHOTO_W, height=EXEC_PHOTO_H,
+                            preserveAspectRatio=True, anchor='c', mask='auto',
+                        )
+                        drawn = True
+                    except Exception:
+                        drawn = False
+            if not drawn:
+                # Rectángulo placeholder discreto (sin ghost images)
+                c.setStrokeColor(BORDER)
+                c.setLineWidth(0.5)
+                c.rect(x, y_photo, EXEC_PHOTO_W, EXEC_PHOTO_H, stroke=1, fill=0)
+                c.setFillColor(MUTED)
+                c.setFont("Helvetica-Oblique", 10)
+                c.drawCentredString(x + EXEC_PHOTO_W / 2,
+                                    y_photo + EXEC_PHOTO_H / 2,
+                                    "(sin imagen)")
+            # Caption debajo de la foto
+            caption_top = y_photo - 0.35 * cm
+            font = "Helvetica"
+            wrapped = _wrap_lines(caption or "—",
+                                  EXEC_PHOTO_W,
+                                  font, EXEC_CAPTION_SIZE, 4)
+            c.setFillColor(CAPTION_COLOR)
+            c.setFont(font, EXEC_CAPTION_SIZE)
+            cy = caption_top
+            for ln in wrapped:
+                c.drawString(x, cy, ln)
+                cy -= EXEC_CAPTION_LEADING
+
+        # =====================================================================
+        # Agrupación jerárquica: Nodo (con cover) → Área → Reportes.
+        # [FILTRO ESTRICTO 2b] Solo procesamos nodos cuyo árbol (nodo o
+        # ancestro) tenga cover_image. Sin cover_image en toda la rama → OMITIR.
+        #
+        # FIX 2026-07-06 · UBICACIÓN COMPLETA EN PORTADILLA DE NODO
+        # ─────────────────────────────────────────────────────────
+        # Antes el PDF agrupaba las portadillas por `cover_id` (varios
+        # nodos hoja con el mismo ancestor de cover compartían UNA sola
+        # portadilla) y mostraba SÓLO `cover_meta.name` (p.ej. "SUBTRAMO
+        # E1-E2") en vez del `node_path` completo ("TRAMO 1 › Subtramo
+        # E1-E2 › C1"), lo cual perdía la ubicación institucional.
+        # Solución (paridad con PPTX): emitir 1 portadilla por cada nodo
+        # hoja y usar `node_path` como título.
+        # =====================================================================
+
+        # --- Fuerza de Trabajo y Maquinaria: se imprime al FINAL de cada
+        # sección de Subtramo (nodo a profundidad 1), no por cada nodo hoja
+        # ni por Tramo completo. `leaf_nodes` está aplanado en DFS por raíz
+        # (`_flatten_tree_in_order`), y dado que el Subtramo está en la ruta
+        # raíz→hoja, todas las hojas de un mismo Subtramo también quedan
+        # contiguas — detectamos la transición de subtramo para saber cuándo
+        # cerrar la sección anterior (se imprime 1 página de resumen por
+        # CADA cambio de subtramo, aplica igual a diario/semanal/mensual).
+        current_subtramo_id: Optional[str] = None
+
+        def _emit_subtramo_summary(subtramo_id: Optional[str]) -> None:
+            nonlocal page_num
+            if not subtramo_id:
+                return
+            totals = resource_raw_rows_by_subtramo.get(subtramo_id)
+            if not totals:
+                # Ningún leaf de este subtramo tuvo reportes en el período —
+                # no hay página que emitir. Si SÍ hubo reportes pero sin
+                # personal/maquinaria capturados, `totals` existe igual
+                # (dict con listas vacías) y la página se dibuja de todos
+                # modos: las tablas siempre se imprimen completas (mínimo de
+                # filas de relleno + TOTAL 0), nunca se sustituyen por texto.
+                return
+            personal_rows = totals.get("personal") or []
+            maquinaria_rows = totals.get("maquinaria") or []
+            subtramo_node = nodes_by_id.get(subtramo_id) or {}
+            draw_subtramo_summary_page(
+                subtramo_node, personal_rows, maquinaria_rows,
+                actividades_by_subtramo.get(subtramo_id) or [],
+                subtramo_node.get("situacion_social"),
+                subtramo_node.get("acceso_predio"),
+                weather_by_subtramo.get(subtramo_id),
+            )
+            c.showPage()
+            page_num += 1
+
+        for n in leaf_nodes:
+            n_subtramo_id = _subtramo_id_for(n["id"], nodes_by_id)
+            if current_subtramo_id is not None and n_subtramo_id != current_subtramo_id:
+                _emit_subtramo_summary(current_subtramo_id)
+            current_subtramo_id = n_subtramo_id
+
+            # `node_reps` = reportes narrativos (severidad filtrada, política
+            # institucional "no negociable" — solo Importante/Urgente, o la
+            # severidad única de period_type) — de aquí SOLO salen fotos.
+            # `node_reps_all` = TODO reporte del nodo sin filtro de severidad
+            # (mismo criterio que ya se usa para Fuerza de Trabajo, ver
+            # `reports_by_node_workforce` arriba) — decide si hay ALGO que
+            # imprimir (fotos, o solo Fuerza de Trabajo/Actividades). Antes
+            # el nodo se saltaba por completo si `node_reps` venía vacío
+            # (típico: la mayoría de los reportes quedan en "informativo"),
+            # dejando las Actividades Generales curadas de ese nodo/área SIN
+            # IMPRIMIR aunque sí existieran — se veían bien en el hub (que no
+            # filtra por severidad) pero nunca llegaban al PDF.
+            node_reps = reports_by_node.get(n["id"]) or []
+            node_reps_all = workforce_reports_by_node.get(n["id"]) or []
+            if not node_reps_all:
+                continue
+            cover_meta = cover_ancestor_by_node.get(n["id"])
+            if not cover_meta:
+                continue
+            node_path = path_cache.get(n["id"]) or n.get("name", "")
+
+            # === Portadilla de Nodo (1 por nodo hoja) ========================
+            # Título: node_path COMPLETO (con separador ›), mismo formato
+            # que el PPTX (`TRAMO 1 › Subtramo E1-E2 › C1`).
+            draw_dynamic_cover_page(
+                node_path,  # ubicación institucional completa
+                cover_meta.get("cover_image"),
+                page_num,
+            )
+            c.showPage()
+            page_num += 1
+
+            # === Sub-agrupación por Área dentro del nodo =====================
+            # Bucket key = nombre normalizado del área (colapsa "Sub
+            # supervisores" en "OBRA CIVIL" y estabiliza tildes/plurales).
+            def _bucket_key_for_report(_r: dict) -> str:
+                _aid = _r.get("area_id")
+                if not _aid:
+                    return "SIN ÁREA"
+                _a = areas_by_id.get(_aid) or {}
+                return _normalize_area_name(_a.get("name"), user_role=user.get("role"), user_area=user.get("area"))
+
+            # Dos buckets paralelos: `reports_by_area` (narrativa, solo para
+            # fotos) y `reports_by_area_all` (decide qué Áreas existen y
+            # alimenta Actividades Generales). Un Área con actividades pero
+            # sin reportes narrativos SÍ debe tener su bloque — solo que sin
+            # fotos, ver `area_reps` más abajo.
+            reports_by_area: Dict[str, list] = {}
+            for r in node_reps:
+                _bk = _bucket_key_for_report(r)
+                reports_by_area.setdefault(_bk, []).append(r)
+            reports_by_area_all: Dict[str, list] = {}
+            for r in node_reps_all:
+                _bk = _bucket_key_for_report(r)
+                reports_by_area_all.setdefault(_bk, []).append(r)
+
+            # Orden estable de áreas (alfabético por nombre)
+            def _area_name(bk: str) -> str:
+                return bk or "SIN ÁREA"
+            ordered_area_ids = sorted(reports_by_area_all.keys(), key=lambda a: _area_name(a))
+
+            for aid in ordered_area_ids:
+                area_reps = reports_by_area.get(aid) or []  # narrativa: puede venir vacía (sin fotos)
+                area_reps_all = reports_by_area_all[aid]
+                area_name = _area_name(aid)
+
+                # === Portadilla de Área (fondo magenta de la portada) ========
+                # Índice 0-based en el PDF actual = page_num - 1
+                area_page_indices.append(page_num - 1)
+                draw_area_cover_page(area_name)
+                c.showPage()
+                page_num += 1
+
+                # === Resumen de Actividades Generales (curadas) del Área ====
+                # Un bucket visual de Área puede colapsar varios area_id
+                # (ver `_bucket_key_for_report`/`_normalize_area_name`) — se
+                # unen las actividades curadas de TODOS los area_id
+                # presentes en este bucket, no solo uno.
+                _area_ids_en_bucket = sorted({
+                    _r.get("area_id") for _r in area_reps_all if _r.get("area_id")
+                })
+                _resumen_actividades = _actividades_resumen_para_bloque(
+                    actividades_curadas_idx, n["id"], n_subtramo_id, _area_ids_en_bucket,
+                )
+                _emit_actividades_area(area_name, node_path, _resumen_actividades)
+
+                # === Slides de reportes: 2 fotos apaisadas + captions ========
+                # TOPE ESTRICTO: cada reporte emite UNA sola página con
+                # hasta 2 fotos (las 2 primeras). Cada foto usa su caption
+                # individual (`photo_captions[i]`) con fallback a la
+                # observación general del reporte.
+                photo_items: List[tuple] = []
+                for r in area_reps:
+                    imgs = (r.get("images") or [])[:2]  # HARD-CAP 2 fotos
+                    general_obs = (r.get("observaciones") or r.get("notes") or "").strip()
+                    if not general_obs:
+                        general_obs = (r.get("incidencias") or "").strip() or "—"
+                    caps = r.get("photo_captions") or []
+
+                    def _cap_at_pdf(_idx: int) -> str:
+                        if _idx < len(caps):
+                            _c = (caps[_idx] or "").strip()
+                            if _c:
+                                return _c
+                        return general_obs
+
+                    if not imgs:
+                        photo_items.append((None, general_obs))
+                        photo_items.append(("__PAGEBREAK__", ""))
+                        continue
+                    for _i, b64 in enumerate(imgs):
+                        photo_items.append((b64, _cap_at_pdf(_i)))
+                    # Salto de página tras cada reporte para respetar el
+                    # tope estricto de 1 página por reporte.
+                    photo_items.append(("__PAGEBREAK__", ""))
+
+                # Repartir en páginas de 2 fotos
+                PER_PAGE = 2
+                avail_top = PH - TOP_MARGIN_PDF
+                avail_bot = BOTTOM_MARGIN_PDF
+                avail_h = avail_top - avail_bot
+                block_h = EXEC_PHOTO_H + 0.35 * cm + EXEC_CAPTION_H
+                # Centrado vertical del bloque foto+caption
+                block_top_y = avail_top - max(0.0, (avail_h - block_h) / 2)
+                photo_bottom_y = block_top_y - EXEC_PHOTO_H
+                total_w = PER_PAGE * EXEC_PHOTO_W + (PER_PAGE - 1) * EXEC_GAP_X
+                x0 = (PW - total_w) / 2
+
+                # Iteración con sentinela __PAGEBREAK__: cada reporte añade
+                # un marcador tras sus 1-2 fotos, forzando 1 página por
+                # reporte (tope estricto). Los sentinels se filtran del
+                # dibujo pero disparan showPage.
+                #
+                # FIX 2026-07-06 · DRIFT DE page_num
+                # ─────────────────────────────────────────────────────────
+                # Anteriormente `page_num += 1` se ejecutaba SIEMPRE en la
+                # rama __PAGEBREAK__, incluso cuando `_flush_page()` no
+                # generaba página (buffer vacío tras un flush por saturación).
+                # El drift acumulado provocaba que `area_page_indices` de
+                # nodos/áreas posteriores apuntaran a PDF indexes equivocados
+                # → el overlay marcaba páginas de FOTOS como "portadilla de
+                # área" (fondo magenta) y viceversa.
+                # Solución: `_flush_page()` devuelve True solo si se emitió
+                # una página real; page_num se incrementa acorde.
+                _buffer: List[tuple] = []
+                def _flush_page() -> bool:
+                    """Emite una página real con las fotos del buffer.
+                    Devuelve True si se llamó a c.showPage(), False si el
+                    buffer estaba vacío (no hay página que emitir)."""
+                    if not _buffer:
+                        return False
+                    for idx, (b64, cap) in enumerate(_buffer[:PER_PAGE]):
+                        px = x0 + idx * (EXEC_PHOTO_W + EXEC_GAP_X)
+                        draw_photo_with_caption(px, photo_bottom_y, b64, cap)
+                    c.showPage()
+                    _buffer.clear()
+                    return True
+
+                for _item in photo_items:
+                    if _item[0] == "__PAGEBREAK__":
+                        if _flush_page():
+                            page_num += 1
+                        continue
+                    _buffer.append(_item)
+                    if len(_buffer) >= PER_PAGE:
+                        if _flush_page():
+                            page_num += 1
+                # Flush residual (por si algún reporte quedó sin sentinela).
+                if _flush_page():
+                    page_num += 1
+
+        # Flush final: la detección de transición de subtramo solo dispara al
+        # pasar a un Subtramo NUEVO, así que el último subtramo procesado
+        # nunca dispara el emit dentro del loop — hay que cerrarlo aquí.
+        _emit_subtramo_summary(current_subtramo_id)
+
+        # Página(s) de cierre: RECUENTO GENERAL del período completo,
+        # desglosado por Tramo y por puesto/descripción.
+        _emit_recuento_general()
+
+        c.save()
+        return buf.getvalue(), section_page_indices, area_page_indices, _gd_page_count
+
+    # Render bloqueante en thread aparte → libera event loop
+    pdf_bytes, section_page_indices, area_page_indices, gd_page_count = await asyncio.to_thread(_build_pdf_blocking)
+
+    # ── Fusión con plantilla PDF institucional (si existe) ────────────────
+    # Modo Superposición:
+    #   - Página 0 del template = fondo de la portada.
+    #   - Página 1 del template (si existe) = "Sección de Nodo": REEMPLAZA
+    #     por completo cada página separadora de nodo del reporte SynCo.
+    #   - Página 2+ del template (si existe) = base para las páginas de datos.
+    #     Si no hay página 2, se recicla la última página del template.
+    # Nota: `tpl_pdf_path` ya fue calculado arriba para dimensionar el canvas
+    # dinámicamente, por lo que aquí lo reutilizamos sin releer el disco.
+    tpl_pdf = tpl_pdf_path
+    if tpl_pdf:
+        try:
+            pdf_bytes = await asyncio.to_thread(
+                _overlay_pdf_on_template, pdf_bytes, tpl_pdf,
+                section_page_indices, area_page_indices, gd_page_count,
+            )
+        except Exception as e:
+            log.warning("template pdf merge failed: %s", e)
+
+    fname = _safe_export_filename(proj.get("name", "proyecto"), period, "pdf")
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
+def _overlay_pdf_on_template(
+    content_pdf: bytes,
+    template_path: str,
+    section_page_indices: Optional[List[int]] = None,  # deprecated (no-op)
+    cover_bg_page_indices: Optional[List[int]] = None,  # portadillas de Área
+    general_data_page_count: int = 1,  # nº de páginas de Datos Generales
+) -> bytes:
+    """Modo Superposición: fusiona el PDF generado por SynCo sobre la plantilla PDF.
+
+    Convención de páginas del template (3 páginas base):
+      • Página 0 → 'Portada'. Se usa una única vez como fondo de la portada
+        institucional del reporte SynCo (índice 0 del contenido).
+      • Página 1 → 'Mapa'. Se usa una única vez como fondo de la página
+        MAPA del reporte SynCo (índice 1 del contenido, con el
+        `template_map` incrustado).
+      • Página 2..N-1 → 'Lienzo recurrente'. Se cicla como fondo para el
+        resto de páginas de contenido del reporte (portadillas de nodo +
+        páginas de reporte + galerías).
+
+    Reglas de tolerancia (backward-compat):
+      • Si la plantilla tiene 1 página → todas las páginas del contenido se
+        pintan sobre esa única página.
+      • Si la plantilla tiene 2 páginas → índice 0 para portada, índice 1
+        para mapa Y también como lienzo del resto.
+      • `section_page_indices` se mantiene en la firma pero es ignorado.
+    """
+    from pypdf import PdfReader, PdfWriter
+    tpl_bytes = Path(template_path).read_bytes()
+    content_reader = PdfReader(io.BytesIO(content_pdf))
+    tpl_count = len(PdfReader(io.BytesIO(tpl_bytes)).pages)
+    if tpl_count == 0:
+        return content_pdf
+
+    # Índice del lienzo recurrente (páginas 2..N-1 del template)
+    content_base_start = 2 if tpl_count >= 3 else (1 if tpl_count == 2 else 0)
+    content_base_last = tpl_count - 1
+
+    writer = PdfWriter()
+    content_cycle_idx = 0
+    _area_cover_set = set(cover_bg_page_indices or [])
+    _gd_count = max(1, int(general_data_page_count or 1))
+    for i, cpage in enumerate(content_reader.pages):
+        fresh = PdfReader(io.BytesIO(tpl_bytes))
+        if i == 0:
+            # Portada del reporte → fondo = página 0 del template
+            base_idx = 0
+        elif 1 <= i <= _gd_count:
+            # Datos Generales (ex-Mapa) → fondo = página 1 del template
+            base_idx = 1 if tpl_count >= 2 else 0
+        elif i in _area_cover_set:
+            # Portadilla de Área → fondo = página 0 del template (magenta)
+            base_idx = 0
+        else:
+            # Lienzo recurrente: cicla entre content_base_start..content_base_last
+            span = content_base_last - content_base_start + 1
+            if span <= 0:
+                base_idx = content_base_last
+            else:
+                base_idx = content_base_start + (content_cycle_idx % span)
+                content_cycle_idx += 1
+        base = fresh.pages[base_idx]
+        try:
+            base.merge_page(cpage)
+        except Exception:
+            writer.add_page(cpage)
+            continue
+        writer.add_page(base)
+    out = io.BytesIO()
+    writer.write(out)
+    return out.getvalue()
+
+
+
+# === DOCX / PPTX EXPORT (Cero Huella Local - 100 % en RAM con BytesIO) ======
+# Reglas idénticas al motor PDF (Coord = todos / Esp = propios / Sub = scope).
+# Período: today | yesterday | week | month.
+# Procesamiento ESTRICTAMENTE en memoria (io.BytesIO) - NO se escribe ningún
+# archivo al disco del dispositivo ni del servidor.
+
+async def _gather_export_data(
+    pid: str,
+    period: str,
+    user: dict,
+    area_id: Optional[str] = None,
+    scope_mine_only: bool = False,
+    period_type: Optional[str] = None,
+) -> dict:
+    """Carga proyecto, nodos, reportes, anuncios y rutas aplicando filtros.
+
+    Reglas:
+      - `period_type` (opcional): categoriza el informe en "diario",
+          "semanal" o "mensual". Si se provee, TIENE PRIORIDAD sobre
+          `period` para calcular el rango temporal y sobrescribe el filtro
+          de severidad según la jerarquía elegida al capturar (ver
+          `_severity_set_for_period_type`):
+            * diario  → SOLO severidad "diario".
+            * semanal → SOLO severidad "importante".
+            * mensual → SOLO severidad "urgente".
+            * "informativo" nunca se incluye.
+        Si no se provee, se conserva el comportamiento clásico (`period` +
+        severidad por rol vía `_export_severity_filter`).
+      - Área: si `area_id` viene, filtra reportes por esa área.
+      - Scope:
+        * Coord / Sub-coord / Jefe → ven todos (a menos que pasen area_id).
+        * Especialista → ve sus propios por defecto; si `scope_mine_only=False`
+          y tiene `area_id`, ve los reportes del área.
+      - Noticias inyectables: Importante + Urgente vinculadas a cada nodo
+        (o sus ancestros) dentro del periodo.
+    """
+    await ensure_project_access(user, pid)
+    proj = await db.projects.find_one({"id": pid})
+    if not proj:
+        raise HTTPException(404, "Proyecto no existe")
+
+    pt_norm = _normalize_period_type(period_type)
+    if pt_norm:
+        start_dt, end_dt, period_label = _period_range_for_type(pt_norm)
+    else:
+        start_dt, end_dt, period_label = _period_range(period)
+
+    nodes_raw = await db.location_nodes.find({"project_id": pid}).to_list(length=10000)
+    nodes_by_id = {n["id"]: n for n in nodes_raw}
+    root_ids = [n["id"] for n in nodes_raw if not n.get("parent_id")]
+    root_ids.sort(key=lambda nid: (nodes_by_id[nid].get("order", 0), nodes_by_id[nid].get("name", "")))
+    leaf_nodes = _flatten_tree_in_order(nodes_by_id, root_ids)
+
+    role = user["role"]
+    # Severidad efectiva: si viene period_type, se aplica su política; si
+    # no, se conserva la política institucional por rol.
+    default_sev_filter = _export_severity_filter(role)
+    sev_filter = _severity_set_for_period_type(pt_norm, default_sev_filter)
+
+    # --- Construir query base con filtros institucionales ---
+    q: dict = {
+        "project_id": pid,
+        "created_at": {"$gte": start_dt, "$lte": end_dt},
+        "severidad": {"$in": list(sev_filter)},
+    }
+
+    # Scope
+    if role == ROLE_ESPECIALISTA:
+        # Especialista: por defecto solo sus propios reportes.
+        # Si `scope_mine_only=False` y tiene area_id, ampliamos al área.
+        my_area = user.get("area_id")
+        if scope_mine_only or not my_area:
+            q["captured_by"] = user["id"]
+        else:
+            q["area_id"] = my_area
+    else:
+        # Supervisor (sub/jefe/coord): ven todo, opcionalmente filtrado por área.
+        if area_id:
+            q["area_id"] = area_id
+
+    # Filtro área explícito (cuando coordinador/sub pasa area_id sin importar
+    # el rol — ya manejado arriba para supervisores; para especialista lo
+    # tomamos en cuenta también si pasa area_id explícito y no scope_mine_only).
+    if role == ROLE_ESPECIALISTA and area_id and not scope_mine_only:
+        q["area_id"] = area_id
+
+    reports = await db.reports.find(q).to_list(length=20000)
+    reports_by_node: dict = {}
+    for r in reports:
+        reports_by_node.setdefault(r.get("node_id"), []).append(r)
+    for nid, lst in reports_by_node.items():
+        lst.sort(key=lambda r: r.get("created_at") or datetime.min)
+
+    # --- Reportes SIN filtro de severidad, para Fuerza de Trabajo/Maquinaria ---
+    # `q` excluye "informativo" (y, con period_type, restringe a una sola
+    # severidad) porque esa política aplica al contenido narrativo del
+    # reporte (fotos/observaciones). El personal/maquinaria capturado debe
+    # contar sin importar la severidad del reporte — de lo contrario, como
+    # la mayoría de los reportes quedan en "informativo" por defecto, las
+    # tablas de Fuerza de Trabajo salían vacías en la exportación.
+    q_workforce = dict(q)
+    q_workforce.pop("severidad", None)
+    reports_workforce = await db.reports.find(q_workforce).to_list(length=20000)
+    reports_by_node_workforce: dict = {}
+    for r in reports_workforce:
+        reports_by_node_workforce.setdefault(r.get("node_id"), []).append(r)
+
+    path_cache: dict = {}
+    for nid in list(reports_by_node.keys()):
+        names = await node_path_names(nid)
+        path_cache[nid] = " › ".join(names)
+
+    # --- Noticias por nodo (Importante+Urgente, vinculadas a nodo o ancestros)
+    announcements_by_node: dict = {}
+    for nid in list(reports_by_node.keys()):
+        node = nodes_by_id.get(nid)
+        if not node:
+            continue
+        # build_node_path devuelve [root, ..., leaf] usando parent_id (path en BD
+        # puede no estar materializado).
+        path_ids = await build_node_path(node)
+        if nid not in path_ids:
+            path_ids.append(nid)
+        announcements_by_node[nid] = await _announcements_for_node(pid, path_ids, start_dt, end_dt)
+
+    # --- Primera lectura previa por nodo (continuidad histórica) ---
+    prev_reading_by_node: dict = {}
+    for nid in reports_by_node.keys():
+        pre_q: dict = {"project_id": pid, "node_id": nid, "created_at": {"$lt": start_dt}}
+        if role == ROLE_ESPECIALISTA and scope_mine_only:
+            pre_q["captured_by"] = user["id"]
+        prev = await db.reports.find(pre_q).sort("created_at", -1).limit(1).to_list(length=1)
+        prev_reading_by_node[nid] = _extract_numeric_reading(prev[0]) if prev else None
+
+    # --- Portadilla dinámica por nodo (cover_image) ---
+    # Para cada nodo con reportes, encontramos el ancestro más cercano (o sí
+    # mismo) que tenga `cover_image`. Se agrupa por ese ancestro para insertar
+    # UNA sola portadilla por grupo.
+    cover_ancestor_by_node: dict = {}
+    for nid in list(reports_by_node.keys()):
+        cur_node = nodes_by_id.get(nid)
+        found = None
+        while cur_node:
+            ci = cur_node.get("cover_image")
+            if ci:
+                found = {
+                    "id": cur_node["id"],
+                    "name": cur_node.get("name") or "",
+                    "cover_image": ci,
+                }
+                break
+            pid_parent = cur_node.get("parent_id")
+            cur_node = nodes_by_id.get(pid_parent) if pid_parent else None
+        cover_ancestor_by_node[nid] = found  # dict o None
+
+    # --- Áreas del proyecto (para portadillas de Área en el reporte) ---
+    areas_raw = await db.areas.find({"project_id": pid}).to_list(length=500)
+    areas_by_id = {a["id"]: a for a in areas_raw}
+
+    return {
+        "proj": proj,
+        "leaf_nodes": leaf_nodes,
+        "root_ids": root_ids,
+        "nodes_by_id": nodes_by_id,
+        "reports_by_node": reports_by_node,
+        "reports_by_node_workforce": reports_by_node_workforce,
+        "announcements_by_node": announcements_by_node,
+        "path_cache": path_cache,
+        "period_label": period_label,
+        "start_dt": start_dt,
+        "end_dt": end_dt,
+        "prev_reading_by_node": prev_reading_by_node,
+        "cover_ancestor_by_node": cover_ancestor_by_node,
+        "areas_by_id": areas_by_id,
+        "period_type": pt_norm,
+        "user": user,
+    }
+
+
+def _safe_export_filename(name: str, period: str, ext: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_-]+", "_", name or "proyecto")[:60] or "proyecto"
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
+    # Sin prefijo "synco_": el archivo debe ser 100% institucional.
+    return f"reporte_{safe}_{period}_{ts}.{ext}"
+
+
+@api.get("/projects/{pid}/export/reports.docx")
+async def export_reports_docx(
+    pid: str,
+    period: str = Query("today", description="today|yesterday|week|month"),
+    period_type: Optional[str] = Query(
+        None,
+        description="diario | semanal | mensual · categoría de reporte. "
+                    "Si se envía, sobrescribe `period` y aplica la política "
+                    "de severidad correspondiente.",
+    ),
+    area_id: Optional[str] = Query(None, description="Filtro por área (opcional)"),
+    scope: Optional[str] = Query(None, description="mine|area (para especialistas)"),
+    user: dict = Depends(current_user),
+):
+    """Exporta reportes en formato Microsoft Word (.docx). 100 % en RAM.
+
+    Filtros idénticos al PDF/PPTX: severidad (según `period_type` si se
+    envía, o Importante+Urgente por default), área opcional, y scope para
+    especialistas."""
+    try:
+        import base64
+        from docx import Document
+        from docx.shared import Cm, Pt, RGBColor
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        from docx.oxml.ns import qn
+        from docx.oxml import OxmlElement
+    except Exception as e:
+        raise HTTPException(500, f"python-docx no instalado: {e}")
+
+    scope_mine_only = (scope or "").lower() == "mine"
+    data = await _gather_export_data(
+        pid, period, user,
+        area_id=area_id,
+        scope_mine_only=scope_mine_only,
+        period_type=period_type,
+    )
+    proj = data["proj"]
+    leaf_nodes = data["leaf_nodes"]
+    reports_by_node = data["reports_by_node"]
+    announcements_by_node = data["announcements_by_node"]
+    path_cache = data["path_cache"]
+    start_dt = data["start_dt"]
+    end_dt = data["end_dt"]
+    cover_ancestor_by_node = data.get("cover_ancestor_by_node", {})
+
+    project_name = proj.get("name", "Proyecto")
+    project_contract = proj.get("contract_number") or "—"
+    project_constructora = proj.get("constructora") or "—"
+    project_objeto = proj.get("objeto_contrato") or None
+    project_cliente = (proj.get("cliente_principal") or "").strip() or None
+    project_color = _sanitize_color_hex(proj.get("color_tema")) or "#003366"
+    constructora_logo_b64 = (proj.get("constructora_logo") or "").strip() or None
+    fechas_label = f"{_fmt_fecha_dd_mm_yyyy(start_dt)} a {_fmt_fecha_dd_mm_yyyy(end_dt)}"
+
+    area_label = "Todas las áreas"
+    if area_id:
+        area = await db.areas.find_one({"id": area_id, "project_id": pid})
+        if area:
+            area_label = f"Área: {area.get('name', '—')}"
+
+    def _build_docx_blocking() -> bytes:
+        """Motor DOCX estrictamente MONOCROMÁTICO, enfocado a LECTURA
+        (2026-07-06 · CDMX · Batch de Producción V2).
+
+        Diseño solicitado:
+          * Un solo reporte por página (page break forzoso al finalizar cada uno).
+          * SIN imágenes ni columnas: puro texto ordenado y legible.
+          * Encabezado repetido en cada página con logo de la empresa (o nombre
+            del proyecto si no hay logo) + fecha de exportación (CDMX).
+          * Cuerpo por reporte: Ubicación · Área/Disciplina · Fecha · Autor,
+            descripciones individuales por foto (`photo_captions[i]`) y la
+            observación general al final.
+          * PALETA ESTRICTAMENTE B/N (ahorro de tinta, impresión ejecutiva):
+              - Títulos/etiquetas fuertes → negro puro (0,0,0).
+              - Cuerpo de texto            → negro puro (0,0,0).
+              - Texto secundario/atenuado  → gris oscuro (0x59,0x59,0x59).
+              - Etiquetas muy sutiles      → gris medio (0x8C,0x8C,0x8C).
+            No se aplica `project_color` en ninguna parte del documento; el
+            color de marca del proyecto sólo se conserva para el PDF/PPTX.
+        """
+        def _fmt_cdmx(dt) -> str:
+            if not dt:
+                return "—"
+            try:
+                if isinstance(dt, str):
+                    try:
+                        dt = datetime.fromisoformat(dt.replace("Z", "+00:00"))
+                    except Exception:
+                        return dt
+                if isinstance(dt, datetime):
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    dt = dt.astimezone(MX_TZ)
+                    return dt.strftime("%d/%m/%Y %H:%M")
+            except Exception:
+                pass
+            return str(dt)
+
+        # Fecha de exportación (para el header institucional) — misma zona
+        # horaria institucional (MX_TZ) que el resto del sistema, nunca una
+        # re-derivación local con su propio fallback.
+        exported_at = datetime.now(timezone.utc).astimezone(MX_TZ).strftime("%d/%m/%Y %H:%M CDMX")
+
+        # Logo (bytes) o None → nombre proyecto en su lugar.
+        logo_bytes = _resolve_export_logo_bytes(constructora_logo_b64)
+
+        # ============================================================
+        # PALETA ESTRICTAMENTE MONOCROMÁTICA (blanco y negro / gris)
+        # ------------------------------------------------------------
+        # Requerimiento ejecutivo (Batch Producción V2): la salida DOCX
+        # NO usa colores de marca — sólo negro y grises — para impresión
+        # profesional y lectura sin ruido visual. Todos los alias de
+        # colores que existían antes (BRAND_RGB, TEXT_RGB, MUTED_RGB,
+        # SUBTLE_RGB) se conservan pero apuntan a la misma escala de
+        # grises, para minimizar el diff y no romper el layout.
+        # ============================================================
+        _BLACK = RGBColor(0x00, 0x00, 0x00)
+        _DARK_GRAY = RGBColor(0x59, 0x59, 0x59)
+        _MID_GRAY = RGBColor(0x8C, 0x8C, 0x8C)
+
+        # Alias semánticos (todos ⊂ B/N — el color de proyecto NO se usa).
+        BRAND_RGB = _BLACK        # títulos/etiquetas fuertes
+        TEXT_RGB = _BLACK         # cuerpo del texto
+        MUTED_RGB = _DARK_GRAY    # texto atenuado (fecha export, "sin datos")
+        SUBTLE_RGB = _MID_GRAY    # etiquetas muy sutiles ("Reporte n de N")
+
+        doc = Document()
+
+        # ---- Ajuste de márgenes cómodos para lectura ----
+        for section in doc.sections:
+            section.top_margin = Cm(2.0)
+            section.bottom_margin = Cm(2.0)
+            section.left_margin = Cm(2.2)
+            section.right_margin = Cm(2.2)
+
+            # === Header institucional (aparece en TODAS las páginas) ======
+            header = section.header
+            # Limpiamos y añadimos una tabla 1×2: [logo/nombre] | [fecha export]
+            for old in list(header.paragraphs):
+                # python-docx no permite borrar el primer párrafo, lo reusamos.
+                pass
+            hdr_table = header.add_table(rows=1, cols=2, width=Cm(17))
+            hdr_table.autofit = True
+            left_cell = hdr_table.cell(0, 0)
+            right_cell = hdr_table.cell(0, 1)
+
+            # Celda izquierda: logo si hay bytes, si no el nombre del proyecto.
+            left_p = left_cell.paragraphs[0]
+            left_p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            if logo_bytes:
+                try:
+                    left_p.add_run().add_picture(io.BytesIO(logo_bytes), height=Cm(1.2))
+                except Exception:
+                    lr = left_p.add_run(project_name)
+                    lr.bold = True
+                    lr.font.size = Pt(11)
+                    lr.font.color.rgb = BRAND_RGB
+            else:
+                lr = left_p.add_run(project_name)
+                lr.bold = True
+                lr.font.size = Pt(11)
+                lr.font.color.rgb = BRAND_RGB
+
+            # Celda derecha: fecha de exportación.
+            right_p = right_cell.paragraphs[0]
+            right_p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+            rr = right_p.add_run(f"Exportado: {exported_at}")
+            rr.italic = True
+            rr.font.size = Pt(9)
+            rr.font.color.rgb = MUTED_RGB
+
+        # ---- Portada (1 página) --------------------------------------
+        cover_title = doc.add_paragraph()
+        cover_title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        # Aire vertical (~1/3 de página) usando párrafos vacíos.
+        for _ in range(6):
+            doc.add_paragraph()
+        ct = cover_title.add_run(project_name)
+        ct.bold = True
+        ct.font.size = Pt(28)
+        ct.font.color.rgb = BRAND_RGB
+
+        sub = doc.add_paragraph()
+        sub.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        sr = sub.add_run("Reporte de actividades")
+        sr.font.size = Pt(16)
+        sr.font.color.rgb = TEXT_RGB
+
+        # Datos del proyecto
+        meta_lines = [
+            ("Contrato", str(project_contract or "—")),
+            ("Constructora", str(project_constructora or "—")),
+        ]
+        if project_cliente:
+            meta_lines.append(("Cliente", project_cliente))
+        if project_objeto:
+            meta_lines.append(("Objeto", project_objeto))
+        meta_lines.append(("Período", fechas_label))
+        meta_lines.append(("Filtro", area_label))
+
+        # Separador visual
+        doc.add_paragraph()
+        for k, v in meta_lines:
+            p = doc.add_paragraph()
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            k_r = p.add_run(f"{k}: ")
+            k_r.bold = True
+            k_r.font.size = Pt(11)
+            k_r.font.color.rgb = MUTED_RGB
+            v_r = p.add_run(v)
+            v_r.font.size = Pt(11)
+            v_r.font.color.rgb = TEXT_RGB
+
+        # Un solo reporte por página → salto de página tras portada.
+        doc.add_page_break()
+
+        # ---- Iteración de reportes ------------------------------------
+        any_data = False
+        reports_flat = []  # lista lineal en orden de árbol
+        for n in leaf_nodes:
+            node_reps = reports_by_node.get(n["id"]) or []
+            for r in node_reps:
+                reports_flat.append((n, r))
+
+        total_reports = len(reports_flat)
+        for idx, (node, r) in enumerate(reports_flat):
+            any_data = True
+
+            # ---- Encabezado del reporte ----
+            title_p = doc.add_paragraph()
+            title_p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            title_r = title_p.add_run(f"Reporte {idx + 1} de {total_reports}")
+            title_r.bold = True
+            title_r.font.size = Pt(9)
+            title_r.font.color.rgb = SUBTLE_RGB
+
+            # Ubicación (jerarquía completa del nodo)
+            path = path_cache.get(node["id"]) or [node.get("name", "—")]
+            path_txt = " › ".join([str(x) for x in path if x])
+
+            loc_p = doc.add_paragraph()
+            l_lbl = loc_p.add_run("Ubicación:  ")
+            l_lbl.bold = True
+            l_lbl.font.size = Pt(12)
+            l_lbl.font.color.rgb = BRAND_RGB
+            l_val = loc_p.add_run(path_txt)
+            l_val.font.size = Pt(12)
+            l_val.font.color.rgb = TEXT_RGB
+
+            # Área / Disciplina
+            area_p = doc.add_paragraph()
+            a_lbl = area_p.add_run("Área / Disciplina:  ")
+            a_lbl.bold = True
+            a_lbl.font.size = Pt(11)
+            a_lbl.font.color.rgb = BRAND_RGB
+            a_val = area_p.add_run(_normalize_area_name(
+                r.get("area_name"), user_role=user.get("role"), user_area=user.get("area"),
+            ))
+            a_val.font.size = Pt(11)
+            a_val.font.color.rgb = TEXT_RGB
+
+            # Fecha + Autor (misma línea)
+            fa_p = doc.add_paragraph()
+            f_lbl = fa_p.add_run("Fecha:  ")
+            f_lbl.bold = True
+            f_lbl.font.size = Pt(11)
+            f_lbl.font.color.rgb = BRAND_RGB
+            f_val = fa_p.add_run(_fmt_cdmx(r.get("created_at")))
+            f_val.font.size = Pt(11)
+            f_val.font.color.rgb = TEXT_RGB
+            sep_r = fa_p.add_run("        ")
+            sep_r.font.size = Pt(11)
+            au_lbl = fa_p.add_run("Autor:  ")
+            au_lbl.bold = True
+            au_lbl.font.size = Pt(11)
+            au_lbl.font.color.rgb = BRAND_RGB
+            au_val = fa_p.add_run(str(r.get("captured_by_name") or "—"))
+            au_val.font.size = Pt(11)
+            au_val.font.color.rgb = TEXT_RGB
+
+            # Contratista, si viene informado.
+            contratista_val = (r.get("contratista") or "").strip()
+            if contratista_val:
+                ct_p = doc.add_paragraph()
+                ct_lbl = ct_p.add_run("Contratista:  ")
+                ct_lbl.bold = True
+                ct_lbl.font.size = Pt(11)
+                ct_lbl.font.color.rgb = BRAND_RGB
+                ct_val = ct_p.add_run(contratista_val)
+                ct_val.font.size = Pt(11)
+                ct_val.font.color.rgb = TEXT_RGB
+
+            # Separador visual
+            doc.add_paragraph()
+
+            # ---- Descripciones por fotografía ----
+            captions = r.get("photo_captions") or []
+            images_count = len(r.get("images") or [])
+            # Usamos el máximo real detectado, con mínimo 2 (spec del usuario).
+            slots = max(2, images_count, len(captions))
+            has_any_caption = False
+            for i in range(slots):
+                cap = (captions[i] if i < len(captions) else "") or ""
+                cap = cap.strip()
+                if not cap:
+                    # Sólo omitimos los slots vacíos que excedan las 2 primeras
+                    # cuando NO hay imagen para ellos. Los dos primeros siempre
+                    # aparecen para dejar rastro documental.
+                    if i >= 2 and i >= images_count:
+                        continue
+
+                cap_p = doc.add_paragraph()
+                cap_lbl = cap_p.add_run(f"Fotografía {i + 1} — descripción:")
+                cap_lbl.bold = True
+                cap_lbl.font.size = Pt(11)
+                cap_lbl.font.color.rgb = BRAND_RGB
+
+                body_p = doc.add_paragraph()
+                if cap:
+                    body_r = body_p.add_run(cap)
+                    body_r.font.size = Pt(11)
+                    body_r.font.color.rgb = TEXT_RGB
+                    has_any_caption = True
+                else:
+                    body_r = body_p.add_run("(Sin descripción capturada)")
+                    body_r.italic = True
+                    body_r.font.size = Pt(11)
+                    body_r.font.color.rgb = MUTED_RGB
+
+            # ---- Observación general ----
+            obs = (r.get("observaciones") or "").strip()
+            obs_p = doc.add_paragraph()
+            obs_lbl = obs_p.add_run("Observación general:")
+            obs_lbl.bold = True
+            obs_lbl.font.size = Pt(11)
+            obs_lbl.font.color.rgb = BRAND_RGB
+            obs_body = doc.add_paragraph()
+            if obs:
+                obs_r = obs_body.add_run(obs)
+                obs_r.font.size = Pt(11)
+                obs_r.font.color.rgb = TEXT_RGB
+            else:
+                obs_r = obs_body.add_run("(Sin observaciones)")
+                obs_r.italic = True
+                obs_r.font.size = Pt(11)
+                obs_r.font.color.rgb = MUTED_RGB
+
+            # Avance / medición, si aparece.
+            avance_val = (r.get("avance") or "").strip()
+            if avance_val:
+                av_p = doc.add_paragraph()
+                av_lbl = av_p.add_run("Avance / medición:  ")
+                av_lbl.bold = True
+                av_lbl.font.size = Pt(11)
+                av_lbl.font.color.rgb = BRAND_RGB
+                av_val = av_p.add_run(f"{avance_val} {r.get('unidad') or ''}".strip())
+                av_val.font.size = Pt(11)
+                av_val.font.color.rgb = TEXT_RGB
+
+            # Page break forzoso al finalizar cada reporte.
+            doc.add_page_break()
+
+        # ---- Empty state ---------------------------------------------
+        if not any_data:
+            empty = doc.add_paragraph()
+            empty.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            er = empty.add_run("Sin reportes en el período seleccionado.")
+            er.italic = True
+            er.font.size = Pt(12)
+            er.font.color.rgb = MUTED_RGB
+
+        buf = io.BytesIO()
+        doc.save(buf)
+        return buf.getvalue()
+
+    docx_bytes = await asyncio.to_thread(_build_docx_blocking)
+    fname = _safe_export_filename(project_name, period, "docx")
+    return StreamingResponse(
+        io.BytesIO(docx_bytes),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
+@api.get("/projects/{pid}/export/reports.pptx")
+async def export_reports_pptx(
+    pid: str,
+    period: str = Query("today", description="today|yesterday|week|month"),
+    period_type: Optional[str] = Query(
+        None,
+        description="diario | semanal | mensual · categoría ejecutiva.",
+    ),
+    area_id: Optional[str] = Query(None, description="Filtro por área (opcional)"),
+    scope: Optional[str] = Query(None, description="mine|area (para especialistas)"),
+    recuento_nivel: Optional[str] = Query(
+        None, description="tramo|subtramo|hoja|personalizado — nivel de agregación del Recuento "
+                           "General. Si se omite, usa la preferencia guardada del proyecto o "
+                           "'subtramo' por defecto.",
+    ),
+    recuento_node_ids: Optional[str] = Query(
+        None, description="IDs de nodo separados por coma — solo aplica si recuento_nivel="
+                           "personalizado. Si se omite, usa la preferencia guardada del proyecto.",
+    ),
+    recuento_sin_datos: Optional[str] = Query(
+        None, description="omitir|leyenda — qué hacer con nodos de agregación sin actividad en "
+                           "el período. Si se omite, usa la preferencia guardada del proyecto o "
+                           "'omitir' por defecto.",
+    ),
+    user: dict = Depends(current_user),
+):
+    """Exporta reportes en formato PowerPoint (.pptx) — Layout Ejecutivo."""
+    try:
+        import base64
+        from pptx import Presentation
+        from pptx.util import Cm, Pt
+        from pptx.dml.color import RGBColor as PRGBColor
+        from pptx.enum.text import PP_ALIGN
+    except Exception as e:
+        raise HTTPException(500, f"python-pptx no instalado: {e}")
+
+    # === Datos comunes del export ===========================================
+    scope_mine_only = (scope or "").lower() == "mine"
+    data = await _gather_export_data(
+        pid, period, user,
+        area_id=area_id,
+        scope_mine_only=scope_mine_only,
+        period_type=period_type,
+    )
+    proj = data["proj"]
+    leaf_nodes = data["leaf_nodes"]
+    reports_by_node = data["reports_by_node"]
+    path_cache = data["path_cache"]
+    start_dt = data["start_dt"]
+    end_dt = data["end_dt"]
+    cover_ancestor_by_node = data.get("cover_ancestor_by_node", {})
+    areas_by_id = data.get("areas_by_id", {})
+    pt_norm = data.get("period_type")
+    nodes_by_id = data.get("nodes_by_id") or {}
+    root_ids = data.get("root_ids") or []
+    workforce_reports_by_node = data.get("reports_by_node_workforce") or reports_by_node
+    # Página de resumen por Subtramo: mismo resumen consolidado (sin
+    # desglose por día ni autor), actividades y clima usados en el PDF
+    # ejecutivo — reemplaza el panel dual agrupado por Tramo (nodo raíz).
+    resource_consolidated_by_subtramo = _workforce_consolidated_by_subtramo(workforce_reports_by_node, nodes_by_id)
+    actividades_by_subtramo = _actividades_by_subtramo(workforce_reports_by_node, nodes_by_id)
+    # Slide(s) de cierre "RECUENTO GENERAL": consolidado del período
+    # completo, agrupado por el nivel de agregación configurado — ver la
+    # misma nota en export_reports_pdf.
+    recuento_nivel_eff, recuento_node_ids_eff, recuento_incluir_sin_datos = _resolve_recuento_config(
+        proj, recuento_nivel, recuento_node_ids, recuento_sin_datos,
+    )
+    recuento_general_rows = _recuento_general_by_nodo(
+        workforce_reports_by_node, nodes_by_id, root_ids,
+        nivel=recuento_nivel_eff, node_ids=recuento_node_ids_eff,
+        incluir_sin_datos=recuento_incluir_sin_datos,
+    )
+    # Resumen de Actividades Generales CURADAS por Área, para insertar
+    # dentro de cada bloque de Área del cuerpo del PPTX — ver la misma nota
+    # en export_reports_pdf.
+    actividades_curadas_idx = await _actividades_curadas_resumen_por_area(pid, start_dt, end_dt, user)
+    weather_by_subtramo: dict = {}
+    _weather_cache: dict = {}
+    for _subtramo_id in resource_consolidated_by_subtramo.keys():
+        _lat, _lon = _weather_coords_for_subtramo(_subtramo_id, nodes_by_id, workforce_reports_by_node)
+        _cache_key = (_lat, _lon)
+        if _cache_key not in _weather_cache:
+            _weather_cache[_cache_key] = await _fetch_weather_for_export(_lat, _lon)
+        weather_by_subtramo[_subtramo_id] = _weather_cache[_cache_key]
+
+    project_name = proj.get("name", "Proyecto")
+    project_contract = proj.get("contract_number") or "—"  # noqa: F841
+    project_constructora = proj.get("constructora") or "—"  # noqa: F841
+    project_color = _sanitize_color_hex(proj.get("color_tema")) or "#003366"
+    _ch = project_color.lstrip("#")
+    BRAND_RGB = (int(_ch[0:2], 16), int(_ch[2:4], 16), int(_ch[4:6], 16))
+    fechas_label = f"{_fmt_fecha_dd_mm_yyyy(start_dt)} a {_fmt_fecha_dd_mm_yyyy(end_dt)}"
+
+    # Título ejecutivo dependiendo del tipo de reporte.
+    _report_title_map = {
+        "diario": "REPORTE DIARIO",
+        "semanal": "REPORTE SEMANAL",
+        "mensual": "REPORTE MENSUAL",
+    }
+    report_title = _report_title_map.get(pt_norm or "", "REPORTE")
+
+    area_label = "Todas las áreas"  # noqa: F841
+    if area_id:
+        area = await db.areas.find_one({"id": area_id, "project_id": pid})
+        if area:
+            area_label = f"Área: {area.get('name', '—')}"
+
+    def _build_pptx_blocking() -> bytes:
+        tpl_pptx = _get_project_template(proj, "pptx")
+
+        # ==============================================================
+        # Motor PPTX (v2): TODO fondo proviene del MEMBRETE del usuario.
+        # Si la plantilla existe, la 1ª slide es el "membrete master" y
+        # se clona para CADA nueva slide del reporte. NO se dibujan
+        # rectángulos de color hardcoded, ni bandas, ni headers, ni
+        # footers programáticos: solo se INYECTA contenido dinámico
+        # (texto, imágenes) sobre copias del membrete.
+        # Si no hay plantilla, se generan slides en blanco sin decoración.
+        # ==============================================================
+        # tpl_cover_slide  = Slide 0 de la plantilla → PORTADA (se deja 100% intacta).
+        # tpl_master_slide = Slide 1 de la plantilla ("ACTIVIDADES GENERALES") →
+        #                    fondo/membrete UNIVERSAL clonado para Mapa, Nodos,
+        #                    Reportes, Notas, etc.
+        tpl_cover_slide = None
+        tpl_master_slide = None
+        if tpl_pptx:
+            try:
+                prs = Presentation(tpl_pptx)
+                _n_tpl_slides = len(prs.slides)
+                if _n_tpl_slides > 0:
+                    tpl_cover_slide = prs.slides[0]
+                if _n_tpl_slides > 1:
+                    tpl_master_slide = prs.slides[1]
+                else:
+                    # Plantilla con una sola diapositiva: se reutiliza esa misma
+                    # como membrete universal.
+                    tpl_master_slide = tpl_cover_slide
+                if _n_tpl_slides == 0:
+                    prs = Presentation()
+                    prs.slide_width = Cm(29.7)
+                    prs.slide_height = Cm(21.0)
+            except Exception:
+                prs = Presentation()
+                prs.slide_width = Cm(29.7)
+                prs.slide_height = Cm(21.0)
+        else:
+            prs = Presentation()
+            prs.slide_width = Cm(29.7)
+            prs.slide_height = Cm(21.0)
+        SW, SH = prs.slide_width, prs.slide_height
+        # Margen superior seguro para no invadir logos/encabezado del membrete.
+        TOP_MARGIN = Cm(3.5)
+        BOTTOM_MARGIN = Cm(2.0)
+        blank = prs.slide_layouts[6]
+
+        # Imports adicionales para shape fill
+        from pptx.enum.shapes import MSO_SHAPE  # noqa: F401  (kept for compat)
+        from pptx.oxml.ns import qn as _qn  # noqa: F401
+        from lxml import etree as _ET  # noqa: F401
+        from copy import deepcopy as _deepcopy
+
+        def _clone_slide(source_slide):
+            """Clona una slide arbitraria (portada o membrete) reparando rIds.
+
+            Deep-copia los shapes reparando las relaciones (`r:embed`,
+            `r:link`) de imágenes para apuntar a rIds válidos en la slide
+            destino. Sirve para clonar TANTO el membrete (Slide 1) como
+            la portada institucional (Slide 0, usada para portadillas de
+            área).
+            """
+            if source_slide is None:
+                return prs.slides.add_slide(blank)
+            try:
+                from pptx.oxml.ns import qn as _qn
+                _IMG_REL = (
+                    "http://schemas.openxmlformats.org/"
+                    "officeDocument/2006/relationships/image"
+                )
+                _EMBED = _qn("r:embed")
+                _LINK = _qn("r:link")
+                new_slide = prs.slides.add_slide(source_slide.slide_layout)
+                for shp in list(new_slide.shapes):
+                    try:
+                        shp.element.getparent().remove(shp.element)
+                    except Exception:
+                        pass
+                for shp in source_slide.shapes:
+                    try:
+                        new_el = _deepcopy(shp.element)
+                        _skip_shape = False
+                        for blip in new_el.iter(_qn("a:blip")):
+                            for _attr in (_EMBED, _LINK):
+                                old_rid = blip.get(_attr)
+                                if not old_rid:
+                                    continue
+                                try:
+                                    image_part = source_slide.part.related_part(old_rid)
+                                    new_rid = new_slide.part.relate_to(image_part, _IMG_REL)
+                                    blip.set(_attr, new_rid)
+                                except Exception:
+                                    _skip_shape = True
+                                    break
+                            if _skip_shape:
+                                break
+                        if _skip_shape:
+                            continue
+                        new_slide.shapes._spTree.insert_element_before(new_el, "p:extLst")
+                    except Exception:
+                        continue
+                return new_slide
+            except Exception:
+                return prs.slides.add_slide(blank)
+
+        def _clone_membrete():
+            """Clona el membrete institucional (Slide 1) para páginas de contenido."""
+            return _clone_slide(tpl_master_slide)
+
+        def _clone_cover_bg():
+            """Clona el fondo de la portada (Slide 0) para portadillas de Área."""
+            return _clone_slide(tpl_cover_slide) if tpl_cover_slide else _clone_membrete()
+
+        def add_bg_rect(slide, x, y, w, h, rgb_tuple):
+            """DEPRECATED · no-op: los fondos ahora provienen exclusivamente
+            del membrete de la plantilla. Mantenida por compatibilidad."""
+            return None
+
+        def add_text(slide, x, y, w, h, text, *, size=14, bold=False, color=(0x0F, 0x17, 0x2A),
+                     align=PP_ALIGN.LEFT, italic=False):
+            tb = slide.shapes.add_textbox(x, y, w, h)
+            tf = tb.text_frame
+            tf.word_wrap = True
+            p = tf.paragraphs[0]
+            p.alignment = align
+            run = p.add_run()
+            run.text = str(text)
+            run.font.size = Pt(size)
+            run.font.bold = bold
+            run.font.italic = italic
+            run.font.color.rgb = PRGBColor(*color)
+            return tb
+
+        # === Paleta derivada de BRAND (mismo criterio que el PDF: nunca hex fijo) ===
+        _total_tint_hex = _blend_hex_with_white(project_color, 0.78)
+        _header_shadow_hex = _blend_hex_with_black(project_color, 0.28)
+        _zebra_tint_hex = _blend_hex_with_white(project_color, 0.95)
+        WF_TOTAL_TINT_RGB = tuple(int(_total_tint_hex.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4))
+        WF_HEADER_SHADOW_RGB = tuple(int(_header_shadow_hex.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4))
+        WF_ZEBRA_TINT_RGB = tuple(int(_zebra_tint_hex.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4))
+        WF_BORDER_RGB = (0xE2, 0xE8, 0xF0)
+        WF_MUTED_RGB = (0x64, 0x74, 0x8B)
+        WF_TEXT_RGB = (0x0F, 0x17, 0x2A)
+        WF_WHITE_RGB = (0xFF, 0xFF, 0xFF)
+        # FIX 2026-08-13 · CONTRASTE EN PPTX (paridad con el motor PDF)
+        # ─────────────────────────────────────────────────────────
+        # `BRAND_RGB` (arriba) es el color de identidad CRUDO del proyecto —
+        # correcto para RELLENOS sólidos (headers de tabla, íconos, barras),
+        # pero si se usa tal cual como color de TEXTO sobre fondo BLANCO y el
+        # proyecto tiene un tema claro/pastel, el texto queda casi invisible
+        # (mismo bug ya resuelto en el motor PDF vía `_readable_dark_hex` y
+        # en el frontend vía `readableAccent()` — ver theme.ts). Dos
+        # variables nuevas, cero hex fijo:
+        #   - READABLE_BRAND_RGB: para TEXTO de marca sobre fondo blanco
+        #     (títulos de sección, "RECUENTO GENERAL", cifras destacadas).
+        #   - HEADER_TEXT_RGB: para texto DENTRO de un encabezado de tabla
+        #     con fondo BRAND_RGB crudo — blanco si el fondo es oscuro,
+        #     oscuro si el fondo es claro (antes hardcodeado a blanco fijo).
+        _readable_brand_hex = _readable_dark_hex(project_color)
+        READABLE_BRAND_RGB = tuple(int(_readable_brand_hex.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4))
+        HEADER_TEXT_RGB = WF_WHITE_RGB if _hex_luminance(project_color) <= 0.6 else (0x1A, 0x1A, 0x1A)
+
+        def _wf_rect(slide, x, y, w, h, fill_rgb=None, line_rgb=None, line_pt=None):
+            sh = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, x, y, w, h)
+            sh.shadow.inherit = False
+            if fill_rgb is not None:
+                sh.fill.solid()
+                sh.fill.fore_color.rgb = PRGBColor(*fill_rgb)
+            else:
+                sh.fill.background()
+            if line_rgb is not None:
+                sh.line.color.rgb = PRGBColor(*line_rgb)
+                sh.line.width = Pt(line_pt or 0.75)
+            else:
+                sh.line.fill.background()
+            return sh
+
+        def _wf_oval(slide, x, y, w, h, fill_rgb):
+            sh = slide.shapes.add_shape(MSO_SHAPE.OVAL, x, y, w, h)
+            sh.shadow.inherit = False
+            sh.fill.solid()
+            sh.fill.fore_color.rgb = PRGBColor(*fill_rgb)
+            sh.line.fill.background()
+            return sh
+
+        def _wf_person_icon(slide, cx: int, cy: int, r: int) -> None:
+            _wf_oval(slide, cx - r, cy - r, 2 * r, 2 * r, BRAND_RGB)
+            head_r = int(r * 0.30)
+            _wf_oval(slide, cx - head_r, cy - int(r * 0.30) - head_r, 2 * head_r, 2 * head_r, WF_WHITE_RGB)
+            body_w, body_h = int(r * 1.08), int(r * 0.62)
+            _wf_oval(slide, cx - body_w // 2, cy + int(r * 0.02) - body_h, body_w, body_h, WF_WHITE_RGB)
+
+        def _wf_gear_icon(slide, cx: int, cy: int, r: int) -> None:
+            _wf_oval(slide, cx - r, cy - r, 2 * r, 2 * r, BRAND_RGB)
+            body_r = int(r * 0.52)
+            _wf_oval(slide, cx - body_r, cy - body_r, 2 * body_r, 2 * body_r, WF_WHITE_RGB)
+            tooth_w, tooth_h, n_teeth = int(r * 0.26), int(r * 0.32), 8
+            for i in range(n_teeth):
+                angle = (360.0 / n_teeth) * i
+                rad = math.radians(angle)
+                tx = cx + int(math.cos(rad) * r * 0.58)
+                ty = cy + int(math.sin(rad) * r * 0.58)
+                tooth = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, tx - tooth_w // 2, ty - tooth_h // 2, tooth_w, tooth_h)
+                tooth.rotation = angle
+                tooth.shadow.inherit = False
+                tooth.fill.solid()
+                tooth.fill.fore_color.rgb = PRGBColor(*WF_WHITE_RGB)
+                tooth.line.fill.background()
+            hole_r = int(r * 0.20)
+            _wf_oval(slide, cx - hole_r, cy - hole_r, 2 * hole_r, 2 * hole_r, BRAND_RGB)
+
+        WF_ACCESO_COLORS = {
+            "con acceso": (0x16, 0xA3, 0x4A), "permitido": (0x16, 0xA3, 0x4A), "acceso permitido": (0x16, 0xA3, 0x4A),
+            "liberado": (0x16, 0xA3, 0x4A), "libre": (0x16, 0xA3, 0x4A), "si": (0x16, 0xA3, 0x4A), "sí": (0x16, 0xA3, 0x4A),
+            "sin acceso": (0xDC, 0x26, 0x26), "bloqueado": (0xDC, 0x26, 0x26), "denegado": (0xDC, 0x26, 0x26), "no": (0xDC, 0x26, 0x26),
+            "parcial": (0xD9, 0x77, 0x06), "restringido": (0xD9, 0x77, 0x06),
+        }
+
+        def _wf_structure_icon(slide, cx: int, cy: int, r: int) -> None:
+            _wf_oval(slide, cx - r, cy - r, 2 * r, 2 * r, BRAND_RGB)
+            node_r = int(r * 0.17)
+            top = (cx, cy - int(r * 0.38))
+            bl = (cx - int(r * 0.40), cy + int(r * 0.32))
+            br = (cx + int(r * 0.40), cy + int(r * 0.32))
+            for (nx, ny) in (top, bl, br):
+                _wf_oval(slide, nx - node_r, ny - node_r, 2 * node_r, 2 * node_r, WF_WHITE_RGB)
+
+        def _wf_weather_icon(slide, cx: int, cy: int, r: int) -> None:
+            _wf_oval(slide, cx - r, cy - r, 2 * r, 2 * r, BRAND_RGB)
+            sun_r = int(r * 0.34)
+            _wf_oval(slide, cx - int(r * 0.10) - sun_r, cy - int(r * 0.20) - sun_r, 2 * sun_r, 2 * sun_r, WF_WHITE_RGB)
+            cloud_w, cloud_h = int(r * 1.1), int(r * 0.5)
+            _wf_oval(slide, cx - cloud_w // 2, cy + int(r * 0.05), cloud_w, cloud_h, WF_WHITE_RGB)
+
+        def _wf_truncate(text: str, max_chars: int) -> str:
+            text = (text or "").strip()
+            if len(text) <= max_chars:
+                return text
+            return text[:max(1, max_chars - 1)].rstrip() + "…"
+
+        def _wf_bullets(slide, x: int, y: int, w: int, h: int, items: list, max_items: int, font_size: float = 11) -> None:
+            """Textbox con viñetas (una por párrafo). Trunca por CANTIDAD de
+            ítems (`max_items`) y por longitud de cada ítem — no hay
+            paginación: mismo criterio de 'página fija, truncar' del PDF."""
+            tb = slide.shapes.add_textbox(x, y, w, h)
+            tf = tb.text_frame
+            tf.word_wrap = True
+            shown = (items or [])[:max_items]
+            max_chars = max(40, int((w / 360000.0) * 5.4 * 2))
+            if not shown:
+                p = tf.paragraphs[0]
+                run = p.add_run()
+                run.text = "Sin información registrada"
+                run.font.size = Pt(font_size)
+                run.font.italic = True
+                run.font.color.rgb = PRGBColor(*WF_MUTED_RGB)
+                return
+            for i, text in enumerate(shown):
+                p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+                run = p.add_run()
+                run.text = f"•  {_wf_truncate(text, max_chars)}"
+                run.font.size = Pt(font_size)
+                run.font.color.rgb = PRGBColor(*WF_TEXT_RGB)
+            overflow = len(items or []) - len(shown)
+            if overflow > 0:
+                p = tf.add_paragraph()
+                run = p.add_run()
+                run.text = f"+ {overflow} más…"
+                run.font.size = Pt(max(7, font_size - 1.5))
+                run.font.italic = True
+                run.font.color.rgb = PRGBColor(*WF_MUTED_RGB)
+
+        def draw_subtramo_summary_slide(subtramo_node: dict, personal_rows: list, maquinaria_rows: list,
+                                         actividades: list, situacion_social: Optional[str],
+                                         acceso_predio: Optional[str], weather: Optional[dict]) -> None:
+            """Slide de resumen por Subtramo — MISMO layout de 2 columnas que
+            `draw_subtramo_summary_page` (motor PDF), con primitivas
+            python-pptx: IZQUIERDA (título con ícono de estructura, Acceso al
+            Predio con badge semántico, Situación Social, Actividades) y
+            DERECHA (Estado del Tiempo 2x2 + mini-tablas Fuerza de
+            Trabajo/Maquinaria y Equipo con TOTAL). Slide FIJA (1 sola, sin
+            paginación adicional): el contenido que no cabe se trunca."""
+            slide = _clone_membrete()
+
+            MARGIN_X = Cm(1.5)
+            GUTTER = Cm(0.9)
+            content_w = SW - 2 * MARGIN_X
+            col_w = int((content_w - GUTTER) / 2)
+            left_x = MARGIN_X
+            right_x = MARGIN_X + col_w + GUTTER
+            divider_x = MARGIN_X + col_w + int(GUTTER / 2)
+            top_y = TOP_MARGIN
+            bottom_y = SH - BOTTOM_MARGIN
+
+            BADGE_R = int(Cm(0.5))
+            subtramo_name = (subtramo_node or {}).get("name") or "Subtramo"
+
+            def _section_title(x: int, y: int, w: int, text: str) -> int:
+                add_text(slide, x, y, w, Cm(0.55), text.upper(), size=12, bold=True, color=READABLE_BRAND_RGB)
+                return y + Cm(0.6)
+
+            # ---- COLUMNA IZQUIERDA ------------------------------------------
+            y = top_y
+            cx, cy = left_x + BADGE_R, y + BADGE_R
+            _wf_structure_icon(slide, cx, cy, BADGE_R)
+            add_text(slide, left_x + 2 * BADGE_R + Cm(0.3), y + int(BADGE_R * 0.35),
+                     col_w - 2 * BADGE_R - Cm(0.3), Cm(0.8),
+                     subtramo_name.upper(), size=17, bold=True, color=READABLE_BRAND_RGB)
+            y += Cm(1.4)
+            _wf_rect(slide, left_x, y, col_w, Pt(1.6), fill_rgb=BRAND_RGB)
+            y += Cm(0.35)
+
+            # --- Acceso al Predio ---------------------------------------------
+            y = _section_title(left_x, y, col_w, "Acceso al Predio")
+            box_h = Cm(1.0)
+            acceso_rgb = WF_ACCESO_COLORS.get((acceso_predio or "").strip().lower(), (0x94, 0xA3, 0xB8))
+            _wf_rect(slide, left_x, y, col_w, box_h, fill_rgb=acceso_rgb)
+            add_text(slide, left_x, y, col_w, box_h, (acceso_predio or "Sin especificar").strip().upper(),
+                     size=13, bold=True, color=WF_WHITE_RGB, align=PP_ALIGN.CENTER)
+            y += box_h + Cm(0.15)
+            add_text(
+                slide, left_x, y, col_w, Cm(0.7),
+                "Refleja el estatus vigente al momento de exportar, no necesariamente el del período de este reporte.",
+                size=7.5, italic=True, color=WF_MUTED_RGB,
+            )
+            y += Cm(0.75)
+
+            # --- Situación Social -----------------------------------------------
+            y = _section_title(left_x, y, col_w, "Situación Social - Liberación Física del Predio")
+            situ_items = [ln.strip() for ln in (situacion_social or "").splitlines() if ln.strip()]
+            situ_h = Cm(3.2)
+            _wf_bullets(slide, left_x, y, col_w, situ_h, situ_items, max_items=4, font_size=10.5)
+            y += situ_h + Cm(0.2)
+
+            # --- Actividades ------------------------------------------------------
+            y = _section_title(left_x, y, col_w, "Actividades")
+            act_h = max(Cm(1.5), bottom_y - y)
+            _wf_bullets(slide, left_x, y, col_w, act_h, actividades or [], max_items=6, font_size=10.5)
+
+            # ---- LÍNEA DIVISORIA VERTICAL (delgada, color de marca) ---------
+            _wf_rect(slide, divider_x, top_y, Pt(1.3), bottom_y - top_y, fill_rgb=BRAND_RGB)
+
+            # ---- COLUMNA DERECHA ---------------------------------------------
+            y = top_y
+            cx, cy = right_x + BADGE_R, y + BADGE_R
+            _wf_weather_icon(slide, cx, cy, BADGE_R)
+            add_text(slide, right_x + 2 * BADGE_R + Cm(0.3), y + int(BADGE_R * 0.35),
+                     col_w - 2 * BADGE_R - Cm(0.3), Cm(0.8),
+                     "ESTADO DEL TIEMPO", size=14, bold=True, color=READABLE_BRAND_RGB)
+            y += Cm(1.15)
+
+            w = weather or {}
+            temp = w.get("temperature_c")
+            wind = w.get("wind_kmh")
+            precip = w.get("precipitation_mm")
+            aqi = w.get("us_aqi")
+            cells = [
+                ("TEMPERATURA", f"{temp:.0f}°C" if temp is not None else "—"),
+                ("VIENTO", f"{wind:.0f} km/h" if wind is not None else "—"),
+                ("PRECIPITACIÓN", f"{precip:.1f} mm" if precip is not None else "—"),
+                ("CALIDAD DEL AIRE", f"{int(aqi)} · {_us_aqi_label(aqi)}" if aqi is not None else "—"),
+            ]
+            cell_w, cell_h = col_w // 2, Cm(1.5)
+            grid_top = y
+            for i, (label, val) in enumerate(cells):
+                row, colx = divmod(i, 2)
+                cx2 = right_x + colx * cell_w
+                cy2 = grid_top + row * cell_h
+                _wf_rect(slide, cx2, cy2, cell_w, cell_h, line_rgb=WF_BORDER_RGB, line_pt=0.75)
+                add_text(slide, cx2 + Cm(0.15), cy2 + Cm(0.1), cell_w - Cm(0.3), Cm(0.4),
+                         label, size=8, bold=True, color=WF_MUTED_RGB)
+                add_text(slide, cx2 + Cm(0.15), cy2 + Cm(0.55), cell_w - Cm(0.3), Cm(0.8),
+                         val, size=15, bold=True, color=WF_TEXT_RGB)
+            y = grid_top + 2 * cell_h + Cm(0.35)
+
+            # --- Mini-tablas FUERZA DE TRABAJO | MAQUINARIA Y EQUIPO ------------
+            tbl_gutter = Cm(0.5)
+            tbl_w = (col_w - tbl_gutter) // 2
+            tbl_avail_h = bottom_y - y
+
+            def _draw_mini_table(x: int, y_top: int, w: int, title: str, rows: list, icon_kind: str) -> None:
+                mini_r = int(Cm(0.4))
+                HEADER_H = Cm(0.75)
+                ROW_H = Cm(0.5)
+                TOTAL_H = Cm(0.65)
+                cx3, cy3 = x + mini_r, y_top + mini_r
+                if icon_kind == "person":
+                    _wf_person_icon(slide, cx3, cy3, mini_r)
+                else:
+                    _wf_gear_icon(slide, cx3, cy3, mini_r)
+                add_text(slide, x + 2 * mini_r + Cm(0.2), y_top + int(mini_r * 0.35),
+                         w - 2 * mini_r - Cm(0.2), Cm(0.6), title.upper(), size=10.5, bold=True, color=READABLE_BRAND_RGB)
+                yy = y_top + 2 * mini_r + Cm(0.15)
+                _wf_rect(slide, x, yy, w, HEADER_H, fill_rgb=BRAND_RGB)
+                add_text(slide, x + Cm(0.15), yy + Cm(0.08), int(w * 0.6), HEADER_H - Cm(0.1), "RECURSO",
+                         size=9, bold=True, color=HEADER_TEXT_RGB)
+                add_text(slide, x + int(w * 0.55), yy + Cm(0.08), int(w * 0.4), HEADER_H - Cm(0.1), "CANT.",
+                         size=9, bold=True, color=HEADER_TEXT_RGB, align=PP_ALIGN.RIGHT)
+                yy += HEADER_H
+                total_qty = sum(r["qty"] for r in rows)
+                max_rows = max(1, int((tbl_avail_h - 2 * mini_r - Cm(0.15) - HEADER_H - TOTAL_H) / ROW_H))
+                shown = rows[:max_rows]
+                overflow = len(rows) - len(shown)
+                for idx, r in enumerate(shown):
+                    if idx % 2 == 1:
+                        _wf_rect(slide, x, yy, w, ROW_H, fill_rgb=WF_ZEBRA_TINT_RGB)
+                    main, _ = _format_workforce_desc(r["desc"])
+                    add_text(slide, x + Cm(0.15), yy + Cm(0.05), int(w * 0.6), ROW_H - Cm(0.1),
+                             main or "—", size=9, color=WF_TEXT_RGB)
+                    add_text(slide, x + int(w * 0.55), yy + Cm(0.05), int(w * 0.4), ROW_H - Cm(0.1),
+                             str(r["qty"]), size=9, bold=True, color=READABLE_BRAND_RGB, align=PP_ALIGN.RIGHT)
+                    _wf_rect(slide, x, yy + ROW_H - Pt(0.75), w, Pt(0.75), fill_rgb=WF_BORDER_RGB)
+                    yy += ROW_H
+                if overflow > 0:
+                    add_text(slide, x + Cm(0.15), yy + Cm(0.05), w - Cm(0.3), ROW_H - Cm(0.1),
+                             f"+ {overflow} más…", size=8, italic=True, color=WF_MUTED_RGB)
+                    yy += ROW_H
+                if not rows:
+                    add_text(slide, x + Cm(0.15), yy + Cm(0.05), w - Cm(0.3), ROW_H - Cm(0.1),
+                             "Sin registros", size=9, italic=True, color=WF_MUTED_RGB)
+                    yy += ROW_H
+                _wf_rect(slide, x, yy, w, TOTAL_H, fill_rgb=WF_TOTAL_TINT_RGB)
+                _wf_rect(slide, x, yy, w, Pt(1.6), fill_rgb=BRAND_RGB)
+                add_text(slide, x + Cm(0.15), yy + Cm(0.1), int(w * 0.5), TOTAL_H - Cm(0.15),
+                         "TOTAL", size=10, bold=True, color=READABLE_BRAND_RGB)
+                add_text(slide, x + int(w * 0.4), yy + Cm(0.1), int(w * 0.55), TOTAL_H - Cm(0.15),
+                         str(total_qty), size=10, bold=True, color=READABLE_BRAND_RGB, align=PP_ALIGN.RIGHT)
+
+            _draw_mini_table(right_x, y, tbl_w, "Fuerza de Trabajo", personal_rows, "person")
+            _draw_mini_table(right_x + tbl_w + tbl_gutter, y, tbl_w, "Maquinaria y Equipo", maquinaria_rows, "gear")
+
+        _emitted_recuento_general_title = False
+
+        def _emit_recuento_general_slides() -> None:
+            """Slide(s) de cierre "RECUENTO GENERAL": una por Tramo, y tantas
+            adicionales como haga falta si las filas no caben en una sola
+            (NUNCA se trunca con "+N más" aquí — se pagina). Mismas
+            mini-tablas gemelas PERSONAL / MAQUINARIA Y EQUIPO que
+            `draw_subtramo_summary_slide`, pero más grandes y centradas en
+            el ancho completo de la slide."""
+            nonlocal _emitted_recuento_general_title
+            if not recuento_general_rows:
+                return
+
+            MARGIN_X = Cm(1.5)
+            content_w = SW - 2 * MARGIN_X
+            tbl_gutter = Cm(0.6)
+            pair_w = int(content_w * 0.85)
+            tbl_w = (pair_w - tbl_gutter) // 2
+            pair_x = MARGIN_X + (content_w - pair_w) // 2
+
+            HEADER_H = Cm(1.05)
+            ROW_H = Cm(0.85)
+            TOTAL_H = Cm(1.0)
+            ROW_FONT = 14
+            HEADER_FONT = 13
+
+            def _draw_big_table(x: int, y_top: int, title: str, items: list, draw_total: bool, total_qty,
+                                 tiene_poste: bool) -> int:
+                # Con columna POSTE (nivel de agregación por encima de hoja —
+                # ver `_recuento_general_by_nodo`) el ancho se reparte en 3
+                # franjas (POSTE/desc/CANT.), sin ella en 2 (histórico).
+                if tiene_poste:
+                    poste_x0, name_x0, qty_x0 = 0.0, 0.30, 0.72
+                else:
+                    poste_x0, name_x0, qty_x0 = None, 0.0, 0.62
+                _wf_rect(slide, x, y_top, tbl_w, HEADER_H, fill_rgb=BRAND_RGB)
+                if tiene_poste:
+                    add_text(slide, x + Cm(0.2), y_top + Cm(0.15), int(tbl_w * (name_x0 - poste_x0) - Cm(0.2)),
+                             HEADER_H - Cm(0.2), "POSTE", size=HEADER_FONT, bold=True, color=HEADER_TEXT_RGB)
+                add_text(slide, x + int(tbl_w * name_x0) + Cm(0.2), y_top + Cm(0.15),
+                         int(tbl_w * (qty_x0 - name_x0)) - Cm(0.2), HEADER_H - Cm(0.2),
+                         title.upper(), size=HEADER_FONT, bold=True, color=HEADER_TEXT_RGB)
+                add_text(slide, x + int(tbl_w * qty_x0), y_top + Cm(0.15), int(tbl_w * (1 - qty_x0)),
+                         HEADER_H - Cm(0.2), "CANT.", size=HEADER_FONT, bold=True, color=HEADER_TEXT_RGB,
+                         align=PP_ALIGN.RIGHT)
+                yy = y_top + HEADER_H
+                for idx, r in enumerate(items):
+                    if idx % 2 == 1:
+                        _wf_rect(slide, x, yy, tbl_w, ROW_H, fill_rgb=WF_ZEBRA_TINT_RGB)
+                    if tiene_poste:
+                        add_text(slide, x + Cm(0.2), yy + Cm(0.12), int(tbl_w * (name_x0 - poste_x0)) - Cm(0.3),
+                                 ROW_H - Cm(0.2), str(r.get("poste") or "—"), size=ROW_FONT - 2, color=WF_MUTED_RGB)
+                    main, _ = _format_workforce_desc(r["desc"])
+                    add_text(slide, x + int(tbl_w * name_x0) + Cm(0.2), yy + Cm(0.12),
+                             int(tbl_w * (qty_x0 - name_x0)) - Cm(0.3), ROW_H - Cm(0.2),
+                             main or "—", size=ROW_FONT, color=WF_TEXT_RGB)
+                    add_text(slide, x + int(tbl_w * qty_x0), yy + Cm(0.12), int(tbl_w * (1 - qty_x0)) - Cm(0.2),
+                             ROW_H - Cm(0.2), str(r["qty"]), size=ROW_FONT, bold=True, color=READABLE_BRAND_RGB,
+                             align=PP_ALIGN.RIGHT)
+                    _wf_rect(slide, x, yy + ROW_H - Pt(0.9), tbl_w, Pt(0.9), fill_rgb=WF_BORDER_RGB)
+                    yy += ROW_H
+                if not items:
+                    add_text(slide, x + Cm(0.2), yy + Cm(0.12), tbl_w - Cm(0.4), ROW_H - Cm(0.2),
+                             "Sin registros", size=ROW_FONT, italic=True, color=WF_MUTED_RGB)
+                    yy += ROW_H
+                if draw_total:
+                    _wf_rect(slide, x, yy, tbl_w, TOTAL_H, fill_rgb=WF_TOTAL_TINT_RGB)
+                    _wf_rect(slide, x, yy, tbl_w, Pt(2.0), fill_rgb=BRAND_RGB)
+                    add_text(slide, x + Cm(0.2), yy + Cm(0.18), int(tbl_w * qty_x0) - Cm(0.2), TOTAL_H - Cm(0.25),
+                             "TOTAL", size=ROW_FONT + 1, bold=True, color=READABLE_BRAND_RGB)
+                    add_text(slide, x + int(tbl_w * qty_x0), yy + Cm(0.18), int(tbl_w * (1 - qty_x0)) - Cm(0.2),
+                             TOTAL_H - Cm(0.25), str(total_qty), size=ROW_FONT + 1, bold=True,
+                             color=READABLE_BRAND_RGB, align=PP_ALIGN.RIGHT)
+                    yy += TOTAL_H
+                return yy
+
+            for entry in recuento_general_rows:
+                nodo_name = (entry.get("nodo_name") or "Nodo").strip()
+                nodo_path = (entry.get("nodo_path") or nodo_name).strip()
+                show_path = bool(nodo_path) and nodo_path.upper() != nodo_name.upper()
+                tiene_poste = bool(entry.get("tiene_columna_poste"))
+
+                if entry.get("sin_datos"):
+                    # Nodo de agregación sin personal/maquinaria en el período
+                    # (`incluir_sin_datos=True`): leyenda, nunca tabla vacía.
+                    slide = _clone_membrete()
+                    y = TOP_MARGIN
+                    if not _emitted_recuento_general_title:
+                        add_text(slide, MARGIN_X, y, content_w, Cm(1.1), "RECUENTO GENERAL",
+                                  size=30, bold=True, color=READABLE_BRAND_RGB, align=PP_ALIGN.CENTER)
+                        y += Cm(1.3)
+                        _emitted_recuento_general_title = True
+                    add_text(slide, MARGIN_X, y, content_w, Cm(0.9), nodo_name.upper(),
+                              size=18, bold=True, color=WF_TEXT_RGB, align=PP_ALIGN.CENTER)
+                    y += Cm(1.0)
+                    if show_path:
+                        add_text(slide, MARGIN_X, y, content_w, Cm(0.55), nodo_path,
+                                  size=11, color=WF_MUTED_RGB, align=PP_ALIGN.CENTER)
+                        y += Cm(0.55)
+                    add_text(slide, MARGIN_X, y + Cm(0.3), content_w, Cm(0.7), "Sin actividad en el periodo",
+                              size=13, italic=True, color=WF_MUTED_RGB, align=PP_ALIGN.CENTER)
+                    continue
+
+                personal_rows_e = entry.get("personal") or []
+                maquinaria_rows_e = entry.get("maquinaria") or []
+                personal_total = sum(r["qty"] for r in personal_rows_e)
+                maquinaria_total = sum(r["qty"] for r in maquinaria_rows_e)
+                n_total = max(len(personal_rows_e), len(maquinaria_rows_e))
+
+                title_reserved = Cm(1.3) if not _emitted_recuento_general_title else Cm(0)
+                subtitle_reserved = Cm(1.0) + (Cm(0.55) if show_path else Cm(0))
+                avail_h = (SH - BOTTOM_MARGIN) - TOP_MARGIN - title_reserved - subtitle_reserved - HEADER_H - TOTAL_H
+                rows_per_slide = max(1, int(avail_h / ROW_H))
+
+                idx = 0
+                page_in_nodo = 0
+                while idx < n_total or page_in_nodo == 0:
+                    page_in_nodo += 1
+                    slide = _clone_membrete()
+                    y = TOP_MARGIN
+                    if not _emitted_recuento_general_title:
+                        add_text(slide, MARGIN_X, y, content_w, Cm(1.1), "RECUENTO GENERAL",
+                                  size=30, bold=True, color=READABLE_BRAND_RGB, align=PP_ALIGN.CENTER)
+                        y += Cm(1.3)
+                        _emitted_recuento_general_title = True
+                    subtitle = nodo_name.upper()
+                    if page_in_nodo > 1:
+                        subtitle += f"  (CONTINÚA · {page_in_nodo})"
+                    add_text(slide, MARGIN_X, y, content_w, Cm(0.9), subtitle,
+                              size=18, bold=True, color=WF_TEXT_RGB, align=PP_ALIGN.CENTER)
+                    y += Cm(1.0)
+                    if show_path:
+                        add_text(slide, MARGIN_X, y, content_w, Cm(0.55), nodo_path,
+                                  size=11, color=WF_MUTED_RGB, align=PP_ALIGN.CENTER)
+                        y += Cm(0.55)
+
+                    chunk_end = min(idx + rows_per_slide, n_total)
+                    is_last_chunk = chunk_end >= n_total
+                    _draw_big_table(pair_x, y, "Personal", personal_rows_e[idx:chunk_end], is_last_chunk,
+                                     personal_total, tiene_poste)
+                    _draw_big_table(pair_x + tbl_w + tbl_gutter, y, "Maquinaria y Equipo",
+                                     maquinaria_rows_e[idx:chunk_end], is_last_chunk, maquinaria_total, tiene_poste)
+
+                    idx = chunk_end
+
+        def _emit_subtramo_summary_slide(subtramo_id: Optional[str]) -> None:
+            """Emite (si hay datos) la slide de resumen del Subtramo
+            `subtramo_id` para todo el período exportado — al final de la
+            sección de ese subtramo."""
+            if not subtramo_id:
+                return
+            totals = resource_consolidated_by_subtramo.get(subtramo_id)
+            if not totals:
+                return
+            personal_rows = totals.get("personal") or []
+            maquinaria_rows = totals.get("maquinaria") or []
+            if not personal_rows and not maquinaria_rows:
+                return
+            subtramo_node = nodes_by_id.get(subtramo_id) or {}
+            draw_subtramo_summary_slide(
+                subtramo_node, personal_rows, maquinaria_rows,
+                actividades_by_subtramo.get(subtramo_id) or [],
+                subtramo_node.get("situacion_social"),
+                subtramo_node.get("acceso_predio"),
+                weather_by_subtramo.get(subtramo_id),
+            )
+
+        def _emit_actividades_area_slides(area_name: str, node_path: str, items: List[str]) -> None:
+            """Slide(s) "RESUMEN DE ACTIVIDADES" insertadas justo después de
+            la portadilla de Área — mismo contenido y misma fuente (curada
+            del hub Actividades Generales) que `_emit_actividades_area` en
+            el motor PDF, ver esa nota ahí. No-op si `items` viene vacío.
+            Pagina igual que `_emit_recuento_general_slides` (nunca trunca
+            con "+N más"). python-pptx no expone medición real de texto
+            envuelto — la altura de fila se estima por conteo de caracteres,
+            con margen generoso para minimizar el riesgo de texto cortado."""
+            if not items:
+                return
+
+            MARGIN_X = Cm(1.8)
+            content_w = SW - 2 * MARGIN_X
+            HEADER_H = Cm(0.9)
+            LINE_H = Cm(0.5)
+            ROW_PAD = Cm(0.18)
+            ROW_FONT = 11
+            MAX_LINES_PER_ROW = 4
+
+            def _estimate_lines(text: str, box_w_emu: int, font_pt: float) -> int:
+                if not text:
+                    return 1
+                avg_char_w_emu = max(1, int(Pt(font_pt * 0.52)))
+                chars_per_line = max(1, int(box_w_emu / avg_char_w_emu))
+                return min(MAX_LINES_PER_ROW, max(1, math.ceil(len(text) / chars_per_line)))
+
+            row_text_w = content_w - Cm(0.5)
+            measured = [
+                {"text": texto, "h": _estimate_lines(texto, row_text_w, ROW_FONT) * LINE_H + 2 * ROW_PAD}
+                for texto in items
+            ]
+            n_total = len(measured)
+
+            idx = 0
+            page_in_area = 0
+            while idx < n_total or page_in_area == 0:
+                page_in_area += 1
+                slide = _clone_membrete()
+                y = TOP_MARGIN
+                title = "RESUMEN DE ACTIVIDADES"
+                if page_in_area > 1:
+                    title += f"  (CONTINÚA · {page_in_area})"
+                add_text(slide, MARGIN_X, y, content_w, Cm(0.9), title,
+                         size=22, bold=True, color=READABLE_BRAND_RGB, align=PP_ALIGN.CENTER)
+                y += Cm(1.0)
+                add_text(slide, MARGIN_X, y, content_w, Cm(0.6), area_name.upper(),
+                         size=15, bold=True, color=WF_TEXT_RGB, align=PP_ALIGN.CENTER)
+                y += Cm(0.65)
+                if node_path:
+                    add_text(slide, MARGIN_X, y, content_w, Cm(0.5), node_path,
+                             size=10, color=WF_MUTED_RGB, align=PP_ALIGN.CENTER)
+                    y += Cm(0.55)
+
+                _wf_rect(slide, MARGIN_X, y, content_w, HEADER_H, fill_rgb=BRAND_RGB)
+                add_text(slide, MARGIN_X + Cm(0.2), y + Cm(0.15), content_w - Cm(0.4), HEADER_H - Cm(0.2),
+                         "ACTIVIDADES", size=12, bold=True, color=HEADER_TEXT_RGB)
+                yy = y + HEADER_H
+                avail_h = (SH - BOTTOM_MARGIN) - yy
+
+                cnt = 0
+                h_acc = 0.0
+                for i in range(idx, n_total):
+                    rh = measured[i]["h"]
+                    if cnt > 0 and h_acc + rh > avail_h:
+                        break
+                    h_acc += rh
+                    cnt += 1
+                cnt = max(cnt, 1)
+                chunk_end = idx + cnt
+
+                for i in range(idx, chunk_end):
+                    row_h = measured[i]["h"]
+                    if (i - idx) % 2 == 1:
+                        _wf_rect(slide, MARGIN_X, yy, content_w, row_h, fill_rgb=WF_ZEBRA_TINT_RGB)
+                    add_text(slide, MARGIN_X + Cm(0.25), yy + Cm(0.08), content_w - Cm(0.5), row_h - Cm(0.1),
+                             f"•  {measured[i]['text']}", size=ROW_FONT, color=WF_TEXT_RGB)
+                    _wf_rect(slide, MARGIN_X, yy + row_h - Pt(0.75), content_w, Pt(0.75), fill_rgb=WF_BORDER_RGB)
+                    yy += row_h
+
+                idx = chunk_end
+
+        # Logo institucional: eliminado — la plantilla ya trae los logos
+        # del membrete. Cualquier logo adicional programático producía
+        # "ghost images" en las esquinas del reporte.
+        # (Se conserva la resolución del blob por compatibilidad con otros
+        # motores; no se inserta ninguna imagen adicional en PPTX.)
+        logo_bytes = None  # noqa: F841
+
+        def add_logo(slide, x, y, w_cm: float, h_cm: float):
+            """DEPRECATED · no-op: no se insertan logos adicionales en PPTX."""
+            return False
+
+        def add_header_footer(slide):
+            """DEPRECATED · no-op: el encabezado/pie institucional ahora
+            proviene exclusivamente del membrete de la plantilla clonada
+            por `_clone_membrete()`. Se mantiene para compatibilidad con
+            invocaciones existentes."""
+            return None
+
+        # ==============================================================
+        # COLORES PARAMETRIZABLES (documentados para futura configuración
+        # por proyecto vía DB). Todos son tuples RGB (0..255).
+        # ==============================================================
+        COVER_TEXT_COLOR = (0xFF, 0xFF, 0xFF)     # Portada principal: blanco
+        AREA_TEXT_COLOR = (0xFF, 0xFF, 0xFF)      # Portadillas de Área: blanco
+        NODE_TITLE_COLOR = (0x0F, 0x17, 0x2A)     # Título de nodo: azul oscuro
+        PHOTO_CAPTION_COLOR = _sanitize_color_hex(proj.get("report_text_color")) or "#0F172A"
+        # Convertir a tupla RGB para python-pptx
+        _pcc = PHOTO_CAPTION_COLOR.lstrip("#")
+        PHOTO_CAPTION_COLOR = (int(_pcc[0:2], 16), int(_pcc[2:4], 16), int(_pcc[4:6], 16))
+        TEXT_MUTED = (0x64, 0x75, 0x8B)
+
+        # ===== PORTADA PRINCIPAL (Slide 0 de la plantilla) =============
+        # NOTA IMPORTANTE: los textos de la portada se inyectan AL FINAL
+        # del render (después de todas las clonaciones de portadillas de
+        # Área), para evitar que dichas portadillas hereden estos textos
+        # al clonarse desde `tpl_cover_slide`. Aquí solo garantizamos que
+        # existe la portada; los textos van al cierre del builder.
+        if tpl_cover_slide is None and tpl_master_slide is None:
+            # Sin plantilla: portada en blanco.
+            prs.slides.add_slide(blank)
+
+        # ===== SLIDES DATOS GENERALES (ex-Mapa: array de imágenes) =========
+        # Cada imagen en `general_data_images` produce UNA slide dedicada
+        # sobre el membrete institucional. Retro-compat: si el array está
+        # vacío pero existe `template_map` (legacy), se emite ese archivo
+        # como única slide. Si nada, slide con mensaje guía.
+        _gd_images_p: List[str] = list(proj.get("general_data_images") or [])
+        _legacy_map_pptx = _get_project_template(proj, "map") if not _gd_images_p else None
+
+        def _emit_gd_slide_from_bytes(img_bytes: bytes) -> None:
+            _sl = _clone_membrete()
+            try:
+                _map_x = Cm(1.0)
+                _map_y = TOP_MARGIN
+                _map_w = SW - Cm(2.0)
+                _map_h = SH - _map_y - BOTTOM_MARGIN
+                _sl.shapes.add_picture(
+                    io.BytesIO(img_bytes),
+                    _map_x, _map_y, width=_map_w, height=_map_h,
+                )
+            except Exception:
+                pass
+
+        if _gd_images_p:
+            for _b64 in _gd_images_p:
+                try:
+                    raw = base64.b64decode(_strip_b64_prefix(_b64))
+                    _emit_gd_slide_from_bytes(raw)
+                except Exception:
+                    _emit_gd_slide_from_bytes(b"")
+        elif _legacy_map_pptx:
+            try:
+                _emit_gd_slide_from_bytes(Path(_legacy_map_pptx).read_bytes())
+            except Exception:
+                _emit_gd_slide_from_bytes(b"")
+        else:
+            _empty = _clone_membrete()
+            add_text(_empty, Cm(1.0), SH / 2 - Cm(0.6), SW - Cm(2.0), Cm(1.2),
+                     "Sube imágenes de Datos Generales para el proyecto (presupuesto, programa, planos, mapa…).",
+                     size=14, italic=True, color=TEXT_MUTED,
+                     align=PP_ALIGN.CENTER)
+
+        # ================================================================
+        # Helper: emite una slide ejecutiva con hasta 2 FOTOS (foto + pie).
+        # Cada foto es apaisada 13.37 × 10 cm; debajo va un cuadro de texto
+        # con la descripción/observación del reporte al que pertenece
+        # (máx 4 líneas). Un reporte con 4 fotos genera 2 slides.
+        # ================================================================
+        PHOTO_W = Cm(13.37)
+        PHOTO_H = Cm(10.0)
+        GAP_X = Cm(0.6)
+        CAPTION_H = Cm(3.8)  # holgura para caption a 14pt (≈ 4 líneas)
+        CAPTION_GAP = Cm(0.25)
+        CAPTION_FONT_PT = 14
+
+        def _pair_slide(photo_pair):
+            """Emite una slide con hasta 2 fotos (foto + pie de texto).
+            `photo_pair` es una lista de tuplas (b64_img|None, caption_str)."""
+            slide = _clone_membrete()
+            total_w = 2 * PHOTO_W + GAP_X
+            x0 = (SW - total_w) // 2
+            avail_top = TOP_MARGIN
+            avail_h = SH - TOP_MARGIN - BOTTOM_MARGIN
+            block_h = PHOTO_H + CAPTION_GAP + CAPTION_H
+            y_photo = avail_top + (avail_h - block_h) // 2
+            for idx, item in enumerate(photo_pair):
+                if item is None:
+                    continue
+                b64_img, caption = item
+                cx = x0 + idx * (PHOTO_W + GAP_X)
+                if b64_img:
+                    try:
+                        raw = base64.b64decode(_strip_b64_prefix(b64_img))
+                        slide.shapes.add_picture(
+                            io.BytesIO(raw), cx, y_photo,
+                            width=PHOTO_W, height=PHOTO_H,
+                        )
+                    except Exception:
+                        pass
+                # Pie de foto: descripción/observación del reporte
+                caption_txt = (caption or "").strip() or "—"
+                if len(caption_txt) > 320:
+                    caption_txt = caption_txt[:317] + "…"
+                add_text(
+                    slide, cx, y_photo + PHOTO_H + CAPTION_GAP,
+                    PHOTO_W, CAPTION_H,
+                    caption_txt, size=CAPTION_FONT_PT, bold=False,
+                    color=PHOTO_CAPTION_COLOR, align=PP_ALIGN.LEFT,
+                )
+            return slide
+
+        any_data = False
+        current_subtramo_id: Optional[str] = None
+        for n in leaf_nodes:
+            n_subtramo_id = _subtramo_id_for(n["id"], nodes_by_id)
+            if current_subtramo_id is not None and n_subtramo_id != current_subtramo_id:
+                _emit_subtramo_summary_slide(current_subtramo_id)
+            current_subtramo_id = n_subtramo_id
+
+            # Ver comentario equivalente en export_reports_pdf: `node_reps`
+            # (severidad filtrada) SOLO alimenta fotos; `node_reps_all` (sin
+            # filtro, mismo set que Fuerza de Trabajo) decide si el nodo
+            # tiene algo que imprimir — antes se saltaba el nodo entero
+            # cuando sus reportes eran todos "informativo", y sus
+            # Actividades Generales curadas (que sí se ven en el hub) nunca
+            # llegaban al PPTX.
+            node_reps = reports_by_node.get(n["id"]) or []
+            node_reps_all = workforce_reports_by_node.get(n["id"]) or []
+            if not node_reps_all:
+                continue
+            cover_meta_pptx = cover_ancestor_by_node.get(n["id"])
+            if not cover_meta_pptx:
+                continue
+            any_data = True
+            node_path = path_cache.get(n["id"]) or n.get("name", "")
+
+            # === Portadilla de nodo: cover_image grande + TÍTULO ===========
+            s = _clone_membrete()
+            _title_h = Cm(1.8)
+            _title_gap = Cm(0.5)
+            _cov_b64_p = _strip_b64_prefix(cover_meta_pptx.get("cover_image") or "")
+            _cw = Cm(0)
+            _ch2 = Cm(0)
+            _cy = TOP_MARGIN
+            if _cov_b64_p:
+                try:
+                    _avail_w = SW - Cm(2.0)
+                    _avail_h = SH - TOP_MARGIN - BOTTOM_MARGIN - _title_h - _title_gap
+                    _target_ratio = 4.0 / 3.0
+                    _w_from_h = _avail_h * _target_ratio
+                    if _w_from_h <= _avail_w:
+                        _cw = _w_from_h
+                        _ch2 = _avail_h
+                    else:
+                        _cw = _avail_w
+                        _ch2 = _avail_w / _target_ratio
+                    _cx = (SW - _cw) // 2
+                    _cy = TOP_MARGIN + (_avail_h - _ch2) // 2
+                    s.shapes.add_picture(
+                        io.BytesIO(base64.b64decode(_cov_b64_p)),
+                        _cx, _cy, width=_cw, height=_ch2,
+                    )
+                except Exception:
+                    _ch2 = Cm(0)
+            _title_y = (
+                _cy + _ch2 + _title_gap
+                if _ch2 and _ch2 > Cm(0)
+                else TOP_MARGIN + (SH - TOP_MARGIN - BOTTOM_MARGIN) // 2 - _title_h // 2
+            )
+            add_text(
+                s, Cm(1.0), _title_y, SW - Cm(2.0), _title_h,
+                node_path,
+                size=28, bold=True, color=NODE_TITLE_COLOR, align=PP_ALIGN.CENTER,
+            )
+
+            # === Sub-bucle por Área/Disciplina (bucket normalizado) ========
+            # "Sub supervisores" → "OBRA CIVIL". Áreas con tildes/plurales
+            # se colapsan al mismo bucket.
+            def _bucket_key_for_report_slides(_r: dict) -> str:
+                _aid_r = _r.get("area_id")
+                if not _aid_r:
+                    return "SIN ÁREA"
+                return _normalize_area_name(
+                    (areas_by_id.get(_aid_r) or {}).get("name"),
+                    user_role=user.get("role"),
+                    user_area=user.get("area"),
+                )
+
+            # Dos buckets paralelos, igual que en export_reports_pdf:
+            # `reps_by_area` (narrativa, solo fotos) y `reps_by_area_all`
+            # (decide qué Áreas existen y alimenta Actividades Generales).
+            reps_by_area: dict = {}
+            for r in node_reps:
+                reps_by_area.setdefault(_bucket_key_for_report_slides(r), []).append(r)
+            reps_by_area_all: dict = {}
+            for r in node_reps_all:
+                reps_by_area_all.setdefault(_bucket_key_for_report_slides(r), []).append(r)
+            _sorted_area_ids = sorted(reps_by_area_all.keys(), key=lambda a: a.lower())
+            for bkey in _sorted_area_ids:
+                area_reps = reps_by_area.get(bkey) or []  # narrativa: puede venir vacía (sin fotos)
+                area_reps_all = reps_by_area_all[bkey]
+                area_name = bkey  # ya normalizado
+
+                # --- Portadilla de Área (clon del fondo de la portada) ----
+                # Título posicionado en la MISMA Y que "REPORTE X" en la
+                # portada principal, para preservar consistencia visual.
+                a_slide = _clone_cover_bg()
+                _area_y = SH * 0.32  # equivalente a PH*0.32 en el PDF
+                add_text(
+                    a_slide, Cm(1.5), _area_y, SW - Cm(3.0), Cm(4.0),
+                    area_name.upper(),
+                    size=44, bold=True,
+                    color=AREA_TEXT_COLOR, align=PP_ALIGN.CENTER,
+                )
+
+                # --- Resumen de Actividades Generales (curadas) del Área ---
+                # Un bucket visual de Área puede colapsar varios area_id
+                # (ver arriba) — se unen las actividades curadas de TODOS
+                # los area_id presentes en este bucket, no solo uno.
+                _area_ids_en_bucket = sorted({
+                    _r.get("area_id") for _r in area_reps_all if _r.get("area_id")
+                })
+                _resumen_actividades = _actividades_resumen_para_bloque(
+                    actividades_curadas_idx, n["id"], n_subtramo_id, _area_ids_en_bucket,
+                )
+                _emit_actividades_area_slides(area_name, node_path, _resumen_actividades)
+
+                # --- Slides ejecutivas: 2 FOTOS por slide -----------------
+                # TOPE ESTRICTO: cada reporte emite UNA sola slide con
+                # máximo 2 fotos (las 2 primeras). Con captions individuales
+                # por foto (`photo_captions[i]`), fallback a la observación
+                # general si el caption individual está vacío.
+                for _r in area_reps:
+                    _all_imgs = _r.get("images") or []
+                    _imgs = _all_imgs[:2]  # HARD-CAP: máximo 2 fotos
+                    _general_obs = (
+                        _r.get("observaciones") or _r.get("notes") or ""
+                    ).strip() or (_r.get("incidencias") or "").strip() or "—"
+                    _caps = _r.get("photo_captions") or []
+                    def _cap_at(idx: int) -> str:
+                        if idx < len(_caps):
+                            _c = (_caps[idx] or "").strip()
+                            if _c:
+                                return _c
+                        return _general_obs
+                    if not _imgs:
+                        # Reporte sin fotos → 1 slide con placeholder + obs.
+                        _pair_slide([(None, _general_obs), None])
+                        continue
+                    _pair: list = []
+                    for _i, _b64 in enumerate(_imgs):
+                        _pair.append((_b64, _cap_at(_i)))
+                    while len(_pair) < 2:
+                        _pair.append(None)
+                    _pair_slide(_pair)
+
+        _emit_subtramo_summary_slide(current_subtramo_id)
+
+        # Slide(s) de cierre: RECUENTO GENERAL del período completo,
+        # desglosado por Tramo y por puesto/descripción.
+        _emit_recuento_general_slides()
+
+        # ==============================================================
+        # TEXTOS DE PORTADA PRINCIPAL — se inyectan al FINAL para que las
+        # clonaciones previas de `tpl_cover_slide` (portadillas de Área) no
+        # arrastren estos textos como fondo residual.
+        # ==============================================================
+        if tpl_cover_slide is not None:
+            _cx_left = Cm(1.5)
+            _cy_top = Cm(6.0)
+            _cw_full = SW - Cm(3.0)
+            add_text(
+                tpl_cover_slide, _cx_left, _cy_top, _cw_full, Cm(3.0),
+                report_title, size=54, bold=True,
+                color=COVER_TEXT_COLOR, align=PP_ALIGN.LEFT,
+            )
+            add_text(
+                tpl_cover_slide, _cx_left, _cy_top + Cm(3.2), _cw_full, Cm(1.2),
+                fechas_label, size=22, bold=True,
+                color=COVER_TEXT_COLOR, align=PP_ALIGN.LEFT,
+            )
+            add_text(
+                tpl_cover_slide, _cx_left, _cy_top + Cm(4.6), _cw_full, Cm(2.0),
+                project_name, size=28, bold=True,
+                color=COVER_TEXT_COLOR, align=PP_ALIGN.LEFT,
+            )
+
+        if not any_data:
+            s2 = _clone_membrete()
+            add_text(s2, Cm(1.5), SH / 2 - Cm(1.0), SW - Cm(3.0), Cm(2.0),
+                     "Sin reportes en el período seleccionado.",
+                     size=20, italic=True, color=TEXT_MUTED,
+                     align=PP_ALIGN.CENTER)
+
+        # === [BLOQUE LEGACY PURGADO 2026-07-04] Layout viejo con tablas y 
+        # 'Notas y noticias' eliminado tras refactor P0 → Layout Ejecutivo.
+
+
+        # ================================================================
+        # Eliminar la diapositiva de membrete original (índice 1) para que
+        # no quede vacía en el PPTX final. Snippet exacto pedido por el
+        # usuario · borra la relación de la Presentation-part y purga la
+        # entrada del sldIdLst.
+        # ================================================================
+        try:
+            rId = prs.slides._sldIdLst[1].rId
+            prs.part.drop_rel(rId)
+            del prs.slides._sldIdLst[1]
+        except Exception:
+            pass
+
+        buf = io.BytesIO()
+        prs.save(buf)
+        return buf.getvalue()
+
+    pptx_bytes = await asyncio.to_thread(_build_pptx_blocking)
+    fname = _safe_export_filename(project_name, period, "pptx")
+    return StreamingResponse(
+        io.BytesIO(pptx_bytes),
+        media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
+# === DAILY GOALS (Metas del día por proyecto) ==============================
+class DailyGoalIn(BaseModel):
+    text: str
+
+
+class DailyGoalPatch(BaseModel):
+    text: Optional[str] = None
+    is_completed: Optional[bool] = None
+
+
+def _goal_out(doc: dict) -> dict:
+    doc.pop("_id", None)
+    return doc
+
+
+@api.get("/projects/{pid}/daily_goals")
+async def list_daily_goals(pid: str, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    cur = db.daily_goals.find({"project_id": pid}).sort("created_at", 1)
+    out = []
+    async for d in cur:
+        out.append(_goal_out(d))
+    return out
+
+
+@api.post("/projects/{pid}/daily_goals")
+async def create_daily_goal(pid: str, body: DailyGoalIn, user: dict = Depends(current_user)):
+    if user["role"] not in (ROLE_COORD, ROLE_JEFE, ROLE_SUB):
+        raise HTTPException(403, "Solo coord, jefe o sub-coordinador pueden crear metas")
+    await ensure_project_access(user, pid)
+    text = (body.text or "").strip()
+    if not text:
+        raise HTTPException(400, "El texto es obligatorio")
+    gid = str(uuid.uuid4())
+    doc = {
+        "id": gid,
+        "project_id": pid,
+        "text": text,
+        "is_completed": False,
+        "created_at": datetime.now(timezone.utc),
+        "created_by": user["id"],
+        "created_by_name": user.get("name", ""),
+    }
+    await db.daily_goals.insert_one(doc)
+    return _goal_out(doc)
+
+
+@api.patch("/projects/{pid}/daily_goals/{gid}")
+async def update_daily_goal(pid: str, gid: str, body: DailyGoalPatch, user: dict = Depends(current_user)):
+    if user["role"] not in (ROLE_COORD, ROLE_JEFE, ROLE_SUB):
+        raise HTTPException(403, "Solo coord, jefe o sub-coordinador pueden modificar metas")
+    await ensure_project_access(user, pid)
+    upd: dict = {}
+    if body.text is not None:
+        t = body.text.strip()
+        if not t:
+            raise HTTPException(400, "Texto inválido")
+        upd["text"] = t
+    if body.is_completed is not None:
+        upd["is_completed"] = bool(body.is_completed)
+    if upd:
+        res = await db.daily_goals.update_one({"id": gid, "project_id": pid}, {"$set": upd})
+        if res.matched_count == 0:
+            raise HTTPException(404, "Meta no encontrada")
+    out = await db.daily_goals.find_one({"id": gid, "project_id": pid})
+    if not out:
+        raise HTTPException(404, "Meta no encontrada")
+    return _goal_out(out)
+
+
+@api.delete("/projects/{pid}/daily_goals/{gid}")
+async def delete_daily_goal(pid: str, gid: str, user: dict = Depends(current_user)):
+    if user["role"] not in (ROLE_COORD, ROLE_JEFE, ROLE_SUB):
+        raise HTTPException(403, "Solo coord, jefe o sub-coordinador pueden eliminar metas")
+    await ensure_project_access(user, pid)
+    res = await db.daily_goals.delete_one({"id": gid, "project_id": pid})
+    if res.deleted_count == 0:
+        raise HTTPException(404, "Meta no encontrada")
+    return {"ok": True}
+
+
+# === AI Summary (Resumen Ejecutivo con IA) ==================================
+class AISummaryResponse(BaseModel):
+    summary: str
+    reports_count: int
+    period_hours: int
+    generated_at: datetime
+
+
+@api.post("/projects/{pid}/ai_summary", response_model=AISummaryResponse)
+async def project_ai_summary(pid: str, user: dict = Depends(current_user)):
+    """Genera un resumen ejecutivo (3 viñetas) usando IA con base en los
+    reportes de las últimas 24h del proyecto. Disponible para todos los roles
+    con acceso al proyecto."""
+    await ensure_project_access(user, pid)
+
+    if not GEMINI_API_KEY:
+        raise HTTPException(500, "GEMINI_API_KEY no configurada en el servidor.")
+
+    # [FIX] Día natural: desde 00:00:00 CDMX hoy
+    now_mx = datetime.now(timezone.utc).astimezone(MX_TZ)
+    since_mx = now_mx.replace(hour=0, minute=0, second=0, microsecond=0)
+    since = since_mx.astimezone(timezone.utc)
+
+    q: dict = {"project_id": pid, "created_at": {"$gte": since}}
+    # Aplica el mismo scope RBAC que el feed.
+    if user["role"] == ROLE_ESPECIALISTA:
+        scope = user.get("scope_node_ids") or []
+        q["node_id"] = {"$in": scope}
+    # Sub-coordinador: scope GLOBAL (sin restricción).
+
+    raw = await db.reports.find(q).sort("created_at", -1).to_list(length=500)
+
+    if not raw:
+        return AISummaryResponse(
+            summary=(
+                "• No se registraron reportes en las últimas 24 horas.\n"
+                "• Equipo y personal sin movimientos capturados.\n"
+                "• Recomendación: validar con sub-coordinadores el estado de avance del día."
+            ),
+            reports_count=0,
+            period_hours=24,
+            generated_at=datetime.now(timezone.utc),
+        )
+
+    # Formatea reportes como texto plano legible para el LLM.
+    lines: List[str] = []
+    for r in raw:
+        path = " › ".join(r.get("node_path_names") or []) or "(sin nodo)"
+        area = r.get("area_name") or "—"
+        avance = r.get("avance") or "—"
+        contratista = r.get("contratista") or "—"
+        personnel = ", ".join(r.get("personnel") or []) or "—"
+        equipment = ", ".join(r.get("equipment") or []) or "—"
+        captured_by = r.get("captured_by_name") or "—"
+        created = r.get("created_at")
+        created_s = created.isoformat() if isinstance(created, datetime) else str(created)
+        lines.append(
+            f"- [{created_s}] {path} | Área: {area} | Avance: {avance} | "
+            f"Contratista: {contratista} | Personal: {personnel} | "
+            f"Equipo: {equipment} | Capturó: {captured_by}"
+        )
+    body = "\n".join(lines)
+
+    system_message = (
+        "ERES UN ANALISTA DE OBRA CIVIL DE NIVEL EJECUTIVO. TUS REGLAS SON INQUEBRANTABLES:\n"
+        "1) NO PUEDES INVENTAR DATOS (ALUCINAR). SI NO HAY INFORMACIÓN, REPORTA QUE EL DATO NO ESTÁ DISPONIBLE.\n"
+        "2) NO PUEDES FALLAR.\n"
+        "3) TU ÚNICA FUNCIÓN ES RESUMIR EXACTAMENTE LO QUE DICEN LOS REPORTES SIN AGREGAR INTERPRETACIONES AJENAS.\n"
+        "4) ESTRUCTURA: SOLO 3 VIÑETAS EJECUTIVAS Y NADA MÁS.\n\n"
+        "Responde SIEMPRE en español. Cada viñeta debe iniciar con '• '. "
+        "Distribución sugerida: una viñeta para avances, una para equipo/maquinaria y una para personal. "
+        "Si alguna categoría no tiene datos, indícalo explícitamente como 'No disponible en los reportes'. "
+        "Cero relleno, sin introducciones ni cierres."
+    )
+    user_text = (
+        f"Reportes de las últimas 24 horas del proyecto (id={pid}). "
+        f"Total: {len(raw)} entradas.\n\n{body}\n\n"
+        "Genera el resumen ejecutivo solicitado."
+    )
+
+    try:
+        import httpx  # local import: mismo patrón que EXPO_PUSH_API_URL más arriba
+        gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                gemini_url,
+                params={"key": GEMINI_API_KEY},
+                json={
+                    "system_instruction": {"parts": [{"text": system_message}]},
+                    "contents": [{"parts": [{"text": user_text}]}],
+                    "generationConfig": {"maxOutputTokens": 400},
+                },
+            )
+            if resp.status_code != 200:
+                detail = resp.text[:500]
+                try:
+                    detail = (resp.json().get("error") or {}).get("message", detail)
+                except Exception:
+                    pass
+                raise RuntimeError(f"Gemini {resp.status_code}: {detail}")
+            data = resp.json()
+            candidates = data.get("candidates") or []
+            parts = ((candidates[0].get("content") or {}).get("parts") if candidates else None) or []
+            summary = "".join(p.get("text", "") for p in parts).strip()
+            if not summary:
+                raise RuntimeError("Respuesta vacía del LLM")
+    except Exception as e:
+        log.exception("[ai_summary] Gemini error: %s", e)
+        raise HTTPException(502, f"No se pudo generar el resumen con IA: {e}")
+
+    return AISummaryResponse(
+        summary=summary,
+        reports_count=len(raw),
+        period_hours=24,
+        generated_at=datetime.now(timezone.utc),
+    )
+
+
+# =============================================================================
+# HUB DE MINUTAS (Batch V2 · Fase 1 · 2026-07)
+# -----------------------------------------------------------------------------
+# Módulo de seguimiento de acuerdos y minutas de obra.
+#
+# Modelo (colección `minutas`):
+#   { id, project_id, titulo, descripcion, area_ids[], area_names[],
+#     fecha_reunion (ISO date), author_id, author_name, author_role,
+#     acuerdos: [ { id, descripcion, responsable_id, responsable_name,
+#                   fecha_limite (ISO date), estado (bool),
+#                   completed_at, completed_by, completed_by_name } ],
+#     created_at, updated_at }
+#
+# Reglas de negocio:
+#   * Crear minutas: coord_general, jefe_proyecto, sub_coordinador.
+#   * Ver minutas: cualquier miembro del proyecto (RBAC vía ensure_project_access).
+#   * Marcar/desmarcar acuerdo como concluido: SOLO el autor de la minuta.
+#     Esta regla se refuerza server-side (401/403) sin depender del front.
+#   * Borrar minuta: SOLO el autor o un Coord General del proyecto.
+# =============================================================================
+
+
+class AcuerdoIn(BaseModel):
+    descripcion: str
+    responsable_id: str
+    fecha_limite: str  # ISO date "YYYY-MM-DD"
+
+
+class MinutaIn(BaseModel):
+    # "compromiso" (default, comportamiento clásico: requiere ≥1 acuerdo con
+    # responsable + fecha límite) o "informativo" (solo texto — avisa un
+    # cambio o acuerdo sin generar compromisos de seguimiento).
+    tipo: Literal["informativo", "compromiso"] = "compromiso"
+    titulo: str
+    descripcion: Optional[str] = ""
+    area_ids: List[str] = Field(default_factory=list)
+    involved_ids: List[str] = Field(default_factory=list)
+    fecha_reunion: Optional[str] = None  # ISO date; default hoy CDMX
+    # Ubicación de la minuta: id de un nodo del árbol de ubicaciones del proyecto.
+    # Requerido a nivel de negocio (validado en el endpoint), opcional en el modelo
+    # para no romper minutas creadas antes del 2026-07 (backfill = null).
+    ubicacion_id: Optional[str] = None
+    acuerdos: List[AcuerdoIn] = Field(default_factory=list)
+
+
+_MINUTA_CREATORS = {ROLE_COORD, ROLE_JEFE, ROLE_SUB, ROLE_ESPECIALISTA}
+
+
+def _minuta_out(doc: dict) -> dict:
+    doc.pop("_id", None)
+    return doc
+
+
+async def _resolve_areas_for_minuta(pid: str, area_ids: List[str]) -> tuple[List[str], List[str]]:
+    """Valida las áreas contra el proyecto y devuelve (ids_norm, names)."""
+    if not area_ids:
+        return [], []
+    # Dedup + strip
+    clean = [a.strip() for a in area_ids if a and a.strip()]
+    clean = list(dict.fromkeys(clean))  # preserva orden, quita duplicados
+    if not clean:
+        return [], []
+    cursor = db.areas.find({"project_id": pid, "id": {"$in": clean}})
+    found = await cursor.to_list(length=len(clean))
+    found_map = {a["id"]: a for a in found}
+    missing = [aid for aid in clean if aid not in found_map]
+    if missing:
+        raise HTTPException(400, f"Áreas inválidas: {', '.join(missing)}")
+    return clean, [found_map[a]["name"] for a in clean]
+
+
+@api.post("/projects/{pid}/minutas")
+async def create_minuta(pid: str, body: MinutaIn, user: dict = Depends(current_user)):
+    proj = await ensure_project_access(user, pid)
+    # Eliminada restricción de roles: Todos los usuarios con acceso al proyecto pueden crear minutas.
+    titulo = (body.titulo or "").strip()
+    if not titulo:
+        raise HTTPException(400, "Título requerido")
+    if len(titulo) > 200:
+        raise HTTPException(400, "Título máximo 200 caracteres")
+    descripcion = (body.descripcion or "").strip()
+    if len(descripcion) > 4000:
+        raise HTTPException(400, "Descripción máximo 4000 caracteres")
+    area_ids, area_names = await _resolve_areas_for_minuta(pid, body.area_ids or [])
+    fecha_reunion = (body.fecha_reunion or "").strip() or datetime.now(timezone.utc).astimezone(MX_TZ).strftime("%Y-%m-%d")
+
+    # Ubicación (nodo del proyecto) — REQUERIDA por regla de negocio 2026-07.
+    # Guardamos id + name + path para poder mostrar breadcrumb sin joins extra.
+    ubicacion_raw = (body.ubicacion_id or "").strip()
+    if not ubicacion_raw:
+        raise HTTPException(400, "Ubicación requerida")
+    ubi_doc = await db.location_nodes.find_one({"project_id": pid, "id": ubicacion_raw})
+    if not ubi_doc:
+        raise HTTPException(400, f"Ubicación inválida: {ubicacion_raw}")
+    ubicacion_id = ubi_doc["id"]
+    ubicacion_name = ubi_doc.get("name") or ""
+    # Breadcrumb legible tipo "Torre A > Piso 3 > Zona Sur" caminando parent_id.
+    ubicacion_path_names: List[str] = []
+    _cur = ubi_doc
+    _guard = 0
+    while _cur and _guard < 50:
+        ubicacion_path_names.insert(0, _cur.get("name") or "")
+        parent_id = _cur.get("parent_id")
+        if not parent_id:
+            break
+        _cur = await db.location_nodes.find_one({"project_id": pid, "id": parent_id})
+        _guard += 1
+
+    # Involucrados (opcional) — usuarios extra que ven la minuta en "Mis Minutas".
+    involved_ids: List[str] = []
+    involved_names: List[str] = []
+    involved_clean = list(dict.fromkeys([x.strip() for x in (body.involved_ids or []) if x and x.strip()]))
+    if involved_clean:
+        u_cursor = db.users.find({"id": {"$in": involved_clean}})
+        u_list = await u_cursor.to_list(length=len(involved_clean))
+        u_map = {u["id"]: u for u in u_list}
+        missing = [uid for uid in involved_clean if uid not in u_map]
+        if missing:
+            raise HTTPException(400, f"Involucrado(s) inválido(s): {', '.join(missing)}")
+        involved_ids = involved_clean
+        involved_names = [u_map[uid].get("name") or "Sin nombre" for uid in involved_clean]
+
+    # Valida y normaliza acuerdos. Las minutas "informativo" son solo texto
+    # (avisan un cambio/acuerdo sin generar compromisos de seguimiento) —
+    # no exigen acuerdos; "compromiso" mantiene la regla clásica de ≥1.
+    if body.tipo == "compromiso" and not body.acuerdos:
+        raise HTTPException(400, "Debes registrar al menos un acuerdo")
+    if len(body.acuerdos) > 50:
+        raise HTTPException(400, "Máximo 50 acuerdos por minuta")
+    # Precarga responsables en un solo query.
+    resp_ids = list({(a.responsable_id or "").strip() for a in body.acuerdos if (a.responsable_id or "").strip()})
+    users_map: dict = {}
+    if resp_ids:
+        u_cursor = db.users.find({"id": {"$in": resp_ids}})
+        u_list = await u_cursor.to_list(length=len(resp_ids))
+        users_map = {u["id"]: u for u in u_list}
+    acuerdos_out: List[dict] = []
+    for i, a in enumerate(body.acuerdos):
+        desc = (a.descripcion or "").strip()
+        if not desc:
+            raise HTTPException(400, f"Acuerdo #{i+1}: descripción requerida")
+        if len(desc) > 1200:
+            raise HTTPException(400, f"Acuerdo #{i+1}: máximo 1200 caracteres")
+        rid = (a.responsable_id or "").strip()
+        if not rid:
+            raise HTTPException(400, f"Acuerdo #{i+1}: responsable inválido")
+        # "Contratista" es un pseudo-responsable reservado (no es una cuenta
+        # de usuario real) — siempre disponible como opción en el picker del
+        # frontend, representa a la empresa contratista del proyecto.
+        if rid == "contratista":
+            resp_name = "Contratista"
+            resp_role = "contratista"
+        elif rid in users_map:
+            u = users_map[rid]
+            resp_name = u.get("name") or "Sin nombre"
+            resp_role = u.get("role")
+        else:
+            raise HTTPException(400, f"Acuerdo #{i+1}: responsable inválido")
+        # Nota: no forzamos que `project_ids` incluya `pid` porque los coords
+        # generales tienen acceso implícito global y algunos usuarios legacy
+        # pueden faltarlo. La verificación real de acceso al proyecto se hace
+        # arriba en `ensure_project_access`.
+        fl = (a.fecha_limite or "").strip()
+        if not fl:
+            raise HTTPException(400, f"Acuerdo #{i+1}: fecha límite requerida")
+        # valida formato ISO "YYYY-MM-DD" simple
+        try:
+            datetime.strptime(fl, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(400, f"Acuerdo #{i+1}: fecha límite debe ser YYYY-MM-DD")
+        acuerdos_out.append({
+            "id": str(uuid.uuid4()),
+            "descripcion": desc,
+            "responsable_id": rid,
+            "responsable_name": resp_name,
+            "responsable_role": resp_role,
+            "fecha_limite": fl,
+            "estado": False,
+            "completed_at": None,
+            "completed_by": None,
+            "completed_by_name": None,
+        })
+
+    now = datetime.now(timezone.utc)
+
+    # === Código de minuta ====================================================
+    # Formato: "{PREFIJO} {YYMMDD}-{LETRA}" — fecha de creación en CDMX +
+    # letra secuencial (A, B, C...) entre las minutas del MISMO proyecto
+    # creadas el MISMO día natural CDMX. El prefijo (2 palabras institucionales,
+    # ej. "CL4 OBRA") es configurable por el Coordinador General a nivel
+    # proyecto (`project.minuta_code_prefix`) y aplica a TODAS sus minutas.
+    now_mx = now.astimezone(MX_TZ)
+    yymmdd = now_mx.strftime("%y%m%d")
+    today_str = now_mx.strftime("%Y-%m-%d")
+    day_bounds = _feed_day_bounds(today_str)
+    count_today = 0
+    if day_bounds:
+        start_utc, end_utc = day_bounds
+        count_today = await db.minutas.count_documents({
+            "project_id": pid,
+            "created_at": {"$gte": start_utc, "$lt": end_utc},
+        })
+
+    def _seq_letter(n: int) -> str:
+        """0->A, 1->B, ..., 25->Z, 26->AA, ... (estilo columnas de hoja de cálculo)."""
+        n += 1
+        s = ""
+        while n > 0:
+            n, rem = divmod(n - 1, 26)
+            s = chr(65 + rem) + s
+        return s
+
+    prefix = (proj.get("minuta_code_prefix") or "").strip().upper()
+    codigo = f"{prefix} {yymmdd}-{_seq_letter(count_today)}".strip()
+
+    doc = {
+        "id": str(uuid.uuid4()),
+        "project_id": pid,
+        "codigo": codigo,
+        "tipo": body.tipo,
+        "titulo": titulo,
+        "descripcion": descripcion,
+        "area_ids": area_ids,
+        "area_names": area_names,
+        "ubicacion_id": ubicacion_id,
+        "ubicacion_name": ubicacion_name,
+        "ubicacion_path_names": ubicacion_path_names,
+        "involved_ids": involved_ids,
+        "involved_names": involved_names,
+        "fecha_reunion": fecha_reunion,
+        "author_id": user["id"],
+        "author_name": user["name"],
+        "author_role": user["role"],
+        "acuerdos": acuerdos_out,
+        "created_at": now,
+        "updated_at": now,
+    }
+    await db.minutas.insert_one(doc)
+    return _minuta_out(doc)
+
+
+@api.get("/projects/{pid}/minutas")
+async def list_minutas(
+    pid: str,
+    status: str = "all",   # "pending" | "done" | "all"
+    mine: int = 0,
+    q: Optional[str] = None,
+    area_ids: Optional[str] = None,  # CSV
+    ubicacion_ids: Optional[str] = None,  # CSV — filtra por node_id (regla 2026-07)
+    tipo: Optional[str] = None,  # "informativo" | "compromiso"
+    user: dict = Depends(current_user),
+):
+    await ensure_project_access(user, pid)
+    query: dict = {"project_id": pid}
+    if area_ids:
+        wanted = [a.strip() for a in area_ids.split(",") if a.strip()]
+        if wanted:
+            query["area_ids"] = {"$in": wanted}
+    if ubicacion_ids:
+        wanted_ubi = [a.strip() for a in ubicacion_ids.split(",") if a.strip()]
+        if wanted_ubi:
+            query["ubicacion_id"] = {"$in": wanted_ubi}
+    if q:
+        rx = re.escape(q.strip())
+        if rx:
+            query["$or"] = [
+                {"titulo": {"$regex": rx, "$options": "i"}},
+                {"descripcion": {"$regex": rx, "$options": "i"}},
+                {"acuerdos.descripcion": {"$regex": rx, "$options": "i"}},
+                {"acuerdos.responsable_name": {"$regex": rx, "$options": "i"}},
+            ]
+    if mine:
+        # Autor, responsable en algún acuerdo, o involucrado explícito.
+        query["$or"] = (query.get("$or") or []) + [
+            {"author_id": user["id"]},
+            {"acuerdos.responsable_id": user["id"]},
+            {"involved_ids": user["id"]},
+        ]
+    cursor = db.minutas.find(query).sort("created_at", -1)
+    items = await cursor.to_list(length=500)
+    # Filtro por estado en Python (barato — pocas minutas por proyecto).
+    def _minuta_status(m: dict) -> str:
+        acs = m.get("acuerdos") or []
+        if not acs:
+            return "done"
+        if all(bool(a.get("estado")) for a in acs):
+            return "done"
+        return "pending"
+    if status in ("pending", "done"):
+        items = [m for m in items if _minuta_status(m) == status]
+    if tipo in ("informativo", "compromiso"):
+        # Legacy (sin `tipo` persistido) = "compromiso" por default del modelo.
+        items = [m for m in items if (m.get("tipo") or "compromiso") == tipo]
+    return [_minuta_out(m) for m in items]
+
+
+@api.get("/minutas/{mid}")
+async def get_minuta(mid: str, user: dict = Depends(current_user)):
+    m = await db.minutas.find_one({"id": mid})
+    if not m:
+        raise HTTPException(404, "Minuta no existe")
+    await ensure_project_access(user, m["project_id"])
+    return _minuta_out(m)
+
+
+class AcuerdoPatch(BaseModel):
+    estado: bool
+
+
+@api.patch("/minutas/{mid}/acuerdos/{aid}")
+async def toggle_acuerdo(
+    mid: str,
+    aid: str,
+    body: AcuerdoPatch,
+    user: dict = Depends(current_user),
+):
+    """Marca/desmarca un acuerdo como concluido.
+
+    Regla estricta: SOLO el autor de la minuta puede cambiar el estado.
+    El servidor rechaza cualquier intento con 403 en caso contrario.
+    """
+    m = await db.minutas.find_one({"id": mid})
+    if not m:
+        raise HTTPException(404, "Minuta no existe")
+    await ensure_project_access(user, m["project_id"])
+    # Eliminada restricción de roles: Cualquier usuario con acceso al proyecto puede concluir acuerdos.
+    acs = list(m.get("acuerdos") or [])
+    idx = next((i for i, a in enumerate(acs) if a.get("id") == aid), -1)
+    if idx < 0:
+        raise HTTPException(404, "Acuerdo no existe en esta minuta")
+    now = datetime.now(timezone.utc)
+    if body.estado:
+        acs[idx]["estado"] = True
+        acs[idx]["completed_at"] = now
+        acs[idx]["completed_by"] = user["id"]
+        acs[idx]["completed_by_name"] = user["name"]
+    else:
+        acs[idx]["estado"] = False
+        acs[idx]["completed_at"] = None
+        acs[idx]["completed_by"] = None
+        acs[idx]["completed_by_name"] = None
+    await db.minutas.update_one(
+        {"id": mid},
+        {"$set": {"acuerdos": acs, "updated_at": now}},
+    )
+    updated = await db.minutas.find_one({"id": mid})
+    return _minuta_out(updated)
+
+
+@api.delete("/minutas/{mid}")
+async def delete_minuta(mid: str, user: dict = Depends(current_user)):
+    m = await db.minutas.find_one({"id": mid})
+    if not m:
+        raise HTTPException(404, "Minuta no existe")
+    await ensure_project_access(user, m["project_id"])
+    # Eliminada restricción de roles: Cualquier usuario con acceso al proyecto puede eliminar minutas.
+    await db.minutas.delete_one({"id": mid})
+    return {"ok": True}
+
+
+@api.get("/projects/{pid}/minutas/badge")
+async def minutas_badge(pid: str, user: dict = Depends(current_user)):
+    """Cuenta acuerdos pendientes asignados al usuario en el proyecto y los
+    'urgentes' (vencidos o que vencen HOY). Se usa para el badge del módulo.
+    """
+    await ensure_project_access(user, pid)
+    today = datetime.now(timezone.utc).astimezone(MX_TZ).strftime("%Y-%m-%d")
+    cursor = db.minutas.find({
+        "project_id": pid,
+        "acuerdos.responsable_id": user["id"],
+    })
+    minutas = await cursor.to_list(length=500)
+    assigned_pending = 0
+    urgent = 0
+    for m in minutas:
+        for a in (m.get("acuerdos") or []):
+            if a.get("responsable_id") != user["id"]:
+                continue
+            if a.get("estado"):
+                continue
+            assigned_pending += 1
+            fl = str(a.get("fecha_limite") or "")
+            if fl and fl <= today:
+                urgent += 1
+    return {"assigned_pending": assigned_pending, "urgent": urgent}
+
+
+# ============================================================================
+# === ACTIVIDADES GENERALES ===================================================
+# ============================================================================
+# Vista agregada y curada de las actividades ya capturadas en los reportes de
+# campo (campo `actividades` en `ReportOut` — texto libre, UNO por reporte,
+# capturado en un solo TextInput multilínea; ver `(spec)/nuevo.tsx:70,258,424`
+# — NO es una lista de actividades discretas). NUNCA se muta el reporte
+# original: esto es una capa overlay en su propia colección
+# (`actividades_curadas`), mismo principio que una bitácora de correcciones.
+# Un item de esta capa puede:
+#   - derivar de reporte(s) de campo ("virtual" hasta que se edita/oculta/
+#     reordena/mueve por primera vez, momento en el que se materializa una
+#     fila real — ver `_resolve_actividad_doc`), o
+#   - haber sido añadido a mano en esta pantalla (`reporte_origen_id = None`).
+#
+# Identidad de un item virtual = `virtual:{reporte_id}` del PRIMER reporte
+# (por fecha) de su grupo de dedup (mismo node_id + mismo texto exacto). Es
+# seguro como clave 1:1 porque cada reporte pertenece a EXACTAMENTE un grupo
+# (su propio par node_id+texto) y por lo tanto es "primero" de a lo sumo un
+# grupo — no puede haber colisión entre dos actividades distintas. Esto
+# depende de que `actividades` sea 1 texto por reporte (ver arriba); test de
+# no-contaminación cruzada: `backend/tests/test_actividades_generales.py`.
+#
+# Niveles (jerarquía del árbol de nodos) — el nivel se ALMACENA en la fila
+# curada, no se recalcula en cada lectura, y el usuario puede MOVER una
+# actividad entre niveles (ver `move_actividad_general`):
+#   GENERAL  — sin nodo. Solo alta manual (ningún reporte carece de nodo).
+#   SUBTRAMO — atada a un nodo de profundidad 1 (una "Estación" completa).
+#   NODO     — atada a un nodo hoja más profundo que depth 1 (un "Poste").
+# Default para actividades derivadas de reporte: se deriva de la PROFUNDIDAD
+# del nodo hoja donde se capturó el reporte, NO de si es hoja o no — un nodo
+# a depth 1 puede ser hoja en su propia rama (una Estación sin postes hijos)
+# y su actividad debe agruparse como Estación, no como Poste (ver
+# `_default_nivel_for_report_node`). `node_id_origen`/`node_path_names_origen`
+# guardan SIEMPRE el nodo real donde se capturó el reporte, inmutable incluso
+# después de mover la actividad a otro nivel — es lo que alimenta el texto
+# "viene del reporte de <nodo original>" en la UI.
+#
+# Deduplicación: reportes del mismo nodo con el mismo texto EXACTO en el
+# mismo período se agrupan en un solo item con `dedup_count`/
+# `dedup_report_ids` — igual criterio que ya usaba `_actividades_by_subtramo`
+# para el PDF/PPTX existente, generalizado a cualquier par (no solo
+# consecutivos) dentro del período consultado.
+#
+# Snapshot del texto original: `texto_original` se fija UNA sola vez, al
+# materializar (nunca se vuelve a leer del reporte después) — "revertir" usa
+# ese snapshot, no relee el reporte. Si el texto vigente del reporte de
+# origen difiere del snapshot (hoy no hay endpoint que edite `actividades`
+# de un reporte ya creado, pero un reporte SÍ puede borrarse, y esto queda
+# defendido para cuando exista edición), se expone `origen_cambio`/
+# `origen_eliminado`/`texto_actual_reporte` en la salida — la UI debe ofrecer
+# ver ambos textos, nunca resolver la discrepancia en silencio.
+#
+# EFECTO EN IMPRESIÓN (etapas c/d, ya confirmado con el usuario): cuando el
+# PDF/PPTX deje de leer `report.actividades` crudo y resuelva a través de
+# esta capa curada, **regenerar un informe de una fecha pasada mostrará el
+# texto EDITADO vigente, no el texto original de ese momento** — es el
+# comportamiento deseado (la curaduría es "la versión oficial"), pero
+# NO hay snapshot histórico por informe: si se edita hoy una actividad de
+# hace un mes, cualquier informe de ese mes que se vuelva a exportar sale
+# con el texto de hoy. Documentado aquí para que nadie se sorprenda.
+# ============================================================================
+
+NIVEL_GENERAL = "GENERAL"
+NIVEL_SUBTRAMO = "SUBTRAMO"
+NIVEL_NODO = "NODO"
+NIVELES_ACTIVIDAD = {NIVEL_GENERAL, NIVEL_SUBTRAMO, NIVEL_NODO}
+
+# ----------------------------------------------------------------------------
+# FEATURE FLAG — división de `actividades` por línea.
+#
+# ACTIVADA (2026-08-13), sin que el usuario haya podido confirmar con datos
+# reales de Mongo (sin acceso en ese momento) si los reportes traen
+# múltiples líneas por bloque — decisión delegada explícitamente ("haz lo
+# que creas mas probable"). Encendida a criterio de Claude, con esta
+# evidencia (ninguna es una confirmación directa de datos reales):
+#   - La captura (`(spec)/nuevo.tsx:419-424`) usa la etiqueta PLURAL
+#     "ACTIVIDADES" y el placeholder "Describe las actividades del día_"
+#     (también plural), en un TextInput multilínea generoso (80px mínimo) —
+#     diseño que invita a listar varias, no a escribir una frase.
+#   - El documento de referencia que esta función busca replicar (Etapa c/d
+#     de impresión) ya muestra viñetas separadas por poste, no un párrafo.
+#   - `_split_actividades_lineas` es un no-op para bloques de una sola línea
+#     (garantía ya probada), así que activar esto NO cambia nada para
+#     reportes que en la práctica sean de una sola frase — el riesgo de
+#     estar equivocado es bajo.
+# Si el usuario confirma con datos reales que en la práctica es lo
+# contrario (bloques de una sola frase, sin múltiples líneas), esto vuelve
+# a False sin que haga falta deshacer nada más: `_derive_actividades_from_reports`
+# y `_resolve_actividad_doc` ya están escritas para funcionar correctamente
+# en ambos estados de la bandera (ver `_lineas_de_bloque`, único punto que
+# la consulta).
+FEATURE_SPLIT_ACTIVIDADES_POR_LINEA = True
+
+_ACTIVIDAD_LINE_SPLIT_RE = re.compile(r"\r\n|\r|\n")
+
+
+def _split_actividades_lineas(texto: Optional[str]) -> List[str]:
+    """Divide un bloque de `actividades` (texto libre, potencialmente
+    multilínea) en actividades individuales, una por línea con contenido.
+
+    Reglas (fijadas por casos de prueba, no re-derivar):
+    - Un bloque de una sola línea devuelve una lista de un solo elemento,
+      idéntico (mismo `.strip()`) al texto que hoy se trata como la
+      actividad completa — activar la bandera no cambia nada para reportes
+      de una sola línea.
+    - Líneas vacías o de solo espacios en blanco se ignoran POR COMPLETO: no
+      generan un item vacío ni corren el índice de las líneas con contenido
+      (el índice N del resultado siempre corresponde a la N-ésima línea con
+      contenido real, nunca a la N-ésima línea cruda del bloque).
+    - Separadores \n, \r\n y \r se aceptan mezclados en el mismo bloque.
+    - Viñetas que el usuario ya haya escrito a mano al inicio de línea
+      ("- ", "• ", "1. ", etc.) NO se quitan ni normalizan aquí — se
+      preservan tal cual como parte del texto de la línea. Decisión de
+      diseño aprobada explícitamente (2026-08-12): separar líneas y decidir
+      cómo dibujarlas son dos trabajos distintos; mezclarlos en el parser
+      sería un error. La deduplicación/edición debe operar sobre el texto
+      que el usuario realmente escribió.
+
+      REQUISITO PENDIENTE PARA LA ETAPA DE IMPRESIÓN (PDF/PPTX) — anotado,
+      NO implementado todavía: cuando el renderer dibuje cada actividad como
+      viñeta (glifo "•" real antepuesto por reportlab/python-pptx), debe
+      detectar si la línea YA empieza con "- ", "• " o "1. " (numeración
+      arábiga + punto) y, en ese caso, NO anteponer su propio glifo — el
+      texto ya trae su propia marca y antepuesta dos veces se ve
+      duplicada/rota. Este parser deliberadamente no resuelve esto; es
+      trabajo del motor de impresión, no de la división por línea."""
+    if not texto:
+        return []
+    return [ln.strip() for ln in _ACTIVIDAD_LINE_SPLIT_RE.split(texto) if ln.strip()]
+
+
+class ActividadCuradaIn(BaseModel):
+    """Alta manual de una actividad (sin reporte de origen)."""
+    area_id: str
+    nivel: Literal["GENERAL", "SUBTRAMO", "NODO"]
+    node_id: Optional[str] = None  # obligatorio si nivel != GENERAL
+    texto: str
+
+
+class ActividadCuradaPatch(BaseModel):
+    texto_editado: Optional[str] = None
+    oculta: Optional[bool] = None
+    orden: Optional[int] = None
+
+
+class ActividadCuradaMover(BaseModel):
+    """Recategoriza una actividad a otro nivel. `node_id` es el destino
+    explícito (validado contra la profundidad esperada del nivel); si se
+    omite y la actividad tiene `node_id_origen` (vino de un reporte), se
+    auto-resuelve desde ahí (Subtramo ancestro del poste, o el poste mismo)."""
+    nivel: Literal["GENERAL", "SUBTRAMO", "NODO"]
+    node_id: Optional[str] = None
+
+
+def _actividad_area_editable(user: dict, area_id: Optional[str]) -> bool:
+    """RBAC de escritura sobre una actividad — validado siempre en el
+    servicio, nunca solo deshabilitando botones en la UI."""
+    role = user.get("role")
+    if role in (ROLE_COORD, ROLE_SUB):
+        return True
+    if role == ROLE_ESPECIALISTA:
+        return bool(area_id) and area_id == user.get("area_id")
+    return False  # jefe_proyecto y cualquier otro: solo lectura
+
+
+def _default_nivel_for_report_node(node: dict) -> str:
+    """Nivel de agrupación impresa por defecto para una actividad derivada de
+    reporte, según la PROFUNDIDAD del nodo hoja donde se capturó — no según
+    si es hoja o no. Un nodo a depth 1 ES el Subtramo/Estación (puede ser
+    hoja en su propia rama, sin postes hijos) → SUBTRAMO; más profundo
+    (aunque sea hoja) → NODO. No asume un número fijo de niveles
+    intermedios entre Subtramo y poste."""
+    return NIVEL_SUBTRAMO if (node.get("depth") or 0) == 1 else NIVEL_NODO
+
+
+def _actividad_out(doc: dict, node: dict, areas_by_id: dict, user: dict, *,
+                    fallback_texto_original: Optional[str] = None,
+                    fallback_dedup: Optional[list] = None,
+                    fallback_fecha=None, fallback_autor: Optional[str] = None,
+                    origen_estado: Optional[dict] = None) -> dict:
+    area_id = doc.get("area_id")
+    texto_original = doc.get("texto_original") or fallback_texto_original or ""
+    texto_editado = doc.get("texto_editado")
+    dedup_ids = doc.get("dedup_report_ids") or fallback_dedup or (
+        [doc["reporte_origen_id"]] if doc.get("reporte_origen_id") else []
+    )
+    origen_estado = origen_estado or {}
+    return {
+        "id": doc["id"],
+        "project_id": doc.get("project_id"),
+        "area_id": area_id,
+        "area_name": (areas_by_id.get(area_id) or {}).get("name"),
+        "nivel": doc.get("nivel"),
+        "node_id": doc.get("node_id"),
+        "node_name": node.get("name"),
+        "node_path_names": doc.get("node_path_names") or [],
+        "node_id_origen": doc.get("node_id_origen"),
+        "node_path_names_origen": doc.get("node_path_names_origen") or [],
+        "reporte_origen_id": doc.get("reporte_origen_id"),
+        "texto_original": texto_original,
+        "texto_editado": texto_editado,
+        "texto": texto_editado if texto_editado else texto_original,
+        "editada": bool(texto_editado),
+        "anadida_manual": doc.get("reporte_origen_id") is None,
+        "oculta": bool(doc.get("oculta")),
+        "orden": doc.get("orden", 0),
+        "dedup_count": len(dedup_ids) or 1,
+        "dedup_report_ids": dedup_ids,
+        "reporte_fecha": doc.get("reporte_fecha") or fallback_fecha,
+        "reporte_autor": doc.get("reporte_autor") or fallback_autor,
+        "puede_editar": _actividad_area_editable(user, area_id),
+        "editado_por": doc.get("editado_por"),
+        "editado_en": doc.get("editado_en"),
+        "historial": doc.get("historial") or [],
+        # Ver nota "PUNTERO AL ORIGEN" arriba: nunca se resuelve en silencio.
+        "origen_cambio": bool(origen_estado.get("cambio")),
+        "origen_eliminado": bool(origen_estado.get("eliminado")),
+        # True cuando el bloque del reporte ya no tiene esa cantidad de
+        # líneas (no se intentó realinear por contenido) — distinto de
+        # "origen_cambio" simple (misma línea, texto distinto).
+        "origen_estructura_cambio": bool(origen_estado.get("estructura_cambio")),
+        "texto_actual_reporte": origen_estado.get("texto_actual"),
+    }
+
+
+def _linea_actual_del_reporte(bloque: Optional[str], linea_idx: Optional[int]) -> tuple:
+    """(texto_actual_o_None, estructura_cambio) — el texto VIGENTE en la
+    posición `linea_idx` del bloque actual de un reporte, según las mismas
+    reglas de `_lineas_de_bloque` (respeta la bandera). `estructura_cambio`
+    es True si el bloque ya no tiene esa cantidad de líneas — la posición
+    dejó de existir, no se intenta adivinar a qué línea corresponde ahora."""
+    idx = linea_idx if linea_idx is not None else 0
+    lineas = _lineas_de_bloque(bloque)
+    if idx >= len(lineas):
+        return None, True
+    return lineas[idx], False
+
+
+async def _origen_estado_for_one(doc: dict) -> Optional[dict]:
+    """Para una fila YA materializada con `reporte_origen_id`: compara el
+    snapshot (`texto_original`, fijado al materializar) contra el texto
+    VIGENTE del reporte ancla, en su misma posición de línea. None si la
+    actividad no tiene reporte de origen (alta manual)."""
+    rid = doc.get("reporte_origen_id")
+    if not rid:
+        return None
+    origin = await db.reports.find_one({"id": rid}, {"actividades": 1})
+    if not origin:
+        return {"eliminado": True, "cambio": False, "estructura_cambio": False, "texto_actual": None}
+    actual, estructura_cambio = _linea_actual_del_reporte(origin.get("actividades"), doc.get("linea_idx"))
+    if estructura_cambio:
+        return {"eliminado": False, "cambio": True, "estructura_cambio": True, "texto_actual": None}
+    return {
+        "eliminado": False,
+        "cambio": actual != (doc.get("texto_original") or "").strip(),
+        "estructura_cambio": False,
+        "texto_actual": actual,
+    }
+
+
+def _lineas_de_bloque(bloque: Optional[str]) -> List[str]:
+    """Un bloque `actividades` → lista de actividades individuales, según
+    `FEATURE_SPLIT_ACTIVIDADES_POR_LINEA`. Activada: una por línea con
+    contenido (`_split_actividades_lineas`). Desactivada: el bloque completo
+    como un único elemento — mismo comportamiento que antes de la bandera.
+    Único punto de la base de código que debe consultar la bandera para
+    decidir esto; todo lo demás (agrupar, materializar, detectar
+    divergencia) llama a esta función en vez de repetir el `if`."""
+    if FEATURE_SPLIT_ACTIVIDADES_POR_LINEA:
+        return _split_actividades_lineas(bloque)
+    texto = (bloque or "").strip()
+    return [texto] if texto else []
+
+
+async def _derive_actividades_from_reports_by_range(pid: str, area_id: Optional[str],
+                                                      rango: Optional[dict]) -> list:
+    """Núcleo compartido de `_derive_actividades_from_reports` (usado por el
+    hub HTTP, que recibe `desde`/`hasta` como strings 'YYYY-MM-DD') y del
+    motor de impresión PDF/PPTX (que ya tiene el rango UTC exacto calculado
+    por `_gather_export_data` — `start_dt`/`end_dt` — y lo pasa directo sin
+    una segunda conversión de huso horario). `rango` es un filtro Mongo
+    listo para usar en `created_at` (p.ej. `{"$gte": ..., "$lte": ...}`) o
+    None para no acotar por fecha."""
+    query: dict = {"project_id": pid, "actividades": {"$nin": [None, ""]}}
+    if area_id:
+        query["area_id"] = area_id
+    if rango:
+        query["created_at"] = rango
+    reps = await db.reports.find(query).sort("created_at", 1).to_list(length=20000)
+
+    groups: dict = {}
+    for r in reps:
+        for idx, texto in enumerate(_lineas_de_bloque(r.get("actividades"))):
+            key = (r.get("node_id"), texto)
+            g = groups.setdefault(key, {
+                "node_id": r.get("node_id"), "texto": texto,
+                "area_id": r.get("area_id"), "miembros": [],
+            })
+            g["miembros"].append({"report": r, "linea_idx": idx})
+    return list(groups.values())
+
+
+async def _derive_actividades_from_reports(pid: str, area_id: Optional[str],
+                                            desde: Optional[str], hasta: Optional[str]) -> list:
+    """Reportes del período (y área, si se especifica) con `actividades` no
+    vacío. Cada LÍNEA con contenido de cada reporte (`_lineas_de_bloque`) es
+    un miembro independiente — con la bandera apagada, cada reporte aporta
+    exactamente un miembro (el bloque completo), igual que antes. Agrupados
+    por (node_id, texto) — ver criterio de dedup arriba. Cada grupo es una
+    actividad 'virtual' salvo que ya exista una fila materializada en
+    `actividades_curadas` anclada a alguno de sus miembros (ver
+    `list_actividades_generales`)."""
+    rango: dict = {}
+    if desde:
+        b = _feed_day_bounds(desde)
+        if b:
+            rango["$gte"] = b[0]
+    if hasta:
+        b = _feed_day_bounds(hasta)
+        if b:
+            rango["$lte"] = b[1]
+    return await _derive_actividades_from_reports_by_range(pid, area_id, rango or None)
+
+
+async def _resolve_actividad_doc(pid: str, aid: str) -> dict:
+    """Resuelve un id de actividad — real (uuid ya materializado) o
+    'virtual:{reporte_id}:{indice_linea}' (aún vive solo como texto de
+    reporte) — a una fila de `actividades_curadas`, materializándola en
+    Mongo la PRIMERA vez que se toca (edición/ocultamiento/reorden/mover).
+    No hay escritura sin acción del usuario: mientras nadie edite nada, no
+    se duplica el dato del reporte en otra colección.
+
+    El índice de línea SIEMPRE va en el id virtual (incluso con la bandera
+    apagada, donde vale 0) — un solo formato, sin parseo dual condicional."""
+    if not aid.startswith("virtual:"):
+        doc = await db.actividades_curadas.find_one({"id": aid, "project_id": pid})
+        if not doc:
+            raise HTTPException(404, "Actividad no existe")
+        return doc
+
+    remainder = aid[len("virtual:"):]
+    report_id, sep, idx_str = remainder.rpartition(":")
+    if not sep or not report_id or not idx_str.isdigit():
+        raise HTTPException(400, "Id de actividad virtual inválido")
+    linea_idx = int(idx_str)
+
+    report = await db.reports.find_one({"id": report_id, "project_id": pid})
+    if not report:
+        raise HTTPException(404, "Reporte de origen no existe")
+    lineas = _lineas_de_bloque(report.get("actividades"))
+    if linea_idx >= len(lineas):
+        # El bloque cambió de estructura entre listar la pantalla y tocar
+        # esta actividad (ej. otra pestaña la modificó) — no se intenta
+        # realinear por contenido, se pide recargar. Ver nota "PUNTERO AL
+        # ORIGEN" arriba: nunca se resuelve en silencio.
+        raise HTTPException(
+            409,
+            "El reporte de origen cambió de estructura desde que se listó "
+            "esta pantalla — recargá antes de editar esta actividad.",
+        )
+    texto_original = lineas[linea_idx]
+    if not texto_original:
+        raise HTTPException(404, "Este reporte ya no tiene actividad asociada")
+
+    # Re-derivar el grupo de dedup VIGENTE (mismo nodo + misma línea de
+    # texto) al momento de materializar, no el que existía cuando se listó
+    # la pantalla. No se puede empujar "línea == texto" a un filtro de Mongo
+    # cuando se parte por línea, así que se trae el bloque de cada reporte
+    # del nodo y se compara en Python — el volumen por nodo es chico y esto
+    # solo corre al materializar (primera edición), no en cada GET.
+    dedup_ids: List[str] = []
+    async for r2 in db.reports.find(
+        {"project_id": pid, "node_id": report.get("node_id")}, {"id": 1, "actividades": 1}
+    ):
+        if texto_original in _lineas_de_bloque(r2.get("actividades")):
+            dedup_ids.append(r2["id"])
+
+    existing = await db.actividades_curadas.find_one({
+        "project_id": pid, "reporte_origen_id": {"$in": dedup_ids}, "texto_original": texto_original,
+    })
+    if existing:
+        return existing
+
+    origen_node = await db.location_nodes.find_one({"id": report.get("node_id"), "project_id": pid}) or {}
+    nivel_default = _default_nivel_for_report_node(origen_node)
+    origen_path = report.get("node_path_names") or await node_path_names(report["node_id"])
+    now = datetime.now(timezone.utc)
+    doc = {
+        "id": str(uuid.uuid4()),
+        "project_id": pid,
+        "area_id": report.get("area_id"),
+        "nivel": nivel_default,
+        "node_id": report.get("node_id"),  # default = su propio nodo (Subtramo si depth==1, hoja si no)
+        "node_path_names": origen_path,
+        "node_id_origen": report.get("node_id"),  # inmutable, aunque luego se mueva de nivel
+        "node_path_names_origen": origen_path,
+        "reporte_origen_id": report_id,
+        "linea_idx": linea_idx,
+        "texto_original": texto_original,
+        "texto_editado": None,
+        "oculta": False,
+        "orden": 0,
+        "dedup_report_ids": dedup_ids,
+        "reporte_fecha": report.get("created_at"),
+        "reporte_autor": report.get("captured_by_name"),
+        "creado_por": None,  # materializada por acción de edición, no por alta manual
+        "creado_en": now,
+        "editado_por": None,
+        "editado_en": None,
+        "historial": [],
+    }
+    await db.actividades_curadas.insert_one(doc)
+    return doc
+
+
+async def _areas_by_id_for(pid: str) -> dict:
+    areas = await db.areas.find({"project_id": pid}).to_list(length=1000)
+    return {a["id"]: a for a in areas}
+
+
+async def _actividades_generales_core(pid: str, area_id: Optional[str], rango: Optional[dict],
+                                       user: dict, *, incluir_ocultas: bool = False) -> list:
+    """Cuerpo compartido entre GET /actividades_generales (hub HTTP) y el
+    resumen por área que se imprime dentro de cada bloque de Área del
+    PDF/PPTX (`_actividades_curadas_resumen_por_area`) — misma fuente de
+    verdad: lo que ve el hub curado es exactamente lo que se imprime,
+    incluyendo ediciones/ocultamientos. `rango` es un filtro Mongo listo
+    para `created_at` (ver `_derive_actividades_from_reports_by_range`)."""
+    nodes = await db.location_nodes.find({"project_id": pid}).to_list(length=10000)
+    nodes_by_id = {n["id"]: n for n in nodes}
+    areas_by_id = await _areas_by_id_for(pid)
+
+    groups = await _derive_actividades_from_reports_by_range(pid, area_id, rango)
+    report_ids_all = list({m["report"]["id"] for g in groups for m in g["miembros"]})
+    # Ancla = (reporte_id, índice de línea dentro de ESE reporte) — con la
+    # bandera apagada el índice siempre es 0, así que sigue siendo 1:1 por
+    # reporte como antes; con la bandera prendida, dos líneas del MISMO
+    # reporte no se confunden entre sí.
+    curated_by_anchor: dict = {}
+    if report_ids_all:
+        async for doc in db.actividades_curadas.find(
+            {"project_id": pid, "reporte_origen_id": {"$in": report_ids_all}}
+        ):
+            rid = doc.get("reporte_origen_id")
+            if rid:
+                idx = doc.get("linea_idx") if doc.get("linea_idx") is not None else 0
+                curated_by_anchor[(rid, idx)] = doc
+
+    # Estado de "el reporte de origen cambió" en un solo round trip extra
+    # para todas las filas YA materializadas de esta página (no una query
+    # por item).
+    origin_ids_to_check = {
+        d["reporte_origen_id"] for d in curated_by_anchor.values() if d.get("reporte_origen_id")
+    }
+    origin_reports_by_id: dict = {}
+    if origin_ids_to_check:
+        async for r in db.reports.find(
+            {"id": {"$in": list(origin_ids_to_check)}}, {"id": 1, "actividades": 1}
+        ):
+            origin_reports_by_id[r["id"]] = r
+
+    def _origen_estado_batched(doc: dict) -> Optional[dict]:
+        rid = doc.get("reporte_origen_id")
+        if not rid:
+            return None
+        origin = origin_reports_by_id.get(rid)
+        if origin is None:
+            return {"eliminado": True, "cambio": False, "estructura_cambio": False, "texto_actual": None}
+        actual, estructura_cambio = _linea_actual_del_reporte(origin.get("actividades"), doc.get("linea_idx"))
+        if estructura_cambio:
+            return {"eliminado": False, "cambio": True, "estructura_cambio": True, "texto_actual": None}
+        return {
+            "eliminado": False,
+            "cambio": actual != (doc.get("texto_original") or "").strip(),
+            "estructura_cambio": False,
+            "texto_actual": actual,
+        }
+
+    out: list = []
+    seen_curated_ids: set = set()
+    for g in groups:
+        miembros = sorted(
+            g["miembros"],
+            key=lambda m: (m["report"].get("created_at") or datetime.min.replace(tzinfo=timezone.utc), m["linea_idx"]),
+        )
+        primer_m = miembros[0]
+        primer, primer_idx = primer_m["report"], primer_m["linea_idx"]
+        member_ids = [m["report"]["id"] for m in miembros]
+        anchor_keys = [(m["report"]["id"], m["linea_idx"]) for m in miembros]
+        curated = next((curated_by_anchor[k] for k in anchor_keys if k in curated_by_anchor), None)
+        if curated:
+            seen_curated_ids.add(curated["id"])
+            if curated.get("oculta") and not incluir_ocultas:
+                continue
+            node = nodes_by_id.get(curated.get("node_id")) or {}
+            out.append(_actividad_out(
+                curated, node, areas_by_id, user,
+                fallback_texto_original=g["texto"], fallback_dedup=member_ids,
+                fallback_fecha=primer.get("created_at"), fallback_autor=primer.get("captured_by_name"),
+                origen_estado=_origen_estado_batched(curated),
+            ))
+        else:
+            origen_node = nodes_by_id.get(g["node_id"]) or {}
+            path = primer.get("node_path_names") or []
+            out.append(_actividad_out(
+                {
+                    "id": f"virtual:{primer['id']}:{primer_idx}", "project_id": pid, "area_id": g["area_id"],
+                    "nivel": _default_nivel_for_report_node(origen_node), "node_id": g["node_id"],
+                    "node_path_names": path,
+                    "node_id_origen": g["node_id"], "node_path_names_origen": path,
+                    "reporte_origen_id": primer["id"], "linea_idx": primer_idx, "texto_original": g["texto"],
+                },
+                origen_node, areas_by_id, user,
+                fallback_dedup=member_ids, fallback_fecha=primer.get("created_at"),
+                fallback_autor=primer.get("captured_by_name"),
+                # Virtual = nada materializado todavía: no hay snapshot del
+                # cual divergir, así que no aplica "origen_cambio".
+            ))
+
+    manual_query: dict = {"project_id": pid, "reporte_origen_id": None}
+    if area_id:
+        manual_query["area_id"] = area_id
+    async for doc in db.actividades_curadas.find(manual_query):
+        if doc["id"] in seen_curated_ids:
+            continue
+        if doc.get("oculta") and not incluir_ocultas:
+            continue
+        node = nodes_by_id.get(doc.get("node_id")) or {}
+        out.append(_actividad_out(doc, node, areas_by_id, user))
+
+    root_ids = sorted(
+        [n["id"] for n in nodes if n.get("depth") == 0],
+        key=lambda nid: (nodes_by_id[nid].get("order", 0), nodes_by_id[nid].get("name", "")),
+    )
+    leaf_order_index = {n["id"]: i for i, n in enumerate(_flatten_tree_in_order(nodes_by_id, root_ids))}
+    subtramo_order_index = {
+        n["id"]: i for i, n in enumerate(
+            sorted([n for n in nodes if n.get("depth") == 1], key=lambda n: (n.get("order", 0), n.get("name", "")))
+        )
+    }
+
+    def _sort_key(it: dict):
+        if it["nivel"] == NIVEL_GENERAL:
+            return (0, 0, it.get("orden", 0))
+        if it["nivel"] == NIVEL_SUBTRAMO:
+            return (1, subtramo_order_index.get(it["node_id"], 0), it.get("orden", 0))
+        return (2, leaf_order_index.get(it["node_id"], 0), it.get("orden", 0))
+
+    out.sort(key=_sort_key)
+    return out
+
+
+def _actividades_por_area_index(items: list) -> dict:
+    """Indexa una lista de ActividadOut (la forma que devuelve
+    `_actividades_generales_core`/`_actividad_out`, con `texto` ya resuelto
+    a editado-o-original) en 3 diccionarios O(1) para el motor de impresión
+    PDF/PPTX — evita recorrer la lista completa por cada combinación
+    nodo×área al armar el resumen dentro de cada bloque de Área. Excluye
+    ocultas y textos vacíos (el caller debe pedir `incluir_ocultas=False`
+    al listar). Pura — sin Mongo, testeable directo."""
+    general: dict = {}
+    subtramo: dict = {}
+    nodo: dict = {}
+    for it in items:
+        texto = (it.get("texto") or "").strip()
+        if not texto:
+            continue
+        aid = it.get("area_id")
+        nivel = it.get("nivel")
+        if nivel == NIVEL_GENERAL:
+            general.setdefault(aid, []).append(texto)
+        elif nivel == NIVEL_SUBTRAMO:
+            subtramo.setdefault((it.get("node_id"), aid), []).append(texto)
+        else:
+            nodo.setdefault((it.get("node_id"), aid), []).append(texto)
+    return {"general": general, "subtramo": subtramo, "nodo": nodo}
+
+
+def _actividades_resumen_para_bloque(idx: dict, node_id: str, subtramo_id: Optional[str],
+                                      area_ids: List[str]) -> List[str]:
+    """Actividades curadas aplicables al bloque de un Área dentro de un nodo
+    del export: unión de GENERAL (por área) + SUBTRAMO (del ancestro de
+    este nodo) + NODO (de este nodo mismo) — mismo criterio de jerarquía
+    (Generales → Por Estación → Por Poste) que usa el hub. `area_ids` puede
+    traer más de un id porque un bucket visual de "Área" en el export
+    colapsa varias áreas cuyo nombre normaliza igual (ver
+    `_normalize_area_name`, ej. "Sub supervisores" → "OBRA CIVIL").
+    Deduplica preservando el primer orden en que aparece cada texto. Pura —
+    sin Mongo, testeable directo."""
+    out: List[str] = []
+    seen: set = set()
+
+    def _extend(lst):
+        for texto in lst or []:
+            if texto not in seen:
+                seen.add(texto)
+                out.append(texto)
+
+    for aid in area_ids:
+        _extend(idx["general"].get(aid))
+        if subtramo_id:
+            _extend(idx["subtramo"].get((subtramo_id, aid)))
+        _extend(idx["nodo"].get((node_id, aid)))
+    return out
+
+
+async def _actividades_curadas_resumen_por_area(pid: str, start_dt: datetime, end_dt: datetime,
+                                                  user: dict) -> dict:
+    """Prefetch único (antes del render bloqueante) del resumen de
+    Actividades Generales CURADAS para todo el proyecto en el rango exacto
+    del export — misma fuente que el hub (`_actividades_generales_core`),
+    nunca el texto crudo del reporte. Se llama UNA vez por export (no por
+    nodo/área) y se indexa con `_actividades_por_area_index` para lookup
+    O(1) dentro del loop de impresión."""
+    rango = {"$gte": start_dt, "$lte": end_dt}
+    items = await _actividades_generales_core(pid, None, rango, user, incluir_ocultas=False)
+    return _actividades_por_area_index(items)
+
+
+@api.get("/projects/{pid}/actividades_generales")
+async def list_actividades_generales(
+    pid: str,
+    area_id: Optional[str] = Query(None, description="Filtro por área (opcional)"),
+    desde: Optional[str] = Query(None, description="YYYY-MM-DD, inclusive"),
+    hasta: Optional[str] = Query(None, description="YYYY-MM-DD, inclusive"),
+    incluir_ocultas: bool = Query(False),
+    user: dict = Depends(current_user),
+):
+    """Lista unificada (los 3 niveles juntos, el frontend filtra por nivel
+    para cada submenú) en orden de árbol: GENERAL primero, luego SUBTRAMO/
+    NODO según `_flatten_tree_in_order`. especialista ve TODO el proyecto
+    (`puede_editar` marca qué puede tocar); el resto de los roles ya está
+    filtrado por `ensure_project_access`."""
+    await ensure_project_access(user, pid)
+    if user.get("role") not in (ROLE_COORD, ROLE_SUB, ROLE_ESPECIALISTA, ROLE_JEFE):
+        raise HTTPException(403, "Tu rol no tiene acceso a Actividades Generales")
+    rango: dict = {}
+    if desde:
+        b = _feed_day_bounds(desde)
+        if b:
+            rango["$gte"] = b[0]
+    if hasta:
+        b = _feed_day_bounds(hasta)
+        if b:
+            rango["$lte"] = b[1]
+    return await _actividades_generales_core(pid, area_id, rango or None, user, incluir_ocultas=incluir_ocultas)
+
+
+@api.post("/projects/{pid}/actividades_generales")
+async def create_actividad_general(pid: str, body: ActividadCuradaIn, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    _assert_write_allowed(user)
+    if user.get("role") not in (ROLE_COORD, ROLE_SUB, ROLE_ESPECIALISTA):
+        raise HTTPException(403, "Tu rol no puede añadir actividades")
+    if not _actividad_area_editable(user, body.area_id):
+        raise HTTPException(403, "No puedes añadir actividades fuera de tu área")
+    if body.nivel != NIVEL_GENERAL and not body.node_id:
+        raise HTTPException(400, "node_id es obligatorio para nivel SUBTRAMO/NODO")
+    texto = (body.texto or "").strip()
+    if not texto:
+        raise HTTPException(400, "El texto no puede estar vacío")
+
+    node = None
+    node_path: List[str] = []
+    if body.node_id:
+        node = await db.location_nodes.find_one({"id": body.node_id, "project_id": pid})
+        if not node:
+            raise HTTPException(404, "Nodo no existe en este proyecto")
+        node_path = await node_path_names(body.node_id)
+
+    now = datetime.now(timezone.utc)
+    doc = {
+        "id": str(uuid.uuid4()),
+        "project_id": pid,
+        "area_id": body.area_id,
+        "nivel": body.nivel,
+        "node_id": body.node_id,
+        "node_path_names": node_path,
+        "node_id_origen": None,  # alta manual: no viene de ningún reporte
+        "node_path_names_origen": [],
+        "reporte_origen_id": None,
+        "linea_idx": None,  # sin reporte de origen, no aplica índice de línea
+        "texto_original": texto,
+        "texto_editado": None,
+        "oculta": False,
+        "orden": 0,
+        "dedup_report_ids": [],
+        "creado_por": user["id"],
+        "creado_en": now,
+        "editado_por": None,
+        "editado_en": None,
+        "historial": [{
+            "accion": "creada", "usuario_id": user["id"], "usuario_nombre": user.get("name"), "en": now,
+        }],
+    }
+    await db.actividades_curadas.insert_one(doc)
+    areas_by_id = await _areas_by_id_for(pid)
+    return _actividad_out(doc, node or {}, areas_by_id, user)
+
+
+@api.patch("/projects/{pid}/actividades_generales/{aid}")
+async def update_actividad_general(pid: str, aid: str, body: ActividadCuradaPatch, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    _assert_write_allowed(user)
+
+    doc = await _resolve_actividad_doc(pid, aid)
+    if not _actividad_area_editable(user, doc.get("area_id")):
+        raise HTTPException(403, "No puedes editar actividades fuera de tu área")
+
+    now = datetime.now(timezone.utc)
+    upd: dict = {}
+    historial_entry: Optional[dict] = None
+    if body.texto_editado is not None:
+        nuevo = body.texto_editado.strip()
+        anterior = doc.get("texto_editado") or doc.get("texto_original")
+        upd["texto_editado"] = nuevo or None
+        upd["editado_por"] = user["id"]
+        upd["editado_en"] = now
+        historial_entry = {
+            "accion": "editada", "texto_anterior": anterior,
+            "usuario_id": user["id"], "usuario_nombre": user.get("name"), "en": now,
+        }
+    if body.oculta is not None:
+        upd["oculta"] = body.oculta
+        historial_entry = {
+            "accion": "ocultada" if body.oculta else "restaurada",
+            "usuario_id": user["id"], "usuario_nombre": user.get("name"), "en": now,
+        }
+    if body.orden is not None:
+        upd["orden"] = body.orden
+
+    if upd:
+        update_op: dict = {"$set": upd}
+        if historial_entry:
+            update_op["$push"] = {"historial": historial_entry}
+        await db.actividades_curadas.update_one({"id": doc["id"]}, update_op)
+
+    updated = await db.actividades_curadas.find_one({"id": doc["id"]})
+    node = await db.location_nodes.find_one({"id": updated.get("node_id")}) if updated.get("node_id") else {}
+    areas_by_id = await _areas_by_id_for(pid)
+    return _actividad_out(updated, node or {}, areas_by_id, user, origen_estado=await _origen_estado_for_one(updated))
+
+
+@api.post("/projects/{pid}/actividades_generales/{aid}/revertir")
+async def revert_actividad_general(pid: str, aid: str, user: dict = Depends(current_user)):
+    """Descarta `texto_editado`: vuelve a mostrarse el `texto_original`
+    guardado como SNAPSHOT al materializar (nunca se relee el reporte en
+    este momento). No aplica a items 'virtual:' (nunca tuvieron edición)."""
+    await ensure_project_access(user, pid)
+    _assert_write_allowed(user)
+    if aid.startswith("virtual:"):
+        raise HTTPException(400, "Esta actividad no tiene ediciones para revertir")
+
+    doc = await db.actividades_curadas.find_one({"id": aid, "project_id": pid})
+    if not doc:
+        raise HTTPException(404, "Actividad no existe")
+    if not _actividad_area_editable(user, doc.get("area_id")):
+        raise HTTPException(403, "No puedes editar actividades fuera de tu área")
+    if not doc.get("texto_editado"):
+        raise HTTPException(400, "Esta actividad no tiene ediciones para revertir")
+
+    now = datetime.now(timezone.utc)
+    await db.actividades_curadas.update_one(
+        {"id": aid},
+        {
+            "$set": {"texto_editado": None, "editado_por": user["id"], "editado_en": now},
+            "$push": {"historial": {
+                "accion": "revertida", "texto_anterior": doc.get("texto_editado"),
+                "usuario_id": user["id"], "usuario_nombre": user.get("name"), "en": now,
+            }},
+        },
+    )
+    updated = await db.actividades_curadas.find_one({"id": aid})
+    node = await db.location_nodes.find_one({"id": updated.get("node_id")}) if updated.get("node_id") else {}
+    areas_by_id = await _areas_by_id_for(pid)
+    return _actividad_out(updated, node or {}, areas_by_id, user, origen_estado=await _origen_estado_for_one(updated))
+
+
+@api.post("/projects/{pid}/actividades_generales/{aid}/mover")
+async def move_actividad_general(pid: str, aid: str, body: ActividadCuradaMover, user: dict = Depends(current_user)):
+    """Recategoriza una actividad a otro nivel — los 3 submenús son una
+    herramienta de curaduría, no una clasificación automática inamovible.
+    Materializa si `aid` era 'virtual:'. `node_id_origen` (el nodo real del
+    reporte) NUNCA cambia, aunque se mueva de nivel."""
+    await ensure_project_access(user, pid)
+    _assert_write_allowed(user)
+
+    doc = await _resolve_actividad_doc(pid, aid)
+    if not _actividad_area_editable(user, doc.get("area_id")):
+        raise HTTPException(403, "No puedes editar actividades fuera de tu área")
+
+    nuevo_node_id: Optional[str] = None
+    if body.nivel != NIVEL_GENERAL:
+        target = body.node_id
+        if not target:
+            origen_id = doc.get("node_id_origen")
+            if not origen_id:
+                raise HTTPException(
+                    400,
+                    "node_id es obligatorio: esta actividad no tiene nodo de origen "
+                    "para resolverlo automáticamente",
+                )
+            nodes_by_id = {
+                n["id"]: n async for n in db.location_nodes.find({"project_id": pid})
+            }
+            target = (
+                origen_id if body.nivel == NIVEL_NODO
+                else _subtramo_id_for(origen_id, nodes_by_id)
+            )
+        node = await db.location_nodes.find_one({"id": target, "project_id": pid})
+        if not node:
+            raise HTTPException(404, "Nodo destino no existe en este proyecto")
+        if body.nivel == NIVEL_SUBTRAMO and node.get("depth") != 1:
+            raise HTTPException(400, "El nodo destino no es un Subtramo (depth 1)")
+        if body.nivel == NIVEL_NODO and not node.get("is_leaf"):
+            raise HTTPException(400, "El nodo destino no es una hoja")
+        nuevo_node_id = target
+        nuevo_path = await node_path_names(target)
+    else:
+        nuevo_path = []
+
+    now = datetime.now(timezone.utc)
+    historial_entry = {
+        "accion": "movida", "nivel_anterior": doc.get("nivel"), "node_id_anterior": doc.get("node_id"),
+        "usuario_id": user["id"], "usuario_nombre": user.get("name"), "en": now,
+    }
+    await db.actividades_curadas.update_one(
+        {"id": doc["id"]},
+        {
+            "$set": {"nivel": body.nivel, "node_id": nuevo_node_id, "node_path_names": nuevo_path},
+            "$push": {"historial": historial_entry},
+        },
+    )
+    updated = await db.actividades_curadas.find_one({"id": doc["id"]})
+    node = await db.location_nodes.find_one({"id": updated.get("node_id")}) if updated.get("node_id") else {}
+    areas_by_id = await _areas_by_id_for(pid)
+    return _actividad_out(updated, node or {}, areas_by_id, user, origen_estado=await _origen_estado_for_one(updated))
+
+
+# ============================================================================
+# === CATÁLOGO DE CONCEPTOS ===================================================
+# ============================================================================
+# Partidas, Conceptos, Registro de Avance, Importación desde Excel — fusionado
+# directo en server.py (antes vivía en routers/catalogo_conceptos.py +
+# clave_utils.py + money_utils.py + import_number_parser.py) porque el flujo
+# de despliegue de producción solo copia server.py, un único archivo.
+#
+# Reglas de negocio (spec de producto):
+# - SUBCOORDINADOR y COORDINADOR GENERAL editan precioUnitario y meta; crean,
+#   editan y desactivan partidas y conceptos; importan catálogos.
+# - El resto de los roles ve el catálogo en solo lectura (PU y meta visibles
+#   pero deshabilitados, nunca ocultos) y puede registrar avance.
+# - Jefe de Proyecto es de solo lectura global en toda la app (ver
+#   READ_ONLY_ROLES más arriba) — tampoco registra avance.
+# - Dinero/cantidades: SIEMPRE Decimal, nunca float.
+# - Orden de claves: SIEMPRE sort_by_clave, nunca orden de texto.
+
+# --- Comparador de claves jerárquicas ("3.3", "10.3") ------------------------
+SortKey = Tuple[Tuple[int, int, str], ...]
+
+
+def clave_sort_key(clave: str) -> SortKey:
+    """Convierte una clave en una tupla comparable segmento por segmento.
+
+    Cada segmento numérico se compara como entero; un segmento no numérico
+    (ej. "3A") ordena después de los numéricos en esa misma posición y usa
+    comparación de texto como desempate. Una clave que es prefijo de otra
+    ("1.2" vs "1.2.1") ordena primero, igual que en un explorador de
+    archivos.
+    """
+    key = []
+    for seg in (clave or "").split("."):
+        seg = seg.strip()
+        if seg.isdigit():
+            key.append((0, int(seg), ""))
+        else:
+            key.append((1, 0, seg))
+    return tuple(key)
+
+
+def sort_by_clave(items: list, clave_getter=lambda x: x.get("clave")) -> list:
+    """Ordena una lista de dicts (u objetos) por su campo `clave` con el
+    comparador numérico jerárquico."""
+    return sorted(items, key=lambda it: clave_sort_key(clave_getter(it)))
+
+
+# --- Dinero/cantidades: Decimal, nunca float ---------------------------------
+TWO_PLACES = Decimal("0.01")
+
+
+def to_decimal(value) -> Decimal:
+    """Convierte un valor externo (string/int/Decimal) a Decimal exacto.
+
+    Rechaza float explícitamente: un float ya perdió precisión antes de
+    llegar aquí, así que aceptarlo silenciosamente ocultaría el bug.
+    """
+    if isinstance(value, Decimal):
+        return value
+    if isinstance(value, float):
+        raise TypeError(
+            "money_utils.to_decimal no acepta float; usa string o Decimal "
+            "para no perder precisión (ej. '123.45', no 123.45)"
+        )
+    try:
+        return Decimal(str(value))
+    except InvalidOperation:
+        raise ValueError(f"Valor decimal inválido: {value!r}")
+
+
+def round_money(value) -> Decimal:
+    """Redondeo HALF_UP a 2 decimales — solo para mostrar/totalizar."""
+    return to_decimal(value).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+
+
+def dec_to_str(value: Decimal) -> str:
+    """Serializa un Decimal a string exacto (sin notación científica)."""
+    return format(value, "f")
+
+
+def compute_importe(cantidad, precio_unitario) -> Decimal:
+    """importeContratado = cantidad × precioUnitario, sin redondear
+    (el redondeo, si aplica, se hace al mostrar/totalizar, no aquí)."""
+    return to_decimal(cantidad) * to_decimal(precio_unitario)
+
+
+def sum_decimales(values) -> Decimal:
+    total = Decimal("0")
+    for v in values:
+        total += to_decimal(v)
+    return total
+
+
+# --- Normalizador de decimales de importación (texto sucio de Excel/CSV) ----
+ConvencionDecimal = Literal["coma", "punto"]
+
+_EXCEL_ERROR_LITERALS = {"#REF!", "#VALUE!", "#N/A", "#DIV/0!", "#NAME?", "#NULL!", "#NUM!"}
+
+_MONEDA_RE = re.compile(r"(?i)\b(MXN|USD)\b|\$")
+_ESPACIOS_RE = re.compile(r"[ \t  ]+")
+_COMILLAS_RE = re.compile(r"['\"´`]")
+_PARENS_RE = re.compile(r"^\((.*)\)$")
+
+
+class NumeroTextoError(ValueError):
+    """Base de los errores controlados de este módulo."""
+
+
+class NumeroInvalidoError(NumeroTextoError):
+    """El texto no se puede interpretar como número en absoluto (vacío, basura, etc.)."""
+
+
+class CeldaErrorExcelError(NumeroTextoError):
+    """La celda contiene un literal de error de fórmula de Excel (#REF!, #VALUE!, ...)."""
+
+    def __init__(self, literal: str):
+        self.literal = literal
+        super().__init__(f"Celda de error de Excel: {literal}")
+
+
+class NumeroAmbiguoError(NumeroTextoError):
+    """Un solo separador con exactamente 3 dígitos después ("1.234"): puede ser
+    separador de miles (1234) o decimal (1.234), y no hay convención de
+    archivo determinada para resolverlo. NO se adivina: se marca la fila."""
+
+    def __init__(self, texto: str, sep: str, lectura_miles: Decimal, lectura_decimal: Decimal):
+        self.texto = texto
+        self.lectura_miles = lectura_miles
+        self.lectura_decimal = lectura_decimal
+        super().__init__(
+            f"Número ambiguo: '{texto}' podría ser {lectura_miles} "
+            f"(si {sep!r} es separador de miles) o {lectura_decimal} (si {sep!r} es separador decimal)"
+        )
+
+
+def _limpiar(texto: str) -> "tuple[str, bool]":
+    """Quita símbolos de moneda/espacios/comillas y detecta el signo
+    (incluido el formato contable "(1.234,50)" = negativo).
+    Devuelve (cuerpo_limpio, es_negativo)."""
+    s = texto.strip()
+    negativo = False
+
+    m = _PARENS_RE.match(s)
+    if m:
+        negativo = True
+        s = m.group(1).strip()
+
+    s = _MONEDA_RE.sub("", s)
+    s = _ESPACIOS_RE.sub("", s)
+    s = _COMILLAS_RE.sub("", s)
+    s = s.strip()
+
+    if s.startswith("-"):
+        negativo = True
+        s = s[1:]
+    elif s.startswith("+"):
+        s = s[1:]
+
+    return s, negativo
+
+
+def _resolver_ambiguo(texto_original: str, sep: str, segmentos: List[str], convencion: Optional[ConvencionDecimal]) -> Decimal:
+    lectura_miles = Decimal("".join(segmentos))
+    lectura_decimal = Decimal(segmentos[0] + "." + segmentos[1])
+
+    if convencion is None:
+        raise NumeroAmbiguoError(texto_original, sep, lectura_miles, lectura_decimal)
+
+    if sep == ".":
+        # "." es separador de miles bajo convención coma-decimal, y decimal bajo convención punto-decimal.
+        return lectura_miles if convencion == "coma" else lectura_decimal
+    else:
+        # "," es decimal bajo convención coma-decimal, y de miles bajo convención punto-decimal.
+        return lectura_decimal if convencion == "coma" else lectura_miles
+
+
+def parse_numero_texto(texto: Optional[str], convencion: Optional[ConvencionDecimal] = None) -> Decimal:
+    """Convierte un texto de celda (Excel/CSV) a Decimal exacto.
+
+    Algoritmo de resolución del separador (ver especificación del producto):
+      1. Sin "." ni "," -> entero directo.
+      2. Con AMBOS -> el que aparece más a la derecha es el decimal; el otro
+         es separador de miles y se descarta.
+      3. Un solo tipo de separador, repetido -> es de miles, se descarta todo.
+      4. Un solo tipo, una sola vez:
+         - 1, 2 o 4+ dígitos después -> es DECIMAL.
+         - Exactamente 3 dígitos después -> AMBIGUO; se resuelve con
+           `convencion` si se proporcionó, si no se lanza NumeroAmbiguoError.
+    """
+    if texto is None:
+        raise NumeroInvalidoError("Valor vacío")
+    texto_original = str(texto)
+    texto_stripped = texto_original.strip()
+    if texto_stripped == "":
+        raise NumeroInvalidoError("Valor vacío")
+    if texto_stripped.upper() in _EXCEL_ERROR_LITERALS:
+        raise CeldaErrorExcelError(texto_stripped)
+
+    body, negativo = _limpiar(texto_original)
+    if body == "" or not re.fullmatch(r"[0-9.,]+", body):
+        raise NumeroInvalidoError(f"No se pudo interpretar '{texto_original}' como número")
+
+    tiene_punto = "." in body
+    tiene_coma = "," in body
+
+    if not tiene_punto and not tiene_coma:
+        valor = Decimal(body)
+    elif tiene_punto and tiene_coma:
+        ultimo_punto = body.rfind(".")
+        ultima_coma = body.rfind(",")
+        if ultima_coma > ultimo_punto:
+            cuerpo = body.replace(".", "").replace(",", ".")
+        else:
+            cuerpo = body.replace(",", "")
+        valor = Decimal(cuerpo)
+    else:
+        sep = "." if tiene_punto else ","
+        segmentos = body.split(sep)
+        if len(segmentos) > 2:
+            # Separador repetido -> inequívocamente de miles, se descarta todo.
+            valor = Decimal("".join(segmentos))
+        else:
+            digitos_despues = segmentos[-1]
+            n = len(digitos_despues)
+            if n == 3:
+                valor = _resolver_ambiguo(texto_original, sep, segmentos, convencion)
+            else:
+                cuerpo = body.replace(",", ".") if sep == "," else body
+                valor = Decimal(cuerpo)
+
+    return -valor if negativo else valor
+
+
+def detectar_convencion(candidatos: List[object]) -> Optional[ConvencionDecimal]:
+    """Recorre celdas de texto candidatas (ignora números nativos: no
+    informan convención porque no tienen separador ambiguo) y determina si
+    el archivo usa coma o punto como separador decimal, a partir de los
+    casos INEQUÍVOCOS que encuentre (reglas 2, 3 y 4-con-1/2/4+-dígitos de
+    `parse_numero_texto`). Devuelve None si no hay ningún caso inequívoco, o
+    si hay evidencia empatada en ambos sentidos."""
+    votos_coma = 0
+    votos_punto = 0
+
+    for candidato in candidatos:
+        if not isinstance(candidato, str):
+            continue
+        texto = candidato.strip()
+        if not texto or texto.upper() in _EXCEL_ERROR_LITERALS:
+            continue
+        cuerpo, _ = _limpiar(texto)
+        if not cuerpo or not re.fullmatch(r"[0-9.,]+", cuerpo):
+            continue
+
+        tiene_punto = "." in cuerpo
+        tiene_coma = "," in cuerpo
+        if not tiene_punto and not tiene_coma:
+            continue  # entero simple: no aporta evidencia de convención
+
+        if tiene_punto and tiene_coma:
+            if cuerpo.rfind(",") > cuerpo.rfind("."):
+                votos_coma += 1
+            else:
+                votos_punto += 1
+            continue
+
+        sep = "." if tiene_punto else ","
+        segmentos = cuerpo.split(sep)
+        if len(segmentos) > 2:
+            # Regla 3: separador repetido = de miles inequívocamente. Si "."
+            # es de miles, la convención del archivo usa "," para decimales
+            # (y viceversa).
+            if sep == ".":
+                votos_coma += 1
+            else:
+                votos_punto += 1
+            continue
+
+        n = len(segmentos[-1])
+        if n == 3:
+            continue  # ambiguo por sí solo, no vota
+        # Regla 4 inequívoca: el separador presente ES el decimal del archivo.
+        if sep == ",":
+            votos_coma += 1
+        else:
+            votos_punto += 1
+
+    if votos_coma > 0 and votos_coma > votos_punto:
+        return "coma"
+    if votos_punto > 0 and votos_punto > votos_coma:
+        return "punto"
+    return None
+
+
+# --- Partidas / Conceptos / Avances / Importación ----------------------------
+# === Constantes de dominio ===================================================
+UNIDADES: tuple = (
+    "UNIVERSAL", "PZA", "KG", "TON", "G", "M", "KM", "CM", "M2", "M3",
+    "L", "ML", "LOTE", "JGO", "HR", "JORNADA", "SERV",
+)
+UnidadType = Literal[
+    "UNIVERSAL", "PZA", "KG", "TON", "G", "M", "KM", "CM", "M2", "M3",
+    "L", "ML", "LOTE", "JGO", "HR", "JORNADA", "SERV",
+]
+PERIODICIDADES: tuple = ("SEMANAL", "MENSUAL")
+PeriodicidadType = Literal["SEMANAL", "MENSUAL"]
+
+# Alias comunes encontrados en catálogos reales de obra -> nuestro enum.
+_UNIDAD_ALIASES = {
+    "pza": "PZA", "pzas": "PZA", "pieza": "PZA", "piezas": "PZA", "pz": "PZA",
+    "kg": "KG", "kilogramo": "KG", "kilogramos": "KG",
+    "ton": "TON", "tonelada": "TON", "toneladas": "TON", "t": "TON",
+    "g": "G", "gramo": "G", "gramos": "G",
+    "m": "M", "metro": "M", "metros": "M",
+    "km": "KM", "kilometro": "KM", "kilómetro": "KM",
+    "cm": "CM", "centimetro": "CM", "centímetro": "CM",
+    "m2": "M2", "m²": "M2", "metro2": "M2", "metros2": "M2",
+    "m3": "M3", "m³": "M3", "metro3": "M3", "metros3": "M3",
+    "l": "L", "lt": "L", "litro": "L", "litros": "L",
+    "ml": "ML", "metro lineal": "ML", "metros lineales": "ML",
+    "lote": "LOTE", "lotes": "LOTE",
+    "jgo": "JGO", "juego": "JGO", "juegos": "JGO",
+    "hr": "HR", "hrs": "HR", "hora": "HR", "horas": "HR",
+    "jornada": "JORNADA", "jornadas": "JORNADA",
+    "serv": "SERV", "servicio": "SERV", "servicios": "SERV",
+}
+
+
+def _strip_accents(s: str) -> str:
+    return "".join(c for c in unicodedata.normalize("NFKD", s or "") if not unicodedata.combining(c))
+
+
+def _normalize_text(s: str) -> str:
+    return _strip_accents((s or "")).strip().lower()
+
+
+def _map_unidad_con_flag(raw: Optional[str]) -> "tuple[str, bool]":
+    """Igual que el mapeo de unidad de Etapa 2, pero además dice si la
+    reconoció (para poder marcar la fila con una ADVERTENCIA en la vista
+    previa en vez de fallar en silencio con UNIVERSAL)."""
+    if not raw:
+        return "UNIVERSAL", True  # celda vacía: no es un error de reconocimiento, es ausencia de dato
+    key = _normalize_text(str(raw))
+    if key.upper() in UNIDADES:
+        return key.upper(), True
+    if key in _UNIDAD_ALIASES:
+        return _UNIDAD_ALIASES[key], True
+    return "UNIVERSAL", False
+
+
+def _parse_celda_numerica(raw, convencion: Optional[ConvencionDecimal]):
+    """Bifurcación por tipo (Etapa 2, diagnóstico 2.a): si la celda ya es un
+    número nativo de Python (int/float — lo que entrega openpyxl con
+    data_only=True para una celda numérica real de .xlsx), NUNCA pasa por el
+    normalizador de texto; no hay separadores de miles/decimales que
+    resolver, openpyxl ya interpretó el valor. Solo el texto (CSV siempre, o
+    una celda de .xlsx guardada como texto) pasa por `parse_numero_texto`,
+    que sí puede fallar de forma controlada (número ambiguo, celda de error
+    de Excel, texto ilegible)."""
+    if raw is None:
+        raise ValueError("Celda vacía")
+    if isinstance(raw, bool):  # bool es subclase de int; nunca es un valor numérico válido aquí
+        raise ValueError(f"Valor no numérico: {raw!r}")
+    if isinstance(raw, (int, float)):
+        # Excel puede guardar un valor que SE VE como "2.3" (así lo muestra
+        # su UI, que redondea para mostrar) pero cuyo float64 real es
+        # 2.3000000000000003 o similar (arrastrado de una fórmula, o del
+        # propio redondeo binario) -- str() sobre ESE float expone el ruido
+        # tal cual. Redondear a 2 decimales antes de convertir a Decimal
+        # elimina ese ruido (cantidades/precios/metas de este catálogo se
+        # manejan siempre a 2 decimales).
+        valor = raw if isinstance(raw, int) else round(raw, 2)
+        return to_decimal(str(valor))
+    return parse_numero_texto(str(raw), convencion)
+
+
+# === Modelos =================================================================
+class PartidaIn(BaseModel):
+    project_id: str
+    clave: str
+    nombre: str
+    orden: int = 0
+    # Partida padre (subpartidas anidadas, N niveles) — None = nivel raíz.
+    partida_padre_id: Optional[str] = None
+
+
+class PartidaPatch(BaseModel):
+    clave: Optional[str] = None
+    nombre: Optional[str] = None
+    orden: Optional[int] = None
+    activo: Optional[bool] = None
+    # None aquí significa "no tocar" (mismo criterio que el resto de los
+    # campos de este Patch) — para MOVER una partida de vuelta al nivel raíz
+    # se usa `quitar_padre`, no `partida_padre_id=None`.
+    partida_padre_id: Optional[str] = None
+    quitar_padre: bool = False
+
+
+class PartidaOut(BaseModel):
+    id: str
+    project_id: str
+    clave: str
+    nombre: str
+    orden: int
+    activo: bool
+    partida_padre_id: Optional[str] = None
+    created_at: datetime
+    # --- Calculados: nunca almacenados ---
+    numero_conceptos: int = 0
+    importe_contratado_partida: str = "0"
+    porcentaje_avance_partida: str = "0"
+
+
+class ConceptoIn(BaseModel):
+    partida_id: str
+    clave: str
+    descripcion: str
+    unidad: UnidadType = "UNIVERSAL"
+    cantidad: str
+    precio_unitario: str
+    meta: str
+    periodicidad_meta: PeriodicidadType = "SEMANAL"
+
+    @field_validator("cantidad", "precio_unitario", "meta")
+    @classmethod
+    def _v_decimal(cls, v):
+        to_decimal(v)  # valida que sea un decimal exacto parseable (nunca float)
+        return v
+
+
+class ConceptoPatch(BaseModel):
+    clave: Optional[str] = None
+    descripcion: Optional[str] = None
+    unidad: Optional[UnidadType] = None
+    cantidad: Optional[str] = None
+    precio_unitario: Optional[str] = None
+    meta: Optional[str] = None
+    periodicidad_meta: Optional[PeriodicidadType] = None
+    activo: Optional[bool] = None
+
+    @field_validator("cantidad", "precio_unitario", "meta")
+    @classmethod
+    def _v_decimal(cls, v):
+        if v is not None:
+            to_decimal(v)
+        return v
+
+
+class ConceptoOut(BaseModel):
+    id: str
+    partida_id: str
+    project_id: str
+    clave: str
+    descripcion: str
+    unidad: str
+    cantidad: str
+    precio_unitario: str
+    meta: str
+    periodicidad_meta: str
+    activo: bool
+    created_at: datetime
+    # --- Calculados ---
+    importe_contratado: str
+    cantidad_ejecutada_acumulada: str = "0"
+
+
+class RegistroAvanceIn(BaseModel):
+    concepto_id: str
+    fecha: str  # "YYYY-MM-DD"
+    cantidad_ejecutada: str
+    estacion_id: Optional[str] = None
+    reporte_id: Optional[str] = None
+    fotos: List[str] = Field(default_factory=list)  # base64, mismo criterio que ReportIn.images
+    photo_captions: List[str] = Field(default_factory=list)
+    client_id: Optional[str] = None  # idempotencia offline, igual que ReportIn.client_id
+
+    @field_validator("cantidad_ejecutada")
+    @classmethod
+    def _v_cant(cls, v):
+        to_decimal(v)
+        return v
+
+
+class RegistroAvancePatch(BaseModel):
+    cantidad_ejecutada: Optional[str] = None
+    fotos: Optional[List[str]] = None
+    photo_captions: Optional[List[str]] = None
+
+    @field_validator("cantidad_ejecutada")
+    @classmethod
+    def _v_cant(cls, v):
+        if v is not None:
+            to_decimal(v)
+        return v
+
+
+class RegistroAvanceOut(BaseModel):
+    id: str
+    concepto_id: str
+    project_id: str
+    fecha: str
+    cantidad_ejecutada: str
+    estacion_id: Optional[str] = None
+    reporte_id: Optional[str] = None
+    fotos: List[str] = Field(default_factory=list)
+    photo_captions: List[str] = Field(default_factory=list)
+    capturado_por: str
+    capturado_por_nombre: Optional[str] = None
+    creado_en: datetime
+    sincronizado: bool = True
+    editado_en: Optional[datetime] = None
+
+
+class BitacoraCambioOut(BaseModel):
+    id: str
+    project_id: str
+    tipo: str  # "pu" | "meta" | "import" | "partida" | "concepto"
+    entidad_tipo: str  # "partida" | "concepto"
+    entidad_id: str
+    campo: Optional[str] = None
+    valor_anterior: Optional[str] = None
+    valor_nuevo: Optional[str] = None
+    usuario_id: str
+    usuario_nombre: Optional[str] = None
+    fecha: datetime
+
+
+class ImportMappingIn(BaseModel):
+    clave: Optional[str] = None
+    descripcion: Optional[str] = None
+    unidad: Optional[str] = None
+    cantidad: Optional[str] = None
+    precio_unitario: Optional[str] = None
+    # Opcional: solo para el chequeo informativo de "el importe del archivo
+    # no coincide con cantidad × PU" — nunca se usa como fuente de verdad.
+    importe: Optional[str] = None
+
+
+class ImportValidateIn(BaseModel):
+    sheet: str
+    header_row_index: int = 0
+    mapping: ImportMappingIn
+    partida_id: str
+    # Si no se manda, se usa la convención detectada automáticamente al
+    # subir el archivo. Mandar un valor explícito aquí RE-VALIDA el archivo
+    # completo con esa convención — mismo mecanismo tanto para "cambié la
+    # convención en el paso de confirmación" como para "aplicar esta
+    # interpretación a todas las filas ambiguas" desde la vista previa.
+    convencion: Optional[ConvencionDecimal] = None
+
+
+class RowCorrectionIn(BaseModel):
+    # Todas las correcciones llegan como valores YA VALIDADOS por el
+    # cliente (mismo input decimal que la edición en línea de PU/meta del
+    # catálogo, mismo selector cerrado de unidad) — nunca texto crudo que
+    # haya que re-interpretar con parse_numero_texto. Un campo en None
+    # significa "no tocar/quitar esta corrección", no "poner vacío".
+    cantidad: Optional[str] = None
+    precio_unitario: Optional[str] = None
+    unidad: Optional[str] = None
+    descartar: bool = False
+
+
+class DuplicadosAccionIn(BaseModel):
+    accion: Literal["omitir", "actualizar"]
+
+
+# === Helpers internos =========================================================
+async def _log_bitacora(
+    project_id: str,
+    tipo: str,
+    entidad_tipo: str,
+    entidad_id: str,
+    campo: Optional[str],
+    valor_anterior: Optional[str],
+    valor_nuevo: Optional[str],
+    user: dict,
+) -> None:
+    await db.catalogo_bitacora.insert_one({
+        "id": str(uuid.uuid4()),
+        "project_id": project_id,
+        "tipo": tipo,
+        "entidad_tipo": entidad_tipo,
+        "entidad_id": entidad_id,
+        "campo": campo,
+        "valor_anterior": valor_anterior,
+        "valor_nuevo": valor_nuevo,
+        "usuario_id": user["id"],
+        "usuario_nombre": user.get("name"),
+        "fecha": datetime.now(timezone.utc),
+    })
+
+
+async def _concepto_ejecutado_acumulado(concepto_id: str) -> str:
+    avances = await db.registros_avance.find({"concepto_id": concepto_id}).to_list(length=100000)
+    total = sum_decimales([a["cantidad_ejecutada"] for a in avances]) if avances else to_decimal("0")
+    return dec_to_str(total)
+
+
+async def _concepto_out(doc: dict) -> ConceptoOut:
+    importe = compute_importe(doc["cantidad"], doc["precio_unitario"])
+    ejecutado = await _concepto_ejecutado_acumulado(doc["id"])
+    return ConceptoOut(
+        id=doc["id"],
+        partida_id=doc["partida_id"],
+        project_id=doc["project_id"],
+        clave=doc["clave"],
+        descripcion=doc["descripcion"],
+        unidad=doc["unidad"],
+        cantidad=doc["cantidad"],
+        precio_unitario=doc["precio_unitario"],
+        meta=doc["meta"],
+        periodicidad_meta=doc["periodicidad_meta"],
+        activo=doc.get("activo", True),
+        created_at=doc["created_at"],
+        importe_contratado=dec_to_str(importe),
+        cantidad_ejecutada_acumulada=ejecutado,
+    )
+
+
+def _partida_children_by_parent(all_partidas: List[dict]) -> Dict[Optional[str], List[str]]:
+    """id de partida padre (None = raíz) -> ids de sus hijas directas."""
+    children: Dict[Optional[str], List[str]] = {}
+    for p in all_partidas:
+        children.setdefault(p.get("partida_padre_id"), []).append(p["id"])
+    return children
+
+
+def _partida_subtree_ids(partida_id: str, children_by_parent: Dict[Optional[str], List[str]]) -> List[str]:
+    """partida_id + TODOS sus descendientes, a cualquier profundidad (N
+    niveles de subpartidas) — recorrido en profundidad, sin asumir un
+    número fijo de niveles."""
+    ids = [partida_id]
+    for child_id in children_by_parent.get(partida_id, []):
+        ids.extend(_partida_subtree_ids(child_id, children_by_parent))
+    return ids
+
+
+async def _partida_subtree_ids_en_proyecto(project_id: str, partida_id: str) -> List[str]:
+    """`partida_id` + todas sus subpartidas (a cualquier profundidad) dentro
+    de `project_id` — usado para filtrar avances/conceptos por una partida
+    que puede ser una "carpeta" sin conceptos propios."""
+    all_partidas = await db.partidas.find({"project_id": project_id}).to_list(length=10000)
+    return _partida_subtree_ids(partida_id, _partida_children_by_parent(all_partidas))
+
+
+async def _partida_out(doc: dict, all_partidas: List[dict]) -> PartidaOut:
+    # El total/porcentaje/conteo de una partida incluye TODA su subtree (las
+    # subpartidas anidadas dentro), no solo sus conceptos directos — una
+    # "carpeta" sin conceptos propios pero con subpartidas debe seguir
+    # mostrando el total real de lo que contiene.
+    children_by_parent = _partida_children_by_parent(all_partidas)
+    subtree_ids = _partida_subtree_ids(doc["id"], children_by_parent)
+    conceptos = await db.conceptos.find({"partida_id": {"$in": subtree_ids}, "activo": True}).to_list(length=100000)
+    importe_total = to_decimal("0")
+    avance_ponderado_num = to_decimal("0")
+    for c in conceptos:
+        importe_c = compute_importe(c["cantidad"], c["precio_unitario"])
+        importe_total += importe_c
+        cantidad_contratada = to_decimal(c["cantidad"])
+        if cantidad_contratada != 0:
+            ejecutado = to_decimal(await _concepto_ejecutado_acumulado(c["id"]))
+            pct_c = ejecutado / cantidad_contratada
+        else:
+            pct_c = to_decimal("0")
+        avance_ponderado_num += importe_c * pct_c
+    pct_partida = (avance_ponderado_num / importe_total) if importe_total != 0 else to_decimal("0")
+    return PartidaOut(
+        id=doc["id"],
+        project_id=doc["project_id"],
+        clave=doc["clave"],
+        nombre=doc["nombre"],
+        orden=doc.get("orden", 0),
+        activo=doc.get("activo", True),
+        partida_padre_id=doc.get("partida_padre_id"),
+        created_at=doc["created_at"],
+        numero_conceptos=len(conceptos),
+        importe_contratado_partida=dec_to_str(importe_total),
+        porcentaje_avance_partida=dec_to_str(round_money(pct_partida * to_decimal("100"))),
+    )
+
+
+# === Partidas =================================================================
+@api.get("/projects/{pid}/partidas", response_model=List[PartidaOut])
+async def list_partidas(pid: str, incluir_inactivas: bool = False, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    query = {"project_id": pid}
+    if not incluir_inactivas:
+        query["activo"] = True
+    docs = await db.partidas.find(query).to_list(length=10000)
+    all_partidas = docs  # incluir_inactivas=False ya filtró arriba; el subtree solo debe rodar sobre lo visible
+    docs = sort_by_clave(docs)
+    return [await _partida_out(d, all_partidas) for d in docs]
+
+
+@api.post("/partidas", response_model=PartidaOut)
+async def create_partida(body: PartidaIn, user: dict = Depends(require_role(ROLE_SUB, ROLE_COORD))):
+    await ensure_project_access(user, body.project_id)
+    existing = await db.partidas.find_one({"project_id": body.project_id, "clave": body.clave.strip()})
+    if existing:
+        raise HTTPException(400, f"Ya existe una partida con clave {body.clave}")
+    partida_padre_id = body.partida_padre_id
+    if partida_padre_id:
+        padre = await db.partidas.find_one({"id": partida_padre_id, "project_id": body.project_id})
+        if not padre:
+            raise HTTPException(404, "La partida padre no existe en este proyecto")
+    pid = str(uuid.uuid4())
+    doc = {
+        "id": pid,
+        "project_id": body.project_id,
+        "clave": body.clave.strip(),
+        "nombre": body.nombre.strip(),
+        "orden": body.orden,
+        "activo": True,
+        "partida_padre_id": partida_padre_id,
+        "created_at": datetime.now(timezone.utc),
+        "created_by": user["id"],
+    }
+    await db.partidas.insert_one(doc)
+    all_partidas = await db.partidas.find({"project_id": body.project_id, "activo": True}).to_list(length=10000)
+    return await _partida_out(doc, all_partidas)
+
+
+@api.patch("/partidas/{partida_id}", response_model=PartidaOut)
+async def update_partida(partida_id: str, body: PartidaPatch, user: dict = Depends(require_role(ROLE_SUB, ROLE_COORD))):
+    partida = await db.partidas.find_one({"id": partida_id})
+    if not partida:
+        raise HTTPException(404, "Partida no existe")
+    upd: dict = {}
+    if body.clave is not None:
+        upd["clave"] = body.clave.strip()
+    if body.nombre is not None:
+        upd["nombre"] = body.nombre.strip()
+    if body.orden is not None:
+        upd["orden"] = body.orden
+    if body.activo is not None:
+        upd["activo"] = body.activo  # baja lógica
+    if body.quitar_padre:
+        upd["partida_padre_id"] = None
+    elif body.partida_padre_id is not None:
+        if body.partida_padre_id == partida_id:
+            raise HTTPException(400, "Una partida no puede ser su propia partida padre")
+        nuevo_padre = await db.partidas.find_one({"id": body.partida_padre_id, "project_id": partida["project_id"]})
+        if not nuevo_padre:
+            raise HTTPException(404, "La partida padre no existe en este proyecto")
+        todas = await db.partidas.find({"project_id": partida["project_id"]}).to_list(length=10000)
+        # El nuevo padre no puede ser la propia partida ni ninguna de sus
+        # descendientes (a cualquier profundidad) — eso crearía un ciclo.
+        if body.partida_padre_id in _partida_subtree_ids(partida_id, _partida_children_by_parent(todas)):
+            raise HTTPException(400, "No se puede mover una partida dentro de su propia subpartida")
+        upd["partida_padre_id"] = body.partida_padre_id
+    if upd:
+        await db.partidas.update_one({"id": partida_id}, {"$set": upd})
+    updated = await db.partidas.find_one({"id": partida_id})
+    all_partidas = await db.partidas.find({"project_id": updated["project_id"], "activo": True}).to_list(length=10000)
+    return await _partida_out(updated, all_partidas)
+
+
+# === Conceptos =================================================================
+@api.get("/partidas/{partida_id}/conceptos", response_model=List[ConceptoOut])
+async def list_conceptos(partida_id: str, incluir_inactivos: bool = False, user: dict = Depends(current_user)):
+    partida = await db.partidas.find_one({"id": partida_id})
+    if not partida:
+        raise HTTPException(404, "Partida no existe")
+    await ensure_project_access(user, partida["project_id"])
+    query = {"partida_id": partida_id}
+    if not incluir_inactivos:
+        query["activo"] = True
+    docs = await db.conceptos.find(query).to_list(length=100000)
+    docs = sort_by_clave(docs)
+    return [await _concepto_out(d) for d in docs]
+
+
+@api.post("/conceptos", response_model=ConceptoOut)
+async def create_concepto(body: ConceptoIn, user: dict = Depends(require_role(ROLE_SUB, ROLE_COORD))):
+    partida = await db.partidas.find_one({"id": body.partida_id})
+    if not partida:
+        raise HTTPException(404, "Partida no existe")
+    cid = str(uuid.uuid4())
+    doc = {
+        "id": cid,
+        "partida_id": body.partida_id,
+        "project_id": partida["project_id"],
+        "clave": body.clave.strip(),
+        "descripcion": body.descripcion.strip(),
+        "unidad": body.unidad,
+        "cantidad": body.cantidad,
+        "precio_unitario": body.precio_unitario,
+        "meta": body.meta,
+        "periodicidad_meta": body.periodicidad_meta,
+        "activo": True,
+        "created_at": datetime.now(timezone.utc),
+        "created_by": user["id"],
+    }
+    await db.conceptos.insert_one(doc)
+    return await _concepto_out(doc)
+
+
+@api.patch("/conceptos/{concepto_id}", response_model=ConceptoOut)
+async def update_concepto(concepto_id: str, body: ConceptoPatch, user: dict = Depends(require_role(ROLE_SUB, ROLE_COORD))):
+    concepto = await db.conceptos.find_one({"id": concepto_id})
+    if not concepto:
+        raise HTTPException(404, "Concepto no existe")
+    upd: dict = {}
+    if body.clave is not None:
+        upd["clave"] = body.clave.strip()
+    if body.descripcion is not None:
+        upd["descripcion"] = body.descripcion.strip()
+    if body.unidad is not None:
+        upd["unidad"] = body.unidad
+    if body.cantidad is not None:
+        upd["cantidad"] = body.cantidad
+    if body.periodicidad_meta is not None:
+        upd["periodicidad_meta"] = body.periodicidad_meta
+    if body.activo is not None:
+        upd["activo"] = body.activo
+
+    # PU y meta llevan bitácora explícita (valor anterior/nuevo/usuario/fecha)
+    if body.precio_unitario is not None and body.precio_unitario != concepto["precio_unitario"]:
+        await _log_bitacora(
+            concepto["project_id"], "pu", "concepto", concepto_id,
+            "precio_unitario", concepto["precio_unitario"], body.precio_unitario, user,
+        )
+        upd["precio_unitario"] = body.precio_unitario
+    if body.meta is not None and body.meta != concepto["meta"]:
+        await _log_bitacora(
+            concepto["project_id"], "meta", "concepto", concepto_id,
+            "meta", concepto["meta"], body.meta, user,
+        )
+        upd["meta"] = body.meta
+
+    if upd:
+        await db.conceptos.update_one({"id": concepto_id}, {"$set": upd})
+    updated = await db.conceptos.find_one({"id": concepto_id})
+    return await _concepto_out(updated)
+
+
+@api.get("/projects/{pid}/conceptos/search", response_model=List[dict])
+async def search_conceptos(pid: str, q: Optional[str] = None, unidad: Optional[str] = None, user: dict = Depends(current_user)):
+    """Búsqueda global (atraviesa partidas) por clave o cualquier palabra de la
+    descripción: parcial, sin distinguir acentos ni mayúsculas. Cada resultado
+    indica a qué partida pertenece."""
+    await ensure_project_access(user, pid)
+    query: dict = {"project_id": pid, "activo": True}
+    if unidad:
+        query["unidad"] = unidad
+    docs = await db.conceptos.find(query).to_list(length=100000)
+    docs = sort_by_clave(docs)
+
+    if q and q.strip():
+        needle = _normalize_text(q)
+        docs = [
+            d for d in docs
+            if needle in _normalize_text(d["clave"]) or needle in _normalize_text(d["descripcion"])
+        ]
+
+    partida_ids = {d["partida_id"] for d in docs}
+    partidas = await db.partidas.find({"id": {"$in": list(partida_ids)}}).to_list(length=10000)
+    partida_by_id = {p["id"]: p for p in partidas}
+
+    out = []
+    for d in docs:
+        concepto_out = await _concepto_out(d)
+        p = partida_by_id.get(d["partida_id"])
+        out.append({
+            **concepto_out.model_dump(),
+            "partida_clave": p["clave"] if p else None,
+            "partida_nombre": p["nombre"] if p else None,
+        })
+    return out
+
+
+@api.get("/conceptos/{concepto_id}/bitacora", response_model=List[BitacoraCambioOut])
+async def concepto_bitacora(concepto_id: str, user: dict = Depends(current_user)):
+    concepto = await db.conceptos.find_one({"id": concepto_id})
+    if not concepto:
+        raise HTTPException(404, "Concepto no existe")
+    await ensure_project_access(user, concepto["project_id"])
+    docs = await db.catalogo_bitacora.find({"entidad_tipo": "concepto", "entidad_id": concepto_id}).sort("fecha", -1).to_list(length=1000)
+    return [BitacoraCambioOut(**d) for d in docs]
+
+
+# === Importación desde Excel ===================================================
+# Wizard de 4 pasos: (1) subir archivo → (2) elegir hoja + mapeo + partida
+# destino + confirmar convención → (3) VALIDAR (todas las filas, una sola
+# vez) → revisar vista previa paginada y corregir → (4) importar (commit).
+#
+# Los campos objetivo del mapeo y las palabras clave que usamos para proponer
+# un mapeo automático a partir de los encabezados reales. "importe" es
+# opcional: solo alimenta el chequeo informativo de 3.a, nunca se usa como
+# fuente de verdad (el importe SIEMPRE se recalcula como cantidad × PU).
+_MAPPING_TARGETS = ["clave", "descripcion", "unidad", "cantidad", "precio_unitario", "importe"]
+_MAPPING_KEYWORDS = {
+    "clave": ["clave", "codigo", "código", "no.", "num", "item", "partida"],
+    "descripcion": ["descripcion", "descripción", "concepto", "nombre", "actividad", "trabajo"],
+    "unidad": ["unidad", "und", "um", "u.m.", "unidad de medida"],
+    "cantidad": ["cantidad", "cant", "volumen", "vol"],
+    "precio_unitario": ["precio unitario", "p.u.", "pu", "precio", "costo unitario", "costo"],
+    "importe": ["importe", "total", "monto"],
+}
+
+# Umbral de tolerancia para el chequeo informativo "importe del archivo vs.
+# cantidad × PU recalculado" — diferencias de redondeo de centavo no cuentan.
+_TOLERANCIA_IMPORTE = Decimal("0.01")
+
+# Orden de severidad para decidir el estado de una fila cuando aplican varios
+# problemas a la vez (ver `_calcular_vista_filas`).
+_TIPOS_ERROR = {"excel_error", "numero_ilegible", "numero_ambiguo", "campo_obligatorio_vacio"}
+_TIPOS_DUPLICADO = {"clave_duplicada_archivo", "clave_existente_proyecto"}
+_TIPOS_ADVERTENCIA = {"unidad_no_reconocida", "importe_no_coincide"}
+
+
+def _read_workbook_sheets(filename: str, content: bytes) -> dict:
+    """Devuelve {sheet_name: [[celda,...], ...]} para .xlsx/.csv."""
+    lower = filename.lower()
+    if lower.endswith(".csv"):
+        text = content.decode("utf-8-sig", errors="replace")
+        rows = list(csv.reader(io.StringIO(text)))
+        return {"CSV": rows}
+    if lower.endswith(".xls"):
+        raise HTTPException(
+            400,
+            "Formato .xls (Excel 97-2003) no soportado. Guarda el archivo como "
+            ".xlsx o .csv desde Excel (Archivo > Guardar como) y vuelve a intentar.",
+        )
+    if not lower.endswith(".xlsx"):
+        raise HTTPException(400, "Formato no soportado. Usa .xlsx o .csv")
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(content), data_only=True, read_only=True)
+    except Exception as e:
+        raise HTTPException(400, f"No se pudo leer el archivo: {e}")
+    sheets = {}
+    for name in wb.sheetnames:
+        ws = wb[name]
+        rows = [[cell for cell in row] for row in ws.iter_rows(values_only=True)]
+        sheets[name] = rows
+    return sheets
+
+
+def _propose_mapping(headers: List[str]) -> dict:
+    normalized = [_normalize_text(h) for h in headers]
+    mapping: dict = {}
+    used_idx: set = set()
+    for target in _MAPPING_TARGETS:
+        best_idx = None
+        for idx, h in enumerate(normalized):
+            if idx in used_idx or not h:
+                continue
+            if any(kw in h for kw in _MAPPING_KEYWORDS[target]):
+                best_idx = idx
+                break
+        if best_idx is not None:
+            mapping[target] = headers[best_idx]
+            used_idx.add(best_idx)
+    return mapping
+
+
+def _validar_archivo_completo(
+    rows: List[list],
+    header_row_index: int,
+    mapping: "ImportMappingIn",
+    convencion: Optional[ConvencionDecimal],
+    existing_by_clave: dict,
+) -> List[dict]:
+    """Procesa TODAS las filas de datos de la hoja UNA vez (3.a) — no una
+    muestra. Cada fila queda con su interpretación (clave/descripción/
+    unidad/cantidad/PU/importe) y la lista de `problemas` intrínsecos que
+    encontró (celda de error de Excel, número ilegible/ambiguo, campo
+    obligatorio vacío, unidad no reconocida, importe que no cuadra, clave ya
+    existente en el proyecto). El resultado es inmutable una vez calculado:
+    las correcciones del usuario NUNCA lo tocan, viven aparte como overlay
+    (ver `_calcular_vista_filas`). No detecta claves duplicadas DENTRO del
+    archivo aquí — eso depende de qué filas estén descartadas en cada
+    momento, así que se recalcula dinámicamente en `_calcular_vista_filas`."""
+    if len(rows) <= header_row_index:
+        raise HTTPException(400, "header_row_index fuera de rango")
+    headers = [str(c) if c is not None else "" for c in rows[header_row_index]]
+    data_rows = rows[header_row_index + 1:]
+
+    def col(header_name: Optional[str]):
+        if not header_name or header_name not in headers:
+            return None
+        return headers.index(header_name)
+
+    idx = {
+        "clave": col(mapping.clave), "descripcion": col(mapping.descripcion),
+        "unidad": col(mapping.unidad), "cantidad": col(mapping.cantidad),
+        "precio_unitario": col(mapping.precio_unitario), "importe": col(mapping.importe),
+    }
+    if idx["clave"] is None or idx["descripcion"] is None or idx["cantidad"] is None or idx["precio_unitario"] is None:
+        raise HTTPException(400, "El mapeo debe incluir al menos clave, descripción, cantidad y precio unitario")
+
+    def celda(row: list, key: str):
+        i = idx[key]
+        if i is None or i >= len(row):
+            return None
+        return row[i]
+
+    filas: List[dict] = []
+    for i, row in enumerate(data_rows):
+        clave_raw = celda(row, "clave")
+        if clave_raw in (None, ""):
+            continue  # fila vacía / de relleno, se ignora silenciosamente (igual que antes de Etapa 3)
+        fila_num = header_row_index + 2 + i
+        problemas: List[dict] = []
+
+        clave = str(clave_raw).strip() or None
+        if not clave:
+            problemas.append({"tipo": "campo_obligatorio_vacio", "campo": "clave", "motivo": "La clave está vacía"})
+
+        descripcion_raw = celda(row, "descripcion")
+        descripcion = (str(descripcion_raw).strip() if descripcion_raw is not None else "") or None
+        if not descripcion:
+            problemas.append({"tipo": "campo_obligatorio_vacio", "campo": "descripcion", "motivo": "La descripción está vacía"})
+
+        unidad_raw = celda(row, "unidad")
+        unidad, unidad_reconocida = _map_unidad_con_flag(str(unidad_raw) if unidad_raw is not None else None)
+        if not unidad_reconocida:
+            problemas.append({
+                "tipo": "unidad_no_reconocida", "campo": "unidad",
+                "motivo": f"Unidad '{unidad_raw}' no reconocida; se usará UNIVERSAL si no se corrige",
+            })
+
+        def _parse_campo_numerico(raw_valor, nombre_campo: str) -> Optional[str]:
+            try:
+                return dec_to_str(_parse_celda_numerica(raw_valor, convencion))
+            except CeldaErrorExcelError as e:
+                problemas.append({"tipo": "excel_error", "campo": nombre_campo, "motivo": str(e)})
+            except NumeroAmbiguoError as e:
+                problemas.append({
+                    "tipo": "numero_ambiguo", "campo": nombre_campo, "motivo": str(e),
+                    "lectura_miles": dec_to_str(e.lectura_miles), "lectura_decimal": dec_to_str(e.lectura_decimal),
+                })
+            except ValueError as e:
+                if raw_valor in (None, ""):
+                    problemas.append({"tipo": "campo_obligatorio_vacio", "campo": nombre_campo, "motivo": f"El campo '{nombre_campo}' está vacío"})
+                else:
+                    problemas.append({"tipo": "numero_ilegible", "campo": nombre_campo, "motivo": str(e)})
+            return None
+
+        cantidad_raw = celda(row, "cantidad")
+        cantidad = _parse_campo_numerico(cantidad_raw, "cantidad")
+        pu_raw = celda(row, "precio_unitario")
+        precio_unitario = _parse_campo_numerico(pu_raw, "precio_unitario")
+
+        importe_archivo_raw = celda(row, "importe")
+        importe_archivo = None
+        if importe_archivo_raw not in (None, ""):
+            try:
+                importe_archivo = dec_to_str(_parse_celda_numerica(importe_archivo_raw, convencion))
+            except Exception:
+                importe_archivo = None  # el importe es solo informativo: si no parsea, se ignora sin bloquear
+
+        importe_calculado = None
+        if cantidad is not None and precio_unitario is not None:
+            importe_calculado = dec_to_str(compute_importe(cantidad, precio_unitario))
+            if importe_archivo is not None:
+                diferencia = abs(to_decimal(importe_calculado) - to_decimal(importe_archivo))
+                if diferencia > _TOLERANCIA_IMPORTE:
+                    problemas.append({
+                        "tipo": "importe_no_coincide", "campo": "importe",
+                        "motivo": f"El importe del archivo ({importe_archivo}) difiere del recalculado ({importe_calculado}); se usará siempre el recalculado",
+                    })
+
+        concepto_existente_id = None
+        if clave and clave in existing_by_clave:
+            concepto_existente_id = existing_by_clave[clave]["id"]
+            problemas.append({
+                "tipo": "clave_existente_proyecto", "campo": None,
+                "motivo": f"Ya existe un concepto con clave '{clave}' en esta partida",
+            })
+
+        filas.append({
+            "fila": fila_num,
+            "clave": clave,
+            "descripcion": descripcion,
+            "unidad": unidad,
+            "unidad_raw": str(unidad_raw) if unidad_raw is not None else None,
+            "cantidad": cantidad,
+            "cantidad_raw": cantidad_raw,
+            "precio_unitario": precio_unitario,
+            "precio_unitario_raw": pu_raw,
+            "importe_archivo": importe_archivo,
+            "importe_calculado": importe_calculado,
+            "concepto_existente_id": concepto_existente_id,
+            "problemas": problemas,
+        })
+
+    return filas
+
+
+def _calcular_vista_filas(validated_rows: List[dict], correcciones: dict) -> List[dict]:
+    """Aplica el overlay de correcciones (disperso, por número de fila) sobre
+    el resultado inmutable de `_validar_archivo_completo` y calcula el
+    estado EFECTIVO de cada fila (ok | error | advertencia | duplicado |
+    descartado). Se recalcula en cada lectura (preview, commit) — nunca se
+    guarda un "estado" fijo en `validated_rows`, porque depende de
+    correcciones y descartes que cambian entre lecturas."""
+    # Claves duplicadas DENTRO del archivo: se recalcula aquí (no en la
+    # validación) porque depende de qué filas están descartadas ahora mismo.
+    conteo_claves: dict = {}
+    for row in validated_rows:
+        correccion = correcciones.get(str(row["fila"])) or {}
+        if correccion.get("descartar") or not row["clave"]:
+            continue
+        conteo_claves[row["clave"]] = conteo_claves.get(row["clave"], 0) + 1
+    claves_repetidas = {c for c, n in conteo_claves.items() if n > 1}
+
+    vista: List[dict] = []
+    for row in validated_rows:
+        fila_key = str(row["fila"])
+        correccion = correcciones.get(fila_key) or {}
+        descartado = bool(correccion.get("descartar"))
+
+        # Una corrección de cantidad/precio_unitario/unidad "resuelve" los
+        # problemas intrínsecos de ESE campo (número ilegible/ambiguo,
+        # unidad no reconocida). clave/descripción nunca son corregibles
+        # (contrato aprobado) — sus problemas solo se resuelven descartando.
+        campos_corregidos = {k for k in ("cantidad", "precio_unitario", "unidad") if correccion.get(k) is not None}
+        problemas_activos = [p for p in row["problemas"] if p.get("campo") not in campos_corregidos]
+
+        if not descartado and row["clave"] in claves_repetidas:
+            problemas_activos = problemas_activos + [{
+                "tipo": "clave_duplicada_archivo", "campo": None,
+                "motivo": f"La clave '{row['clave']}' aparece más de una vez en el archivo; descarta todas menos una",
+            }]
+
+        cantidad_efectiva = correccion.get("cantidad") or row["cantidad"]
+        precio_unitario_efectivo = correccion.get("precio_unitario") or row["precio_unitario"]
+        unidad_efectiva = correccion.get("unidad") or row["unidad"]
+
+        if descartado:
+            estado = "descartado"
+        else:
+            tipos_activos = {p["tipo"] for p in problemas_activos}
+            if tipos_activos & _TIPOS_ERROR:
+                estado = "error"
+            elif tipos_activos & _TIPOS_DUPLICADO:
+                estado = "duplicado"
+            elif tipos_activos & _TIPOS_ADVERTENCIA:
+                estado = "advertencia"
+            else:
+                estado = "ok"
+
+        vista.append({
+            **row,
+            "cantidad_efectiva": cantidad_efectiva,
+            "precio_unitario_efectivo": precio_unitario_efectivo,
+            "unidad_efectiva": unidad_efectiva,
+            "problemas_activos": problemas_activos,
+            "correccion": correccion or None,
+            "estado": estado,
+        })
+    return vista
+
+
+def _resumen_de_vista(vista: List[dict]) -> dict:
+    """Conteos del ARCHIVO COMPLETO (3.a) — se calcula sobre `vista` entera,
+    nunca sobre la página que se vaya a devolver."""
+    resumen = {"total": len(vista), "ok": 0, "advertencia": 0, "error": 0, "duplicado": 0, "descartado": 0}
+    for row in vista:
+        resumen[row["estado"]] = resumen.get(row["estado"], 0) + 1
+    return resumen
+
+
+@api.post("/projects/{pid}/conceptos/import/sheets")
+async def import_upload_sheets(pid: str, file: UploadFile = File(...), user: dict = Depends(require_role(ROLE_SUB, ROLE_COORD))):
+    """Paso 1: sube el archivo y devuelve las hojas disponibles.
+    El archivo parseado se guarda temporalmente (Mongo, no disco local) para
+    que los pasos siguientes no requieran volver a subirlo."""
+    await ensure_project_access(user, pid)
+    content = await file.read()
+    if len(content) > 15 * 1024 * 1024:
+        raise HTTPException(400, "Archivo demasiado grande (máx. 15MB)")
+    sheets = _read_workbook_sheets(file.filename or "archivo.xlsx", content)
+
+    # Detección de convención decimal (Etapa 2, diagnóstico 2.c): se hace
+    # sobre TODAS las celdas de texto de TODAS las hojas (todavía no hay
+    # mapeo de columnas elegido en este paso), buscando casos inequívocos.
+    # Los números nativos (int/float) no aportan evidencia: no tienen
+    # separador que desambiguar.
+    candidatos = [cell for rows in sheets.values() for row in rows for cell in row]
+    convencion_detectada = detectar_convencion(candidatos)
+
+    import_id = str(uuid.uuid4())
+    await db.catalogo_import_sessions.insert_one({
+        "id": import_id,
+        "project_id": pid,
+        "user_id": user["id"],
+        "filename": file.filename,
+        "sheets": {name: rows for name, rows in sheets.items()},
+        "convencion_decimal": convencion_detectada,
+        "created_at": datetime.now(timezone.utc),
+    })
+    return {
+        "import_id": import_id,
+        "sheet_names": list(sheets.keys()),
+        "requiere_seleccion_hoja": len(sheets) > 1,
+        "convencion_detectada": convencion_detectada,
+    }
+
+
+@api.get("/projects/{pid}/conceptos/import/pendiente")
+async def import_sesion_pendiente(pid: str, user: dict = Depends(require_role(ROLE_SUB, ROLE_COORD))):
+    """Sesión de importación sin terminar más reciente DE ESTE USUARIO en
+    este proyecto (si existe) — el modal la consulta al abrirse para
+    ofrecer "Tienes una importación sin terminar de <archivo>. ¿Continuar o
+    empezar de nuevo?". Se purga sola a las 24h por el índice TTL (ver
+    startup_event en server.py); si expiró justo entre esta consulta y que
+    el usuario elija "Continuar", las llamadas siguientes (headers/preview)
+    devuelven 404 con el mismo "no existe o expiró" de siempre — el
+    frontend lo muestra con claridad en vez de fallar en silencio."""
+    await ensure_project_access(user, pid)
+    session = await db.catalogo_import_sessions.find_one(
+        {"project_id": pid, "user_id": user["id"]},
+        sort=[("created_at", -1)],
+    )
+    if not session:
+        return None
+    return {
+        "import_id": session["id"],
+        "filename": session.get("filename"),
+        "created_at": session["created_at"],
+        "sheet_names": list(session.get("sheets", {}).keys()),
+        "validado": session.get("validated_rows") is not None,
+        "validated_sheet": session.get("validated_sheet"),
+        "validated_header_row_index": session.get("validated_header_row_index"),
+        "validated_mapping": session.get("validated_mapping"),
+        "validated_partida_id": session.get("validated_partida_id"),
+        "convencion_usada": session.get("convencion_usada") or session.get("convencion_decimal"),
+    }
+
+
+@api.delete("/projects/{pid}/conceptos/import/{import_id}")
+async def import_descartar_sesion(pid: str, import_id: str, user: dict = Depends(require_role(ROLE_SUB, ROLE_COORD))):
+    """"Empezar de nuevo": borra explícitamente una sesión de importación
+    sin terminar, en vez de dejar que la encuentre el TTL 24h después.
+    Idempotente: si ya no existe (el TTL ya la purgó, o ya se descartó),
+    igual devuelve ok."""
+    await ensure_project_access(user, pid)
+    await db.catalogo_import_sessions.delete_one({"id": import_id, "project_id": pid})
+    return {"ok": True}
+
+
+def _fila_parece_encabezado(row: list) -> bool:
+    """Heurística simple para proponer una fila de encabezado por defecto:
+    la mayoría de las celdas no vacías son texto (no numéricas) — un
+    encabezado real dice "Clave"/"Cantidad", una fila de logo/título suele
+    tener 1-2 celdas con texto largo y el resto vacías."""
+    no_vacias = [c for c in row if c not in (None, "")]
+    if not no_vacias:
+        return False
+    textuales = [c for c in no_vacias if isinstance(c, str) and not re.fullmatch(r"[-+]?[0-9.,]+", c.strip())]
+    return len(no_vacias) >= 3 and len(textuales) / len(no_vacias) >= 0.6
+
+
+@api.get("/conceptos/import/{import_id}/headers")
+async def import_headers(
+    import_id: str,
+    sheet: Optional[str] = None,
+    header_row_index: Optional[int] = None,
+    user: dict = Depends(require_role(ROLE_SUB, ROLE_COORD)),
+):
+    """Paso 2 (lectura ligera, sin validar): encabezados detectados de la
+    hoja elegida + mapeo propuesto + una muestra de filas para que el
+    usuario arme el mapeo antes de disparar la validación completa.
+
+    `header_row_index` es OPCIONAL: si el archivo trae filas de logo/título
+    antes del encabezado real (caso común en catálogos con membrete), el
+    cliente puede pedir explícitamente cuál fila usar. Si no se manda, se
+    propone una automáticamente con `_fila_parece_encabezado` (y de todos
+    modos se devuelven las primeras filas crudas en `preview_rows` para que
+    el usuario pueda corregir la propuesta con un toque, sin adivinar)."""
+    session = await db.catalogo_import_sessions.find_one({"id": import_id})
+    if not session:
+        raise HTTPException(404, "Sesión de importación no existe o expiró")
+    await ensure_project_access(user, session["project_id"])
+    sheet_name = sheet or next(iter(session["sheets"].keys()))
+    if sheet_name not in session["sheets"]:
+        raise HTTPException(400, f"La hoja '{sheet_name}' no existe en este archivo")
+    rows = session["sheets"][sheet_name]
+    if not rows:
+        raise HTTPException(400, "La hoja está vacía")
+
+    if header_row_index is None:
+        header_row_index = next((i for i, r in enumerate(rows[:15]) if _fila_parece_encabezado(r)), 0)
+    if header_row_index >= len(rows):
+        raise HTTPException(400, "header_row_index fuera de rango")
+
+    headers = [str(c) if c is not None else "" for c in rows[header_row_index]]
+    sample_rows = rows[header_row_index + 1: header_row_index + 6]
+    return {
+        "sheet": sheet_name,
+        "header_row_index": header_row_index,
+        "headers": headers,
+        "suggested_mapping": _propose_mapping(headers),
+        "sample_rows": sample_rows,
+        "total_rows": max(len(rows) - header_row_index - 1, 0),
+        "convencion_detectada": session.get("convencion_decimal"),
+        # Primeras filas TAL CUAL vienen en el archivo (sin importar cuál se
+        # está usando como encabezado ahora) — para que el usuario elija.
+        "preview_rows": rows[: min(len(rows), 15)],
+    }
+
+
+@api.post("/projects/{pid}/conceptos/import/{import_id}/validate")
+async def import_validate(pid: str, import_id: str, body: ImportValidateIn, user: dict = Depends(require_role(ROLE_SUB, ROLE_COORD))):
+    """Paso 3: valida TODAS las filas del archivo una sola vez (3.a) y
+    guarda el resultado en la sesión de staging — la vista previa
+    (import_preview) solo lee ese resultado ya calculado, paginado.
+
+    Volver a llamar este endpoint (cambiar la convención decimal en el paso
+    de confirmación, o "aplicar esta interpretación a todas las filas
+    ambiguas" desde la vista previa) recalcula `validated_rows` desde cero,
+    pero NUNCA toca `correcciones`: el overlay del usuario sigue aplicando
+    sobre el resultado nuevo."""
+    await ensure_project_access(user, pid)
+    partida = await db.partidas.find_one({"id": body.partida_id, "project_id": pid})
+    if not partida:
+        raise HTTPException(404, "Partida no existe en este proyecto")
+    session = await db.catalogo_import_sessions.find_one({"id": import_id, "project_id": pid})
+    if not session:
+        raise HTTPException(404, "Sesión de importación no existe o expiró")
+    if body.sheet not in session["sheets"]:
+        raise HTTPException(400, f"La hoja '{body.sheet}' no existe en este archivo")
+
+    convencion: Optional[ConvencionDecimal] = body.convencion or session.get("convencion_decimal")
+
+    # Consulta única de duplicados (Respuesta 2, aprobada): se trae UNA vez
+    # todo el catálogo activo de la partida destino y se compara en
+    # memoria — nada de una consulta por fila. A la escala esperada
+    # (decenas a unos cientos de conceptos) esto es trivial.
+    existing = await db.conceptos.find({"partida_id": body.partida_id, "activo": True}).to_list(length=10000)
+    existing_by_clave = {c["clave"]: c for c in existing}
+
+    filas = _validar_archivo_completo(
+        session["sheets"][body.sheet], body.header_row_index, body.mapping, convencion, existing_by_clave,
+    )
+
+    update_fields = {
+        "validated_rows": filas,
+        "validated_sheet": body.sheet,
+        "validated_header_row_index": body.header_row_index,
+        "validated_mapping": body.mapping.model_dump(),
+        "validated_partida_id": body.partida_id,
+        "convencion_usada": convencion,
+        "validated_at": datetime.now(timezone.utc),
+    }
+    if "correcciones" not in session:
+        update_fields["correcciones"] = {}
+        update_fields["duplicados_accion"] = "omitir"
+    await db.catalogo_import_sessions.update_one({"id": import_id}, {"$set": update_fields})
+
+    vista = _calcular_vista_filas(filas, session.get("correcciones") or {})
+    return {"resumen": _resumen_de_vista(vista), "convencion_usada": convencion}
+
+
+@api.get("/conceptos/import/{import_id}/preview")
+async def import_preview(import_id: str, page: int = 1, page_size: int = 50, user: dict = Depends(require_role(ROLE_SUB, ROLE_COORD))):
+    """Lectura PAGINADA del resultado ya validado — no procesa nada aquí.
+    El resumen de conteos es siempre del archivo completo (3.a), aunque
+    `filas` solo traiga la página pedida."""
+    session = await db.catalogo_import_sessions.find_one({"id": import_id})
+    if not session:
+        raise HTTPException(404, "Sesión de importación no existe o expiró")
+    await ensure_project_access(user, session["project_id"])
+    validated_rows = session.get("validated_rows")
+    if validated_rows is None:
+        raise HTTPException(400, "Todavía no se valida esta importación. Llama primero a /validate.")
+
+    correcciones = session.get("correcciones") or {}
+    vista = _calcular_vista_filas(validated_rows, correcciones)
+    resumen = _resumen_de_vista(vista)
+
+    page = max(page, 1)
+    page_size = max(1, min(page_size, 200))
+    start = (page - 1) * page_size
+    pagina = vista[start:start + page_size]
+    total_pages = max(1, (len(vista) + page_size - 1) // page_size)
+
+    return {
+        "resumen": resumen,
+        "filas": pagina,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages,
+        "total_rows": len(vista),
+        "sheet": session.get("validated_sheet"),
+        "partida_id": session.get("validated_partida_id"),
+        "convencion_usada": session.get("convencion_usada"),
+        "duplicados_accion": session.get("duplicados_accion", "omitir"),
+    }
+
+
+@api.put("/conceptos/import/{import_id}/rows/{fila}")
+async def import_correct_row(import_id: str, fila: int, body: RowCorrectionIn, user: dict = Depends(require_role(ROLE_SUB, ROLE_COORD))):
+    """3.b — corrección en línea de una fila con problema (o descartarla).
+    Las correcciones de número ambiguo también pasan por aquí: el frontend
+    ofrece las DOS lecturas ya calculadas (`problemas_activos[].lectura_*`)
+    y el usuario elige una — nunca teclea el número de nuevo."""
+    session = await db.catalogo_import_sessions.find_one({"id": import_id})
+    if not session:
+        raise HTTPException(404, "Sesión de importación no existe o expiró")
+    await ensure_project_access(user, session["project_id"])
+    validated_rows = session.get("validated_rows") or []
+    if not any(r["fila"] == fila for r in validated_rows):
+        raise HTTPException(404, f"Fila {fila} no existe en esta validación")
+
+    entry: dict = {}
+    if body.cantidad is not None:
+        try:
+            entry["cantidad"] = dec_to_str(to_decimal(body.cantidad))
+        except Exception:
+            raise HTTPException(400, "cantidad inválida")
+    if body.precio_unitario is not None:
+        try:
+            entry["precio_unitario"] = dec_to_str(to_decimal(body.precio_unitario))
+        except Exception:
+            raise HTTPException(400, "precio_unitario inválido")
+    if body.unidad is not None:
+        if body.unidad not in UNIDADES:
+            raise HTTPException(400, f"Unidad '{body.unidad}' no válida")
+        entry["unidad"] = body.unidad
+    if body.descartar:
+        entry["descartar"] = True
+
+    correcciones = session.get("correcciones") or {}
+    if entry:
+        correcciones[str(fila)] = entry
+    else:
+        correcciones.pop(str(fila), None)  # cuerpo vacío = revertir la fila a su valor original
+    await db.catalogo_import_sessions.update_one({"id": import_id}, {"$set": {"correcciones": correcciones}})
+
+    vista = _calcular_vista_filas(validated_rows, correcciones)
+    fila_actualizada = next(r for r in vista if r["fila"] == fila)
+    return {"fila": fila_actualizada, "resumen": _resumen_de_vista(vista)}
+
+
+@api.delete("/conceptos/import/{import_id}/rows/{fila}")
+async def import_revert_row(import_id: str, fila: int, user: dict = Depends(require_role(ROLE_SUB, ROLE_COORD))):
+    """Revierte una fila a su valor original de `validated_rows` (borra su
+    entrada del overlay de correcciones). Si el usuario se equivocó al
+    corregir, este es el camino de vuelta."""
+    session = await db.catalogo_import_sessions.find_one({"id": import_id})
+    if not session:
+        raise HTTPException(404, "Sesión de importación no existe o expiró")
+    await ensure_project_access(user, session["project_id"])
+    validated_rows = session.get("validated_rows") or []
+    correcciones = session.get("correcciones") or {}
+    correcciones.pop(str(fila), None)
+    await db.catalogo_import_sessions.update_one({"id": import_id}, {"$set": {"correcciones": correcciones}})
+
+    vista = _calcular_vista_filas(validated_rows, correcciones)
+    fila_actualizada = next((r for r in vista if r["fila"] == fila), None)
+    if fila_actualizada is None:
+        raise HTTPException(404, f"Fila {fila} no existe en esta validación")
+    return {"fila": fila_actualizada, "resumen": _resumen_de_vista(vista)}
+
+
+@api.put("/conceptos/import/{import_id}/duplicados-accion")
+async def import_set_duplicados_accion(import_id: str, body: DuplicadosAccionIn, user: dict = Depends(require_role(ROLE_SUB, ROLE_COORD))):
+    """Opción por archivo (no por fila): qué hacer con claves que YA EXISTEN
+    en el proyecto — "omitir" (no tocar lo existente) o "actualizar
+    existentes" (upsert). Nunca duplica en silencio. No aplica a claves
+    duplicadas DENTRO del mismo archivo — esas siempre requieren descarte
+    manual porque no hay forma de saber cuál de las filas es la buena."""
+    session = await db.catalogo_import_sessions.find_one({"id": import_id})
+    if not session:
+        raise HTTPException(404, "Sesión de importación no existe o expiró")
+    await ensure_project_access(user, session["project_id"])
+    await db.catalogo_import_sessions.update_one({"id": import_id}, {"$set": {"duplicados_accion": body.accion}})
+    return {"duplicados_accion": body.accion}
+
+
+async def _ejecutar_commit_con_compensacion(
+    conceptos_col,
+    sessions_col,
+    log_bitacora: Callable[..., Any],
+    pid: str,
+    import_id: str,
+    partida_id: str,
+    vista: List[dict],
+    duplicados_accion: str,
+    user: dict,
+    filename: Optional[str],
+) -> dict:
+    """Núcleo del commit, separado de la ruta HTTP para poder probarlo con
+    colecciones falsas (ver tests/test_import_commit_compensacion.py) sin
+    depender de un Mongo real.
+
+    LIMITACIÓN DOCUMENTADA (Respuesta 1 del diagnóstico): no se pudo
+    determinar con certeza si el Mongo de producción de este proyecto corre
+    en replica set — requisito de `session.start_transaction()` de Mongo, y
+    no hay cadena de conexión de producción versionada en este repo. Por
+    eso este commit usa COMPENSACIÓN MANUAL en vez de una transacción real:
+
+      1. Antes de escribir CADA fila, se registra en
+         `catalogo_import_sessions.compensacion_log` qué se está a punto de
+         hacer (crear un id nuevo, o el valor ANTERIOR completo si se va a
+         actualizar un concepto existente). El registro se persiste ANTES
+         que la escritura real en `conceptos`.
+      2. Si algo truena a mitad del loop, se recorre `compensacion_log` en
+         reversa: los "creados" se borran, los "actualizados" recuperan su
+         `valor_anterior`.
+
+    El orden (registrar ANTES de escribir) es intencional: si el proceso
+    muere entre el paso 1 y el paso 2, lo peor que pasa es "restaurar" algo
+    que nunca se llegó a modificar — inocuo. Si fuera al revés (escribir y
+    luego registrar), un crash justo ahí dejaría un cambio real sin ninguna
+    forma de revertirlo.
+
+    Esto NO es atomicidad real de Mongo: sigue habiendo una ventana angosta
+    entre "registrar la compensación" y "ejecutar el write real" en la que,
+    si el PROCESO ENTERO muere (no solo una excepción dentro de este
+    request), ninguna compensación corre. Cuando se confirme que el Mongo de
+    producción es replica set, esto debe reemplazarse por:
+
+        async with await client.start_session() as s:
+            async with s.start_transaction():
+                ...  # los mismos writes, sin compensacion_log
+
+    Importar NUNCA borra conceptos ni registros de avance existentes — como
+    mucho, actualiza campos de un concepto ya existente (y siempre con su
+    valor anterior guardado para poder revertir)."""
+    import_batch_id = str(uuid.uuid4())
+    creados, actualizados, omitidos = 0, 0, 0
+    log_local: List[dict] = []
+
+    async def _compensar() -> None:
+        for entry in reversed(log_local):
+            try:
+                if entry["tipo"] == "creado":
+                    await conceptos_col.delete_one({"id": entry["concepto_id"]})
+                else:
+                    await conceptos_col.update_one({"id": entry["concepto_id"]}, {"$set": entry["valor_anterior"]})
+            except Exception as comp_err:
+                log.error("[import_commit] fallo compensando %s: %s", entry, comp_err)
+
+    try:
+        for row in vista:
+            estado = row["estado"]
+            if estado in ("error", "descartado"):
+                continue
+            if estado == "duplicado":
+                tipos = {p["tipo"] for p in row["problemas_activos"]}
+                if "clave_duplicada_archivo" in tipos:
+                    # Ambiguo entre filas del propio archivo: nunca se
+                    # autoresuelve, sin importar duplicados_accion.
+                    omitidos += 1
+                    continue
+                if duplicados_accion == "omitir":
+                    omitidos += 1
+                    continue
+                # duplicados_accion == "actualizar" y es solo
+                # clave_existente_proyecto -> sigue como actualización abajo.
+
+            clave = row["clave"]
+            descripcion = row["descripcion"]
+            unidad = row["unidad_efectiva"]
+            cantidad = row["cantidad_efectiva"]
+            precio_unitario = row["precio_unitario_efectivo"]
+
+            existing_id = row.get("concepto_existente_id")
+            existing_doc = None
+            if existing_id:
+                existing_doc = await conceptos_col.find_one({"id": existing_id})
+                if not existing_doc:
+                    existing_id = None  # se borró entre la validación y el commit: tratar como nuevo
+
+            if existing_id and existing_doc:
+                valor_anterior = {
+                    "descripcion": existing_doc["descripcion"], "unidad": existing_doc["unidad"],
+                    "precio_unitario": existing_doc["precio_unitario"], "cantidad": existing_doc["cantidad"],
+                }
+                entry = {"tipo": "actualizado", "concepto_id": existing_id, "valor_anterior": valor_anterior}
+                log_local.append(entry)
+                # Se registra la compensación ANTES del write real (ver docstring).
+                await sessions_col.update_one({"id": import_id}, {"$push": {"compensacion_log": entry}})
+
+                if existing_doc["precio_unitario"] != precio_unitario:
+                    await log_bitacora(pid, "import", "concepto", existing_id, "precio_unitario", existing_doc["precio_unitario"], precio_unitario, user)
+                if existing_doc["cantidad"] != cantidad:
+                    await log_bitacora(pid, "import", "concepto", existing_id, "cantidad", existing_doc["cantidad"], cantidad, user)
+                # La meta NUNCA se toca al actualizar (no se importa desde el
+                # archivo) — si el concepto ya existía, conserva la meta que
+                # ya tenía configurada.
+                await conceptos_col.update_one(
+                    {"id": existing_id},
+                    {"$set": {
+                        "descripcion": descripcion, "unidad": unidad,
+                        "precio_unitario": precio_unitario, "cantidad": cantidad,
+                        "import_batch_id": import_batch_id,
+                    }},
+                )
+                actualizados += 1
+            else:
+                cid = str(uuid.uuid4())
+                entry = {"tipo": "creado", "concepto_id": cid, "valor_anterior": None}
+                log_local.append(entry)
+                await sessions_col.update_one({"id": import_id}, {"$push": {"compensacion_log": entry}})
+
+                await conceptos_col.insert_one({
+                    "id": cid, "partida_id": partida_id, "project_id": pid,
+                    "clave": clave, "descripcion": descripcion, "unidad": unidad,
+                    "cantidad": cantidad, "precio_unitario": precio_unitario,
+                    # La meta de un concepto recién importado es su propia
+                    # cantidad contratada — no hay columna Meta en el
+                    # importador (feedback: "la meta debe de ser la cantidad").
+                    "meta": cantidad, "periodicidad_meta": "SEMANAL", "activo": True,
+                    "created_at": datetime.now(timezone.utc), "created_by": user["id"],
+                    "import_batch_id": import_batch_id,
+                })
+                await log_bitacora(pid, "import", "concepto", cid, None, None, f"creado desde importación ({filename})", user)
+                creados += 1
+    except Exception as e:
+        log.error("[import_commit] fallo a mitad del commit, compensando %d escrituras: %s", len(log_local), e)
+        await _compensar()
+        raise HTTPException(500, f"La importación falló a mitad de camino y se revirtió automáticamente (no se guardó nada): {e}")
+
+    con_error = sum(1 for r in vista if r["estado"] == "error")
+    descartados = sum(1 for r in vista if r["estado"] == "descartado")
+    return {
+        "creados": creados, "actualizados": actualizados, "omitidos": omitidos,
+        "con_error": con_error, "descartados": descartados, "import_batch_id": import_batch_id,
+    }
+
+
+@api.post("/projects/{pid}/conceptos/import/{import_id}/commit")
+async def import_commit(pid: str, import_id: str, user: dict = Depends(require_role(ROLE_SUB, ROLE_COORD))):
+    """Paso 4: aplica el resultado ya validado (import_validate) + las
+    correcciones del usuario. No recibe body — todo lo necesario ya quedó
+    confirmado en la sesión de staging en los pasos anteriores."""
+    await ensure_project_access(user, pid)
+    session = await db.catalogo_import_sessions.find_one({"id": import_id, "project_id": pid})
+    if not session:
+        raise HTTPException(404, "Sesión de importación no existe o expiró")
+    validated_rows = session.get("validated_rows")
+    if validated_rows is None:
+        raise HTTPException(400, "Todavía no se valida esta importación. Llama primero a /validate.")
+    partida_id = session.get("validated_partida_id")
+    partida = await db.partidas.find_one({"id": partida_id, "project_id": pid})
+    if not partida:
+        raise HTTPException(404, "La partida validada ya no existe en este proyecto")
+
+    correcciones = session.get("correcciones") or {}
+    duplicados_accion = session.get("duplicados_accion", "omitir")
+    vista = _calcular_vista_filas(validated_rows, correcciones)
+
+    try:
+        resultado = await _ejecutar_commit_con_compensacion(
+            db.conceptos, db.catalogo_import_sessions, _log_bitacora,
+            pid, import_id, partida_id, vista, duplicados_accion, user, session.get("filename"),
+        )
+    finally:
+        # 3.d: SIEMPRE se limpia la sesión de staging al terminar el commit,
+        # tanto en éxito como en falla-ya-compensada — no hay razón para
+        # conservarla (si falló, la base ya quedó como estaba; el usuario
+        # tendría que volver a subir/validar de todas formas).
+        await db.catalogo_import_sessions.delete_one({"id": import_id})
+
+    return resultado
+
+
+# === Registro de avance =========================================================
+@api.post("/avances", response_model=RegistroAvanceOut)
+async def create_avance(body: RegistroAvanceIn, user: dict = Depends(current_user)):
+    _assert_write_allowed(user)  # bloquea Jefe de Proyecto (solo lectura global)
+    concepto = await db.conceptos.find_one({"id": body.concepto_id})
+    if not concepto:
+        raise HTTPException(404, "Concepto no existe")
+    await ensure_project_access(user, concepto["project_id"])
+
+    # Idempotencia offline: si ya existe un registro con el mismo client_id,
+    # se devuelve el existente en vez de duplicar (mismo criterio que reports).
+    if body.client_id:
+        dup = await db.registros_avance.find_one({"client_id": body.client_id})
+        if dup:
+            return RegistroAvanceOut(**dup)
+
+    aid = str(uuid.uuid4())
+    doc = {
+        "id": aid,
+        "concepto_id": body.concepto_id,
+        "project_id": concepto["project_id"],
+        "fecha": body.fecha,
+        "cantidad_ejecutada": body.cantidad_ejecutada,
+        "estacion_id": body.estacion_id,
+        "reporte_id": body.reporte_id,
+        "fotos": body.fotos,
+        "photo_captions": body.photo_captions,
+        "capturado_por": user["id"],
+        "capturado_por_nombre": user.get("name"),
+        "creado_en": datetime.now(timezone.utc),
+        "sincronizado": True,
+        "editado_en": None,
+        "client_id": body.client_id,
+    }
+    await db.registros_avance.insert_one(doc)
+    return RegistroAvanceOut(**doc)
+
+
+@api.patch("/avances/{avance_id}", response_model=RegistroAvanceOut)
+async def update_avance(avance_id: str, body: RegistroAvancePatch, user: dict = Depends(current_user)):
+    _assert_write_allowed(user)
+    avance = await db.registros_avance.find_one({"id": avance_id})
+    if not avance:
+        raise HTTPException(404, "Registro de avance no existe")
+    await ensure_project_access(user, avance["project_id"])
+
+    # Ventana de edición: el autor original puede corregir su propio registro
+    # durante 24h; después de eso (o si el registro es de otro usuario) solo
+    # Sub-Coordinador puede autorizar la corrección.
+    creado_en = avance["creado_en"]
+    creado_en = creado_en if creado_en.tzinfo else creado_en.replace(tzinfo=timezone.utc)
+    dentro_de_ventana = (datetime.now(timezone.utc) - creado_en) <= timedelta(hours=24)
+    es_autor = avance["capturado_por"] == user["id"]
+    if not ((es_autor and dentro_de_ventana) or user.get("role") == ROLE_SUB):
+        raise HTTPException(403, "Fuera de la ventana de edición; requiere autorización de Sub-Coordinador")
+
+    upd: dict = {"editado_en": datetime.now(timezone.utc)}
+    if body.cantidad_ejecutada is not None:
+        upd["cantidad_ejecutada"] = body.cantidad_ejecutada
+    if body.fotos is not None:
+        upd["fotos"] = body.fotos
+    if body.photo_captions is not None:
+        upd["photo_captions"] = body.photo_captions
+    await db.registros_avance.update_one({"id": avance_id}, {"$set": upd})
+    updated = await db.registros_avance.find_one({"id": avance_id})
+    return RegistroAvanceOut(**updated)
+
+
+@api.get("/projects/{pid}/avances", response_model=List[RegistroAvanceOut])
+async def list_avances(
+    pid: str,
+    desde: Optional[str] = None,
+    hasta: Optional[str] = None,
+    partida_id: Optional[str] = None,
+    concepto_id: Optional[str] = None,
+    user: dict = Depends(current_user),
+):
+    """Para la pantalla 'Visualizar avance' (reporte por periodo)."""
+    await ensure_project_access(user, pid)
+    query: dict = {"project_id": pid}
+    if desde or hasta:
+        rango: dict = {}
+        if desde:
+            rango["$gte"] = desde
+        if hasta:
+            rango["$lte"] = hasta
+        query["fecha"] = rango
+    if concepto_id:
+        query["concepto_id"] = concepto_id
+    elif partida_id:
+        partida_ids = await _partida_subtree_ids_en_proyecto(pid, partida_id)
+        conceptos = await db.conceptos.find({"partida_id": {"$in": partida_ids}}).to_list(length=100000)
+        query["concepto_id"] = {"$in": [c["id"] for c in conceptos]}
+    docs = await db.registros_avance.find(query).sort("fecha", -1).to_list(length=100000)
+    return [RegistroAvanceOut(**d) for d in docs]
+
+
+class AvancesResumenOut(BaseModel):
+    total_registros: int
+    importe_total: str
+
+
+@api.get("/projects/{pid}/avances/resumen", response_model=AvancesResumenOut)
+async def avances_resumen(
+    pid: str,
+    desde: Optional[str] = None,
+    hasta: Optional[str] = None,
+    partida_id: Optional[str] = None,
+    concepto_id: Optional[str] = None,
+    user: dict = Depends(current_user),
+):
+    """Sumatoria de importe (cantidad_ejecutada x precio_unitario del concepto)
+    para el periodo filtrado _ mismos filtros que list_avances. Se calcula
+    aqui con Decimal (nunca float) para no duplicar aritmetica de dinero en
+    el frontend (ver src/utils/money.ts, que prohibe parseFloat)."""
+    await ensure_project_access(user, pid)
+    query: dict = {"project_id": pid}
+    if desde or hasta:
+        rango: dict = {}
+        if desde:
+            rango["$gte"] = desde
+        if hasta:
+            rango["$lte"] = hasta
+        query["fecha"] = rango
+    if concepto_id:
+        query["concepto_id"] = concepto_id
+    elif partida_id:
+        partida_ids = await _partida_subtree_ids_en_proyecto(pid, partida_id)
+        conceptos = await db.conceptos.find({"partida_id": {"$in": partida_ids}}).to_list(length=100000)
+        query["concepto_id"] = {"$in": [c["id"] for c in conceptos]}
+    docs = await db.registros_avance.find(query).to_list(length=100000)
+    concepto_ids = list({d["concepto_id"] for d in docs})
+    precios_por_concepto: dict = {}
+    if concepto_ids:
+        cs = await db.conceptos.find({"id": {"$in": concepto_ids}}).to_list(length=len(concepto_ids))
+        precios_por_concepto = {c["id"]: c.get("precio_unitario", "0") for c in cs}
+    total = Decimal("0")
+    for d in docs:
+        precio = precios_por_concepto.get(d["concepto_id"], "0")
+        total += compute_importe(d.get("cantidad_ejecutada", "0"), precio)
+    return AvancesResumenOut(total_registros=len(docs), importe_total=dec_to_str(round_money(total)))
+
+
+# === Exportar PDF ===============================================================
+def _safe_filename_fragment(name: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_-]+", "_", (name or "").strip()).strip("_") or "catalogo"
+
+
+@api.get("/projects/{pid}/export/catalogo.pdf")
+async def export_catalogo_pdf(pid: str, user: dict = Depends(current_user)):
+    """PDF del catálogo de conceptos: una tabla por partida (mismo orden de
+    columnas que la vista tabla de la pantalla) + total del catálogo.
+    Mismo criterio que export_reports_pdf: render bloqueante (reportlab) en
+    thread aparte, 100% en memoria (BytesIO), sin escribir a disco."""
+    await ensure_project_access(user, pid)
+    proj = await db.projects.find_one({"id": pid})
+    if not proj:
+        raise HTTPException(404, "Proyecto no existe")
+
+    partidas_docs = sort_by_clave(await db.partidas.find({"project_id": pid, "activo": True}).to_list(length=10000))
+    partidas_out = [await _partida_out(d, partidas_docs) for d in partidas_docs]
+    conceptos_por_partida = {}
+    for d in partidas_docs:
+        conceptos = sort_by_clave(await db.conceptos.find({"partida_id": d["id"], "activo": True}).to_list(length=100000))
+        conceptos_por_partida[d["id"]] = [await _concepto_out(c) for c in conceptos]
+
+    project_name = proj.get("name", "Proyecto")
+    project_color = _sanitize_color_hex(proj.get("color_tema")) or "#003366"
+    total_catalogo = sum_decimales([p.importe_contratado_partida for p in partidas_out])
+
+    def _build_pdf_blocking() -> bytes:
+        from reportlab.lib.pagesizes import A4, landscape
+        from reportlab.lib.units import cm
+        from reportlab.lib.colors import HexColor, white
+        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.enums import TA_RIGHT
+
+        buf = io.BytesIO()
+        doc = SimpleDocTemplate(
+            buf, pagesize=landscape(A4),
+            topMargin=1.2 * cm, bottomMargin=1.2 * cm, leftMargin=1.2 * cm, rightMargin=1.2 * cm,
+        )
+        styles = getSampleStyleSheet()
+        title_style = ParagraphStyle("CatTitle", parent=styles["Heading1"], textColor=HexColor(project_color), fontSize=16)
+        partida_style = ParagraphStyle("CatPartida", parent=styles["Heading2"], fontSize=12, spaceBefore=10)
+        cell_style = ParagraphStyle("CatCell", parent=styles["BodyText"], fontSize=8, leading=10)
+        money_style = ParagraphStyle("CatMoney", parent=styles["BodyText"], fontSize=8, leading=10, alignment=TA_RIGHT)
+
+        story = [
+            Paragraph(f"CATÁLOGO DE CONCEPTOS — {project_name}", title_style),
+            Spacer(1, 10),
+        ]
+        col_widths = [2.2 * cm, 9.5 * cm, 1.6 * cm, 2.2 * cm, 2.6 * cm, 2.8 * cm]
+        header_row = [
+            Paragraph("CLAVE", cell_style), Paragraph("DESCRIPCIÓN", cell_style),
+            Paragraph("UNIDAD", cell_style), Paragraph("CANTIDAD", cell_style),
+            Paragraph("PU", cell_style), Paragraph("IMPORTE", cell_style),
+        ]
+        for p in partidas_out:
+            story.append(Paragraph(f"{p.clave} — {p.nombre}", partida_style))
+            rows = [header_row]
+            for c in conceptos_por_partida.get(p.id, []):
+                rows.append([
+                    Paragraph(c.clave, cell_style),
+                    Paragraph(c.descripcion, cell_style),
+                    Paragraph(c.unidad, cell_style),
+                    Paragraph(dec_to_str(round_money(c.cantidad)), money_style),
+                    Paragraph(dec_to_str(round_money(c.precio_unitario)), money_style),
+                    Paragraph(dec_to_str(round_money(c.importe_contratado)), money_style),
+                ])
+            rows.append([
+                "", "", "", "", Paragraph("SUBTOTAL", cell_style),
+                Paragraph(dec_to_str(round_money(p.importe_contratado_partida)), money_style),
+            ])
+            table = Table(rows, colWidths=col_widths, repeatRows=1)
+            table.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), HexColor(project_color)),
+                ("TEXTCOLOR", (0, 0), (-1, 0), white),
+                ("FONTSIZE", (0, 0), (-1, 0), 8),
+                ("GRID", (0, 0), (-1, -2), 0.4, HexColor("#CBD5E1")),
+                ("LINEABOVE", (0, -1), (-1, -1), 0.8, HexColor("#94A3B8")),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -2), [white, HexColor("#F8FAFC")]),
+            ]))
+            story.append(table)
+
+        story.append(Spacer(1, 14))
+        story.append(Paragraph(
+            f"TOTAL DEL CATÁLOGO: {dec_to_str(round_money(total_catalogo))}",
+            ParagraphStyle("CatTotal", parent=styles["Heading2"], alignment=TA_RIGHT),
+        ))
+        doc.build(story)
+        return buf.getvalue()
+
+    pdf_bytes = await asyncio.to_thread(_build_pdf_blocking)
+    fname = f"catalogo_conceptos_{_safe_filename_fragment(project_name)}.pdf"
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
+# === MOUNT ==================================================================
+app.include_router(api)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["https://apm-app.mx","https://apm-app.com","https://www.apm-app.mx","https://www.apm-app.com"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
