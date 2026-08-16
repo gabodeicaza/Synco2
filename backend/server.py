@@ -11156,6 +11156,19 @@ class PartidaIn(BaseModel):
     orden: int = 0
     # Partida padre (subpartidas anidadas, N niveles) — None = nivel raíz.
     partida_padre_id: Optional[str] = None
+    # Peso manual de esta rama dentro del ponderado de SU padre — ver
+    # PartidaPatch.peso_manual para el porqué completo. Casi nunca se manda
+    # aquí (se captura después de crear la partida), pero se admite por
+    # completitud de la API.
+    peso_manual: Optional[str] = None
+
+    @field_validator("peso_manual")
+    @classmethod
+    def _v_peso_manual(cls, v):
+        if v is not None:
+            if to_decimal(v) < 0:
+                raise ValueError("peso_manual no puede ser negativo")
+        return v
 
 
 class PartidaPatch(BaseModel):
@@ -11168,6 +11181,33 @@ class PartidaPatch(BaseModel):
     # se usa `quitar_padre`, no `partida_padre_id=None`.
     partida_padre_id: Optional[str] = None
     quitar_padre: bool = False
+    # Peso-por-rama (adelanto de Etapa 7, preparado antes de que el equipo
+    # confirme si el peso de cada rama sale del importe contratado o es
+    # criterio de supervisión — el modelo soporta ambas respuestas sin
+    # elegir una de antemano):
+    # - Por default, el peso de una rama dentro del ponderado de SU padre es
+    #   su importe_contratado_partida (ya calculado, ver _partida_out) — eso
+    #   es "peso_calculado", nunca se teclea, igual que el peso de un
+    #   concepto.
+    # - `peso_manual` sobrescribe ese default cuando la supervisión decide
+    #   el peso de una rama por otro criterio — mismo tipo de excepción que
+    #   ya existe para "concepto sin importe → permitir peso manual" en el
+    #   plan, generalizada a cualquier nivel de la jerarquía.
+    # - `quitar_peso_manual` (no `peso_manual=None`, mismo criterio que
+    #   `quitar_padre`) vuelve a calculado explícitamente.
+    # PartidaOut expone peso_manual + peso_efectivo + peso_es_manual para
+    # que la UI muestre SIEMPRE cuál de los dos está en uso — nunca en
+    # silencio.
+    peso_manual: Optional[str] = None
+    quitar_peso_manual: bool = False
+
+    @field_validator("peso_manual")
+    @classmethod
+    def _v_peso_manual(cls, v):
+        if v is not None:
+            if to_decimal(v) < 0:
+                raise ValueError("peso_manual no puede ser negativo")
+        return v
 
 
 class PartidaOut(BaseModel):
@@ -11183,6 +11223,14 @@ class PartidaOut(BaseModel):
     numero_conceptos: int = 0
     importe_contratado_partida: str = "0"
     porcentaje_avance_partida: str = "0"
+    # --- Peso-por-rama (ver PartidaPatch.peso_manual) ---
+    peso_manual: Optional[str] = None
+    # peso_efectivo = peso_manual si está configurado, si no
+    # importe_contratado_partida (el calculado). Es lo que debe USARSE en
+    # cualquier ponderado que sume esta rama junto a sus hermanas — nunca
+    # leer peso_manual/importe_contratado_partida por separado para eso.
+    peso_efectivo: str = "0"
+    peso_es_manual: bool = False
 
 
 class ConceptoIn(BaseModel):
@@ -11320,6 +11368,24 @@ class RegistroAvanceOut(BaseModel):
     creado_en: datetime
     sincronizado: bool = True
     editado_en: Optional[datetime] = None
+    # --- Línea base de arranque en caliente (adelanto de Etapa 3, modelo
+    # preparado antes de que el equipo confirme si mantienen al día la
+    # matriz "Avance Diario FÍSICO") -----------------------------------
+    # origen="LINEA_BASE" es el MISMO modelo de RegistroAvance que un
+    # avance normal de campo — la línea base NO es una entidad aparte, es
+    # un RegistroAvance con esta marca. Eso es lo que permite las dos rutas
+    # de poblarla sin tocar el esquema: un único registro por concepto con
+    # fecha=fecha de corte (ruta plana), o uno por cada día con dato real de
+    # la matriz diaria (ruta fiel) — ambas son, para el resto de la app,
+    # "un RegistroAvance más", solo que marcado.
+    origen: Literal["APP", "LINEA_BASE"] = "APP"
+    # Agrupa todos los registros de UN import de línea base (1 o miles,
+    # según la ruta elegida) — "solo se permite una línea base por
+    # proyecto, reimportar reemplaza" se implementa borrando por
+    # project_id+origen, no por batch (ver _reemplazar_linea_base); el
+    # batch_id queda para poder mostrar "de qué importación vino este
+    # registro" si hace falta depurar.
+    linea_base_batch_id: Optional[str] = None
 
 
 async def _registro_avance_out(doc: dict) -> RegistroAvanceOut:
@@ -11365,6 +11431,31 @@ async def _registro_avance_out(doc: dict) -> RegistroAvanceOut:
     if nodo_id != doc.get("nodo_id"):
         doc = {**doc, "nodo_id": nodo_id}
     return RegistroAvanceOut(**doc)
+
+
+async def _reemplazar_linea_base(avances_col, project_id: str) -> int:
+    """"Solo se permite UNA línea base por proyecto. Reimportar exige
+    confirmación explícita y reemplaza, no acumula" — borra TODOS los
+    RegistroAvance con origen=LINEA_BASE de este proyecto, sin importar de
+    qué importación (linea_base_batch_id) vinieron ni cuántos eran. Se
+    llama ANTES de insertar los nuevos registros del import.
+
+    Funciona igual sin importar cuál de las dos rutas de poblar la línea
+    base se haya usado antes (un registro por concepto en la fecha de
+    corte, o miles reconstruidos día por día desde la matriz) — en ambos
+    casos son RegistroAvance normales marcados con origen=LINEA_BASE, así
+    que "reemplazar" es siempre el mismo borrado por project_id+origen.
+
+    NO borra avances capturados en la app (origen=APP) — el reemplazo de
+    línea base nunca toca la captura viva, ver criterio de aceptación del
+    plan ("importar un programa/línea base nueva nunca borra avances
+    capturados").
+
+    Todavía no la llama ningún endpoint (el import de línea base en sí no
+    está construido — pendiente de que el equipo confirme si mantienen al
+    día la matriz "Avance Diario FÍSICO"); queda lista para cuando exista."""
+    result = await avances_col.delete_many({"project_id": project_id, "origen": "LINEA_BASE"})
+    return result.deleted_count
 
 
 class BitacoraCambioOut(BaseModel):
@@ -11521,6 +11612,18 @@ async def _partida_out(doc: dict, all_partidas: List[dict]) -> PartidaOut:
             pct_c = to_decimal("0")
         avance_ponderado_num += importe_c * pct_c
     pct_partida = (avance_ponderado_num / importe_total) if importe_total != 0 else to_decimal("0")
+
+    # Peso-por-rama: peso_manual (si está configurado) SIEMPRE gana sobre el
+    # calculado — es una excepción explícita de la supervisión, no un
+    # promedio ni un ajuste. peso_efectivo es lo único que debe leerse desde
+    # fuera de este archivo cuando se pondera esta rama junto a sus
+    # hermanas (Etapa 7); peso_manual/importe_contratado_partida por
+    # separado son para mostrar cuál es cuál, no para calcular con ellos
+    # directamente.
+    peso_manual = doc.get("peso_manual")
+    peso_es_manual = peso_manual is not None
+    peso_efectivo = to_decimal(peso_manual) if peso_es_manual else importe_total
+
     return PartidaOut(
         id=doc["id"],
         project_id=doc["project_id"],
@@ -11533,6 +11636,9 @@ async def _partida_out(doc: dict, all_partidas: List[dict]) -> PartidaOut:
         numero_conceptos=len(conceptos),
         importe_contratado_partida=dec_to_str(importe_total),
         porcentaje_avance_partida=dec_to_str(round_money(pct_partida * to_decimal("100"))),
+        peso_manual=peso_manual,
+        peso_efectivo=dec_to_str(peso_efectivo),
+        peso_es_manual=peso_es_manual,
     )
 
 
@@ -11569,6 +11675,7 @@ async def create_partida(body: PartidaIn, user: dict = Depends(require_role(ROLE
         "orden": body.orden,
         "activo": True,
         "partida_padre_id": partida_padre_id,
+        "peso_manual": body.peso_manual,
         "created_at": datetime.now(timezone.utc),
         "created_by": user["id"],
     }
@@ -11605,6 +11712,13 @@ async def update_partida(partida_id: str, body: PartidaPatch, user: dict = Depen
         if body.partida_padre_id in _partida_subtree_ids(partida_id, _partida_children_by_parent(todas)):
             raise HTTPException(400, "No se puede mover una partida dentro de su propia subpartida")
         upd["partida_padre_id"] = body.partida_padre_id
+    # Peso-por-rama: quitar_peso_manual explícito vuelve a calculado (mismo
+    # criterio que quitar_padre) — peso_manual=None en el body NUNCA se lee
+    # como "quitar", significa "no tocar" igual que el resto del Patch.
+    if body.quitar_peso_manual:
+        upd["peso_manual"] = None
+    elif body.peso_manual is not None:
+        upd["peso_manual"] = body.peso_manual
     if upd:
         await db.partidas.update_one({"id": partida_id}, {"$set": upd})
     updated = await db.partidas.find_one({"id": partida_id})
@@ -12601,9 +12715,28 @@ async def create_avance(body: RegistroAvanceIn, user: dict = Depends(current_use
         "sincronizado": True,
         "editado_en": None,
         "client_id": body.client_id,
+        # Este endpoint es la captura normal de campo — origen SIEMPRE "APP",
+        # nunca viene del body (la línea base se crea por su propio flujo,
+        # todavía sin construir, ver _reemplazar_linea_base).
+        "origen": "APP",
+        "linea_base_batch_id": None,
     }
     await db.registros_avance.insert_one(doc)
     return await _registro_avance_out(doc)
+
+
+def _validar_permiso_edicion_avance(avance_doc: dict, user: dict) -> None:
+    """Un RegistroAvance con origen=LINEA_BASE está MIGRADO: no se corrige
+    con la ventana normal de 24h/autor (ver update_avance) — solo
+    Sub-Coordinador, sin excepción, y SIEMPRE queda bitácora (la escribe el
+    caller tras pasar esta validación, no aquí — este helper solo decide si
+    se permite, para poder probarlo sin tocar Mongo)."""
+    if avance_doc.get("origen") == "LINEA_BASE" and user.get("role") != ROLE_SUB:
+        raise HTTPException(
+            403,
+            "Este registro es parte de la línea base migrada del proyecto — "
+            "solo el Sub-Coordinador puede corregirlo, y queda registrado en bitácora.",
+        )
 
 
 @api.patch("/avances/{avance_id}", response_model=RegistroAvanceOut)
@@ -12613,16 +12746,21 @@ async def update_avance(avance_id: str, body: RegistroAvancePatch, user: dict = 
     if not avance:
         raise HTTPException(404, "Registro de avance no existe")
     await ensure_project_access(user, avance["project_id"])
+    _validar_permiso_edicion_avance(avance, user)
 
-    # Ventana de edición: el autor original puede corregir su propio registro
-    # durante 24h; después de eso (o si el registro es de otro usuario) solo
-    # Sub-Coordinador puede autorizar la corrección.
-    creado_en = avance["creado_en"]
-    creado_en = creado_en if creado_en.tzinfo else creado_en.replace(tzinfo=timezone.utc)
-    dentro_de_ventana = (datetime.now(timezone.utc) - creado_en) <= timedelta(hours=24)
-    es_autor = avance["capturado_por"] == user["id"]
-    if not ((es_autor and dentro_de_ventana) or user.get("role") == ROLE_SUB):
-        raise HTTPException(403, "Fuera de la ventana de edición; requiere autorización de Sub-Coordinador")
+    if avance.get("origen") != "LINEA_BASE":
+        # Ventana de edición normal: el autor original puede corregir su
+        # propio registro durante 24h; después de eso (o si el registro es
+        # de otro usuario) solo Sub-Coordinador puede autorizar la
+        # corrección. Un registro de línea base ya pasó el chequeo más
+        # estricto de _validar_permiso_edicion_avance arriba, así que no
+        # vuelve a aplicar esta ventana.
+        creado_en = avance["creado_en"]
+        creado_en = creado_en if creado_en.tzinfo else creado_en.replace(tzinfo=timezone.utc)
+        dentro_de_ventana = (datetime.now(timezone.utc) - creado_en) <= timedelta(hours=24)
+        es_autor = avance["capturado_por"] == user["id"]
+        if not ((es_autor and dentro_de_ventana) or user.get("role") == ROLE_SUB):
+            raise HTTPException(403, "Fuera de la ventana de edición; requiere autorización de Sub-Coordinador")
 
     upd: dict = {"editado_en": datetime.now(timezone.utc)}
     if body.cantidad_ejecutada is not None:
@@ -12632,6 +12770,11 @@ async def update_avance(avance_id: str, body: RegistroAvancePatch, user: dict = 
     if body.photo_captions is not None:
         upd["photo_captions"] = body.photo_captions
     await db.registros_avance.update_one({"id": avance_id}, {"$set": upd})
+    if avance.get("origen") == "LINEA_BASE":
+        await _log_bitacora(
+            avance["project_id"], "correccion_linea_base", "registro_avance", avance_id,
+            "cantidad_ejecutada", avance.get("cantidad_ejecutada"), body.cantidad_ejecutada, user,
+        )
     updated = await db.registros_avance.find_one({"id": avance_id})
     return await _registro_avance_out(updated)
 
