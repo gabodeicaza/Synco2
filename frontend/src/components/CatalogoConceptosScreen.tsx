@@ -1,0 +1,911 @@
+// Catálogo de Conceptos — pantalla completa (nivel 1: partidas, nivel 2:
+// conceptos de una partida, búsqueda global, importación desde Excel).
+// Screen "dueña" de su propio header (igual que MinutasHubScreen.tsx), para
+// que las 3 rutas (subcoord/spec/coord) sean simples re-exports que solo
+// resuelven `projectId` desde los params — ver app/(subcoord)/catalogo-conceptos.tsx.
+//
+// Divulgación progresiva: nivel 2 muestra cada concepto colapsado (clave ·
+// descripción a una línea · meta) y solo un concepto expandido a la vez
+// (acordeón) con el detalle completo tipo Excel.
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, TextInput, StatusBar, Alert, Modal,
+} from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { router } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
+
+import { api, Concepto, ConceptoSearchResult, Partida, Project } from '@/src/api';
+import { useAuth } from '@/src/auth-context';
+import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
+import { confirm } from '@/src/utils/confirm';
+import { ROLE_SUB, ROLE_COORD, APP_BRAND } from '@/src/utils/roles';
+import { UNIDADES, UNIDAD_LABELS, PERIODICIDAD_META_LABELS, Unidad } from '@/src/utils/unidades';
+import { formatMoney, formatCantidad, isValidDecimalInput, sumDecimalStringsAsCents, centsToDecimalString } from '@/src/utils/money';
+import { ImportarCatalogoModal } from '@/src/components/ImportarCatalogoModal';
+import { nombreNivel, nombreConcepto, tituloModuloCatalogo, pluralizar } from '@/src/utils/nombresNivel';
+
+type ViewMode = 'partidas' | 'conceptos' | 'busqueda';
+
+export default function CatalogoConceptosScreen({ projectId }: { projectId: string }) {
+  const insets = useSafeAreaInsets();
+  const { user } = useAuth();
+  // Edición de PU/meta y editar/desactivar partidas: Sub-Coordinador Y Coordinador General.
+  const canEdit = user?.role === ROLE_SUB || user?.role === ROLE_COORD;
+  // Importar catálogo y crear partidas (prerrequisito para tener dónde
+  // importar): Sub-Coordinador Y Coordinador General.
+  const canImport = user?.role === ROLE_SUB || user?.role === ROLE_COORD;
+
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [project, setProject] = useState<Project | null>(null);
+  const [partidas, setPartidas] = useState<Partida[]>([]);
+
+  const [mode, setMode] = useState<ViewMode>('partidas');
+  // Navegación de partidas anidadas (N niveles): currentParentId = null es
+  // la raíz del catálogo; breadcrumb guarda el camino completo hasta ahí
+  // para poder saltar de vuelta a cualquier nivel, no solo "un paso atrás".
+  const [currentParentId, setCurrentParentId] = useState<string | null>(null);
+  const [breadcrumb, setBreadcrumb] = useState<Partida[]>([]);
+  const [selectedPartida, setSelectedPartida] = useState<Partida | null>(null);
+  const [conceptos, setConceptos] = useState<Concepto[]>([]);
+  const [conceptosLoading, setConceptosLoading] = useState(false);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [tableView, setTableView] = useState(false);
+
+  const [query, setQuery] = useState('');
+  const [unidadFiltro, setUnidadFiltro] = useState<Unidad | null>(null);
+  const [searchResults, setSearchResults] = useState<ConceptoSearchResult[]>([]);
+  const [searching, setSearching] = useState(false);
+
+  const [importOpen, setImportOpen] = useState(false);
+  const [nuevaPartidaOpen, setNuevaPartidaOpen] = useState(false);
+
+  const headerColor = project?.color_tema || colors.primary;
+  const headerTextColor = contrastText(headerColor);
+
+  const loadPartidas = useCallback(async () => {
+    if (!projectId) return;
+    try {
+      setError(null);
+      setLoading(true);
+      const [proj, parts] = await Promise.all([api.getProject(projectId), api.listPartidas(projectId)]);
+      setProject(proj);
+      setPartidas(parts);
+    } catch (e: any) {
+      setError(e?.message || 'No se pudo cargar el catálogo');
+    } finally {
+      setLoading(false);
+    }
+  }, [projectId]);
+
+  useEffect(() => { loadPartidas(); }, [loadPartidas]);
+
+  async function openPartida(p: Partida) {
+    setSelectedPartida(p);
+    setMode('conceptos');
+    setExpandedId(null);
+    setConceptosLoading(true);
+    try {
+      const list = await api.listConceptos(p.id);
+      setConceptos(list);
+    } catch (e: any) {
+      Alert.alert('Error', e?.message || `No se pudieron cargar los ${pluralizar(nombreConcepto(project)).toLowerCase()} de esta ${nombreNivel(project, breadcrumb.length).toLowerCase()}`);
+    } finally {
+      setConceptosLoading(false);
+    }
+  }
+
+  function backToPartidas() {
+    setMode('partidas');
+    setSelectedPartida(null);
+    setConceptos([]);
+    setExpandedId(null);
+    setTableView(false);
+    loadPartidas();
+  }
+
+  // --- Navegación entre carpetas de partidas (N niveles) ----------------------
+  function abrirCarpeta(p: Partida) {
+    setBreadcrumb((b) => [...b, p]);
+    setCurrentParentId(p.id);
+  }
+
+  // index === -1 vuelve a la raíz del catálogo.
+  function irABreadcrumb(index: number) {
+    if (index < 0) {
+      setBreadcrumb([]);
+      setCurrentParentId(null);
+      return;
+    }
+    setBreadcrumb((b) => {
+      const next = b.slice(0, index + 1);
+      setCurrentParentId(next[next.length - 1]?.id ?? null);
+      return next;
+    });
+  }
+
+  function subirUnNivel() {
+    irABreadcrumb(breadcrumb.length - 2);
+  }
+
+  const tienePartidasHijas = useCallback(
+    (p: Partida) => partidas.some((x) => x.partida_padre_id === p.id),
+    [partidas],
+  );
+
+  function onPressPartidaRow(p: Partida) {
+    if (tienePartidasHijas(p)) abrirCarpeta(p);
+    else openPartida(p);
+  }
+
+  // --- Búsqueda global (debounce 300ms) --------------------------------------
+  useEffect(() => {
+    if (!query.trim() && !unidadFiltro) {
+      if (mode === 'busqueda') setMode(selectedPartida ? 'conceptos' : 'partidas');
+      return;
+    }
+    setMode('busqueda');
+    setSearching(true);
+    const t = setTimeout(async () => {
+      try {
+        const results = await api.searchConceptos(projectId, { q: query, unidad: unidadFiltro || undefined });
+        setSearchResults(results);
+      } catch (e: any) {
+        Alert.alert('Error', e?.message || 'La búsqueda falló');
+      } finally {
+        setSearching(false);
+      }
+    }, 300);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query, unidadFiltro, projectId]);
+
+  function clearSearch() {
+    setQuery('');
+    setUnidadFiltro(null);
+    setMode(selectedPartida ? 'conceptos' : 'partidas');
+  }
+
+  // Solo las partidas del nivel que se está viendo ahora mismo (raíz o
+  // dentro de una carpeta) — el total del catálogo sigue sumando TODAS
+  // (partidas.length), no solo las visibles.
+  const visiblePartidas = useMemo(
+    () => partidas.filter((p) => (p.partida_padre_id || null) === currentParentId),
+    [partidas, currentParentId],
+  );
+  const totalCatalogoCents = useMemo(
+    () => sumDecimalStringsAsCents(partidas.filter((p) => !p.partida_padre_id).map((p) => p.importe_contratado_partida)),
+    [partidas],
+  );
+  const subtotalPartidaCents = useMemo(
+    () => sumDecimalStringsAsCents(conceptos.map((c) => c.importe_contratado)),
+    [conceptos],
+  );
+
+  async function saveField(concepto: Concepto, field: 'precio_unitario' | 'meta', value: string) {
+    if (!isValidDecimalInput(value)) {
+      Alert.alert('Valor inválido', 'Ingresa un número con hasta 2 decimales.');
+      return;
+    }
+    const label = field === 'precio_unitario' ? 'precio unitario' : 'meta (ritmo)';
+    const ok = await confirm(
+      `Actualizar ${label}`,
+      `${nombreConcepto(project)} ${concepto.clave}: cambiar ${label} de ${field === 'precio_unitario' ? formatMoney(concepto[field]) : formatCantidad(concepto[field])} a ${field === 'precio_unitario' ? formatMoney(value) : formatCantidad(value)}.`,
+    );
+    if (!ok) return;
+    try {
+      const updated = await api.updateConcepto(concepto.id, { [field]: value } as any);
+      setConceptos((list) => list.map((c) => (c.id === concepto.id ? updated : c)));
+    } catch (e: any) {
+      Alert.alert('No se pudo guardar', e?.message || 'Intentalo nuevamente.');
+    }
+  }
+
+  if (loading) {
+    return (
+      <View style={styles.center}>
+        <StatusBar barStyle="light-content" />
+        <ActivityIndicator color={colors.primary} />
+      </View>
+    );
+  }
+
+  return (
+    <View style={{ flex: 1, backgroundColor: colors.bg }}>
+      <StatusBar barStyle={headerTextColor === '#FFFFFF' ? 'light-content' : 'dark-content'} />
+
+      {/* Encabezado: marca + área/periodo del proyecto + barra de título.
+          El color de texto/ícono se calcula por contraste contra
+          headerColor (color_tema del proyecto) — antes era blanco fijo, y
+          si el proyecto tenía un color_tema claro el botón de "atrás"
+          quedaba invisible. */}
+      <View style={[styles.headerWrap, { backgroundColor: headerColor, paddingTop: insets.top + spacing.xs }]}>
+        <View style={styles.headerTopRow}>
+          <Pressable
+            onPress={() => {
+              if (mode === 'conceptos') backToPartidas();
+              else if (mode === 'partidas' && breadcrumb.length > 0) subirUnNivel();
+              else router.back();
+            }}
+            hitSlop={10}
+            style={styles.iconBtn}
+          >
+            <Ionicons
+              name={mode === 'conceptos' || (mode === 'partidas' && breadcrumb.length > 0) ? 'arrow-back' : 'chevron-back'}
+              size={22}
+              color={headerTextColor}
+            />
+          </Pressable>
+          <Text style={[styles.brand, { color: headerTextColor }]}>{APP_BRAND}</Text>
+          <View style={{ width: 32 }} />
+        </View>
+        <Text style={[styles.titleBar, { color: headerTextColor }]} numberOfLines={1}>
+          {tituloModuloCatalogo(project).toUpperCase()} — {(project?.name || '').toUpperCase()}
+        </Text>
+        {(project?.start_date || project?.end_date) ? (
+          <Text style={[styles.periodo, { color: headerTextColor, opacity: 0.85 }]} numberOfLines={1}>
+            Periodo: {project?.start_date || '—'} a {project?.end_date || '—'}
+          </Text>
+        ) : null}
+        {mode === 'conceptos' && selectedPartida ? (
+          <Text style={[styles.partidaCrumb, { color: headerTextColor, opacity: 0.9 }]} numberOfLines={1}>
+            {selectedPartida.clave} — {selectedPartida.nombre}
+          </Text>
+        ) : null}
+      </View>
+
+      {/* Búsqueda global + filtro por unidad */}
+      <View style={styles.searchBar}>
+        <Ionicons name="search-outline" size={18} color={colors.textMuted} />
+        <TextInput
+          value={query}
+          onChangeText={setQuery}
+          placeholder="Buscar por clave o descripción en todo el catálogo…"
+          placeholderTextColor={colors.textMuted}
+          style={styles.searchInput}
+        />
+        {query || unidadFiltro ? (
+          <Pressable onPress={clearSearch} hitSlop={8}>
+            <Ionicons name="close-circle" size={18} color={colors.textMuted} />
+          </Pressable>
+        ) : null}
+      </View>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.unidadFiltroRow} contentContainerStyle={{ gap: 6, paddingHorizontal: spacing.md }}>
+        {UNIDADES.map((u) => {
+          const active = unidadFiltro === u;
+          return (
+            <Pressable
+              key={u}
+              onPress={() => setUnidadFiltro(active ? null : u)}
+              style={[styles.unidadChip, active && { backgroundColor: colors.primary, borderColor: colors.primary }]}
+            >
+              <Text style={[styles.unidadChipTxt, active && { color: '#fff' }]}>{u}</Text>
+            </Pressable>
+          );
+        })}
+      </ScrollView>
+
+      {error ? (
+        <View style={styles.errorBox}>
+          <Ionicons name="alert-circle" size={18} color={colors.error} />
+          <Text style={styles.errorText}>{error}</Text>
+        </View>
+      ) : null}
+
+      {mode === 'busqueda' ? (
+        <SearchResultsList results={searchResults} loading={searching} />
+      ) : mode === 'partidas' ? (
+        <PartidasList
+          project={project}
+          partidas={visiblePartidas}
+          totalCatalogoCents={totalCatalogoCents}
+          esRaiz={breadcrumb.length === 0}
+          depth={breadcrumb.length}
+          breadcrumb={breadcrumb}
+          onIrABreadcrumb={irABreadcrumb}
+          tienePartidasHijas={tienePartidasHijas}
+          onAbrirCarpeta={abrirCarpeta}
+          onPressPartida={onPressPartidaRow}
+          onVerConceptos={openPartida}
+          canImport={canImport}
+          onNuevaPartida={() => setNuevaPartidaOpen(true)}
+        />
+      ) : (
+        <ConceptosList
+          project={project}
+          depth={breadcrumb.length}
+          conceptos={conceptos}
+          loading={conceptosLoading}
+          expandedId={expandedId}
+          onToggleExpand={(id) => setExpandedId((cur) => (cur === id ? null : id))}
+          canEdit={canEdit}
+          onSaveField={saveField}
+          tableView={tableView}
+          onToggleTableView={() => setTableView((v) => !v)}
+          headerColor={headerColor}
+          subtotalCents={subtotalPartidaCents}
+        />
+      )}
+
+      {canImport && mode !== 'busqueda' ? (
+        <Pressable style={styles.importFab} onPress={() => setImportOpen(true)}>
+          <Ionicons name="cloud-upload-outline" size={18} color="#fff" />
+          <Text style={styles.importFabTxt}>Importar catálogo</Text>
+        </Pressable>
+      ) : null}
+
+      <ImportarCatalogoModal
+        visible={importOpen}
+        projectId={projectId}
+        partidas={partidas}
+        onClose={() => setImportOpen(false)}
+        onImported={() => {
+          setImportOpen(false);
+          loadPartidas();
+          if (selectedPartida) openPartida(selectedPartida);
+        }}
+      />
+
+      <NuevaPartidaModal
+        visible={nuevaPartidaOpen}
+        project={project}
+        depth={breadcrumb.length}
+        projectId={projectId}
+        ordenSugerido={visiblePartidas.length}
+        partidaPadreId={currentParentId}
+        partidaPadreNombre={breadcrumb.length > 0 ? breadcrumb[breadcrumb.length - 1].nombre : null}
+        onClose={() => setNuevaPartidaOpen(false)}
+        onCreada={() => { setNuevaPartidaOpen(false); loadPartidas(); }}
+      />
+    </View>
+  );
+}
+
+// ============================================================================
+// Crear partida — mínimo necesario (clave + nombre) para poder tener un
+// destino donde importar. Solo sub_coordinador (mismo gate que "Importar
+// catálogo").
+// ============================================================================
+function NuevaPartidaModal({
+  visible, project, depth, projectId, ordenSugerido, partidaPadreId, partidaPadreNombre, onClose, onCreada,
+}: {
+  visible: boolean;
+  project: Project | null;
+  depth: number;
+  projectId: string;
+  ordenSugerido: number;
+  partidaPadreId: string | null;
+  partidaPadreNombre: string | null;
+  onClose: () => void;
+  onCreada: () => void;
+}) {
+  const nivel = nombreNivel(project, depth);
+  const [clave, setClave] = useState('');
+  const [nombre, setNombre] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (visible) { setClave(''); setNombre(''); setErr(null); }
+  }, [visible]);
+
+  async function crear() {
+    if (!clave.trim() || !nombre.trim()) {
+      setErr('Clave y nombre son obligatorios');
+      return;
+    }
+    try {
+      setBusy(true); setErr(null);
+      await api.createPartida({
+        project_id: projectId, clave: clave.trim(), nombre: nombre.trim(), orden: ordenSugerido,
+        partida_padre_id: partidaPadreId || undefined,
+      });
+      onCreada();
+    } catch (e: any) {
+      setErr(e?.message || 'No se pudo crear la partida');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <View style={styles.nuevaPartidaBackdrop}>
+        <View style={styles.nuevaPartidaCard}>
+          <Text style={styles.nuevaPartidaTitle}>Nueva {nivel.toLowerCase()}</Text>
+          {partidaPadreNombre ? (
+            <Text style={styles.nuevaPartidaPadreTxt}>Se creará dentro de "{partidaPadreNombre}"</Text>
+          ) : (
+            <Text style={styles.nuevaPartidaPadreTxt}>Se creará en la raíz del catálogo</Text>
+          )}
+          <Text style={styles.detailLabel}>Clave (ej. "3.3")</Text>
+          <TextInput value={clave} onChangeText={setClave} style={styles.nuevaPartidaInput} editable={!busy} autoCapitalize="none" />
+          <Text style={[styles.detailLabel, { marginTop: 10 }]}>Nombre</Text>
+          <TextInput value={nombre} onChangeText={setNombre} style={styles.nuevaPartidaInput} editable={!busy} placeholder="Ej. Albañilerías" placeholderTextColor={colors.textMuted} />
+          {err ? <Text style={{ color: colors.error, fontSize: 12, marginTop: 8 }}>{err}</Text> : null}
+          <View style={{ flexDirection: 'row', gap: 10, marginTop: 16 }}>
+            <Pressable onPress={onClose} style={[styles.nuevaPartidaBtn, { backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border }]} disabled={busy}>
+              <Text style={{ color: colors.text, fontWeight: '700' }}>Cancelar</Text>
+            </Pressable>
+            <Pressable onPress={crear} style={[styles.nuevaPartidaBtn, { backgroundColor: colors.primary }, busy && { opacity: 0.6 }]} disabled={busy}>
+              {busy ? <ActivityIndicator color="#fff" /> : <Text style={{ color: '#fff', fontWeight: '700' }}>Crear</Text>}
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+// ============================================================================
+// Nivel 1 — lista de partidas
+// ============================================================================
+function PartidasList({
+  project, depth, partidas, totalCatalogoCents, esRaiz, breadcrumb, onIrABreadcrumb,
+  tienePartidasHijas, onAbrirCarpeta, onPressPartida, onVerConceptos, canImport, onNuevaPartida,
+}: {
+  project: Project | null;
+  depth: number;
+  partidas: Partida[];
+  totalCatalogoCents: number;
+  esRaiz: boolean;
+  breadcrumb: Partida[];
+  onIrABreadcrumb: (index: number) => void;
+  tienePartidasHijas: (p: Partida) => boolean;
+  onAbrirCarpeta: (p: Partida) => void;
+  onPressPartida: (p: Partida) => void;
+  onVerConceptos: (p: Partida) => void;
+  canImport: boolean;
+  onNuevaPartida: () => void;
+}) {
+  const nivelActual = nombreNivel(project, depth);
+  const nivelPadre = depth > 0 ? nombreNivel(project, depth - 1) : nivelActual;
+  const conceptoPlural = pluralizar(nombreConcepto(project));
+  return (
+    <View style={{ flex: 1 }}>
+      {breadcrumb.length > 0 ? (
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.breadcrumbRow} contentContainerStyle={{ paddingHorizontal: spacing.md, alignItems: 'center' }}>
+          <Pressable onPress={() => onIrABreadcrumb(-1)} style={styles.breadcrumbItem}>
+            <Ionicons name="albums-outline" size={13} color={colors.primary} />
+            <Text style={styles.breadcrumbTxt}>Catálogo</Text>
+          </Pressable>
+          {breadcrumb.map((p, idx) => (
+            <React.Fragment key={p.id}>
+              <Ionicons name="chevron-forward" size={12} color={colors.textMuted} />
+              <Pressable onPress={() => onIrABreadcrumb(idx)} style={styles.breadcrumbItem}>
+                <Text style={[styles.breadcrumbTxt, idx === breadcrumb.length - 1 && styles.breadcrumbTxtActive]} numberOfLines={1}>
+                  {p.clave}
+                </Text>
+              </Pressable>
+            </React.Fragment>
+          ))}
+        </ScrollView>
+      ) : null}
+      <ScrollView contentContainerStyle={styles.listScroll}>
+        {canImport ? (
+          <Pressable onPress={onNuevaPartida} style={styles.nuevaPartidaRow}>
+            <Ionicons name="add-circle-outline" size={20} color={colors.primary} />
+            <Text style={styles.nuevaPartidaRowTxt}>
+              {esRaiz ? `Nueva ${nivelActual.toLowerCase()}` : `Nueva ${nivelActual.toLowerCase()} aquí`}
+            </Text>
+          </Pressable>
+        ) : null}
+        {partidas.length === 0 ? (
+          <Text style={styles.empty}>
+            {esRaiz
+              ? `Este proyecto aún no tiene ${pluralizar(nivelActual).toLowerCase()} en su catálogo.`
+              : `Esta ${nivelPadre.toLowerCase()} aún no tiene ${pluralizar(nivelActual).toLowerCase()}.`}
+          </Text>
+        ) : (
+          partidas.map((p) => {
+            const pct = Math.max(0, Math.min(100, Math.round(parseFloat(p.porcentaje_avance_partida) || 0)));
+            const esCarpeta = tienePartidasHijas(p);
+            return (
+              <Pressable key={p.id} onPress={() => onPressPartida(p)} style={styles.partidaRow}>
+                <Ionicons name={esCarpeta ? 'folder' : 'folder-outline'} size={22} color={colors.primary} />
+                <View style={{ flex: 1, marginLeft: 10 }}>
+                  <Text style={styles.partidaTitle} numberOfLines={1}>{p.clave} — {p.nombre}</Text>
+                  <View style={styles.partidaMetaRow}>
+                    <Text style={styles.partidaMetaTxt}>{p.numero_conceptos} {conceptoPlural.toLowerCase()}</Text>
+                    <Text style={styles.partidaMetaTxt}>·</Text>
+                    <Text style={styles.partidaMetaTxt}>{formatMoney(p.importe_contratado_partida)}</Text>
+                  </View>
+                  <View style={styles.progressTrack}>
+                    <View style={[styles.progressFill, { width: `${pct}%` }]} />
+                  </View>
+                </View>
+                {/* Acción secundaria = lo opuesto al tap principal: si la
+                    fila ya es una "carpeta" (tiene sub-partidas), el tap
+                    principal navega ahí y este botón va directo a sus
+                    conceptos propios; si todavía es una hoja, el tap
+                    principal va a sus conceptos y este botón es la única
+                    forma de entrar a crear su PRIMERA sub-partida. */}
+                <Pressable
+                  onPress={(e) => { e.stopPropagation(); esCarpeta ? onVerConceptos(p) : onAbrirCarpeta(p); }}
+                  hitSlop={8}
+                  style={styles.verConceptosBtn}
+                >
+                  <Ionicons name={esCarpeta ? 'list-outline' : 'folder-open-outline'} size={16} color={colors.primary} />
+                </Pressable>
+                <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+              </Pressable>
+            );
+          })
+        )}
+      </ScrollView>
+      <View style={styles.footerFixed}>
+        <Text style={styles.footerLabel}>TOTAL DEL CATÁLOGO</Text>
+        <Text style={styles.footerValue}>{formatMoney(centsToDecimalString(totalCatalogoCents))}</Text>
+      </View>
+    </View>
+  );
+}
+
+// ============================================================================
+// Nivel 2 — conceptos de una partida (acordeón + vista tabla)
+// ============================================================================
+function ConceptosList({
+  project, depth, conceptos, loading, expandedId, onToggleExpand, canEdit, onSaveField, tableView, onToggleTableView, headerColor, subtotalCents,
+}: {
+  project: Project | null;
+  depth: number;
+  conceptos: Concepto[];
+  loading: boolean;
+  expandedId: string | null;
+  onToggleExpand: (id: string) => void;
+  canEdit: boolean;
+  onSaveField: (c: Concepto, field: 'precio_unitario' | 'meta', value: string) => void;
+  tableView: boolean;
+  onToggleTableView: () => void;
+  headerColor: string;
+  subtotalCents: number;
+}) {
+  if (loading) return <ActivityIndicator color={colors.primary} style={{ marginTop: 40 }} />;
+  const nivelActual = nombreNivel(project, depth);
+  const conceptoPlural = pluralizar(nombreConcepto(project));
+
+  return (
+    <View style={{ flex: 1 }}>
+      <View style={styles.tableToggleRow}>
+        <Pressable onPress={onToggleTableView} style={styles.tableToggleBtn}>
+          <Ionicons name={tableView ? 'list-outline' : 'grid-outline'} size={16} color={colors.primary} />
+          <Text style={styles.tableToggleTxt}>{tableView ? 'Vista lista' : 'Vista tabla completa'}</Text>
+        </Pressable>
+      </View>
+
+      {conceptos.length === 0 ? (
+        <Text style={styles.empty}>Esta {nivelActual.toLowerCase()} aún no tiene {conceptoPlural.toLowerCase()}.</Text>
+      ) : tableView ? (
+        <ConceptosTable conceptos={conceptos} headerColor={headerColor} />
+      ) : (
+        <ScrollView contentContainerStyle={styles.listScroll}>
+          {conceptos.map((c) => (
+            <ConceptoRow
+              key={c.id}
+              concepto={c}
+              expanded={expandedId === c.id}
+              onToggle={() => onToggleExpand(c.id)}
+              canEdit={canEdit}
+              onSaveField={onSaveField}
+            />
+          ))}
+        </ScrollView>
+      )}
+
+      <View style={styles.footerFixed}>
+        <Text style={styles.footerLabel}>
+          {nivelActual.toLowerCase() === 'partida' ? 'SUBTOTAL DE LA PARTIDA' : `SUBTOTAL — ${nivelActual.toUpperCase()}`}
+        </Text>
+        <Text style={styles.footerValue}>{formatMoney(centsToDecimalString(subtotalCents))}</Text>
+      </View>
+    </View>
+  );
+}
+
+function ConceptoRow({
+  concepto, expanded, onToggle, canEdit, onSaveField,
+}: {
+  concepto: Concepto;
+  expanded: boolean;
+  onToggle: () => void;
+  canEdit: boolean;
+  onSaveField: (c: Concepto, field: 'precio_unitario' | 'meta', value: string) => void;
+}) {
+  return (
+    <View style={styles.conceptoCard}>
+      <Pressable onPress={onToggle} style={styles.conceptoCollapsedRow}>
+        <View style={styles.conceptoClaveBadge}>
+          <Text style={styles.conceptoClaveBadgeTxt} numberOfLines={1}>{concepto.clave}</Text>
+        </View>
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text style={styles.conceptoDescCollapsed} numberOfLines={2} ellipsizeMode="tail">
+            {concepto.descripcion}
+          </Text>
+          <Text style={styles.conceptoMetaCollapsed} numberOfLines={1}>
+            Meta: {formatCantidad(concepto.meta)} {concepto.unidad}/{PERIODICIDAD_META_LABELS[concepto.periodicidad_meta].toLowerCase()}
+          </Text>
+        </View>
+        <Ionicons name={expanded ? 'chevron-up' : 'chevron-down'} size={18} color={colors.textMuted} />
+      </Pressable>
+
+      {expanded ? (
+        <View style={styles.conceptoDetail}>
+          <Text style={styles.detailDescFull}>{concepto.descripcion}</Text>
+          <DetailField label="Unidad" value={UNIDAD_LABELS[concepto.unidad as Unidad] || concepto.unidad} />
+          <DetailField label="Cantidad contratada" value={`${formatCantidad(concepto.cantidad)} ${concepto.unidad}`} />
+          <EditableDetailField
+            label="Precio unitario"
+            value={formatMoney(concepto.precio_unitario)}
+            rawValue={concepto.precio_unitario}
+            canEdit={canEdit}
+            onSave={(v) => onSaveField(concepto, 'precio_unitario', v)}
+          />
+          <DetailField label="Importe contratado" value={formatMoney(concepto.importe_contratado)} bold />
+          <EditableDetailField
+            label="Meta (ritmo)"
+            value={`${formatCantidad(concepto.meta)} ${concepto.unidad} / ${PERIODICIDAD_META_LABELS[concepto.periodicidad_meta].toLowerCase()}`}
+            rawValue={concepto.meta}
+            canEdit={canEdit}
+            onSave={(v) => onSaveField(concepto, 'meta', v)}
+          />
+          <DetailField
+            label="Ejecutado acumulado"
+            value={`${formatCantidad(concepto.cantidad_ejecutada_acumulada)} de ${formatCantidad(concepto.cantidad)} ${concepto.unidad}`}
+          />
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+function DetailField({ label, value, bold }: { label: string; value: string; bold?: boolean }) {
+  return (
+    <View style={styles.detailFieldRow}>
+      <Text style={styles.detailLabel}>{label}</Text>
+      <Text style={[styles.detailValue, bold && { fontWeight: '800' }]}>{value}</Text>
+    </View>
+  );
+}
+
+function EditableDetailField({
+  label, value, rawValue, canEdit, onSave,
+}: {
+  label: string;
+  value: string;
+  rawValue: string;
+  canEdit: boolean;
+  onSave: (v: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(rawValue);
+
+  if (!canEdit) {
+    return (
+      <View style={styles.detailFieldRow}>
+        <View style={styles.lockedLabelRow}>
+          <Ionicons name="lock-closed-outline" size={12} color={colors.textMuted} />
+          <Text style={styles.detailLabel}>{label}</Text>
+        </View>
+        <Text style={[styles.detailValue, styles.detailValueLocked]}>{value}</Text>
+      </View>
+    );
+  }
+
+  if (editing) {
+    return (
+      <View style={styles.detailFieldRow}>
+        <Text style={styles.detailLabel}>{label}</Text>
+        <View style={styles.editRow}>
+          <TextInput
+            value={draft}
+            onChangeText={setDraft}
+            keyboardType="decimal-pad"
+            style={styles.editInput}
+            autoFocus
+          />
+          <Pressable onPress={() => { setEditing(false); onSave(draft); }} hitSlop={8}>
+            <Ionicons name="checkmark-circle" size={22} color={colors.success} />
+          </Pressable>
+          <Pressable onPress={() => { setDraft(rawValue); setEditing(false); }} hitSlop={8}>
+            <Ionicons name="close-circle" size={22} color={colors.error} />
+          </Pressable>
+        </View>
+      </View>
+    );
+  }
+
+  return (
+    <Pressable onPress={() => { setDraft(rawValue); setEditing(true); }} style={styles.detailFieldRow}>
+      <Text style={styles.detailLabel}>{label}</Text>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+        <Text style={styles.detailValue}>{value}</Text>
+        <Ionicons name="create-outline" size={14} color={colors.primary} />
+      </View>
+    </Pressable>
+  );
+}
+
+// ============================================================================
+// Vista tabla completa (horizontal, encabezado con color de identidad del proyecto)
+// ============================================================================
+function ConceptosTable({ conceptos, headerColor }: { conceptos: Concepto[]; headerColor: string }) {
+  return (
+    <ScrollView horizontal contentContainerStyle={{ paddingHorizontal: spacing.md }}>
+      <View>
+        <View style={[styles.tableHeaderRow, { backgroundColor: headerColor }]}>
+          <Text style={[styles.tableHeaderCell, { width: 90 }]}>CLAVE</Text>
+          <Text style={[styles.tableHeaderCell, { width: 320 }]}>DESCRIPCIÓN</Text>
+          <Text style={[styles.tableHeaderCell, { width: 80 }]}>UNIDAD</Text>
+          <Text style={[styles.tableHeaderCell, { width: 100 }]}>CANTIDAD</Text>
+          <Text style={[styles.tableHeaderCell, { width: 110 }]}>PU</Text>
+          <Text style={[styles.tableHeaderCell, { width: 130 }]}>IMPORTE</Text>
+        </View>
+        <ScrollView contentContainerStyle={{ paddingBottom: 90 }}>
+          {conceptos.map((c, idx) => (
+            <View key={c.id} style={[styles.tableRow, idx % 2 === 1 && { backgroundColor: colors.bg }]}>
+              <Text style={[styles.tableCell, { width: 90 }]}>{c.clave}</Text>
+              <Text style={[styles.tableCell, { width: 320 }]}>{c.descripcion}</Text>
+              <Text style={[styles.tableCell, { width: 80 }]}>{c.unidad}</Text>
+              <Text style={[styles.tableCell, { width: 100, textAlign: 'right' }]}>{formatCantidad(c.cantidad)}</Text>
+              <Text style={[styles.tableCell, { width: 110, textAlign: 'right' }]}>{formatMoney(c.precio_unitario)}</Text>
+              <Text style={[styles.tableCell, { width: 130, textAlign: 'right' }]}>{formatMoney(c.importe_contratado)}</Text>
+            </View>
+          ))}
+        </ScrollView>
+      </View>
+    </ScrollView>
+  );
+}
+
+// ============================================================================
+// Búsqueda global — indica a qué partida pertenece cada resultado
+// ============================================================================
+function SearchResultsList({ results, loading }: { results: ConceptoSearchResult[]; loading: boolean }) {
+  if (loading) return <ActivityIndicator color={colors.primary} style={{ marginTop: 40 }} />;
+  return (
+    <ScrollView contentContainerStyle={styles.listScroll}>
+      {results.length === 0 ? (
+        <Text style={styles.empty}>Sin resultados.</Text>
+      ) : (
+        results.map((c) => (
+          <View key={c.id} style={styles.searchCard}>
+            <Text style={styles.searchPartida} numberOfLines={1}>{c.partida_clave} — {c.partida_nombre}</Text>
+            <View style={styles.searchRow}>
+              <Text style={styles.conceptoClave}>{c.clave}</Text>
+              <Text style={styles.conceptoDescCollapsed} numberOfLines={2}>{c.descripcion}</Text>
+            </View>
+            <Text style={styles.searchMeta}>{UNIDAD_LABELS[c.unidad as Unidad] || c.unidad} · {formatMoney(c.importe_contratado)}</Text>
+          </View>
+        ))
+      )}
+    </ScrollView>
+  );
+}
+
+const styles = StyleSheet.create({
+  center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg },
+  headerWrap: { paddingHorizontal: spacing.md, paddingBottom: spacing.sm },
+  headerTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  iconBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
+  brand: { color: '#fff', fontWeight: '800', fontSize: 15 },
+  titleBar: { color: '#fff', fontWeight: '800', fontSize: 15, marginTop: 6, letterSpacing: 0.3 },
+  periodo: { color: 'rgba(255,255,255,0.85)', fontSize: 11, marginTop: 2 },
+  partidaCrumb: { color: 'rgba(255,255,255,0.9)', fontSize: 12, marginTop: 4, fontWeight: '600' },
+
+  searchBar: {
+    flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: spacing.md, marginTop: spacing.sm,
+    backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border,
+    paddingHorizontal: 10, height: 40,
+  },
+  searchInput: { flex: 1, fontSize: 14, color: colors.text },
+  unidadFiltroRow: { marginTop: 8, maxHeight: 34 },
+  unidadChip: {
+    paddingHorizontal: 10, paddingVertical: 5, borderRadius: radius.full, borderWidth: 1, borderColor: colors.border,
+    backgroundColor: colors.surface,
+  },
+  unidadChipTxt: { fontSize: 11, fontWeight: '700', color: colors.textBody },
+
+  errorBox: {
+    flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: colors.errorBg,
+    padding: 10, borderRadius: 10, marginHorizontal: spacing.md, marginTop: spacing.sm,
+  },
+  errorText: { flex: 1, color: colors.error, fontSize: 13, fontWeight: '600' },
+
+  listScroll: { padding: spacing.md, paddingBottom: 110, gap: 12 },
+  empty: { textAlign: 'center', color: colors.textMuted, marginTop: 40, fontStyle: 'italic' },
+
+  // Breadcrumb de partidas anidadas
+  breadcrumbRow: { maxHeight: 32, marginTop: 8 },
+  breadcrumbItem: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 4 },
+  breadcrumbTxt: { fontSize: 12, fontWeight: '700', color: colors.primary, maxWidth: 120 },
+  breadcrumbTxtActive: { color: colors.text },
+
+  // Nivel 1 — partidas
+  partidaRow: {
+    flexDirection: 'row', alignItems: 'center', minHeight: 56, backgroundColor: colors.surface,
+    borderRadius: radius.md, paddingHorizontal: 12, borderWidth: 1, borderColor: colors.border,
+  },
+  verConceptosBtn: {
+    width: 30, height: 30, borderRadius: 15, backgroundColor: colors.primaryLight,
+    alignItems: 'center', justifyContent: 'center', marginRight: 4,
+  },
+  partidaTitle: { fontSize: 14, fontWeight: '700', color: colors.text },
+  partidaMetaRow: { flexDirection: 'row', gap: 6, marginTop: 2 },
+  partidaMetaTxt: { fontSize: 11, color: colors.textMuted },
+  progressTrack: { height: 4, borderRadius: 2, backgroundColor: colors.border, marginTop: 6, overflow: 'hidden' },
+  progressFill: { height: 4, backgroundColor: colors.success },
+
+  footerFixed: {
+    position: 'absolute', left: 0, right: 0, bottom: 0, backgroundColor: colors.surface,
+    borderTopWidth: 1, borderTopColor: colors.border, paddingHorizontal: spacing.md, paddingVertical: 12,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', ...shadow.lg,
+  },
+  footerLabel: { fontSize: 12, fontWeight: '800', color: colors.textMuted, letterSpacing: 0.4 },
+  footerValue: { fontSize: 16, fontWeight: '800', color: colors.text },
+
+  // Nivel 2 — conceptos
+  tableToggleRow: { paddingHorizontal: spacing.md, paddingTop: 8, alignItems: 'flex-end' },
+  tableToggleBtn: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  tableToggleTxt: { fontSize: 12, fontWeight: '700', color: colors.primary },
+
+  conceptoCard: { backgroundColor: colors.surface, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, ...shadow.card },
+  conceptoCollapsedRow: {
+    flexDirection: 'row', alignItems: 'center', minHeight: 68, paddingHorizontal: 14, paddingVertical: 12, gap: 12,
+  },
+  conceptoClaveBadge: {
+    backgroundColor: colors.primaryLight, borderRadius: radius.md, paddingHorizontal: 10, paddingVertical: 7,
+    alignItems: 'center', justifyContent: 'center', minWidth: 52,
+  },
+  conceptoClaveBadgeTxt: { fontSize: 13, fontWeight: '800', color: colors.primary },
+  conceptoClave: { fontSize: 12, fontWeight: '800', color: colors.primary, width: 56 },
+  conceptoDescCollapsed: { fontSize: 15, fontWeight: '600', color: colors.text, lineHeight: 20 },
+  conceptoMetaCollapsed: { fontSize: 12, color: colors.textMuted, marginTop: 3 },
+
+  conceptoDetail: { borderTopWidth: 1, borderTopColor: colors.border, padding: 14, gap: 10 },
+  detailDescFull: { fontSize: 13, color: colors.text, marginBottom: 4 },
+  detailFieldRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  detailLabel: { fontSize: 12, color: colors.textMuted, fontWeight: '600' },
+  detailValue: { fontSize: 13, color: colors.text, fontWeight: '700' },
+  detailValueLocked: { color: colors.textMuted },
+  lockedLabelRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  editRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  editInput: {
+    borderWidth: 1, borderColor: colors.primary, borderRadius: radius.sm, paddingHorizontal: 8, paddingVertical: 4,
+    fontSize: 13, minWidth: 80, textAlign: 'right', color: colors.text,
+  },
+
+  // Vista tabla
+  tableHeaderRow: { flexDirection: 'row' },
+  tableHeaderCell: { color: '#fff', fontSize: 11, fontWeight: '800', textTransform: 'uppercase', padding: 8 },
+  tableRow: { flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: colors.border },
+  tableCell: { fontSize: 12, color: colors.text, padding: 8 },
+
+  // Búsqueda
+  searchCard: { backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, padding: 10, gap: 4 },
+  searchPartida: { fontSize: 10, fontWeight: '800', color: colors.textMuted, textTransform: 'uppercase' },
+  searchRow: { flexDirection: 'row', gap: 8, alignItems: 'flex-start' },
+  searchMeta: { fontSize: 11, color: colors.textMuted },
+
+  importFab: {
+    position: 'absolute', right: spacing.md, bottom: 64, flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: colors.primary, borderRadius: radius.full, paddingHorizontal: 14, paddingVertical: 10, ...shadow.lg,
+  },
+  importFabTxt: { color: '#fff', fontWeight: '700', fontSize: 12 },
+
+  nuevaPartidaRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 8, minHeight: 44,
+    borderWidth: 1, borderColor: colors.primary, borderStyle: 'dashed', borderRadius: radius.md,
+    paddingHorizontal: 12, justifyContent: 'center',
+  },
+  nuevaPartidaRowTxt: { color: colors.primary, fontWeight: '700', fontSize: 13 },
+  nuevaPartidaBackdrop: { flex: 1, backgroundColor: 'rgba(15,23,42,0.55)', alignItems: 'center', justifyContent: 'center', padding: spacing.md },
+  nuevaPartidaCard: { width: '100%', maxWidth: 380, backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.md, ...shadow.lg },
+  nuevaPartidaTitle: { fontSize: 16, fontWeight: '800', color: colors.text, marginBottom: 4 },
+  nuevaPartidaPadreTxt: { fontSize: 12, color: colors.textMuted, marginBottom: 12, fontStyle: 'italic' },
+  nuevaPartidaInput: {
+    borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, paddingHorizontal: 10, paddingVertical: 8,
+    fontSize: 14, color: colors.text, backgroundColor: colors.bg,
+  },
+  nuevaPartidaBtn: { flex: 1, paddingVertical: 10, borderRadius: radius.md, alignItems: 'center', justifyContent: 'center' },
+});
