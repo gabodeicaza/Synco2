@@ -252,6 +252,17 @@ class ProjectIn(BaseModel):
     # incorrectos (ej. "CATÁLOGO DE RENGLÓNS"). Si el proyecto no lo
     # configura, cae al texto histórico "Catálogo de Conceptos".
     titulo_modulo_catalogo: str = ""
+    # Cadencia de reporte (Etapa 4): DIARIA/SEMANAL/MENSUAL varía por
+    # proyecto — nunca se infiere de los datos capturados. Solo controla
+    # CÓMO SE AGRUPA al consultar (ver avance_fisico_acumulado, todavía sin
+    # construir); RegistroAvance.fecha siempre guarda la fecha exacta, nunca
+    # "semana 32" ni "mes 8" — reagrupar después con otra cadencia no debe
+    # requerir volver a capturar nada.
+    cadencia_reporte: Literal["DIARIA", "SEMANAL", "MENSUAL"] = "MENSUAL"
+    # Día en que arranca la semana PARA ESTE PROYECTO — el informe de
+    # referencia del plan corta sábado a sábado, así que no se puede asumir
+    # lunes como en un calendario ISO estándar.
+    dia_inicio_semana: Literal["LUNES", "MARTES", "MIERCOLES", "JUEVES", "VIERNES", "SABADO", "DOMINGO"] = "LUNES"
 
 
 class ProjectPatch(BaseModel):
@@ -279,6 +290,8 @@ class ProjectPatch(BaseModel):
     nombre_nivel_concepto: Optional[str] = None
     unidades_personalizadas: Optional[List[str]] = None
     titulo_modulo_catalogo: Optional[str] = None
+    cadencia_reporte: Optional[Literal["DIARIA", "SEMANAL", "MENSUAL"]] = None
+    dia_inicio_semana: Optional[Literal["LUNES", "MARTES", "MIERCOLES", "JUEVES", "VIERNES", "SABADO", "DOMINGO"]] = None
     # Banderas de intención explícita — mismo idioma que `quitar_padre` en
     # PartidaPatch. Dos flags independientes (no una sola) porque
     # tipo_contrato y modo_avance son ejes que no se deben conflatar: cambiar
@@ -320,6 +333,8 @@ class ProjectOut(BaseModel):
     nombre_nivel_concepto: str = ""
     unidades_personalizadas: List[str] = Field(default_factory=list)
     titulo_modulo_catalogo: str = ""
+    cadencia_reporte: str = "MENSUAL"
+    dia_inicio_semana: str = "LUNES"
     created_by: str
     created_at: datetime
     archived: bool = False
@@ -1127,6 +1142,8 @@ async def create_project(body: ProjectIn, user: dict = Depends(require_role(ROLE
         "nombre_nivel_concepto": (body.nombre_nivel_concepto or "").strip(),
         "unidades_personalizadas": _sanitize_str_list(body.unidades_personalizadas),
         "titulo_modulo_catalogo": (body.titulo_modulo_catalogo or "").strip(),
+        "cadencia_reporte": body.cadencia_reporte,
+        "dia_inicio_semana": body.dia_inicio_semana,
         "created_by": user["id"],
         "created_at": datetime.now(timezone.utc),
         "archived": False,
@@ -1157,6 +1174,8 @@ async def get_project(pid: str, user: dict = Depends(current_user)):
     p.setdefault("nombre_nivel_concepto", "")
     p.setdefault("unidades_personalizadas", [])
     p.setdefault("titulo_modulo_catalogo", "")
+    p.setdefault("cadencia_reporte", "MENSUAL")
+    p.setdefault("dia_inicio_semana", "LUNES")
     return p
 
 
@@ -1244,6 +1263,10 @@ async def update_project(pid: str, body: ProjectPatch, user: dict = Depends(requ
         upd["unidades_personalizadas"] = _sanitize_str_list(body.unidades_personalizadas)
     if body.titulo_modulo_catalogo is not None:
         upd["titulo_modulo_catalogo"] = body.titulo_modulo_catalogo.strip()
+    if body.cadencia_reporte is not None:
+        upd["cadencia_reporte"] = body.cadencia_reporte
+    if body.dia_inicio_semana is not None:
+        upd["dia_inicio_semana"] = body.dia_inicio_semana
 
     if upd:
         await db.projects.update_one({"id": pid}, {"$set": upd})
@@ -1279,6 +1302,8 @@ def _project_public(p: dict) -> dict:
     p.setdefault("nombre_nivel_concepto", "")
     p.setdefault("unidades_personalizadas", [])
     p.setdefault("titulo_modulo_catalogo", "")
+    p.setdefault("cadencia_reporte", "MENSUAL")
+    p.setdefault("dia_inicio_semana", "LUNES")
     return p
 
 
@@ -11386,6 +11411,12 @@ class RegistroAvanceOut(BaseModel):
     # batch_id queda para poder mostrar "de qué importación vino este
     # registro" si hace falta depurar.
     linea_base_batch_id: Optional[str] = None
+    # --- Captura de avance en % (Etapa 4, modo_avance=PORCENTAJE) ---
+    # true si este valor es MENOR que la última captura anterior del mismo
+    # concepto — un retroceso real de obra se PERMITE (nunca se rechaza),
+    # pero nunca se guarda como si nada: queda marcado para que la UI lo
+    # muestre y alguien lo revise. Siempre False fuera de modo PORCENTAJE.
+    es_retroceso: bool = False
 
 
 async def _registro_avance_out(doc: dict) -> RegistroAvanceOut:
@@ -11538,15 +11569,36 @@ async def _log_bitacora(
     })
 
 
-async def _concepto_ejecutado_acumulado(concepto_id: str) -> str:
+def _acumulado_desde_avances(avances: List[dict], modo_avance: str) -> str:
+    """Núcleo puro (sin DB) de _concepto_ejecutado_acumulado — separado para
+    poder probarlo sin Mongo.
+
+    CANTIDAD/MATRIZ: cada RegistroAvance es una cantidad física INCREMENTAL
+    (lo que se ejecutó ESE día) — el acumulado es la SUMA de todos.
+
+    PORCENTAJE: el residente reporta el ESTADO al que llegó el concepto
+    ("el concepto va al 45%"), no un incremento — cada captura ya es
+    acumulativa por sí sola. El acumulado es la captura MÁS RECIENTE por
+    fecha (desempate por creado_en si dos registros comparten fecha), NUNCA
+    la suma — sumar duplicaría el avance reportado."""
+    if not avances:
+        return "0"
+    if modo_avance == "PORCENTAJE":
+        mas_reciente = max(avances, key=lambda a: (a["fecha"], a["creado_en"]))
+        return dec_to_str(to_decimal(mas_reciente["cantidad_ejecutada"]))
+    return dec_to_str(sum_decimales([a["cantidad_ejecutada"] for a in avances]))
+
+
+async def _concepto_ejecutado_acumulado(concepto_id: str, modo_avance: str = "CANTIDAD") -> str:
     avances = await db.registros_avance.find({"concepto_id": concepto_id}).to_list(length=100000)
-    total = sum_decimales([a["cantidad_ejecutada"] for a in avances]) if avances else to_decimal("0")
-    return dec_to_str(total)
+    return _acumulado_desde_avances(avances, modo_avance)
 
 
 async def _concepto_out(doc: dict) -> ConceptoOut:
     importe = compute_importe(doc["cantidad"], doc["precio_unitario"])
-    ejecutado = await _concepto_ejecutado_acumulado(doc["id"])
+    project = await db.projects.find_one({"id": doc["project_id"]})
+    modo_avance = (project or {}).get("modo_avance", "CANTIDAD")
+    ejecutado = await _concepto_ejecutado_acumulado(doc["id"], modo_avance)
     return ConceptoOut(
         id=doc["id"],
         partida_id=doc["partida_id"],
@@ -11596,6 +11648,9 @@ async def _partida_out(doc: dict, all_partidas: List[dict]) -> PartidaOut:
     # subpartidas anidadas dentro), no solo sus conceptos directos — una
     # "carpeta" sin conceptos propios pero con subpartidas debe seguir
     # mostrando el total real de lo que contiene.
+    project = await db.projects.find_one({"id": doc["project_id"]})
+    modo_avance = (project or {}).get("modo_avance", "CANTIDAD")
+
     children_by_parent = _partida_children_by_parent(all_partidas)
     subtree_ids = _partida_subtree_ids(doc["id"], children_by_parent)
     conceptos = await db.conceptos.find({"partida_id": {"$in": subtree_ids}, "activo": True}).to_list(length=100000)
@@ -11604,12 +11659,15 @@ async def _partida_out(doc: dict, all_partidas: List[dict]) -> PartidaOut:
     for c in conceptos:
         importe_c = compute_importe(c["cantidad"], c["precio_unitario"])
         importe_total += importe_c
-        cantidad_contratada = to_decimal(c["cantidad"])
-        if cantidad_contratada != 0:
-            ejecutado = to_decimal(await _concepto_ejecutado_acumulado(c["id"]))
-            pct_c = ejecutado / cantidad_contratada
+        ejecutado = to_decimal(await _concepto_ejecutado_acumulado(c["id"], modo_avance))
+        if modo_avance == "PORCENTAJE":
+            # ejecutado ya es un 0-100 (el estado reportado, no una
+            # cantidad física) — dividir entre cantidad_contratada (que en
+            # PRECIO_ALZADO siempre es 1) daría 4500% en vez de 45%.
+            pct_c = ejecutado / to_decimal("100")
         else:
-            pct_c = to_decimal("0")
+            cantidad_contratada = to_decimal(c["cantidad"])
+            pct_c = (ejecutado / cantidad_contratada) if cantidad_contratada != 0 else to_decimal("0")
         avance_ponderado_num += importe_c * pct_c
     pct_partida = (avance_ponderado_num / importe_total) if importe_total != 0 else to_decimal("0")
 
@@ -12691,6 +12749,19 @@ async def create_avance(body: RegistroAvanceIn, user: dict = Depends(current_use
         if not nodo:
             raise HTTPException(404, "nodo_id inválido para este proyecto")
 
+    # PRECIO_ALZADO (modo_avance=PORCENTAJE): el residente captura el
+    # PORCENTAJE al que llegó el concepto (0-100), no una cantidad física —
+    # validación obligatoria del plan. Un valor menor al anterior es un
+    # retroceso real de obra: se PERMITE (nunca se rechaza), pero se marca
+    # para revisión en vez de guardarse como si nada — nunca en silencio.
+    es_retroceso = False
+    if modo_avance == "PORCENTAJE":
+        valor = to_decimal(body.cantidad_ejecutada)
+        if valor < 0 or valor > 100:
+            raise HTTPException(400, f"El avance en modo PORCENTAJE debe estar entre 0 y 100 (recibido: {body.cantidad_ejecutada})")
+        anterior = to_decimal(await _concepto_ejecutado_acumulado(body.concepto_id, "PORCENTAJE"))
+        es_retroceso = valor < anterior
+
     # Idempotencia offline: si ya existe un registro con el mismo client_id,
     # se devuelve el existente en vez de duplicar (mismo criterio que reports).
     if body.client_id:
@@ -12720,6 +12791,7 @@ async def create_avance(body: RegistroAvanceIn, user: dict = Depends(current_use
         # todavía sin construir, ver _reemplazar_linea_base).
         "origen": "APP",
         "linea_base_batch_id": None,
+        "es_retroceso": es_retroceso,
     }
     await db.registros_avance.insert_one(doc)
     return await _registro_avance_out(doc)
@@ -12764,6 +12836,11 @@ async def update_avance(avance_id: str, body: RegistroAvancePatch, user: dict = 
 
     upd: dict = {"editado_en": datetime.now(timezone.utc)}
     if body.cantidad_ejecutada is not None:
+        project = await db.projects.find_one({"id": avance["project_id"]})
+        if (project or {}).get("modo_avance") == "PORCENTAJE":
+            valor = to_decimal(body.cantidad_ejecutada)
+            if valor < 0 or valor > 100:
+                raise HTTPException(400, f"El avance en modo PORCENTAJE debe estar entre 0 y 100 (recibido: {body.cantidad_ejecutada})")
         upd["cantidad_ejecutada"] = body.cantidad_ejecutada
     if body.fotos is not None:
         upd["fotos"] = body.fotos
