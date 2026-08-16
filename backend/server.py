@@ -10575,17 +10575,40 @@ async def move_actividad_general(pid: str, aid: str, body: ActividadCuradaMover,
 # - Dinero/cantidades: SIEMPRE Decimal, nunca float.
 # - Orden de claves: SIEMPRE sort_by_clave, nunca orden de texto.
 
-# --- Comparador de claves jerárquicas ("3.3", "10.3") ------------------------
-SortKey = Tuple[Tuple[int, int, str], ...]
+# --- Comparador de claves jerárquicas ("3.3", "10.3", "A1011") ---------------
+SortKey = Tuple[tuple, ...]
+
+
+_ALNUM_RUN_RE = re.compile(r"\d+|\D+")
+
+
+def _tokenize_alnum(segment: str) -> tuple:
+    """Descompone un segmento NO puramente numérico (ej. "A1011") en corridas
+    alternadas de dígitos/no-dígitos, cada una comparable por tipo: una
+    corrida numérica como entero, una corrida de texto como texto. Así
+    "A101" < "A102" < "A1010" < "A1011" en vez de orden de texto plano
+    (que pondría "A102" antes que "A1010")."""
+    tokens = []
+    for run in _ALNUM_RUN_RE.findall(segment):
+        if run.isdigit():
+            tokens.append((0, int(run), ""))
+        else:
+            tokens.append((1, 0, run))
+    return tuple(tokens)
 
 
 def clave_sort_key(clave: str) -> SortKey:
     """Convierte una clave en una tupla comparable segmento por segmento.
 
     Cada segmento numérico se compara como entero; un segmento no numérico
-    (ej. "3A") ordena después de los numéricos en esa misma posición y usa
-    comparación de texto como desempate. Una clave que es prefijo de otra
-    ("1.2" vs "1.2.1") ordena primero, igual que en un explorador de
+    (ej. "3A", "A1011") ordena después de los numéricos en esa misma
+    posición — regla que NO cambia, ver test_segmento_no_numerico_ordena_despues.
+    Entre dos segmentos no numéricos, en vez de comparar como texto plano se
+    tokeniza en corridas dígito/no-dígito (_tokenize_alnum) para que el
+    prefijo alfabético compare como texto y la corrida numérica como entero
+    ("A101" < "A102" < "A1010" < "A1011"; texto plano ordenaría "A1010"
+    antes que "A102"). Una clave que es prefijo de otra ("1.2" vs "1.2.1",
+    o "A1011" vs "A1011.1") ordena primero, igual que en un explorador de
     archivos.
     """
     key = []
@@ -10594,7 +10617,7 @@ def clave_sort_key(clave: str) -> SortKey:
         if seg.isdigit():
             key.append((0, int(seg), ""))
         else:
-            key.append((1, 0, seg))
+            key.append((1, 0, _tokenize_alnum(seg)))
     return tuple(key)
 
 
