@@ -681,6 +681,13 @@ export interface RegistroAvance {
   creado_en: string;
   sincronizado: boolean;
   editado_en?: string | null;
+  // Línea base (ver server.py, sección PROGRAMA DESGLOSADO / línea base).
+  origen?: 'APP' | 'LINEA_BASE';
+  linea_base_batch_id?: string | null;
+  // modo_avance=PORCENTAJE: true si este valor es menor que la captura
+  // anterior del mismo concepto — se permite (nunca se rechaza), pero se
+  // marca para que la UI lo muestre. Siempre false fuera de ese modo.
+  es_retroceso?: boolean;
 }
 
 export interface AvancesResumen {

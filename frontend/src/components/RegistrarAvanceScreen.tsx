@@ -18,6 +18,7 @@ import { UNIDAD_LABELS, Unidad } from '@/src/utils/unidades';
 import { nombreConcepto } from '@/src/utils/nombresNivel';
 import { formatCantidad, isValidDecimalInput } from '@/src/utils/money';
 import { dayjs, CDMX_TZ } from '@/src/utils/tz';
+import { esPorcentajeValido, esRetrocesoLocal } from '@/src/utils/avancePorcentaje';
 
 export default function RegistrarAvanceScreen({ projectId }: { projectId: string }) {
   const insets = useSafeAreaInsets();
@@ -81,22 +82,41 @@ export default function RegistrarAvanceScreen({ projectId }: { projectId: string
     setFoto(`data:${mime};base64,${asset.base64}`);
   }
 
+  const esPorcentaje = project?.modo_avance === 'PORCENTAJE';
+
   async function submit() {
     if (!selected) return;
-    if (!isValidDecimalInput(cantidad)) {
+    if (esPorcentaje) {
+      if (!esPorcentajeValido(cantidad)) {
+        Alert.alert('Porcentaje inválido', 'Ingresa un valor entre 0 y 100, con hasta 2 decimales.');
+        return;
+      }
+    } else if (!isValidDecimalInput(cantidad)) {
       Alert.alert('Cantidad inválida', 'Ingresa un número con hasta 2 decimales.');
       return;
     }
     try {
       setSaving(true);
-      await api.createAvance({
+      const res = await api.createAvance({
         concepto_id: selected.id,
         fecha,
         cantidad_ejecutada: cantidad,
         fotos: foto ? [foto] : [],
         nodo_id: selectedNodo?.id,
       });
-      Alert.alert('Avance registrado', `${selected.clave} · ${formatCantidad(cantidad)} ${selected.unidad}`);
+      const resumen = esPorcentaje
+        ? `${selected.clave} · va al ${formatCantidad(cantidad)}%`
+        : `${selected.clave} · ${formatCantidad(cantidad)} ${selected.unidad}`;
+      if (res.es_retroceso) {
+        // Un retroceso se permite (nunca se rechaza) pero nunca se guarda
+        // como si nada — el aviso es distinto del de éxito normal.
+        Alert.alert(
+          'Avance registrado — es un retroceso',
+          `${resumen}\n\nEste valor es menor que el porcentaje anterior registrado. Se guardó de todas formas y quedó marcado para revisión.`,
+        );
+      } else {
+        Alert.alert('Avance registrado', resumen);
+      }
       setSelected(null);
       setCantidad('');
       setFoto(null);
@@ -142,7 +162,9 @@ export default function RegistrarAvanceScreen({ projectId }: { projectId: string
                 <Text style={styles.resultPartida}>{c.partida_clave} — {c.partida_nombre}</Text>
                 <Text style={styles.resultClave}>{c.clave} · {c.descripcion}</Text>
                 <Text style={styles.resultMeta}>
-                  Meta: {formatCantidad(c.meta)} {c.unidad} · Ejecutado: {formatCantidad(c.cantidad_ejecutada_acumulada)} de {formatCantidad(c.cantidad)} {c.unidad}
+                  {project?.modo_avance === 'PORCENTAJE'
+                    ? `Va al ${formatCantidad(c.cantidad_ejecutada_acumulada)}%`
+                    : `Meta: ${formatCantidad(c.meta)} ${c.unidad} · Ejecutado: ${formatCantidad(c.cantidad_ejecutada_acumulada)} de ${formatCantidad(c.cantidad)} ${c.unidad}`}
                 </Text>
               </Pressable>
             ))}
@@ -159,15 +181,35 @@ export default function RegistrarAvanceScreen({ projectId }: { projectId: string
               Unidad: {UNIDAD_LABELS[selected.unidad as Unidad] || selected.unidad} · Contratado: {formatCantidad(selected.cantidad)}
             </Text>
 
-            <Text style={styles.fieldLabel}>Cantidad ejecutada hoy ({selected.unidad})</Text>
+            {esPorcentaje ? (
+              <>
+                <View style={styles.pctLabelRow}>
+                  <Text style={styles.fieldLabel}>El concepto va al ___%</Text>
+                  <Text style={styles.pctAnteriorTxt}>
+                    Anterior: {formatCantidad(selected.cantidad_ejecutada_acumulada)}%
+                  </Text>
+                </View>
+                {/* Acumulativo, no incremental — el residente escribe el
+                    estado al que llegó el concepto, no cuánto avanzó hoy.
+                    Un valor menor al anterior se permite (retroceso real de
+                    obra existe) pero se avisa al confirmar, ver submit(). */}
+              </>
+            ) : (
+              <Text style={styles.fieldLabel}>Cantidad ejecutada hoy ({selected.unidad})</Text>
+            )}
             <TextInput
               value={cantidad}
               onChangeText={setCantidad}
-              placeholder="0.00"
+              placeholder={esPorcentaje ? '0-100' : '0.00'}
               keyboardType="decimal-pad"
               style={styles.qtyInput}
               autoFocus
             />
+            {esPorcentaje && cantidad && esRetrocesoLocal(cantidad, selected.cantidad_ejecutada_acumulada) ? (
+              <Text style={styles.pctRetrocesoTxt}>
+                Este valor es menor que el {formatCantidad(selected.cantidad_ejecutada_acumulada)}% anterior — se permite, pero se marcará como retroceso.
+              </Text>
+            ) : null}
 
             {nodes.length > 0 ? (
               <>
@@ -295,6 +337,9 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, paddingHorizontal: 12, paddingVertical: 12,
     fontSize: 20, fontWeight: '700', color: colors.text, backgroundColor: colors.bg,
   },
+  pctLabelRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 8 },
+  pctAnteriorTxt: { fontSize: 12, fontWeight: '700', color: colors.textMuted },
+  pctRetrocesoTxt: { fontSize: 11, color: colors.warning, fontWeight: '600', marginTop: 4 },
 
   nodoBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 8, borderWidth: 1, borderColor: colors.border,
