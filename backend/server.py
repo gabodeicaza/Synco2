@@ -10978,6 +10978,167 @@ def _parse_celda_numerica(raw, convencion: Optional[ConvencionDecimal]):
     return parse_numero_texto(str(raw), convencion)
 
 
+# === PROGRAMA DESGLOSADO (Etapa 2 — Ampliación del Catálogo) ================
+# Import del "Programa desglosado": archivo real con hoja "Cambio",
+# encabezados en la fila 19 (Código/Descripción/Unidad/Cantidad/PU/Importe/
+# Inicio/Fin/Mes 1.../Mes N) y hasta 4 filas consecutivas por concepto
+# (datos+fracción, porcentaje, IMPORTES, dibujo de barra). Reusa el mismo
+# wizard y los mismos parsers de número/decimal que el import de catálogo
+# (_parse_celda_numerica, parse_numero_texto, sort_by_clave) — NO es un
+# segundo importador, es un segundo destino del mismo wizard.
+
+_RE_RANGO_FECHAS_MES = re.compile(
+    r"DEL\s+(\d{1,2})/(\d{1,2})/(\d{2,4})\s+AL\s+(\d{1,2})/(\d{1,2})/(\d{2,4})",
+    re.IGNORECASE,
+)
+
+
+def _anio_completo(raw: str) -> int:
+    """Año de 2 dígitos -> siglo por la misma convención que strptime "%y"
+    (00-68 -> 20xx, 69-99 -> 19xx); un año ya completo se deja tal cual."""
+    n = int(raw)
+    return n if len(raw) >= 4 else (2000 + n if n < 69 else 1900 + n)
+
+
+def parse_rango_fechas_mes(texto: Optional[str]) -> Optional[Tuple[str, str]]:
+    """Parsea la fila bajo el encabezado de cada columna Mes N
+    ("DEL 8/12/25 AL 31/12/25") -> ("2025-12-08", "2025-12-31"). None si el
+    texto no matchea el patrón o las fechas no son válidas — el llamador
+    decide si eso bloquea la importación de esa columna."""
+    if not texto:
+        return None
+    m = _RE_RANGO_FECHAS_MES.search(str(texto))
+    if not m:
+        return None
+    d1, mo1, y1, d2, mo2, y2 = m.groups()
+    try:
+        f1 = datetime(_anio_completo(y1), int(mo1), int(d1)).date().isoformat()
+        f2 = datetime(_anio_completo(y2), int(mo2), int(d2)).date().isoformat()
+    except ValueError:
+        return None
+    return f1, f2
+
+
+def _fecha_excel_a_iso(raw) -> Optional[str]:
+    """Inicio/Fin (fechas CONTRACTUALES) llegan como datetime nativo de Excel
+    (openpyxl con data_only=True) — se conserva solo la fecha, sin hora.
+    Cualquier otra cosa (texto, celda vacía) no se adivina: se devuelve None
+    y el llamador lo trata como dato faltante/inválido, nunca como fecha
+    silenciosa."""
+    if raw is None or isinstance(raw, str):
+        return None
+    if hasattr(raw, "date") and callable(raw.date):  # datetime -> .date()
+        return raw.date().isoformat()
+    if hasattr(raw, "isoformat"):  # date puro, ya sin hora
+        return raw.isoformat()
+    return None
+
+
+def _celda_es_fila_barra(row: list) -> bool:
+    """Fila 4 del bloque de 4 (datos de dibujo del diagrama de barras, ej.
+    "Barra=22.58-100,0-…") — se ignora siempre, sin generar error, en
+    cualquier columna de la fila donde aparezca."""
+    for cell in row:
+        if isinstance(cell, str) and cell.strip().upper().startswith("BARRA="):
+            return True
+    return False
+
+
+def agrupar_bloques_programa(rows: List[list], idx_codigo: int) -> List[dict]:
+    """Agrupa las filas de datos de la hoja del programa en un bloque por
+    concepto: la fila con Código no vacío ("fila_datos") ES TAMBIÉN la fila
+    de distribución en fracción (fila 1 del plan: "datos + distribución") —
+    por eso este bloque no expone una "fila_fraccion" aparte, esa
+    distribución vive en fila_datos y de cualquier forma no se usa para
+    importar (ver extraer_distribucion_mensual_bloque, que solo lee
+    fila_importes). Le siguen hasta 2 filas más: porcentaje e IMPORTES. La
+    fila de dibujo "Barra=..." se descarta y NO cuenta como una de esas 2,
+    sin importar en qué posición del bloque aparezca — se detecta ANTES de
+    mirar si la fila "parece" el siguiente concepto, porque su primera
+    celda ("Barra=22.58-100,0-…") no está vacía y de otro modo se
+    confundiría con el Código de un concepto nuevo.
+
+    No asume exactamente 4 filas por concepto: se detiene en cuanto aparece
+    la siguiente fila con su propio Código (así, un renglón de nivel
+    superior sin distribución propia queda con fila_importes=None — su
+    curva se calcula sumando la de sus hijos, nunca se importa)."""
+    bloques: List[dict] = []
+    i, n = 0, len(rows)
+    while i < n:
+        row = rows[i]
+        codigo = row[idx_codigo] if idx_codigo < len(row) else None
+        if codigo is None or str(codigo).strip() == "":
+            i += 1
+            continue
+        fila_datos_idx = i
+        sub_filas: List[list] = []
+        j = i + 1
+        while j < n and len(sub_filas) < 2:
+            sig = rows[j]
+            if _celda_es_fila_barra(sig):
+                j += 1
+                continue
+            sig_codigo = sig[idx_codigo] if idx_codigo < len(sig) else None
+            if sig_codigo is not None and str(sig_codigo).strip() != "":
+                break  # ya es el siguiente concepto, no una sub-fila de este
+            sub_filas.append(sig)
+            j += 1
+        bloques.append({
+            "fila_datos": row,
+            "fila_datos_idx": fila_datos_idx,
+            "fila_porcentaje": sub_filas[0] if len(sub_filas) > 0 else None,
+            "fila_importes": sub_filas[1] if len(sub_filas) > 1 else None,
+        })
+        i = j
+    return bloques
+
+
+def extraer_distribucion_mensual_bloque(
+    fila_importes: Optional[list],
+    columnas_mes_idx: List[int],
+    convencion: Optional[ConvencionDecimal],
+) -> Tuple[List[Decimal], List[str]]:
+    """De la fila de IMPORTES (fila 3 del bloque — verificado contra el
+    archivo real: es la única de las tres filas de distribución cuya suma
+    coincide exactamente con el importe del concepto, fracción y porcentaje
+    quedan desfasados por factores de 10 y 100) extrae un Decimal por cada
+    columna Mes N mapeada. Celda vacía = Decimal("0") (sin actividad
+    programada ese mes); celda con texto no numérico se reporta como error
+    de parseo en vez de silenciarse a 0 (podría ser una celda corrupta)."""
+    if fila_importes is None:
+        return [to_decimal("0") for _ in columnas_mes_idx], []
+    valores: List[Decimal] = []
+    errores: List[str] = []
+    for idx in columnas_mes_idx:
+        raw = fila_importes[idx] if idx < len(fila_importes) else None
+        if raw is None or (isinstance(raw, str) and raw.strip() == ""):
+            valores.append(to_decimal("0"))
+            continue
+        try:
+            valores.append(_parse_celda_numerica(raw, convencion))
+        except ValueError as e:
+            valores.append(to_decimal("0"))
+            errores.append(f"columna mes idx {idx}: {e}")
+    return valores, errores
+
+
+def validar_cuadre_distribucion(importe_concepto: Decimal, valores_mensuales: List[Decimal]) -> Optional[dict]:
+    """Regla obligatoria del plan: la suma de la distribución mensual debe
+    cuadrar con el importe del concepto (tolerancia 1 centavo). None si
+    cuadra; si no, un dict con ambos valores para la vista previa — nunca se
+    importa en silencio un concepto que no cuadra."""
+    suma = sum_decimales(valores_mensuales)
+    diferencia = abs(suma - importe_concepto)
+    if diferencia <= to_decimal("0.01"):
+        return None
+    return {
+        "tipo": "distribucion_no_cuadra",
+        "importe_concepto": dec_to_str(round_money(importe_concepto)),
+        "suma_distribucion": dec_to_str(round_money(suma)),
+        "diferencia": dec_to_str(round_money(diferencia)),
+    }
+
+
 # === Modelos =================================================================
 class PartidaIn(BaseModel):
     project_id: str
