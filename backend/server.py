@@ -228,6 +228,30 @@ class ProjectIn(BaseModel):
     # editable por Coordinador General; se antepone a fecha+letra en cada
     # minuta (ver `create_minuta`).
     minuta_code_prefix: Optional[str] = None
+    # === Configuración de Catálogo de Conceptos / avance (multiproyecto) ===
+    # tipo_contrato y modo_avance son EJES INDEPENDIENTES — no se deriva uno
+    # del otro. Defaults preservan el comportamiento de hoy para proyectos
+    # existentes: precios unitarios (cantidad × PU) y captura por cantidad.
+    tipo_contrato: Literal["PRECIO_ALZADO", "PRECIOS_UNITARIOS"] = "PRECIOS_UNITARIOS"
+    modo_avance: Literal["CANTIDAD", "PORCENTAJE", "MATRIZ"] = "CANTIDAD"
+    # Nombres de nivel — Partida y Concepto son entidades distintas del
+    # modelo, por eso van en dos campos separados y no en una sola lista con
+    # una posición "especial" al final (ver discusión de diseño en el plan).
+    # nombres_niveles_partida[i] nombra la Partida de profundidad i; si el
+    # árbol es más profundo que la lista, los niveles sobrantes caen a
+    # fallback genérico ("Nivel N"), nunca se trunca ni se repite el último.
+    nombres_niveles_partida: List[str] = Field(default_factory=list)
+    nombre_nivel_concepto: str = ""  # fallback "Concepto" si vacío
+    # Unidades adicionales a UNIDADES (constante base, definida junto al
+    # resto del módulo de catálogo), propias de este proyecto — la captura
+    # sigue siendo de lista cerrada, nunca texto libre.
+    unidades_personalizadas: List[str] = Field(default_factory=list)
+    # Título visible del módulo de catálogo (pantalla, encabezado del PDF y
+    # nombre del archivo exportado). NO se deriva pluralizando
+    # nombre_nivel_concepto — pluralizar una palabra libre da resultados
+    # incorrectos (ej. "CATÁLOGO DE RENGLÓNS"). Si el proyecto no lo
+    # configura, cae al texto histórico "Catálogo de Conceptos".
+    titulo_modulo_catalogo: str = ""
 
 
 class ProjectPatch(BaseModel):
@@ -249,6 +273,18 @@ class ProjectPatch(BaseModel):
     categorias_equipo: Optional[List[str]] = None
     constructora_logo: Optional[str] = None
     minuta_code_prefix: Optional[str] = None
+    tipo_contrato: Optional[Literal["PRECIO_ALZADO", "PRECIOS_UNITARIOS"]] = None
+    modo_avance: Optional[Literal["CANTIDAD", "PORCENTAJE", "MATRIZ"]] = None
+    nombres_niveles_partida: Optional[List[str]] = None
+    nombre_nivel_concepto: Optional[str] = None
+    unidades_personalizadas: Optional[List[str]] = None
+    titulo_modulo_catalogo: Optional[str] = None
+    # Banderas de intención explícita — mismo idioma que `quitar_padre` en
+    # PartidaPatch. Dos flags independientes (no una sola) porque
+    # tipo_contrato y modo_avance son ejes que no se deben conflatar: cambiar
+    # uno no debe requerir (ni permitir de facto) confirmar el otro.
+    confirmar_cambio_modo_avance: bool = False
+    confirmar_cambio_tipo_contrato: bool = False
 
 
 class ProjectOut(BaseModel):
@@ -278,6 +314,12 @@ class ProjectOut(BaseModel):
     # renderizan como slides/páginas dedicadas al inicio de las exportaciones
     # (presupuesto, programa, planos, etc.). Reemplaza al single `template_map`.
     general_data_images: List[str] = Field(default_factory=list)
+    tipo_contrato: str = "PRECIOS_UNITARIOS"
+    modo_avance: str = "CANTIDAD"
+    nombres_niveles_partida: List[str] = Field(default_factory=list)
+    nombre_nivel_concepto: str = ""
+    unidades_personalizadas: List[str] = Field(default_factory=list)
+    titulo_modulo_catalogo: str = ""
     created_by: str
     created_at: datetime
     archived: bool = False
@@ -1070,6 +1112,12 @@ async def create_project(body: ProjectIn, user: dict = Depends(require_role(ROLE
         "contratos_list": _sanitize_str_list(body.contratos_list),
         "categorias_personal": _sanitize_str_list(body.categorias_personal),
         "categorias_equipo": _sanitize_str_list(body.categorias_equipo),
+        "tipo_contrato": body.tipo_contrato,
+        "modo_avance": body.modo_avance,
+        "nombres_niveles_partida": _sanitize_str_list(body.nombres_niveles_partida),
+        "nombre_nivel_concepto": (body.nombre_nivel_concepto or "").strip(),
+        "unidades_personalizadas": _sanitize_str_list(body.unidades_personalizadas),
+        "titulo_modulo_catalogo": (body.titulo_modulo_catalogo or "").strip(),
         "created_by": user["id"],
         "created_at": datetime.now(timezone.utc),
         "archived": False,
@@ -1094,6 +1142,12 @@ async def get_project(pid: str, user: dict = Depends(current_user)):
     p.setdefault("report_text_color", "#0F172A")
     p.setdefault("general_data_images", [])
     p.setdefault("minuta_code_prefix", None)
+    p.setdefault("tipo_contrato", "PRECIOS_UNITARIOS")
+    p.setdefault("modo_avance", "CANTIDAD")
+    p.setdefault("nombres_niveles_partida", [])
+    p.setdefault("nombre_nivel_concepto", "")
+    p.setdefault("unidades_personalizadas", [])
+    p.setdefault("titulo_modulo_catalogo", "")
     return p
 
 
@@ -1147,6 +1201,41 @@ async def update_project(pid: str, body: ProjectPatch, user: dict = Depends(requ
     if body.minuta_code_prefix is not None:
         upd["minuta_code_prefix"] = body.minuta_code_prefix.strip() or None
 
+    # modo_avance y tipo_contrato: ejes independientes, cada uno con su
+    # propia bandera de confirmación — cambiarlos con datos ya capturados
+    # reinterpreta cómo se lee ese dato, así que NUNCA se convierte en
+    # silencio (ver diagnóstico de Etapa 1).
+    if body.modo_avance is not None and body.modo_avance != existing.get("modo_avance", "CANTIDAD"):
+        tiene_avances = await db.registros_avance.find_one({"project_id": pid})
+        if tiene_avances and not body.confirmar_cambio_modo_avance:
+            raise HTTPException(
+                400,
+                "Este proyecto ya tiene registros de avance capturados. Cambiar "
+                "modo_avance reinterpreta cómo se calcula el % de avance de cada "
+                "concepto y partida — reenvía la solicitud con "
+                "confirmar_cambio_modo_avance=true para confirmar el cambio.",
+            )
+        upd["modo_avance"] = body.modo_avance
+    if body.tipo_contrato is not None and body.tipo_contrato != existing.get("tipo_contrato", "PRECIOS_UNITARIOS"):
+        tiene_conceptos = await db.conceptos.find_one({"project_id": pid})
+        if tiene_conceptos and not body.confirmar_cambio_tipo_contrato:
+            raise HTTPException(
+                400,
+                "Este proyecto ya tiene conceptos capturados en su catálogo. "
+                "Cambiar tipo_contrato reinterpreta cómo se leen cantidad y "
+                "precio unitario — reenvía la solicitud con "
+                "confirmar_cambio_tipo_contrato=true para confirmar el cambio.",
+            )
+        upd["tipo_contrato"] = body.tipo_contrato
+    if body.nombres_niveles_partida is not None:
+        upd["nombres_niveles_partida"] = _sanitize_str_list(body.nombres_niveles_partida)
+    if body.nombre_nivel_concepto is not None:
+        upd["nombre_nivel_concepto"] = body.nombre_nivel_concepto.strip()
+    if body.unidades_personalizadas is not None:
+        upd["unidades_personalizadas"] = _sanitize_str_list(body.unidades_personalizadas)
+    if body.titulo_modulo_catalogo is not None:
+        upd["titulo_modulo_catalogo"] = body.titulo_modulo_catalogo.strip()
+
     if upd:
         await db.projects.update_one({"id": pid}, {"$set": upd})
 
@@ -1175,6 +1264,12 @@ def _project_public(p: dict) -> dict:
     p.setdefault("template_pptx", None)
     p.setdefault("template_map", None)
     p.setdefault("minuta_code_prefix", None)
+    p.setdefault("tipo_contrato", "PRECIOS_UNITARIOS")
+    p.setdefault("modo_avance", "CANTIDAD")
+    p.setdefault("nombres_niveles_partida", [])
+    p.setdefault("nombre_nivel_concepto", "")
+    p.setdefault("unidades_personalizadas", [])
+    p.setdefault("titulo_modulo_catalogo", "")
     return p
 
 
@@ -10761,12 +10856,35 @@ UNIDADES: tuple = (
     "UNIVERSAL", "PZA", "KG", "TON", "G", "M", "KM", "CM", "M2", "M3",
     "L", "ML", "LOTE", "JGO", "HR", "JORNADA", "SERV",
 )
-UnidadType = Literal[
-    "UNIVERSAL", "PZA", "KG", "TON", "G", "M", "KM", "CM", "M2", "M3",
-    "L", "ML", "LOTE", "JGO", "HR", "JORNADA", "SERV",
-]
+# `unidad` en ConceptoIn/ConceptoPatch antes era un Literal[...] de Pydantic
+# (validación estática) construido sobre esta misma UNIDADES. La app es
+# multiproyecto y cada proyecto puede agregar sus propias unidades
+# (`Project.unidades_personalizadas`) — un Literal no puede consultar la DB
+# para saber qué proyecto es, así que la validación de pertenencia se movió a
+# `_validar_unidad_para_proyecto`, llamada desde los handlers de
+# create_concepto/update_concepto (los únicos dos escritores de `unidad` vía
+# API directa — el importador de catálogo, más abajo, todavía solo reconoce
+# UNIDADES base y normaliza cualquier otra cosa a UNIVERSAL; extenderlo a
+# unidades_personalizadas queda para cuando se toque el wizard de
+# importación, no aquí). ConceptoIn/ConceptoPatch.unidad son `str` de formato
+# libre a nivel de Pydantic; siguen siendo lista cerrada a nivel de negocio,
+# nunca texto libre para el usuario final (el selector de la UI ofrece solo
+# UNIDADES + las del proyecto).
 PERIODICIDADES: tuple = ("SEMANAL", "MENSUAL")
 PeriodicidadType = Literal["SEMANAL", "MENSUAL"]
+
+
+def _validar_unidad_para_proyecto(unidad: str, project: dict) -> None:
+    """Rechaza una unidad que no pertenezca a UNIDADES + las personalizadas
+    de ESTE proyecto — el caso que se escapa es una unidad que sí existe en
+    OTRO proyecto pero no en este (ver test_project_genericidad_config.py)."""
+    validas = list(UNIDADES) + list(project.get("unidades_personalizadas") or [])
+    if unidad not in validas:
+        raise HTTPException(
+            400,
+            f"Unidad '{unidad}' no es válida para este proyecto. "
+            f"Válidas aquí: {', '.join(validas)}",
+        )
 
 # Alias comunes encontrados en catálogos reales de obra -> nuestro enum.
 _UNIDAD_ALIASES = {
@@ -10878,11 +10996,21 @@ class ConceptoIn(BaseModel):
     partida_id: str
     clave: str
     descripcion: str
-    unidad: UnidadType = "UNIVERSAL"
+    # Formato solamente aquí (no vacío) — la pertenencia a BASE + unidades
+    # del proyecto se valida en el handler vía _validar_unidad_para_proyecto.
+    unidad: str = "UNIVERSAL"
     cantidad: str
     precio_unitario: str
     meta: str
     periodicidad_meta: PeriodicidadType = "SEMANAL"
+
+    @field_validator("unidad")
+    @classmethod
+    def _v_unidad_formato(cls, v):
+        v = (v or "").strip()
+        if not v:
+            raise ValueError("unidad no puede estar vacía")
+        return v
 
     @field_validator("cantidad", "precio_unitario", "meta")
     @classmethod
@@ -10894,12 +11022,21 @@ class ConceptoIn(BaseModel):
 class ConceptoPatch(BaseModel):
     clave: Optional[str] = None
     descripcion: Optional[str] = None
-    unidad: Optional[UnidadType] = None
+    unidad: Optional[str] = None
     cantidad: Optional[str] = None
     precio_unitario: Optional[str] = None
     meta: Optional[str] = None
     periodicidad_meta: Optional[PeriodicidadType] = None
     activo: Optional[bool] = None
+
+    @field_validator("unidad")
+    @classmethod
+    def _v_unidad_formato(cls, v):
+        if v is not None:
+            v = v.strip()
+            if not v:
+                raise ValueError("unidad no puede estar vacía")
+        return v
 
     @field_validator("cantidad", "precio_unitario", "meta")
     @classmethod
@@ -10931,6 +11068,24 @@ class RegistroAvanceIn(BaseModel):
     concepto_id: str
     fecha: str  # "YYYY-MM-DD"
     cantidad_ejecutada: str
+    # Opcional a nivel de almacenamiento SIEMPRE — la obligatoriedad depende
+    # de project.modo_avance (obligatorio solo en MATRIZ) y se valida en el
+    # handler, no aquí, porque un modelo de Pydantic no puede consultar la
+    # DB para saber en qué proyecto está el concepto. En modo CANTIDAD/
+    # PORCENTAJE es guardable pero nunca bloqueante (si el residente sabe en
+    # qué nodo ejecutó, se guarda aunque el cálculo de avance no lo use hoy).
+    nodo_id: Optional[str] = None
+    # TODO(migración estacion_id→nodo_id): campo legado — RegistroAvance
+    # tenía un campo estacion_id sin usar que se renombró a nodo_id. Se
+    # acepta aquí solo para no rechazar avances de dispositivos con cola
+    # offline vieja (capturados antes del rename, sincronizando después).
+    # Resuelto en create_avance: si ambos vienen y difieren, gana nodo_id y
+    # se registra advertencia; si solo viene estacion_id, se usa como
+    # nodo_id. Retirar este campo, la lógica de resolución en create_avance
+    # y el resolver de lectura _registro_avance_out cuando quien administre
+    # producción confirme que (a) no quedan dispositivos con cola vieja
+    # pendiente de sincronizar y (b) ningún documento en Mongo conserva la
+    # llave estacion_id.
     estacion_id: Optional[str] = None
     reporte_id: Optional[str] = None
     fotos: List[str] = Field(default_factory=list)  # base64, mismo criterio que ReportIn.images
@@ -10963,7 +11118,7 @@ class RegistroAvanceOut(BaseModel):
     project_id: str
     fecha: str
     cantidad_ejecutada: str
-    estacion_id: Optional[str] = None
+    nodo_id: Optional[str] = None
     reporte_id: Optional[str] = None
     fotos: List[str] = Field(default_factory=list)
     photo_captions: List[str] = Field(default_factory=list)
@@ -10972,6 +11127,51 @@ class RegistroAvanceOut(BaseModel):
     creado_en: datetime
     sincronizado: bool = True
     editado_en: Optional[datetime] = None
+
+
+async def _registro_avance_out(doc: dict) -> RegistroAvanceOut:
+    """Serializa un doc de `registros_avance` a RegistroAvanceOut, resolviendo
+    el campo legado `estacion_id` -> `nodo_id` para documentos guardados
+    ANTES del rename (mismo criterio que la resolución en `create_avance`
+    para la entrada; ver el TODO en RegistroAvanceIn.estacion_id).
+
+    - Si el doc trae nodo_id, ese gana siempre — si ADEMÁS trae estacion_id
+      con un valor distinto, no se resuelve en silencio: se registra una
+      advertencia con el id del registro y estacion_id se ignora.
+    - Si el doc trae SOLO estacion_id, se usa como nodo_id — pero solo si
+      corresponde a un nodo que de verdad existe en el árbol del proyecto
+      (un estacion_id viejo puede apuntar a un nodo que ya se borró/movió).
+      Si no existe, se deja nodo_id en null y se registra advertencia; no se
+      lanza excepción — es una lectura, no se puede rechazar un documento ya
+      guardado.
+
+    TODO(migración estacion_id→nodo_id): retirar este resolver (y volver a
+    hacer `RegistroAvanceOut(**doc)` directo) cuando quien administre
+    producción confirme que (a) no quedan dispositivos con cola offline
+    vieja pendiente de sincronizar y (b) ningún documento en Mongo conserva
+    la llave estacion_id.
+    """
+    estacion_id = doc.get("estacion_id")
+    nodo_id = doc.get("nodo_id")
+    if estacion_id:
+        if nodo_id and nodo_id != estacion_id:
+            log.warning(
+                f"[avance:{doc.get('id')}] documento con nodo_id y estacion_id distintos "
+                f"(nodo_id={nodo_id!r}, estacion_id legado={estacion_id!r}) — gana nodo_id, "
+                f"estacion_id se ignora"
+            )
+        elif not nodo_id:
+            nodo = await db.location_nodes.find_one({"id": estacion_id, "project_id": doc.get("project_id")})
+            if nodo:
+                nodo_id = estacion_id
+            else:
+                log.warning(
+                    f"[avance:{doc.get('id')}] estacion_id legado={estacion_id!r} no corresponde "
+                    f"a un nodo existente en este proyecto — nodo_id queda en null"
+                )
+    if nodo_id != doc.get("nodo_id"):
+        doc = {**doc, "nodo_id": nodo_id}
+    return RegistroAvanceOut(**doc)
 
 
 class BitacoraCambioOut(BaseModel):
@@ -11239,6 +11439,8 @@ async def create_concepto(body: ConceptoIn, user: dict = Depends(require_role(RO
     partida = await db.partidas.find_one({"id": body.partida_id})
     if not partida:
         raise HTTPException(404, "Partida no existe")
+    project = await db.projects.find_one({"id": partida["project_id"]})
+    _validar_unidad_para_proyecto(body.unidad, project or {})
     cid = str(uuid.uuid4())
     doc = {
         "id": cid,
@@ -11270,6 +11472,8 @@ async def update_concepto(concepto_id: str, body: ConceptoPatch, user: dict = De
     if body.descripcion is not None:
         upd["descripcion"] = body.descripcion.strip()
     if body.unidad is not None:
+        project = await db.projects.find_one({"id": concepto["project_id"]})
+        _validar_unidad_para_proyecto(body.unidad, project or {})
         upd["unidad"] = body.unidad
     if body.cantidad is not None:
         upd["cantidad"] = body.cantidad
@@ -11424,6 +11628,7 @@ def _validar_archivo_completo(
     mapping: "ImportMappingIn",
     convencion: Optional[ConvencionDecimal],
     existing_by_clave: dict,
+    unidades_personalizadas: Optional[List[str]] = None,
 ) -> List[dict]:
     """Procesa TODAS las filas de datos de la hoja UNA vez (3.a) — no una
     muestra. Cada fila queda con su interpretación (clave/descripción/
@@ -11479,10 +11684,28 @@ def _validar_archivo_completo(
         unidad_raw = celda(row, "unidad")
         unidad, unidad_reconocida = _map_unidad_con_flag(str(unidad_raw) if unidad_raw is not None else None)
         if not unidad_reconocida:
-            problemas.append({
-                "tipo": "unidad_no_reconocida", "campo": "unidad",
-                "motivo": f"Unidad '{unidad_raw}' no reconocida; se usará UNIVERSAL si no se corrige",
-            })
+            # TODO(Etapa 6 — importación de la matriz): _map_unidad_con_flag
+            # solo conoce UNIDADES + _UNIDAD_ALIASES, nunca
+            # project.unidades_personalizadas — el importador de catálogo
+            # (este archivo) sigue sin poder reconocer una unidad
+            # personalizada del proyecto directamente desde Excel, aunque
+            # sí la acepte si se escribe a mano en el catálogo (ver
+            # _validar_unidad_para_proyecto). Mientras tanto, el matiz de
+            # abajo evita que el aviso lea como "unidad inventada" cuando en
+            # realidad es una unidad que el proyecto configuró a propósito.
+            es_personalizada = str(unidad_raw or "").strip().upper() in {
+                (u or "").strip().upper() for u in (unidades_personalizadas or [])
+            }
+            if es_personalizada:
+                motivo = (
+                    f"Unidad '{unidad_raw}' no reconocida por el importador; si es una unidad "
+                    f"personalizada del proyecto, corrígela aquí (el importador aún no lee "
+                    f"unidades personalizadas directamente del Excel) — de lo contrario se "
+                    f"usará UNIVERSAL si no se corrige"
+                )
+            else:
+                motivo = f"Unidad '{unidad_raw}' no reconocida; se usará UNIVERSAL si no se corrige"
+            problemas.append({"tipo": "unidad_no_reconocida", "campo": "unidad", "motivo": motivo})
 
         def _parse_campo_numerico(raw_valor, nombre_campo: str) -> Optional[str]:
             try:
@@ -11778,6 +12001,7 @@ async def import_validate(pid: str, import_id: str, body: ImportValidateIn, user
     pero NUNCA toca `correcciones`: el overlay del usuario sigue aplicando
     sobre el resultado nuevo."""
     await ensure_project_access(user, pid)
+    project = await db.projects.find_one({"id": pid})
     partida = await db.partidas.find_one({"id": body.partida_id, "project_id": pid})
     if not partida:
         raise HTTPException(404, "Partida no existe en este proyecto")
@@ -11798,6 +12022,7 @@ async def import_validate(pid: str, import_id: str, body: ImportValidateIn, user
 
     filas = _validar_archivo_completo(
         session["sheets"][body.sheet], body.header_row_index, body.mapping, convencion, existing_by_clave,
+        unidades_personalizadas=(project or {}).get("unidades_personalizadas") or [],
     )
 
     update_fields = {
@@ -12132,13 +12357,39 @@ async def create_avance(body: RegistroAvanceIn, user: dict = Depends(current_use
     if not concepto:
         raise HTTPException(404, "Concepto no existe")
     await ensure_project_access(user, concepto["project_id"])
+    project = await db.projects.find_one({"id": concepto["project_id"]})
+    modo_avance = (project or {}).get("modo_avance", "CANTIDAD")
+
+    # TODO(migración estacion_id→nodo_id): resuelve el campo legado antes de
+    # cualquier validación de nodo_id — ver el TODO completo en
+    # RegistroAvanceIn.estacion_id. Retirar este bloque junto con ese campo.
+    nodo_id_efectivo = body.nodo_id
+    if body.estacion_id:
+        if body.nodo_id and body.nodo_id != body.estacion_id:
+            log.warning(
+                f"[avance] payload con nodo_id y estacion_id legado distintos "
+                f"(nodo_id={body.nodo_id!r}, estacion_id={body.estacion_id!r}) — gana nodo_id"
+            )
+        elif not body.nodo_id:
+            nodo_id_efectivo = body.estacion_id
+
+    # nodo_id: obligatorio SOLO en modo MATRIZ (ver ProjectOut.modo_avance).
+    # En cualquier otro modo es opcional y nunca bloqueante — pero si viene,
+    # tiene que ser un nodo real de este proyecto (mismo criterio que
+    # scope_node_id en invitaciones).
+    if modo_avance == "MATRIZ" and not nodo_id_efectivo:
+        raise HTTPException(400, "Este proyecto captura avance en modo MATRIZ: nodo_id es obligatorio")
+    if nodo_id_efectivo:
+        nodo = await db.location_nodes.find_one({"id": nodo_id_efectivo, "project_id": concepto["project_id"]})
+        if not nodo:
+            raise HTTPException(404, "nodo_id inválido para este proyecto")
 
     # Idempotencia offline: si ya existe un registro con el mismo client_id,
     # se devuelve el existente en vez de duplicar (mismo criterio que reports).
     if body.client_id:
         dup = await db.registros_avance.find_one({"client_id": body.client_id})
         if dup:
-            return RegistroAvanceOut(**dup)
+            return await _registro_avance_out(dup)
 
     aid = str(uuid.uuid4())
     doc = {
@@ -12147,7 +12398,7 @@ async def create_avance(body: RegistroAvanceIn, user: dict = Depends(current_use
         "project_id": concepto["project_id"],
         "fecha": body.fecha,
         "cantidad_ejecutada": body.cantidad_ejecutada,
-        "estacion_id": body.estacion_id,
+        "nodo_id": nodo_id_efectivo,
         "reporte_id": body.reporte_id,
         "fotos": body.fotos,
         "photo_captions": body.photo_captions,
@@ -12159,7 +12410,7 @@ async def create_avance(body: RegistroAvanceIn, user: dict = Depends(current_use
         "client_id": body.client_id,
     }
     await db.registros_avance.insert_one(doc)
-    return RegistroAvanceOut(**doc)
+    return await _registro_avance_out(doc)
 
 
 @api.patch("/avances/{avance_id}", response_model=RegistroAvanceOut)
@@ -12189,7 +12440,7 @@ async def update_avance(avance_id: str, body: RegistroAvancePatch, user: dict = 
         upd["photo_captions"] = body.photo_captions
     await db.registros_avance.update_one({"id": avance_id}, {"$set": upd})
     updated = await db.registros_avance.find_one({"id": avance_id})
-    return RegistroAvanceOut(**updated)
+    return await _registro_avance_out(updated)
 
 
 @api.get("/projects/{pid}/avances", response_model=List[RegistroAvanceOut])
@@ -12218,7 +12469,7 @@ async def list_avances(
         conceptos = await db.conceptos.find({"partida_id": {"$in": partida_ids}}).to_list(length=100000)
         query["concepto_id"] = {"$in": [c["id"] for c in conceptos]}
     docs = await db.registros_avance.find(query).sort("fecha", -1).to_list(length=100000)
-    return [RegistroAvanceOut(**d) for d in docs]
+    return [await _registro_avance_out(d) for d in docs]
 
 
 class AvancesResumenOut(BaseModel):
@@ -12293,6 +12544,13 @@ async def export_catalogo_pdf(pid: str, user: dict = Depends(current_user)):
     project_name = proj.get("name", "Proyecto")
     project_color = _sanitize_color_hex(proj.get("color_tema")) or "#003366"
     total_catalogo = sum_decimales([p.importe_contratado_partida for p in partidas_out])
+    titulo_modulo_raw = (proj.get("titulo_modulo_catalogo") or "").strip()
+    titulo_modulo = titulo_modulo_raw or "Catálogo de Conceptos"
+    # Fragmento de archivo: si no hay título propio, se preserva LITERAL el
+    # nombre de archivo histórico ("catalogo_conceptos_...") en vez de pasar
+    # el fallback con acentos por el sanitizador — evita que el nombre del
+    # PDF cambie para un proyecto que no configuró nada.
+    titulo_modulo_fname = _safe_filename_fragment(titulo_modulo_raw) if titulo_modulo_raw else "catalogo_conceptos"
 
     def _build_pdf_blocking() -> bytes:
         from reportlab.lib.pagesizes import A4, landscape
@@ -12314,7 +12572,7 @@ async def export_catalogo_pdf(pid: str, user: dict = Depends(current_user)):
         money_style = ParagraphStyle("CatMoney", parent=styles["BodyText"], fontSize=8, leading=10, alignment=TA_RIGHT)
 
         story = [
-            Paragraph(f"CATÁLOGO DE CONCEPTOS — {project_name}", title_style),
+            Paragraph(f"{titulo_modulo.upper()} — {project_name}", title_style),
             Spacer(1, 10),
         ]
         col_widths = [2.2 * cm, 9.5 * cm, 1.6 * cm, 2.2 * cm, 2.6 * cm, 2.8 * cm]
@@ -12360,7 +12618,7 @@ async def export_catalogo_pdf(pid: str, user: dict = Depends(current_user)):
         return buf.getvalue()
 
     pdf_bytes = await asyncio.to_thread(_build_pdf_blocking)
-    fname = f"catalogo_conceptos_{_safe_filename_fragment(project_name)}.pdf"
+    fname = f"{titulo_modulo_fname}_{_safe_filename_fragment(project_name)}.pdf"
     return StreamingResponse(
         io.BytesIO(pdf_bytes),
         media_type="application/pdf",
