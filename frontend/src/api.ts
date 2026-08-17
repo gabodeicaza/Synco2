@@ -1278,6 +1278,11 @@ export const api = {
   revokeInvitation: (iid: string) => request<{ ok: boolean }>('DELETE', `/invitations/${iid}`),
 
   getReportTemplates: () => request<ReportTemplate[]>('GET', '/report-templates'),
+  createReportTemplate: (body: { code: string; name: string; category: string; fields: ReportTemplateField[] }) =>
+    request<ReportTemplate>('POST', '/report-templates', body),
+  updateReportTemplate: (tid: string, body: { name?: string; category?: string; fields?: ReportTemplateField[] }) =>
+    request<ReportTemplate>('PUT', `/report-templates/${tid}`, body),
+  deleteReportTemplate: (tid: string) => request<{ ok: boolean }>('DELETE', `/report-templates/${tid}`),
 
   createReport: async (body: any): Promise<Report> => {
     // [OFFLINE 2026-08-07] Los especialistas capturan en obra, donde a

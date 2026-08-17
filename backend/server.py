@@ -566,6 +566,19 @@ class ReportTemplate(BaseModel):
     fields: List[ReportTemplateField] = Field(default_factory=list)
 
 
+class ReportTemplateIn(BaseModel):
+    code: str
+    name: str
+    category: str
+    fields: List[ReportTemplateField] = Field(default_factory=list)
+
+
+class ReportTemplatePatch(BaseModel):
+    name: Optional[str] = None
+    category: Optional[str] = None
+    fields: Optional[List[ReportTemplateField]] = None
+
+
 def _tf(key: str, label: str, type: str, required: bool = False, options: Optional[List[str]] = None) -> dict:
     return {"key": key, "label": label, "type": type, "required": required, "options": options or []}
 
@@ -2555,6 +2568,65 @@ def validate_measurement_value(mtype: str, value: dict):
 async def list_report_templates(user: dict = Depends(current_user)):
     cursor = db.report_templates.find({}, {"_id": 0}).sort("name", 1)
     return await cursor.to_list(length=None)
+
+
+def _normalize_template_code(raw: str) -> str:
+    code = (raw or "").strip().lower().replace(" ", "_")
+    code = re.sub(r"[^a-z0-9_]", "", code)
+    return code
+
+
+@api.post("/report-templates")
+async def create_report_template(body: ReportTemplateIn, user: dict = Depends(require_role(ROLE_COORD))):
+    code = _normalize_template_code(body.code)
+    if not code:
+        raise HTTPException(400, "code requerido")
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(400, "name requerido")
+    existing = await db.report_templates.find_one({"code": code})
+    if existing:
+        raise HTTPException(409, "Ya existe una plantilla con ese código")
+    doc = {
+        "id": str(uuid.uuid4()),
+        "code": code,
+        "name": name,
+        "category": (body.category or "General").strip() or "General",
+        "fields": [f.model_dump() for f in body.fields],
+    }
+    await db.report_templates.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api.put("/report-templates/{tid}")
+async def update_report_template(tid: str, body: ReportTemplatePatch, user: dict = Depends(require_role(ROLE_COORD))):
+    tpl = await db.report_templates.find_one({"id": tid})
+    if not tpl:
+        raise HTTPException(404, "Plantilla no existe")
+    update: dict = {}
+    if body.name is not None:
+        name = body.name.strip()
+        if not name:
+            raise HTTPException(400, "name no puede quedar vacío")
+        update["name"] = name
+    if body.category is not None:
+        update["category"] = body.category.strip() or "General"
+    if body.fields is not None:
+        update["fields"] = [f.model_dump() for f in body.fields]
+    if update:
+        await db.report_templates.update_one({"id": tid}, {"$set": update})
+    tpl = await db.report_templates.find_one({"id": tid}, {"_id": 0})
+    return tpl
+
+
+@api.delete("/report-templates/{tid}")
+async def delete_report_template(tid: str, user: dict = Depends(require_role(ROLE_COORD))):
+    tpl = await db.report_templates.find_one({"id": tid})
+    if not tpl:
+        raise HTTPException(404, "Plantilla no existe")
+    await db.report_templates.delete_one({"id": tid})
+    return {"ok": True}
 
 
 @api.post("/reports")
