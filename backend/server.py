@@ -504,6 +504,10 @@ class ReportIn(BaseModel):
     # encolar un reporte sin conexion. Permite deduplicar si el mismo
     # reporte se reintenta (ver db.reports índice único sparse sobre esto).
     client_id: Optional[str] = None
+    # Reporte estructurado (opcional): id de la plantilla elegida (ver
+    # ReportTemplate) y los valores capturados para sus campos dinámicos.
+    template_id: Optional[str] = None
+    dynamic_data: dict = Field(default_factory=dict)
 
 
 class ReportOut(BaseModel):
@@ -541,6 +545,124 @@ class ReportOut(BaseModel):
     captured_by: str
     captured_by_name: str
     created_at: datetime
+    template_id: Optional[str] = None
+    dynamic_data: dict = Field(default_factory=dict)
+
+
+# === Plantillas de reporte estructurado (formularios dinámicos) ============
+class ReportTemplateField(BaseModel):
+    key: str
+    label: str
+    type: Literal["string", "number", "boolean", "select", "multiselect"]
+    required: bool = False
+    options: List[str] = Field(default_factory=list)
+
+
+class ReportTemplate(BaseModel):
+    id: str
+    code: str
+    name: str
+    category: str
+    fields: List[ReportTemplateField] = Field(default_factory=list)
+
+
+def _tf(key: str, label: str, type: str, required: bool = False, options: Optional[List[str]] = None) -> dict:
+    return {"key": key, "label": label, "type": type, "required": required, "options": options or []}
+
+
+# Plantillas iniciales de reporte estructurado. Se siembran en startup_event
+# (idempotente por `code`) — ver Fase 2 del epic de reportes estructurados.
+SEED_REPORT_TEMPLATES: List[dict] = [
+    {
+        "code": "calidad_colados",
+        "name": "Calidad - Colados",
+        "category": "Calidad",
+        "fields": [
+            _tf("elemento", "Elemento", "string"),
+            _tf("vol_teorico_m3", "Vol. Teórico m3", "number"),
+            _tf("vol_olla_m3", "Vol. de Olla m3", "number"),
+            _tf("revenimiento_cm", "Revenimiento cm", "number"),
+            _tf("temperatura_c", "Temperatura °C", "number"),
+            _tf("hora_vaciado", "Hora vaciado", "string"),
+            _tf("junta_fria", "Junta fría", "boolean"),
+        ],
+    },
+    {
+        "code": "calidad_acero",
+        "name": "Calidad - Acero",
+        "category": "Calidad",
+        "fields": [
+            _tf("elemento", "Elemento", "string"),
+            _tf("calibre", "Calibre", "string"),
+            _tf("marca", "Marca", "string"),
+            _tf("no_probetas", "No. probetas", "number"),
+        ],
+    },
+    {
+        "code": "calidad_pit_concreto",
+        "name": "Calidad - PIT / Concreto",
+        "category": "Calidad",
+        "fields": [
+            _tf("ubicacion", "Ubicación", "string"),
+            _tf("no_pila", "No. Pila", "string"),
+            _tf("tipo_prueba", "Tipo prueba", "select", options=["PIT", "Cilindros"]),
+            _tf("temperatura", "Temperatura", "number"),
+        ],
+    },
+    {
+        "code": "hse",
+        "name": "Seguridad e Higiene (HSE)",
+        "category": "Seguridad",
+        "fields": [
+            _tf("tipo_recorrido", "Tipo recorrido", "select", options=["Rutina", "Alto Riesgo"]),
+            _tf(
+                "incumplimientos",
+                "Incumplimientos",
+                "multiselect",
+                options=["Falta EPP", "Sin Permiso", "Sin Señalización", "Ninguno"],
+            ),
+            _tf("nivel_riesgo", "Nivel Riesgo", "select", options=["Bajo", "Medio", "Alto"]),
+        ],
+    },
+    {
+        "code": "gestion_social",
+        "name": "Gestión Social",
+        "category": "Gestión Social",
+        "fields": [
+            _tf("predios_visitados", "Predios visitados", "string"),
+            _tf("inconformidad_vecinal", "¿Inconformidad vecinal?", "boolean"),
+            _tf("mitigacion", "Mitigación", "string"),
+        ],
+    },
+    {
+        "code": "medio_ambiente",
+        "name": "Medio Ambiente",
+        "category": "Medio Ambiente",
+        "fields": [
+            _tf("residuo", "Residuo", "select", options=["Sólido", "Cascajo", "Peligroso", "Ninguno"]),
+            _tf("control_polvo", "¿Control polvo?", "boolean"),
+        ],
+    },
+    {
+        "code": "obra_civil",
+        "name": "Obra Civil",
+        "category": "Obra Civil",
+        "fields": [
+            _tf("elemento", "Elemento", "string"),
+            _tf("profundidad_inicial", "Profundidad inicial", "number"),
+            _tf("profundidad_actual", "Profundidad actual", "number"),
+            _tf("material", "Material", "select", options=["A", "B", "C", "Roca"]),
+        ],
+    },
+    {
+        "code": "reporte_libre",
+        "name": "Reporte Libre",
+        "category": "General",
+        "fields": [
+            _tf("descripcion", "Descripción", "string"),
+        ],
+    },
+]
 
 
 # === Helpers ================================================================
@@ -724,6 +846,19 @@ async def startup_event():
     await db.programa_versiones.create_index([("project_id", 1), ("vigente", 1)])
     await db.programa_distribucion.create_index("id")
     await db.programa_distribucion.create_index([("programa_version_id", 1)])
+    await db.report_templates.create_index("code", unique=True)
+    await db.report_templates.create_index("id", unique=True)
+
+    # --- Seed de plantillas de reporte estructurado (idempotente por `code`) ---
+    try:
+        for tpl in SEED_REPORT_TEMPLATES:
+            existing_tpl = await db.report_templates.find_one({"code": tpl["code"]})
+            if existing_tpl:
+                continue
+            await db.report_templates.insert_one({"id": str(uuid.uuid4()), **tpl})
+            log.info(f"[seed] Plantilla de reporte creada: {tpl['code']}")
+    except Exception as e:
+        log.warning(f"[seed] error sembrando report_templates: {e}")
 
     # --- Migración one-shot: asegurar canal General + asignar channel_id a
     # mensajes legacy creados antes del refactor de canales.
@@ -2416,6 +2551,12 @@ def validate_measurement_value(mtype: str, value: dict):
         raise HTTPException(400, f"measurement_type desconocido: {mtype}")
 
 
+@api.get("/report-templates")
+async def list_report_templates(user: dict = Depends(current_user)):
+    cursor = db.report_templates.find({}, {"_id": 0}).sort("name", 1)
+    return await cursor.to_list(length=None)
+
+
 @api.post("/reports")
 async def create_report(body: ReportIn, user: dict = Depends(current_user)):
     if user["role"] not in (ROLE_ESPECIALISTA, ROLE_COORD, ROLE_SUB, ROLE_JEFE):
@@ -2564,6 +2705,8 @@ async def create_report(body: ReportIn, user: dict = Depends(current_user)):
         "captured_by": user["id"],
         "captured_by_name": user["name"],
         "created_at": datetime.now(timezone.utc),
+        "template_id": body.template_id or None,
+        "dynamic_data": body.dynamic_data or {},
     }
     if body.client_id:
         # Solo se agrega si hay valor: el índice es sparse, y una clave con

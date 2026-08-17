@@ -332,6 +332,26 @@ export interface Report {
    * caso es un placeholder local (`local-<client_id>`), no un id real del
    * backend todavia. */
   _queued?: boolean;
+  /** Reporte estructurado (opcional): id de la plantilla elegida y los
+   * valores capturados para sus campos dinámicos. Ver ReportTemplate. */
+  template_id?: string | null;
+  dynamic_data?: Record<string, any>;
+}
+
+export interface ReportTemplateField {
+  key: string;
+  label: string;
+  type: 'string' | 'number' | 'boolean' | 'select' | 'multiselect';
+  required: boolean;
+  options: string[];
+}
+
+export interface ReportTemplate {
+  id: string;
+  code: string;
+  name: string;
+  category: string;
+  fields: ReportTemplateField[];
 }
 
 export interface FeedItem {
@@ -1256,6 +1276,8 @@ export const api = {
   listInvitations: (pid: string) => request<Invitation[]>('GET', `/projects/${pid}/invitations`),
   createInvitation: (pid: string, body: any) => request<Invitation>('POST', `/projects/${pid}/invitations`, body),
   revokeInvitation: (iid: string) => request<{ ok: boolean }>('DELETE', `/invitations/${iid}`),
+
+  getReportTemplates: () => request<ReportTemplate[]>('GET', '/report-templates'),
 
   createReport: async (body: any): Promise<Report> => {
     // [OFFLINE 2026-08-07] Los especialistas capturan en obra, donde a
