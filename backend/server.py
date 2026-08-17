@@ -7392,23 +7392,38 @@ async def export_reports_pdf(
         # cerrar la sección anterior (se imprime 1 página de resumen por
         # CADA cambio de subtramo, aplica igual a diario/semanal/mensual).
         current_subtramo_id: Optional[str] = None
+        # Nombres de bucket de Área (normalizados) que YA recibieron su
+        # portadilla + resumen dentro de algún nodo — usado al final para
+        # detectar Áreas curadas (hub Actividades Generales) que nunca
+        # aparecieron porque ningún reporte de campo cayó en su bucket
+        # durante el período (ver sección "ÁREAS SIN REPORTES" al cierre).
+        printed_area_buckets: set = set()
 
         def _emit_subtramo_summary(subtramo_id: Optional[str]) -> None:
             nonlocal page_num
             if not subtramo_id:
                 return
             totals = resource_raw_rows_by_subtramo.get(subtramo_id)
-            if not totals:
-                # Ningún leaf de este subtramo tuvo reportes en el período —
-                # no hay página que emitir. Si SÍ hubo reportes pero sin
-                # personal/maquinaria capturados, `totals` existe igual
-                # (dict con listas vacías) y la página se dibuja de todos
-                # modos: las tablas siempre se imprimen completas (mínimo de
-                # filas de relleno + TOTAL 0), nunca se sustituyen por texto.
-                return
-            personal_rows = totals.get("personal") or []
-            maquinaria_rows = totals.get("maquinaria") or []
             subtramo_node = nodes_by_id.get(subtramo_id) or {}
+            # FIX: antes, si ningún leaf de este subtramo tenía reportes en
+            # el período, `totals` venía ausente y la página completa se
+            # omitía — incluyendo "Acceso al Predio", que es un estado
+            # persistente del nodo (seteado desde el panel de Acceso al
+            # Predio), NO algo derivado de reportes del período. Un
+            # Subtramo sin actividad reciente pero con Acceso al Predio
+            # configurado dejaba de imprimirlo por completo (conexión
+            # panel↔impresión rota). Ahora la página se emite si HAY datos
+            # de recursos O si hay algo persistente que mostrar (acceso al
+            # predio, situación social, actividades del subtramo).
+            has_persistent_content = bool(
+                (subtramo_node.get("acceso_predio") or "").strip()
+                or (subtramo_node.get("situacion_social") or "").strip()
+                or (actividades_by_subtramo.get(subtramo_id) or [])
+            )
+            if not totals and not has_persistent_content:
+                return
+            personal_rows = (totals or {}).get("personal") or []
+            maquinaria_rows = (totals or {}).get("maquinaria") or []
             draw_subtramo_summary_page(
                 subtramo_node, personal_rows, maquinaria_rows,
                 actividades_by_subtramo.get(subtramo_id) or [],
@@ -7490,6 +7505,7 @@ async def export_reports_pdf(
                 area_reps = reports_by_area.get(aid) or []  # narrativa: puede venir vacía (sin fotos)
                 area_reps_all = reports_by_area_all[aid]
                 area_name = _area_name(aid)
+                printed_area_buckets.add(area_name)
 
                 # === Portadilla de Área (fondo magenta de la portada) ========
                 # Índice 0-based en el PDF actual = page_num - 1
@@ -7600,6 +7616,45 @@ async def export_reports_pdf(
         # pasar a un Subtramo NUEVO, así que el último subtramo procesado
         # nunca dispara el emit dentro del loop — hay que cerrarlo aquí.
         _emit_subtramo_summary(current_subtramo_id)
+
+        # === ÁREAS SIN REPORTES: Actividades Generales curadas (hub) cuyo
+        # bucket de Área nunca se imprimió arriba porque ningún reporte de
+        # campo cayó en esa Área durante el período exportado (típico de
+        # Áreas puramente administrativas/curadas — seguridad, social,
+        # coordinación). El curado del hub es independiente de si hubo
+        # reportes: se imprime igual, en una sección final dedicada, para
+        # que el hub y el PDF nunca diverjan.
+        _orphan_by_bucket: Dict[str, List[str]] = {}
+        for _aid, _texts in (actividades_curadas_idx.get("general") or {}).items():
+            if not _texts:
+                continue
+            _area = areas_by_id.get(_aid) or {}
+            _bucket = _normalize_area_name(
+                _area.get("name"), user_role=user.get("role"), user_area=user.get("area"),
+            ) or "SIN ÁREA"
+            if _bucket in printed_area_buckets:
+                continue
+            _dest = _orphan_by_bucket.setdefault(_bucket, [])
+            for _t in _texts:
+                if _t not in _dest:
+                    _dest.append(_t)
+
+        if _orphan_by_bucket:
+            c.setFillColor(HexColor(_readable_dark_hex(project_color)))
+            c.setFont("Helvetica-Bold", 20)
+            c.drawCentredString(PW / 2, PH / 2 + 0.3 * cm, "ACTIVIDADES GENERALES")
+            c.setFont("Helvetica", 11)
+            c.setFillColor(MUTED)
+            c.drawCentredString(PW / 2, PH / 2 - 0.5 * cm, "Áreas sin reportes de campo en el período exportado")
+            c.showPage()
+            page_num += 1
+
+            for _bucket in sorted(_orphan_by_bucket.keys()):
+                area_page_indices.append(page_num - 1)
+                draw_area_cover_page(_bucket)
+                c.showPage()
+                page_num += 1
+                _emit_actividades_area(_bucket, "", _orphan_by_bucket[_bucket])
 
         # Página(s) de cierre: RECUENTO GENERAL del período completo,
         # desglosado por Tramo y por puesto/descripción.
@@ -8972,13 +9027,21 @@ async def export_reports_pptx(
             if not subtramo_id:
                 return
             totals = resource_consolidated_by_subtramo.get(subtramo_id)
-            if not totals:
-                return
-            personal_rows = totals.get("personal") or []
-            maquinaria_rows = totals.get("maquinaria") or []
-            if not personal_rows and not maquinaria_rows:
-                return
             subtramo_node = nodes_by_id.get(subtramo_id) or {}
+            personal_rows = (totals or {}).get("personal") or []
+            maquinaria_rows = (totals or {}).get("maquinaria") or []
+            # FIX: mismo caso que en el motor PDF (`_emit_subtramo_summary`)
+            # — "Acceso al Predio" es estado persistente del nodo, no
+            # derivado de reportes del período; un Subtramo sin
+            # personal/maquinaria capturados en el período no debe perder
+            # su slide de Acceso al Predio si el panel lo tiene configurado.
+            has_persistent_content = bool(
+                (subtramo_node.get("acceso_predio") or "").strip()
+                or (subtramo_node.get("situacion_social") or "").strip()
+                or (actividades_by_subtramo.get(subtramo_id) or [])
+            )
+            if not personal_rows and not maquinaria_rows and not has_persistent_content:
+                return
             draw_subtramo_summary_slide(
                 subtramo_node, personal_rows, maquinaria_rows,
                 actividades_by_subtramo.get(subtramo_id) or [],
@@ -9202,6 +9265,9 @@ async def export_reports_pptx(
 
         any_data = False
         current_subtramo_id: Optional[str] = None
+        # Ver nota equivalente en export_reports_pdf: buckets de Área que ya
+        # recibieron su portadilla + resumen dentro de algún nodo.
+        printed_area_buckets: set = set()
         for n in leaf_nodes:
             n_subtramo_id = _subtramo_id_for(n["id"], nodes_by_id)
             if current_subtramo_id is not None and n_subtramo_id != current_subtramo_id:
@@ -9291,6 +9357,7 @@ async def export_reports_pptx(
                 area_reps = reps_by_area.get(bkey) or []  # narrativa: puede venir vacía (sin fotos)
                 area_reps_all = reps_by_area_all[bkey]
                 area_name = bkey  # ya normalizado
+                printed_area_buckets.add(area_name)
 
                 # --- Portadilla de Área (clon del fondo de la portada) ----
                 # Título posicionado en la MISMA Y que "REPORTE X" en la
@@ -9346,6 +9413,50 @@ async def export_reports_pptx(
                     _pair_slide(_pair)
 
         _emit_subtramo_summary_slide(current_subtramo_id)
+
+        # === ÁREAS SIN REPORTES: ver nota equivalente en export_reports_pdf
+        # — Actividades Generales curadas (hub) cuyo bucket de Área nunca
+        # se imprimió arriba porque ningún reporte de campo cayó en esa
+        # Área durante el período exportado. Se imprimen en una sección
+        # final dedicada para que el hub y el PPTX nunca diverjan.
+        _orphan_by_bucket: Dict[str, List[str]] = {}
+        for _aid, _texts in (actividades_curadas_idx.get("general") or {}).items():
+            if not _texts:
+                continue
+            _area = areas_by_id.get(_aid) or {}
+            _bucket = _normalize_area_name(
+                _area.get("name"), user_role=user.get("role"), user_area=user.get("area"),
+            ) or "SIN ÁREA"
+            if _bucket in printed_area_buckets:
+                continue
+            _dest = _orphan_by_bucket.setdefault(_bucket, [])
+            for _t in _texts:
+                if _t not in _dest:
+                    _dest.append(_t)
+
+        if _orphan_by_bucket:
+            _divider = _clone_membrete()
+            add_text(
+                _divider, Cm(1.0), SH / 2 - Cm(0.9), SW - Cm(2.0), Cm(1.2),
+                "ACTIVIDADES GENERALES",
+                size=24, bold=True, color=READABLE_BRAND_RGB, align=PP_ALIGN.CENTER,
+            )
+            add_text(
+                _divider, Cm(1.0), SH / 2 + Cm(0.3), SW - Cm(2.0), Cm(1.0),
+                "Áreas sin reportes de campo en el período exportado",
+                size=13, italic=True, color=TEXT_MUTED, align=PP_ALIGN.CENTER,
+            )
+
+            for _bucket in sorted(_orphan_by_bucket.keys()):
+                a_slide = _clone_cover_bg()
+                _area_y = SH * 0.32
+                add_text(
+                    a_slide, Cm(1.5), _area_y, SW - Cm(3.0), Cm(4.0),
+                    _bucket.upper(),
+                    size=44, bold=True,
+                    color=AREA_TEXT_COLOR, align=PP_ALIGN.CENTER,
+                )
+                _emit_actividades_area_slides(_bucket, "", _orphan_by_bucket[_bucket])
 
         # Slide(s) de cierre: RECUENTO GENERAL del período completo,
         # desglosado por Tramo y por puesto/descripción.
