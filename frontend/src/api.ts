@@ -227,6 +227,10 @@ export interface Project {
   // deriva — fallback "Catálogo de Conceptos" si vacío (ver nombresNivel.ts
   // para el porqué de no derivarlo).
   titulo_modulo_catalogo?: string;
+  // Cadencia de reporte (Etapa 4) — solo controla cómo se agrupa al
+  // consultar; RegistroAvance.fecha siempre guarda la fecha exacta.
+  cadencia_reporte?: 'DIARIA' | 'SEMANAL' | 'MENSUAL';
+  dia_inicio_semana?: 'LUNES' | 'MARTES' | 'MIERCOLES' | 'JUEVES' | 'VIERNES' | 'SABADO' | 'DOMINGO';
   created_by: string;
   created_at: string;
   archived?: boolean;
