@@ -215,7 +215,11 @@ export interface Project {
   template_docx?: string | null;
   template_pptx?: string | null;
   template_map?: string | null;
+  // GET /projects/{pid} ya NO trae el contenido de `general_data_images`
+  // (puede pesar hasta ~12-16MB) — solo el conteo. El contenido real se pide
+  // bajo demanda con api.getGeneralDataImages(pid) al abrir ese modal.
   general_data_images?: string[];
+  general_data_images_count?: number;
   // Configuración de Catálogo de Conceptos / avance — ver server.py
   // (ProjectOut). tipo_contrato y modo_avance son ejes independientes.
   tipo_contrato?: 'PRECIO_ALZADO' | 'PRECIOS_UNITARIOS';
@@ -1159,6 +1163,11 @@ export const api = {
 
   deleteProjectTemplate: (pid: string, kind: 'pdf' | 'docx' | 'pptx' | 'map') =>
     request<Project>('DELETE', `/projects/${pid}/template/${kind}`),
+
+  // Carga bajo demanda del array completo (GET /projects/{pid} ya no lo trae
+  // por peso). Pedir solo al abrir el modal "Datos Generales".
+  getGeneralDataImages: (pid: string) =>
+    request<{ general_data_images: string[] }>('GET', `/projects/${pid}/general-data-images`),
 
   addGeneralDataImage: (pid: string, imageDataUrl: string) =>
     request<Project>('POST', `/projects/${pid}/general-data-images`, { image: imageDataUrl }),

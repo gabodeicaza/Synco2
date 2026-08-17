@@ -737,8 +737,21 @@ def user_to_out(u: dict) -> dict:
 
 
 async def ensure_project_access(user: dict, project_id: str) -> dict:
-    """Valida que el usuario tenga acceso a un proyecto; devuelve el proyecto."""
-    p = await db.projects.find_one({"id": project_id, "archived": {"$ne": True}})
+    """Valida que el usuario tenga acceso a un proyecto; devuelve el proyecto.
+
+    Excluye `general_data_images`/`constructora_logo`: son binarios pesados
+    (hasta 30 imágenes de 5MB c/u) que solo hacen falta en el modal "Datos
+    Generales" o en las exportaciones. Este helper se llama en ~90 endpoints
+    del proyecto (la mayoría descarta el valor de retorno, solo lo usan para
+    el chequeo de acceso), así que traer esos campos aquí hacía lento
+    CUALQUIER endpoint de un proyecto con varias imágenes cargadas — no solo
+    GET /projects/{pid}. Quien sí necesite las imágenes las pide aparte via
+    GET /projects/{pid}/general-data-images.
+    """
+    p = await db.projects.find_one(
+        {"id": project_id, "archived": {"$ne": True}},
+        {"general_data_images": 0, "constructora_logo": 0},
+    )
     if not p:
         raise HTTPException(404, "Proyecto no existe")
     if user["role"] in (ROLE_COORD, ROLE_JEFE):
@@ -1314,7 +1327,17 @@ async def get_project(pid: str, user: dict = Depends(current_user)):
     p.setdefault("cliente_principal", None)
     p.setdefault("color_tema", "#003366")
     p.setdefault("report_text_color", "#0F172A")
-    p.setdefault("general_data_images", [])
+    # `general_data_images` NO se incluye aquí a propósito (ver
+    # ensure_project_access): puede pesar hasta 30 imágenes de 5MB. Solo se
+    # manda el conteo (vía $size, sin transferir el array) para el badge de
+    # la UI; el contenido real se pide bajo demanda en
+    # GET /projects/{pid}/general-data-images cuando se abre ese modal.
+    p["general_data_images"] = []
+    count_doc = await db.projects.aggregate([
+        {"$match": {"id": pid}},
+        {"$project": {"_id": 0, "n": {"$size": {"$ifNull": ["$general_data_images", []]}}}},
+    ]).to_list(length=1)
+    p["general_data_images_count"] = count_doc[0]["n"] if count_doc else 0
     p.setdefault("minuta_code_prefix", None)
     p.setdefault("tipo_contrato", "PRECIOS_UNITARIOS")
     p.setdefault("modo_avance", "CANTIDAD")
@@ -5790,6 +5813,16 @@ class GeneralDataImageIn(BaseModel):
 
 class GeneralDataReplaceIn(BaseModel):
     images: List[str]  # reemplazo completo del array
+
+
+@api.get("/projects/{pid}/general-data-images")
+async def get_general_data_images(pid: str, user: dict = Depends(current_user)):
+    """Carga bajo demanda del array completo de imágenes (hasta 150MB).
+    Se pide solo cuando el usuario abre el modal "Datos Generales" — ver
+    ensure_project_access, que ya no las incluye en el resto de endpoints."""
+    await ensure_project_access(user, pid)
+    proj = await db.projects.find_one({"id": pid}, {"_id": 0, "general_data_images": 1})
+    return {"general_data_images": (proj or {}).get("general_data_images") or []}
 
 
 @api.post("/projects/{pid}/general-data-images", response_model=ProjectOut)
