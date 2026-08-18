@@ -591,7 +591,6 @@ SEED_REPORT_TEMPLATES: List[dict] = [
         "name": "Calidad - Colados",
         "category": "Calidad",
         "fields": [
-            _tf("elemento", "Elemento", "string"),
             _tf("vol_teorico_m3", "Vol. Teórico m3", "number"),
             _tf("vol_olla_m3", "Vol. de Olla m3", "number"),
             _tf("revenimiento_cm", "Revenimiento cm", "number"),
@@ -610,7 +609,6 @@ SEED_REPORT_TEMPLATES: List[dict] = [
         "name": "Calidad - Acero",
         "category": "Calidad",
         "fields": [
-            _tf("elemento", "Elemento", "string"),
             _tf("calibre", "Calibre", "string"),
             _tf("marca", "Marca", "string"),
             _tf("no_probetas", "No. probetas", "number"),
@@ -621,22 +619,21 @@ SEED_REPORT_TEMPLATES: List[dict] = [
         "name": "Revisión de Acero",
         "category": "Calidad",
         "fields": [
-            _tf("elemento", "Elemento", "string"),
             _tf(
                 "calibre_acero",
                 "Calibre de acero utilizado",
                 "multiselect",
                 options=["#2", "#3", "#4", "#5", "#6", "#8", "#10", "#12"],
             ),
-            _tf("amarres", "Amarres", "select", options=["Cumple", "No cumple"]),
-            _tf("traslapes", "Traslapes", "select", options=["Cumple", "No cumple"]),
-            _tf("dimensiones", "Dimensiones", "select", options=["Cumple", "No cumple"]),
-            _tf("grapas", "Grapas", "select", options=["Cumple", "No cumple"]),
-            _tf("ganchos", "Ganchos", "select", options=["Cumple", "No cumple"]),
-            _tf("escuadras", "Escuadras", "select", options=["Cumple", "No cumple"]),
-            _tf("temperaturas", "Temperaturas", "select", options=["Cumple", "No cumple"]),
-            _tf("limpieza", "Limpieza", "select", options=["Cumple", "No cumple"]),
-            _tf("separaciones", "Separaciones", "select", options=["Cumple", "No cumple"]),
+            _tf("amarres", "Amarres", "select", options=["Cumple", "No cumple", "N/A"]),
+            _tf("traslapes", "Traslapes", "select", options=["Cumple", "No cumple", "N/A"]),
+            _tf("dimensiones", "Dimensiones", "select", options=["Cumple", "No cumple", "N/A"]),
+            _tf("grapas", "Grapas", "select", options=["Cumple", "No cumple", "N/A"]),
+            _tf("ganchos", "Ganchos", "select", options=["Cumple", "No cumple", "N/A"]),
+            _tf("escuadras", "Escuadras", "select", options=["Cumple", "No cumple", "N/A"]),
+            _tf("temperaturas", "Temperaturas", "select", options=["Cumple", "No cumple", "N/A"]),
+            _tf("limpieza", "Limpieza", "select", options=["Cumple", "No cumple", "N/A"]),
+            _tf("separaciones", "Separaciones", "select", options=["Cumple", "No cumple", "N/A"]),
         ],
     },
     {
@@ -913,6 +910,22 @@ async def startup_event():
             log.info(f"[seed] Plantilla de reporte creada: {tpl['code']}")
     except Exception as e:
         log.warning(f"[seed] error sembrando report_templates: {e}")
+
+    # --- Migración one-shot: reconcilia campos de plantillas de sistema que
+    # cambiaron de definición (quitar "Elemento" duplicado, agregar opción
+    # "N/A") — el seed de arriba es solo insert-si-falta-el-code, así que un
+    # ambiente ya sembrado se quedaría con la definición vieja sin esto.
+    try:
+        _RECONCILE_TEMPLATE_CODES = {"calidad_colados", "calidad_acero", "calidad_revision_acero"}
+        for tpl in SEED_REPORT_TEMPLATES:
+            if tpl["code"] not in _RECONCILE_TEMPLATE_CODES:
+                continue
+            await db.report_templates.update_one(
+                {"code": tpl["code"]},
+                {"$set": {"fields": tpl["fields"], "name": tpl["name"], "category": tpl["category"]}},
+            )
+    except Exception as e:
+        log.warning(f"[migrate] error reconciliando report_templates: {e}")
 
     # --- Migración one-shot: asegurar canal General + asignar channel_id a
     # mensajes legacy creados antes del refactor de canales.
@@ -1569,6 +1582,27 @@ def _acceso_predio_efectivo(node: dict) -> bool:
     habilitarlo/deshabilitarlo nodo por nodo, a cualquier profundidad."""
     habilitado = node.get("acceso_predio_habilitado")
     return habilitado if habilitado is not None else (node.get("depth") == 1)
+
+
+def _resolve_acceso_predio_node(subtramo_id: str, subtramo_node: dict, nodes_by_subtramo: dict) -> Optional[dict]:
+    """Resuelve qué nodo representa el estatus de Acceso al Predio /
+    Situación Social a IMPRIMIR para este Subtramo, respetando el toggle
+    `acceso_predio_habilitado` (a cualquier profundidad, ver hub
+    `AccesoPredioManager`). Antes el PDF/PPTX leían SIEMPRE el nodo Subtramo
+    directo sin chequear si estaba habilitado — imprimían "Sin especificar"
+    en TODOS los subtramos aunque en el hub solo estuvieran referenciadas/
+    habilitadas unas partes del proyecto (logica rota).
+    Prioridad: el propio Subtramo si está habilitado; si no, el primer nodo
+    descendiente habilitado (p.ej. un Poste específico); si ninguno, None —
+    la sección se omite por completo en la página impresa."""
+    if _acceso_predio_efectivo(subtramo_node):
+        return subtramo_node
+    for n in nodes_by_subtramo.get(subtramo_id) or []:
+        if n.get("id") == subtramo_id:
+            continue
+        if _acceso_predio_efectivo(n):
+            return n
+    return None
 
 
 @api.get("/projects/{pid}/nodes")
@@ -6084,6 +6118,7 @@ async def export_reports_pdf(
     cover_ancestor_by_node = data.get("cover_ancestor_by_node", {})
     areas_by_id = data.get("areas_by_id", {})
     nodes_by_id = data.get("nodes_by_id") or {}
+    nodes_by_subtramo = data.get("nodes_by_subtramo") or {}
     root_ids = data.get("root_ids") or []
     workforce_reports_by_node = data.get("reports_by_node_workforce") or reports_by_node
     # Página de resumen por Subtramo (nodo a profundidad 1): actividades,
@@ -6502,7 +6537,9 @@ async def export_reports_pdf(
 
         def draw_subtramo_summary_page(subtramo_node: dict, personal_rows: list, maquinaria_rows: list,
                                         actividades: list, situacion_social: Optional[str],
-                                        acceso_predio: Optional[str], weather: Optional[dict]) -> None:
+                                        acceso_predio: Optional[str], weather: Optional[dict],
+                                        mostrar_acceso_predio: bool = True,
+                                        acceso_node_label: Optional[str] = None) -> None:
             """Página de resumen por Subtramo — layout de 2 columnas separadas
             por una línea vertical delgada (color de marca):
 
@@ -6665,33 +6702,41 @@ async def export_reports_pdf(
             c.line(left_x, y, left_x + col_w, y)
             y -= 0.35 * cm
 
-            # --- ACCESO AL PREDIO -------------------------------------------
-            y = _section_title(left_x, y, col_w, "Acceso al Predio")
-            box_h = 0.85 * cm
-            acceso_color = HexColor(_ACCESO_PREDIO_COLORS.get((acceso_predio or "").strip().lower(), "#94A3B8"))
-            c.setFillColor(acceso_color)
-            c.rect(left_x, y - box_h, col_w, box_h, fill=1, stroke=0)
-            c.setFillColor(WHITE)
-            c.setFont("Helvetica-Bold", 11)
-            status_label = (acceso_predio or "Sin especificar").strip().upper()
-            c.drawCentredString(left_x + col_w / 2, y - box_h / 2 - 0.14 * cm, status_label)
-            y -= box_h + 0.18 * cm
-            c.setFillColor(MUTED)
-            c.setFont("Helvetica-Oblique", 6.8)
-            for ln in _wrap_lines(
-                "Refleja el estatus vigente al momento de exportar, no necesariamente el del período de este reporte.",
-                col_w, "Helvetica-Oblique", 6.8, 2,
-            ):
-                c.drawString(left_x, y, ln)
-                y -= 0.3 * cm
-            y -= 0.18 * cm
+            # --- ACCESO AL PREDIO ---------------------------------------------
+            # Se omite por completo si el coordinador no habilitó Acceso al
+            # Predio para esta ubicación en el hub (ver `mostrar_acceso_predio`
+            # / `_resolve_acceso_predio_node`) — antes se imprimía "Sin
+            # especificar" en TODOS los subtramos sin importar el hub.
+            if mostrar_acceso_predio:
+                title_txt_ap = "Acceso al Predio"
+                if acceso_node_label:
+                    title_txt_ap = f"Acceso al Predio ({acceso_node_label})"
+                y = _section_title(left_x, y, col_w, title_txt_ap)
+                box_h = 0.85 * cm
+                acceso_color = HexColor(_ACCESO_PREDIO_COLORS.get((acceso_predio or "").strip().lower(), "#94A3B8"))
+                c.setFillColor(acceso_color)
+                c.rect(left_x, y - box_h, col_w, box_h, fill=1, stroke=0)
+                c.setFillColor(WHITE)
+                c.setFont("Helvetica-Bold", 11)
+                status_label = (acceso_predio or "Sin especificar").strip().upper()
+                c.drawCentredString(left_x + col_w / 2, y - box_h / 2 - 0.14 * cm, status_label)
+                y -= box_h + 0.18 * cm
+                c.setFillColor(MUTED)
+                c.setFont("Helvetica-Oblique", 6.8)
+                for ln in _wrap_lines(
+                    "Refleja el estatus vigente al momento de exportar, no necesariamente el del período de este reporte.",
+                    col_w, "Helvetica-Oblique", 6.8, 2,
+                ):
+                    c.drawString(left_x, y, ln)
+                    y -= 0.3 * cm
+                y -= 0.18 * cm
 
-            # --- SITUACIÓN SOCIAL --------------------------------------------
-            y = _section_title(left_x, y, col_w, "Situación Social - Liberación Física del Predio")
-            situ_items = [ln.strip() for ln in (situacion_social or "").splitlines() if ln.strip()]
-            situ_h = min(3.4 * cm, max(1.2 * cm, y - bottom_y))
-            y = _draw_bullets(left_x, y, col_w, situ_items, situ_h, max_items=5)
-            y -= 0.28 * cm
+                # --- SITUACIÓN SOCIAL ------------------------------------------
+                y = _section_title(left_x, y, col_w, "Situación Social - Liberación Física del Predio")
+                situ_items = [ln.strip() for ln in (situacion_social or "").splitlines() if ln.strip()]
+                situ_h = min(3.4 * cm, max(1.2 * cm, y - bottom_y))
+                y = _draw_bullets(left_x, y, col_w, situ_items, situ_h, max_items=5)
+                y -= 0.28 * cm
 
             # --- ACTIVIDADES ---------------------------------------------------
             y = _section_title(left_x, y, col_w, "Actividades")
@@ -7433,6 +7478,12 @@ async def export_reports_pdf(
                 return
             totals = resource_raw_rows_by_subtramo.get(subtramo_id)
             subtramo_node = nodes_by_id.get(subtramo_id) or {}
+            # Nodo que realmente representa Acceso al Predio/Situación Social
+            # para este Subtramo — respeta el toggle `acceso_predio_habilitado`
+            # (a cualquier profundidad, ver hub). None si el coordinador NO
+            # habilitó nada para esta ubicación (antes se imprimía "Sin
+            # especificar" en TODOS los subtramos sin importar el hub).
+            acceso_node = _resolve_acceso_predio_node(subtramo_id, subtramo_node, nodes_by_subtramo)
             # FIX: antes, si ningún leaf de este subtramo tenía reportes en
             # el período, `totals` venía ausente y la página completa se
             # omitía — incluyendo "Acceso al Predio", que es un estado
@@ -7444,8 +7495,8 @@ async def export_reports_pdf(
             # de recursos O si hay algo persistente que mostrar (acceso al
             # predio, situación social, actividades del subtramo).
             has_persistent_content = bool(
-                (subtramo_node.get("acceso_predio") or "").strip()
-                or (subtramo_node.get("situacion_social") or "").strip()
+                (acceso_node and (acceso_node.get("acceso_predio") or "").strip())
+                or (acceso_node and (acceso_node.get("situacion_social") or "").strip())
                 or (actividades_by_subtramo.get(subtramo_id) or [])
             )
             if not totals and not has_persistent_content:
@@ -7455,9 +7506,11 @@ async def export_reports_pdf(
             draw_subtramo_summary_page(
                 subtramo_node, personal_rows, maquinaria_rows,
                 actividades_by_subtramo.get(subtramo_id) or [],
-                subtramo_node.get("situacion_social"),
-                subtramo_node.get("acceso_predio"),
+                acceso_node.get("situacion_social") if acceso_node else None,
+                acceso_node.get("acceso_predio") if acceso_node else None,
                 weather_by_subtramo.get(subtramo_id),
+                mostrar_acceso_predio=acceso_node is not None,
+                acceso_node_label=(acceso_node.get("name") if acceso_node and acceso_node.get("id") != subtramo_id else None),
             )
             c.showPage()
             page_num += 1
@@ -7847,6 +7900,13 @@ async def _gather_export_data(
     root_ids.sort(key=lambda nid: (nodes_by_id[nid].get("order", 0), nodes_by_id[nid].get("name", "")))
     leaf_nodes = _flatten_tree_in_order(nodes_by_id, root_ids)
 
+    # --- Nodos agrupados por su Subtramo dueño (para Acceso al Predio "a
+    # cualquier profundidad" — ver `_resolve_acceso_predio_node`) ---
+    nodes_by_subtramo: dict = {}
+    for nid in nodes_by_id:
+        sid = _subtramo_id_for(nid, nodes_by_id)
+        nodes_by_subtramo.setdefault(sid, []).append(nodes_by_id[nid])
+
     role = user["role"]
     # Severidad efectiva: si viene period_type, se aplica su política; si
     # no, se conserva la política institucional por rol.
@@ -7958,6 +8018,7 @@ async def _gather_export_data(
         "leaf_nodes": leaf_nodes,
         "root_ids": root_ids,
         "nodes_by_id": nodes_by_id,
+        "nodes_by_subtramo": nodes_by_subtramo,
         "reports_by_node": reports_by_node,
         "reports_by_node_workforce": reports_by_node_workforce,
         "announcements_by_node": announcements_by_node,
@@ -8418,6 +8479,7 @@ async def export_reports_pptx(
     areas_by_id = data.get("areas_by_id", {})
     pt_norm = data.get("period_type")
     nodes_by_id = data.get("nodes_by_id") or {}
+    nodes_by_subtramo = data.get("nodes_by_subtramo") or {}
     root_ids = data.get("root_ids") or []
     workforce_reports_by_node = data.get("reports_by_node_workforce") or reports_by_node
     # Página de resumen por Subtramo: mismo resumen consolidado (sin
@@ -8746,7 +8808,9 @@ async def export_reports_pptx(
 
         def draw_subtramo_summary_slide(subtramo_node: dict, personal_rows: list, maquinaria_rows: list,
                                          actividades: list, situacion_social: Optional[str],
-                                         acceso_predio: Optional[str], weather: Optional[dict]) -> None:
+                                         acceso_predio: Optional[str], weather: Optional[dict],
+                                         mostrar_acceso_predio: bool = True,
+                                         acceso_node_label: Optional[str] = None) -> None:
             """Slide de resumen por Subtramo — MISMO layout de 2 columnas que
             `draw_subtramo_summary_page` (motor PDF), con primitivas
             python-pptx: IZQUIERDA (título con ícono de estructura, Acceso al
@@ -8784,27 +8848,35 @@ async def export_reports_pptx(
             _wf_rect(slide, left_x, y, col_w, Pt(1.6), fill_rgb=BRAND_RGB)
             y += Cm(0.35)
 
-            # --- Acceso al Predio ---------------------------------------------
-            y = _section_title(left_x, y, col_w, "Acceso al Predio")
-            box_h = Cm(1.0)
-            acceso_rgb = WF_ACCESO_COLORS.get((acceso_predio or "").strip().lower(), (0x94, 0xA3, 0xB8))
-            _wf_rect(slide, left_x, y, col_w, box_h, fill_rgb=acceso_rgb)
-            add_text(slide, left_x, y, col_w, box_h, (acceso_predio or "Sin especificar").strip().upper(),
-                     size=13, bold=True, color=WF_WHITE_RGB, align=PP_ALIGN.CENTER)
-            y += box_h + Cm(0.15)
-            add_text(
-                slide, left_x, y, col_w, Cm(0.7),
-                "Refleja el estatus vigente al momento de exportar, no necesariamente el del período de este reporte.",
-                size=7.5, italic=True, color=WF_MUTED_RGB,
-            )
-            y += Cm(0.75)
+            # --- Acceso al Predio -----------------------------------------------
+            # Se omite por completo si el coordinador no habilitó Acceso al
+            # Predio para esta ubicación en el hub (ver `mostrar_acceso_predio`
+            # / `_resolve_acceso_predio_node`) — antes se imprimía "Sin
+            # especificar" en TODOS los subtramos sin importar el hub.
+            if mostrar_acceso_predio:
+                title_txt_ap = "Acceso al Predio"
+                if acceso_node_label:
+                    title_txt_ap = f"Acceso al Predio ({acceso_node_label})"
+                y = _section_title(left_x, y, col_w, title_txt_ap)
+                box_h = Cm(1.0)
+                acceso_rgb = WF_ACCESO_COLORS.get((acceso_predio or "").strip().lower(), (0x94, 0xA3, 0xB8))
+                _wf_rect(slide, left_x, y, col_w, box_h, fill_rgb=acceso_rgb)
+                add_text(slide, left_x, y, col_w, box_h, (acceso_predio or "Sin especificar").strip().upper(),
+                         size=13, bold=True, color=WF_WHITE_RGB, align=PP_ALIGN.CENTER)
+                y += box_h + Cm(0.15)
+                add_text(
+                    slide, left_x, y, col_w, Cm(0.7),
+                    "Refleja el estatus vigente al momento de exportar, no necesariamente el del período de este reporte.",
+                    size=7.5, italic=True, color=WF_MUTED_RGB,
+                )
+                y += Cm(0.75)
 
-            # --- Situación Social -----------------------------------------------
-            y = _section_title(left_x, y, col_w, "Situación Social - Liberación Física del Predio")
-            situ_items = [ln.strip() for ln in (situacion_social or "").splitlines() if ln.strip()]
-            situ_h = Cm(3.2)
-            _wf_bullets(slide, left_x, y, col_w, situ_h, situ_items, max_items=4, font_size=10.5)
-            y += situ_h + Cm(0.2)
+                # --- Situación Social -------------------------------------------
+                y = _section_title(left_x, y, col_w, "Situación Social - Liberación Física del Predio")
+                situ_items = [ln.strip() for ln in (situacion_social or "").splitlines() if ln.strip()]
+                situ_h = Cm(3.2)
+                _wf_bullets(slide, left_x, y, col_w, situ_h, situ_items, max_items=4, font_size=10.5)
+                y += situ_h + Cm(0.2)
 
             # --- Actividades ------------------------------------------------------
             y = _section_title(left_x, y, col_w, "Actividades")
@@ -9056,6 +9128,12 @@ async def export_reports_pptx(
                 return
             totals = resource_consolidated_by_subtramo.get(subtramo_id)
             subtramo_node = nodes_by_id.get(subtramo_id) or {}
+            # Nodo que realmente representa Acceso al Predio/Situación Social
+            # para este Subtramo — respeta el toggle `acceso_predio_habilitado`
+            # (a cualquier profundidad, ver hub). None si nada fue habilitado
+            # para esta ubicación (antes se imprimía "Sin especificar" en
+            # TODOS los subtramos sin importar el hub).
+            acceso_node = _resolve_acceso_predio_node(subtramo_id, subtramo_node, nodes_by_subtramo)
             personal_rows = (totals or {}).get("personal") or []
             maquinaria_rows = (totals or {}).get("maquinaria") or []
             # FIX: mismo caso que en el motor PDF (`_emit_subtramo_summary`)
@@ -9064,8 +9142,8 @@ async def export_reports_pptx(
             # personal/maquinaria capturados en el período no debe perder
             # su slide de Acceso al Predio si el panel lo tiene configurado.
             has_persistent_content = bool(
-                (subtramo_node.get("acceso_predio") or "").strip()
-                or (subtramo_node.get("situacion_social") or "").strip()
+                (acceso_node and (acceso_node.get("acceso_predio") or "").strip())
+                or (acceso_node and (acceso_node.get("situacion_social") or "").strip())
                 or (actividades_by_subtramo.get(subtramo_id) or [])
             )
             if not personal_rows and not maquinaria_rows and not has_persistent_content:
@@ -9073,9 +9151,11 @@ async def export_reports_pptx(
             draw_subtramo_summary_slide(
                 subtramo_node, personal_rows, maquinaria_rows,
                 actividades_by_subtramo.get(subtramo_id) or [],
-                subtramo_node.get("situacion_social"),
-                subtramo_node.get("acceso_predio"),
+                acceso_node.get("situacion_social") if acceso_node else None,
+                acceso_node.get("acceso_predio") if acceso_node else None,
                 weather_by_subtramo.get(subtramo_id),
+                mostrar_acceso_predio=acceso_node is not None,
+                acceso_node_label=(acceso_node.get("name") if acceso_node and acceso_node.get("id") != subtramo_id else None),
             )
 
         def _emit_actividades_area_slides(area_name: str, node_path: str, items: List[str]) -> None:
