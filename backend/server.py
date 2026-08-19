@@ -648,6 +648,16 @@ SEED_REPORT_TEMPLATES: List[dict] = [
         ],
     },
     {
+        "code": "topografia_cimbrado",
+        "name": "Cimbrado",
+        "category": "Topografía",
+        "fields": [
+            _tf("recubrimiento_superior", "Recubrimiento Superior", "number"),
+            _tf("recubrimiento_inferior", "Recubrimiento Inferior", "number"),
+            _tf("recubrimiento_lateral", "Recubrimiento Lateral", "number"),
+        ],
+    },
+    {
         "code": "hse",
         "name": "Seguridad e Higiene (HSE)",
         "category": "Seguridad",
