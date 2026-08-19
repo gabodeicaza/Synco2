@@ -6733,7 +6733,15 @@ async def export_reports_pdf(
             BRAND = HexColor(_readable_dark_hex(project_color))
 
             BADGE_R = 0.42 * cm
-            subtramo_name = (subtramo_node or {}).get("name") or "Subtramo"
+            # Título grande de la página: el nombre del nodo que REALMENTE
+            # tiene Acceso al Predio configurado en el hub (`acceso_node_label`
+            # — puede ser un Poste específico, no siempre el Subtramo), no el
+            # nombre del Subtramo a secas. Si el Subtramo no tiene Acceso al
+            # Predio habilitado en absoluto (`acceso_node_label` viene None),
+            # cae de vuelta al nombre del propio Subtramo — la página sigue
+            # necesitando un título aunque no haya nada de Acceso al Predio
+            # que mostrar.
+            subtramo_name = acceso_node_label or (subtramo_node or {}).get("name") or "Subtramo"
 
             BULLET_STYLE = ParagraphStyle(
                 "SubtramoBullet", fontName="Helvetica", fontSize=8.3, leading=10.5,
@@ -6851,17 +6859,10 @@ async def export_reports_pdf(
             # / `_resolve_acceso_predio_node`) — antes se imprimía "Sin
             # especificar" en TODOS los subtramos sin importar el hub.
             if mostrar_acceso_predio:
+                # Ya no hace falta repetir el nombre del nodo aquí como
+                # subtítulo: es el título GRANDE de toda la página (ver
+                # `subtramo_name` arriba, resuelto vía `acceso_node_label`).
                 y = _section_title(left_x, y, col_w, "Acceso al Predio")
-                # Subtítulo: SIEMPRE el nombre propio del nodo resuelto (el
-                # que realmente tiene el estatus configurado en el hub, a
-                # cualquier profundidad) — nunca el del Subtramo/nodo padre
-                # si el estatus vive en un nodo distinto (ver
-                # `_resolve_acceso_predio_node`).
-                if acceso_node_label:
-                    c.setFillColor(MUTED)
-                    c.setFont("Helvetica-Oblique", 8.5)
-                    c.drawString(left_x, y - 0.02 * cm, acceso_node_label)
-                    y -= 0.38 * cm
                 box_h = 0.85 * cm
                 acceso_color = HexColor(_ACCESO_PREDIO_COLORS.get((acceso_predio or "").strip().lower(), "#94A3B8"))
                 c.setFillColor(acceso_color)
@@ -8984,7 +8985,15 @@ async def export_reports_pptx(
             bottom_y = SH - BOTTOM_MARGIN
 
             BADGE_R = int(Cm(0.5))
-            subtramo_name = (subtramo_node or {}).get("name") or "Subtramo"
+            # Título grande de la página: el nombre del nodo que REALMENTE
+            # tiene Acceso al Predio configurado en el hub (`acceso_node_label`
+            # — puede ser un Poste específico, no siempre el Subtramo), no el
+            # nombre del Subtramo a secas. Si el Subtramo no tiene Acceso al
+            # Predio habilitado en absoluto (`acceso_node_label` viene None),
+            # cae de vuelta al nombre del propio Subtramo — la página sigue
+            # necesitando un título aunque no haya nada de Acceso al Predio
+            # que mostrar.
+            subtramo_name = acceso_node_label or (subtramo_node or {}).get("name") or "Subtramo"
 
             def _section_title(x: int, y: int, w: int, text: str) -> int:
                 add_text(slide, x, y, w, Cm(0.55), text.upper(), size=12, bold=True, color=READABLE_BRAND_RGB)
@@ -9007,13 +9016,10 @@ async def export_reports_pptx(
             # / `_resolve_acceso_predio_node`) — antes se imprimía "Sin
             # especificar" en TODOS los subtramos sin importar el hub.
             if mostrar_acceso_predio:
+                # Ya no hace falta repetir el nombre del nodo aquí como
+                # subtítulo: es el título GRANDE de toda la slide (ver
+                # `subtramo_name` arriba, resuelto vía `acceso_node_label`).
                 y = _section_title(left_x, y, col_w, "Acceso al Predio")
-                # Subtítulo: SIEMPRE el nombre propio del nodo resuelto, no
-                # el del Subtramo/nodo padre — ver misma nota en el PDF.
-                if acceso_node_label:
-                    add_text(slide, left_x, y, col_w, Cm(0.4), acceso_node_label,
-                             size=8.5, italic=True, color=WF_MUTED_RGB)
-                    y += Cm(0.4)
                 box_h = Cm(1.0)
                 acceso_rgb = WF_ACCESO_COLORS.get((acceso_predio or "").strip().lower(), (0x94, 0xA3, 0xB8))
                 _wf_rect(slide, left_x, y, col_w, box_h, fill_rgb=acceso_rgb)
