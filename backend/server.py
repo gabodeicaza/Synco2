@@ -6155,6 +6155,10 @@ async def export_reports_pdf(
     # nunca el texto crudo del reporte. Un solo prefetch para todo el
     # proyecto/rango, ANTES del render bloqueante (requiere Mongo).
     actividades_curadas_idx = await _actividades_curadas_resumen_por_area(pid, start_dt, end_dt, user)
+    # Tabla consolidada "Actividades por Área" (justo después de Datos
+    # Generales, ver `_draw_actividades_por_area_section` más abajo) —
+    # mismo prefetch, distinta forma (conserva ubicación por fila).
+    actividades_tabla_por_area = await _actividades_tabla_por_area(pid, start_dt, end_dt, user)
     # Clima: una consulta por cada combinación de coordenadas distinta que
     # aparezca entre los subtramos con datos (cacheada para no repetir
     # llamadas idénticas cuando varios subtramos comparten coords de raíz).
@@ -6357,6 +6361,129 @@ async def export_reports_pdf(
         c.showPage()
         page_num += 1
 
+        # --- SECCIÓN "ACTIVIDADES POR ÁREA" (justo después de Datos Generales) ---
+        # Tabla de 2 columnas (Ubicación / Actividad) por cada Área del
+        # proyecto, sourced del hub de Actividades Generales (misma fuente
+        # curada que ya alimenta el resumen dentro de cada bloque de Área,
+        # ver `actividades_curadas_idx` / `_actividades_resumen_para_bloque`
+        # más abajo — esta sección es un consolidado adicional, no un
+        # reemplazo). Pagina de verdad (nunca trunca con "+N más"): puede
+        # generar varias hojas por Área si hay muchas actividades.
+        def _draw_actividades_por_area_section() -> None:
+            nonlocal page_num
+            if not actividades_tabla_por_area:
+                return
+
+            AA_MARGIN_X = 2.0 * cm
+            aa_content_w = PW - 2 * AA_MARGIN_X
+            aa_top_y = PH - TOP_MARGIN_PDF
+            aa_bottom_y = BOTTOM_MARGIN_PDF
+
+            AA_TITLE_COLOR = HexColor(_readable_dark_hex(project_color))
+            _aa_raw_brand_hex = _sanitize_color_hex(project_color) or "#003366"
+            AA_BRAND = HexColor(_aa_raw_brand_hex)
+            AA_HEADER_TEXT = WHITE if _hex_luminance(_aa_raw_brand_hex) <= 0.6 else HexColor("#1A1A1A")
+            AA_LINE_GRAY = HexColor("#D0D0D0")
+            AA_CONTENT_GRAY = HexColor("#333333")
+
+            AA_ROW_FONT_SIZE = 10.5
+            AA_HEADER_H = 26
+            AA_UBIC_FRAC, AA_TXT_FRAC = 0.28, 0.72
+            AA_PAD_L, AA_PAD_R = 8, 8
+
+            AA_UBIC_STYLE = ParagraphStyle(
+                "AAUbic", fontName="Helvetica-Bold", fontSize=AA_ROW_FONT_SIZE,
+                leading=AA_ROW_FONT_SIZE * 1.3, textColor=AA_CONTENT_GRAY,
+            )
+            AA_TXT_STYLE = ParagraphStyle(
+                "AATxt", fontName="Helvetica", fontSize=AA_ROW_FONT_SIZE,
+                leading=AA_ROW_FONT_SIZE * 1.3, textColor=AA_CONTENT_GRAY,
+            )
+            AA_HEADER_STYLE = ParagraphStyle(
+                "AAHeader", fontName="Helvetica-Bold", fontSize=AA_ROW_FONT_SIZE,
+                leading=AA_ROW_FONT_SIZE * 1.2, textColor=AA_HEADER_TEXT,
+            )
+
+            aa_ubic_w = aa_content_w * AA_UBIC_FRAC - AA_PAD_L - AA_PAD_R
+            aa_txt_w = aa_content_w * AA_TXT_FRAC - AA_PAD_L - AA_PAD_R
+
+            is_first_aa_page = True
+
+            def _aa_new_page(area_name: str) -> float:
+                nonlocal page_num, is_first_aa_page
+                y = aa_top_y
+                if is_first_aa_page:
+                    c.setFillColor(AA_TITLE_COLOR)
+                    c.setFont("Helvetica-Bold", 26)
+                    c.drawCentredString(PW / 2, y, "ACTIVIDADES POR ÁREA")
+                    y -= 26 * 1.4
+                    is_first_aa_page = False
+                c.setFillColor(TEXT)
+                c.setFont("Helvetica-Bold", 15)
+                c.drawString(AA_MARGIN_X, y, area_name.upper())
+                y -= 15 * 1.6
+                return y
+
+            for area_name in sorted(actividades_tabla_por_area.keys(), key=lambda s: s.upper()):
+                rows = actividades_tabla_por_area.get(area_name) or []
+                if not rows:
+                    continue
+                measured = []
+                for r in rows:
+                    ubic_p = Paragraph(_xml_escape(r["ubicacion"]), AA_UBIC_STYLE)
+                    txt_p = Paragraph(_xml_escape(r["texto"]), AA_TXT_STYLE)
+                    _, ubic_h = ubic_p.wrap(aa_ubic_w, 10000)
+                    _, txt_h = txt_p.wrap(aa_txt_w, 10000)
+                    row_h = max(ubic_h, txt_h) + 10
+                    measured.append((ubic_p, txt_p, row_h))
+
+                idx = 0
+                y = _aa_new_page(area_name)
+                while idx < len(measured):
+                    avail_h = y - aa_bottom_y
+                    page_rows = []
+                    page_h = AA_HEADER_H
+                    while idx < len(measured):
+                        _, _, row_h = measured[idx]
+                        if page_h + row_h > avail_h and page_rows:
+                            break
+                        page_rows.append(measured[idx])
+                        page_h += row_h
+                        idx += 1
+                    if not page_rows:
+                        # Una sola fila más alta que la página completa: la
+                        # forzamos igual (evita loop infinito) — se recorta
+                        # visualmente contra el margen inferior.
+                        page_rows = [measured[idx]]
+                        idx += 1
+                    data = [[Paragraph("UBICACIÓN", AA_HEADER_STYLE), Paragraph("ACTIVIDAD", AA_HEADER_STYLE)]]
+                    heights = [AA_HEADER_H]
+                    for ubic_p, txt_p, row_h in page_rows:
+                        data.append([ubic_p, txt_p])
+                        heights.append(row_h)
+                    tbl = Table(
+                        data,
+                        colWidths=[aa_content_w * AA_UBIC_FRAC, aa_content_w * AA_TXT_FRAC],
+                        rowHeights=heights,
+                    )
+                    tbl.setStyle(TableStyle([
+                        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                        ("LEFTPADDING", (0, 0), (-1, -1), AA_PAD_L),
+                        ("RIGHTPADDING", (0, 0), (-1, -1), AA_PAD_R),
+                        ("TOPPADDING", (0, 0), (-1, -1), 5),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                        ("BACKGROUND", (0, 0), (-1, 0), AA_BRAND),
+                        ("BOX", (0, 0), (-1, -1), 0.75, AA_LINE_GRAY),
+                        ("LINEAFTER", (0, 1), (0, -1), 0.75, AA_LINE_GRAY),
+                        ("LINEBELOW", (0, 1), (-1, -1), 0.5, AA_LINE_GRAY),
+                    ]))
+                    tw, th = tbl.wrapOn(c, aa_content_w, avail_h)
+                    tbl.drawOn(c, AA_MARGIN_X, y - th)
+                    c.showPage()
+                    page_num += 1
+                    if idx < len(measured):
+                        y = _aa_new_page(area_name)
+
         # --- PÁGINAS DE DATOS GENERALES (ex-Mapa: array de imágenes) -----
         # Cada imagen del array `general_data_images` genera UNA página
         # dedicada usando el mismo membrete institucional (página 1+ del
@@ -6407,6 +6534,12 @@ async def export_reports_pdf(
                                 "Sube imágenes de Datos Generales para el proyecto (presupuesto, programa, planos, mapa…).")
             c.showPage()
             page_num += 1
+
+        # "Actividades por Área" va justo DEBAJO/después de Datos Generales
+        # (spec de producto) — antes del cuerpo principal por nodo/área, e
+        # incluso si el período no tiene reportes narrativos (puede haber
+        # actividades GENERALES añadidas a mano sin reportes de campo).
+        _draw_actividades_por_area_section()
 
         if total_reportes == 0:
             c.setFillColor(MUTED)
@@ -6718,10 +6851,17 @@ async def export_reports_pdf(
             # / `_resolve_acceso_predio_node`) — antes se imprimía "Sin
             # especificar" en TODOS los subtramos sin importar el hub.
             if mostrar_acceso_predio:
-                title_txt_ap = "Acceso al Predio"
+                y = _section_title(left_x, y, col_w, "Acceso al Predio")
+                # Subtítulo: SIEMPRE el nombre propio del nodo resuelto (el
+                # que realmente tiene el estatus configurado en el hub, a
+                # cualquier profundidad) — nunca el del Subtramo/nodo padre
+                # si el estatus vive en un nodo distinto (ver
+                # `_resolve_acceso_predio_node`).
                 if acceso_node_label:
-                    title_txt_ap = f"Acceso al Predio ({acceso_node_label})"
-                y = _section_title(left_x, y, col_w, title_txt_ap)
+                    c.setFillColor(MUTED)
+                    c.setFont("Helvetica-Oblique", 8.5)
+                    c.drawString(left_x, y - 0.02 * cm, acceso_node_label)
+                    y -= 0.38 * cm
                 box_h = 0.85 * cm
                 acceso_color = HexColor(_ACCESO_PREDIO_COLORS.get((acceso_predio or "").strip().lower(), "#94A3B8"))
                 c.setFillColor(acceso_color)
@@ -7520,7 +7660,7 @@ async def export_reports_pdf(
                 acceso_node.get("acceso_predio") if acceso_node else None,
                 weather_by_subtramo.get(subtramo_id),
                 mostrar_acceso_predio=acceso_node is not None,
-                acceso_node_label=(acceso_node.get("name") if acceso_node and acceso_node.get("id") != subtramo_id else None),
+                acceso_node_label=(acceso_node.get("name") if acceso_node else None),
             )
             c.showPage()
             page_num += 1
@@ -8512,6 +8652,9 @@ async def export_reports_pptx(
     # dentro de cada bloque de Área del cuerpo del PPTX — ver la misma nota
     # en export_reports_pdf.
     actividades_curadas_idx = await _actividades_curadas_resumen_por_area(pid, start_dt, end_dt, user)
+    # Tabla consolidada "Actividades por Área" (ver la misma nota en
+    # export_reports_pdf / `_draw_actividades_por_area_section`).
+    actividades_tabla_por_area = await _actividades_tabla_por_area(pid, start_dt, end_dt, user)
     weather_by_subtramo: dict = {}
     _weather_cache: dict = {}
     for _subtramo_id in resource_consolidated_by_subtramo.keys():
@@ -8864,10 +9007,13 @@ async def export_reports_pptx(
             # / `_resolve_acceso_predio_node`) — antes se imprimía "Sin
             # especificar" en TODOS los subtramos sin importar el hub.
             if mostrar_acceso_predio:
-                title_txt_ap = "Acceso al Predio"
+                y = _section_title(left_x, y, col_w, "Acceso al Predio")
+                # Subtítulo: SIEMPRE el nombre propio del nodo resuelto, no
+                # el del Subtramo/nodo padre — ver misma nota en el PDF.
                 if acceso_node_label:
-                    title_txt_ap = f"Acceso al Predio ({acceso_node_label})"
-                y = _section_title(left_x, y, col_w, title_txt_ap)
+                    add_text(slide, left_x, y, col_w, Cm(0.4), acceso_node_label,
+                             size=8.5, italic=True, color=WF_MUTED_RGB)
+                    y += Cm(0.4)
                 box_h = Cm(1.0)
                 acceso_rgb = WF_ACCESO_COLORS.get((acceso_predio or "").strip().lower(), (0x94, 0xA3, 0xB8))
                 _wf_rect(slide, left_x, y, col_w, box_h, fill_rgb=acceso_rgb)
@@ -9165,7 +9311,7 @@ async def export_reports_pptx(
                 acceso_node.get("acceso_predio") if acceso_node else None,
                 weather_by_subtramo.get(subtramo_id),
                 mostrar_acceso_predio=acceso_node is not None,
-                acceso_node_label=(acceso_node.get("name") if acceso_node and acceso_node.get("id") != subtramo_id else None),
+                acceso_node_label=(acceso_node.get("name") if acceso_node else None),
             )
 
         def _emit_actividades_area_slides(area_name: str, node_path: str, items: List[str]) -> None:
@@ -9291,6 +9437,105 @@ async def export_reports_pptx(
             # Sin plantilla: portada en blanco.
             prs.slides.add_slide(blank)
 
+        # ===== SLIDES "ACTIVIDADES POR ÁREA" (justo después de Datos Generales) ==
+        # Tabla de 2 columnas (Ubicación / Actividad) por cada Área del
+        # proyecto — ver la misma nota en export_reports_pdf
+        # (`_draw_actividades_por_area_section`). Pagina de verdad (nunca
+        # trunca con "+N más"); altura de fila estimada por conteo de
+        # caracteres, igual criterio que `_emit_actividades_area_slides`.
+        def _draw_actividades_por_area_slides() -> None:
+            if not actividades_tabla_por_area:
+                return
+
+            AA_MARGIN_X = Cm(1.8)
+            aa_content_w = SW - 2 * AA_MARGIN_X
+            AA_HEADER_H = Cm(0.9)
+            AA_LINE_H = Cm(0.5)
+            AA_ROW_PAD = Cm(0.18)
+            AA_ROW_FONT = 11
+            AA_MAX_LINES_PER_ROW = 6
+            AA_UBIC_FRAC, AA_TXT_FRAC = 0.28, 0.72
+
+            def _aa_estimate_lines(text: str, box_w_emu: int, font_pt: float) -> int:
+                if not text:
+                    return 1
+                avg_char_w_emu = max(1, int(Pt(font_pt * 0.52)))
+                chars_per_line = max(1, int(box_w_emu / avg_char_w_emu))
+                return min(AA_MAX_LINES_PER_ROW, max(1, math.ceil(len(text) / chars_per_line)))
+
+            aa_ubic_w_emu = int(aa_content_w * AA_UBIC_FRAC) - Cm(0.4)
+            aa_txt_w_emu = int(aa_content_w * AA_TXT_FRAC) - Cm(0.4)
+
+            is_first_aa_slide = True
+
+            for area_name in sorted(actividades_tabla_por_area.keys(), key=lambda s: s.upper()):
+                rows = actividades_tabla_por_area.get(area_name) or []
+                if not rows:
+                    continue
+                measured = []
+                for r in rows:
+                    ubic_lines = _aa_estimate_lines(r["ubicacion"], aa_ubic_w_emu, AA_ROW_FONT)
+                    txt_lines = _aa_estimate_lines(r["texto"], aa_txt_w_emu, AA_ROW_FONT)
+                    lines = max(ubic_lines, txt_lines)
+                    measured.append({
+                        "ubicacion": r["ubicacion"], "texto": r["texto"],
+                        "h": lines * AA_LINE_H + 2 * AA_ROW_PAD,
+                    })
+                n_total = len(measured)
+
+                idx = 0
+                page_in_area = 0
+                while idx < n_total or page_in_area == 0:
+                    page_in_area += 1
+                    slide = _clone_membrete()
+                    y = TOP_MARGIN
+                    if is_first_aa_slide:
+                        add_text(slide, AA_MARGIN_X, y, aa_content_w, Cm(1.1), "ACTIVIDADES POR ÁREA",
+                                 size=26, bold=True, color=READABLE_BRAND_RGB, align=PP_ALIGN.CENTER)
+                        y += Cm(1.3)
+                        is_first_aa_slide = False
+                    title = area_name.upper()
+                    if page_in_area > 1:
+                        title += f"  (CONTINÚA · {page_in_area})"
+                    add_text(slide, AA_MARGIN_X, y, aa_content_w, Cm(0.7), title,
+                             size=16, bold=True, color=WF_TEXT_RGB)
+                    y += Cm(0.75)
+
+                    _wf_rect(slide, AA_MARGIN_X, y, aa_content_w, AA_HEADER_H, fill_rgb=BRAND_RGB)
+                    add_text(slide, AA_MARGIN_X + Cm(0.2), y + Cm(0.15), int(aa_content_w * AA_UBIC_FRAC) - Cm(0.3),
+                             AA_HEADER_H - Cm(0.2), "UBICACIÓN", size=12, bold=True, color=HEADER_TEXT_RGB)
+                    add_text(slide, AA_MARGIN_X + int(aa_content_w * AA_UBIC_FRAC) + Cm(0.2), y + Cm(0.15),
+                             int(aa_content_w * AA_TXT_FRAC) - Cm(0.3), AA_HEADER_H - Cm(0.2),
+                             "ACTIVIDAD", size=12, bold=True, color=HEADER_TEXT_RGB)
+                    yy = y + AA_HEADER_H
+                    avail_h = (SH - BOTTOM_MARGIN) - yy
+
+                    cnt = 0
+                    h_acc = 0.0
+                    for i in range(idx, n_total):
+                        rh = measured[i]["h"]
+                        if cnt > 0 and h_acc + rh > avail_h:
+                            break
+                        h_acc += rh
+                        cnt += 1
+                    cnt = max(cnt, 1)
+                    chunk_end = idx + cnt
+
+                    for i in range(idx, chunk_end):
+                        row_h = measured[i]["h"]
+                        if (i - idx) % 2 == 1:
+                            _wf_rect(slide, AA_MARGIN_X, yy, aa_content_w, row_h, fill_rgb=WF_ZEBRA_TINT_RGB)
+                        add_text(slide, AA_MARGIN_X + Cm(0.2), yy + Cm(0.08),
+                                 int(aa_content_w * AA_UBIC_FRAC) - Cm(0.3), row_h - Cm(0.1),
+                                 measured[i]["ubicacion"], size=AA_ROW_FONT, bold=True, color=WF_TEXT_RGB)
+                        add_text(slide, AA_MARGIN_X + int(aa_content_w * AA_UBIC_FRAC) + Cm(0.2), yy + Cm(0.08),
+                                 int(aa_content_w * AA_TXT_FRAC) - Cm(0.3), row_h - Cm(0.1),
+                                 measured[i]["texto"], size=AA_ROW_FONT, color=WF_TEXT_RGB)
+                        _wf_rect(slide, AA_MARGIN_X, yy + row_h - Pt(0.75), aa_content_w, Pt(0.75), fill_rgb=WF_BORDER_RGB)
+                        yy += row_h
+
+                    idx = chunk_end
+
         # ===== SLIDES DATOS GENERALES (ex-Mapa: array de imágenes) =========
         # Cada imagen en `general_data_images` produce UNA slide dedicada
         # sobre el membrete institucional. Retro-compat: si el array está
@@ -9331,6 +9576,10 @@ async def export_reports_pptx(
                      "Sube imágenes de Datos Generales para el proyecto (presupuesto, programa, planos, mapa…).",
                      size=14, italic=True, color=TEXT_MUTED,
                      align=PP_ALIGN.CENTER)
+
+        # "Actividades por Área" va justo DEBAJO/después de Datos Generales
+        # (spec de producto) — antes del cuerpo principal por nodo/área.
+        _draw_actividades_por_area_slides()
 
         # ================================================================
         # Helper: emite una slide ejecutiva con hasta 2 FOTOS (foto + pie).
@@ -10848,6 +11097,33 @@ async def _actividades_curadas_resumen_por_area(pid: str, start_dt: datetime, en
     return _actividades_por_area_index(items)
 
 
+async def _actividades_tabla_por_area(pid: str, start_dt: datetime, end_dt: datetime, user: dict) -> dict:
+    """Prefetch para la sección consolidada "Actividades por Área" que se
+    imprime justo después de Datos Generales (una tabla de 2 columnas —
+    Ubicación / Actividad — por cada Área del proyecto, ver
+    `_draw_actividades_por_area_section` en el motor PDF y su equivalente
+    en PPTX). Misma fuente que el hub (`_actividades_generales_core`):
+    ediciones/ocultamientos ya aplicados. A diferencia de
+    `_actividades_curadas_resumen_por_area` (que indexa SOLO por lookup
+    nodo×área para insertar dentro de cada bloque existente), esta función
+    conserva la ubicación de cada actividad para la columna dedicada.
+    Retorna dict `area_name -> [{"ubicacion", "texto"}, ...]`, en el mismo
+    orden de árbol que ya trae `_actividades_generales_core`."""
+    rango = {"$gte": start_dt, "$lte": end_dt}
+    items = await _actividades_generales_core(pid, None, rango, user, incluir_ocultas=False)
+    out: dict = {}
+    for it in items:
+        texto = (it.get("texto") or "").strip()
+        if not texto:
+            continue
+        area_name = it.get("area_name") or "Sin área"
+        ubicacion = "General"
+        if it.get("nivel") != NIVEL_GENERAL:
+            ubicacion = it.get("node_name") or ((it.get("node_path_names") or ["—"])[-1])
+        out.setdefault(area_name, []).append({"ubicacion": ubicacion, "texto": texto})
+    return out
+
+
 @api.get("/projects/{pid}/actividades_generales")
 async def list_actividades_generales(
     pid: str,
@@ -10859,12 +11135,20 @@ async def list_actividades_generales(
 ):
     """Lista unificada (los 3 niveles juntos, el frontend filtra por nivel
     para cada submenú) en orden de árbol: GENERAL primero, luego SUBTRAMO/
-    NODO según `_flatten_tree_in_order`. especialista ve TODO el proyecto
-    (`puede_editar` marca qué puede tocar); el resto de los roles ya está
-    filtrado por `ensure_project_access`."""
+    NODO según `_flatten_tree_in_order`. Especialista SOLO ve las
+    actividades de su propia área (`area_id` que mande, si es otra, se
+    ignora); Sub-coordinador y Coordinador General ven todas las áreas
+    (`area_id` opcional, filtra si se manda). Jefe de Proyecto conserva el
+    acceso global de solo lectura que ya tenía en el resto de la app."""
     await ensure_project_access(user, pid)
-    if user.get("role") not in (ROLE_COORD, ROLE_SUB, ROLE_ESPECIALISTA, ROLE_JEFE):
+    role = user.get("role")
+    if role not in (ROLE_COORD, ROLE_SUB, ROLE_ESPECIALISTA, ROLE_JEFE):
         raise HTTPException(403, "Tu rol no tiene acceso a Actividades Generales")
+    effective_area_id = area_id
+    if role == ROLE_ESPECIALISTA:
+        effective_area_id = user.get("area_id")
+        if not effective_area_id:
+            return []
     rango: dict = {}
     if desde:
         b = _feed_day_bounds(desde)
@@ -10874,7 +11158,7 @@ async def list_actividades_generales(
         b = _feed_day_bounds(hasta)
         if b:
             rango["$lte"] = b[1]
-    return await _actividades_generales_core(pid, area_id, rango or None, user, incluir_ocultas=incluir_ocultas)
+    return await _actividades_generales_core(pid, effective_area_id, rango or None, user, incluir_ocultas=incluir_ocultas)
 
 
 @api.post("/projects/{pid}/actividades_generales")
