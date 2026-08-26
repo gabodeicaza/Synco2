@@ -28,7 +28,7 @@ export function HeaderMenu({ basePath, projectId }: HeaderMenuProps) {
   const [actividadesOpen, setActividadesOpen] = useState(false);
 
   function goTo(
-    screen: 'archivos-consulta' | 'fuerza-de-trabajo' | 'acceso-predio' | 'registrar-avance' | 'catalogo-conceptos' | 'visualizar-avance' | 'actividades-generales' | 'mensajes' | 'calendario',
+    screen: 'archivos-consulta' | 'fuerza-de-trabajo' | 'acceso-predio' | 'registrar-avance' | 'catalogo-conceptos' | 'visualizar-avance' | 'actividades-generales' | 'mensajes' | 'calendario' | 'dashboard-evm',
     extraParams?: Record<string, string>,
   ) {
     setOpen(false);
@@ -109,6 +109,11 @@ export function HeaderMenu({ basePath, projectId }: HeaderMenuProps) {
                 <MenuItem icon="location-outline" label="Por Ubicación" onPress={() => goTo('actividades-generales', { nivel: 'NODO' })} indented />
               </View>
             ) : null}
+
+            {/* Vista ejecutiva de costo/tiempo (Valor Ganado) — no es una
+                captura de campo, por eso vive suelto y no dentro del grupo
+                "Catálogo de Conceptos". Ver src/components/DashboardEVM.tsx. */}
+            <MenuItem icon="stats-chart-outline" label="Dashboard EVM" onPress={() => goTo('dashboard-evm')} />
 
             {basePath === '/(subcoord)' ? (
               // Edita acceso_predio/situacion_social por Subtramo — el backend

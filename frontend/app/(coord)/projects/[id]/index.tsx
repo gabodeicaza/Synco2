@@ -1128,6 +1128,19 @@ export default function ProjectDetailScreen() {
               contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + 32 }]}
               ListHeaderComponent={
                 <>
+                  {/* Dashboard EVM (Valor Ganado) — destacado arriba de los
+                      accesos operativos diarios: es la vista ejecutiva de
+                      costo/tiempo del proyecto, no una captura de campo.
+                      Ver src/components/DashboardEVM.tsx. */}
+                  <View style={{ marginBottom: spacing.md }}>
+                    <ActionTile
+                      icon="stats-chart-outline"
+                      title="Control de Costos (EVM)"
+                      subtitle="Valor Ganado: SPI, CPI, Curva S y excepciones"
+                      onPress={() => router.push({ pathname: '/(coord)/projects/[id]/dashboard' as any, params: { id: pid } })}
+                    />
+                  </View>
+
                   {/* Registrar avance / Visualizar avance — accesos operativos
                       diarios (Catalogo de Conceptos en si, que es consulta y
                       administracion, se queda en la pestaña Configuracion). */}
