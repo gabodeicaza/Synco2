@@ -626,6 +626,15 @@ export interface Concepto {
   // Calculados por el servidor
   importe_contratado: string;
   cantidad_ejecutada_acumulada: string;
+  // ---- Etapa EVM (aditivo) — null mientras el concepto no tenga datos EVM
+  // (importado por el Importador Maestro o editado a mano). Ver server.py,
+  // _concepto_tiene_datos_evm. ----------------------------------------
+  meta_cantidad?: string | null;
+  importe_total_editable?: string | null;
+  fecha_inicio?: string | null; // "YYYY-MM-DD"
+  fecha_fin?: string | null; // "YYYY-MM-DD"
+  /** precio_unitario_dinamico = importe_total_editable / meta_cantidad, calculado por el servidor — null si el concepto no tiene datos EVM. */
+  precio_unitario_dinamico?: string | null;
 }
 
 export interface ConceptoSearchResult extends Concepto {
@@ -712,6 +721,12 @@ export interface RegistroAvance {
   // anterior del mismo concepto — se permite (nunca se rechaza), pero se
   // marca para que la UI lo muestre. Siempre false fuera de ese modo.
   es_retroceso?: boolean;
+  // ---- Etapa EVM (aditivo) — congelado en el servidor al crear el avance,
+  // null solo para avances capturados ANTES de esta etapa. ---------------
+  precio_unitario_congelado?: string | null;
+  importe_ganado_congelado?: string | null;
+  /** true si `fecha` cayó fuera de [concepto.fecha_inicio, concepto.fecha_fin] al momento de capturar — nunca bloquea, solo se muestra en la Lista por Excepción. */
+  fuera_de_ventana?: boolean;
 }
 
 export interface AvancesResumen {
@@ -848,6 +863,113 @@ export interface SesionPendiente {
   validated_mapping: ImportMapping | null;
   validated_partida_id: string | null;
   convencion_usada: ConvencionDecimal | null;
+}
+
+// ---- Importador Maestro de Control de Obra (Etapa EVM) --------------------
+// Mismo wizard de 4 pasos que el catálogo legado (subir -> mapear -> validar
+// -> commit), pero mapea Clave/Descripción/Meta/Importe/Inicio/Fin en vez de
+// Clave/Descripción/Unidad/Cantidad/PU — ver server.py, sección
+// "Importador Maestro de Control de Obra". Colección de staging propia
+// (no comparte sesión con el catálogo legado).
+export interface ImportMappingEvm {
+  clave?: string;
+  descripcion?: string;
+  meta?: string;
+  importe?: string;
+  inicio?: string;
+  fin?: string;
+}
+
+// tipo incluye, además de los del catálogo legado: 'fecha_ilegible' | 'rango_fecha_invalido'
+export interface ImportFilaEvm {
+  fila: number;
+  clave: string | null;
+  descripcion: string | null;
+  meta_cantidad: string | null;
+  importe_total_editable: string | null;
+  fecha_inicio: string | null;
+  fecha_fin: string | null;
+  concepto_existente_id: string | null;
+  problemas: ImportProblema[];
+  // Calculados por _calcular_vista_filas_evm (overlay de correcciones aplicado):
+  meta_cantidad_efectiva: string | null;
+  importe_total_editable_efectivo: string | null;
+  fecha_inicio_efectiva: string | null;
+  fecha_fin_efectiva: string | null;
+  problemas_activos: ImportProblema[];
+  correccion: { meta_cantidad?: string; importe_total_editable?: string; fecha_inicio?: string; fecha_fin?: string; descartar?: boolean } | null;
+  estado: ImportEstadoFila;
+}
+
+export interface ImportValidateEvmResult {
+  resumen: ImportResumen;
+  convencion_usada: ConvencionDecimal | null;
+}
+
+export interface ImportPreviewEvmResponse {
+  resumen: ImportResumen;
+  filas: ImportFilaEvm[];
+  page: number;
+  page_size: number;
+  total_pages: number;
+  total_rows: number;
+  sheet: string | null;
+  partida_id: string | null;
+  convencion_usada: ConvencionDecimal | null;
+  duplicados_accion: 'omitir' | 'actualizar';
+}
+
+export interface ImportCommitEvmResult {
+  creados: number;
+  actualizados: number;
+  omitidos: number;
+  con_error: number;
+  descartados: number;
+  import_batch_id: string;
+}
+
+// ---- Análisis de Periodos EVM (Valor Ganado) -------------------------------
+export interface AnalisisPeriodo {
+  project_id: string;
+  start: string;
+  end: string;
+  /** Valor Planeado (PV) — string decimal exacto, ver src/utils/money.ts. */
+  pv: string;
+  /** Valor Ganado (EV). */
+  ev: string;
+  /** Costo Real (AC), desde gastos_reales. */
+  ac: string;
+  /** SPI = EV/PV — null si PV es 0 (nada planeado en la ventana). */
+  spi: string | null;
+  /** CPI = EV/AC — null si AC es 0 (nada de gasto real capturado). */
+  cpi: string | null;
+  variacion_cronograma: string;
+  variacion_costo: string;
+}
+
+export interface CurvaS {
+  meses: string[]; // "YYYY-MM", mismo orden que los 3 arreglos siguientes
+  planeado_acumulado: string[];
+  ganado_acumulado: string[];
+  real_acumulado: string[];
+}
+
+export interface ExcepcionEvm {
+  concepto_id: string;
+  clave: string;
+  descripcion: string;
+  tipo: 'fuera_de_ventana' | 'sobre_meta';
+  detalle: string;
+}
+
+export interface GastoReal {
+  id: string;
+  project_id: string;
+  fecha: string;
+  monto: string;
+  concepto_texto: string;
+  capturado_por: string;
+  creado_en: string;
 }
 
 // ---- Programa desglosado (Etapa 2 de la Ampliación del Catálogo) ----------
@@ -1621,6 +1743,68 @@ export const api = {
   importCatalogoCommit: (pid: string, importId: string) =>
     request<ImportCommitResult>('POST', `/projects/${pid}/conceptos/import/${importId}/commit`),
 
+  // ---- Importador Maestro de Control de Obra (Etapa EVM) --------------------
+  // Mismo patrón que importCatalogo* de arriba, colección/endpoints propios
+  // (no interfiere con el wizard legado mientras coexistan).
+  importEvmUploadSheets: async (
+    pid: string,
+    file: { uri: string; name: string; mimeType?: string | null },
+  ): Promise<ImportSheetsResponse> => {
+    if (!file || !file.uri) throw new ApiError(0, 'Archivo o URI no proporcionado');
+    const isWeb = Platform.OS === 'web';
+    const fileName = file.name || 'control_obra.xlsx';
+    const mime = file.mimeType || 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    const url = `${BASE}/projects/${pid}/conceptos/import_evm/sheets`;
+
+    if (!isWeb) {
+      return nativeMultipartUpload<ImportSheetsResponse>(url, file.uri, fileName, mime, 'import_evm');
+    }
+    const form = new FormData();
+    const resBlob = await fetch(file.uri);
+    const blob = await resBlob.blob();
+    try {
+      const f = new File([blob], fileName, { type: mime });
+      form.append('file', f);
+    } catch {
+      form.append('file', blob, fileName);
+    }
+    const headers = await authHeader();
+    const res = await fetch(url, { method: 'POST', headers, body: form as any });
+    const text = await res.text();
+    const data = text ? safeJson(text) : null;
+    if (!res.ok) {
+      const msg = (data && (data as any).detail) || `HTTP ${res.status}`;
+      throw new ApiError(res.status, typeof msg === 'string' ? msg : JSON.stringify(msg));
+    }
+    return data as ImportSheetsResponse;
+  },
+  importEvmHeaders: (importId: string, sheet?: string, headerRowIndex?: number) => {
+    const qs = new URLSearchParams();
+    if (sheet) qs.set('sheet', sheet);
+    if (headerRowIndex !== undefined) qs.set('header_row_index', String(headerRowIndex));
+    const suffix = qs.toString();
+    return request<ImportHeadersResponse>('GET', `/conceptos/import_evm/${importId}/headers${suffix ? `?${suffix}` : ''}`);
+  },
+  importEvmValidate: (pid: string, importId: string, payload: {
+    sheet: string; header_row_index?: number; mapping: ImportMappingEvm; partida_id: string; convencion?: ConvencionDecimal;
+  }) => request<ImportValidateEvmResult>('POST', `/projects/${pid}/conceptos/import_evm/${importId}/validate`, payload),
+  importEvmPreview: (importId: string, opts: { page?: number; page_size?: number } = {}) => {
+    const qs = new URLSearchParams();
+    if (opts.page) qs.set('page', String(opts.page));
+    if (opts.page_size) qs.set('page_size', String(opts.page_size));
+    const suffix = qs.toString();
+    return request<ImportPreviewEvmResponse>('GET', `/conceptos/import_evm/${importId}/preview${suffix ? `?${suffix}` : ''}`);
+  },
+  importEvmCorrectRow: (importId: string, fila: number, payload: {
+    meta_cantidad?: string; importe_total_editable?: string; fecha_inicio?: string; fecha_fin?: string; descartar?: boolean;
+  }) => request<{ fila: ImportFilaEvm; resumen: ImportResumen }>('PUT', `/conceptos/import_evm/${importId}/rows/${fila}`, payload),
+  importEvmSetDuplicadosAccion: (importId: string, accion: 'omitir' | 'actualizar') =>
+    request<{ duplicados_accion: string }>('PUT', `/conceptos/import_evm/${importId}/duplicados-accion`, { accion }),
+  importEvmDescartarSesion: (pid: string, importId: string) =>
+    request<{ ok: boolean }>('DELETE', `/projects/${pid}/conceptos/import_evm/${importId}`),
+  importEvmCommit: (pid: string, importId: string) =>
+    request<ImportCommitEvmResult>('POST', `/projects/${pid}/conceptos/import_evm/${importId}/commit`),
+
   // ---- Programa desglosado — mismo wizard, segundo destino -----------------
   programaImportSesionPendiente: (pid: string) =>
     request<ProgramaSesionPendiente | null>('GET', `/projects/${pid}/programa/import/pendiente`),
@@ -1741,6 +1925,25 @@ export const api = {
     const suffix = qs.toString();
     return request<AvancesResumen>('GET', `/projects/${pid}/avances/resumen${suffix ? `?${suffix}` : ''}`);
   },
+
+  // ---- Análisis de Periodos EVM (Valor Ganado) / Dashboard -----------------
+  analisisPeriodo: (pid: string, start: string, end: string) =>
+    request<AnalisisPeriodo>('GET', `/projects/${pid}/analisis_periodo?start=${start}&end=${end}`),
+  analisisPeriodoCurvaS: (pid: string) =>
+    request<CurvaS>('GET', `/projects/${pid}/analisis_periodo/curva_s`),
+  analisisPeriodoExcepciones: (pid: string) =>
+    request<ExcepcionEvm[]>('GET', `/projects/${pid}/analisis_periodo/excepciones`),
+
+  createGastoReal: (pid: string, payload: { fecha: string; monto: string; concepto_texto: string }) =>
+    request<GastoReal>('POST', `/projects/${pid}/gastos_reales`, payload),
+  listGastosReales: (pid: string, opts: { desde?: string; hasta?: string } = {}) => {
+    const qs = new URLSearchParams();
+    if (opts.desde) qs.set('desde', opts.desde);
+    if (opts.hasta) qs.set('hasta', opts.hasta);
+    const suffix = qs.toString();
+    return request<GastoReal[]>('GET', `/projects/${pid}/gastos_reales${suffix ? `?${suffix}` : ''}`);
+  },
+  deleteGastoReal: (gastoId: string) => request<{ ok: boolean }>('DELETE', `/gastos_reales/${gastoId}`),
 
   downloadCatalogoPdf: async (pid: string): Promise<{ blob: Blob; filename: string }> => {
     const tok = await getToken();

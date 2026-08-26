@@ -18,7 +18,7 @@ import secrets
 import asyncio
 import unicodedata
 from pathlib import Path
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, date
 from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 from typing import List, Optional, Literal, Any, Callable, Tuple, Dict
 try:
@@ -36,8 +36,9 @@ from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
-from pymongo.errors import DuplicateKeyError
-from pydantic import BaseModel, Field, EmailStr, field_validator
+from pymongo.errors import DuplicateKeyError, BulkWriteError
+from pymongo import InsertOne, UpdateOne
+from pydantic import BaseModel, Field, EmailStr, field_validator, model_validator
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -903,6 +904,13 @@ async def startup_event():
     await db.registros_avance.create_index("id")
     await db.catalogo_import_sessions.create_index("id")
     await db.programa_import_sessions.create_index("id")
+    # Etapa EVM: mismo criterio de TTL 24h que catalogo/programa (sesiones
+    # de importación abandonadas), colección propia para no interferir con
+    # el importador legado mientras coexistan (ver Importador Maestro).
+    await db.evm_import_sessions.create_index("created_at", expireAfterSeconds=86400)
+    await db.evm_import_sessions.create_index("id")
+    await db.gastos_reales.create_index("id")
+    await db.gastos_reales.create_index([("project_id", 1), ("fecha", 1)])
     await db.programa_versiones.create_index("id")
     await db.programa_versiones.create_index([("project_id", 1), ("vigente", 1)])
     await db.programa_distribucion.create_index("id")
@@ -11467,6 +11475,29 @@ def compute_importe(cantidad, precio_unitario) -> Decimal:
     return to_decimal(cantidad) * to_decimal(precio_unitario)
 
 
+# --- Etapa EVM: precio unitario dinámico -------------------------------------
+def compute_precio_unitario_dinamico(importe_total_editable, meta_cantidad) -> Decimal:
+    """precio_unitario = importe_total_editable / meta_cantidad, SIN redondear
+    (mismo criterio que compute_importe). Nunca se guarda — se recalcula cada
+    vez que se lee el Concepto, así que editar importe_total_editable cambia
+    el precio_unitario de HOY, pero nunca el de un RegistroAvance ya
+    congelado (ver RegistroAvanceOut.precio_unitario_congelado)."""
+    importe = to_decimal(importe_total_editable)
+    meta = to_decimal(meta_cantidad)
+    if meta == 0:
+        raise ValueError("meta_cantidad no puede ser 0: precio_unitario quedaría indefinido")
+    return importe / meta
+
+
+def _concepto_tiene_datos_evm(doc: dict) -> bool:
+    """True si este Concepto ya migró a los campos de Etapa EVM (importados
+    o capturados por el Importador Maestro / editados a mano). Los
+    conceptos creados antes de esta etapa NO tienen estos campos — se
+    quedan con precio_unitario estático hasta que alguien los reimporte o
+    edite; nunca se les inventa un valor por default."""
+    return bool(doc.get("meta_cantidad")) and bool(doc.get("importe_total_editable"))
+
+
 def sum_decimales(values) -> Decimal:
     total = Decimal("0")
     for v in values:
@@ -12051,6 +12082,46 @@ class ConceptoIn(BaseModel):
         to_decimal(v)  # valida que sea un decimal exacto parseable (nunca float)
         return v
 
+    # --- Etapa EVM (aditivo, todos opcionales) --------------------------
+    # Migración deliberadamente NO destructiva: cantidad/precio_unitario/meta
+    # de arriba siguen siendo la fuente de verdad hasta que un concepto
+    # tiene también meta_cantidad + importe_total_editable (importado por el
+    # Importador Maestro, o editado a mano) — ver _concepto_tiene_datos_evm y
+    # compute_precio_unitario_dinamico. Reemplazar los campos legado en un
+    # solo paso habría requerido tocar cada lectura de concepto.cantidad/
+    # precio_unitario en todo el archivo (reportes, _partida_out, el
+    # importador de catálogo existente) sin poder probarlo contra datos
+    # reales de producción primero.
+    meta_cantidad: Optional[str] = None
+    importe_total_editable: Optional[str] = None
+    fecha_inicio: Optional[str] = None  # "YYYY-MM-DD"
+    fecha_fin: Optional[str] = None  # "YYYY-MM-DD"
+
+    @field_validator("meta_cantidad", "importe_total_editable")
+    @classmethod
+    def _v_decimal_evm(cls, v):
+        if v is not None:
+            to_decimal(v)
+        return v
+
+    @field_validator("fecha_inicio", "fecha_fin")
+    @classmethod
+    def _v_fecha_evm(cls, v):
+        if v is not None:
+            try:
+                date.fromisoformat(v)
+            except ValueError:
+                raise ValueError(f"fecha inválida, se espera YYYY-MM-DD: {v!r}")
+        return v
+
+    @model_validator(mode="after")
+    def _v_rango_fechas_evm(self):
+        if self.fecha_inicio and self.fecha_fin and date.fromisoformat(self.fecha_fin) < date.fromisoformat(self.fecha_inicio):
+            raise ValueError("fecha_fin no puede ser anterior a fecha_inicio")
+        if self.meta_cantidad is not None and to_decimal(self.meta_cantidad) <= 0:
+            raise ValueError("meta_cantidad debe ser mayor a 0 (se usa como divisor de precio_unitario)")
+        return self
+
 
 class ConceptoPatch(BaseModel):
     clave: Optional[str] = None
@@ -12061,6 +12132,11 @@ class ConceptoPatch(BaseModel):
     meta: Optional[str] = None
     periodicidad_meta: Optional[PeriodicidadType] = None
     activo: Optional[bool] = None
+    # --- Etapa EVM (aditivo) — ver ConceptoIn ---------------------------
+    meta_cantidad: Optional[str] = None
+    importe_total_editable: Optional[str] = None
+    fecha_inicio: Optional[str] = None
+    fecha_fin: Optional[str] = None
 
     @field_validator("unidad")
     @classmethod
@@ -12071,12 +12147,27 @@ class ConceptoPatch(BaseModel):
                 raise ValueError("unidad no puede estar vacía")
         return v
 
-    @field_validator("cantidad", "precio_unitario", "meta")
+    @field_validator("cantidad", "precio_unitario", "meta", "meta_cantidad", "importe_total_editable")
     @classmethod
     def _v_decimal(cls, v):
         if v is not None:
             to_decimal(v)
         return v
+
+    @field_validator("fecha_inicio", "fecha_fin")
+    @classmethod
+    def _v_fecha_evm(cls, v):
+        if v is not None:
+            try:
+                date.fromisoformat(v)
+            except ValueError:
+                raise ValueError(f"fecha inválida, se espera YYYY-MM-DD: {v!r}")
+        return v
+    # NOTA: si el PATCH trae solo fecha_inicio o solo fecha_fin, la
+    # consistencia del rango contra el valor YA GUARDADO del otro campo se
+    # valida en el handler (update_concepto) — un validador de Pydantic no
+    # puede consultar Mongo. Mismo criterio que unidad vs. catálogo del
+    # proyecto (_validar_unidad_para_proyecto).
 
 
 class ConceptoOut(BaseModel):
@@ -12095,6 +12186,13 @@ class ConceptoOut(BaseModel):
     # --- Calculados ---
     importe_contratado: str
     cantidad_ejecutada_acumulada: str = "0"
+    # --- Etapa EVM (aditivo, None mientras el concepto no tenga datos EVM
+    # — ver _concepto_tiene_datos_evm) -----------------------------------
+    meta_cantidad: Optional[str] = None
+    importe_total_editable: Optional[str] = None
+    fecha_inicio: Optional[str] = None
+    fecha_fin: Optional[str] = None
+    precio_unitario_dinamico: Optional[str] = None
 
 
 class RegistroAvanceIn(BaseModel):
@@ -12184,6 +12282,22 @@ class RegistroAvanceOut(BaseModel):
     # pero nunca se guarda como si nada: queda marcado para que la UI lo
     # muestre y alguien lo revise. Siempre False fuera de modo PORCENTAJE.
     es_retroceso: bool = False
+    # --- Congelación histórica para EVM (aditivo) -----------------------
+    # precio_unitario_congelado = precio unitario vigente del Concepto EN EL
+    # MOMENTO en que se creó este registro (dinámico si el concepto ya tiene
+    # datos EVM, o el precio_unitario estático si no — ver create_avance).
+    # Se calcula UNA sola vez y ya NUNCA se vuelve a tocar: es lo que hace
+    # que editar importe_total_editable hoy no altere el Valor Ganado de
+    # periodos ya cerrados. Optional porque los RegistroAvance capturados
+    # ANTES de esta etapa no lo tienen — nunca se les inventa un valor.
+    precio_unitario_congelado: Optional[str] = None
+    importe_ganado_congelado: Optional[str] = None
+    # True si `fecha` cae fuera de [concepto.fecha_inicio, concepto.fecha_fin]
+    # vigentes al momento de la captura — nunca se rechaza el avance por
+    # esto (mismo criterio que es_retroceso), solo se marca para la Lista
+    # por Excepción del dashboard EVM. Siempre False si el concepto todavía
+    # no tiene fecha_inicio/fecha_fin (nada que comparar).
+    fuera_de_ventana: bool = False
 
 
 async def _registro_avance_out(doc: dict) -> RegistroAvanceOut:
@@ -12366,6 +12480,9 @@ async def _concepto_out(doc: dict) -> ConceptoOut:
     project = await db.projects.find_one({"id": doc["project_id"]})
     modo_avance = (project or {}).get("modo_avance", "CANTIDAD")
     ejecutado = await _concepto_ejecutado_acumulado(doc["id"], modo_avance)
+    precio_dinamico = None
+    if _concepto_tiene_datos_evm(doc):
+        precio_dinamico = dec_to_str(compute_precio_unitario_dinamico(doc["importe_total_editable"], doc["meta_cantidad"]))
     return ConceptoOut(
         id=doc["id"],
         partida_id=doc["partida_id"],
@@ -12381,6 +12498,11 @@ async def _concepto_out(doc: dict) -> ConceptoOut:
         created_at=doc["created_at"],
         importe_contratado=dec_to_str(importe),
         cantidad_ejecutada_acumulada=ejecutado,
+        meta_cantidad=doc.get("meta_cantidad"),
+        importe_total_editable=doc.get("importe_total_editable"),
+        fecha_inicio=doc.get("fecha_inicio"),
+        fecha_fin=doc.get("fecha_fin"),
+        precio_unitario_dinamico=precio_dinamico,
     )
 
 
@@ -12588,6 +12710,13 @@ async def create_concepto(body: ConceptoIn, user: dict = Depends(require_role(RO
         "activo": True,
         "created_at": datetime.now(timezone.utc),
         "created_by": user["id"],
+        # Etapa EVM (aditivo) — casi siempre llegan vacíos aquí (el alta
+        # manual de un concepto sigue siendo el flujo legado); se completan
+        # después vía PATCH o el Importador Maestro (Tarea 2).
+        "meta_cantidad": body.meta_cantidad,
+        "importe_total_editable": body.importe_total_editable,
+        "fecha_inicio": body.fecha_inicio,
+        "fecha_fin": body.fecha_fin,
     }
     await db.conceptos.insert_one(doc)
     return await _concepto_out(doc)
@@ -12627,6 +12756,38 @@ async def update_concepto(concepto_id: str, body: ConceptoPatch, user: dict = De
             "meta", concepto["meta"], body.meta, user,
         )
         upd["meta"] = body.meta
+
+    # --- Etapa EVM (aditivo) --------------------------------------------
+    # importe_total_editable lleva la MISMA bitácora que precio_unitario:
+    # es lo que determina el precio_unitario_dinamico de aquí en adelante,
+    # así que un cambio aquí es tan sensible como cambiar el PU a mano.
+    if body.importe_total_editable is not None and body.importe_total_editable != concepto.get("importe_total_editable"):
+        await _log_bitacora(
+            concepto["project_id"], "pu", "concepto", concepto_id,
+            "importe_total_editable", concepto.get("importe_total_editable"), body.importe_total_editable, user,
+        )
+        upd["importe_total_editable"] = body.importe_total_editable
+    if body.meta_cantidad is not None and body.meta_cantidad != concepto.get("meta_cantidad"):
+        if to_decimal(body.meta_cantidad) <= 0:
+            raise HTTPException(400, "meta_cantidad debe ser mayor a 0 (se usa como divisor de precio_unitario)")
+        await _log_bitacora(
+            concepto["project_id"], "meta", "concepto", concepto_id,
+            "meta_cantidad", concepto.get("meta_cantidad"), body.meta_cantidad, user,
+        )
+        upd["meta_cantidad"] = body.meta_cantidad
+    # fecha_inicio/fecha_fin: la consistencia del rango se valida contra el
+    # valor EFECTIVO (el que llega en este PATCH, o si no el ya guardado) —
+    # un PATCH de un solo extremo no puede dejar el rango invertido en
+    # silencio.
+    if body.fecha_inicio is not None or body.fecha_fin is not None:
+        nueva_inicio = body.fecha_inicio if body.fecha_inicio is not None else concepto.get("fecha_inicio")
+        nueva_fin = body.fecha_fin if body.fecha_fin is not None else concepto.get("fecha_fin")
+        if nueva_inicio and nueva_fin and date.fromisoformat(nueva_fin) < date.fromisoformat(nueva_inicio):
+            raise HTTPException(400, "fecha_fin no puede ser anterior a fecha_inicio")
+        if body.fecha_inicio is not None:
+            upd["fecha_inicio"] = body.fecha_inicio
+        if body.fecha_fin is not None:
+            upd["fecha_fin"] = body.fecha_fin
 
     if upd:
         await db.conceptos.update_one({"id": concepto_id}, {"$set": upd})
@@ -13481,6 +13642,623 @@ async def import_commit(pid: str, import_id: str, user: dict = Depends(require_r
     return resultado
 
 
+# === Importador Maestro de Control de Obra (Etapa EVM) =======================
+# Fusiona lo que antes eran dos wizards (Catálogo + Programa) en uno solo:
+# un archivo, un mapeo (Clave/Descripción/Meta/Importe/Inicio/Fin), un commit.
+# Vive en endpoints y colección de staging PROPIOS (evm_import_sessions,
+# prefijo /conceptos/import_evm/...) en vez de reemplazar los del catálogo
+# legado — así el wizard que hoy usan los coordinadores sigue funcionando
+# mientras el catálogo migra concepto por concepto a los campos EVM (ver
+# _concepto_tiene_datos_evm). Reutiliza toda la infraestructura de parseo ya
+# probada (_read_workbook_sheets, detectar_convencion, _parse_celda_numerica,
+# _fecha_excel_a_iso, _fila_parece_encabezado, _log_bitacora,
+# _resumen_de_vista) — solo el mapeo de columnas y el commit son nuevos.
+
+_MAPPING_TARGETS_EVM = ["clave", "descripcion", "meta", "importe", "inicio", "fin"]
+_MAPPING_KEYWORDS_EVM = {
+    "clave": ["clave", "codigo", "código", "no.", "num", "item", "partida"],
+    "descripcion": ["descripcion", "descripción", "concepto", "nombre", "actividad", "trabajo"],
+    "meta": ["meta", "cantidad", "cant", "volumen", "vol"],
+    "importe": ["importe", "total", "monto", "importe contratado"],
+    "inicio": ["inicio", "fecha inicio", "f. inicio", "start"],
+    "fin": ["fin", "fecha fin", "f. fin", "termino", "término", "end"],
+}
+
+_TIPOS_ERROR_EVM = {"excel_error", "numero_ilegible", "numero_ambiguo", "campo_obligatorio_vacio", "fecha_ilegible", "rango_fecha_invalido"}
+_TIPOS_DUPLICADO_EVM = {"clave_duplicada_archivo", "clave_existente_proyecto"}
+
+
+class ImportMappingEvmIn(BaseModel):
+    clave: Optional[str] = None
+    descripcion: Optional[str] = None
+    meta: Optional[str] = None       # columna del Excel -> Concepto.meta_cantidad
+    importe: Optional[str] = None    # columna del Excel -> Concepto.importe_total_editable
+    inicio: Optional[str] = None     # columna del Excel -> Concepto.fecha_inicio
+    fin: Optional[str] = None        # columna del Excel -> Concepto.fecha_fin
+
+
+class ImportValidateEvmIn(BaseModel):
+    sheet: str
+    header_row_index: int = 0
+    mapping: ImportMappingEvmIn
+    partida_id: str
+    convencion: Optional[ConvencionDecimal] = None
+
+
+class RowCorrectionEvmIn(BaseModel):
+    meta_cantidad: Optional[str] = None
+    importe_total_editable: Optional[str] = None
+    fecha_inicio: Optional[str] = None
+    fecha_fin: Optional[str] = None
+    descartar: bool = False
+
+
+def _propose_mapping_evm(headers: List[str]) -> dict:
+    normalized = [_normalize_text(h) for h in headers]
+    mapping: dict = {}
+    used_idx: set = set()
+    for target in _MAPPING_TARGETS_EVM:
+        best_idx = None
+        for idx, h in enumerate(normalized):
+            if idx in used_idx or not h:
+                continue
+            if any(kw in h for kw in _MAPPING_KEYWORDS_EVM[target]):
+                best_idx = idx
+                break
+        if best_idx is not None:
+            mapping[target] = headers[best_idx]
+            used_idx.add(best_idx)
+    return mapping
+
+
+def _validar_archivo_completo_evm(
+    rows: List[list],
+    header_row_index: int,
+    mapping: "ImportMappingEvmIn",
+    convencion: Optional[ConvencionDecimal],
+    existing_by_clave: dict,
+) -> List[dict]:
+    """Mismo contrato que _validar_archivo_completo (catálogo legado):
+    procesa TODAS las filas una vez, resultado inmutable, correcciones
+    viven aparte en _calcular_vista_filas_evm. A diferencia del importador
+    de catálogo, aquí no hay unidad/cantidad/precio_unitario — el concepto
+    EVM se define por meta_cantidad + importe_total_editable +
+    fecha_inicio/fecha_fin (ver ConceptoIn). unidad se deja en "UNIVERSAL"
+    por default al crear (mismo default que ConceptoIn.unidad) — este
+    importador no trae columna de unidad, tal como se pidió."""
+    if len(rows) <= header_row_index:
+        raise HTTPException(400, "header_row_index fuera de rango")
+    headers = [str(c) if c is not None else "" for c in rows[header_row_index]]
+    data_rows = rows[header_row_index + 1:]
+
+    def col(header_name: Optional[str]):
+        if not header_name or header_name not in headers:
+            return None
+        return headers.index(header_name)
+
+    idx = {k: col(getattr(mapping, k)) for k in ("clave", "descripcion", "meta", "importe", "inicio", "fin")}
+    if any(idx[k] is None for k in ("clave", "descripcion", "meta", "importe", "inicio", "fin")):
+        raise HTTPException(400, "El mapeo debe incluir clave, descripción, meta, importe, inicio y fin")
+
+    def celda(row: list, key: str):
+        i = idx[key]
+        if i is None or i >= len(row):
+            return None
+        return row[i]
+
+    filas: List[dict] = []
+    for i, row in enumerate(data_rows):
+        clave_raw = celda(row, "clave")
+        if clave_raw in (None, ""):
+            continue  # fila vacía / de relleno, se ignora silenciosamente (igual que el importador de catálogo)
+        fila_num = header_row_index + 2 + i
+        problemas: List[dict] = []
+
+        clave = str(clave_raw).strip() or None
+        if not clave:
+            problemas.append({"tipo": "campo_obligatorio_vacio", "campo": "clave", "motivo": "La clave está vacía"})
+
+        descripcion_raw = celda(row, "descripcion")
+        descripcion = (str(descripcion_raw).strip() if descripcion_raw is not None else "") or None
+        if not descripcion:
+            problemas.append({"tipo": "campo_obligatorio_vacio", "campo": "descripcion", "motivo": "La descripción está vacía"})
+
+        def _parse_campo_numerico(raw_valor, nombre_campo: str) -> Optional[str]:
+            try:
+                return dec_to_str(_parse_celda_numerica(raw_valor, convencion))
+            except CeldaErrorExcelError as e:
+                problemas.append({"tipo": "excel_error", "campo": nombre_campo, "motivo": str(e)})
+            except NumeroAmbiguoError as e:
+                problemas.append({
+                    "tipo": "numero_ambiguo", "campo": nombre_campo, "motivo": str(e),
+                    "lectura_miles": dec_to_str(e.lectura_miles), "lectura_decimal": dec_to_str(e.lectura_decimal),
+                })
+            except ValueError as e:
+                if raw_valor in (None, ""):
+                    problemas.append({"tipo": "campo_obligatorio_vacio", "campo": nombre_campo, "motivo": f"El campo '{nombre_campo}' está vacío"})
+                else:
+                    problemas.append({"tipo": "numero_ilegible", "campo": nombre_campo, "motivo": str(e)})
+            return None
+
+        meta_raw = celda(row, "meta")
+        meta_cantidad = _parse_campo_numerico(meta_raw, "meta")
+        if meta_cantidad is not None and to_decimal(meta_cantidad) <= 0:
+            problemas.append({"tipo": "campo_obligatorio_vacio", "campo": "meta", "motivo": "meta debe ser mayor a 0 (se usa como divisor de precio_unitario)"})
+            meta_cantidad = None
+
+        importe_raw = celda(row, "importe")
+        importe_total_editable = _parse_campo_numerico(importe_raw, "importe")
+
+        # Fechas: SOLO se aceptan como celda de fecha real de Excel (mismo
+        # criterio que el importador de Programa Desglosado, ver
+        # _fecha_excel_a_iso) — nunca se adivina un texto "01/02/2026"
+        # (¿día o mes primero?) como si fuera inequívoco.
+        inicio_raw = celda(row, "inicio")
+        fecha_inicio = _fecha_excel_a_iso(inicio_raw)
+        if fecha_inicio is None:
+            tipo = "campo_obligatorio_vacio" if inicio_raw in (None, "") else "fecha_ilegible"
+            problemas.append({"tipo": tipo, "campo": "inicio", "motivo": f"Fecha de inicio inválida o no es una celda de fecha de Excel: {inicio_raw!r}"})
+
+        fin_raw = celda(row, "fin")
+        fecha_fin = _fecha_excel_a_iso(fin_raw)
+        if fecha_fin is None:
+            tipo = "campo_obligatorio_vacio" if fin_raw in (None, "") else "fecha_ilegible"
+            problemas.append({"tipo": tipo, "campo": "fin", "motivo": f"Fecha de fin inválida o no es una celda de fecha de Excel: {fin_raw!r}"})
+
+        if fecha_inicio and fecha_fin and date.fromisoformat(fecha_fin) < date.fromisoformat(fecha_inicio):
+            problemas.append({"tipo": "rango_fecha_invalido", "campo": "fin", "motivo": f"fecha_fin ({fecha_fin}) es anterior a fecha_inicio ({fecha_inicio})"})
+
+        concepto_existente_id = None
+        if clave and clave in existing_by_clave:
+            concepto_existente_id = existing_by_clave[clave]["id"]
+            problemas.append({
+                "tipo": "clave_existente_proyecto", "campo": None,
+                "motivo": f"Ya existe un concepto con clave '{clave}' en esta partida",
+            })
+
+        filas.append({
+            "fila": fila_num, "clave": clave, "descripcion": descripcion,
+            "meta_cantidad": meta_cantidad, "importe_total_editable": importe_total_editable,
+            "fecha_inicio": fecha_inicio, "fecha_fin": fecha_fin,
+            "concepto_existente_id": concepto_existente_id, "problemas": problemas,
+        })
+    return filas
+
+
+def _calcular_vista_filas_evm(validated_rows: List[dict], correcciones: dict) -> List[dict]:
+    """Mismo contrato que _calcular_vista_filas (catálogo legado), sobre los
+    campos EVM en vez de cantidad/precio_unitario/unidad."""
+    conteo_claves: dict = {}
+    for row in validated_rows:
+        correccion = correcciones.get(str(row["fila"])) or {}
+        if correccion.get("descartar") or not row["clave"]:
+            continue
+        conteo_claves[row["clave"]] = conteo_claves.get(row["clave"], 0) + 1
+    claves_repetidas = {c for c, n in conteo_claves.items() if n > 1}
+
+    vista: List[dict] = []
+    for row in validated_rows:
+        fila_key = str(row["fila"])
+        correccion = correcciones.get(fila_key) or {}
+        descartado = bool(correccion.get("descartar"))
+
+        campos_corregidos = {k for k in ("meta_cantidad", "importe_total_editable", "fecha_inicio", "fecha_fin") if correccion.get(k) is not None}
+        problemas_activos = [p for p in row["problemas"] if p.get("campo") not in campos_corregidos]
+
+        if not descartado and row["clave"] in claves_repetidas:
+            problemas_activos = problemas_activos + [{
+                "tipo": "clave_duplicada_archivo", "campo": None,
+                "motivo": f"La clave '{row['clave']}' aparece más de una vez en el archivo; descarta todas menos una",
+            }]
+
+        meta_cantidad_efectiva = correccion.get("meta_cantidad") or row["meta_cantidad"]
+        importe_efectivo = correccion.get("importe_total_editable") or row["importe_total_editable"]
+        fecha_inicio_efectiva = correccion.get("fecha_inicio") or row["fecha_inicio"]
+        fecha_fin_efectiva = correccion.get("fecha_fin") or row["fecha_fin"]
+
+        if descartado:
+            estado = "descartado"
+        else:
+            tipos_activos = {p["tipo"] for p in problemas_activos}
+            if tipos_activos & _TIPOS_ERROR_EVM:
+                estado = "error"
+            elif tipos_activos & _TIPOS_DUPLICADO_EVM:
+                estado = "duplicado"
+            else:
+                estado = "ok"
+
+        vista.append({
+            **row,
+            "meta_cantidad_efectiva": meta_cantidad_efectiva,
+            "importe_total_editable_efectivo": importe_efectivo,
+            "fecha_inicio_efectiva": fecha_inicio_efectiva,
+            "fecha_fin_efectiva": fecha_fin_efectiva,
+            "problemas_activos": problemas_activos,
+            "correccion": correccion or None,
+            "estado": estado,
+        })
+    return vista
+
+
+async def _ejecutar_commit_evm_con_compensacion(
+    conceptos_col,
+    sessions_col,
+    log_bitacora: Callable[..., Any],
+    pid: str,
+    import_id: str,
+    partida_id: str,
+    vista: List[dict],
+    duplicados_accion: str,
+    user: dict,
+    filename: Optional[str],
+    batch_size: int = 500,
+) -> dict:
+    """Commit del Importador Maestro — mismo criterio de COMPENSACIÓN MANUAL
+    que _ejecutar_commit_con_compensacion del catálogo legado (ver ese
+    docstring para el porqué completo: no hay confirmación de que el Mongo
+    de producción corra en replica set, así que no hay `start_transaction()`
+    real disponible).
+
+    Única diferencia real: los writes van en bulk_write POR LOTES de
+    `batch_size` en vez de un insert_one/update_one por fila — con miles de
+    conceptos (una curva de varios años) esa es la diferencia entre un
+    commit de segundos y uno que tumba el proxy por timeout. La
+    compensación se mantiene porque el lote COMPLETO se registra en
+    compensacion_log ANTES de ejecutar su bulk_write (mismo orden
+    "registrar antes de escribir"); si ese lote falla a mitad de camino
+    (BulkWriteError con ordered=True), el índice del primer error dice
+    cuántas operaciones SÍ se aplicaron — se recorta el log de ese lote a
+    solo esas antes de compensar, para no fingir que se revierte algo que
+    nunca llegó a escribirse.
+
+    Igual que el importador legado: NUNCA reasigna el `id` de un concepto
+    existente (upsert por clave, in-place) — eso es lo que garantiza que
+    una cola de avances offline con un concepto_id viejo siga siendo válida
+    sin importar cuántas reimportaciones hayan pasado mientras el
+    dispositivo estaba desconectado."""
+    import_batch_id = str(uuid.uuid4())
+    log_local: List[dict] = []
+
+    async def _compensar() -> None:
+        for entry in reversed(log_local):
+            try:
+                if entry["tipo"] == "creado":
+                    await conceptos_col.delete_one({"id": entry["concepto_id"]})
+                else:
+                    await conceptos_col.update_one({"id": entry["concepto_id"]}, {"$set": entry["valor_anterior"]})
+            except Exception as comp_err:
+                log.error("[import_evm_commit] fallo compensando %s: %s", entry, comp_err)
+
+    omitidos = 0
+    filas_aplicables: List[dict] = []
+    for row in vista:
+        estado = row["estado"]
+        if estado in ("error", "descartado"):
+            continue
+        if estado == "duplicado":
+            tipos = {p["tipo"] for p in row["problemas_activos"]}
+            if "clave_duplicada_archivo" in tipos:
+                omitidos += 1
+                continue  # ambiguo entre filas del propio archivo: nunca se autoresuelve
+            if duplicados_accion == "omitir":
+                omitidos += 1
+                continue
+        filas_aplicables.append(row)
+
+    # Existentes se traen UNA vez (no una consulta por fila) para armar el
+    # valor_anterior de compensación — mismo criterio que el importador de
+    # catálogo.
+    existing_ids = [r["concepto_existente_id"] for r in filas_aplicables if r.get("concepto_existente_id")]
+    existing_docs: dict = {}
+    if existing_ids:
+        async for d in conceptos_col.find({"id": {"$in": existing_ids}}):
+            existing_docs[d["id"]] = d
+
+    try:
+        for lote_inicio in range(0, len(filas_aplicables), batch_size):
+            lote = filas_aplicables[lote_inicio: lote_inicio + batch_size]
+            ops: List[Any] = []
+            lote_log: List[dict] = []
+            for row in lote:
+                existing_id = row.get("concepto_existente_id")
+                existing_doc = existing_docs.get(existing_id) if existing_id else None
+                if existing_id and not existing_doc:
+                    existing_id = None  # se borró entre validate y commit: tratar como nuevo
+
+                if existing_id and existing_doc:
+                    valor_anterior = {
+                        "descripcion": existing_doc["descripcion"],
+                        "meta_cantidad": existing_doc.get("meta_cantidad"),
+                        "importe_total_editable": existing_doc.get("importe_total_editable"),
+                        "fecha_inicio": existing_doc.get("fecha_inicio"),
+                        "fecha_fin": existing_doc.get("fecha_fin"),
+                    }
+                    lote_log.append({"tipo": "actualizado", "concepto_id": existing_id, "valor_anterior": valor_anterior})
+                    ops.append(UpdateOne(
+                        {"id": existing_id},
+                        {"$set": {
+                            "descripcion": row["descripcion"],
+                            "meta_cantidad": row["meta_cantidad_efectiva"],
+                            "importe_total_editable": row["importe_total_editable_efectivo"],
+                            "fecha_inicio": row["fecha_inicio_efectiva"],
+                            "fecha_fin": row["fecha_fin_efectiva"],
+                            "import_batch_id": import_batch_id,
+                        }},
+                    ))
+                else:
+                    cid = str(uuid.uuid4())
+                    lote_log.append({"tipo": "creado", "concepto_id": cid, "valor_anterior": None})
+                    ops.append(InsertOne({
+                        "id": cid, "partida_id": partida_id, "project_id": pid,
+                        "clave": row["clave"], "descripcion": row["descripcion"], "unidad": "UNIVERSAL",
+                        # Campos legado (cantidad/precio_unitario/meta) se dejan en
+                        # blanco/derivados mínimos para que _concepto_out no truene
+                        # al leer un concepto que NUNCA pasó por el alta manual
+                        # legado — importe_contratado legado queda en "0" hasta que
+                        # alguien lo edite a mano; el que manda para este concepto
+                        # es precio_unitario_dinamico (ver _concepto_tiene_datos_evm).
+                        "cantidad": row["meta_cantidad_efectiva"], "precio_unitario": "0", "meta": row["meta_cantidad_efectiva"],
+                        "periodicidad_meta": "SEMANAL",
+                        "meta_cantidad": row["meta_cantidad_efectiva"],
+                        "importe_total_editable": row["importe_total_editable_efectivo"],
+                        "fecha_inicio": row["fecha_inicio_efectiva"], "fecha_fin": row["fecha_fin_efectiva"],
+                        "activo": True, "created_at": datetime.now(timezone.utc), "created_by": user["id"],
+                        "import_batch_id": import_batch_id,
+                    }))
+
+            # Registrar el lote ANTES de ejecutarlo (ver docstring).
+            await sessions_col.update_one({"id": import_id}, {"$push": {"compensacion_log": {"$each": lote_log}}})
+            log_local.extend(lote_log)
+
+            try:
+                await conceptos_col.bulk_write(ops, ordered=True)
+            except BulkWriteError as bwe:
+                write_errors = bwe.details.get("writeErrors", [])
+                primer_error_idx = min((we["index"] for we in write_errors), default=0)
+                # ordered=True: todo lo ANTES de primer_error_idx sí se aplicó
+                # en este lote; lo de este lote desde ahí en adelante nunca se
+                # escribió, así que se descarta del log antes de compensar.
+                del log_local[len(log_local) - len(lote_log) + primer_error_idx:]
+                raise
+    except Exception as e:
+        log.error("[import_evm_commit] fallo a mitad del commit, compensando %d escrituras: %s", len(log_local), e)
+        await _compensar()
+        raise HTTPException(500, f"La importación falló a mitad de camino y se revirtió automáticamente (no se guardó nada): {e}")
+
+    creados = sum(1 for e in log_local if e["tipo"] == "creado")
+    actualizados = sum(1 for e in log_local if e["tipo"] == "actualizado")
+    for entry in log_local:
+        if entry["tipo"] == "creado":
+            await log_bitacora(pid, "import_evm", "concepto", entry["concepto_id"], None, None, f"creado desde Importador Maestro ({filename})", user)
+        else:
+            await log_bitacora(pid, "import_evm", "concepto", entry["concepto_id"], "importe_total_editable/fechas", None, "actualizado desde Importador Maestro", user)
+
+    con_error = sum(1 for r in vista if r["estado"] == "error")
+    descartados = sum(1 for r in vista if r["estado"] == "descartado")
+    return {
+        "creados": creados, "actualizados": actualizados, "omitidos": omitidos,
+        "con_error": con_error, "descartados": descartados, "import_batch_id": import_batch_id,
+    }
+
+
+@api.post("/projects/{pid}/conceptos/import_evm/sheets")
+async def import_evm_upload_sheets(pid: str, file: UploadFile = File(...), user: dict = Depends(require_role(ROLE_SUB, ROLE_COORD))):
+    """Paso 1 del Importador Maestro — mismo contrato que
+    import_upload_sheets del catálogo legado, colección de staging propia."""
+    await ensure_project_access(user, pid)
+    content = await file.read()
+    if len(content) > 15 * 1024 * 1024:
+        raise HTTPException(400, "Archivo demasiado grande (máx. 15MB)")
+    sheets = _read_workbook_sheets(file.filename or "archivo.xlsx", content)
+    candidatos = [cell for rows in sheets.values() for row in rows for cell in row]
+    convencion_detectada = detectar_convencion(candidatos)
+
+    import_id = str(uuid.uuid4())
+    await db.evm_import_sessions.insert_one({
+        "id": import_id, "project_id": pid, "user_id": user["id"], "filename": file.filename,
+        "sheets": {name: rows for name, rows in sheets.items()},
+        "convencion_decimal": convencion_detectada, "created_at": datetime.now(timezone.utc),
+    })
+    return {
+        "import_id": import_id, "sheet_names": list(sheets.keys()),
+        "requiere_seleccion_hoja": len(sheets) > 1, "convencion_detectada": convencion_detectada,
+    }
+
+
+@api.get("/conceptos/import_evm/{import_id}/headers")
+async def import_evm_headers(
+    import_id: str,
+    sheet: Optional[str] = None,
+    header_row_index: Optional[int] = None,
+    user: dict = Depends(require_role(ROLE_SUB, ROLE_COORD)),
+):
+    session = await db.evm_import_sessions.find_one({"id": import_id})
+    if not session:
+        raise HTTPException(404, "Sesión de importación no existe o expiró")
+    await ensure_project_access(user, session["project_id"])
+    sheet_name = sheet or next(iter(session["sheets"].keys()))
+    if sheet_name not in session["sheets"]:
+        raise HTTPException(400, f"La hoja '{sheet_name}' no existe en este archivo")
+    rows = session["sheets"][sheet_name]
+    if not rows:
+        raise HTTPException(400, "La hoja está vacía")
+
+    if header_row_index is None:
+        header_row_index = next((i for i, r in enumerate(rows[:15]) if _fila_parece_encabezado(r)), 0)
+    if header_row_index >= len(rows):
+        raise HTTPException(400, "header_row_index fuera de rango")
+
+    headers = [str(c) if c is not None else "" for c in rows[header_row_index]]
+    sample_rows = rows[header_row_index + 1: header_row_index + 6]
+    return {
+        "sheet": sheet_name, "header_row_index": header_row_index, "headers": headers,
+        "suggested_mapping": _propose_mapping_evm(headers), "sample_rows": sample_rows,
+        "total_rows": max(len(rows) - header_row_index - 1, 0),
+        "convencion_detectada": session.get("convencion_decimal"),
+        "preview_rows": rows[: min(len(rows), 15)],
+    }
+
+
+@api.post("/projects/{pid}/conceptos/import_evm/{import_id}/validate")
+async def import_evm_validate(pid: str, import_id: str, body: ImportValidateEvmIn, user: dict = Depends(require_role(ROLE_SUB, ROLE_COORD))):
+    await ensure_project_access(user, pid)
+    partida = await db.partidas.find_one({"id": body.partida_id, "project_id": pid})
+    if not partida:
+        raise HTTPException(404, "Partida no existe en este proyecto")
+    session = await db.evm_import_sessions.find_one({"id": import_id, "project_id": pid})
+    if not session:
+        raise HTTPException(404, "Sesión de importación no existe o expiró")
+    if body.sheet not in session["sheets"]:
+        raise HTTPException(400, f"La hoja '{body.sheet}' no existe en este archivo")
+
+    convencion: Optional[ConvencionDecimal] = body.convencion or session.get("convencion_decimal")
+    existing = await db.conceptos.find({"partida_id": body.partida_id, "activo": True}).to_list(length=10000)
+    existing_by_clave = {c["clave"]: c for c in existing}
+
+    filas = _validar_archivo_completo_evm(session["sheets"][body.sheet], body.header_row_index, body.mapping, convencion, existing_by_clave)
+
+    update_fields = {
+        "validated_rows": filas, "validated_sheet": body.sheet,
+        "validated_header_row_index": body.header_row_index, "validated_mapping": body.mapping.model_dump(),
+        "validated_partida_id": body.partida_id, "convencion_usada": convencion,
+        "validated_at": datetime.now(timezone.utc),
+    }
+    if "correcciones" not in session:
+        update_fields["correcciones"] = {}
+        update_fields["duplicados_accion"] = "omitir"
+    await db.evm_import_sessions.update_one({"id": import_id}, {"$set": update_fields})
+
+    vista = _calcular_vista_filas_evm(filas, session.get("correcciones") or {})
+    return {"resumen": _resumen_de_vista(vista), "convencion_usada": convencion}
+
+
+@api.get("/conceptos/import_evm/{import_id}/preview")
+async def import_evm_preview(import_id: str, page: int = 1, page_size: int = 50, user: dict = Depends(require_role(ROLE_SUB, ROLE_COORD))):
+    session = await db.evm_import_sessions.find_one({"id": import_id})
+    if not session:
+        raise HTTPException(404, "Sesión de importación no existe o expiró")
+    await ensure_project_access(user, session["project_id"])
+    validated_rows = session.get("validated_rows")
+    if validated_rows is None:
+        raise HTTPException(400, "Todavía no se valida esta importación. Llama primero a /validate.")
+
+    correcciones = session.get("correcciones") or {}
+    vista = _calcular_vista_filas_evm(validated_rows, correcciones)
+    resumen = _resumen_de_vista(vista)
+
+    page = max(page, 1)
+    page_size = max(1, min(page_size, 200))
+    start = (page - 1) * page_size
+    pagina = vista[start:start + page_size]
+    total_pages = max(1, (len(vista) + page_size - 1) // page_size)
+
+    return {
+        "resumen": resumen, "filas": pagina, "page": page, "page_size": page_size,
+        "total_pages": total_pages, "total_rows": len(vista),
+        "sheet": session.get("validated_sheet"), "partida_id": session.get("validated_partida_id"),
+        "convencion_usada": session.get("convencion_usada"), "duplicados_accion": session.get("duplicados_accion", "omitir"),
+    }
+
+
+@api.put("/conceptos/import_evm/{import_id}/rows/{fila}")
+async def import_evm_correct_row(import_id: str, fila: int, body: RowCorrectionEvmIn, user: dict = Depends(require_role(ROLE_SUB, ROLE_COORD))):
+    session = await db.evm_import_sessions.find_one({"id": import_id})
+    if not session:
+        raise HTTPException(404, "Sesión de importación no existe o expiró")
+    await ensure_project_access(user, session["project_id"])
+    validated_rows = session.get("validated_rows") or []
+    if not any(r["fila"] == fila for r in validated_rows):
+        raise HTTPException(404, f"Fila {fila} no existe en esta validación")
+
+    entry: dict = {}
+    if body.meta_cantidad is not None:
+        try:
+            valor = dec_to_str(to_decimal(body.meta_cantidad))
+        except Exception:
+            raise HTTPException(400, "meta inválida")
+        if to_decimal(valor) <= 0:
+            raise HTTPException(400, "meta debe ser mayor a 0")
+        entry["meta_cantidad"] = valor
+    if body.importe_total_editable is not None:
+        try:
+            entry["importe_total_editable"] = dec_to_str(to_decimal(body.importe_total_editable))
+        except Exception:
+            raise HTTPException(400, "importe inválido")
+    if body.fecha_inicio is not None:
+        try:
+            date.fromisoformat(body.fecha_inicio)
+        except ValueError:
+            raise HTTPException(400, "fecha_inicio inválida, se espera YYYY-MM-DD")
+        entry["fecha_inicio"] = body.fecha_inicio
+    if body.fecha_fin is not None:
+        try:
+            date.fromisoformat(body.fecha_fin)
+        except ValueError:
+            raise HTTPException(400, "fecha_fin inválida, se espera YYYY-MM-DD")
+        entry["fecha_fin"] = body.fecha_fin
+    if body.descartar:
+        entry["descartar"] = True
+
+    correcciones = session.get("correcciones") or {}
+    if entry:
+        correcciones[str(fila)] = entry
+    else:
+        correcciones.pop(str(fila), None)
+    await db.evm_import_sessions.update_one({"id": import_id}, {"$set": {"correcciones": correcciones}})
+
+    vista = _calcular_vista_filas_evm(validated_rows, correcciones)
+    fila_actualizada = next(r for r in vista if r["fila"] == fila)
+    return {"fila": fila_actualizada, "resumen": _resumen_de_vista(vista)}
+
+
+@api.put("/conceptos/import_evm/{import_id}/duplicados-accion")
+async def import_evm_set_duplicados_accion(import_id: str, body: DuplicadosAccionIn, user: dict = Depends(require_role(ROLE_SUB, ROLE_COORD))):
+    session = await db.evm_import_sessions.find_one({"id": import_id})
+    if not session:
+        raise HTTPException(404, "Sesión de importación no existe o expiró")
+    await ensure_project_access(user, session["project_id"])
+    await db.evm_import_sessions.update_one({"id": import_id}, {"$set": {"duplicados_accion": body.accion}})
+    return {"duplicados_accion": body.accion}
+
+
+@api.delete("/projects/{pid}/conceptos/import_evm/{import_id}")
+async def import_evm_descartar_sesion(pid: str, import_id: str, user: dict = Depends(require_role(ROLE_SUB, ROLE_COORD))):
+    await ensure_project_access(user, pid)
+    await db.evm_import_sessions.delete_one({"id": import_id, "project_id": pid})
+    return {"ok": True}
+
+
+@api.post("/projects/{pid}/conceptos/import_evm/{import_id}/commit")
+async def import_evm_commit(pid: str, import_id: str, user: dict = Depends(require_role(ROLE_SUB, ROLE_COORD))):
+    """Paso 4: aplica el resultado ya validado — no recibe body, todo lo
+    necesario ya quedó confirmado en la sesión de staging."""
+    await ensure_project_access(user, pid)
+    session = await db.evm_import_sessions.find_one({"id": import_id, "project_id": pid})
+    if not session:
+        raise HTTPException(404, "Sesión de importación no existe o expiró")
+    validated_rows = session.get("validated_rows")
+    if validated_rows is None:
+        raise HTTPException(400, "Todavía no se valida esta importación. Llama primero a /validate.")
+    partida_id = session.get("validated_partida_id")
+    partida = await db.partidas.find_one({"id": partida_id, "project_id": pid})
+    if not partida:
+        raise HTTPException(404, "La partida validada ya no existe en este proyecto")
+
+    correcciones = session.get("correcciones") or {}
+    duplicados_accion = session.get("duplicados_accion", "omitir")
+    vista = _calcular_vista_filas_evm(validated_rows, correcciones)
+
+    try:
+        resultado = await _ejecutar_commit_evm_con_compensacion(
+            db.conceptos, db.evm_import_sessions, _log_bitacora,
+            pid, import_id, partida_id, vista, duplicados_accion, user, session.get("filename"),
+        )
+    finally:
+        await db.evm_import_sessions.delete_one({"id": import_id})
+
+    return resultado
+
+
 # === Registro de avance =========================================================
 @api.post("/avances", response_model=RegistroAvanceOut)
 async def create_avance(body: RegistroAvanceIn, user: dict = Depends(current_user)):
@@ -13536,6 +14314,30 @@ async def create_avance(body: RegistroAvanceIn, user: dict = Depends(current_use
         if dup:
             return await _registro_avance_out(dup)
 
+    # --- Congelación histórica EVM (aditivo) ----------------------------
+    # El precio SIEMPRE se calcula en el servidor, nunca se acepta del
+    # body — si viniera del cliente, un dispositivo (o una cola offline
+    # vieja) podría inyectar un precio arbitrario. Si el concepto todavía
+    # no tiene datos EVM (meta_cantidad/importe_total_editable), se congela
+    # su precio_unitario estático de siempre — así el campo queda poblado
+    # de manera uniforme para avances viejos y nuevos, sin bloquear la
+    # captura de campo mientras el catálogo se termina de migrar.
+    if _concepto_tiene_datos_evm(concepto):
+        precio_congelado = compute_precio_unitario_dinamico(concepto["importe_total_editable"], concepto["meta_cantidad"])
+    else:
+        precio_congelado = to_decimal(concepto["precio_unitario"])
+    importe_congelado = to_decimal(body.cantidad_ejecutada) * precio_congelado
+
+    fuera_de_ventana = False
+    if concepto.get("fecha_inicio") and concepto.get("fecha_fin"):
+        try:
+            fecha_avance = date.fromisoformat(body.fecha)
+            fuera_de_ventana = not (
+                date.fromisoformat(concepto["fecha_inicio"]) <= fecha_avance <= date.fromisoformat(concepto["fecha_fin"])
+            )
+        except ValueError:
+            pass  # fecha del avance no es YYYY-MM-DD parseable: no bloquea la captura, solo no se puede comparar
+
     aid = str(uuid.uuid4())
     doc = {
         "id": aid,
@@ -13559,6 +14361,9 @@ async def create_avance(body: RegistroAvanceIn, user: dict = Depends(current_use
         "origen": "APP",
         "linea_base_batch_id": None,
         "es_retroceso": es_retroceso,
+        "precio_unitario_congelado": dec_to_str(precio_congelado),
+        "importe_ganado_congelado": dec_to_str(importe_congelado),
+        "fuera_de_ventana": fuera_de_ventana,
     }
     await db.registros_avance.insert_one(doc)
     return await _registro_avance_out(doc)
@@ -13696,6 +14501,317 @@ async def avances_resumen(
         precio = precios_por_concepto.get(d["concepto_id"], "0")
         total += compute_importe(d.get("cantidad_ejecutada", "0"), precio)
     return AvancesResumenOut(total_registros=len(docs), importe_total=dec_to_str(round_money(total)))
+
+
+# === Etapa EVM: Análisis de Periodos (Valor Ganado) ==========================
+def _prorrateo_concepto_en_ventana(concepto: dict, ventana_ini: date, ventana_fin: date) -> Decimal:
+    """PV que aporta UN concepto a la ventana consultada.
+
+    Fracción de días EXACTA con Decimal (nunca float): un concepto puede
+    durar varios años, y el margen de error de un float sí se nota al sumar
+    miles de conceptos. Devuelve 0 si el concepto no tiene datos EVM
+    todavía (ver _concepto_tiene_datos_evm) o no intersecta la ventana —
+    nunca lanza, un concepto sin migrar simplemente no aporta PV."""
+    if not _concepto_tiene_datos_evm(concepto) or not concepto.get("fecha_inicio") or not concepto.get("fecha_fin"):
+        return Decimal("0")
+    c_ini = date.fromisoformat(concepto["fecha_inicio"])
+    c_fin = date.fromisoformat(concepto["fecha_fin"])
+
+    overlap_ini = max(c_ini, ventana_ini)
+    overlap_fin = min(c_fin, ventana_fin)
+    if overlap_ini > overlap_fin:
+        return Decimal("0")
+
+    dias_en_ventana = (overlap_fin - overlap_ini).days + 1  # inclusivo
+    dias_totales = (c_fin - c_ini).days + 1
+    fraccion = Decimal(dias_en_ventana) / Decimal(dias_totales)
+    return fraccion * to_decimal(concepto["importe_total_editable"])
+    # No se redondea aquí — el redondeo a 2 decimales se hace UNA sola vez,
+    # sobre el total ya sumado, en el endpoint. Redondear por concepto y
+    # luego sumar miles de redondeos es justo el tipo de acumulación de
+    # error que to_decimal/round_money existen para evitar.
+
+
+def _rango_meses(c_ini: date, c_fin: date) -> List["tuple[date, date]"]:
+    """[(inicio_mes, fin_mes), ...] recortados a [c_ini, c_fin] — un par por
+    cada mes calendario que el concepto toca, el primero y el último
+    recortados a las fechas reales del concepto (no al 1 y al 30/31)."""
+    meses = []
+    cursor = date(c_ini.year, c_ini.month, 1)
+    while cursor <= c_fin:
+        if cursor.month == 12:
+            siguiente = date(cursor.year + 1, 1, 1)
+        else:
+            siguiente = date(cursor.year, cursor.month + 1, 1)
+        mes_ini = max(cursor, c_ini)
+        mes_fin = min(siguiente - timedelta(days=1), c_fin)
+        meses.append((mes_ini, mes_fin))
+        cursor = siguiente
+    return meses
+
+
+def _curva_mensual_concepto(concepto: dict) -> List[dict]:
+    """Reparte importe_total_editable en un valor por mes calendario dentro
+    de [fecha_inicio, fecha_fin] — para la Curva S del dashboard (Tarea 4).
+
+    A diferencia de _prorrateo_concepto_en_ventana (una sola fracción sobre
+    una ventana), aquí SÍ hay que garantizar que la suma de todos los meses
+    sea EXACTAMENTE importe_total_editable: cualquier residuo de la
+    división se asigna al ÚLTIMO mes, nunca se pierde ni se reparte
+    disperso (reparto de centavos estándar)."""
+    if not _concepto_tiene_datos_evm(concepto) or not concepto.get("fecha_inicio") or not concepto.get("fecha_fin"):
+        return []
+    c_ini = date.fromisoformat(concepto["fecha_inicio"])
+    c_fin = date.fromisoformat(concepto["fecha_fin"])
+    dias_totales = (c_fin - c_ini).days + 1
+    importe = to_decimal(concepto["importe_total_editable"])
+
+    meses = _rango_meses(c_ini, c_fin)
+    resultado = []
+    acumulado = Decimal("0")
+    for i, (mes_ini, mes_fin) in enumerate(meses):
+        if i == len(meses) - 1:
+            valor_mes = importe - acumulado  # último mes se lleva el residuo exacto
+        else:
+            dias_mes = (mes_fin - mes_ini).days + 1
+            valor_mes = importe * Decimal(dias_mes) / Decimal(dias_totales)
+            acumulado += valor_mes
+        resultado.append({"mes": mes_ini.strftime("%Y-%m"), "valor": dec_to_str(valor_mes)})
+    return resultado
+
+
+class AnalisisPeriodoOut(BaseModel):
+    project_id: str
+    start: str
+    end: str
+    pv: str  # Valor Planeado
+    ev: str  # Valor Ganado
+    ac: str  # Costo Real
+    spi: Optional[str] = None  # EV / PV — Schedule Performance Index
+    cpi: Optional[str] = None  # EV / AC — Cost Performance Index
+    variacion_cronograma: str  # EV - PV
+    variacion_costo: str       # EV - AC
+
+
+class ExcepcionEvmOut(BaseModel):
+    concepto_id: str
+    clave: str
+    descripcion: str
+    tipo: Literal["fuera_de_ventana", "sobre_meta"]
+    detalle: str
+
+
+class CurvaSOut(BaseModel):
+    meses: List[str]
+    planeado_acumulado: List[str]
+    ganado_acumulado: List[str]
+    real_acumulado: List[str]
+
+
+@api.get("/projects/{pid}/analisis_periodo", response_model=AnalisisPeriodoOut)
+async def analisis_periodo(pid: str, start: str, end: str, user: dict = Depends(current_user)):
+    """Motor EVM: PV analítico (nunca se guarda un prorrateo día por día en
+    Mongo, ver _prorrateo_concepto_en_ventana), EV desde lo ya CONGELADO en
+    cada RegistroAvance (nunca se recalcula con el precio de hoy — ver
+    create_avance), AC desde gastos_reales (captura manual de
+    administración)."""
+    await ensure_project_access(user, pid)
+    try:
+        ventana_ini, ventana_fin = date.fromisoformat(start), date.fromisoformat(end)
+    except ValueError:
+        raise HTTPException(400, "start/end deben ser YYYY-MM-DD")
+    if ventana_fin < ventana_ini:
+        raise HTTPException(400, "end no puede ser anterior a start")
+
+    conceptos = await db.conceptos.find({"project_id": pid, "activo": True}).to_list(length=100000)
+    pv_total = sum(
+        (_prorrateo_concepto_en_ventana(c, ventana_ini, ventana_fin) for c in conceptos),
+        start=Decimal("0"),
+    )
+
+    ev_total = Decimal("0")
+    async for a in db.registros_avance.find({"project_id": pid, "fecha": {"$gte": start, "$lte": end}}):
+        if a.get("importe_ganado_congelado") is not None:
+            ev_total += to_decimal(a["importe_ganado_congelado"])
+        # Avances capturados ANTES de la congelación (sin
+        # importe_ganado_congelado) simplemente no aportan EV — no hay
+        # precio histórico confiable que inventarles.
+
+    ac_total = Decimal("0")
+    async for g in db.gastos_reales.find({"project_id": pid, "fecha": {"$gte": start, "$lte": end}}):
+        ac_total += to_decimal(g["monto"])
+
+    # SPI/CPI son índices de desempeño, no dinero — se muestran a 4
+    # decimales (Decimal.quantize explícito con redondeo HALF_UP, nunca la
+    # división cruda: ev_total/pv_total sin redondear puede arrastrar ~28
+    # dígitos significativos del contexto de Decimal, inservible para UI).
+    CUATRO_DECIMALES = Decimal("0.0001")
+    spi = dec_to_str((ev_total / pv_total).quantize(CUATRO_DECIMALES, rounding=ROUND_HALF_UP)) if pv_total != 0 else None
+    cpi = dec_to_str((ev_total / ac_total).quantize(CUATRO_DECIMALES, rounding=ROUND_HALF_UP)) if ac_total != 0 else None
+
+    return AnalisisPeriodoOut(
+        project_id=pid, start=start, end=end,
+        pv=dec_to_str(round_money(pv_total)),
+        ev=dec_to_str(round_money(ev_total)),
+        ac=dec_to_str(round_money(ac_total)),
+        spi=spi, cpi=cpi,
+        variacion_cronograma=dec_to_str(round_money(ev_total - pv_total)),
+        variacion_costo=dec_to_str(round_money(ev_total - ac_total)),
+    )
+
+
+@api.get("/projects/{pid}/analisis_periodo/curva_s", response_model=CurvaSOut)
+async def analisis_periodo_curva_s(pid: str, user: dict = Depends(current_user)):
+    """Curva S completa del proyecto (todos los meses que tocan sus
+    conceptos EVM), para el gráfico de 3 líneas del dashboard — no depende
+    de start/end porque la curva se ve completa, la ventana de
+    start/end es solo para las tarjetas de analisis_periodo."""
+    await ensure_project_access(user, pid)
+    conceptos = await db.conceptos.find({"project_id": pid, "activo": True}).to_list(length=100000)
+
+    planeado_por_mes: Dict[str, Decimal] = {}
+    for c in conceptos:
+        for punto in _curva_mensual_concepto(c):
+            planeado_por_mes[punto["mes"]] = planeado_por_mes.get(punto["mes"], Decimal("0")) + to_decimal(punto["valor"])
+
+    ganado_por_mes: Dict[str, Decimal] = {}
+    async for a in db.registros_avance.find({"project_id": pid}):
+        if a.get("importe_ganado_congelado") is None or not a.get("fecha"):
+            continue
+        mes = a["fecha"][:7]  # "YYYY-MM-DD" -> "YYYY-MM"
+        ganado_por_mes[mes] = ganado_por_mes.get(mes, Decimal("0")) + to_decimal(a["importe_ganado_congelado"])
+
+    real_por_mes: Dict[str, Decimal] = {}
+    async for g in db.gastos_reales.find({"project_id": pid}):
+        mes = g["fecha"][:7]
+        real_por_mes[mes] = real_por_mes.get(mes, Decimal("0")) + to_decimal(g["monto"])
+
+    todos_los_meses = sorted(set(planeado_por_mes) | set(ganado_por_mes) | set(real_por_mes))
+    planeado_acum, ganado_acum, real_acum = Decimal("0"), Decimal("0"), Decimal("0")
+    planeado_serie, ganado_serie, real_serie = [], [], []
+    for mes in todos_los_meses:
+        planeado_acum += planeado_por_mes.get(mes, Decimal("0"))
+        ganado_acum += ganado_por_mes.get(mes, Decimal("0"))
+        real_acum += real_por_mes.get(mes, Decimal("0"))
+        planeado_serie.append(dec_to_str(round_money(planeado_acum)))
+        ganado_serie.append(dec_to_str(round_money(ganado_acum)))
+        real_serie.append(dec_to_str(round_money(real_acum)))
+
+    return CurvaSOut(meses=todos_los_meses, planeado_acumulado=planeado_serie, ganado_acumulado=ganado_serie, real_acumulado=real_serie)
+
+
+@api.get("/projects/{pid}/analisis_periodo/excepciones", response_model=List[ExcepcionEvmOut])
+async def analisis_periodo_excepciones(pid: str, user: dict = Depends(current_user)):
+    """Lista por excepción del dashboard (Tarea 4): conceptos con avances
+    fuera de su ventana fecha_inicio/fecha_fin, o cuyo acumulado ejecutado
+    superó meta_cantidad. Nunca bloquea nada — es solo para revisión."""
+    await ensure_project_access(user, pid)
+    conceptos = await db.conceptos.find({"project_id": pid, "activo": True}).to_list(length=100000)
+    conceptos_por_id = {c["id"]: c for c in conceptos}
+
+    excepciones: List[ExcepcionEvmOut] = []
+
+    concepto_ids_fuera_de_ventana: set = set()
+    async for a in db.registros_avance.find({"project_id": pid, "fuera_de_ventana": True}):
+        concepto_ids_fuera_de_ventana.add(a["concepto_id"])
+    for cid in concepto_ids_fuera_de_ventana:
+        c = conceptos_por_id.get(cid)
+        if not c:
+            continue
+        excepciones.append(ExcepcionEvmOut(
+            concepto_id=cid, clave=c["clave"], descripcion=c["descripcion"],
+            tipo="fuera_de_ventana",
+            detalle=f"Tiene avances capturados fuera de su ventana {c.get('fecha_inicio')} — {c.get('fecha_fin')}",
+        ))
+
+    for c in conceptos:
+        if not _concepto_tiene_datos_evm(c):
+            continue
+        modo_avance = "CANTIDAD"  # el chequeo de sobre-meta es sobre cantidad física, no aplica a PORCENTAJE
+        project = await db.projects.find_one({"id": pid})
+        if (project or {}).get("modo_avance") == "PORCENTAJE":
+            continue
+        ejecutado = to_decimal(await _concepto_ejecutado_acumulado(c["id"], modo_avance))
+        meta = to_decimal(c["meta_cantidad"])
+        if ejecutado > meta:
+            excepciones.append(ExcepcionEvmOut(
+                concepto_id=c["id"], clave=c["clave"], descripcion=c["descripcion"],
+                tipo="sobre_meta",
+                detalle=f"Ejecutado {dec_to_str(ejecutado)} supera la meta {dec_to_str(meta)}",
+            ))
+    return excepciones
+
+
+class GastoRealIn(BaseModel):
+    fecha: str  # "YYYY-MM-DD"
+    monto: str
+    concepto_texto: str  # descripción libre ("Nómina semana 12", "Factura #445") — AC es agregado, no por partida
+
+    @field_validator("monto")
+    @classmethod
+    def _v_monto(cls, v):
+        to_decimal(v)
+        return v
+
+    @field_validator("fecha")
+    @classmethod
+    def _v_fecha(cls, v):
+        try:
+            date.fromisoformat(v)
+        except ValueError:
+            raise ValueError(f"fecha inválida, se espera YYYY-MM-DD: {v!r}")
+        return v
+
+
+class GastoRealOut(BaseModel):
+    id: str
+    project_id: str
+    fecha: str
+    monto: str
+    concepto_texto: str
+    capturado_por: str
+    creado_en: datetime
+
+
+@api.post("/projects/{pid}/gastos_reales", response_model=GastoRealOut)
+async def create_gasto_real(pid: str, body: GastoRealIn, user: dict = Depends(require_role(ROLE_SUB, ROLE_COORD))):
+    """AC (Costo Real) del motor EVM: captura simple y manual — no intenta
+    reconciliar facturas/nómina automáticamente, solo registra el monto que
+    administración ya calculó fuera del sistema."""
+    await ensure_project_access(user, pid)
+    gid = str(uuid.uuid4())
+    doc = {
+        "id": gid, "project_id": pid, "fecha": body.fecha, "monto": body.monto,
+        "concepto_texto": body.concepto_texto.strip(),
+        "capturado_por": user["id"], "creado_en": datetime.now(timezone.utc),
+    }
+    await db.gastos_reales.insert_one(doc)
+    return GastoRealOut(**doc)
+
+
+@api.get("/projects/{pid}/gastos_reales", response_model=List[GastoRealOut])
+async def list_gastos_reales(pid: str, desde: Optional[str] = None, hasta: Optional[str] = None, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    query: dict = {"project_id": pid}
+    if desde or hasta:
+        rango: dict = {}
+        if desde:
+            rango["$gte"] = desde
+        if hasta:
+            rango["$lte"] = hasta
+        query["fecha"] = rango
+    docs = await db.gastos_reales.find(query).sort("fecha", -1).to_list(length=100000)
+    return [GastoRealOut(**d) for d in docs]
+
+
+@api.delete("/gastos_reales/{gasto_id}")
+async def delete_gasto_real(gasto_id: str, user: dict = Depends(require_role(ROLE_SUB, ROLE_COORD))):
+    gasto = await db.gastos_reales.find_one({"id": gasto_id})
+    if not gasto:
+        raise HTTPException(404, "Gasto no existe")
+    await ensure_project_access(user, gasto["project_id"])
+    await db.gastos_reales.delete_one({"id": gasto_id})
+    return {"ok": True}
 
 
 # === Exportar PDF ===============================================================
