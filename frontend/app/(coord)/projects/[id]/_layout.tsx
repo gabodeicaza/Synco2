@@ -16,6 +16,7 @@ export default function ProjectLayout() {
       <Stack.Screen name="registrar-avance" />
       <Stack.Screen name="visualizar-avance" />
       <Stack.Screen name="actividades-generales" />
+      <Stack.Screen name="dashboard" />
     </Stack>
   );
 }

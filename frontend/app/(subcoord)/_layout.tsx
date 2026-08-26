@@ -98,6 +98,8 @@ export default function SubCoordLayout() {
         <Tabs.Screen name="visualizar-avance" options={{ href: null }} />
         {/* Actividades Generales (grupo de 3 opciones del menu hamburgues), sin tab visible. */}
         <Tabs.Screen name="actividades-generales" options={{ href: null }} />
+        {/* Dashboard EVM (Valor Ganado) _ alcanzable via router.push (menu hamburgues), sin tab visible. */}
+        <Tabs.Screen name="dashboard-evm" options={{ href: null }} />
         {/* Acceso al Predio _ alcanzable via router.push (menu hamburgues), sin tab visible.
             Expo Router auto-genera un tab para cualquier archivo dentro del
             grupo de Tabs que no este explicitamente registrado con href:
