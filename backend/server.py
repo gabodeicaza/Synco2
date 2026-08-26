@@ -13,6 +13,7 @@ import io
 import csv
 import math
 import uuid
+import shutil
 import logging
 import secrets
 import asyncio
@@ -52,9 +53,12 @@ EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
 # Resumen Ejecutivo con IA: llamada directa a Gemini desde el BACKEND (nunca
 # desde el cliente — la key nunca se expone en el app). Modelo configurable
 # vía env var para poder actualizarlo sin tocar código si Google deprecia
-# una versión (usar un alias "latest" como default minimiza ese riesgo).
+# una versión. [2026-08-20] "gemini-2.5-flash" ya no está disponible para la
+# API key vigente (404 "no longer available to new users"); Google exige
+# "gemini-3.6-flash" en su lugar, así que queda fijo explícitamente (no el
+# alias "gemini-flash-latest", para no depender de a qué apunte a futuro).
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
 
 client = AsyncIOMotorClient(MONGO_URL, serverSelectionTimeoutMS=5000)
 db = client[DB_NAME]
@@ -874,6 +878,11 @@ async def startup_event():
     await db.messages.create_index([("project_id", 1), ("created_at", -1)])
     await db.messages.create_index([("channel_id", 1), ("created_at", -1)])
     await db.events.create_index([("project_id", 1), ("start_at", 1)])
+    await db.events.create_index([("project_id", 1), ("attendee_ids", 1)])
+    # Consultada por el loop de recordatorios (_meeting_reminder_loop), que
+    # escanea TODOS los proyectos por start_at — no puede aprovechar el
+    # índice compuesto de arriba, que empieza por project_id.
+    await db.events.create_index([("start_at", 1), ("reminder_sent", 1)])
     await db.channels.create_index([("project_id", 1), ("type", 1)])
     await db.channels.create_index([("project_id", 1), ("type", 1), ("area_id", 1)])
     await db.channels.create_index([("project_id", 1), ("type", 1), ("member_ids", 1)])
@@ -977,6 +986,10 @@ async def startup_event():
             log.info("[migrate] expires_at backfill de noticias legacy completado")
     except Exception as e:
         log.warning(f"[migrate] error en backfill de expires_at de noticias: {e}")
+
+    # Loop en segundo plano: recordatorios push de reuniones (1h antes).
+    asyncio.create_task(_meeting_reminder_loop())
+
     log.info("[startup] SynCo v2.0 ready")
 
 
@@ -2444,8 +2457,20 @@ async def create_area(pid: str, body: AreaIn, user: dict = Depends(require_role(
     name = body.name.strip()
     if not name:
         raise HTTPException(400, "Nombre requerido")
-    existing = await db.areas.find_one({"project_id": pid, "name": name})
-    if existing:
+    # Comparación insensible a mayúsculas/acentos/espacios: dos áreas que
+    # solo difieren en casing (p. ej. "Calidad" vs "CALIDAD") imprimían dos
+    # portadillas de Área consecutivas en los reportes (ver
+    # `_normalize_area_name`); bloquearlas aquí evita que el problema vuelva
+    # a entrar por la puerta de alta.
+    def _fold(s: str) -> str:
+        flat = "".join(
+            ch for ch in unicodedata.normalize("NFD", s.strip().lower())
+            if unicodedata.category(ch) != "Mn"
+        )
+        return " ".join(flat.replace("-", " ").replace("_", " ").split())
+    name_fold = _fold(name)
+    existing_areas = await db.areas.find({"project_id": pid}).to_list(length=200)
+    if any(_fold(a.get("name") or "") == name_fold for a in existing_areas):
         raise HTTPException(409, "Área ya existe en este proyecto")
     doc = {
         "id": str(uuid.uuid4()),
@@ -3568,6 +3593,76 @@ async def list_project_members(pid: str, user: dict = Depends(current_user)):
     return [user_to_out(u) for u in items]
 
 
+# === Gestión de equipo (Sub-coordinador / Especialista) ====================
+# Editar/dar de baja Coordinadores Generales vive aparte (ver /admin/coordinators
+# _ "no se puede eliminar entre pares"). Esto es solo para los dos roles que
+# el Coordinador General invita por proyecto y que antes quedaban "congelados"
+# tras aceptar la invitación (un typo en el correo o el puesto obligaba a
+# revocar y re-crear todo el alta, perdiendo el nodo/área ya asignados).
+TEAM_EDITABLE_ROLES = {ROLE_SUB, ROLE_ESPECIALISTA}
+
+
+class TeamMemberPatch(BaseModel):
+    name: Optional[str] = None
+    email: Optional[EmailStr] = None
+    puesto: Optional[str] = None
+
+
+@api.patch("/projects/{pid}/team/{uid}")
+async def update_team_member(
+    pid: str, uid: str, body: TeamMemberPatch, user: dict = Depends(require_role(ROLE_COORD)),
+):
+    await ensure_project_access(user, pid)
+    member = await db.users.find_one({"id": uid, "project_ids": pid})
+    if not member:
+        raise HTTPException(404, "Miembro no encontrado en este proyecto")
+    if member.get("role") not in TEAM_EDITABLE_ROLES:
+        raise HTTPException(400, "Solo se puede editar a Sub-coordinadores y Especialistas")
+
+    update: dict = {}
+    if body.name is not None:
+        name = body.name.strip()
+        if not name:
+            raise HTTPException(400, "Nombre requerido")
+        update["name"] = name
+    if body.email is not None:
+        email = body.email.lower().strip()
+        dup = await db.users.find_one({"email": email, "id": {"$ne": uid}})
+        if dup:
+            raise HTTPException(409, "Ya existe un usuario con ese email")
+        update["email"] = email
+    if body.puesto is not None:
+        update["puesto"] = body.puesto.strip() or None
+
+    if update:
+        await db.users.update_one({"id": uid}, {"$set": update})
+        member.update(update)
+    return user_to_out(member)
+
+
+@api.delete("/projects/{pid}/team/{uid}")
+async def remove_team_member(pid: str, uid: str, user: dict = Depends(require_role(ROLE_COORD))):
+    """Saca a un Sub-coordinador o Especialista del proyecto (offboarding).
+
+    Regla de negocio "1 usuario = 1 proyecto" (ver `create_invite`): sacarlo
+    del único proyecto al que pertenece equivale a borrar su cuenta. Los
+    reportes/minutas/mensajes ya capturados conservan su copia del nombre
+    (`captured_by_name`, etc.) y no se ven afectados.
+    """
+    await ensure_project_access(user, pid)
+    member = await db.users.find_one({"id": uid, "project_ids": pid})
+    if not member:
+        raise HTTPException(404, "Miembro no encontrado en este proyecto")
+    if member.get("role") not in TEAM_EDITABLE_ROLES:
+        raise HTTPException(400, "Solo se puede quitar a Sub-coordinadores y Especialistas")
+    await db.users.delete_one({"id": uid})
+    await db.invitations.update_one(
+        {"accepted_user_id": uid, "status": "accepted"},
+        {"$set": {"status": "removed", "removed_at": datetime.now(timezone.utc)}},
+    )
+    return {"ok": True}
+
+
 # === ANNOUNCEMENTS (Noticias) ==============================================
 # Toda noticia (fijada o no) vence 24h después de creada. El fijado solo
 # controla el orden mientras está vigente; no extiende su vida.
@@ -4244,6 +4339,7 @@ class EventIn(BaseModel):
     start_at: str  # ISO 8601
     end_at: Optional[str] = None
     area_id: Optional[str] = None
+    attendee_ids: List[str] = Field(default_factory=list)
 
 
 class EventPatch(BaseModel):
@@ -4253,11 +4349,27 @@ class EventPatch(BaseModel):
     start_at: Optional[str] = None
     end_at: Optional[str] = None
     area_id: Optional[str] = None
+    attendee_ids: Optional[List[str]] = None
 
 
 def _event_out(doc: dict) -> dict:
     doc.pop("_id", None)
     return doc
+
+
+async def _resolve_attendee_ids(ids: List[str]) -> tuple:
+    """Valida una lista de user ids y devuelve (ids, names) — mismo patrón que
+    `involved_ids`/`involved_names` en minutas (ver create_minuta)."""
+    clean = list(dict.fromkeys([x.strip() for x in (ids or []) if x and x.strip()]))
+    if not clean:
+        return [], []
+    u_list = await db.users.find({"id": {"$in": clean}}).to_list(length=len(clean))
+    u_map = {u["id"]: u for u in u_list}
+    missing = [uid for uid in clean if uid not in u_map]
+    if missing:
+        raise HTTPException(400, f"Asistente(s) inválido(s): {', '.join(missing)}")
+    names = [u_map[uid].get("name") or "Sin nombre" for uid in clean]
+    return clean, names
 
 
 async def _enrich_event_with_area(doc: dict) -> dict:
@@ -4289,6 +4401,7 @@ async def list_events(
     pid: str,
     range: str = "upcoming",  # upcoming | past | all
     limit: int = 500,
+    mine: int = 0,
     user: dict = Depends(current_user),
 ):
     """Lista eventos. Cualquier miembro del proyecto puede leer."""
@@ -4302,6 +4415,12 @@ async def list_events(
     elif range == "past":
         q["start_at"] = {"$lt": now.replace(hour=0, minute=0, second=0, microsecond=0)}
     # 'all' → sin filtro
+    if mine:
+        # Autor o asistente asignado — mismo criterio que "Mis Minutas".
+        q["$or"] = [
+            {"author_id": user["id"]},
+            {"attendee_ids": user["id"]},
+        ]
 
     sort_dir = 1 if range != "past" else -1
     safe_limit = max(1, min(int(limit or 500), 1000))
@@ -4352,6 +4471,7 @@ async def create_event(
         a = await db.areas.find_one({"id": area_id_val, "project_id": pid})
         if not a:
             raise HTTPException(400, "Área inválida para este proyecto")
+    attendee_ids, attendee_names = await _resolve_attendee_ids(body.attendee_ids)
     now = datetime.now(timezone.utc)
     doc = {
         "id": str(uuid.uuid4()),
@@ -4362,9 +4482,12 @@ async def create_event(
         "start_at": start,
         "end_at": end,
         "area_id": area_id_val,
+        "attendee_ids": attendee_ids,
+        "attendee_names": attendee_names,
         "author_id": user["id"],
         "author_name": user["name"],
         "author_role": user["role"],
+        "reminder_sent": False,
         "created_at": now,
         "updated_at": now,
     }
@@ -4416,12 +4539,21 @@ async def update_event(
             if not a:
                 raise HTTPException(400, "Área inválida para este proyecto")
         update["area_id"] = aid
+    if body.attendee_ids is not None:
+        attendee_ids, attendee_names = await _resolve_attendee_ids(body.attendee_ids)
+        update["attendee_ids"] = attendee_ids
+        update["attendee_names"] = attendee_names
     start_final = update.get("start_at", e["start_at"])
     end_final = update.get("end_at", e.get("end_at"))
     if end_final and end_final < start_final:
         raise HTTPException(400, "La fecha de fin no puede ser anterior al inicio")
     if not update:
         return await _enrich_event_with_area(_event_out(e))
+    # Reagendar reinicia el flag de recordatorio -- si no, un evento movido a
+    # una hora futura podría quedarse sin push (ya se había marcado enviado
+    # con la hora vieja) o el usuario recibiría el recordatorio a destiempo.
+    if "start_at" in update:
+        update["reminder_sent"] = False
     update["updated_at"] = datetime.now(timezone.utc)
     await db.events.update_one({"id": eid}, {"$set": update})
     e = await db.events.find_one({"id": eid})
@@ -4441,6 +4573,60 @@ async def delete_event(eid: str, user: dict = Depends(current_user)):
         raise HTTPException(403, "Sólo el autor o un Coordinador puede eliminar")
     await db.events.delete_one({"id": eid})
     return {"ok": True}
+
+
+async def _meeting_reminder_loop() -> None:
+    """
+    Loop en segundo plano (fire-and-forget, arrancado en startup_event) que
+    envía un push de recordatorio a los asistentes + autor de cada reunión
+    que empieza en ~1h. No hay scheduler externo (APScheduler/cron) en este
+    proyecto — este loop simple con asyncio.sleep es el mismo criterio que ya
+    usa el resto del código para trabajo en segundo plano (ver
+    asyncio.create_task(_notify_supervisors_new_report(...)) en create_report).
+
+    Ventana de ±5min alrededor de "ahora + 60min", revisada cada 5 minutos —
+    suficiente precisión para un recordatorio sin agregar infraestructura
+    nueva. Cada evento se marca `reminder_sent=True` tras procesarlo (haya o
+    no destinatarios) para no reintentar en la siguiente vuelta del loop.
+    """
+    while True:
+        try:
+            now = datetime.now(timezone.utc)
+            window_start = now + timedelta(minutes=55)
+            window_end = now + timedelta(minutes=65)
+            cursor = db.events.find({
+                "start_at": {"$gte": window_start, "$lte": window_end},
+                "reminder_sent": {"$ne": True},
+            })
+            due = await cursor.to_list(length=200)
+            for e in due:
+                recipients = set(e.get("attendee_ids") or [])
+                if e.get("author_id"):
+                    recipients.add(e["author_id"])
+                if recipients:
+                    start_mx = e["start_at"].astimezone(MX_TZ)
+                    title = f"Recordatorio: {e.get('title') or 'Reunión'}"
+                    body_text = f"Hoy a las {start_mx.strftime('%H:%M')}"
+                    if e.get("location"):
+                        body_text += f" · {e['location']}"
+                    for uid in recipients:
+                        try:
+                            await send_push_notification(
+                                user_id=uid,
+                                title=title,
+                                body=body_text,
+                                data={
+                                    "type": "meeting_reminder",
+                                    "event_id": e["id"],
+                                    "project_id": e["project_id"],
+                                },
+                            )
+                        except Exception:
+                            log.exception("[push] meeting_reminder falló para user=%s event=%s", uid, e["id"])
+                await db.events.update_one({"id": e["id"]}, {"$set": {"reminder_sent": True}})
+        except Exception:
+            log.exception("[push] _meeting_reminder_loop: error en la iteración")
+        await asyncio.sleep(300)
 
 
 # === EXPORT (Excel "sábana plana" jerárquica) ===============================
@@ -5512,11 +5698,11 @@ def _period_range(period: str) -> tuple:
 #   * severidad "importante"  → SOLO informe Semanal (etiqueta UI: "Semanal").
 #   * severidad "urgente"     → SOLO informe Mensual (etiqueta UI: "Mensual").
 #   * severidad "informativo" → NUNCA llega a ningún informe.
-# El rango de fechas de cada informe (diario = hoy+ayer, semanal = semana
-# natural, mensual = mes calendario en curso) es independiente de esta regla;
-# ver `_period_range_for_type`. La lógica de filtrado es exclusivamente de
-# datos; el motor de renderizado (`_clone_membrete`, escalado, márgenes)
-# permanece intocado.
+# El rango de fechas de cada informe (diario = día natural en curso,
+# semanal = semana natural, mensual = mes calendario en curso) es
+# independiente de esta regla; ver `_period_range_for_type`. La lógica de
+# filtrado es exclusivamente de datos; el motor de renderizado
+# (`_clone_membrete`, escalado, márgenes) permanece intocado.
 # ============================================================================
 _PERIOD_TYPE_ALIASES = {
     "diario", "daily", "dia", "día",
@@ -5545,13 +5731,12 @@ def _period_range_for_type(period_type: str) -> tuple:
     now_mx = now_utc.astimezone(MX_TZ)
     pt = _normalize_period_type(period_type)
     if pt == "diario":
-        # Hoy + ayer: desde ayer 00:00 CDMX hasta ahora.
+        # Solo hoy: desde las 00:00 CDMX de hoy hasta ahora.
         today_start_mx = now_mx.replace(hour=0, minute=0, second=0, microsecond=0)
-        start_mx = today_start_mx - timedelta(days=1)
         return (
-            start_mx.astimezone(timezone.utc),
+            today_start_mx.astimezone(timezone.utc),
             now_utc,
-            "Reporte Diario (hoy y ayer)",
+            "Reporte Diario",
         )
     if pt == "semanal":
         # [FIX] Bloque fijo de semana natural (Domingo a Sábado)
@@ -5647,7 +5832,12 @@ def _normalize_area_name(
         return "OBRA CIVIL"
     if _flat.startswith("sub supervisor") or _flat.startswith("subsupervisor"):
         return "OBRA CIVIL"
-    return raw
+    # Canonicaliza mayúsculas/espacios/guiones (sin tocar acentos) para que
+    # "Calidad" y "CALIDAD" caigan en el mismo bucket de portadilla en vez
+    # de imprimir dos portadillas de Área consecutivas con el mismo título.
+    canon = raw.replace("-", " ").replace("_", " ")
+    canon = " ".join(canon.split())
+    return canon.title()
 
 
 
@@ -10010,12 +10200,19 @@ async def project_ai_summary(pid: str, user: dict = Depends(current_user)):
 
     raw = await db.reports.find(q).sort("created_at", -1).to_list(length=500)
 
-    if not raw:
+    # Noticias vigentes del proyecto (TTL de 24h — ver `list_announcements`),
+    # así que "vigente" y "de las últimas 24h" son lo mismo aquí.
+    ann_raw = await db.announcements.find(
+        {"project_id": pid, "expires_at": {"$gt": datetime.now(timezone.utc)}}
+    ).sort([("pinned", -1), ("created_at", -1)]).to_list(length=100)
+
+    if not raw and not ann_raw:
         return AISummaryResponse(
             summary=(
-                "• No se registraron reportes en las últimas 24 horas.\n"
-                "• Equipo y personal sin movimientos capturados.\n"
-                "• Recomendación: validar con sub-coordinadores el estado de avance del día."
+                "• Avances: no disponible en los reportes (sin reportes en las últimas 24h).\n"
+                "• Actividades: no disponible en los reportes.\n"
+                "• Fuerza laboral: no disponible en los reportes.\n"
+                "• Noticias: no hay noticias vigentes."
             ),
             reports_count=0,
             period_hours=24,
@@ -10028,6 +10225,7 @@ async def project_ai_summary(pid: str, user: dict = Depends(current_user)):
         path = " › ".join(r.get("node_path_names") or []) or "(sin nodo)"
         area = r.get("area_name") or "—"
         avance = r.get("avance") or "—"
+        actividades = (r.get("actividades") or "").strip() or "—"
         contratista = r.get("contratista") or "—"
         personnel = ", ".join(r.get("personnel") or []) or "—"
         equipment = ", ".join(r.get("equipment") or []) or "—"
@@ -10036,26 +10234,41 @@ async def project_ai_summary(pid: str, user: dict = Depends(current_user)):
         created_s = created.isoformat() if isinstance(created, datetime) else str(created)
         lines.append(
             f"- [{created_s}] {path} | Área: {area} | Avance: {avance} | "
-            f"Contratista: {contratista} | Personal: {personnel} | "
-            f"Equipo: {equipment} | Capturó: {captured_by}"
+            f"Actividades: {actividades} | Contratista: {contratista} | "
+            f"Personal: {personnel} | Equipo: {equipment} | Capturó: {captured_by}"
         )
-    body = "\n".join(lines)
+    body = "\n".join(lines) if lines else "(sin reportes en las últimas 24h)"
+
+    ann_lines: List[str] = []
+    for a in ann_raw:
+        created = a.get("created_at")
+        created_s = created.isoformat() if isinstance(created, datetime) else str(created)
+        ann_lines.append(f"- [{created_s}] {a.get('title') or '(sin título)'}: {a.get('body') or ''}".strip())
+    ann_body = "\n".join(ann_lines) if ann_lines else "(sin noticias vigentes)"
 
     system_message = (
         "ERES UN ANALISTA DE OBRA CIVIL DE NIVEL EJECUTIVO. TUS REGLAS SON INQUEBRANTABLES:\n"
-        "1) NO PUEDES INVENTAR DATOS (ALUCINAR). SI NO HAY INFORMACIÓN, REPORTA QUE EL DATO NO ESTÁ DISPONIBLE.\n"
+        "1) NO PUEDES INVENTAR DATOS (ALUCINAR). SOLO PUEDES USAR LO QUE APARECE LITERALMENTE EN "
+        "LOS REPORTES Y NOTICIAS QUE SE TE DAN. SI NO HAY INFORMACIÓN PARA UNA CATEGORÍA, ESCRIBE "
+        "EXACTAMENTE 'No disponible en los reportes' (o 'Sin noticias vigentes' para esa categoría) "
+        "EN VEZ DE INFERIR, ESTIMAR O COMPLETAR CON SUPOSICIONES.\n"
         "2) NO PUEDES FALLAR.\n"
-        "3) TU ÚNICA FUNCIÓN ES RESUMIR EXACTAMENTE LO QUE DICEN LOS REPORTES SIN AGREGAR INTERPRETACIONES AJENAS.\n"
-        "4) ESTRUCTURA: SOLO 3 VIÑETAS EJECUTIVAS Y NADA MÁS.\n\n"
-        "Responde SIEMPRE en español. Cada viñeta debe iniciar con '• '. "
-        "Distribución sugerida: una viñeta para avances, una para equipo/maquinaria y una para personal. "
-        "Si alguna categoría no tiene datos, indícalo explícitamente como 'No disponible en los reportes'. "
-        "Cero relleno, sin introducciones ni cierres."
+        "3) TU ÚNICA FUNCIÓN ES RESUMIR EXACTAMENTE LO QUE DICEN LOS REPORTES Y NOTICIAS, SIN AGREGAR "
+        "INTERPRETACIONES, CIFRAS NI NOMBRES QUE NO APAREZCAN EN EL TEXTO FUENTE.\n"
+        "4) ESTRUCTURA: EXACTAMENTE 4 VIÑETAS EJECUTIVAS Y NADA MÁS, EN ESTE ORDEN:\n"
+        "   • Avances: qué se avanzó y dónde (nodo/tramo), según el campo Avance de los reportes.\n"
+        "   • Actividades: qué actividades se realizaron, según el campo Actividades de los reportes.\n"
+        "   • Fuerza laboral: personal y equipo/maquinaria que estuvieron en obra.\n"
+        "   • Noticias: anuncios vigentes del proyecto (últimas 24h).\n\n"
+        "Responde SIEMPRE en español. Cada viñeta debe iniciar con '• ' y el nombre de su categoría "
+        "seguido de dos puntos (ej. '• Avances: ...'). Cero relleno, sin introducciones ni cierres, "
+        "sin viñetas adicionales fuera de las 4 indicadas."
     )
     user_text = (
         f"Reportes de las últimas 24 horas del proyecto (id={pid}). "
         f"Total: {len(raw)} entradas.\n\n{body}\n\n"
-        "Genera el resumen ejecutivo solicitado."
+        f"Noticias vigentes del proyecto. Total: {len(ann_raw)} entradas.\n\n{ann_body}\n\n"
+        "Genera el resumen ejecutivo solicitado, usando SOLO lo anterior."
     )
 
     try:
@@ -10453,7 +10666,159 @@ async def delete_minuta(mid: str, user: dict = Depends(current_user)):
     await ensure_project_access(user, m["project_id"])
     # Eliminada restricción de roles: Cualquier usuario con acceso al proyecto puede eliminar minutas.
     await db.minutas.delete_one({"id": mid})
+    # Best-effort: limpia el PDF escaneado (si lo hay) para no dejar huérfanos en disco.
+    try:
+        mdir = _MINUTA_PDF_DIR / mid
+        if mdir.is_dir():
+            shutil.rmtree(mdir, ignore_errors=True)
+    except Exception:
+        pass
     return {"ok": True}
+
+
+# === PDF escaneado de la minuta (una sola hoja) =============================
+# No hay un PATCH general para editar una minuta ya creada (ver comentario en
+# toggle_acuerdo/delete_minuta: el estilo de este módulo es endpoints angostos,
+# no un PATCH genérico) — por eso el PDF se maneja con su propio mini-CRUD,
+# reusable tanto justo después de crear la minuta como en cualquier momento
+# posterior ("anexarlo después").
+#
+# [PERF] A propósito NO se renderiza el PDF en la app (no hay librería de
+# render/thumbnail de PDF instalada, ver frontend). Solo se guarda el archivo
+# y se sirve tal cual — abrir/visualizar lo delega el frontend al sistema
+# operativo (mismo patrón que "Archivos de consulta"), así que agregar esto
+# nunca puede volver lenta la lista de minutas.
+_MINUTA_PDF_DIR = UPLOADS_DIR / "minutas"
+_MINUTA_PDF_MAX_BYTES = 15 * 1024 * 1024  # 15 MB — de sobra para una hoja escaneada
+
+
+def _minuta_pdf_disk_path(mid: str, file_id: str) -> Optional[Path]:
+    """Reconstruye la ruta en disco del PDF a partir de su file_id. Nunca se
+    guarda la ruta absoluta en Mongo (solo el file_id) para no exponer la
+    estructura de archivos del servidor en la respuesta de la API."""
+    mdir = _MINUTA_PDF_DIR / mid
+    if not mdir.is_dir():
+        return None
+    matches = list(mdir.glob(f"{file_id}__*"))
+    return matches[0] if matches else None
+
+
+@api.post("/minutas/{mid}/pdf")
+async def upload_minuta_pdf(
+    mid: str,
+    file: UploadFile = File(...),
+    user: dict = Depends(current_user),
+):
+    """Sube (o reemplaza) el PDF escaneado de una minuta.
+
+    Mismo criterio de permisos que el resto de mutaciones de minuta en este
+    módulo (crear/eliminar/concluir acuerdo): cualquier usuario con acceso al
+    proyecto, sin restricción de autor/rol.
+    """
+    m = await db.minutas.find_one({"id": mid})
+    if not m:
+        raise HTTPException(404, "Minuta no existe")
+    await ensure_project_access(user, m["project_id"])
+
+    try:
+        raw = await file.read()
+    except Exception as e:
+        raise HTTPException(400, f"No se pudo leer el archivo: {e}")
+    if not raw:
+        raise HTTPException(400, "Archivo vacío")
+    if len(raw) > _MINUTA_PDF_MAX_BYTES:
+        raise HTTPException(
+            413,
+            f"PDF demasiado grande ({len(raw)//1024//1024} MB). Máx {_MINUTA_PDF_MAX_BYTES//1024//1024} MB.",
+        )
+
+    orig = file.filename or "minuta.pdf"
+    ctype = (file.content_type or "").lower().split(";", 1)[0].strip()
+    is_pdf = ctype == "application/pdf" or orig.lower().endswith(".pdf")
+    if not is_pdf:
+        raise HTTPException(415, "Solo se aceptan archivos PDF")
+
+    # Reemplazo: borra el PDF anterior en disco (best-effort) antes de guardar el nuevo.
+    old_file_id = m.get("pdf_file_id")
+    if old_file_id:
+        old_path = _minuta_pdf_disk_path(mid, old_file_id)
+        if old_path:
+            try:
+                old_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    safe_name = _safe_filename(orig)
+    file_id = uuid.uuid4().hex
+    mdir = _MINUTA_PDF_DIR / mid
+    try:
+        mdir.mkdir(parents=True, exist_ok=True)
+        on_disk = mdir / f"{file_id}__{safe_name}"
+        on_disk.write_bytes(raw)
+    except Exception as exc:
+        log.exception("[minuta-pdf] no se pudo escribir en disco: %s", exc)
+        raise HTTPException(500, f"No se pudo guardar el PDF: {exc}")
+
+    now = datetime.now(timezone.utc)
+    update = {
+        "pdf_file_id": file_id,
+        "pdf_original_name": orig,
+        "pdf_mime_type": "application/pdf",
+        "pdf_size": len(raw),
+        "pdf_url": f"/api/minutas/{mid}/pdf",
+        "pdf_uploaded_at": now,
+        "pdf_uploaded_by": user.get("id"),
+        "pdf_uploaded_by_name": user.get("name"),
+        "updated_at": now,
+    }
+    await db.minutas.update_one({"id": mid}, {"$set": update})
+    updated = await db.minutas.find_one({"id": mid})
+    return _minuta_out(updated)
+
+
+@api.get("/minutas/{mid}/pdf")
+async def download_minuta_pdf(mid: str, user: dict = Depends(current_user)):
+    m = await db.minutas.find_one({"id": mid})
+    if not m:
+        raise HTTPException(404, "Minuta no existe")
+    await ensure_project_access(user, m["project_id"])
+    file_id = m.get("pdf_file_id")
+    if not file_id:
+        raise HTTPException(404, "Esta minuta no tiene PDF adjunto")
+    on_disk = _minuta_pdf_disk_path(mid, file_id)
+    if not on_disk or not on_disk.exists():
+        raise HTTPException(404, "PDF no disponible en disco")
+    return FileResponse(
+        path=str(on_disk),
+        media_type="application/pdf",
+        filename=m.get("pdf_original_name") or on_disk.name,
+    )
+
+
+@api.delete("/minutas/{mid}/pdf")
+async def delete_minuta_pdf(mid: str, user: dict = Depends(current_user)):
+    m = await db.minutas.find_one({"id": mid})
+    if not m:
+        raise HTTPException(404, "Minuta no existe")
+    await ensure_project_access(user, m["project_id"])
+    file_id = m.get("pdf_file_id")
+    if file_id:
+        on_disk = _minuta_pdf_disk_path(mid, file_id)
+        if on_disk:
+            try:
+                on_disk.unlink(missing_ok=True)
+            except Exception:
+                pass
+    await db.minutas.update_one(
+        {"id": mid},
+        {"$unset": {
+            "pdf_file_id": "", "pdf_original_name": "", "pdf_mime_type": "",
+            "pdf_size": "", "pdf_url": "", "pdf_uploaded_at": "",
+            "pdf_uploaded_by": "", "pdf_uploaded_by_name": "",
+        }},
+    )
+    updated = await db.minutas.find_one({"id": mid})
+    return _minuta_out(updated)
 
 
 @api.get("/projects/{pid}/minutas/badge")

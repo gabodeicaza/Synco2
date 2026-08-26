@@ -1,0 +1,32 @@
+{
+  "summary": "Validación frontend de pantalla 'Nuevo Reporte' (Especialista). Login con topografia@syncsite.com OK. Card 'Georreferenciación' renderiza con texto 'Coordenadas vinculadas automáticamente al poste seleccionado'. Inputs 'Ubicación' y 'Coordenadas' inician vacíos y read-only (atributo readonly presente). Selección Tramo 1 → E3 → Poste 12 auto-vincula ubicación a 'Cablebús Tramo 1 · Estación 3 · Poste 12' y coordenadas '19.3923°N, 99.1023°W'. Al cambiar a Tramo 2/E7/P20, valores se actualizan reactivamente a 'Cablebús Tramo 2 · Estación 7 · Poste 20' / '19.4911°N, 99.0851°W'. Badge 'Auto' aparece solo cuando los 3 valores están seleccionados. NO existe mapa manual/interactivo en el formulario. Botones 'Subir archivo' y 'Escanear' presentes y visibles. Sin errores rojos de consola. ISSUE encontrado: múltiples strings hardcodeadas en new.tsx perdieron sus acentos (Spanish ñ/á/í/ó/ú), causando UX inconsistente: 'UBICACIN CABLEBS', 'Estacin', 'fsico', 'Lmite', 'Mximo', 'cmara'. Cero Huella Local: confirmado en código — pickDocument, scanDocument, pickFromGallery y takePhoto llaman wipeTemp(asset.uri) tras leer base64; pendingStampBase64 vive solo en RAM.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "Nuevo Reporte – Sección Ubicación Cablebús", "issue": "Strings con caracteres acentuados perdidos en JSX hardcoded: 'Ubicacin Cablebs' (debería ser 'Ubicación Cablebús'), 'Estacin' (Estación), 'fsico' (físico). Reference: /app/frontend/app/(especialista)/new.tsx:649, 651, 676, 718", "testID": "n/a", "priority": "MEDIUM"},
+      {"component": "Nuevo Reporte – Archivos adjuntos", "issue": "Strings sin acentos: 'PDF, Excel, Word, CSV o escaneo de cmara. Mximo 8 MB c/u.' (debería 'cámara', 'Máximo'). Reference: /app/frontend/app/(especialista)/new.tsx:1026", "testID": "n/a", "priority": "MEDIUM"},
+      {"component": "Nuevo Reporte – Alerts pickDocument/scanDocument", "issue": "Mensajes de Alert.alert con acentos faltantes: 'Lmite alcanzado', 'Mximo 5 archivos', 'Mximo 8 MB', 'Permiso de cmara denegado', 'Habilita la cmara'. Reference: /app/frontend/app/(especialista)/new.tsx:312, 329, 352, 363, 364", "testID": "n/a", "priority": "MEDIUM"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Nuevo Reporte", "issues": ["Texto de resumen verde 'Tramo 1  Estacin 3  Poste 12' tiene doble espacio donde se esperaba un separador '·' (ver línea 718)"]}
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": ["/app/test_reports/iteration_5.json"],
+  "action_items": [
+    "Reemplazar strings hardcoded en /app/frontend/app/(especialista)/new.tsx para restaurar acentos: línea 312 'Límite alcanzado', 'Máximo 5 archivos…'; línea 329 'Máximo 8 MB…'; línea 352 idem; líneas 363-364 'cámara'; línea 649 'Ubicación Cablebús'; línea 651 'Obligatorio · define el contexto físico del reporte'; línea 676 'Estación'; línea 718 'Tramo {t} · Estación {e} · Poste {p}'; línea 1026 'escaneo de cámara. Máximo 8 MB c/u.'; línea 1203 comentario 'cámara'.",
+    "Considerar usar la utilidad posteLocationName() (que ya devuelve formato con · y acentos correctos) para mostrar el resumen verde en línea 717-719, evitando duplicar el formato manualmente."
+  ],
+  "critical_code_review_comments": [
+    "new.tsx tiene 1659 líneas (>700) — considerar dividir en sub-componentes (UbicacionCablebus, Georreferenciacion, ArchivosAdjuntos, LecturasYAvance) para mantenibilidad.",
+    "Buena práctica observada: useEffect dependiente [tramo, estacion, poste] correctamente auto-vincula coordenadas mediante getPosteCoord(), preserva Cero Huella Local (utilidad pura en memoria)."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a (no backend testing requested)", "frontend": "100% – todos los criterios funcionales aprobados; solo issues cosméticos de strings"},
+  "seed_data_creation": "Ninguna",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Pantalla Nuevo Reporte del Especialista validada en iteración 5. Auto-vinculación Tramo/Estación/Poste → Ubicación + Coordenadas funciona correctamente. Mock posteCoords.ts es determinista y retorna labels CDMX válidos. Único pendiente: strings sin acentos en new.tsx (lista en action_items). No probar pantallas pausadas.",
+  "rca_of_issue": "Las strings sin acentos parecen haberse copiado/pegado desde una fuente que filtró diacríticos (probablemente edición desde un editor con codificación inconsistente o conversion ASCII). El runtime de RN/Expo no las repara — se muestran tal cual. Solución: edición manual de los literales en new.tsx con UTF-8."
+}

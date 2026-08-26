@@ -290,7 +290,8 @@ export interface Invitation {
   puesto?: string | null;
   scope_node_id?: string | null;
   scope_node_ids: string[];
-  status: 'pending' | 'accepted' | 'revoked';
+  status: 'pending' | 'accepted' | 'revoked' | 'removed';
+  accepted_user_id?: string | null;
   created_at: string;
   expires_at: string;
 }
@@ -461,6 +462,14 @@ export interface Minuta {
   author_name: string;
   author_role?: string;
   acuerdos: Acuerdo[];
+  pdf_file_id?: string | null;
+  pdf_original_name?: string | null;
+  pdf_mime_type?: string | null;
+  pdf_size?: number | null;
+  pdf_url?: string | null;
+  pdf_uploaded_at?: string | null;
+  pdf_uploaded_by?: string | null;
+  pdf_uploaded_by_name?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -521,6 +530,8 @@ export interface ProjectEvent {
   area_id?: string | null;
   area_name?: string | null;
   area_color?: string | null;
+  attendee_ids?: string[];
+  attendee_names?: string[];
   created_at: string;
   updated_at: string;
 }
@@ -1285,6 +1296,10 @@ export const api = {
   listInvitations: (pid: string) => request<Invitation[]>('GET', `/projects/${pid}/invitations`),
   createInvitation: (pid: string, body: any) => request<Invitation>('POST', `/projects/${pid}/invitations`, body),
   revokeInvitation: (iid: string) => request<{ ok: boolean }>('DELETE', `/invitations/${iid}`),
+  updateTeamMember: (pid: string, uid: string, body: { name?: string; email?: string; puesto?: string }) =>
+    request<User>('PATCH', `/projects/${pid}/team/${uid}`, body),
+  removeTeamMember: (pid: string, uid: string) =>
+    request<{ ok: boolean }>('DELETE', `/projects/${pid}/team/${uid}`),
 
   getReportTemplates: () => request<ReportTemplate[]>('GET', '/report-templates'),
   createReportTemplate: (body: { code: string; name: string; category: string; fields: ReportTemplateField[] }) =>
@@ -1451,8 +1466,8 @@ export const api = {
     return { blob: await res.blob(), filename: (m && m[1]) || `reporte_${period}.pptx` };
   },
 
-  listEvents: (pid: string, range: string = 'upcoming', limit = 500) =>
-    request<ProjectEvent[]>('GET', `/projects/${pid}/events?range=${range}&limit=${limit}`),
+  listEvents: (pid: string, range: string = 'upcoming', limit = 500, mine = false) =>
+    request<ProjectEvent[]>('GET', `/projects/${pid}/events?range=${range}&limit=${limit}${mine ? '&mine=1' : ''}`),
   createEvent: (pid: string, payload: any) => request<ProjectEvent>('POST', `/projects/${pid}/events`, payload),
   updateEvent: (eid: string, payload: any) => request<ProjectEvent>('PATCH', `/events/${eid}`, payload),
   deleteEvent: (eid: string) => request<{ ok: boolean }>('DELETE', `/events/${eid}`),
@@ -1482,6 +1497,62 @@ export const api = {
     request<Minuta>('PATCH', `/minutas/${mid}/acuerdos/${aid}`, { estado }),
   deleteMinuta: (mid: string) => request<{ ok: boolean }>('DELETE', `/minutas/${mid}`),
   minutasBadge: (pid: string) => request<MinutaBadge>('GET', `/projects/${pid}/minutas/badge`),
+
+  uploadMinutaPdf: async (
+    mid: string,
+    file: { uri: string; name: string; mimeType?: string | null },
+  ): Promise<Minuta> => {
+    if (!file || !file.uri) {
+      throw new ApiError(0, 'Archivo o URI no proporcionado');
+    }
+    const isWeb = Platform.OS === 'web';
+    const fileName = file.name || 'minuta.pdf';
+    const mime = file.mimeType || 'application/pdf';
+    const url = `${BASE}/minutas/${mid}/pdf`;
+
+    if (!isWeb) {
+      return nativeMultipartUpload<Minuta>(url, file.uri, fileName, mime, 'minuta_pdf');
+    }
+
+    const form = new FormData();
+    const resBlob = await fetch(file.uri);
+    const blob = await resBlob.blob();
+    try {
+      const f = new File([blob], fileName, { type: mime });
+      form.append('file', f);
+    } catch {
+      form.append('file', blob, fileName);
+    }
+    const headers = await authHeader();
+    const res = await fetch(url, { method: 'POST', headers, body: form as any });
+    const text = await res.text();
+    const data = text ? safeJson(text) : null;
+    if (!res.ok) {
+      const msg = (data && (data as any).detail) || `HTTP ${res.status}`;
+      throw new ApiError(res.status, typeof msg === 'string' ? msg : JSON.stringify(msg));
+    }
+    return data as Minuta;
+  },
+
+  downloadMinutaPdf: async (mid: string, fallbackFilename?: string): Promise<{ blob: Blob; filename: string; mime?: string }> => {
+    const headers = await authHeader();
+    const url = `${BASE}/minutas/${mid}/pdf`;
+    const res = await fetch(url, { method: 'GET', headers });
+    if (!res.ok) {
+      throw new ApiError(res.status, `HTTP ${res.status} al descargar el PDF`);
+    }
+    let filename = fallbackFilename || 'minuta.pdf';
+    const cd = res.headers.get('content-disposition') || res.headers.get('Content-Disposition') || '';
+    const m = /filename\*?=(?:UTF-8'')?"?([^";\n]+)"?/i.exec(cd);
+    if (m && m[1]) {
+      try { filename = decodeURIComponent(m[1]); } catch { filename = m[1]; }
+    }
+    const mime = res.headers.get('content-type') || undefined;
+    const blob = await res.blob();
+    return { blob, filename, mime: mime || undefined };
+  },
+
+  deleteMinutaPdf: (mid: string) => request<Minuta>('DELETE', `/minutas/${mid}/pdf`),
 
   // ---- Catálogo de Conceptos ------------------------------------------------
   listPartidas: (pid: string, incluirInactivas = false) =>

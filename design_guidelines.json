@@ -1,0 +1,116 @@
+{
+  "theme_and_archetype": {
+    "theme": "LIGHT",
+    "archetype": "4 (Swiss & High-Contrast)",
+    "vibe": "Serious, professional, robust, engineering-focused, highly legible"
+  },
+  "color_palette": {
+    "primary": {
+      "DEFAULT": "#1E40AF",
+      "hover": "#1E3A8A",
+      "light": "#DBEAFE",
+      "description": "Royal Blue for main actions and branding."
+    },
+    "background": {
+      "app": "#F8FAFC",
+      "surface": "#FFFFFF",
+      "header": "rgba(255, 255, 255, 0.9)"
+    },
+    "text": {
+      "heading": "#0F172A",
+      "body": "#334155",
+      "muted": "#64748B",
+      "inverse": "#FFFFFF"
+    },
+    "borders": {
+      "DEFAULT": "#E2E8F0",
+      "focus": "#1E40AF"
+    },
+    "status": {
+      "online": "#10B981",
+      "offline": "#64748B",
+      "syncing": "#F59E0B",
+      "error": "#EF4444"
+    },
+    "areas": {
+      "Geotecnia": { "bg": "#FEF3C7", "text": "#D97706", "border": "#FDE68A", "description": "Amber" },
+      "Topografía": { "bg": "#D1FAE5", "text": "#059669", "border": "#A7F3D0", "description": "Emerald" },
+      "Obra Civil": { "bg": "#DBEAFE", "text": "#2563EB", "border": "#BFDBFE", "description": "Blue" },
+      "Seguridad": { "bg": "#FEE2E2", "text": "#DC2626", "border": "#FECACA", "description": "Red" },
+      "Calidad": { "bg": "#F3E8FF", "text": "#7C3AED", "border": "#E9D5FF", "description": "Purple" }
+    }
+  },
+  "typography": {
+    "font_family": {
+      "headings": "'IBM Plex Sans', sans-serif",
+      "body": "'IBM Plex Sans', sans-serif",
+      "mono": "'JetBrains Mono', monospace"
+    },
+    "scales": {
+      "h1": "text-2xl sm:text-3xl font-bold tracking-tight text-slate-900",
+      "h2": "text-xl sm:text-2xl font-bold tracking-tight text-slate-900",
+      "h3": "text-lg font-semibold text-slate-800",
+      "body": "text-base leading-relaxed text-slate-700",
+      "small": "text-sm text-slate-500",
+      "overline": "text-xs font-bold uppercase tracking-widest text-slate-500"
+    }
+  },
+  "spacing_and_layout": {
+    "container": "w-full max-w-md mx-auto min-h-screen flex flex-col bg-slate-50 relative pb-20",
+    "padding": "p-4 sm:p-6",
+    "touch_targets": "min-h-[44px] min-w-[44px] flex items-center justify-center",
+    "header": "sticky top-0 z-50 bg-white/90 backdrop-blur-md border-b border-slate-200 px-4 py-3 flex items-center justify-between",
+    "bottom_nav": "fixed bottom-0 left-0 right-0 z-50 bg-white border-t border-slate-200 flex justify-around items-center h-16 pb-safe"
+  },
+  "surfaces_and_components": {
+    "cards": "bg-white border border-slate-200 rounded-lg p-4 shadow-sm",
+    "buttons": {
+      "primary": "bg-blue-800 text-white rounded-md font-semibold hover:bg-blue-900 transition-colors flex items-center justify-center gap-2",
+      "secondary": "bg-white text-slate-700 border border-slate-300 rounded-md font-medium hover:bg-slate-50 transition-colors flex items-center justify-center gap-2",
+      "ghost": "text-slate-600 hover:bg-slate-100 rounded-md transition-colors",
+      "ai_magic": "bg-slate-900 text-white rounded-md font-semibold hover:bg-slate-800 transition-colors flex items-center justify-center gap-2 border border-slate-700"
+    },
+    "inputs": "w-full bg-white border border-slate-300 rounded-md px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-blue-800 focus:border-transparent transition-all",
+    "badges": "inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold border",
+    "photo_thumbnail": "w-20 h-20 rounded-md object-cover border border-slate-200 bg-slate-100"
+  },
+  "interactions_and_motion": {
+    "hover_states": "subtle background shifts, no heavy scaling",
+    "active_states": "scale-[0.98] transition-transform duration-75",
+    "transitions": "transition-all duration-200 ease-in-out"
+  },
+  "icons": {
+    "library": "lucide-react",
+    "rules": "No emojis. Use crisp vector icons with a stroke width of 2."
+  },
+  "testing": {
+    "attributes": "All interactive and key informational elements MUST include a 'data-testid' attribute (e.g., 'data-testid=\"login-button\"')."
+  },
+  "media": {
+    "images": {
+      "construction_site_hero": {
+        "url": "https://images.unsplash.com/photo-1527335988388-b40ee248d80c?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDk1ODB8MHwxfHNlYXJjaHwzfHxjb25zdHJ1Y3Rpb24lMjBzaXRlJTIwYXJjaGl0ZWN0dXJlfGVufDB8fHx8MTc4MDcxMjI0Nnww&ixlib=rb-4.1.0&q=85",
+        "description": "Gray metal building frame near tower crane. Use for login background or dashboard header imagery with a heavy white or blue overlay."
+      },
+      "engineer_profile": {
+        "url": "https://images.pexels.com/photos/8961008/pexels-photo-8961008.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+        "description": "Female engineer in hard hat using a tablet. Use for profile avatars or empty states."
+      },
+      "placeholder_evidence_1": {
+        "url": "https://images.unsplash.com/photo-1694521787162-5373b598945c?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDk1ODB8MHwxfHNlYXJjaHwyfHxjb25zdHJ1Y3Rpb24lMjBzaXRlJTIwYXJjaGl0ZWN0dXJlfGVufDB8fHx8MTc4MDcxMjI0Nnww&ixlib=rb-4.1.0&q=85",
+        "description": "Group of men on a construction site. Use for mock evidence photos."
+      }
+    }
+  },
+  "instructions_to_main_agent": [
+    "This is an Expo React Native concept adapted for a mobile web app using React, Tailwind, and Shadcn UI.",
+    "Build a mobile-first UI wrapper (e.g., max-w-md mx-auto on desktop, 100% width on mobile) to simulate the app feel.",
+    "Enforce touch targets of at least 44px for all interactable elements (buttons, inputs, tabs).",
+    "Use 'IBM Plex Sans' globally to instill an engineering, utilitarian vibe.",
+    "Do NOT use heavy gradients or glassmorphism. Stick to 'Swiss & High-Contrast' principles: solid white backgrounds, crisp borders, and Royal Blue (#1E40AF) for primary actions.",
+    "The sticky header must show real-time looking sync status (Online/Offline) using the defined status colors.",
+    "For the AI buttons ('AI Executive Summary' and '✨ AI Technical Redaction'), use the 'ai_magic' button style to differentiate it from standard actions.",
+    "Use standard HTML inputs customized with Tailwind for mobile friendliness, not native date pickers unless provided by Shadcn.",
+    "Crucially, add 'data-testid' to all buttons, links, and forms."
+  ]
+}

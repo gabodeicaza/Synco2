@@ -1,0 +1,63 @@
+Traceback (most recent call last):
+  File [35m"<frozen runpy>"[0m, line [35m203[0m, in [35m_run_module_as_main[0m
+  File [35m"<frozen runpy>"[0m, line [35m88[0m, in [35m_run_code[0m
+  File [35m"C:\Users\gabod\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\uvicorn\__main__.py"[0m, line [35m4[0m, in [35m<module>[0m
+    [31muvicorn.main[0m[1;31m()[0m
+    [31m~~~~~~~~~~~~[0m[1;31m^^[0m
+  File [35m"C:\Users\gabod\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\click\core.py"[0m, line [35m1569[0m, in [35m__call__[0m
+    return [31mself.main[0m[1;31m(*args, **kwargs)[0m
+           [31m~~~~~~~~~[0m[1;31m^^^^^^^^^^^^^^^^^[0m
+  File [35m"C:\Users\gabod\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\click\core.py"[0m, line [35m1490[0m, in [35mmain[0m
+    rv = self.invoke(ctx)
+  File [35m"C:\Users\gabod\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\click\core.py"[0m, line [35m1353[0m, in [35minvoke[0m
+    return [31mctx.invoke[0m[1;31m(self.callback, **ctx.params)[0m
+           [31m~~~~~~~~~~[0m[1;31m^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+  File [35m"C:\Users\gabod\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\click\core.py"[0m, line [35m907[0m, in [35minvoke[0m
+    return callback(*args, **kwargs)
+  File [35m"C:\Users\gabod\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\uvicorn\main.py"[0m, line [35m416[0m, in [35mmain[0m
+    [31mrun[0m[1;31m([0m
+    [31m~~~[0m[1;31m^[0m
+        [1;31mapp,[0m
+        [1;31m^^^^[0m
+    ...<45 lines>...
+        [1;31mh11_max_incomplete_event_size=h11_max_incomplete_event_size,[0m
+        [1;31m^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+    [1;31m)[0m
+    [1;31m^[0m
+  File [35m"C:\Users\gabod\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\uvicorn\main.py"[0m, line [35m587[0m, in [35mrun[0m
+    [31mserver.run[0m[1;31m()[0m
+    [31m~~~~~~~~~~[0m[1;31m^^[0m
+  File [35m"C:\Users\gabod\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\uvicorn\server.py"[0m, line [35m61[0m, in [35mrun[0m
+    return [31masyncio.run[0m[1;31m(self.serve(sockets=sockets))[0m
+           [31m~~~~~~~~~~~[0m[1;31m^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+  File [35m"C:\Users\gabod\AppData\Local\Python\pythoncore-3.14-64\Lib\asyncio\runners.py"[0m, line [35m205[0m, in [35mrun[0m
+    return [31mrunner.run[0m[1;31m(main)[0m
+           [31m~~~~~~~~~~[0m[1;31m^^^^^^[0m
+  File [35m"C:\Users\gabod\AppData\Local\Python\pythoncore-3.14-64\Lib\asyncio\runners.py"[0m, line [35m128[0m, in [35mrun[0m
+    return [31mself._loop.run_until_complete[0m[1;31m(task)[0m
+           [31m~~~~~~~~~~~~~~~~~~~~~~~~~~~~~[0m[1;31m^^^^^^[0m
+  File [35m"C:\Users\gabod\AppData\Local\Python\pythoncore-3.14-64\Lib\asyncio\base_events.py"[0m, line [35m719[0m, in [35mrun_until_complete[0m
+    return [31mfuture.result[0m[1;31m()[0m
+           [31m~~~~~~~~~~~~~[0m[1;31m^^[0m
+  File [35m"C:\Users\gabod\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\uvicorn\server.py"[0m, line [35m68[0m, in [35mserve[0m
+    [31mconfig.load[0m[1;31m()[0m
+    [31m~~~~~~~~~~~[0m[1;31m^^[0m
+  File [35m"C:\Users\gabod\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\uvicorn\config.py"[0m, line [35m467[0m, in [35mload[0m
+    self.loaded_app = [31mimport_from_string[0m[1;31m(self.app)[0m
+                      [31m~~~~~~~~~~~~~~~~~~[0m[1;31m^^^^^^^^^^[0m
+  File [35m"C:\Users\gabod\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\uvicorn\importer.py"[0m, line [35m21[0m, in [35mimport_from_string[0m
+    module = importlib.import_module(module_str)
+  File [35m"C:\Users\gabod\AppData\Local\Python\pythoncore-3.14-64\Lib\importlib\__init__.py"[0m, line [35m88[0m, in [35mimport_module[0m
+    return [31m_bootstrap._gcd_import[0m[1;31m(name[level:], package, level)[0m
+           [31m~~~~~~~~~~~~~~~~~~~~~~[0m[1;31m^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+  File [35m"<frozen importlib._bootstrap>"[0m, line [35m1406[0m, in [35m_gcd_import[0m
+  File [35m"<frozen importlib._bootstrap>"[0m, line [35m1371[0m, in [35m_find_and_load[0m
+  File [35m"<frozen importlib._bootstrap>"[0m, line [35m1342[0m, in [35m_find_and_load_unlocked[0m
+  File [35m"<frozen importlib._bootstrap>"[0m, line [35m938[0m, in [35m_load_unlocked[0m
+  File [35m"<frozen importlib._bootstrap_external>"[0m, line [35m759[0m, in [35mexec_module[0m
+  File [35m"<frozen importlib._bootstrap>"[0m, line [35m491[0m, in [35m_call_with_frames_removed[0m
+  File [35m"C:\Synco2-main\backend\server.py"[0m, line [35m41[0m, in [35m<module>[0m
+    MONGO_URL = [31mos.environ[0m[1;31m["MONGO_URL"][0m
+                [31m~~~~~~~~~~[0m[1;31m^^^^^^^^^^^^^[0m
+  File [35m"<frozen os>"[0m, line [35m709[0m, in [35m__getitem__[0m
+[1;35mKeyError[0m: [35m'MONGO_URL'[0m

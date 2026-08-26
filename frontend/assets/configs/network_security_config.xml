@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Network Security Configuration for SynCo Android APK.
+
+  Política: HTTPS-only estricto en producción (base-config).
+  El backend de producción es https://apm-app.mx y usa TLS válido con
+  certificados del sistema, por lo tanto NO se requieren excepciones
+  cleartext para el tráfico de producción.
+
+  Whitelist (SOLO desarrollo local):
+    - 10.0.2.2        → emulador Android → host loopback
+    - localhost / 127.0.0.1 → Metro bundler / dev-client
+
+  Estas entradas son inofensivas en un APK release ya que las IPs
+  loopback no son ruteables públicamente. Se mantienen para permitir
+  builds internas contra Metro sin romper TLS estricto en producción.
+-->
+<network-security-config>
+
+    <!-- Rangos loopback SOLO para desarrollo (Metro, dev-client, emulador) -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">10.0.2.2</domain>
+        <domain includeSubdomains="true">localhost</domain>
+        <domain includeSubdomains="true">127.0.0.1</domain>
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </domain-config>
+
+    <!-- Política por defecto: HTTPS-only + certificados del sistema -->
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+
+</network-security-config>

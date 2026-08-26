@@ -1,0 +1,50 @@
+{
+  "summary": "Backend regression on SynCo v2.0 — /api/areas, /api/invitations, /api/nodes (DELETE cascade). Ejecutado pytest backend/tests/test_areas_invitations_nodes.py vía URL pública (EXPO_PUBLIC_BACKEND_URL/api). Tras corregir 1 bug crítico de precedencia de operadores en GET /api/invitations/by-token/{tok}, los 22 tests PASS. Cobertura: (1) Areas CRUD: list 200, create 200 (persistido en GET), duplicate→409 ✅, empty-name→400 ✅, project_id mismatch→400 ✅, delete 200 ✅, delete inexistente→404 ✅. (2) Invitations CRUD: list 200 ✅, sub_coordinador con scope_node_id→200 + token urlsafe alfanumérico (>=20 chars) ✅, sub_coordinador sin scope→400 ✅, especialista con area_id+puesto+scope_node_ids (hojas)→200 ✅, especialista con nodo NO-hoja→400 ✅, preview público sin auth GET by-token→200 ✅ (DESPUÉS del fix), token inválido→404 ✅, revoke DELETE→200 + by-token retorna 410 ✅, revoke ya-revocada→404 ✅, persistencia en list ✅. (3) Node DELETE cascade: árbol de 6 nodos (root + 2 children + 3 leaves) → DELETE root devuelve deleted_count=6 y los 6 desaparecen del GET /nodes ✅; delete inexistente→404 ✅; delete hoja solitaria→deleted_count=1 ✅. BUG ENCONTRADO Y CORREGIDO: server.py:709 tenía una ternaria mal parentizada `inv['expires_at'].replace(tzinfo=utc) if tzinfo is None else inv['expires_at'] < now` que por precedencia se evalúa como `X if (cond) else (Y < now)`, devolviendo el datetime (truthy) cuando tzinfo is None → TODA invitación recién creada retornaba 410 'Invitación expirada' en el preview público. Reemplazado por el mismo patrón usado en accept_invite (líneas 728-730). Sin más bugs detectados.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "GET /api/invitations/by-token/{tok}",
+        "issue": "[FIXED] Ternaria con precedencia incorrecta en server.py:709 causaba que toda invitación pending retornara 410 'expirada' cuando `expires_at.tzinfo is None` (la mayoría de docs Mongo sin tz). Fix aplicado: extraer en dos statements iguales al patrón de accept_invite (líneas 728-730).",
+        "priority": "CRITICAL"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_areas_invitations_nodes.py",
+    "/app/test_reports/pytest/areas_invitations_nodes_results.xml"
+  ],
+  "action_items": [
+    "Revisar y aceptar el fix en server.py:702-718 (helper invite_preview) — se reemplazó la ternaria mal parentizada por un bloque if/if explícito (idéntico al de accept_invite).",
+    "Considerar refactor: extraer la lógica `_is_expired(exp)` en una función helper reusable en invite_preview, accept_invite y cualquier nuevo consumidor de invitations.expires_at.",
+    "Opcional — Pydantic AreaIn no rechaza nombre vacío a nivel modelo; el endpoint sí lo valida con strip+400, lo cual está bien, pero podría endurecerse con `name: str = Field(min_length=1)`.",
+    "Opcional — POST /api/projects/{pid}/areas y POST /api/projects/{pid}/invitations devuelven 200; podrían retornar 201 para alinearse con convenciones REST (no crítico).",
+    "Mantener este test file como suite de regresión para futuras iteraciones de SynCo v2.0."
+  ],
+  "critical_code_review_comments": [
+    "server.py:709 — Bug de precedencia: `A if C else B < D` se parsea como `A if C else (B < D)`. Lección: nunca anidar comparaciones dentro de ternarias sin paréntesis. Patrón correcto ya existía en líneas 728-730 (accept_invite) — la inconsistencia es la causa raíz.",
+    "server.py:644-647 — `create_invite` rechaza emails ya registrados con 409, sin distinguir si es el mismo usuario para un nuevo proyecto. El comentario en código menciona la salvedad pero el código rechaza siempre. Si el caso multi-proyecto es válido, falta implementar la rama 'OK si es el mismo usuario'. No bloqueante para la regresión actual, pero a documentar.",
+    "server.py:571-582 — delete_node cascade está correctamente implementado vía descendants_ids (BFS), y reports asociados se marcan como huérfanos en vez de borrarse (preservación). Comportamiento alineado con la regresión solicitada.",
+    "server.py:618-624 — delete_area NO valida si hay invitaciones/reports apuntando al area_id; podría dejar referencias colgantes. Acceptable mientras no haya FKs.",
+    "server.py:696 — DELETE /api/invitations/{iid} filtra por `status: 'pending'`. Si el agente intenta revocar una accepted/revoked devuelve 404 con mensaje 'Invitación no pendiente'. Tested OK."
+  ],
+  "updated_files": [
+    "/app/backend/server.py (líneas 702-718: refactor de invite_preview, fix de precedencia)",
+    "/app/backend/tests/test_areas_invitations_nodes.py (nuevo, 22 tests)"
+  ],
+  "success_rate": {
+    "backend": "100% (22/22) post-fix",
+    "frontend": "n/a (backend only requested)"
+  },
+  "seed_data_creation": "Project 'TEST_AreasInv_<8hex>' creado por fixture session-scoped y archivado al final (DELETE /api/projects/{pid}). 6 nodos del árbol DEL + 6 nodos del árbol session + áreas/invitaciones prefijo TEST_. Datos efímeros con cleanup automático vía teardown.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Suite de regresión backend lista: /app/backend/tests/test_areas_invitations_nodes.py (22 tests, ~5s, 100% pass). Cubre Areas CRUD, Invitations CRUD (sub_coord + especialista + by-token preview público + revoke), Nodes DELETE cascade. Endpoints públicos sin auth: solo GET /api/invitations/by-token/{tok}. El bug de invite_preview (server.py:709, precedencia de operadores en ternaria con expires_at) fue corregido en esta iteración — verificar que el commit fix sigue presente. La conftest.py NO existe; las credenciales y BASE_URL se leen desde frontend/.env vía dotenv_values + /app/memory/test_credentials.md.",
+  "rca_of_issue": "RCA del bug invite_preview: La línea 709 era `if inv['expires_at'].replace(tzinfo=timezone.utc) if inv['expires_at'].tzinfo is None else inv['expires_at'] < datetime.now(timezone.utc):`. Por precedencia de Python, esto se parsea como `(<datetime_object>) if (tzinfo is None) else (<datetime> < now)`. Cuando `tzinfo is None` (caso típico Mongo motor), el if global recibe un objeto datetime no-vacío → siempre truthy → siempre HTTPException 410. REPRODUCCIÓN: POST /api/projects/{pid}/invitations → obtienes token T; GET /api/invitations/by-token/T inmediatamente → 410 'Invitación expirada' aunque expires_at sea now+30d. MITIGACIÓN APLICADA: Reemplazada la ternaria por `exp = inv['expires_at']; if exp.tzinfo is None: exp = exp.replace(tzinfo=timezone.utc); if exp < datetime.now(timezone.utc): raise HTTPException(410, 'Invitación expirada')` — patrón idéntico al de accept_invite (líneas 728-730). Tests confirman fix: test_invitation_by_token_preview_public ahora retorna 200 con preview correcto."
+}

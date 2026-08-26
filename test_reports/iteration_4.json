@@ -1,0 +1,49 @@
+{
+  "summary": "Frontend-only verification of (coordinador)/(especialista) layouts + RoleBadge after the calendar 'Unmatched route' fix. The hidden-tab declaration (`<Tabs.Screen name=\"calendar\" options={{ href: null }} />`) IS WORKING: zero 'Unmatched route' messages were observed in any flow tested (Coordinador, Especialista, Invitado). RoleBadge renders correctly inside ChatList row (`nameWrap` has `flex:1, minWidth:0`, Text uses `flexShrink:1`, no overflow). However a SEPARATE CRITICAL bug surfaced: login as `admin@synco.com` triggers `Maximum update depth exceeded` (infinite redirect loop) because the backend assigns role `coordinador_global` to that user, but the frontend role tables (`SUPERVISOR_ROLES` / `READ_ONLY_ROLES` in src/utils/roles.ts and the `su` array in app/(auth)/login.tsx) DO NOT include `coordinador_global`. Coord and especialista layouts each redirect the user to the *other* group → loop. Login as Supervisor General (`coordinador@syncsite.com`), Especialista Geotecnia, and Invitado Dependencia all work cleanly. Inicio time chips (Hoy / Semana / Mes), Nuevo (especialista), Mensajes (both roles), Noticias (both roles) and direct /profile navigation render without crashes. Deprecated shadow* style warnings observed (RN web migration to boxShadow).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "(coordinador)/_layout.tsx + (especialista)/_layout.tsx + (auth)/login.tsx + src/utils/roles.ts",
+        "issue": "Login as admin@synco.com (role='coordinador_global') triggers infinite redirect loop -> 'Maximum update depth exceeded' Uncaught Error. Coord layout redirects to (especialista) because !isSupervisorView('coordinador_global'); (especialista) layout redirects back because role !== 'especialista'. The role 'coordinador_global' is missing from READ_ONLY_ROLES/SUPERVISOR_ROLES (roles.ts:43-53) and from the `su` array in login.tsx:38. Also missing from the Role union in src/auth-context.tsx.",
+        "testID": "login-submit / (coordinador) layout root",
+        "priority": "CRITICAL"
+      },
+      {
+        "component": "RN web shadow*",
+        "issue": "Console warning: '\"shadow*\" style props are deprecated. Use \"boxShadow\".' Non-blocking but pollutes logs (theme.ts shadow.card).",
+        "testID": "n/a",
+        "priority": "LOW"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/test_reports/iteration_4.json"
+  ],
+  "action_items": [
+    "Add 'coordinador_global' to SUPERVISOR_ROLES (and therefore READ_ONLY_ROLES) in /app/frontend/src/utils/roles.ts so isSupervisorView('coordinador_global') === true. Also update Role type in /app/frontend/src/auth-context.tsx and the `su` array in /app/frontend/app/(auth)/login.tsx (line 38). Add labels in roleLabel/roleShortLabel/roleBadgeColor for 'coordinador_global' (e.g. 'Coordinador Global').",
+    "OPTIONAL hardening: in (coordinador)/_layout.tsx and (especialista)/_layout.tsx wrap the cross-group `router.replace(...)` with a guard so unknown roles never bounce (e.g. log & fall through, or replace('/(auth)/login')) instead of triggering an infinite ping-pong if a future role is added without updating role tables.",
+    "Migrate shadow* style props to boxShadow / boxShadowColor in /app/frontend/src/theme.ts (shadow.card) to silence the deprecation warning on web."
+  ],
+  "critical_code_review_comments": [
+    "Physical files /app/frontend/app/(coordinador)/calendar.tsx and /app/frontend/app/(especialista)/calendar.tsx still exist; they ARE auto-registered as routes by expo-router and now correctly hidden via `href: null`. If the calendar module is permanently paused per user directive, consider deleting both files so the routes disappear entirely and we don't carry dead code (calendar route currently still resolves at /calendar).",
+    "(coordinador)/_layout.tsx + (especialista)/_layout.tsx mutual cross-redirect is fragile against new backend roles (see admin@synco.com bug). Centralize role-to-group resolution in one helper used by both layouts and login.tsx to avoid drift.",
+    "Login screen `useDemo('coord')` seeds `coordinador@syncsite.com` but the credentials file calls that account the Supervisor General. The demo button labelled 'Supervisor de Obra' does NOT seed the Coordinador Global (admin@synco.com); add a third demo button or update labelling to avoid confusion now that there are two coord-tier roles."
+  ],
+  "updated_files": [],
+  "success_rate": {
+    "backend": "not tested (per request)",
+    "frontend": "5/7 P0 scenarios pass; admin@synco.com login (#1) and Coordinador 'Inicio' chips for the admin user (#4) blocked by the redirect loop. RoleBadge, especialista, supervisor general, invitado, profile, Nuevo, Mensajes, Noticias, calendar hidden-tab fix all PASS."
+  },
+  "seed_data_creation": "None",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "After main agent adds 'coordinador_global' to SUPERVISOR_ROLES in /app/frontend/src/utils/roles.ts and to the `su` whitelist in /app/frontend/app/(auth)/login.tsx, re-run: login as admin@synco.com / demo1234, confirm URL lands at /noticias (coordinador group), confirm 5 tabs render (Noticias, Inicio, Resumen IA, Mensajes, Configuración), tap Inicio → Hoy/Semana/Mes chips, tap Mensajes → see Chat directo / Chat por área, navigate /profile directly. No 'Maximum update depth' must appear. The calendar hidden-tab fix is already validated and does NOT need retesting.",
+  "rca_of_issue": "Backend seed (/app/backend/server.py:1745-1746) introduces a new role 'coordinador_global' for admin@synco.com but the frontend role registry was never updated. (1) /app/frontend/src/utils/roles.ts SUPERVISOR_ROLES set excludes 'coordinador_global' → isSupervisorView() returns false. (2) /app/frontend/app/(coordinador)/_layout.tsx useEffect calls router.replace('/(especialista)') for non-supervisor roles. (3) /app/frontend/app/(especialista)/_layout.tsx useEffect calls router.replace('/(coordinador)') for non-'especialista' roles. Result: each layout mount triggers the opposite mount → React Navigation's setConsumed/SceneView updates ping-pong every render → 'Maximum update depth exceeded' thrown from react-navigation/core useNavigationBuilder. Also /app/frontend/app/(auth)/login.tsx:38 lacks 'coordinador_global' in `su`, so right after a successful login the screen does router.replace('/(especialista)/noticias'), kicking off the same loop. Reproduction: goto /login, fill admin@synco.com / demo1234, click Entrar — within ~2s the dev error overlay 'Uncaught Error: Maximum update depth exceeded' appears with stack getRootForUpdatedFiber → enqueueConcurrentHookUpdate → dispatchSetState → setConsumed (@react-navigation/core SceneView). Mitigation: add 'coordinador_global' to SUPERVISOR_ROLES (roles.ts), to the `su` array (login.tsx:38), and to the Role union (auth-context.tsx). Optionally add a fallback in both layouts so unknown roles route to /(auth)/login instead of cross-redirecting."
+}

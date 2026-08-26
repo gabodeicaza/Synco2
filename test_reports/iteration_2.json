@@ -1,0 +1,35 @@
+{
+  "summary": "Backend-only verification of the Coordinator Settings tab (Menú del Coordinador). Created /app/backend/tests/test_coordinator_settings.py with 20 pytest cases covering GET /api/areas (5 seeded), GET/PUT /api/site-config (schema, persistence, role enforcement, auth), and GET/POST/DELETE /api/reference-points (CRUD, role-based visibility, duplicate prevention, invalid area, especialista forced to own area, delete permissions). All 20/20 tests PASSED against the public EXPO_PUBLIC_BACKEND_URL. The backend contract exactly matches the frontend `api.ts` signatures for getSiteConfig, updateSiteConfig, listReferencePoints, createReferencePoint, deleteReferencePoint. Coordinador-only PUT /site-config and especialista visibility filtering on reference-points are correctly enforced.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_coordinator_settings.py",
+    "/app/test_reports/pytest/coord_settings_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py:462 — GET /site-config returns `updatedBy = cfg.get('updatedByName')` (the user's display name), which matches what the frontend displays. Note: the stored doc has both `updatedBy` (user id) and `updatedByName` (name); intentional design but worth a code comment to avoid confusion in the future.",
+    "server.py:391 — list_reference_points especialista filter uses `{'area': user.get('area')}` OR `{'area': None}`. Works, but if a future especialista has no area (legacy data) they would see ALL points whose area is null AND the (legacy) ones where area==None which is the same. Currently fine.",
+    "server.py:421 — duplicate check is per (name, area) scope. A coord cannot create the same global name twice; an area-scoped point with the same name in two different areas IS allowed (verified behavior). This matches the UX intent.",
+    "No DELETE endpoint exists for /site-config (intentional: it's a singleton)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_coordinator_settings.py",
+    "/app/test_reports/pytest/coord_settings_results.xml",
+    "/app/test_reports/iteration_2.json"
+  ],
+  "success_rate": {"backend": "100% (20/20)", "frontend": "not tested (per request)"},
+  "seed_data_creation": "Tests create TEST_-prefixed reference points and clean them up in a module-scoped teardown fixture. The site_config singleton is left with last test values (TEST_C-xxxxxx / TEST_Contratista-xxxxxx) — main agent may want to reset it via UI if needed before demo.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Re-run with: cd /app/backend && EXPO_PUBLIC_BACKEND_URL=$(grep EXPO_PUBLIC_BACKEND_URL /app/frontend/.env | cut -d= -f2) python -m pytest tests/test_coordinator_settings.py -v. Existing test_noticias.py still applicable for regression. Frontend UI for the new settings tab was NOT browser-tested this iteration (explicitly requested backend-only).",
+  "rca_of_issue": "N/A — no bugs found."
+}

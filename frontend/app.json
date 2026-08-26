@@ -1,0 +1,105 @@
+{
+  "expo": {
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#1E40AF",
+        "foregroundImage": "./assets/images/app-icon.png"
+      },
+      "edgeToEdgeEnabled": true,
+      "package": "app.emergent.offlinereportsyncaf47530f",
+      "permissions": [
+        "CAMERA",
+        "READ_EXTERNAL_STORAGE",
+        "WRITE_EXTERNAL_STORAGE",
+        "READ_MEDIA_IMAGES",
+        "READ_MEDIA_VIDEO",
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_NETWORK_STATE",
+        "VIBRATE",
+        "POST_NOTIFICATIONS"
+      ],
+      "usesCleartextTraffic": false
+    },
+    "experiments": {
+      "typedRoutes": true
+    },
+    "icon": "./assets/images/app-icon.png",
+    "ios": {
+      "bundleIdentifier": "app.emergent.offlinereportsync13c7397a",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Capturar evidencia de obra en memoria, sin guardarla en tu dispositivo.",
+        "NSLocationWhenInUseUsageDescription": "Adjuntar ubicación a la evidencia fotográfica.",
+        "NSPhotoLibraryAddUsageDescription": "Guardar evidencia compartida en tu galería.",
+        "NSPhotoLibraryUsageDescription": "Adjuntar fotos al reporte sin guardarlas en tu dispositivo."
+      },
+      "supportsTablet": true
+    },
+    "name": "Dirac",
+    "newArchEnabled": true,
+    "orientation": "portrait",
+    "plugins": [
+      "expo-router",
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#1E40AF",
+          "image": "./assets/images/app-icon.png",
+          "imageWidth": 200,
+          "resizeMode": "contain"
+        }
+      ],
+      "expo-font",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Tomar fotografías de evidencia para reportes de obra."
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Adjuntar ubicación a la evidencia fotográfica."
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "color": "#1E40AF",
+          "defaultChannel": "default"
+        }
+      ],
+      "@react-native-community/datetimepicker",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "usesCleartextTraffic": false
+          }
+        }
+      ],
+      [
+        "expo-document-picker",
+        {
+          "iCloudContainerEnvironment": "Production"
+        }
+      ],
+      [
+        "expo-network-security-config",
+        {
+          "networkSecurityConfig": "./assets/configs/network_security_config.xml",
+          "enable": true
+        }
+      ]
+    ],
+    "scheme": "dirac",
+    "slug": "dirac",
+    "userInterfaceStyle": "light",
+    "version": "1.0.0",
+    "web": {
+      "bundler": "metro",
+      "favicon": "./assets/images/favicon.png",
+      "output": "single"
+    }
+  }
+}

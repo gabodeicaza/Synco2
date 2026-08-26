@@ -1,0 +1,59 @@
+// Dinero/cantidades del Catálogo de Conceptos — PROHIBIDO Double/Float.
+//
+// El backend expone precio_unitario/cantidad/meta/importe como STRING
+// decimal exacto (ver backend/money_utils.py, que usa Decimal — el
+// equivalente Python de BigDecimal). Este módulo nunca hace aritmética con
+// `parseFloat`; los montos se representan como enteros de centavos
+// (seguros hasta 2^53, sin el error de redondeo binario de los floats) y
+// solo se formatean a texto para mostrarlos.
+
+/** Convierte un string decimal exacto (ej. "1234.5") a enteros de centavos. */
+export function decimalStringToCents(value: string | null | undefined): number {
+  const s = (value ?? '0').trim();
+  const negative = s.startsWith('-');
+  const clean = negative ? s.slice(1) : s;
+  const [intPart, fracPartRaw = ''] = clean.split('.');
+  const fracPart = (fracPartRaw + '00').slice(0, 2); // trunca/rellena a 2 decimales
+  const cents = parseInt((intPart || '0') + fracPart, 10);
+  if (!Number.isFinite(cents)) return 0;
+  return negative ? -cents : cents;
+}
+
+/** Convierte enteros de centavos de vuelta a un string decimal exacto ("1234.50"). */
+export function centsToDecimalString(cents: number): string {
+  const negative = cents < 0;
+  const abs = Math.abs(Math.trunc(cents));
+  const intPart = Math.floor(abs / 100);
+  const fracPart = String(abs % 100).padStart(2, '0');
+  return `${negative ? '-' : ''}${intPart}.${fracPart}`;
+}
+
+/** Formatea un string decimal (o centavos) como moneda MXN para mostrar. */
+export function formatMoney(value: string | number | null | undefined): string {
+  const cents = typeof value === 'number' ? value : decimalStringToCents(value);
+  const decimalStr = centsToDecimalString(cents);
+  const [intPart, fracPart] = decimalStr.split('.');
+  const negative = intPart.startsWith('-');
+  const digits = negative ? intPart.slice(1) : intPart;
+  const withThousands = digits.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return `${negative ? '-' : ''}$${withThousands}.${fracPart}`;
+}
+
+/** Formatea una cantidad (no monetaria) para mostrar, sin separador de miles agresivo. */
+export function formatCantidad(value: string | null | undefined): string {
+  const s = (value ?? '0').trim();
+  const [intPart, fracPart] = s.split('.');
+  if (!fracPart) return intPart;
+  const trimmed = fracPart.replace(/0+$/, '');
+  return trimmed ? `${intPart}.${trimmed}` : intPart;
+}
+
+/** Suma exacta de una lista de strings decimales, en centavos (para totalizar en UI). */
+export function sumDecimalStringsAsCents(values: Array<string | null | undefined>): number {
+  return values.reduce<number>((acc, v) => acc + decimalStringToCents(v), 0);
+}
+
+/** Valida que un string ingresado por el usuario (edición inline de PU/meta) sea un decimal válido. */
+export function isValidDecimalInput(value: string): boolean {
+  return /^-?\d+(\.\d{1,2})?$/.test(value.trim());
+}

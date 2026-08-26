@@ -1,0 +1,74 @@
+{
+  "summary": "SynCo v2.0 Especialista 'Captura Rápida' (nuevo.tsx) end-to-end validated against the PUBLIC URL with feed_test@synco.mx on project 9a909313 / Estación 5+6 (Tramo 2). BACKEND: 10/10 nuevos tests PASS en /app/backend/tests/test_quickcapture_feed.py (+ los 12/12 de iteración 10 quedan vigentes). Cobertura nueva: POST /api/reports con personnel/equipment como List[str], primera_lectura/ultima_lectura float, avance/observaciones/contratista; round-trip GET /api/reports/{rid}; GET /api/projects/{pid}/nodes/{nid}/history (has_previous=false en nodo virgen, has_previous=true + ultima_lectura=12.80 tras POST, 403 fuera de scope); 422 ante personnel=object, equipment=string y primera_lectura='abc'. FRONTEND (Expo Web, mobile viewport 390x844): login → /(spec)/nuevo carga correctamente. Tarjeta 'Datos del reporte' read-only con Fecha en español ('16 de Junio de 2026'), 'Ing. Demo Feed', Rol 'Especialista · Ambiental', Puesto 'Residente de obra', No. de contrato 'Contrato Demo' y Ubicación dinámica. La cascada está scope-filtered: el Nivel raíz solo expone 'Tramo 2' (oculta Tramo 1) y el segundo nivel solo expone Estación 5 y Estación 6 (oculta 7/8). Al seleccionar la hoja se dispara automáticamente GET /history y aparece debajo de 'Primera lectura' (y NO debajo de 'Última lectura') el helper 'Última lectura registrada en este nodo: 12.8' — interpolación correcta del backend. Personal y Equipo funcionan con [-]/[+] qty + descripción + autocomplete: typing 'Alb' muestra 'Albañiles' del catálogo en localStorage. Tras Guardar reporte el POST sale a /api/reports con personnel=['1 Albañiles'], equipment=['1 Retro CAT 320'], primera_lectura=11.2, ultima_lectura=13.45, avance/observaciones/contratista poblados, measurement_value={lat,lon}; backend → 200. Modal 'Reporte enviado' (Modo WhatsApp) muestra preview formateado y los tres botones: 'Enviar por WhatsApp', 'Copiar texto', 'Nueva captura'. Catálogos persistidos en localStorage: syncsite_catalog_personal=['Albañiles'], syncsite_catalog_equipo=['Retro CAT 320']. 'Nueva captura' limpia el formulario (cascada vuelve a 'Sin seleccionar'). 'Guardar reporte' permanece DESHABILITADO mientras falte el measurement_value requerido, con leyenda explícita 'Captura el valor de medición requerido para habilitar el envío.', y se habilita al llenar lat/lon. NO se detectaron bugs críticos. Una observación menor de UX: al tocar un item del popover de sugerencias en el test automatizado, el valor no se rellenó en el input (puede ser timing del onBlur con setTimeout 120ms vs el click de Playwright — ver action_items para verificación manual).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "Documentation drift",
+        "issue": "El review describía POST /api/projects/{pid}/reports, pero el endpoint real es POST /api/reports (server.py:873). Frontend /app/frontend/src/api.ts:320 ya usa la ruta real, no es bug."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "DynamicListSection (Personal/Equipo) autocomplete popover",
+        "issue": "Al tocar una sugerencia del popover en el test automatizado, el onPress no actualizó el TextInput (quedó con el texto parcial 'Alb'). Posible carrera entre onBlur (setTimeout 120 ms en nuevo.tsx:1008) y el click sobre <Pressable>. En uso humano puede no manifestarse, pero conviene reemplazar el setTimeout por onPressIn en la sugerencia o por onMouseDown.preventDefault en web. Reference: /app/frontend/app/(spec)/nuevo.tsx:1007-1015",
+        "testID": "n/a (no hay testID en nuevo.tsx)",
+        "priority": "LOW"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "/(spec)/nuevo header",
+        "issues": [
+          "El review pedía que el header mostrara nombre del proyecto Y número de contrato. Actualmente el header (StickyHeader del layout) muestra 'Cablebus Linea 4' + subtitle 'Contrato Contrato Demo · Constructora Demo' — el contrato aparece en el subtítulo, pero está duplicado ('Contrato Contrato Demo') porque el subtitle ya concatena el literal 'Contrato' con el valor 'Contrato Demo'. Convendría limpiar el subtítulo para que diga 'Contrato Demo · Constructora Demo' (sin doble 'Contrato')."
+        ]
+      },
+      {
+        "screen": "/(spec)/nuevo WhatsApp preview",
+        "issues": [
+          "El preview muestra 'Ubicación: 19.432608, -99.133209' usando las coordenadas TARGET del nodo (oficina) en vez del measurement_value capturado por el especialista (19.43261, -99.13321). Verificar con el PM si era intencional mostrar el target como referencia o si debería usar el valor real capturado."
+        ]
+      }
+    ],
+    "react_native_issues": [
+      {
+        "component": "/(spec)/nuevo.tsx",
+        "issue": "Ausencia total de testID en los elementos interactivos (botones, inputs, sugerencias). Dificulta el testing automatizado: solo pudimos confiar en placeholders y textos visibles. Reference: /app/frontend/app/(spec)/nuevo.tsx (toda la screen)."
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_quickcapture_feed.py",
+    "/app/test_reports/pytest/quickcapture_feed_results.xml"
+  ],
+  "action_items": [
+    "OPCIONAL — Agregar testID a botones críticos de /(spec)/nuevo.tsx: 'spec-guardar-reporte', 'spec-agregar-personal', 'spec-agregar-equipo', 'spec-cascade-row-{idx}', 'spec-suggestion-{value}', 'spec-modal-wa-enviar', 'spec-modal-wa-copiar', 'spec-modal-wa-nueva'.",
+    "VERIFICAR MANUALMENTE — Tap sobre item del popover de autocomplete: ¿rellena el input? Si no, reemplazar setTimeout(setFocused(false),120) por onPressIn en la Pressable de la sugerencia (nuevo.tsx:1008 + 1013-1015) para que el onPress se dispare ANTES del blur.",
+    "LIMPIAR — Subtítulo del header en /(spec)/nuevo: 'Contrato {contract_number} · {constructora}' — verificar que no se anteponga otra vez el literal 'Contrato' al valor (actualmente muestra 'Contrato Contrato Demo · Constructora Demo').",
+    "DECISIÓN PM — Preview WhatsApp 'Ubicación: lat, lon': ¿target del nodo (referencia oficina) o measurement_value (lo capturado en campo)? Hoy se usa target.",
+    "OPCIONAL — Validar avance/contratista/observaciones con Field(max_length=…) en server.py para evitar payloads gigantes (acción ya recomendada en iteración 10)."
+  ],
+  "critical_code_review_comments": [
+    "server.py:898-901 — Se persiste primera_lectura/ultima_lectura DENTRO de measurement_value además de columnas top-level, lo que permite a /history devolverlos vía mv.get(...) (server.py:975-976). Correcto.",
+    "server.py:935-980 — /history aplica el mismo RBAC que /reports (scope para especialistas, descendants para sub-coord) y devuelve siempre {has_previous, last_report} — confirmado por el test test_history_on_fresh_node_returns_has_previous_false.",
+    "nuevo.tsx:684-694 — El helper histórico se renderiza ÚNICAMENTE bajo 'Primera lectura' (Field 'Primera lectura' contiene el TextInput + el bloque histHelperBox/histHelperMuted). El Field 'Última lectura' no muestra el helper. ✅ Cumple el requerimiento explícito del review.",
+    "nuevo.tsx:407-415 — El payload del POST construye personnel/equipment con .map((it) => `${it.qty} ${it.desc}`), garantizando List[str] formato '<qty> <desc>'. Verificado en red real: ['1 Albañiles'], ['1 Retro CAT 320'].",
+    "nuevo.tsx:321-344 — La persistencia del catálogo en AsyncStorage usa MAX 80 entries y deduplica antes de guardar. Se confirmó que en localStorage (Expo Web) los keys 'syncsite_catalog_personal' y 'syncsite_catalog_equipo' se actualizan post-envío.",
+    "nuevo.tsx:813-822 — Botón 'Guardar reporte' está disabled por measurementReady=false, con leyenda inferior visible. Comportamiento alineado con el requerimiento."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_quickcapture_feed.py (nuevo, 10 tests, 1.7s, 100% pass)"
+  ],
+  "success_rate": {
+    "backend": "100% (10/10 nuevos + 12/12 iteración 10 vigentes)",
+    "frontend": "~96% — todos los requerimientos funcionales validados; un detalle UX menor en click sobre sugerencia de autocomplete (posible artefacto de timing del test, no bloqueante)"
+  },
+  "seed_data_creation": "No se creó proyecto/usuario nuevo: la prueba reutiliza el proyecto 9a909313-5369-420e-a8d0-e649a91bf073 y el especialista feed_test@synco.mx ya seeded. Los tests POSTean reportes reales contra Estación 5 (y uno a Estación 6) — quedan en Mongo como datos de prueba (no se limpian para preservar el histórico que también valida /history). Si se requiere idempotencia, agregar fixture de teardown que filtre por avance='Colado de zapata Z-4 al 60%' o contratista='CYPSA' creado por feed_test.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Para regresión: ejecutar `pytest /app/backend/tests/test_quickcapture_feed.py -v` (10 tests, 1.7s) + `pytest /app/backend/tests/test_especialista_reports.py` (12 tests). Ambos contra la URL pública usando feed_test@synco.mx / FeedTest2026!. Frontend: viewport 390x844, login con feed_test, abrir tab 'Nuevo' → en el FAB '+' o navegar directo a /(spec)/nuevo. Para autocomplete: pre-seed localStorage con `localStorage.setItem('syncsite_catalog_personal', JSON.stringify(['Albañiles', ...]))`. Para verificar /history en UI: tras seleccionar una hoja que ya tiene reportes, debe aparecer 'Última lectura registrada en este nodo: <num>' debajo del input 'Primera lectura'. El endpoint POST real es /api/reports (no /api/projects/{pid}/reports como decía el review).",
+  "rca_of_issue": "N/A — no se detectaron bugs en esta iteración. El nuevo pipeline de Captura Rápida (cascada filtrada por scope → helper histórico debajo de Primera lectura → listas dinámicas con autocomplete persistido → POST con personnel/equipment List[str] '<qty> <desc>' → modal Modo WhatsApp con Copiar/Enviar/Nueva captura) opera end-to-end. Único detalle UX menor: el click programático sobre item del popover de sugerencias quedó con el input no actualizado en el test, atribuible a la lógica onBlur+setTimeout(120ms); ver action item para mitigar reemplazando setTimeout por onPressIn."
+}

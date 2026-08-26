@@ -1,0 +1,49 @@
+{
+  "summary": "Backend end-to-end del flujo Especialista (SynCo v2.0) con nuevos campos avance + contratista. 12/12 tests PASS contra la URL pública (EXPO_PUBLIC_BACKEND_URL/api). Cobertura completa: (1) Login Coordinador General ✅. (2) Creación de proyecto TEST_EspFlow_* ✅. (3) Árbol multi-rama: 'Tramo 1' → 'Estación 02+450' (hoja, cadenamiento), 'Frente B' → 'PR-Geo' (hoja, coord_latlon), 'Otra Rama' → 'Estación 03+200' (hoja, cadenamiento, fuera de scope) + 'Intermedio' (no-hoja con subchild) ✅. (4) Área 'Topografía' creada ✅. (5) POST /api/projects/{pid}/invitations con role=especialista, area_id, puesto='Topógrafo Senior', scope_node_ids=[hoja1, hoja2] → 200 con token urlsafe y status pending ✅. (6) POST /api/invitations/accept con token+password → 200, devuelve {token, user} con role='especialista', area='Topografía', puesto='Topógrafo Senior' y scope_node_ids correctos ✅. (7) POST /api/reports con avance, contratista, personnel, equipment, images base64, measurement_value cadenamiento → 200; respuesta incluye avance='Colado de zapata Z-4 al 60%', contratista='CYPSA', personnel/equipment intactos, images.length==1 con base64 sin transformación, area_name='Topografía', node_path_names=['Tramo 1','Estación 02+450'], measurement_type='cadenamiento' ✅. (8) GET /api/reports/{rid} confirma persistencia en Mongo de avance, contratista e images base64 (round-trip) ✅. (9) GET /api/projects/{pid}/reports como especialista solo regresa reportes dentro del scope; un reporte creado por admin en out_of_scope_leaf NO aparece en el listado ✅. (10) RBAC: POST /api/reports fuera de scope → 403, en nodo no-hoja (via admin para aislar la regla is_leaf vs scope) → 400, con measurement_value inválido 'abc' → 400 ✅. (11) Sanity coord_latlon en scope con lat/lon válidos → 200 con node_path_names=['Frente B','PR-Geo'] ✅. NOTA DE DISCREPANCIA NO BLOQUEANTE: el review request mencionaba el endpoint POST /api/auth/accept-invite, pero la implementación real (server.py:728) lo expone como POST /api/invitations/accept — el frontend en /app/frontend/src/api.ts debe usar la ruta real. No se encontraron bugs nuevos.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "POST /api/invitations/accept",
+        "issue": "El review request describe el endpoint como POST /api/auth/accept-invite, pero la ruta real es POST /api/invitations/accept (server.py:728). Confirmar que el frontend (api.ts y la screen del especialista que onboarda) llame a la ruta real; si se quiere conservar el naming del review, agregar un alias @api.post('/auth/accept-invite') que reuse el handler."
+      },
+      {
+        "endpoint": "POST /api/reports",
+        "issue": "Convención REST: el endpoint devuelve 200 en lugar de 201 Created. No bloqueante, alinearlo si se decide normalizar (mismo comentario aplica a /api/projects, /api/areas, /api/invitations)."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_especialista_reports.py",
+    "/app/test_reports/pytest/especialista_reports_results.xml"
+  ],
+  "action_items": [
+    "VERIFICAR (frontend, manual): /app/frontend/src/api.ts y /app/frontend/app/(spec)/index.tsx deben apuntar al endpoint real POST /api/invitations/accept (no /api/auth/accept-invite como decía el review). Si la UI ya está hardcoded al nombre /auth/accept-invite, agregar alias en backend o renombrar en frontend.",
+    "Opcional — Agregar test de regresión sobre POST /api/invitations/accept con password de menos de 6 caracteres (debería ser 400) — actualmente cubierto por código pero no por suite.",
+    "Opcional — Considerar validar `avance` y `contratista` con longitud máxima (p.ej. 500/200 chars) en el modelo ReportIn para evitar payloads gigantes."
+  ],
+  "critical_code_review_comments": [
+    "server.py:797-841 — create_report ahora persiste avance y contratista usando strip() + 'or None', lo cual evita guardar cadenas vacías. Bien hecho. La lógica respeta el orden: project_access → node exists → is_leaf → scope_node_ids (especialista) → validate_measurement_value, lo que garantiza que el 403 de scope se evalúe ANTES del 400 de measurement_value (por eso el test de non-leaf se ejecuta como admin para aislar la regla is_leaf).",
+    "server.py:190-202 — Modelo ReportIn correctamente extendido con avance/contratista como Optional[str]. Default None; aceptable, pero podría endurecerse con Field(max_length=…).",
+    "server.py:205-223 — ReportOut también incluye los nuevos campos, garantizando que el cliente los reciba; no se filtra mongo _id en ningún path (verified en tests).",
+    "server.py:728 — El endpoint de aceptar invitación se llama '/invitations/accept'. El review request asumía '/auth/accept-invite'. Inconsistencia documental; no es bug del backend pero puede causar 404 en el frontend si está hardcoded mal."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_especialista_reports.py (nuevo, 12 tests, ~3.1s, 100% pass)"
+  ],
+  "success_rate": {
+    "backend": "100% (12/12)",
+    "frontend": "n/a (backend only requested)"
+  },
+  "seed_data_creation": "Project 'TEST_EspFlow_<8hex>' creado por fixture session-scoped y archivado al final via DELETE /api/projects/{pid}. Dentro: 7 nodos (3 raíces + 1 hoja por rama + un nodo intermedio con sub-hoja), 1 área 'Topografía', 1 invitación especialista aceptada (genera usuario 'test_topografo_<6hex>@example.com' con password 'Esp2026!' — NO se limpia explícitamente, queda en users; ver action item para próxima iteración), 3 reportes (1 hoja1 cadenamiento, 1 admin out_of_scope, 1 hoja2 coord_latlon). Todos prefijados TEST_ donde aplica.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Suite de regresión backend para el flujo Especialista lista: /app/backend/tests/test_especialista_reports.py (12 tests, ~3s, 100% pass). Cubre login admin → project → tree (2 niveles, multi-rama) → área → invitación especialista → accept → POST /api/reports con avance/contratista/personnel/equipment/images base64 → GET por id → list scoped → RBAC (403 fuera de scope, 400 no-hoja, 400 measurement_value inválido). CREDENCIALES en /app/memory/test_credentials.md (admin gabriel@synco.mx). El endpoint para aceptar invitación es /api/invitations/accept (no /api/auth/accept-invite). Los usuarios especialista creados por aceptar invitación NO se limpian automáticamente — para evitar acumulación, considerar fixture teardown que borre por email TEST_ o un endpoint admin DELETE /api/users/{uid}.",
+  "rca_of_issue": "N/A — No se detectaron bugs en esta iteración. El modelo ReportIn/Out fue correctamente extendido con avance + contratista; el handler create_report los normaliza con strip() + 'or None'; la persistencia round-trip vía Mongo es 1:1 (verificado por test_get_single_report_persists_avance_contratista). El base64 de la imagen también se guarda y devuelve sin transformación."
+}

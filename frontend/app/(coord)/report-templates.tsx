@@ -1,0 +1,440 @@
+// SynCo v2.0 _ Gestion de Plantillas de Reporte (solo coordinador_general)
+import React, { useCallback, useEffect, useState } from 'react';
+import {
+  View, Text, StyleSheet, ScrollView, Pressable, TextInput, ActivityIndicator,
+  KeyboardAvoidingView, Platform, RefreshControl, Alert,
+} from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { router } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
+import { api, ApiError, ReportTemplate, ReportTemplateField } from '@/src/api';
+import { useAuth } from '@/src/auth-context';
+import { colors, radius, spacing, shadow } from '@/src/theme';
+import { confirm } from '@/src/utils/confirm';
+
+const FIELD_TYPES: { value: ReportTemplateField['type']; label: string }[] = [
+  { value: 'string', label: 'Texto' },
+  { value: 'number', label: 'Número' },
+  { value: 'boolean', label: 'Sí/No' },
+  { value: 'select', label: 'Selección única' },
+  { value: 'multiselect', label: 'Selección múltiple' },
+];
+
+function slugify(s: string): string {
+  return s
+    .trim()
+    .toLowerCase()
+    .normalize('NFD').replace(new RegExp('[̀-ͯ]', 'g'), '')
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
+const emptyField = (): ReportTemplateField => ({ key: '', label: '', type: 'string', required: false, options: [] });
+
+export default function ReportTemplatesScreen() {
+  const insets = useSafeAreaInsets();
+  const { user } = useAuth();
+
+  const [list, setList] = useState<ReportTemplate[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const [showForm, setShowForm] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [code, setCode] = useState('');
+  const [name, setName] = useState('');
+  const [category, setCategory] = useState('');
+  const [fields, setFields] = useState<ReportTemplateField[]>([]);
+  const [fieldDraft, setFieldDraft] = useState<ReportTemplateField>(emptyField());
+  const [optionsText, setOptionsText] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const data = await api.getReportTemplates();
+      setList(data);
+    } catch (e: any) {
+      Alert.alert('Error', e?.message ?? 'No se pudo cargar la lista');
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  function resetForm() {
+    setEditingId(null);
+    setCode('');
+    setName('');
+    setCategory('');
+    setFields([]);
+    setFieldDraft(emptyField());
+    setOptionsText('');
+  }
+
+  function startCreate() {
+    resetForm();
+    setShowForm(true);
+  }
+
+  function startEdit(t: ReportTemplate) {
+    setEditingId(t.id);
+    setCode(t.code);
+    setName(t.name);
+    setCategory(t.category);
+    setFields(t.fields.map((f) => ({ ...f })));
+    setFieldDraft(emptyField());
+    setOptionsText('');
+    setShowForm(true);
+  }
+
+  function addField() {
+    const label = fieldDraft.label.trim();
+    if (!label) return Alert.alert('Campo requerido', 'Ingresa la etiqueta del campo');
+    const key = slugify(fieldDraft.key || label);
+    if (!key) return Alert.alert('Clave inválida', 'La clave del campo no puede quedar vacía');
+    if (fields.some((f) => f.key === key)) return Alert.alert('Clave duplicada', 'Ya existe un campo con esa clave');
+    const needsOptions = fieldDraft.type === 'select' || fieldDraft.type === 'multiselect';
+    const options = needsOptions ? optionsText.split(',').map((o) => o.trim()).filter(Boolean) : [];
+    if (needsOptions && options.length === 0) {
+      return Alert.alert('Opciones requeridas', 'Ingresa al menos una opción separada por comas');
+    }
+    setFields([...fields, { key, label, type: fieldDraft.type, required: fieldDraft.required, options }]);
+    setFieldDraft(emptyField());
+    setOptionsText('');
+  }
+
+  function removeField(key: string) {
+    setFields(fields.filter((f) => f.key !== key));
+  }
+
+  async function onSave() {
+    const n = name.trim();
+    const c = category.trim();
+    if (!n) return Alert.alert('Campo requerido', 'Ingresa el nombre de la plantilla');
+    if (!c) return Alert.alert('Campo requerido', 'Ingresa la categoría');
+    if (fields.length === 0) return Alert.alert('Agrega campos', 'La plantilla necesita al menos un campo');
+    setSaving(true);
+    try {
+      if (editingId) {
+        await api.updateReportTemplate(editingId, { name: n, category: c, fields });
+      } else {
+        const cd = slugify(code || n);
+        if (!cd) { Alert.alert('Código inválido', 'Ingresa un código válido'); setSaving(false); return; }
+        await api.createReportTemplate({ code: cd, name: n, category: c, fields });
+      }
+      resetForm();
+      setShowForm(false);
+      await load();
+    } catch (err: any) {
+      if (err instanceof ApiError && err.status === 409) {
+        Alert.alert('Código duplicado', 'Ya existe una plantilla con ese código.');
+      } else {
+        Alert.alert('Error', err?.message ?? 'No se pudo guardar la plantilla');
+      }
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function onDelete(t: ReportTemplate) {
+    const ok = await confirm(
+      'Eliminar plantilla',
+      `¿Seguro que deseas eliminar "${t.name}"? Los reportes ya capturados con esta plantilla no se ven afectados; solo deja de estar disponible para nuevas capturas.`,
+      { confirmText: 'Eliminar', destructive: true },
+    );
+    if (!ok) return;
+    try {
+      await api.deleteReportTemplate(t.id);
+      await load();
+    } catch (err: any) {
+      Alert.alert('Error', err?.message ?? 'No se pudo eliminar la plantilla');
+    }
+  }
+
+  if (user?.role !== 'coordinador_general') {
+    return (
+      <View style={[styles.flex, { paddingTop: insets.top }]}>
+        <View style={styles.header}>
+          <Pressable onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
+            <Ionicons name="chevron-back" size={24} color={colors.text} />
+          </Pressable>
+          <Text style={styles.title}>Plantillas de reporte</Text>
+          <View style={{ width: 32 }} />
+        </View>
+        <View style={styles.emptyCenter}>
+          <Ionicons name="lock-closed-outline" size={42} color={colors.textMuted} />
+          <Text style={styles.emptyTxt}>Solo un Coordinador General puede acceder a esta sección.</Text>
+        </View>
+      </View>
+    );
+  }
+
+  return (
+    <KeyboardAvoidingView
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      style={[styles.flex, { paddingTop: insets.top }]}
+    >
+      <View style={styles.header}>
+        <Pressable onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
+          <Ionicons name="chevron-back" size={24} color={colors.text} />
+        </Pressable>
+        <Text style={styles.title}>Plantillas de reporte</Text>
+        <View style={{ width: 32 }} />
+      </View>
+
+      <ScrollView
+        contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + 24 }]}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={colors.primary} />
+        }
+      >
+        <View style={styles.infoCard}>
+          <Ionicons name="information-circle" size={20} color={colors.primary} />
+          <View style={{ flex: 1 }}>
+            <Text style={styles.infoTitle}>Formularios dinámicos</Text>
+            <Text style={styles.infoTxt}>
+              Estas plantillas aparecen como "Tipo de reporte" al capturar un reporte nuevo (Especialista y
+              Sub-coordinador). Los campos que definas aquí son los que ellos llenan.
+            </Text>
+          </View>
+        </View>
+
+        {!showForm && (
+          <Pressable onPress={startCreate} style={({ pressed }) => [styles.addBtn, pressed && { opacity: 0.85 }]}>
+            <Ionicons name="add-circle" size={18} color="#fff" />
+            <Text style={styles.addBtnTxt}>Nueva plantilla</Text>
+          </Pressable>
+        )}
+
+        {showForm && (
+          <View style={styles.formCard}>
+            <View style={styles.formHeader}>
+              <Text style={styles.formTitle}>{editingId ? 'Editar plantilla' : 'Nueva plantilla'}</Text>
+              <Pressable onPress={() => { resetForm(); setShowForm(false); }} hitSlop={8}>
+                <Ionicons name="close" size={22} color={colors.text} />
+              </Pressable>
+            </View>
+
+            <Text style={styles.label}>Nombre</Text>
+            <TextInput
+              value={name} onChangeText={setName}
+              placeholder="Ej. Calidad - Colados"
+              placeholderTextColor={colors.textMuted}
+              style={styles.input}
+            />
+
+            <Text style={styles.label}>Categoría</Text>
+            <TextInput
+              value={category} onChangeText={setCategory}
+              placeholder="Ej. Calidad"
+              placeholderTextColor={colors.textMuted}
+              style={styles.input}
+            />
+
+            {!editingId && (
+              <>
+                <Text style={styles.label}>Código (opcional, se genera del nombre)</Text>
+                <TextInput
+                  value={code} onChangeText={setCode}
+                  placeholder="Ej. calidad_colados"
+                  placeholderTextColor={colors.textMuted}
+                  autoCapitalize="none"
+                  style={styles.input}
+                />
+              </>
+            )}
+
+            <Text style={[styles.sectionTitle, { marginTop: 14 }]}>Campos ({fields.length})</Text>
+            {fields.length === 0 ? (
+              <Text style={styles.helper}>Aún no agregas campos.</Text>
+            ) : (
+              fields.map((f) => (
+                <View key={f.key} style={styles.fieldRow}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.fieldLabel}>{f.label}{f.required ? ' *' : ''}</Text>
+                    <Text style={styles.fieldMeta}>
+                      {FIELD_TYPES.find((t) => t.value === f.type)?.label} · {f.key}
+                      {f.options?.length ? ` · ${f.options.join(', ')}` : ''}
+                    </Text>
+                  </View>
+                  <Pressable onPress={() => removeField(f.key)} hitSlop={8} style={{ padding: 4 }}>
+                    <Ionicons name="trash-outline" size={18} color={colors.error} />
+                  </Pressable>
+                </View>
+              ))
+            )}
+
+            <View style={styles.fieldBuilder}>
+              <Text style={styles.label}>Agregar campo</Text>
+              <TextInput
+                value={fieldDraft.label}
+                onChangeText={(t) => setFieldDraft({ ...fieldDraft, label: t })}
+                placeholder="Etiqueta (ej. Revenimiento cm)"
+                placeholderTextColor={colors.textMuted}
+                style={styles.input}
+              />
+              <View style={styles.chipRow}>
+                {FIELD_TYPES.map((t) => (
+                  <Pressable
+                    key={t.value}
+                    onPress={() => setFieldDraft({ ...fieldDraft, type: t.value })}
+                    style={[styles.chip, fieldDraft.type === t.value && styles.chipActive]}
+                  >
+                    <Text style={[styles.chipTxt, fieldDraft.type === t.value && styles.chipTxtActive]}>{t.label}</Text>
+                  </Pressable>
+                ))}
+              </View>
+              {(fieldDraft.type === 'select' || fieldDraft.type === 'multiselect') && (
+                <TextInput
+                  value={optionsText} onChangeText={setOptionsText}
+                  placeholder="Opciones separadas por coma (ej. Bajo, Medio, Alto)"
+                  placeholderTextColor={colors.textMuted}
+                  style={styles.input}
+                />
+              )}
+              <Pressable
+                onPress={() => setFieldDraft({ ...fieldDraft, required: !fieldDraft.required })}
+                style={[styles.chip, fieldDraft.required && styles.chipActive, { alignSelf: 'flex-start' }]}
+              >
+                <Text style={[styles.chipTxt, fieldDraft.required && styles.chipTxtActive]}>Obligatorio</Text>
+              </Pressable>
+              <Pressable onPress={addField} style={({ pressed }) => [styles.addFieldBtn, pressed && { opacity: 0.85 }]}>
+                <Ionicons name="add" size={16} color={colors.primary} />
+                <Text style={styles.addFieldBtnTxt}>Agregar campo</Text>
+              </Pressable>
+            </View>
+
+            <Pressable
+              onPress={onSave}
+              disabled={saving}
+              style={({ pressed }) => [styles.saveBtn, saving && { opacity: 0.7 }, pressed && !saving && { opacity: 0.85 }]}
+            >
+              {saving ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <>
+                  <Ionicons name="checkmark-circle" size={18} color="#fff" />
+                  <Text style={styles.saveBtnTxt}>{editingId ? 'Guardar cambios' : 'Crear plantilla'}</Text>
+                </>
+              )}
+            </Pressable>
+          </View>
+        )}
+
+        <Text style={styles.sectionTitle}>Plantillas actuales ({list.length})</Text>
+
+        {loading ? (
+          <View style={styles.centerLoader}><ActivityIndicator color={colors.primary} /></View>
+        ) : (
+          list.map((t) => (
+            <View key={t.id} style={styles.tplCard}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.tplName}>{t.name}</Text>
+                <Text style={styles.tplMeta}>{t.category} · {t.fields.length} campo{t.fields.length === 1 ? '' : 's'} · {t.code}</Text>
+              </View>
+              <Pressable onPress={() => startEdit(t)} hitSlop={8} style={{ padding: 6 }}>
+                <Ionicons name="create-outline" size={20} color={colors.primary} />
+              </Pressable>
+              <Pressable onPress={() => onDelete(t)} hitSlop={8} style={{ padding: 6 }}>
+                <Ionicons name="trash-outline" size={20} color={colors.error} />
+              </Pressable>
+            </View>
+          ))
+        )}
+      </ScrollView>
+    </KeyboardAvoidingView>
+  );
+}
+
+const styles = StyleSheet.create({
+  flex: { flex: 1, backgroundColor: colors.bg },
+  header: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
+  },
+  iconBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
+  title: { fontSize: 17, fontWeight: '800', color: colors.text },
+  scroll: { paddingHorizontal: spacing.lg, gap: spacing.md },
+
+  infoCard: {
+    flexDirection: 'row', gap: 10, alignItems: 'flex-start',
+    backgroundColor: colors.primaryLight, padding: spacing.md, borderRadius: radius.lg,
+  },
+  infoTitle: { fontSize: 13, fontWeight: '800', color: colors.primary, marginBottom: 2 },
+  infoTxt: { fontSize: 12, color: colors.text, lineHeight: 17 },
+
+  addBtn: {
+    backgroundColor: colors.primary, paddingVertical: 14, borderRadius: radius.lg,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    ...shadow.card,
+  },
+  addBtnTxt: { color: '#fff', fontWeight: '800', fontSize: 14 },
+
+  formCard: {
+    backgroundColor: '#FFFFFF', borderRadius: radius.lg, padding: spacing.md, gap: 8,
+    borderWidth: 1, borderColor: colors.border, ...shadow.card,
+  },
+  formHeader: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    marginBottom: 4,
+  },
+  formTitle: { fontSize: 15, fontWeight: '800', color: colors.text },
+  label: { fontSize: 11, fontWeight: '800', color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.5, marginTop: 6 },
+  input: {
+    borderWidth: 1, borderColor: colors.border, backgroundColor: '#FFFFFF',
+    borderRadius: radius.sm, paddingHorizontal: 12, paddingVertical: 10,
+    fontSize: 14, color: colors.text,
+  },
+  helper: { fontSize: 11, color: colors.textMuted, fontStyle: 'italic', marginTop: 2 },
+
+  fieldRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: colors.border,
+  },
+  fieldLabel: { fontSize: 13, fontWeight: '700', color: colors.text },
+  fieldMeta: { fontSize: 11, color: colors.textMuted, marginTop: 2 },
+
+  fieldBuilder: {
+    marginTop: 10, padding: spacing.sm, borderRadius: radius.lg,
+    backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border, gap: 8,
+  },
+  chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  chip: {
+    paddingHorizontal: 12, paddingVertical: 8, borderRadius: radius.full,
+    borderWidth: 1, borderColor: colors.border, backgroundColor: '#FFFFFF',
+  },
+  chipActive: { backgroundColor: colors.primary, borderColor: colors.primary },
+  chipTxt: { fontSize: 12, fontWeight: '700', color: colors.textMuted },
+  chipTxtActive: { color: '#fff' },
+  addFieldBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    paddingVertical: 10, borderRadius: radius.md,
+    borderWidth: 1.5, borderColor: colors.primary, borderStyle: 'dashed',
+  },
+  addFieldBtnTxt: { color: colors.primary, fontWeight: '800', fontSize: 13 },
+
+  saveBtn: {
+    backgroundColor: colors.primary, paddingVertical: 12, borderRadius: radius.lg,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    marginTop: 10,
+  },
+  saveBtnTxt: { color: '#fff', fontWeight: '800', fontSize: 14 },
+
+  sectionTitle: {
+    fontSize: 11, fontWeight: '800', color: colors.textMuted,
+    textTransform: 'uppercase', letterSpacing: 0.5, marginTop: 8,
+  },
+  centerLoader: { paddingVertical: 30, alignItems: 'center' },
+  tplCard: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.md,
+    borderWidth: 1, borderColor: colors.border,
+  },
+  tplName: { fontSize: 14, fontWeight: '800', color: colors.text },
+  tplMeta: { fontSize: 11, color: colors.textMuted, marginTop: 3 },
+
+  emptyCenter: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: spacing.lg, gap: 10 },
+  emptyTxt: { fontSize: 13, color: colors.textMuted, textAlign: 'center', maxWidth: 280 },
+});

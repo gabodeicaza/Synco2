@@ -1,0 +1,30 @@
+{
+  "summary": "Task 4 (Seguridad del Perfil Dependencia / Contratista) VALIDADO ✅. Tras un reinicio de Expo para forzar rebundle, los guards isGuestReadOnly funcionan en ambas pantallas. Probado en mobile viewport 390x844 con los 3 logins requeridos (admin@synco.com, contratista@syncsite.com, dependencia@syncsite.com) + navegación principal por las 5 pestañas del bottom-nav y 8 rutas (/(coordinador)/noticias, /, /summary, /chat, /profile, /settings, /settings/proyecto, /settings/puntos, /areas). RESULTADOS: (1) admin@synco.com en /settings ve PROYECTO {Datos del proyecto, Puntos de referencia, Áreas de trabajo} + MI CUENTA{Perfil del Supervisor}; en /areas ve card 'Nueva área' + 'Agregar área' + íconos trash plenamente visibles. (2) contratista@syncsite.com en /settings la sección PROYECTO está completamente OCULTA, solo MI CUENTA → Perfil del Supervisor; en /areas el card 'Nueva área' está oculto, se muestra el banner 'Vista de solo lectura. No puedes modificar áreas.' y los íconos trash se renderizan al 25% de opacidad (deshabilitados). (3) dependencia@syncsite.com comportamiento idéntico al contratista. (4) Cero 'Unmatched route' en login ni en navegación principal por bottom-nav. (5) Cero errores en consola (0 console.error, 0 pageerror; solo warnings nativos de RN sobre shadow/pointerEvents que son cosméticos de la web shim).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "RN-Web shim warnings", "issue": "Warnings repetidos en consola: '\"shadow*\" style props are deprecated. Use \"boxShadow\"' y 'props.pointerEvents is deprecated. Use style.pointerEvents'. No bloquean ni rompen Task 4, pero conviene migrar shadow.* a boxShadow (en src/theme/shadow) cuando el target sea web. Reference: src/theme.ts (helpers shadow.*)"}
+    ]
+  },
+  "test_report_links": ["/app/test_reports/iteration_7.json"],
+  "action_items": [
+    "Ninguna acción crítica para Task 4 — se considera CERRADO. (Opcional) migrar shadow.* a boxShadow para silenciar warnings de RN-Web.",
+    "Recordatorio operativo: el fix anterior (iteración 6→7) requirió reiniciar expo (sudo supervisorctl restart expo) porque Metro estaba en modo CI con reload deshabilitado; los cambios a (coordinador)/settings.tsx y (coordinador)/areas.tsx no se reflejaban hasta el restart. Documentar este paso para futuras inyecciones de guards."
+  ],
+  "critical_code_review_comments": [
+    "(coordinador)/settings.tsx limpio y consistente: usa isGuestReadOnly(user?.role) y envuelve toda la sección Proyecto con {!readOnly && (<>...</>)}.",
+    "(coordinador)/areas.tsx: lógica correcta — card Nueva área envuelta en {!readOnly && (...)}, banner condicional {readOnly && (...)} y trash con style={[styles.delBtn, readOnly && {opacity:0.25}]} disabled={readOnly}. La doble defensa (opacity + disabled) es buena práctica.",
+    "Sigue abierta la observación previa (iteración 6) de que /(coordinador)/index.tsx no aplica isReadOnly/isGuestReadOnly; invitados aterrizan en el dashboard del Coordinador con 'Exportar PDF' y 'Resumen IA' visibles. Para esta iteración NO se solicitó validar ese flujo, pero queda como deuda pendiente.",
+    "Settings/proyecto y settings/puntos son alcanzables vía deep link incluso para invitados (la sección Proyecto se oculta del hub pero las rutas internas no están guardas). Recomendable agregar redirect o banner read-only en esos sub-screens (no requerido por Task 4)."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a (frontend only)", "frontend": "100% en los 5 criterios solicitados de Task 4"},
+  "seed_data_creation": "Ninguna; se usaron las cuentas seed existentes (admin@synco.com, contratista@syncsite.com, dependencia@syncsite.com / demo1234).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Task 4 cerrada. Para futuras validaciones de guards de rol: tras editar archivos en /app/frontend/app/(coordinador) o (especialista), ejecutar 'sudo supervisorctl restart expo' antes de testear UI — Metro corre con CI=true (sin watch), por lo que hot-reload no aplica. Las cuentas contratista/dependencia hacen login y aterrizan en /noticias (root /(coordinador)/index.tsx). El endpoint backend /api/auth/login devuelve role='contratista' y role='dependencia' correctamente (verificado vía curl).",
+  "rca_of_issue": "RCA del falso negativo previo: en la PRIMERA pasada de testing los guards condicionales SÍ estaban en el código fuente pero Metro NO había reconstruido el bundle (CI=true desactiva watch). Reproducción: ver iteración 6.json → en iteración 7 ejecutamos 'sudo supervisorctl restart expo' para forzar rebundle → tras eso los guards funcionan al 100%. Mitigación permanente: la cadena dev debería incluir un sanity check 'restart expo después de tocar archivos (coordinador)/*' o quitar CI=true para tener watch en local."
+}
