@@ -4447,6 +4447,49 @@ async def list_events(
     safe_limit = max(1, min(int(limit or 500), 1000))
     cursor = db.events.find(q).sort("start_at", sort_dir).limit(safe_limit)
     items = await cursor.to_list(length=safe_limit)
+
+    # Eventos virtuales "Inicio de <clave>" / "Fin de <clave>" sintetizados
+    # desde Concepto.fecha_inicio/fecha_fin (Catálogo a Precio Alzado) — NO
+    # se guardan en db.events: se calculan en cada consulta para que el
+    # calendario nunca se desincronice si el concepto cambia de fecha o se
+    # borra. Se omiten en la vista "mine" (esos filtros son de autor/
+    # asistente, que no aplica a un concepto).
+    if not mine:
+        start_today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        partida_ids = [p["id"] async for p in db.partidas.find({"project_id": pid}, {"id": 1})]
+        virtuales: List[dict] = []
+        if partida_ids:
+            async for c in db.conceptos.find(
+                {"partida_id": {"$in": partida_ids}, "$or": [{"fecha_inicio": {"$ne": None}}, {"fecha_fin": {"$ne": None}}]},
+                {"id": 1, "clave": 1, "descripcion": 1, "fecha_inicio": 1, "fecha_fin": 1},
+            ):
+                etiqueta = f"{c.get('clave', '')} — {c.get('descripcion', '')}".strip(" —")
+                if c.get("fecha_inicio"):
+                    dt = datetime.fromisoformat(c["fecha_inicio"]).replace(tzinfo=timezone.utc)
+                    virtuales.append({
+                        "id": f"concepto-inicio:{c['id']}", "project_id": pid,
+                        "title": f"Inicio de {etiqueta}", "description": None, "location": None,
+                        "start_at": dt, "end_at": None, "area_id": None,
+                        "author_id": "catalogo", "author_name": "Catálogo de conceptos",
+                        "created_at": dt, "updated_at": dt,
+                    })
+                if c.get("fecha_fin"):
+                    dt = datetime.fromisoformat(c["fecha_fin"]).replace(tzinfo=timezone.utc)
+                    virtuales.append({
+                        "id": f"concepto-fin:{c['id']}", "project_id": pid,
+                        "title": f"Fin de {etiqueta}", "description": None, "location": None,
+                        "start_at": dt, "end_at": None, "area_id": None,
+                        "author_id": "catalogo", "author_name": "Catálogo de conceptos",
+                        "created_at": dt, "updated_at": dt,
+                    })
+        if range == "upcoming":
+            virtuales = [v for v in virtuales if v["start_at"] >= start_today]
+        elif range == "past":
+            virtuales = [v for v in virtuales if v["start_at"] < start_today]
+        items = items + virtuales
+        items.sort(key=lambda it: it["start_at"], reverse=(range == "past"))
+        items = items[:safe_limit]
+
     # Enriquecer con area_name + area_color (en batch).
     area_ids = {it.get("area_id") for it in items if it.get("area_id")}
     areas_by_id: dict = {}
@@ -14044,6 +14087,70 @@ _MAPPING_KEYWORDS_EVM = {
 
 _TIPOS_ERROR_EVM = {"excel_error", "numero_ilegible", "numero_ambiguo", "campo_obligatorio_vacio", "fecha_ilegible", "rango_fecha_invalido"}
 _TIPOS_DUPLICADO_EVM = {"clave_duplicada_archivo", "clave_existente_proyecto"}
+
+
+@api.get("/conceptos/import_evm/plantilla.xlsx")
+async def import_evm_plantilla(user: dict = Depends(current_user)):
+    """Plantilla descargable con las columnas exactas que espera el
+    Importador Maestro (Clave, Descripción, Meta, Importe, Inicio, Fin), una
+    fila de ejemplo y una hoja de instrucciones. Inicio/Fin se escriben como
+    celdas de fecha reales de Excel (no texto) — el único formato que
+    _fecha_excel_a_iso acepta — para que el archivo del usuario nazca ya
+    bien formateado en vez de tener que adivinarlo."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Catálogo"
+
+    headers = ["Clave", "Descripción", "Meta", "Importe", "Inicio", "Fin"]
+    for col, h in enumerate(headers, start=1):
+        cell = ws.cell(row=1, column=col, value=h)
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="1E3A8A")
+        cell.alignment = Alignment(horizontal="center")
+
+    ejemplo = ["C-001", "Excavación a máquina en material tipo I", "150.00", "45000.00", date(2026, 1, 5), date(2026, 3, 20)]
+    for col, v in enumerate(ejemplo, start=1):
+        cell = ws.cell(row=2, column=col, value=v)
+        if col in (5, 6):
+            cell.number_format = "DD/MM/YYYY"
+
+    for i, w in enumerate([14, 46, 12, 14, 14, 14], start=1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+    ws.freeze_panes = "A2"
+
+    ws2 = wb.create_sheet("Instrucciones")
+    instrucciones = [
+        "Cómo llenar esta plantilla para el Importador Maestro del catálogo de conceptos",
+        "",
+        "1. Clave: identificador único del concepto (ej. C-001). No se puede repetir dentro del mismo archivo.",
+        "2. Descripción: nombre/descripción del concepto.",
+        "3. Meta: cantidad meta del concepto (número, hasta 2 decimales).",
+        "4. Importe: importe total contratado del concepto (número, hasta 2 decimales).",
+        "5. Inicio: fecha de inicio del concepto. DEBE ser una celda con formato de FECHA de Excel, como en la fila de ejemplo de la hoja \"Catálogo\" — si Excel la trae como texto no se va a leer.",
+        "6. Fin: fecha de fin del concepto. Mismo requisito que Inicio: debe ser una celda de fecha real, no texto.",
+        "",
+        "Estas dos fechas son las que se reflejan automáticamente en el Calendario del proyecto como \"Inicio de <clave>\" y \"Fin de <clave>\".",
+        "",
+        "Los 6 campos son obligatorios para poder validar el archivo. No borres la fila de encabezado (fila 1) de la hoja \"Catálogo\". La fila 2 es solo un ejemplo — bórrala o descártala durante la importación antes de confirmar.",
+    ]
+    for i, txt in enumerate(instrucciones, start=1):
+        c = ws2.cell(row=i, column=1, value=txt)
+        if i == 1:
+            c.font = Font(bold=True, size=13, color="1E3A8A")
+    ws2.column_dimensions["A"].width = 110
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="plantilla_catalogo_conceptos.xlsx"'},
+    )
 
 
 class ImportMappingEvmIn(BaseModel):

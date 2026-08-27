@@ -1879,6 +1879,17 @@ export const api = {
     request<{ ok: boolean }>('DELETE', `/projects/${pid}/conceptos/import_evm/${importId}`),
   importEvmCommit: (pid: string, importId: string) =>
     request<ImportCommitEvmResult>('POST', `/projects/${pid}/conceptos/import_evm/${importId}/commit`),
+  downloadImportEvmPlantilla: async (): Promise<{ blob: Blob; filename: string }> => {
+    const tok = await getToken();
+    const res = await fetch(`${BASE}/conceptos/import_evm/plantilla.xlsx`, {
+      method: 'GET',
+      headers: tok ? { Authorization: `Bearer ${tok}` } : {},
+    });
+    if (!res.ok) throw new ApiError(res.status, await _downloadErrorMessage(res, 'Error al descargar la plantilla'));
+    const cd = res.headers.get('Content-Disposition') || '';
+    const m = cd.match(/filename="?([^"]+)"?/);
+    return { blob: await res.blob(), filename: (m && m[1]) || 'plantilla_catalogo_conceptos.xlsx' };
+  },
 
   // ---- Programa desglosado — mismo wizard, segundo destino -----------------
   programaImportSesionPendiente: (pid: string) =>

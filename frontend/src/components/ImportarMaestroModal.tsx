@@ -21,6 +21,7 @@ import {
 } from '@/src/api';
 import { colors, radius, spacing } from '@/src/theme';
 import { isValidDecimalInput, formatCantidad } from '@/src/utils/money';
+import { downloadBlob } from '@/src/utils/downloadBlob';
 import { confirm } from '@/src/utils/confirm';
 import {
   WizardStep, quedanFueraLabel, filasFueraCount, pasoSiguienteTrasSubir, pasoAnterior,
@@ -94,6 +95,20 @@ export function ImportarMaestroModal({ visible, projectId, partidas, onClose, on
 
   // Paso 4: resultado
   const [commitResult, setCommitResult] = useState<{ creados: number; actualizados: number; omitidos: number; con_error: number; descartados: number } | null>(null);
+  const [descargandoPlantilla, setDescargandoPlantilla] = useState(false);
+
+  async function descargarPlantilla() {
+    if (descargandoPlantilla) return;
+    setDescargandoPlantilla(true);
+    try {
+      const { blob, filename } = await api.downloadImportEvmPlantilla();
+      await downloadBlob(blob, filename, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    } catch (e: any) {
+      Alert.alert('No se pudo descargar la plantilla', e?.message || 'Intentalo nuevamente.');
+    } finally {
+      setDescargandoPlantilla(false);
+    }
+  }
 
   function reset() {
     setStep('archivo'); setBusy(false); setError(null);
@@ -312,6 +327,11 @@ export function ImportarMaestroModal({ visible, projectId, partidas, onClose, on
                     <Ionicons name="folder-open-outline" size={18} color="#fff" />
                     <Text style={styles.primaryBtnTxt}>Seleccionar archivo</Text>
                   </>
+                )}
+              </Pressable>
+              <Pressable style={styles.smallBtn} onPress={descargarPlantilla} disabled={descargandoPlantilla}>
+                {descargandoPlantilla ? <ActivityIndicator color={colors.primary} /> : (
+                  <Text style={styles.smallBtnTxt}>Descargar plantilla de ejemplo</Text>
                 )}
               </Pressable>
             </View>
