@@ -13,12 +13,13 @@ import io
 import csv
 import math
 import uuid
+import shutil
 import logging
 import secrets
 import asyncio
 import unicodedata
 from pathlib import Path
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, date
 from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 from typing import List, Optional, Literal, Any, Callable, Tuple, Dict
 try:
@@ -36,8 +37,9 @@ from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
-from pymongo.errors import DuplicateKeyError
-from pydantic import BaseModel, Field, EmailStr, field_validator
+from pymongo.errors import DuplicateKeyError, BulkWriteError
+from pymongo import InsertOne, UpdateOne
+from pydantic import BaseModel, Field, EmailStr, field_validator, model_validator
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -52,9 +54,12 @@ EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
 # Resumen Ejecutivo con IA: llamada directa a Gemini desde el BACKEND (nunca
 # desde el cliente — la key nunca se expone en el app). Modelo configurable
 # vía env var para poder actualizarlo sin tocar código si Google deprecia
-# una versión (usar un alias "latest" como default minimiza ese riesgo).
+# una versión. [2026-08-20] "gemini-2.5-flash" ya no está disponible para la
+# API key vigente (404 "no longer available to new users"); Google exige
+# "gemini-3.6-flash" en su lugar, así que queda fijo explícitamente (no el
+# alias "gemini-flash-latest", para no depender de a qué apunte a futuro).
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
 
 client = AsyncIOMotorClient(MONGO_URL, serverSelectionTimeoutMS=5000)
 db = client[DB_NAME]
@@ -504,6 +509,10 @@ class ReportIn(BaseModel):
     # encolar un reporte sin conexion. Permite deduplicar si el mismo
     # reporte se reintenta (ver db.reports índice único sparse sobre esto).
     client_id: Optional[str] = None
+    # Reporte estructurado (opcional): id de la plantilla elegida (ver
+    # ReportTemplate) y los valores capturados para sus campos dinámicos.
+    template_id: Optional[str] = None
+    dynamic_data: dict = Field(default_factory=dict)
 
 
 class ReportOut(BaseModel):
@@ -541,6 +550,172 @@ class ReportOut(BaseModel):
     captured_by: str
     captured_by_name: str
     created_at: datetime
+    template_id: Optional[str] = None
+    dynamic_data: dict = Field(default_factory=dict)
+
+
+# === Plantillas de reporte estructurado (formularios dinámicos) ============
+class ReportTemplateField(BaseModel):
+    key: str
+    label: str
+    type: Literal["string", "number", "boolean", "select", "multiselect"]
+    required: bool = False
+    options: List[str] = Field(default_factory=list)
+
+
+class ReportTemplate(BaseModel):
+    id: str
+    code: str
+    name: str
+    category: str
+    fields: List[ReportTemplateField] = Field(default_factory=list)
+
+
+class ReportTemplateIn(BaseModel):
+    code: str
+    name: str
+    category: str
+    fields: List[ReportTemplateField] = Field(default_factory=list)
+
+
+class ReportTemplatePatch(BaseModel):
+    name: Optional[str] = None
+    category: Optional[str] = None
+    fields: Optional[List[ReportTemplateField]] = None
+
+
+def _tf(key: str, label: str, type: str, required: bool = False, options: Optional[List[str]] = None) -> dict:
+    return {"key": key, "label": label, "type": type, "required": required, "options": options or []}
+
+
+# Plantillas iniciales de reporte estructurado. Se siembran en startup_event
+# (idempotente por `code`) — ver Fase 2 del epic de reportes estructurados.
+SEED_REPORT_TEMPLATES: List[dict] = [
+    {
+        "code": "calidad_colados",
+        "name": "Calidad - Colados",
+        "category": "Calidad",
+        "fields": [
+            _tf("vol_teorico_m3", "Vol. Teórico m3", "number"),
+            _tf("vol_olla_m3", "Vol. de Olla m3", "number"),
+            _tf("revenimiento_cm", "Revenimiento cm", "number"),
+            _tf("temperatura_c", "Temperatura °C", "number"),
+            _tf("hora_salida_planta", "Hora de salida de planta", "string"),
+            _tf("hora_llegada_obra", "Hora de llegada a obra", "string"),
+            _tf("hora_ensaye", "Hora de ensaye", "string"),
+            _tf("hora_vaciado", "Hora de vaciado", "string"),
+            _tf("hora_finalizacion", "Hora de finalización", "string"),
+            _tf("vol_vaciado_elemento_m3", "Vol. vaciado en elemento m3", "number"),
+            _tf("junta_fria", "Junta fría", "boolean"),
+        ],
+    },
+    {
+        "code": "calidad_acero",
+        "name": "Calidad - Acero",
+        "category": "Calidad",
+        "fields": [
+            _tf("calibre", "Calibre", "string"),
+            _tf("marca", "Marca", "string"),
+            _tf("no_probetas", "No. probetas", "number"),
+        ],
+    },
+    {
+        "code": "calidad_revision_acero",
+        "name": "Revisión de Acero",
+        "category": "Calidad",
+        "fields": [
+            _tf(
+                "calibre_acero",
+                "Calibre de acero utilizado",
+                "multiselect",
+                options=["#2", "#3", "#4", "#5", "#6", "#8", "#10", "#12"],
+            ),
+            _tf("amarres", "Amarres", "select", options=["Cumple", "No cumple", "N/A"]),
+            _tf("traslapes", "Traslapes", "select", options=["Cumple", "No cumple", "N/A"]),
+            _tf("dimensiones", "Dimensiones", "select", options=["Cumple", "No cumple", "N/A"]),
+            _tf("grapas", "Grapas", "select", options=["Cumple", "No cumple", "N/A"]),
+            _tf("ganchos", "Ganchos", "select", options=["Cumple", "No cumple", "N/A"]),
+            _tf("escuadras", "Escuadras", "select", options=["Cumple", "No cumple", "N/A"]),
+            _tf("temperaturas", "Temperaturas", "select", options=["Cumple", "No cumple", "N/A"]),
+            _tf("limpieza", "Limpieza", "select", options=["Cumple", "No cumple", "N/A"]),
+            _tf("separaciones", "Separaciones", "select", options=["Cumple", "No cumple", "N/A"]),
+        ],
+    },
+    {
+        "code": "calidad_pit_concreto",
+        "name": "Calidad - PIT / Concreto",
+        "category": "Calidad",
+        "fields": [
+            _tf("ubicacion", "Ubicación", "string"),
+            _tf("no_pila", "No. Pila", "string"),
+            _tf("tipo_prueba", "Tipo prueba", "select", options=["PIT", "Cilindros"]),
+            _tf("temperatura", "Temperatura", "number"),
+        ],
+    },
+    {
+        "code": "topografia_cimbrado",
+        "name": "Cimbrado",
+        "category": "Topografía",
+        "fields": [
+            _tf("recubrimiento_superior", "Recubrimiento Superior", "number"),
+            _tf("recubrimiento_inferior", "Recubrimiento Inferior", "number"),
+            _tf("recubrimiento_lateral", "Recubrimiento Lateral", "number"),
+        ],
+    },
+    {
+        "code": "hse",
+        "name": "Seguridad e Higiene (HSE)",
+        "category": "Seguridad",
+        "fields": [
+            _tf("tipo_recorrido", "Tipo recorrido", "select", options=["Rutina", "Alto Riesgo"]),
+            _tf(
+                "incumplimientos",
+                "Incumplimientos",
+                "multiselect",
+                options=["Falta EPP", "Sin Permiso", "Sin Señalización", "Ninguno"],
+            ),
+            _tf("nivel_riesgo", "Nivel Riesgo", "select", options=["Bajo", "Medio", "Alto"]),
+        ],
+    },
+    {
+        "code": "gestion_social",
+        "name": "Gestión Social",
+        "category": "Gestión Social",
+        "fields": [
+            _tf("predios_visitados", "Predios visitados", "string"),
+            _tf("inconformidad_vecinal", "¿Inconformidad vecinal?", "boolean"),
+            _tf("mitigacion", "Mitigación", "string"),
+        ],
+    },
+    {
+        "code": "medio_ambiente",
+        "name": "Medio Ambiente",
+        "category": "Medio Ambiente",
+        "fields": [
+            _tf("residuo", "Residuo", "select", options=["Sólido", "Cascajo", "Peligroso", "Ninguno"]),
+            _tf("control_polvo", "¿Control polvo?", "boolean"),
+        ],
+    },
+    {
+        "code": "obra_civil",
+        "name": "Obra Civil",
+        "category": "Obra Civil",
+        "fields": [
+            _tf("elemento", "Elemento", "string"),
+            _tf("profundidad_inicial", "Profundidad inicial", "number"),
+            _tf("profundidad_actual", "Profundidad actual", "number"),
+            _tf("material", "Material", "select", options=["A", "B", "C", "Roca"]),
+        ],
+    },
+    {
+        "code": "reporte_libre",
+        "name": "Reporte Libre",
+        "category": "General",
+        "fields": [
+            _tf("descripcion", "Descripción", "string"),
+        ],
+    },
+]
 
 
 # === Helpers ================================================================
@@ -602,8 +777,21 @@ def user_to_out(u: dict) -> dict:
 
 
 async def ensure_project_access(user: dict, project_id: str) -> dict:
-    """Valida que el usuario tenga acceso a un proyecto; devuelve el proyecto."""
-    p = await db.projects.find_one({"id": project_id, "archived": {"$ne": True}})
+    """Valida que el usuario tenga acceso a un proyecto; devuelve el proyecto.
+
+    Excluye `general_data_images`/`constructora_logo`: son binarios pesados
+    (hasta 30 imágenes de 5MB c/u) que solo hacen falta en el modal "Datos
+    Generales" o en las exportaciones. Este helper se llama en ~90 endpoints
+    del proyecto (la mayoría descarta el valor de retorno, solo lo usan para
+    el chequeo de acceso), así que traer esos campos aquí hacía lento
+    CUALQUIER endpoint de un proyecto con varias imágenes cargadas — no solo
+    GET /projects/{pid}. Quien sí necesite las imágenes las pide aparte via
+    GET /projects/{pid}/general-data-images.
+    """
+    p = await db.projects.find_one(
+        {"id": project_id, "archived": {"$ne": True}},
+        {"general_data_images": 0, "constructora_logo": 0},
+    )
     if not p:
         raise HTTPException(404, "Proyecto no existe")
     if user["role"] in (ROLE_COORD, ROLE_JEFE):
@@ -691,6 +879,11 @@ async def startup_event():
     await db.messages.create_index([("project_id", 1), ("created_at", -1)])
     await db.messages.create_index([("channel_id", 1), ("created_at", -1)])
     await db.events.create_index([("project_id", 1), ("start_at", 1)])
+    await db.events.create_index([("project_id", 1), ("attendee_ids", 1)])
+    # Consultada por el loop de recordatorios (_meeting_reminder_loop), que
+    # escanea TODOS los proyectos por start_at — no puede aprovechar el
+    # índice compuesto de arriba, que empieza por project_id.
+    await db.events.create_index([("start_at", 1), ("reminder_sent", 1)])
     await db.channels.create_index([("project_id", 1), ("type", 1)])
     await db.channels.create_index([("project_id", 1), ("type", 1), ("area_id", 1)])
     await db.channels.create_index([("project_id", 1), ("type", 1), ("member_ids", 1)])
@@ -720,10 +913,46 @@ async def startup_event():
     await db.registros_avance.create_index("id")
     await db.catalogo_import_sessions.create_index("id")
     await db.programa_import_sessions.create_index("id")
+    # Etapa EVM: mismo criterio de TTL 24h que catalogo/programa (sesiones
+    # de importación abandonadas), colección propia para no interferir con
+    # el importador legado mientras coexistan (ver Importador Maestro).
+    await db.evm_import_sessions.create_index("created_at", expireAfterSeconds=86400)
+    await db.evm_import_sessions.create_index("id")
+    await db.gastos_reales.create_index("id")
+    await db.gastos_reales.create_index([("project_id", 1), ("fecha", 1)])
     await db.programa_versiones.create_index("id")
     await db.programa_versiones.create_index([("project_id", 1), ("vigente", 1)])
     await db.programa_distribucion.create_index("id")
     await db.programa_distribucion.create_index([("programa_version_id", 1)])
+    await db.report_templates.create_index("code", unique=True)
+    await db.report_templates.create_index("id", unique=True)
+
+    # --- Seed de plantillas de reporte estructurado (idempotente por `code`) ---
+    try:
+        for tpl in SEED_REPORT_TEMPLATES:
+            existing_tpl = await db.report_templates.find_one({"code": tpl["code"]})
+            if existing_tpl:
+                continue
+            await db.report_templates.insert_one({"id": str(uuid.uuid4()), **tpl})
+            log.info(f"[seed] Plantilla de reporte creada: {tpl['code']}")
+    except Exception as e:
+        log.warning(f"[seed] error sembrando report_templates: {e}")
+
+    # --- Migración one-shot: reconcilia campos de plantillas de sistema que
+    # cambiaron de definición (quitar "Elemento" duplicado, agregar opción
+    # "N/A") — el seed de arriba es solo insert-si-falta-el-code, así que un
+    # ambiente ya sembrado se quedaría con la definición vieja sin esto.
+    try:
+        _RECONCILE_TEMPLATE_CODES = {"calidad_colados", "calidad_acero", "calidad_revision_acero"}
+        for tpl in SEED_REPORT_TEMPLATES:
+            if tpl["code"] not in _RECONCILE_TEMPLATE_CODES:
+                continue
+            await db.report_templates.update_one(
+                {"code": tpl["code"]},
+                {"$set": {"fields": tpl["fields"], "name": tpl["name"], "category": tpl["category"]}},
+            )
+    except Exception as e:
+        log.warning(f"[migrate] error reconciliando report_templates: {e}")
 
     # --- Migración one-shot: asegurar canal General + asignar channel_id a
     # mensajes legacy creados antes del refactor de canales.
@@ -765,6 +994,10 @@ async def startup_event():
             log.info("[migrate] expires_at backfill de noticias legacy completado")
     except Exception as e:
         log.warning(f"[migrate] error en backfill de expires_at de noticias: {e}")
+
+    # Loop en segundo plano: recordatorios push de reuniones (1h antes).
+    asyncio.create_task(_meeting_reminder_loop())
+
     log.info("[startup] SynCo v2.0 ready")
 
 
@@ -1166,7 +1399,17 @@ async def get_project(pid: str, user: dict = Depends(current_user)):
     p.setdefault("cliente_principal", None)
     p.setdefault("color_tema", "#003366")
     p.setdefault("report_text_color", "#0F172A")
-    p.setdefault("general_data_images", [])
+    # `general_data_images` NO se incluye aquí a propósito (ver
+    # ensure_project_access): puede pesar hasta 30 imágenes de 5MB. Solo se
+    # manda el conteo (vía $size, sin transferir el array) para el badge de
+    # la UI; el contenido real se pide bajo demanda en
+    # GET /projects/{pid}/general-data-images cuando se abre ese modal.
+    p["general_data_images"] = []
+    count_doc = await db.projects.aggregate([
+        {"$match": {"id": pid}},
+        {"$project": {"_id": 0, "n": {"$size": {"$ifNull": ["$general_data_images", []]}}}},
+    ]).to_list(length=1)
+    p["general_data_images_count"] = count_doc[0]["n"] if count_doc else 0
     p.setdefault("minuta_code_prefix", None)
     p.setdefault("tipo_contrato", "PRECIOS_UNITARIOS")
     p.setdefault("modo_avance", "CANTIDAD")
@@ -1370,6 +1613,27 @@ def _acceso_predio_efectivo(node: dict) -> bool:
     habilitarlo/deshabilitarlo nodo por nodo, a cualquier profundidad."""
     habilitado = node.get("acceso_predio_habilitado")
     return habilitado if habilitado is not None else (node.get("depth") == 1)
+
+
+def _resolve_acceso_predio_node(subtramo_id: str, subtramo_node: dict, nodes_by_subtramo: dict) -> Optional[dict]:
+    """Resuelve qué nodo representa el estatus de Acceso al Predio /
+    Situación Social a IMPRIMIR para este Subtramo, respetando el toggle
+    `acceso_predio_habilitado` (a cualquier profundidad, ver hub
+    `AccesoPredioManager`). Antes el PDF/PPTX leían SIEMPRE el nodo Subtramo
+    directo sin chequear si estaba habilitado — imprimían "Sin especificar"
+    en TODOS los subtramos aunque en el hub solo estuvieran referenciadas/
+    habilitadas unas partes del proyecto (logica rota).
+    Prioridad: el propio Subtramo si está habilitado; si no, el primer nodo
+    descendiente habilitado (p.ej. un Poste específico); si ninguno, None —
+    la sección se omite por completo en la página impresa."""
+    if _acceso_predio_efectivo(subtramo_node):
+        return subtramo_node
+    for n in nodes_by_subtramo.get(subtramo_id) or []:
+        if n.get("id") == subtramo_id:
+            continue
+        if _acceso_predio_efectivo(n):
+            return n
+    return None
 
 
 @api.get("/projects/{pid}/nodes")
@@ -2201,8 +2465,20 @@ async def create_area(pid: str, body: AreaIn, user: dict = Depends(require_role(
     name = body.name.strip()
     if not name:
         raise HTTPException(400, "Nombre requerido")
-    existing = await db.areas.find_one({"project_id": pid, "name": name})
-    if existing:
+    # Comparación insensible a mayúsculas/acentos/espacios: dos áreas que
+    # solo difieren en casing (p. ej. "Calidad" vs "CALIDAD") imprimían dos
+    # portadillas de Área consecutivas en los reportes (ver
+    # `_normalize_area_name`); bloquearlas aquí evita que el problema vuelva
+    # a entrar por la puerta de alta.
+    def _fold(s: str) -> str:
+        flat = "".join(
+            ch for ch in unicodedata.normalize("NFD", s.strip().lower())
+            if unicodedata.category(ch) != "Mn"
+        )
+        return " ".join(flat.replace("-", " ").replace("_", " ").split())
+    name_fold = _fold(name)
+    existing_areas = await db.areas.find({"project_id": pid}).to_list(length=200)
+    if any(_fold(a.get("name") or "") == name_fold for a in existing_areas):
         raise HTTPException(409, "Área ya existe en este proyecto")
     doc = {
         "id": str(uuid.uuid4()),
@@ -2416,6 +2692,71 @@ def validate_measurement_value(mtype: str, value: dict):
         raise HTTPException(400, f"measurement_type desconocido: {mtype}")
 
 
+@api.get("/report-templates")
+async def list_report_templates(user: dict = Depends(current_user)):
+    cursor = db.report_templates.find({}, {"_id": 0}).sort("name", 1)
+    return await cursor.to_list(length=None)
+
+
+def _normalize_template_code(raw: str) -> str:
+    code = (raw or "").strip().lower().replace(" ", "_")
+    code = re.sub(r"[^a-z0-9_]", "", code)
+    return code
+
+
+@api.post("/report-templates")
+async def create_report_template(body: ReportTemplateIn, user: dict = Depends(require_role(ROLE_COORD))):
+    code = _normalize_template_code(body.code)
+    if not code:
+        raise HTTPException(400, "code requerido")
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(400, "name requerido")
+    existing = await db.report_templates.find_one({"code": code})
+    if existing:
+        raise HTTPException(409, "Ya existe una plantilla con ese código")
+    doc = {
+        "id": str(uuid.uuid4()),
+        "code": code,
+        "name": name,
+        "category": (body.category or "General").strip() or "General",
+        "fields": [f.model_dump() for f in body.fields],
+    }
+    await db.report_templates.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api.put("/report-templates/{tid}")
+async def update_report_template(tid: str, body: ReportTemplatePatch, user: dict = Depends(require_role(ROLE_COORD))):
+    tpl = await db.report_templates.find_one({"id": tid})
+    if not tpl:
+        raise HTTPException(404, "Plantilla no existe")
+    update: dict = {}
+    if body.name is not None:
+        name = body.name.strip()
+        if not name:
+            raise HTTPException(400, "name no puede quedar vacío")
+        update["name"] = name
+    if body.category is not None:
+        update["category"] = body.category.strip() or "General"
+    if body.fields is not None:
+        update["fields"] = [f.model_dump() for f in body.fields]
+    if update:
+        await db.report_templates.update_one({"id": tid}, {"$set": update})
+    tpl = await db.report_templates.find_one({"id": tid}, {"_id": 0})
+    return tpl
+
+
+@api.delete("/report-templates/{tid}")
+async def delete_report_template(tid: str, user: dict = Depends(require_role(ROLE_COORD))):
+    tpl = await db.report_templates.find_one({"id": tid})
+    if not tpl:
+        raise HTTPException(404, "Plantilla no existe")
+    await db.report_templates.delete_one({"id": tid})
+    return {"ok": True}
+
+
 @api.post("/reports")
 async def create_report(body: ReportIn, user: dict = Depends(current_user)):
     if user["role"] not in (ROLE_ESPECIALISTA, ROLE_COORD, ROLE_SUB, ROLE_JEFE):
@@ -2564,6 +2905,8 @@ async def create_report(body: ReportIn, user: dict = Depends(current_user)):
         "captured_by": user["id"],
         "captured_by_name": user["name"],
         "created_at": datetime.now(timezone.utc),
+        "template_id": body.template_id or None,
+        "dynamic_data": body.dynamic_data or {},
     }
     if body.client_id:
         # Solo se agrega si hay valor: el índice es sparse, y una clave con
@@ -3258,6 +3601,76 @@ async def list_project_members(pid: str, user: dict = Depends(current_user)):
     return [user_to_out(u) for u in items]
 
 
+# === Gestión de equipo (Sub-coordinador / Especialista) ====================
+# Editar/dar de baja Coordinadores Generales vive aparte (ver /admin/coordinators
+# _ "no se puede eliminar entre pares"). Esto es solo para los dos roles que
+# el Coordinador General invita por proyecto y que antes quedaban "congelados"
+# tras aceptar la invitación (un typo en el correo o el puesto obligaba a
+# revocar y re-crear todo el alta, perdiendo el nodo/área ya asignados).
+TEAM_EDITABLE_ROLES = {ROLE_SUB, ROLE_ESPECIALISTA}
+
+
+class TeamMemberPatch(BaseModel):
+    name: Optional[str] = None
+    email: Optional[EmailStr] = None
+    puesto: Optional[str] = None
+
+
+@api.patch("/projects/{pid}/team/{uid}")
+async def update_team_member(
+    pid: str, uid: str, body: TeamMemberPatch, user: dict = Depends(require_role(ROLE_COORD)),
+):
+    await ensure_project_access(user, pid)
+    member = await db.users.find_one({"id": uid, "project_ids": pid})
+    if not member:
+        raise HTTPException(404, "Miembro no encontrado en este proyecto")
+    if member.get("role") not in TEAM_EDITABLE_ROLES:
+        raise HTTPException(400, "Solo se puede editar a Sub-coordinadores y Especialistas")
+
+    update: dict = {}
+    if body.name is not None:
+        name = body.name.strip()
+        if not name:
+            raise HTTPException(400, "Nombre requerido")
+        update["name"] = name
+    if body.email is not None:
+        email = body.email.lower().strip()
+        dup = await db.users.find_one({"email": email, "id": {"$ne": uid}})
+        if dup:
+            raise HTTPException(409, "Ya existe un usuario con ese email")
+        update["email"] = email
+    if body.puesto is not None:
+        update["puesto"] = body.puesto.strip() or None
+
+    if update:
+        await db.users.update_one({"id": uid}, {"$set": update})
+        member.update(update)
+    return user_to_out(member)
+
+
+@api.delete("/projects/{pid}/team/{uid}")
+async def remove_team_member(pid: str, uid: str, user: dict = Depends(require_role(ROLE_COORD))):
+    """Saca a un Sub-coordinador o Especialista del proyecto (offboarding).
+
+    Regla de negocio "1 usuario = 1 proyecto" (ver `create_invite`): sacarlo
+    del único proyecto al que pertenece equivale a borrar su cuenta. Los
+    reportes/minutas/mensajes ya capturados conservan su copia del nombre
+    (`captured_by_name`, etc.) y no se ven afectados.
+    """
+    await ensure_project_access(user, pid)
+    member = await db.users.find_one({"id": uid, "project_ids": pid})
+    if not member:
+        raise HTTPException(404, "Miembro no encontrado en este proyecto")
+    if member.get("role") not in TEAM_EDITABLE_ROLES:
+        raise HTTPException(400, "Solo se puede quitar a Sub-coordinadores y Especialistas")
+    await db.users.delete_one({"id": uid})
+    await db.invitations.update_one(
+        {"accepted_user_id": uid, "status": "accepted"},
+        {"$set": {"status": "removed", "removed_at": datetime.now(timezone.utc)}},
+    )
+    return {"ok": True}
+
+
 # === ANNOUNCEMENTS (Noticias) ==============================================
 # Toda noticia (fijada o no) vence 24h después de creada. El fijado solo
 # controla el orden mientras está vigente; no extiende su vida.
@@ -3934,6 +4347,7 @@ class EventIn(BaseModel):
     start_at: str  # ISO 8601
     end_at: Optional[str] = None
     area_id: Optional[str] = None
+    attendee_ids: List[str] = Field(default_factory=list)
 
 
 class EventPatch(BaseModel):
@@ -3943,11 +4357,27 @@ class EventPatch(BaseModel):
     start_at: Optional[str] = None
     end_at: Optional[str] = None
     area_id: Optional[str] = None
+    attendee_ids: Optional[List[str]] = None
 
 
 def _event_out(doc: dict) -> dict:
     doc.pop("_id", None)
     return doc
+
+
+async def _resolve_attendee_ids(ids: List[str]) -> tuple:
+    """Valida una lista de user ids y devuelve (ids, names) — mismo patrón que
+    `involved_ids`/`involved_names` en minutas (ver create_minuta)."""
+    clean = list(dict.fromkeys([x.strip() for x in (ids or []) if x and x.strip()]))
+    if not clean:
+        return [], []
+    u_list = await db.users.find({"id": {"$in": clean}}).to_list(length=len(clean))
+    u_map = {u["id"]: u for u in u_list}
+    missing = [uid for uid in clean if uid not in u_map]
+    if missing:
+        raise HTTPException(400, f"Asistente(s) inválido(s): {', '.join(missing)}")
+    names = [u_map[uid].get("name") or "Sin nombre" for uid in clean]
+    return clean, names
 
 
 async def _enrich_event_with_area(doc: dict) -> dict:
@@ -3979,6 +4409,7 @@ async def list_events(
     pid: str,
     range: str = "upcoming",  # upcoming | past | all
     limit: int = 500,
+    mine: int = 0,
     user: dict = Depends(current_user),
 ):
     """Lista eventos. Cualquier miembro del proyecto puede leer."""
@@ -3992,6 +4423,12 @@ async def list_events(
     elif range == "past":
         q["start_at"] = {"$lt": now.replace(hour=0, minute=0, second=0, microsecond=0)}
     # 'all' → sin filtro
+    if mine:
+        # Autor o asistente asignado — mismo criterio que "Mis Minutas".
+        q["$or"] = [
+            {"author_id": user["id"]},
+            {"attendee_ids": user["id"]},
+        ]
 
     sort_dir = 1 if range != "past" else -1
     safe_limit = max(1, min(int(limit or 500), 1000))
@@ -4042,6 +4479,7 @@ async def create_event(
         a = await db.areas.find_one({"id": area_id_val, "project_id": pid})
         if not a:
             raise HTTPException(400, "Área inválida para este proyecto")
+    attendee_ids, attendee_names = await _resolve_attendee_ids(body.attendee_ids)
     now = datetime.now(timezone.utc)
     doc = {
         "id": str(uuid.uuid4()),
@@ -4052,9 +4490,12 @@ async def create_event(
         "start_at": start,
         "end_at": end,
         "area_id": area_id_val,
+        "attendee_ids": attendee_ids,
+        "attendee_names": attendee_names,
         "author_id": user["id"],
         "author_name": user["name"],
         "author_role": user["role"],
+        "reminder_sent": False,
         "created_at": now,
         "updated_at": now,
     }
@@ -4106,12 +4547,21 @@ async def update_event(
             if not a:
                 raise HTTPException(400, "Área inválida para este proyecto")
         update["area_id"] = aid
+    if body.attendee_ids is not None:
+        attendee_ids, attendee_names = await _resolve_attendee_ids(body.attendee_ids)
+        update["attendee_ids"] = attendee_ids
+        update["attendee_names"] = attendee_names
     start_final = update.get("start_at", e["start_at"])
     end_final = update.get("end_at", e.get("end_at"))
     if end_final and end_final < start_final:
         raise HTTPException(400, "La fecha de fin no puede ser anterior al inicio")
     if not update:
         return await _enrich_event_with_area(_event_out(e))
+    # Reagendar reinicia el flag de recordatorio -- si no, un evento movido a
+    # una hora futura podría quedarse sin push (ya se había marcado enviado
+    # con la hora vieja) o el usuario recibiría el recordatorio a destiempo.
+    if "start_at" in update:
+        update["reminder_sent"] = False
     update["updated_at"] = datetime.now(timezone.utc)
     await db.events.update_one({"id": eid}, {"$set": update})
     e = await db.events.find_one({"id": eid})
@@ -4131,6 +4581,60 @@ async def delete_event(eid: str, user: dict = Depends(current_user)):
         raise HTTPException(403, "Sólo el autor o un Coordinador puede eliminar")
     await db.events.delete_one({"id": eid})
     return {"ok": True}
+
+
+async def _meeting_reminder_loop() -> None:
+    """
+    Loop en segundo plano (fire-and-forget, arrancado en startup_event) que
+    envía un push de recordatorio a los asistentes + autor de cada reunión
+    que empieza en ~1h. No hay scheduler externo (APScheduler/cron) en este
+    proyecto — este loop simple con asyncio.sleep es el mismo criterio que ya
+    usa el resto del código para trabajo en segundo plano (ver
+    asyncio.create_task(_notify_supervisors_new_report(...)) en create_report).
+
+    Ventana de ±5min alrededor de "ahora + 60min", revisada cada 5 minutos —
+    suficiente precisión para un recordatorio sin agregar infraestructura
+    nueva. Cada evento se marca `reminder_sent=True` tras procesarlo (haya o
+    no destinatarios) para no reintentar en la siguiente vuelta del loop.
+    """
+    while True:
+        try:
+            now = datetime.now(timezone.utc)
+            window_start = now + timedelta(minutes=55)
+            window_end = now + timedelta(minutes=65)
+            cursor = db.events.find({
+                "start_at": {"$gte": window_start, "$lte": window_end},
+                "reminder_sent": {"$ne": True},
+            })
+            due = await cursor.to_list(length=200)
+            for e in due:
+                recipients = set(e.get("attendee_ids") or [])
+                if e.get("author_id"):
+                    recipients.add(e["author_id"])
+                if recipients:
+                    start_mx = e["start_at"].astimezone(MX_TZ)
+                    title = f"Recordatorio: {e.get('title') or 'Reunión'}"
+                    body_text = f"Hoy a las {start_mx.strftime('%H:%M')}"
+                    if e.get("location"):
+                        body_text += f" · {e['location']}"
+                    for uid in recipients:
+                        try:
+                            await send_push_notification(
+                                user_id=uid,
+                                title=title,
+                                body=body_text,
+                                data={
+                                    "type": "meeting_reminder",
+                                    "event_id": e["id"],
+                                    "project_id": e["project_id"],
+                                },
+                            )
+                        except Exception:
+                            log.exception("[push] meeting_reminder falló para user=%s event=%s", uid, e["id"])
+                await db.events.update_one({"id": e["id"]}, {"$set": {"reminder_sent": True}})
+        except Exception:
+            log.exception("[push] _meeting_reminder_loop: error en la iteración")
+        await asyncio.sleep(300)
 
 
 # === EXPORT (Excel "sábana plana" jerárquica) ===============================
@@ -5202,11 +5706,11 @@ def _period_range(period: str) -> tuple:
 #   * severidad "importante"  → SOLO informe Semanal (etiqueta UI: "Semanal").
 #   * severidad "urgente"     → SOLO informe Mensual (etiqueta UI: "Mensual").
 #   * severidad "informativo" → NUNCA llega a ningún informe.
-# El rango de fechas de cada informe (diario = hoy+ayer, semanal = semana
-# natural, mensual = mes calendario en curso) es independiente de esta regla;
-# ver `_period_range_for_type`. La lógica de filtrado es exclusivamente de
-# datos; el motor de renderizado (`_clone_membrete`, escalado, márgenes)
-# permanece intocado.
+# El rango de fechas de cada informe (diario = día natural en curso,
+# semanal = semana natural, mensual = mes calendario en curso) es
+# independiente de esta regla; ver `_period_range_for_type`. La lógica de
+# filtrado es exclusivamente de datos; el motor de renderizado
+# (`_clone_membrete`, escalado, márgenes) permanece intocado.
 # ============================================================================
 _PERIOD_TYPE_ALIASES = {
     "diario", "daily", "dia", "día",
@@ -5235,13 +5739,12 @@ def _period_range_for_type(period_type: str) -> tuple:
     now_mx = now_utc.astimezone(MX_TZ)
     pt = _normalize_period_type(period_type)
     if pt == "diario":
-        # Hoy + ayer: desde ayer 00:00 CDMX hasta ahora.
+        # Solo hoy: desde las 00:00 CDMX de hoy hasta ahora.
         today_start_mx = now_mx.replace(hour=0, minute=0, second=0, microsecond=0)
-        start_mx = today_start_mx - timedelta(days=1)
         return (
-            start_mx.astimezone(timezone.utc),
+            today_start_mx.astimezone(timezone.utc),
             now_utc,
-            "Reporte Diario (hoy y ayer)",
+            "Reporte Diario",
         )
     if pt == "semanal":
         # [FIX] Bloque fijo de semana natural (Domingo a Sábado)
@@ -5337,7 +5840,12 @@ def _normalize_area_name(
         return "OBRA CIVIL"
     if _flat.startswith("sub supervisor") or _flat.startswith("subsupervisor"):
         return "OBRA CIVIL"
-    return raw
+    # Canonicaliza mayúsculas/espacios/guiones (sin tocar acentos) para que
+    # "Calidad" y "CALIDAD" caigan en el mismo bucket de portadilla en vez
+    # de imprimir dos portadillas de Área consecutivas con el mismo título.
+    canon = raw.replace("-", " ").replace("_", " ")
+    canon = " ".join(canon.split())
+    return canon.title()
 
 
 
@@ -5577,6 +6085,16 @@ class GeneralDataReplaceIn(BaseModel):
     images: List[str]  # reemplazo completo del array
 
 
+@api.get("/projects/{pid}/general-data-images")
+async def get_general_data_images(pid: str, user: dict = Depends(current_user)):
+    """Carga bajo demanda del array completo de imágenes (hasta 150MB).
+    Se pide solo cuando el usuario abre el modal "Datos Generales" — ver
+    ensure_project_access, que ya no las incluye en el resto de endpoints."""
+    await ensure_project_access(user, pid)
+    proj = await db.projects.find_one({"id": pid}, {"_id": 0, "general_data_images": 1})
+    return {"general_data_images": (proj or {}).get("general_data_images") or []}
+
+
 @api.post("/projects/{pid}/general-data-images", response_model=ProjectOut)
 async def add_general_data_image(
     pid: str,
@@ -5808,6 +6326,7 @@ async def export_reports_pdf(
     cover_ancestor_by_node = data.get("cover_ancestor_by_node", {})
     areas_by_id = data.get("areas_by_id", {})
     nodes_by_id = data.get("nodes_by_id") or {}
+    nodes_by_subtramo = data.get("nodes_by_subtramo") or {}
     root_ids = data.get("root_ids") or []
     workforce_reports_by_node = data.get("reports_by_node_workforce") or reports_by_node
     # Página de resumen por Subtramo (nodo a profundidad 1): actividades,
@@ -5834,6 +6353,10 @@ async def export_reports_pdf(
     # nunca el texto crudo del reporte. Un solo prefetch para todo el
     # proyecto/rango, ANTES del render bloqueante (requiere Mongo).
     actividades_curadas_idx = await _actividades_curadas_resumen_por_area(pid, start_dt, end_dt, user)
+    # Tabla consolidada "Actividades por Área" (justo después de Datos
+    # Generales, ver `_draw_actividades_por_area_section` más abajo) —
+    # mismo prefetch, distinta forma (conserva ubicación por fila).
+    actividades_tabla_por_area = await _actividades_tabla_por_area(pid, start_dt, end_dt, user)
     # Clima: una consulta por cada combinación de coordenadas distinta que
     # aparezca entre los subtramos con datos (cacheada para no repetir
     # llamadas idénticas cuando varios subtramos comparten coords de raíz).
@@ -6036,6 +6559,129 @@ async def export_reports_pdf(
         c.showPage()
         page_num += 1
 
+        # --- SECCIÓN "ACTIVIDADES POR ÁREA" (justo después de Datos Generales) ---
+        # Tabla de 2 columnas (Ubicación / Actividad) por cada Área del
+        # proyecto, sourced del hub de Actividades Generales (misma fuente
+        # curada que ya alimenta el resumen dentro de cada bloque de Área,
+        # ver `actividades_curadas_idx` / `_actividades_resumen_para_bloque`
+        # más abajo — esta sección es un consolidado adicional, no un
+        # reemplazo). Pagina de verdad (nunca trunca con "+N más"): puede
+        # generar varias hojas por Área si hay muchas actividades.
+        def _draw_actividades_por_area_section() -> None:
+            nonlocal page_num
+            if not actividades_tabla_por_area:
+                return
+
+            AA_MARGIN_X = 2.0 * cm
+            aa_content_w = PW - 2 * AA_MARGIN_X
+            aa_top_y = PH - TOP_MARGIN_PDF
+            aa_bottom_y = BOTTOM_MARGIN_PDF
+
+            AA_TITLE_COLOR = HexColor(_readable_dark_hex(project_color))
+            _aa_raw_brand_hex = _sanitize_color_hex(project_color) or "#003366"
+            AA_BRAND = HexColor(_aa_raw_brand_hex)
+            AA_HEADER_TEXT = WHITE if _hex_luminance(_aa_raw_brand_hex) <= 0.6 else HexColor("#1A1A1A")
+            AA_LINE_GRAY = HexColor("#D0D0D0")
+            AA_CONTENT_GRAY = HexColor("#333333")
+
+            AA_ROW_FONT_SIZE = 10.5
+            AA_HEADER_H = 26
+            AA_UBIC_FRAC, AA_TXT_FRAC = 0.28, 0.72
+            AA_PAD_L, AA_PAD_R = 8, 8
+
+            AA_UBIC_STYLE = ParagraphStyle(
+                "AAUbic", fontName="Helvetica-Bold", fontSize=AA_ROW_FONT_SIZE,
+                leading=AA_ROW_FONT_SIZE * 1.3, textColor=AA_CONTENT_GRAY,
+            )
+            AA_TXT_STYLE = ParagraphStyle(
+                "AATxt", fontName="Helvetica", fontSize=AA_ROW_FONT_SIZE,
+                leading=AA_ROW_FONT_SIZE * 1.3, textColor=AA_CONTENT_GRAY,
+            )
+            AA_HEADER_STYLE = ParagraphStyle(
+                "AAHeader", fontName="Helvetica-Bold", fontSize=AA_ROW_FONT_SIZE,
+                leading=AA_ROW_FONT_SIZE * 1.2, textColor=AA_HEADER_TEXT,
+            )
+
+            aa_ubic_w = aa_content_w * AA_UBIC_FRAC - AA_PAD_L - AA_PAD_R
+            aa_txt_w = aa_content_w * AA_TXT_FRAC - AA_PAD_L - AA_PAD_R
+
+            is_first_aa_page = True
+
+            def _aa_new_page(area_name: str) -> float:
+                nonlocal page_num, is_first_aa_page
+                y = aa_top_y
+                if is_first_aa_page:
+                    c.setFillColor(AA_TITLE_COLOR)
+                    c.setFont("Helvetica-Bold", 26)
+                    c.drawCentredString(PW / 2, y, "ACTIVIDADES POR ÁREA")
+                    y -= 26 * 1.4
+                    is_first_aa_page = False
+                c.setFillColor(TEXT)
+                c.setFont("Helvetica-Bold", 15)
+                c.drawString(AA_MARGIN_X, y, area_name.upper())
+                y -= 15 * 1.6
+                return y
+
+            for area_name in sorted(actividades_tabla_por_area.keys(), key=lambda s: s.upper()):
+                rows = actividades_tabla_por_area.get(area_name) or []
+                if not rows:
+                    continue
+                measured = []
+                for r in rows:
+                    ubic_p = Paragraph(_xml_escape(r["ubicacion"]), AA_UBIC_STYLE)
+                    txt_p = Paragraph(_xml_escape(r["texto"]), AA_TXT_STYLE)
+                    _, ubic_h = ubic_p.wrap(aa_ubic_w, 10000)
+                    _, txt_h = txt_p.wrap(aa_txt_w, 10000)
+                    row_h = max(ubic_h, txt_h) + 10
+                    measured.append((ubic_p, txt_p, row_h))
+
+                idx = 0
+                y = _aa_new_page(area_name)
+                while idx < len(measured):
+                    avail_h = y - aa_bottom_y
+                    page_rows = []
+                    page_h = AA_HEADER_H
+                    while idx < len(measured):
+                        _, _, row_h = measured[idx]
+                        if page_h + row_h > avail_h and page_rows:
+                            break
+                        page_rows.append(measured[idx])
+                        page_h += row_h
+                        idx += 1
+                    if not page_rows:
+                        # Una sola fila más alta que la página completa: la
+                        # forzamos igual (evita loop infinito) — se recorta
+                        # visualmente contra el margen inferior.
+                        page_rows = [measured[idx]]
+                        idx += 1
+                    data = [[Paragraph("UBICACIÓN", AA_HEADER_STYLE), Paragraph("ACTIVIDAD", AA_HEADER_STYLE)]]
+                    heights = [AA_HEADER_H]
+                    for ubic_p, txt_p, row_h in page_rows:
+                        data.append([ubic_p, txt_p])
+                        heights.append(row_h)
+                    tbl = Table(
+                        data,
+                        colWidths=[aa_content_w * AA_UBIC_FRAC, aa_content_w * AA_TXT_FRAC],
+                        rowHeights=heights,
+                    )
+                    tbl.setStyle(TableStyle([
+                        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                        ("LEFTPADDING", (0, 0), (-1, -1), AA_PAD_L),
+                        ("RIGHTPADDING", (0, 0), (-1, -1), AA_PAD_R),
+                        ("TOPPADDING", (0, 0), (-1, -1), 5),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                        ("BACKGROUND", (0, 0), (-1, 0), AA_BRAND),
+                        ("BOX", (0, 0), (-1, -1), 0.75, AA_LINE_GRAY),
+                        ("LINEAFTER", (0, 1), (0, -1), 0.75, AA_LINE_GRAY),
+                        ("LINEBELOW", (0, 1), (-1, -1), 0.5, AA_LINE_GRAY),
+                    ]))
+                    tw, th = tbl.wrapOn(c, aa_content_w, avail_h)
+                    tbl.drawOn(c, AA_MARGIN_X, y - th)
+                    c.showPage()
+                    page_num += 1
+                    if idx < len(measured):
+                        y = _aa_new_page(area_name)
+
         # --- PÁGINAS DE DATOS GENERALES (ex-Mapa: array de imágenes) -----
         # Cada imagen del array `general_data_images` genera UNA página
         # dedicada usando el mismo membrete institucional (página 1+ del
@@ -6086,6 +6732,12 @@ async def export_reports_pdf(
                                 "Sube imágenes de Datos Generales para el proyecto (presupuesto, programa, planos, mapa…).")
             c.showPage()
             page_num += 1
+
+        # "Actividades por Área" va justo DEBAJO/después de Datos Generales
+        # (spec de producto) — antes del cuerpo principal por nodo/área, e
+        # incluso si el período no tiene reportes narrativos (puede haber
+        # actividades GENERALES añadidas a mano sin reportes de campo).
+        _draw_actividades_por_area_section()
 
         if total_reportes == 0:
             c.setFillColor(MUTED)
@@ -6226,7 +6878,9 @@ async def export_reports_pdf(
 
         def draw_subtramo_summary_page(subtramo_node: dict, personal_rows: list, maquinaria_rows: list,
                                         actividades: list, situacion_social: Optional[str],
-                                        acceso_predio: Optional[str], weather: Optional[dict]) -> None:
+                                        acceso_predio: Optional[str], weather: Optional[dict],
+                                        mostrar_acceso_predio: bool = True,
+                                        acceso_node_label: Optional[str] = None) -> None:
             """Página de resumen por Subtramo — layout de 2 columnas separadas
             por una línea vertical delgada (color de marca):
 
@@ -6277,7 +6931,15 @@ async def export_reports_pdf(
             BRAND = HexColor(_readable_dark_hex(project_color))
 
             BADGE_R = 0.42 * cm
-            subtramo_name = (subtramo_node or {}).get("name") or "Subtramo"
+            # Título grande de la página: el nombre del nodo que REALMENTE
+            # tiene Acceso al Predio configurado en el hub (`acceso_node_label`
+            # — puede ser un Poste específico, no siempre el Subtramo), no el
+            # nombre del Subtramo a secas. Si el Subtramo no tiene Acceso al
+            # Predio habilitado en absoluto (`acceso_node_label` viene None),
+            # cae de vuelta al nombre del propio Subtramo — la página sigue
+            # necesitando un título aunque no haya nada de Acceso al Predio
+            # que mostrar.
+            subtramo_name = acceso_node_label or (subtramo_node or {}).get("name") or "Subtramo"
 
             BULLET_STYLE = ParagraphStyle(
                 "SubtramoBullet", fontName="Helvetica", fontSize=8.3, leading=10.5,
@@ -6389,33 +7051,41 @@ async def export_reports_pdf(
             c.line(left_x, y, left_x + col_w, y)
             y -= 0.35 * cm
 
-            # --- ACCESO AL PREDIO -------------------------------------------
-            y = _section_title(left_x, y, col_w, "Acceso al Predio")
-            box_h = 0.85 * cm
-            acceso_color = HexColor(_ACCESO_PREDIO_COLORS.get((acceso_predio or "").strip().lower(), "#94A3B8"))
-            c.setFillColor(acceso_color)
-            c.rect(left_x, y - box_h, col_w, box_h, fill=1, stroke=0)
-            c.setFillColor(WHITE)
-            c.setFont("Helvetica-Bold", 11)
-            status_label = (acceso_predio or "Sin especificar").strip().upper()
-            c.drawCentredString(left_x + col_w / 2, y - box_h / 2 - 0.14 * cm, status_label)
-            y -= box_h + 0.18 * cm
-            c.setFillColor(MUTED)
-            c.setFont("Helvetica-Oblique", 6.8)
-            for ln in _wrap_lines(
-                "Refleja el estatus vigente al momento de exportar, no necesariamente el del período de este reporte.",
-                col_w, "Helvetica-Oblique", 6.8, 2,
-            ):
-                c.drawString(left_x, y, ln)
-                y -= 0.3 * cm
-            y -= 0.18 * cm
+            # --- ACCESO AL PREDIO ---------------------------------------------
+            # Se omite por completo si el coordinador no habilitó Acceso al
+            # Predio para esta ubicación en el hub (ver `mostrar_acceso_predio`
+            # / `_resolve_acceso_predio_node`) — antes se imprimía "Sin
+            # especificar" en TODOS los subtramos sin importar el hub.
+            if mostrar_acceso_predio:
+                # Ya no hace falta repetir el nombre del nodo aquí como
+                # subtítulo: es el título GRANDE de toda la página (ver
+                # `subtramo_name` arriba, resuelto vía `acceso_node_label`).
+                y = _section_title(left_x, y, col_w, "Acceso al Predio")
+                box_h = 0.85 * cm
+                acceso_color = HexColor(_ACCESO_PREDIO_COLORS.get((acceso_predio or "").strip().lower(), "#94A3B8"))
+                c.setFillColor(acceso_color)
+                c.rect(left_x, y - box_h, col_w, box_h, fill=1, stroke=0)
+                c.setFillColor(WHITE)
+                c.setFont("Helvetica-Bold", 11)
+                status_label = (acceso_predio or "Sin especificar").strip().upper()
+                c.drawCentredString(left_x + col_w / 2, y - box_h / 2 - 0.14 * cm, status_label)
+                y -= box_h + 0.18 * cm
+                c.setFillColor(MUTED)
+                c.setFont("Helvetica-Oblique", 6.8)
+                for ln in _wrap_lines(
+                    "Refleja el estatus vigente al momento de exportar, no necesariamente el del período de este reporte.",
+                    col_w, "Helvetica-Oblique", 6.8, 2,
+                ):
+                    c.drawString(left_x, y, ln)
+                    y -= 0.3 * cm
+                y -= 0.18 * cm
 
-            # --- SITUACIÓN SOCIAL --------------------------------------------
-            y = _section_title(left_x, y, col_w, "Situación Social - Liberación Física del Predio")
-            situ_items = [ln.strip() for ln in (situacion_social or "").splitlines() if ln.strip()]
-            situ_h = min(3.4 * cm, max(1.2 * cm, y - bottom_y))
-            y = _draw_bullets(left_x, y, col_w, situ_items, situ_h, max_items=5)
-            y -= 0.28 * cm
+                # --- SITUACIÓN SOCIAL ------------------------------------------
+                y = _section_title(left_x, y, col_w, "Situación Social - Liberación Física del Predio")
+                situ_items = [ln.strip() for ln in (situacion_social or "").splitlines() if ln.strip()]
+                situ_h = min(3.4 * cm, max(1.2 * cm, y - bottom_y))
+                y = _draw_bullets(left_x, y, col_w, situ_items, situ_h, max_items=5)
+                y -= 0.28 * cm
 
             # --- ACTIVIDADES ---------------------------------------------------
             y = _section_title(left_x, y, col_w, "Actividades")
@@ -7144,29 +7814,52 @@ async def export_reports_pdf(
         # cerrar la sección anterior (se imprime 1 página de resumen por
         # CADA cambio de subtramo, aplica igual a diario/semanal/mensual).
         current_subtramo_id: Optional[str] = None
+        # Nombres de bucket de Área (normalizados) que YA recibieron su
+        # portadilla + resumen dentro de algún nodo — usado al final para
+        # detectar Áreas curadas (hub Actividades Generales) que nunca
+        # aparecieron porque ningún reporte de campo cayó en su bucket
+        # durante el período (ver sección "ÁREAS SIN REPORTES" al cierre).
+        printed_area_buckets: set = set()
 
         def _emit_subtramo_summary(subtramo_id: Optional[str]) -> None:
             nonlocal page_num
             if not subtramo_id:
                 return
             totals = resource_raw_rows_by_subtramo.get(subtramo_id)
-            if not totals:
-                # Ningún leaf de este subtramo tuvo reportes en el período —
-                # no hay página que emitir. Si SÍ hubo reportes pero sin
-                # personal/maquinaria capturados, `totals` existe igual
-                # (dict con listas vacías) y la página se dibuja de todos
-                # modos: las tablas siempre se imprimen completas (mínimo de
-                # filas de relleno + TOTAL 0), nunca se sustituyen por texto.
-                return
-            personal_rows = totals.get("personal") or []
-            maquinaria_rows = totals.get("maquinaria") or []
             subtramo_node = nodes_by_id.get(subtramo_id) or {}
+            # Nodo que realmente representa Acceso al Predio/Situación Social
+            # para este Subtramo — respeta el toggle `acceso_predio_habilitado`
+            # (a cualquier profundidad, ver hub). None si el coordinador NO
+            # habilitó nada para esta ubicación (antes se imprimía "Sin
+            # especificar" en TODOS los subtramos sin importar el hub).
+            acceso_node = _resolve_acceso_predio_node(subtramo_id, subtramo_node, nodes_by_subtramo)
+            # FIX: antes, si ningún leaf de este subtramo tenía reportes en
+            # el período, `totals` venía ausente y la página completa se
+            # omitía — incluyendo "Acceso al Predio", que es un estado
+            # persistente del nodo (seteado desde el panel de Acceso al
+            # Predio), NO algo derivado de reportes del período. Un
+            # Subtramo sin actividad reciente pero con Acceso al Predio
+            # configurado dejaba de imprimirlo por completo (conexión
+            # panel↔impresión rota). Ahora la página se emite si HAY datos
+            # de recursos O si hay algo persistente que mostrar (acceso al
+            # predio, situación social, actividades del subtramo).
+            has_persistent_content = bool(
+                (acceso_node and (acceso_node.get("acceso_predio") or "").strip())
+                or (acceso_node and (acceso_node.get("situacion_social") or "").strip())
+                or (actividades_by_subtramo.get(subtramo_id) or [])
+            )
+            if not totals and not has_persistent_content:
+                return
+            personal_rows = (totals or {}).get("personal") or []
+            maquinaria_rows = (totals or {}).get("maquinaria") or []
             draw_subtramo_summary_page(
                 subtramo_node, personal_rows, maquinaria_rows,
                 actividades_by_subtramo.get(subtramo_id) or [],
-                subtramo_node.get("situacion_social"),
-                subtramo_node.get("acceso_predio"),
+                acceso_node.get("situacion_social") if acceso_node else None,
+                acceso_node.get("acceso_predio") if acceso_node else None,
                 weather_by_subtramo.get(subtramo_id),
+                mostrar_acceso_predio=acceso_node is not None,
+                acceso_node_label=(acceso_node.get("name") if acceso_node else None),
             )
             c.showPage()
             page_num += 1
@@ -7242,6 +7935,7 @@ async def export_reports_pdf(
                 area_reps = reports_by_area.get(aid) or []  # narrativa: puede venir vacía (sin fotos)
                 area_reps_all = reports_by_area_all[aid]
                 area_name = _area_name(aid)
+                printed_area_buckets.add(area_name)
 
                 # === Portadilla de Área (fondo magenta de la portada) ========
                 # Índice 0-based en el PDF actual = page_num - 1
@@ -7352,6 +8046,45 @@ async def export_reports_pdf(
         # pasar a un Subtramo NUEVO, así que el último subtramo procesado
         # nunca dispara el emit dentro del loop — hay que cerrarlo aquí.
         _emit_subtramo_summary(current_subtramo_id)
+
+        # === ÁREAS SIN REPORTES: Actividades Generales curadas (hub) cuyo
+        # bucket de Área nunca se imprimió arriba porque ningún reporte de
+        # campo cayó en esa Área durante el período exportado (típico de
+        # Áreas puramente administrativas/curadas — seguridad, social,
+        # coordinación). El curado del hub es independiente de si hubo
+        # reportes: se imprime igual, en una sección final dedicada, para
+        # que el hub y el PDF nunca diverjan.
+        _orphan_by_bucket: Dict[str, List[str]] = {}
+        for _aid, _texts in (actividades_curadas_idx.get("general") or {}).items():
+            if not _texts:
+                continue
+            _area = areas_by_id.get(_aid) or {}
+            _bucket = _normalize_area_name(
+                _area.get("name"), user_role=user.get("role"), user_area=user.get("area"),
+            ) or "SIN ÁREA"
+            if _bucket in printed_area_buckets:
+                continue
+            _dest = _orphan_by_bucket.setdefault(_bucket, [])
+            for _t in _texts:
+                if _t not in _dest:
+                    _dest.append(_t)
+
+        if _orphan_by_bucket:
+            c.setFillColor(HexColor(_readable_dark_hex(project_color)))
+            c.setFont("Helvetica-Bold", 20)
+            c.drawCentredString(PW / 2, PH / 2 + 0.3 * cm, "ACTIVIDADES GENERALES")
+            c.setFont("Helvetica", 11)
+            c.setFillColor(MUTED)
+            c.drawCentredString(PW / 2, PH / 2 - 0.5 * cm, "Áreas sin reportes de campo en el período exportado")
+            c.showPage()
+            page_num += 1
+
+            for _bucket in sorted(_orphan_by_bucket.keys()):
+                area_page_indices.append(page_num - 1)
+                draw_area_cover_page(_bucket)
+                c.showPage()
+                page_num += 1
+                _emit_actividades_area(_bucket, "", _orphan_by_bucket[_bucket])
 
         # Página(s) de cierre: RECUENTO GENERAL del período completo,
         # desglosado por Tramo y por puesto/descripción.
@@ -7516,6 +8249,13 @@ async def _gather_export_data(
     root_ids.sort(key=lambda nid: (nodes_by_id[nid].get("order", 0), nodes_by_id[nid].get("name", "")))
     leaf_nodes = _flatten_tree_in_order(nodes_by_id, root_ids)
 
+    # --- Nodos agrupados por su Subtramo dueño (para Acceso al Predio "a
+    # cualquier profundidad" — ver `_resolve_acceso_predio_node`) ---
+    nodes_by_subtramo: dict = {}
+    for nid in nodes_by_id:
+        sid = _subtramo_id_for(nid, nodes_by_id)
+        nodes_by_subtramo.setdefault(sid, []).append(nodes_by_id[nid])
+
     role = user["role"]
     # Severidad efectiva: si viene period_type, se aplica su política; si
     # no, se conserva la política institucional por rol.
@@ -7627,6 +8367,7 @@ async def _gather_export_data(
         "leaf_nodes": leaf_nodes,
         "root_ids": root_ids,
         "nodes_by_id": nodes_by_id,
+        "nodes_by_subtramo": nodes_by_subtramo,
         "reports_by_node": reports_by_node,
         "reports_by_node_workforce": reports_by_node_workforce,
         "announcements_by_node": announcements_by_node,
@@ -8087,6 +8828,7 @@ async def export_reports_pptx(
     areas_by_id = data.get("areas_by_id", {})
     pt_norm = data.get("period_type")
     nodes_by_id = data.get("nodes_by_id") or {}
+    nodes_by_subtramo = data.get("nodes_by_subtramo") or {}
     root_ids = data.get("root_ids") or []
     workforce_reports_by_node = data.get("reports_by_node_workforce") or reports_by_node
     # Página de resumen por Subtramo: mismo resumen consolidado (sin
@@ -8109,6 +8851,9 @@ async def export_reports_pptx(
     # dentro de cada bloque de Área del cuerpo del PPTX — ver la misma nota
     # en export_reports_pdf.
     actividades_curadas_idx = await _actividades_curadas_resumen_por_area(pid, start_dt, end_dt, user)
+    # Tabla consolidada "Actividades por Área" (ver la misma nota en
+    # export_reports_pdf / `_draw_actividades_por_area_section`).
+    actividades_tabla_por_area = await _actividades_tabla_por_area(pid, start_dt, end_dt, user)
     weather_by_subtramo: dict = {}
     _weather_cache: dict = {}
     for _subtramo_id in resource_consolidated_by_subtramo.keys():
@@ -8415,7 +9160,9 @@ async def export_reports_pptx(
 
         def draw_subtramo_summary_slide(subtramo_node: dict, personal_rows: list, maquinaria_rows: list,
                                          actividades: list, situacion_social: Optional[str],
-                                         acceso_predio: Optional[str], weather: Optional[dict]) -> None:
+                                         acceso_predio: Optional[str], weather: Optional[dict],
+                                         mostrar_acceso_predio: bool = True,
+                                         acceso_node_label: Optional[str] = None) -> None:
             """Slide de resumen por Subtramo — MISMO layout de 2 columnas que
             `draw_subtramo_summary_page` (motor PDF), con primitivas
             python-pptx: IZQUIERDA (título con ícono de estructura, Acceso al
@@ -8436,7 +9183,15 @@ async def export_reports_pptx(
             bottom_y = SH - BOTTOM_MARGIN
 
             BADGE_R = int(Cm(0.5))
-            subtramo_name = (subtramo_node or {}).get("name") or "Subtramo"
+            # Título grande de la página: el nombre del nodo que REALMENTE
+            # tiene Acceso al Predio configurado en el hub (`acceso_node_label`
+            # — puede ser un Poste específico, no siempre el Subtramo), no el
+            # nombre del Subtramo a secas. Si el Subtramo no tiene Acceso al
+            # Predio habilitado en absoluto (`acceso_node_label` viene None),
+            # cae de vuelta al nombre del propio Subtramo — la página sigue
+            # necesitando un título aunque no haya nada de Acceso al Predio
+            # que mostrar.
+            subtramo_name = acceso_node_label or (subtramo_node or {}).get("name") or "Subtramo"
 
             def _section_title(x: int, y: int, w: int, text: str) -> int:
                 add_text(slide, x, y, w, Cm(0.55), text.upper(), size=12, bold=True, color=READABLE_BRAND_RGB)
@@ -8453,27 +9208,35 @@ async def export_reports_pptx(
             _wf_rect(slide, left_x, y, col_w, Pt(1.6), fill_rgb=BRAND_RGB)
             y += Cm(0.35)
 
-            # --- Acceso al Predio ---------------------------------------------
-            y = _section_title(left_x, y, col_w, "Acceso al Predio")
-            box_h = Cm(1.0)
-            acceso_rgb = WF_ACCESO_COLORS.get((acceso_predio or "").strip().lower(), (0x94, 0xA3, 0xB8))
-            _wf_rect(slide, left_x, y, col_w, box_h, fill_rgb=acceso_rgb)
-            add_text(slide, left_x, y, col_w, box_h, (acceso_predio or "Sin especificar").strip().upper(),
-                     size=13, bold=True, color=WF_WHITE_RGB, align=PP_ALIGN.CENTER)
-            y += box_h + Cm(0.15)
-            add_text(
-                slide, left_x, y, col_w, Cm(0.7),
-                "Refleja el estatus vigente al momento de exportar, no necesariamente el del período de este reporte.",
-                size=7.5, italic=True, color=WF_MUTED_RGB,
-            )
-            y += Cm(0.75)
+            # --- Acceso al Predio -----------------------------------------------
+            # Se omite por completo si el coordinador no habilitó Acceso al
+            # Predio para esta ubicación en el hub (ver `mostrar_acceso_predio`
+            # / `_resolve_acceso_predio_node`) — antes se imprimía "Sin
+            # especificar" en TODOS los subtramos sin importar el hub.
+            if mostrar_acceso_predio:
+                # Ya no hace falta repetir el nombre del nodo aquí como
+                # subtítulo: es el título GRANDE de toda la slide (ver
+                # `subtramo_name` arriba, resuelto vía `acceso_node_label`).
+                y = _section_title(left_x, y, col_w, "Acceso al Predio")
+                box_h = Cm(1.0)
+                acceso_rgb = WF_ACCESO_COLORS.get((acceso_predio or "").strip().lower(), (0x94, 0xA3, 0xB8))
+                _wf_rect(slide, left_x, y, col_w, box_h, fill_rgb=acceso_rgb)
+                add_text(slide, left_x, y, col_w, box_h, (acceso_predio or "Sin especificar").strip().upper(),
+                         size=13, bold=True, color=WF_WHITE_RGB, align=PP_ALIGN.CENTER)
+                y += box_h + Cm(0.15)
+                add_text(
+                    slide, left_x, y, col_w, Cm(0.7),
+                    "Refleja el estatus vigente al momento de exportar, no necesariamente el del período de este reporte.",
+                    size=7.5, italic=True, color=WF_MUTED_RGB,
+                )
+                y += Cm(0.75)
 
-            # --- Situación Social -----------------------------------------------
-            y = _section_title(left_x, y, col_w, "Situación Social - Liberación Física del Predio")
-            situ_items = [ln.strip() for ln in (situacion_social or "").splitlines() if ln.strip()]
-            situ_h = Cm(3.2)
-            _wf_bullets(slide, left_x, y, col_w, situ_h, situ_items, max_items=4, font_size=10.5)
-            y += situ_h + Cm(0.2)
+                # --- Situación Social -------------------------------------------
+                y = _section_title(left_x, y, col_w, "Situación Social - Liberación Física del Predio")
+                situ_items = [ln.strip() for ln in (situacion_social or "").splitlines() if ln.strip()]
+                situ_h = Cm(3.2)
+                _wf_bullets(slide, left_x, y, col_w, situ_h, situ_items, max_items=4, font_size=10.5)
+                y += situ_h + Cm(0.2)
 
             # --- Actividades ------------------------------------------------------
             y = _section_title(left_x, y, col_w, "Actividades")
@@ -8724,19 +9487,35 @@ async def export_reports_pptx(
             if not subtramo_id:
                 return
             totals = resource_consolidated_by_subtramo.get(subtramo_id)
-            if not totals:
-                return
-            personal_rows = totals.get("personal") or []
-            maquinaria_rows = totals.get("maquinaria") or []
-            if not personal_rows and not maquinaria_rows:
-                return
             subtramo_node = nodes_by_id.get(subtramo_id) or {}
+            # Nodo que realmente representa Acceso al Predio/Situación Social
+            # para este Subtramo — respeta el toggle `acceso_predio_habilitado`
+            # (a cualquier profundidad, ver hub). None si nada fue habilitado
+            # para esta ubicación (antes se imprimía "Sin especificar" en
+            # TODOS los subtramos sin importar el hub).
+            acceso_node = _resolve_acceso_predio_node(subtramo_id, subtramo_node, nodes_by_subtramo)
+            personal_rows = (totals or {}).get("personal") or []
+            maquinaria_rows = (totals or {}).get("maquinaria") or []
+            # FIX: mismo caso que en el motor PDF (`_emit_subtramo_summary`)
+            # — "Acceso al Predio" es estado persistente del nodo, no
+            # derivado de reportes del período; un Subtramo sin
+            # personal/maquinaria capturados en el período no debe perder
+            # su slide de Acceso al Predio si el panel lo tiene configurado.
+            has_persistent_content = bool(
+                (acceso_node and (acceso_node.get("acceso_predio") or "").strip())
+                or (acceso_node and (acceso_node.get("situacion_social") or "").strip())
+                or (actividades_by_subtramo.get(subtramo_id) or [])
+            )
+            if not personal_rows and not maquinaria_rows and not has_persistent_content:
+                return
             draw_subtramo_summary_slide(
                 subtramo_node, personal_rows, maquinaria_rows,
                 actividades_by_subtramo.get(subtramo_id) or [],
-                subtramo_node.get("situacion_social"),
-                subtramo_node.get("acceso_predio"),
+                acceso_node.get("situacion_social") if acceso_node else None,
+                acceso_node.get("acceso_predio") if acceso_node else None,
                 weather_by_subtramo.get(subtramo_id),
+                mostrar_acceso_predio=acceso_node is not None,
+                acceso_node_label=(acceso_node.get("name") if acceso_node else None),
             )
 
         def _emit_actividades_area_slides(area_name: str, node_path: str, items: List[str]) -> None:
@@ -8862,6 +9641,105 @@ async def export_reports_pptx(
             # Sin plantilla: portada en blanco.
             prs.slides.add_slide(blank)
 
+        # ===== SLIDES "ACTIVIDADES POR ÁREA" (justo después de Datos Generales) ==
+        # Tabla de 2 columnas (Ubicación / Actividad) por cada Área del
+        # proyecto — ver la misma nota en export_reports_pdf
+        # (`_draw_actividades_por_area_section`). Pagina de verdad (nunca
+        # trunca con "+N más"); altura de fila estimada por conteo de
+        # caracteres, igual criterio que `_emit_actividades_area_slides`.
+        def _draw_actividades_por_area_slides() -> None:
+            if not actividades_tabla_por_area:
+                return
+
+            AA_MARGIN_X = Cm(1.8)
+            aa_content_w = SW - 2 * AA_MARGIN_X
+            AA_HEADER_H = Cm(0.9)
+            AA_LINE_H = Cm(0.5)
+            AA_ROW_PAD = Cm(0.18)
+            AA_ROW_FONT = 11
+            AA_MAX_LINES_PER_ROW = 6
+            AA_UBIC_FRAC, AA_TXT_FRAC = 0.28, 0.72
+
+            def _aa_estimate_lines(text: str, box_w_emu: int, font_pt: float) -> int:
+                if not text:
+                    return 1
+                avg_char_w_emu = max(1, int(Pt(font_pt * 0.52)))
+                chars_per_line = max(1, int(box_w_emu / avg_char_w_emu))
+                return min(AA_MAX_LINES_PER_ROW, max(1, math.ceil(len(text) / chars_per_line)))
+
+            aa_ubic_w_emu = int(aa_content_w * AA_UBIC_FRAC) - Cm(0.4)
+            aa_txt_w_emu = int(aa_content_w * AA_TXT_FRAC) - Cm(0.4)
+
+            is_first_aa_slide = True
+
+            for area_name in sorted(actividades_tabla_por_area.keys(), key=lambda s: s.upper()):
+                rows = actividades_tabla_por_area.get(area_name) or []
+                if not rows:
+                    continue
+                measured = []
+                for r in rows:
+                    ubic_lines = _aa_estimate_lines(r["ubicacion"], aa_ubic_w_emu, AA_ROW_FONT)
+                    txt_lines = _aa_estimate_lines(r["texto"], aa_txt_w_emu, AA_ROW_FONT)
+                    lines = max(ubic_lines, txt_lines)
+                    measured.append({
+                        "ubicacion": r["ubicacion"], "texto": r["texto"],
+                        "h": lines * AA_LINE_H + 2 * AA_ROW_PAD,
+                    })
+                n_total = len(measured)
+
+                idx = 0
+                page_in_area = 0
+                while idx < n_total or page_in_area == 0:
+                    page_in_area += 1
+                    slide = _clone_membrete()
+                    y = TOP_MARGIN
+                    if is_first_aa_slide:
+                        add_text(slide, AA_MARGIN_X, y, aa_content_w, Cm(1.1), "ACTIVIDADES POR ÁREA",
+                                 size=26, bold=True, color=READABLE_BRAND_RGB, align=PP_ALIGN.CENTER)
+                        y += Cm(1.3)
+                        is_first_aa_slide = False
+                    title = area_name.upper()
+                    if page_in_area > 1:
+                        title += f"  (CONTINÚA · {page_in_area})"
+                    add_text(slide, AA_MARGIN_X, y, aa_content_w, Cm(0.7), title,
+                             size=16, bold=True, color=WF_TEXT_RGB)
+                    y += Cm(0.75)
+
+                    _wf_rect(slide, AA_MARGIN_X, y, aa_content_w, AA_HEADER_H, fill_rgb=BRAND_RGB)
+                    add_text(slide, AA_MARGIN_X + Cm(0.2), y + Cm(0.15), int(aa_content_w * AA_UBIC_FRAC) - Cm(0.3),
+                             AA_HEADER_H - Cm(0.2), "UBICACIÓN", size=12, bold=True, color=HEADER_TEXT_RGB)
+                    add_text(slide, AA_MARGIN_X + int(aa_content_w * AA_UBIC_FRAC) + Cm(0.2), y + Cm(0.15),
+                             int(aa_content_w * AA_TXT_FRAC) - Cm(0.3), AA_HEADER_H - Cm(0.2),
+                             "ACTIVIDAD", size=12, bold=True, color=HEADER_TEXT_RGB)
+                    yy = y + AA_HEADER_H
+                    avail_h = (SH - BOTTOM_MARGIN) - yy
+
+                    cnt = 0
+                    h_acc = 0.0
+                    for i in range(idx, n_total):
+                        rh = measured[i]["h"]
+                        if cnt > 0 and h_acc + rh > avail_h:
+                            break
+                        h_acc += rh
+                        cnt += 1
+                    cnt = max(cnt, 1)
+                    chunk_end = idx + cnt
+
+                    for i in range(idx, chunk_end):
+                        row_h = measured[i]["h"]
+                        if (i - idx) % 2 == 1:
+                            _wf_rect(slide, AA_MARGIN_X, yy, aa_content_w, row_h, fill_rgb=WF_ZEBRA_TINT_RGB)
+                        add_text(slide, AA_MARGIN_X + Cm(0.2), yy + Cm(0.08),
+                                 int(aa_content_w * AA_UBIC_FRAC) - Cm(0.3), row_h - Cm(0.1),
+                                 measured[i]["ubicacion"], size=AA_ROW_FONT, bold=True, color=WF_TEXT_RGB)
+                        add_text(slide, AA_MARGIN_X + int(aa_content_w * AA_UBIC_FRAC) + Cm(0.2), yy + Cm(0.08),
+                                 int(aa_content_w * AA_TXT_FRAC) - Cm(0.3), row_h - Cm(0.1),
+                                 measured[i]["texto"], size=AA_ROW_FONT, color=WF_TEXT_RGB)
+                        _wf_rect(slide, AA_MARGIN_X, yy + row_h - Pt(0.75), aa_content_w, Pt(0.75), fill_rgb=WF_BORDER_RGB)
+                        yy += row_h
+
+                    idx = chunk_end
+
         # ===== SLIDES DATOS GENERALES (ex-Mapa: array de imágenes) =========
         # Cada imagen en `general_data_images` produce UNA slide dedicada
         # sobre el membrete institucional. Retro-compat: si el array está
@@ -8902,6 +9780,10 @@ async def export_reports_pptx(
                      "Sube imágenes de Datos Generales para el proyecto (presupuesto, programa, planos, mapa…).",
                      size=14, italic=True, color=TEXT_MUTED,
                      align=PP_ALIGN.CENTER)
+
+        # "Actividades por Área" va justo DEBAJO/después de Datos Generales
+        # (spec de producto) — antes del cuerpo principal por nodo/área.
+        _draw_actividades_por_area_slides()
 
         # ================================================================
         # Helper: emite una slide ejecutiva con hasta 2 FOTOS (foto + pie).
@@ -8954,6 +9836,9 @@ async def export_reports_pptx(
 
         any_data = False
         current_subtramo_id: Optional[str] = None
+        # Ver nota equivalente en export_reports_pdf: buckets de Área que ya
+        # recibieron su portadilla + resumen dentro de algún nodo.
+        printed_area_buckets: set = set()
         for n in leaf_nodes:
             n_subtramo_id = _subtramo_id_for(n["id"], nodes_by_id)
             if current_subtramo_id is not None and n_subtramo_id != current_subtramo_id:
@@ -9043,6 +9928,7 @@ async def export_reports_pptx(
                 area_reps = reps_by_area.get(bkey) or []  # narrativa: puede venir vacía (sin fotos)
                 area_reps_all = reps_by_area_all[bkey]
                 area_name = bkey  # ya normalizado
+                printed_area_buckets.add(area_name)
 
                 # --- Portadilla de Área (clon del fondo de la portada) ----
                 # Título posicionado en la MISMA Y que "REPORTE X" en la
@@ -9098,6 +9984,50 @@ async def export_reports_pptx(
                     _pair_slide(_pair)
 
         _emit_subtramo_summary_slide(current_subtramo_id)
+
+        # === ÁREAS SIN REPORTES: ver nota equivalente en export_reports_pdf
+        # — Actividades Generales curadas (hub) cuyo bucket de Área nunca
+        # se imprimió arriba porque ningún reporte de campo cayó en esa
+        # Área durante el período exportado. Se imprimen en una sección
+        # final dedicada para que el hub y el PPTX nunca diverjan.
+        _orphan_by_bucket: Dict[str, List[str]] = {}
+        for _aid, _texts in (actividades_curadas_idx.get("general") or {}).items():
+            if not _texts:
+                continue
+            _area = areas_by_id.get(_aid) or {}
+            _bucket = _normalize_area_name(
+                _area.get("name"), user_role=user.get("role"), user_area=user.get("area"),
+            ) or "SIN ÁREA"
+            if _bucket in printed_area_buckets:
+                continue
+            _dest = _orphan_by_bucket.setdefault(_bucket, [])
+            for _t in _texts:
+                if _t not in _dest:
+                    _dest.append(_t)
+
+        if _orphan_by_bucket:
+            _divider = _clone_membrete()
+            add_text(
+                _divider, Cm(1.0), SH / 2 - Cm(0.9), SW - Cm(2.0), Cm(1.2),
+                "ACTIVIDADES GENERALES",
+                size=24, bold=True, color=READABLE_BRAND_RGB, align=PP_ALIGN.CENTER,
+            )
+            add_text(
+                _divider, Cm(1.0), SH / 2 + Cm(0.3), SW - Cm(2.0), Cm(1.0),
+                "Áreas sin reportes de campo en el período exportado",
+                size=13, italic=True, color=TEXT_MUTED, align=PP_ALIGN.CENTER,
+            )
+
+            for _bucket in sorted(_orphan_by_bucket.keys()):
+                a_slide = _clone_cover_bg()
+                _area_y = SH * 0.32
+                add_text(
+                    a_slide, Cm(1.5), _area_y, SW - Cm(3.0), Cm(4.0),
+                    _bucket.upper(),
+                    size=44, bold=True,
+                    color=AREA_TEXT_COLOR, align=PP_ALIGN.CENTER,
+                )
+                _emit_actividades_area_slides(_bucket, "", _orphan_by_bucket[_bucket])
 
         # Slide(s) de cierre: RECUENTO GENERAL del período completo,
         # desglosado por Tramo y por puesto/descripción.
@@ -9278,12 +10208,19 @@ async def project_ai_summary(pid: str, user: dict = Depends(current_user)):
 
     raw = await db.reports.find(q).sort("created_at", -1).to_list(length=500)
 
-    if not raw:
+    # Noticias vigentes del proyecto (TTL de 24h — ver `list_announcements`),
+    # así que "vigente" y "de las últimas 24h" son lo mismo aquí.
+    ann_raw = await db.announcements.find(
+        {"project_id": pid, "expires_at": {"$gt": datetime.now(timezone.utc)}}
+    ).sort([("pinned", -1), ("created_at", -1)]).to_list(length=100)
+
+    if not raw and not ann_raw:
         return AISummaryResponse(
             summary=(
-                "• No se registraron reportes en las últimas 24 horas.\n"
-                "• Equipo y personal sin movimientos capturados.\n"
-                "• Recomendación: validar con sub-coordinadores el estado de avance del día."
+                "• Avances: no disponible en los reportes (sin reportes en las últimas 24h).\n"
+                "• Actividades: no disponible en los reportes.\n"
+                "• Fuerza laboral: no disponible en los reportes.\n"
+                "• Noticias: no hay noticias vigentes."
             ),
             reports_count=0,
             period_hours=24,
@@ -9296,6 +10233,7 @@ async def project_ai_summary(pid: str, user: dict = Depends(current_user)):
         path = " › ".join(r.get("node_path_names") or []) or "(sin nodo)"
         area = r.get("area_name") or "—"
         avance = r.get("avance") or "—"
+        actividades = (r.get("actividades") or "").strip() or "—"
         contratista = r.get("contratista") or "—"
         personnel = ", ".join(r.get("personnel") or []) or "—"
         equipment = ", ".join(r.get("equipment") or []) or "—"
@@ -9304,26 +10242,41 @@ async def project_ai_summary(pid: str, user: dict = Depends(current_user)):
         created_s = created.isoformat() if isinstance(created, datetime) else str(created)
         lines.append(
             f"- [{created_s}] {path} | Área: {area} | Avance: {avance} | "
-            f"Contratista: {contratista} | Personal: {personnel} | "
-            f"Equipo: {equipment} | Capturó: {captured_by}"
+            f"Actividades: {actividades} | Contratista: {contratista} | "
+            f"Personal: {personnel} | Equipo: {equipment} | Capturó: {captured_by}"
         )
-    body = "\n".join(lines)
+    body = "\n".join(lines) if lines else "(sin reportes en las últimas 24h)"
+
+    ann_lines: List[str] = []
+    for a in ann_raw:
+        created = a.get("created_at")
+        created_s = created.isoformat() if isinstance(created, datetime) else str(created)
+        ann_lines.append(f"- [{created_s}] {a.get('title') or '(sin título)'}: {a.get('body') or ''}".strip())
+    ann_body = "\n".join(ann_lines) if ann_lines else "(sin noticias vigentes)"
 
     system_message = (
         "ERES UN ANALISTA DE OBRA CIVIL DE NIVEL EJECUTIVO. TUS REGLAS SON INQUEBRANTABLES:\n"
-        "1) NO PUEDES INVENTAR DATOS (ALUCINAR). SI NO HAY INFORMACIÓN, REPORTA QUE EL DATO NO ESTÁ DISPONIBLE.\n"
+        "1) NO PUEDES INVENTAR DATOS (ALUCINAR). SOLO PUEDES USAR LO QUE APARECE LITERALMENTE EN "
+        "LOS REPORTES Y NOTICIAS QUE SE TE DAN. SI NO HAY INFORMACIÓN PARA UNA CATEGORÍA, ESCRIBE "
+        "EXACTAMENTE 'No disponible en los reportes' (o 'Sin noticias vigentes' para esa categoría) "
+        "EN VEZ DE INFERIR, ESTIMAR O COMPLETAR CON SUPOSICIONES.\n"
         "2) NO PUEDES FALLAR.\n"
-        "3) TU ÚNICA FUNCIÓN ES RESUMIR EXACTAMENTE LO QUE DICEN LOS REPORTES SIN AGREGAR INTERPRETACIONES AJENAS.\n"
-        "4) ESTRUCTURA: SOLO 3 VIÑETAS EJECUTIVAS Y NADA MÁS.\n\n"
-        "Responde SIEMPRE en español. Cada viñeta debe iniciar con '• '. "
-        "Distribución sugerida: una viñeta para avances, una para equipo/maquinaria y una para personal. "
-        "Si alguna categoría no tiene datos, indícalo explícitamente como 'No disponible en los reportes'. "
-        "Cero relleno, sin introducciones ni cierres."
+        "3) TU ÚNICA FUNCIÓN ES RESUMIR EXACTAMENTE LO QUE DICEN LOS REPORTES Y NOTICIAS, SIN AGREGAR "
+        "INTERPRETACIONES, CIFRAS NI NOMBRES QUE NO APAREZCAN EN EL TEXTO FUENTE.\n"
+        "4) ESTRUCTURA: EXACTAMENTE 4 VIÑETAS EJECUTIVAS Y NADA MÁS, EN ESTE ORDEN:\n"
+        "   • Avances: qué se avanzó y dónde (nodo/tramo), según el campo Avance de los reportes.\n"
+        "   • Actividades: qué actividades se realizaron, según el campo Actividades de los reportes.\n"
+        "   • Fuerza laboral: personal y equipo/maquinaria que estuvieron en obra.\n"
+        "   • Noticias: anuncios vigentes del proyecto (últimas 24h).\n\n"
+        "Responde SIEMPRE en español. Cada viñeta debe iniciar con '• ' y el nombre de su categoría "
+        "seguido de dos puntos (ej. '• Avances: ...'). Cero relleno, sin introducciones ni cierres, "
+        "sin viñetas adicionales fuera de las 4 indicadas."
     )
     user_text = (
         f"Reportes de las últimas 24 horas del proyecto (id={pid}). "
         f"Total: {len(raw)} entradas.\n\n{body}\n\n"
-        "Genera el resumen ejecutivo solicitado."
+        f"Noticias vigentes del proyecto. Total: {len(ann_raw)} entradas.\n\n{ann_body}\n\n"
+        "Genera el resumen ejecutivo solicitado, usando SOLO lo anterior."
     )
 
     try:
@@ -9721,7 +10674,159 @@ async def delete_minuta(mid: str, user: dict = Depends(current_user)):
     await ensure_project_access(user, m["project_id"])
     # Eliminada restricción de roles: Cualquier usuario con acceso al proyecto puede eliminar minutas.
     await db.minutas.delete_one({"id": mid})
+    # Best-effort: limpia el PDF escaneado (si lo hay) para no dejar huérfanos en disco.
+    try:
+        mdir = _MINUTA_PDF_DIR / mid
+        if mdir.is_dir():
+            shutil.rmtree(mdir, ignore_errors=True)
+    except Exception:
+        pass
     return {"ok": True}
+
+
+# === PDF escaneado de la minuta (una sola hoja) =============================
+# No hay un PATCH general para editar una minuta ya creada (ver comentario en
+# toggle_acuerdo/delete_minuta: el estilo de este módulo es endpoints angostos,
+# no un PATCH genérico) — por eso el PDF se maneja con su propio mini-CRUD,
+# reusable tanto justo después de crear la minuta como en cualquier momento
+# posterior ("anexarlo después").
+#
+# [PERF] A propósito NO se renderiza el PDF en la app (no hay librería de
+# render/thumbnail de PDF instalada, ver frontend). Solo se guarda el archivo
+# y se sirve tal cual — abrir/visualizar lo delega el frontend al sistema
+# operativo (mismo patrón que "Archivos de consulta"), así que agregar esto
+# nunca puede volver lenta la lista de minutas.
+_MINUTA_PDF_DIR = UPLOADS_DIR / "minutas"
+_MINUTA_PDF_MAX_BYTES = 15 * 1024 * 1024  # 15 MB — de sobra para una hoja escaneada
+
+
+def _minuta_pdf_disk_path(mid: str, file_id: str) -> Optional[Path]:
+    """Reconstruye la ruta en disco del PDF a partir de su file_id. Nunca se
+    guarda la ruta absoluta en Mongo (solo el file_id) para no exponer la
+    estructura de archivos del servidor en la respuesta de la API."""
+    mdir = _MINUTA_PDF_DIR / mid
+    if not mdir.is_dir():
+        return None
+    matches = list(mdir.glob(f"{file_id}__*"))
+    return matches[0] if matches else None
+
+
+@api.post("/minutas/{mid}/pdf")
+async def upload_minuta_pdf(
+    mid: str,
+    file: UploadFile = File(...),
+    user: dict = Depends(current_user),
+):
+    """Sube (o reemplaza) el PDF escaneado de una minuta.
+
+    Mismo criterio de permisos que el resto de mutaciones de minuta en este
+    módulo (crear/eliminar/concluir acuerdo): cualquier usuario con acceso al
+    proyecto, sin restricción de autor/rol.
+    """
+    m = await db.minutas.find_one({"id": mid})
+    if not m:
+        raise HTTPException(404, "Minuta no existe")
+    await ensure_project_access(user, m["project_id"])
+
+    try:
+        raw = await file.read()
+    except Exception as e:
+        raise HTTPException(400, f"No se pudo leer el archivo: {e}")
+    if not raw:
+        raise HTTPException(400, "Archivo vacío")
+    if len(raw) > _MINUTA_PDF_MAX_BYTES:
+        raise HTTPException(
+            413,
+            f"PDF demasiado grande ({len(raw)//1024//1024} MB). Máx {_MINUTA_PDF_MAX_BYTES//1024//1024} MB.",
+        )
+
+    orig = file.filename or "minuta.pdf"
+    ctype = (file.content_type or "").lower().split(";", 1)[0].strip()
+    is_pdf = ctype == "application/pdf" or orig.lower().endswith(".pdf")
+    if not is_pdf:
+        raise HTTPException(415, "Solo se aceptan archivos PDF")
+
+    # Reemplazo: borra el PDF anterior en disco (best-effort) antes de guardar el nuevo.
+    old_file_id = m.get("pdf_file_id")
+    if old_file_id:
+        old_path = _minuta_pdf_disk_path(mid, old_file_id)
+        if old_path:
+            try:
+                old_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    safe_name = _safe_filename(orig)
+    file_id = uuid.uuid4().hex
+    mdir = _MINUTA_PDF_DIR / mid
+    try:
+        mdir.mkdir(parents=True, exist_ok=True)
+        on_disk = mdir / f"{file_id}__{safe_name}"
+        on_disk.write_bytes(raw)
+    except Exception as exc:
+        log.exception("[minuta-pdf] no se pudo escribir en disco: %s", exc)
+        raise HTTPException(500, f"No se pudo guardar el PDF: {exc}")
+
+    now = datetime.now(timezone.utc)
+    update = {
+        "pdf_file_id": file_id,
+        "pdf_original_name": orig,
+        "pdf_mime_type": "application/pdf",
+        "pdf_size": len(raw),
+        "pdf_url": f"/api/minutas/{mid}/pdf",
+        "pdf_uploaded_at": now,
+        "pdf_uploaded_by": user.get("id"),
+        "pdf_uploaded_by_name": user.get("name"),
+        "updated_at": now,
+    }
+    await db.minutas.update_one({"id": mid}, {"$set": update})
+    updated = await db.minutas.find_one({"id": mid})
+    return _minuta_out(updated)
+
+
+@api.get("/minutas/{mid}/pdf")
+async def download_minuta_pdf(mid: str, user: dict = Depends(current_user)):
+    m = await db.minutas.find_one({"id": mid})
+    if not m:
+        raise HTTPException(404, "Minuta no existe")
+    await ensure_project_access(user, m["project_id"])
+    file_id = m.get("pdf_file_id")
+    if not file_id:
+        raise HTTPException(404, "Esta minuta no tiene PDF adjunto")
+    on_disk = _minuta_pdf_disk_path(mid, file_id)
+    if not on_disk or not on_disk.exists():
+        raise HTTPException(404, "PDF no disponible en disco")
+    return FileResponse(
+        path=str(on_disk),
+        media_type="application/pdf",
+        filename=m.get("pdf_original_name") or on_disk.name,
+    )
+
+
+@api.delete("/minutas/{mid}/pdf")
+async def delete_minuta_pdf(mid: str, user: dict = Depends(current_user)):
+    m = await db.minutas.find_one({"id": mid})
+    if not m:
+        raise HTTPException(404, "Minuta no existe")
+    await ensure_project_access(user, m["project_id"])
+    file_id = m.get("pdf_file_id")
+    if file_id:
+        on_disk = _minuta_pdf_disk_path(mid, file_id)
+        if on_disk:
+            try:
+                on_disk.unlink(missing_ok=True)
+            except Exception:
+                pass
+    await db.minutas.update_one(
+        {"id": mid},
+        {"$unset": {
+            "pdf_file_id": "", "pdf_original_name": "", "pdf_mime_type": "",
+            "pdf_size": "", "pdf_url": "", "pdf_uploaded_at": "",
+            "pdf_uploaded_by": "", "pdf_uploaded_by_name": "",
+        }},
+    )
+    updated = await db.minutas.find_one({"id": mid})
+    return _minuta_out(updated)
 
 
 @api.get("/projects/{pid}/minutas/badge")
@@ -10371,6 +11476,33 @@ async def _actividades_curadas_resumen_por_area(pid: str, start_dt: datetime, en
     return _actividades_por_area_index(items)
 
 
+async def _actividades_tabla_por_area(pid: str, start_dt: datetime, end_dt: datetime, user: dict) -> dict:
+    """Prefetch para la sección consolidada "Actividades por Área" que se
+    imprime justo después de Datos Generales (una tabla de 2 columnas —
+    Ubicación / Actividad — por cada Área del proyecto, ver
+    `_draw_actividades_por_area_section` en el motor PDF y su equivalente
+    en PPTX). Misma fuente que el hub (`_actividades_generales_core`):
+    ediciones/ocultamientos ya aplicados. A diferencia de
+    `_actividades_curadas_resumen_por_area` (que indexa SOLO por lookup
+    nodo×área para insertar dentro de cada bloque existente), esta función
+    conserva la ubicación de cada actividad para la columna dedicada.
+    Retorna dict `area_name -> [{"ubicacion", "texto"}, ...]`, en el mismo
+    orden de árbol que ya trae `_actividades_generales_core`."""
+    rango = {"$gte": start_dt, "$lte": end_dt}
+    items = await _actividades_generales_core(pid, None, rango, user, incluir_ocultas=False)
+    out: dict = {}
+    for it in items:
+        texto = (it.get("texto") or "").strip()
+        if not texto:
+            continue
+        area_name = it.get("area_name") or "Sin área"
+        ubicacion = "General"
+        if it.get("nivel") != NIVEL_GENERAL:
+            ubicacion = it.get("node_name") or ((it.get("node_path_names") or ["—"])[-1])
+        out.setdefault(area_name, []).append({"ubicacion": ubicacion, "texto": texto})
+    return out
+
+
 @api.get("/projects/{pid}/actividades_generales")
 async def list_actividades_generales(
     pid: str,
@@ -10382,12 +11514,20 @@ async def list_actividades_generales(
 ):
     """Lista unificada (los 3 niveles juntos, el frontend filtra por nivel
     para cada submenú) en orden de árbol: GENERAL primero, luego SUBTRAMO/
-    NODO según `_flatten_tree_in_order`. especialista ve TODO el proyecto
-    (`puede_editar` marca qué puede tocar); el resto de los roles ya está
-    filtrado por `ensure_project_access`."""
+    NODO según `_flatten_tree_in_order`. Especialista SOLO ve las
+    actividades de su propia área (`area_id` que mande, si es otra, se
+    ignora); Sub-coordinador y Coordinador General ven todas las áreas
+    (`area_id` opcional, filtra si se manda). Jefe de Proyecto conserva el
+    acceso global de solo lectura que ya tenía en el resto de la app."""
     await ensure_project_access(user, pid)
-    if user.get("role") not in (ROLE_COORD, ROLE_SUB, ROLE_ESPECIALISTA, ROLE_JEFE):
+    role = user.get("role")
+    if role not in (ROLE_COORD, ROLE_SUB, ROLE_ESPECIALISTA, ROLE_JEFE):
         raise HTTPException(403, "Tu rol no tiene acceso a Actividades Generales")
+    effective_area_id = area_id
+    if role == ROLE_ESPECIALISTA:
+        effective_area_id = user.get("area_id")
+        if not effective_area_id:
+            return []
     rango: dict = {}
     if desde:
         b = _feed_day_bounds(desde)
@@ -10397,7 +11537,7 @@ async def list_actividades_generales(
         b = _feed_day_bounds(hasta)
         if b:
             rango["$lte"] = b[1]
-    return await _actividades_generales_core(pid, area_id, rango or None, user, incluir_ocultas=incluir_ocultas)
+    return await _actividades_generales_core(pid, effective_area_id, rango or None, user, incluir_ocultas=incluir_ocultas)
 
 
 @api.post("/projects/{pid}/actividades_generales")
@@ -10698,6 +11838,29 @@ def compute_importe(cantidad, precio_unitario) -> Decimal:
     """importeContratado = cantidad × precioUnitario, sin redondear
     (el redondeo, si aplica, se hace al mostrar/totalizar, no aquí)."""
     return to_decimal(cantidad) * to_decimal(precio_unitario)
+
+
+# --- Etapa EVM: precio unitario dinámico -------------------------------------
+def compute_precio_unitario_dinamico(importe_total_editable, meta_cantidad) -> Decimal:
+    """precio_unitario = importe_total_editable / meta_cantidad, SIN redondear
+    (mismo criterio que compute_importe). Nunca se guarda — se recalcula cada
+    vez que se lee el Concepto, así que editar importe_total_editable cambia
+    el precio_unitario de HOY, pero nunca el de un RegistroAvance ya
+    congelado (ver RegistroAvanceOut.precio_unitario_congelado)."""
+    importe = to_decimal(importe_total_editable)
+    meta = to_decimal(meta_cantidad)
+    if meta == 0:
+        raise ValueError("meta_cantidad no puede ser 0: precio_unitario quedaría indefinido")
+    return importe / meta
+
+
+def _concepto_tiene_datos_evm(doc: dict) -> bool:
+    """True si este Concepto ya migró a los campos de Etapa EVM (importados
+    o capturados por el Importador Maestro / editados a mano). Los
+    conceptos creados antes de esta etapa NO tienen estos campos — se
+    quedan con precio_unitario estático hasta que alguien los reimporte o
+    edite; nunca se les inventa un valor por default."""
+    return bool(doc.get("meta_cantidad")) and bool(doc.get("importe_total_editable"))
 
 
 def sum_decimales(values) -> Decimal:
@@ -11284,6 +12447,46 @@ class ConceptoIn(BaseModel):
         to_decimal(v)  # valida que sea un decimal exacto parseable (nunca float)
         return v
 
+    # --- Etapa EVM (aditivo, todos opcionales) --------------------------
+    # Migración deliberadamente NO destructiva: cantidad/precio_unitario/meta
+    # de arriba siguen siendo la fuente de verdad hasta que un concepto
+    # tiene también meta_cantidad + importe_total_editable (importado por el
+    # Importador Maestro, o editado a mano) — ver _concepto_tiene_datos_evm y
+    # compute_precio_unitario_dinamico. Reemplazar los campos legado en un
+    # solo paso habría requerido tocar cada lectura de concepto.cantidad/
+    # precio_unitario en todo el archivo (reportes, _partida_out, el
+    # importador de catálogo existente) sin poder probarlo contra datos
+    # reales de producción primero.
+    meta_cantidad: Optional[str] = None
+    importe_total_editable: Optional[str] = None
+    fecha_inicio: Optional[str] = None  # "YYYY-MM-DD"
+    fecha_fin: Optional[str] = None  # "YYYY-MM-DD"
+
+    @field_validator("meta_cantidad", "importe_total_editable")
+    @classmethod
+    def _v_decimal_evm(cls, v):
+        if v is not None:
+            to_decimal(v)
+        return v
+
+    @field_validator("fecha_inicio", "fecha_fin")
+    @classmethod
+    def _v_fecha_evm(cls, v):
+        if v is not None:
+            try:
+                date.fromisoformat(v)
+            except ValueError:
+                raise ValueError(f"fecha inválida, se espera YYYY-MM-DD: {v!r}")
+        return v
+
+    @model_validator(mode="after")
+    def _v_rango_fechas_evm(self):
+        if self.fecha_inicio and self.fecha_fin and date.fromisoformat(self.fecha_fin) < date.fromisoformat(self.fecha_inicio):
+            raise ValueError("fecha_fin no puede ser anterior a fecha_inicio")
+        if self.meta_cantidad is not None and to_decimal(self.meta_cantidad) <= 0:
+            raise ValueError("meta_cantidad debe ser mayor a 0 (se usa como divisor de precio_unitario)")
+        return self
+
 
 class ConceptoPatch(BaseModel):
     clave: Optional[str] = None
@@ -11294,6 +12497,11 @@ class ConceptoPatch(BaseModel):
     meta: Optional[str] = None
     periodicidad_meta: Optional[PeriodicidadType] = None
     activo: Optional[bool] = None
+    # --- Etapa EVM (aditivo) — ver ConceptoIn ---------------------------
+    meta_cantidad: Optional[str] = None
+    importe_total_editable: Optional[str] = None
+    fecha_inicio: Optional[str] = None
+    fecha_fin: Optional[str] = None
 
     @field_validator("unidad")
     @classmethod
@@ -11304,12 +12512,27 @@ class ConceptoPatch(BaseModel):
                 raise ValueError("unidad no puede estar vacía")
         return v
 
-    @field_validator("cantidad", "precio_unitario", "meta")
+    @field_validator("cantidad", "precio_unitario", "meta", "meta_cantidad", "importe_total_editable")
     @classmethod
     def _v_decimal(cls, v):
         if v is not None:
             to_decimal(v)
         return v
+
+    @field_validator("fecha_inicio", "fecha_fin")
+    @classmethod
+    def _v_fecha_evm(cls, v):
+        if v is not None:
+            try:
+                date.fromisoformat(v)
+            except ValueError:
+                raise ValueError(f"fecha inválida, se espera YYYY-MM-DD: {v!r}")
+        return v
+    # NOTA: si el PATCH trae solo fecha_inicio o solo fecha_fin, la
+    # consistencia del rango contra el valor YA GUARDADO del otro campo se
+    # valida en el handler (update_concepto) — un validador de Pydantic no
+    # puede consultar Mongo. Mismo criterio que unidad vs. catálogo del
+    # proyecto (_validar_unidad_para_proyecto).
 
 
 class ConceptoOut(BaseModel):
@@ -11328,6 +12551,13 @@ class ConceptoOut(BaseModel):
     # --- Calculados ---
     importe_contratado: str
     cantidad_ejecutada_acumulada: str = "0"
+    # --- Etapa EVM (aditivo, None mientras el concepto no tenga datos EVM
+    # — ver _concepto_tiene_datos_evm) -----------------------------------
+    meta_cantidad: Optional[str] = None
+    importe_total_editable: Optional[str] = None
+    fecha_inicio: Optional[str] = None
+    fecha_fin: Optional[str] = None
+    precio_unitario_dinamico: Optional[str] = None
 
 
 class RegistroAvanceIn(BaseModel):
@@ -11417,6 +12647,22 @@ class RegistroAvanceOut(BaseModel):
     # pero nunca se guarda como si nada: queda marcado para que la UI lo
     # muestre y alguien lo revise. Siempre False fuera de modo PORCENTAJE.
     es_retroceso: bool = False
+    # --- Congelación histórica para EVM (aditivo) -----------------------
+    # precio_unitario_congelado = precio unitario vigente del Concepto EN EL
+    # MOMENTO en que se creó este registro (dinámico si el concepto ya tiene
+    # datos EVM, o el precio_unitario estático si no — ver create_avance).
+    # Se calcula UNA sola vez y ya NUNCA se vuelve a tocar: es lo que hace
+    # que editar importe_total_editable hoy no altere el Valor Ganado de
+    # periodos ya cerrados. Optional porque los RegistroAvance capturados
+    # ANTES de esta etapa no lo tienen — nunca se les inventa un valor.
+    precio_unitario_congelado: Optional[str] = None
+    importe_ganado_congelado: Optional[str] = None
+    # True si `fecha` cae fuera de [concepto.fecha_inicio, concepto.fecha_fin]
+    # vigentes al momento de la captura — nunca se rechaza el avance por
+    # esto (mismo criterio que es_retroceso), solo se marca para la Lista
+    # por Excepción del dashboard EVM. Siempre False si el concepto todavía
+    # no tiene fecha_inicio/fecha_fin (nada que comparar).
+    fuera_de_ventana: bool = False
 
 
 async def _registro_avance_out(doc: dict) -> RegistroAvanceOut:
@@ -11599,6 +12845,9 @@ async def _concepto_out(doc: dict) -> ConceptoOut:
     project = await db.projects.find_one({"id": doc["project_id"]})
     modo_avance = (project or {}).get("modo_avance", "CANTIDAD")
     ejecutado = await _concepto_ejecutado_acumulado(doc["id"], modo_avance)
+    precio_dinamico = None
+    if _concepto_tiene_datos_evm(doc):
+        precio_dinamico = dec_to_str(compute_precio_unitario_dinamico(doc["importe_total_editable"], doc["meta_cantidad"]))
     return ConceptoOut(
         id=doc["id"],
         partida_id=doc["partida_id"],
@@ -11614,6 +12863,11 @@ async def _concepto_out(doc: dict) -> ConceptoOut:
         created_at=doc["created_at"],
         importe_contratado=dec_to_str(importe),
         cantidad_ejecutada_acumulada=ejecutado,
+        meta_cantidad=doc.get("meta_cantidad"),
+        importe_total_editable=doc.get("importe_total_editable"),
+        fecha_inicio=doc.get("fecha_inicio"),
+        fecha_fin=doc.get("fecha_fin"),
+        precio_unitario_dinamico=precio_dinamico,
     )
 
 
@@ -11821,6 +13075,13 @@ async def create_concepto(body: ConceptoIn, user: dict = Depends(require_role(RO
         "activo": True,
         "created_at": datetime.now(timezone.utc),
         "created_by": user["id"],
+        # Etapa EVM (aditivo) — casi siempre llegan vacíos aquí (el alta
+        # manual de un concepto sigue siendo el flujo legado); se completan
+        # después vía PATCH o el Importador Maestro (Tarea 2).
+        "meta_cantidad": body.meta_cantidad,
+        "importe_total_editable": body.importe_total_editable,
+        "fecha_inicio": body.fecha_inicio,
+        "fecha_fin": body.fecha_fin,
     }
     await db.conceptos.insert_one(doc)
     return await _concepto_out(doc)
@@ -11860,6 +13121,38 @@ async def update_concepto(concepto_id: str, body: ConceptoPatch, user: dict = De
             "meta", concepto["meta"], body.meta, user,
         )
         upd["meta"] = body.meta
+
+    # --- Etapa EVM (aditivo) --------------------------------------------
+    # importe_total_editable lleva la MISMA bitácora que precio_unitario:
+    # es lo que determina el precio_unitario_dinamico de aquí en adelante,
+    # así que un cambio aquí es tan sensible como cambiar el PU a mano.
+    if body.importe_total_editable is not None and body.importe_total_editable != concepto.get("importe_total_editable"):
+        await _log_bitacora(
+            concepto["project_id"], "pu", "concepto", concepto_id,
+            "importe_total_editable", concepto.get("importe_total_editable"), body.importe_total_editable, user,
+        )
+        upd["importe_total_editable"] = body.importe_total_editable
+    if body.meta_cantidad is not None and body.meta_cantidad != concepto.get("meta_cantidad"):
+        if to_decimal(body.meta_cantidad) <= 0:
+            raise HTTPException(400, "meta_cantidad debe ser mayor a 0 (se usa como divisor de precio_unitario)")
+        await _log_bitacora(
+            concepto["project_id"], "meta", "concepto", concepto_id,
+            "meta_cantidad", concepto.get("meta_cantidad"), body.meta_cantidad, user,
+        )
+        upd["meta_cantidad"] = body.meta_cantidad
+    # fecha_inicio/fecha_fin: la consistencia del rango se valida contra el
+    # valor EFECTIVO (el que llega en este PATCH, o si no el ya guardado) —
+    # un PATCH de un solo extremo no puede dejar el rango invertido en
+    # silencio.
+    if body.fecha_inicio is not None or body.fecha_fin is not None:
+        nueva_inicio = body.fecha_inicio if body.fecha_inicio is not None else concepto.get("fecha_inicio")
+        nueva_fin = body.fecha_fin if body.fecha_fin is not None else concepto.get("fecha_fin")
+        if nueva_inicio and nueva_fin and date.fromisoformat(nueva_fin) < date.fromisoformat(nueva_inicio):
+            raise HTTPException(400, "fecha_fin no puede ser anterior a fecha_inicio")
+        if body.fecha_inicio is not None:
+            upd["fecha_inicio"] = body.fecha_inicio
+        if body.fecha_fin is not None:
+            upd["fecha_fin"] = body.fecha_fin
 
     if upd:
         await db.conceptos.update_one({"id": concepto_id}, {"$set": upd})
@@ -12714,6 +14007,623 @@ async def import_commit(pid: str, import_id: str, user: dict = Depends(require_r
     return resultado
 
 
+# === Importador Maestro de Control de Obra (Etapa EVM) =======================
+# Fusiona lo que antes eran dos wizards (Catálogo + Programa) en uno solo:
+# un archivo, un mapeo (Clave/Descripción/Meta/Importe/Inicio/Fin), un commit.
+# Vive en endpoints y colección de staging PROPIOS (evm_import_sessions,
+# prefijo /conceptos/import_evm/...) en vez de reemplazar los del catálogo
+# legado — así el wizard que hoy usan los coordinadores sigue funcionando
+# mientras el catálogo migra concepto por concepto a los campos EVM (ver
+# _concepto_tiene_datos_evm). Reutiliza toda la infraestructura de parseo ya
+# probada (_read_workbook_sheets, detectar_convencion, _parse_celda_numerica,
+# _fecha_excel_a_iso, _fila_parece_encabezado, _log_bitacora,
+# _resumen_de_vista) — solo el mapeo de columnas y el commit son nuevos.
+
+_MAPPING_TARGETS_EVM = ["clave", "descripcion", "meta", "importe", "inicio", "fin"]
+_MAPPING_KEYWORDS_EVM = {
+    "clave": ["clave", "codigo", "código", "no.", "num", "item", "partida"],
+    "descripcion": ["descripcion", "descripción", "concepto", "nombre", "actividad", "trabajo"],
+    "meta": ["meta", "cantidad", "cant", "volumen", "vol"],
+    "importe": ["importe", "total", "monto", "importe contratado"],
+    "inicio": ["inicio", "fecha inicio", "f. inicio", "start"],
+    "fin": ["fin", "fecha fin", "f. fin", "termino", "término", "end"],
+}
+
+_TIPOS_ERROR_EVM = {"excel_error", "numero_ilegible", "numero_ambiguo", "campo_obligatorio_vacio", "fecha_ilegible", "rango_fecha_invalido"}
+_TIPOS_DUPLICADO_EVM = {"clave_duplicada_archivo", "clave_existente_proyecto"}
+
+
+class ImportMappingEvmIn(BaseModel):
+    clave: Optional[str] = None
+    descripcion: Optional[str] = None
+    meta: Optional[str] = None       # columna del Excel -> Concepto.meta_cantidad
+    importe: Optional[str] = None    # columna del Excel -> Concepto.importe_total_editable
+    inicio: Optional[str] = None     # columna del Excel -> Concepto.fecha_inicio
+    fin: Optional[str] = None        # columna del Excel -> Concepto.fecha_fin
+
+
+class ImportValidateEvmIn(BaseModel):
+    sheet: str
+    header_row_index: int = 0
+    mapping: ImportMappingEvmIn
+    partida_id: str
+    convencion: Optional[ConvencionDecimal] = None
+
+
+class RowCorrectionEvmIn(BaseModel):
+    meta_cantidad: Optional[str] = None
+    importe_total_editable: Optional[str] = None
+    fecha_inicio: Optional[str] = None
+    fecha_fin: Optional[str] = None
+    descartar: bool = False
+
+
+def _propose_mapping_evm(headers: List[str]) -> dict:
+    normalized = [_normalize_text(h) for h in headers]
+    mapping: dict = {}
+    used_idx: set = set()
+    for target in _MAPPING_TARGETS_EVM:
+        best_idx = None
+        for idx, h in enumerate(normalized):
+            if idx in used_idx or not h:
+                continue
+            if any(kw in h for kw in _MAPPING_KEYWORDS_EVM[target]):
+                best_idx = idx
+                break
+        if best_idx is not None:
+            mapping[target] = headers[best_idx]
+            used_idx.add(best_idx)
+    return mapping
+
+
+def _validar_archivo_completo_evm(
+    rows: List[list],
+    header_row_index: int,
+    mapping: "ImportMappingEvmIn",
+    convencion: Optional[ConvencionDecimal],
+    existing_by_clave: dict,
+) -> List[dict]:
+    """Mismo contrato que _validar_archivo_completo (catálogo legado):
+    procesa TODAS las filas una vez, resultado inmutable, correcciones
+    viven aparte en _calcular_vista_filas_evm. A diferencia del importador
+    de catálogo, aquí no hay unidad/cantidad/precio_unitario — el concepto
+    EVM se define por meta_cantidad + importe_total_editable +
+    fecha_inicio/fecha_fin (ver ConceptoIn). unidad se deja en "UNIVERSAL"
+    por default al crear (mismo default que ConceptoIn.unidad) — este
+    importador no trae columna de unidad, tal como se pidió."""
+    if len(rows) <= header_row_index:
+        raise HTTPException(400, "header_row_index fuera de rango")
+    headers = [str(c) if c is not None else "" for c in rows[header_row_index]]
+    data_rows = rows[header_row_index + 1:]
+
+    def col(header_name: Optional[str]):
+        if not header_name or header_name not in headers:
+            return None
+        return headers.index(header_name)
+
+    idx = {k: col(getattr(mapping, k)) for k in ("clave", "descripcion", "meta", "importe", "inicio", "fin")}
+    if any(idx[k] is None for k in ("clave", "descripcion", "meta", "importe", "inicio", "fin")):
+        raise HTTPException(400, "El mapeo debe incluir clave, descripción, meta, importe, inicio y fin")
+
+    def celda(row: list, key: str):
+        i = idx[key]
+        if i is None or i >= len(row):
+            return None
+        return row[i]
+
+    filas: List[dict] = []
+    for i, row in enumerate(data_rows):
+        clave_raw = celda(row, "clave")
+        if clave_raw in (None, ""):
+            continue  # fila vacía / de relleno, se ignora silenciosamente (igual que el importador de catálogo)
+        fila_num = header_row_index + 2 + i
+        problemas: List[dict] = []
+
+        clave = str(clave_raw).strip() or None
+        if not clave:
+            problemas.append({"tipo": "campo_obligatorio_vacio", "campo": "clave", "motivo": "La clave está vacía"})
+
+        descripcion_raw = celda(row, "descripcion")
+        descripcion = (str(descripcion_raw).strip() if descripcion_raw is not None else "") or None
+        if not descripcion:
+            problemas.append({"tipo": "campo_obligatorio_vacio", "campo": "descripcion", "motivo": "La descripción está vacía"})
+
+        def _parse_campo_numerico(raw_valor, nombre_campo: str) -> Optional[str]:
+            try:
+                return dec_to_str(_parse_celda_numerica(raw_valor, convencion))
+            except CeldaErrorExcelError as e:
+                problemas.append({"tipo": "excel_error", "campo": nombre_campo, "motivo": str(e)})
+            except NumeroAmbiguoError as e:
+                problemas.append({
+                    "tipo": "numero_ambiguo", "campo": nombre_campo, "motivo": str(e),
+                    "lectura_miles": dec_to_str(e.lectura_miles), "lectura_decimal": dec_to_str(e.lectura_decimal),
+                })
+            except ValueError as e:
+                if raw_valor in (None, ""):
+                    problemas.append({"tipo": "campo_obligatorio_vacio", "campo": nombre_campo, "motivo": f"El campo '{nombre_campo}' está vacío"})
+                else:
+                    problemas.append({"tipo": "numero_ilegible", "campo": nombre_campo, "motivo": str(e)})
+            return None
+
+        meta_raw = celda(row, "meta")
+        meta_cantidad = _parse_campo_numerico(meta_raw, "meta")
+        if meta_cantidad is not None and to_decimal(meta_cantidad) <= 0:
+            problemas.append({"tipo": "campo_obligatorio_vacio", "campo": "meta", "motivo": "meta debe ser mayor a 0 (se usa como divisor de precio_unitario)"})
+            meta_cantidad = None
+
+        importe_raw = celda(row, "importe")
+        importe_total_editable = _parse_campo_numerico(importe_raw, "importe")
+
+        # Fechas: SOLO se aceptan como celda de fecha real de Excel (mismo
+        # criterio que el importador de Programa Desglosado, ver
+        # _fecha_excel_a_iso) — nunca se adivina un texto "01/02/2026"
+        # (¿día o mes primero?) como si fuera inequívoco.
+        inicio_raw = celda(row, "inicio")
+        fecha_inicio = _fecha_excel_a_iso(inicio_raw)
+        if fecha_inicio is None:
+            tipo = "campo_obligatorio_vacio" if inicio_raw in (None, "") else "fecha_ilegible"
+            problemas.append({"tipo": tipo, "campo": "inicio", "motivo": f"Fecha de inicio inválida o no es una celda de fecha de Excel: {inicio_raw!r}"})
+
+        fin_raw = celda(row, "fin")
+        fecha_fin = _fecha_excel_a_iso(fin_raw)
+        if fecha_fin is None:
+            tipo = "campo_obligatorio_vacio" if fin_raw in (None, "") else "fecha_ilegible"
+            problemas.append({"tipo": tipo, "campo": "fin", "motivo": f"Fecha de fin inválida o no es una celda de fecha de Excel: {fin_raw!r}"})
+
+        if fecha_inicio and fecha_fin and date.fromisoformat(fecha_fin) < date.fromisoformat(fecha_inicio):
+            problemas.append({"tipo": "rango_fecha_invalido", "campo": "fin", "motivo": f"fecha_fin ({fecha_fin}) es anterior a fecha_inicio ({fecha_inicio})"})
+
+        concepto_existente_id = None
+        if clave and clave in existing_by_clave:
+            concepto_existente_id = existing_by_clave[clave]["id"]
+            problemas.append({
+                "tipo": "clave_existente_proyecto", "campo": None,
+                "motivo": f"Ya existe un concepto con clave '{clave}' en esta partida",
+            })
+
+        filas.append({
+            "fila": fila_num, "clave": clave, "descripcion": descripcion,
+            "meta_cantidad": meta_cantidad, "importe_total_editable": importe_total_editable,
+            "fecha_inicio": fecha_inicio, "fecha_fin": fecha_fin,
+            "concepto_existente_id": concepto_existente_id, "problemas": problemas,
+        })
+    return filas
+
+
+def _calcular_vista_filas_evm(validated_rows: List[dict], correcciones: dict) -> List[dict]:
+    """Mismo contrato que _calcular_vista_filas (catálogo legado), sobre los
+    campos EVM en vez de cantidad/precio_unitario/unidad."""
+    conteo_claves: dict = {}
+    for row in validated_rows:
+        correccion = correcciones.get(str(row["fila"])) or {}
+        if correccion.get("descartar") or not row["clave"]:
+            continue
+        conteo_claves[row["clave"]] = conteo_claves.get(row["clave"], 0) + 1
+    claves_repetidas = {c for c, n in conteo_claves.items() if n > 1}
+
+    vista: List[dict] = []
+    for row in validated_rows:
+        fila_key = str(row["fila"])
+        correccion = correcciones.get(fila_key) or {}
+        descartado = bool(correccion.get("descartar"))
+
+        campos_corregidos = {k for k in ("meta_cantidad", "importe_total_editable", "fecha_inicio", "fecha_fin") if correccion.get(k) is not None}
+        problemas_activos = [p for p in row["problemas"] if p.get("campo") not in campos_corregidos]
+
+        if not descartado and row["clave"] in claves_repetidas:
+            problemas_activos = problemas_activos + [{
+                "tipo": "clave_duplicada_archivo", "campo": None,
+                "motivo": f"La clave '{row['clave']}' aparece más de una vez en el archivo; descarta todas menos una",
+            }]
+
+        meta_cantidad_efectiva = correccion.get("meta_cantidad") or row["meta_cantidad"]
+        importe_efectivo = correccion.get("importe_total_editable") or row["importe_total_editable"]
+        fecha_inicio_efectiva = correccion.get("fecha_inicio") or row["fecha_inicio"]
+        fecha_fin_efectiva = correccion.get("fecha_fin") or row["fecha_fin"]
+
+        if descartado:
+            estado = "descartado"
+        else:
+            tipos_activos = {p["tipo"] for p in problemas_activos}
+            if tipos_activos & _TIPOS_ERROR_EVM:
+                estado = "error"
+            elif tipos_activos & _TIPOS_DUPLICADO_EVM:
+                estado = "duplicado"
+            else:
+                estado = "ok"
+
+        vista.append({
+            **row,
+            "meta_cantidad_efectiva": meta_cantidad_efectiva,
+            "importe_total_editable_efectivo": importe_efectivo,
+            "fecha_inicio_efectiva": fecha_inicio_efectiva,
+            "fecha_fin_efectiva": fecha_fin_efectiva,
+            "problemas_activos": problemas_activos,
+            "correccion": correccion or None,
+            "estado": estado,
+        })
+    return vista
+
+
+async def _ejecutar_commit_evm_con_compensacion(
+    conceptos_col,
+    sessions_col,
+    log_bitacora: Callable[..., Any],
+    pid: str,
+    import_id: str,
+    partida_id: str,
+    vista: List[dict],
+    duplicados_accion: str,
+    user: dict,
+    filename: Optional[str],
+    batch_size: int = 500,
+) -> dict:
+    """Commit del Importador Maestro — mismo criterio de COMPENSACIÓN MANUAL
+    que _ejecutar_commit_con_compensacion del catálogo legado (ver ese
+    docstring para el porqué completo: no hay confirmación de que el Mongo
+    de producción corra en replica set, así que no hay `start_transaction()`
+    real disponible).
+
+    Única diferencia real: los writes van en bulk_write POR LOTES de
+    `batch_size` en vez de un insert_one/update_one por fila — con miles de
+    conceptos (una curva de varios años) esa es la diferencia entre un
+    commit de segundos y uno que tumba el proxy por timeout. La
+    compensación se mantiene porque el lote COMPLETO se registra en
+    compensacion_log ANTES de ejecutar su bulk_write (mismo orden
+    "registrar antes de escribir"); si ese lote falla a mitad de camino
+    (BulkWriteError con ordered=True), el índice del primer error dice
+    cuántas operaciones SÍ se aplicaron — se recorta el log de ese lote a
+    solo esas antes de compensar, para no fingir que se revierte algo que
+    nunca llegó a escribirse.
+
+    Igual que el importador legado: NUNCA reasigna el `id` de un concepto
+    existente (upsert por clave, in-place) — eso es lo que garantiza que
+    una cola de avances offline con un concepto_id viejo siga siendo válida
+    sin importar cuántas reimportaciones hayan pasado mientras el
+    dispositivo estaba desconectado."""
+    import_batch_id = str(uuid.uuid4())
+    log_local: List[dict] = []
+
+    async def _compensar() -> None:
+        for entry in reversed(log_local):
+            try:
+                if entry["tipo"] == "creado":
+                    await conceptos_col.delete_one({"id": entry["concepto_id"]})
+                else:
+                    await conceptos_col.update_one({"id": entry["concepto_id"]}, {"$set": entry["valor_anterior"]})
+            except Exception as comp_err:
+                log.error("[import_evm_commit] fallo compensando %s: %s", entry, comp_err)
+
+    omitidos = 0
+    filas_aplicables: List[dict] = []
+    for row in vista:
+        estado = row["estado"]
+        if estado in ("error", "descartado"):
+            continue
+        if estado == "duplicado":
+            tipos = {p["tipo"] for p in row["problemas_activos"]}
+            if "clave_duplicada_archivo" in tipos:
+                omitidos += 1
+                continue  # ambiguo entre filas del propio archivo: nunca se autoresuelve
+            if duplicados_accion == "omitir":
+                omitidos += 1
+                continue
+        filas_aplicables.append(row)
+
+    # Existentes se traen UNA vez (no una consulta por fila) para armar el
+    # valor_anterior de compensación — mismo criterio que el importador de
+    # catálogo.
+    existing_ids = [r["concepto_existente_id"] for r in filas_aplicables if r.get("concepto_existente_id")]
+    existing_docs: dict = {}
+    if existing_ids:
+        async for d in conceptos_col.find({"id": {"$in": existing_ids}}):
+            existing_docs[d["id"]] = d
+
+    try:
+        for lote_inicio in range(0, len(filas_aplicables), batch_size):
+            lote = filas_aplicables[lote_inicio: lote_inicio + batch_size]
+            ops: List[Any] = []
+            lote_log: List[dict] = []
+            for row in lote:
+                existing_id = row.get("concepto_existente_id")
+                existing_doc = existing_docs.get(existing_id) if existing_id else None
+                if existing_id and not existing_doc:
+                    existing_id = None  # se borró entre validate y commit: tratar como nuevo
+
+                if existing_id and existing_doc:
+                    valor_anterior = {
+                        "descripcion": existing_doc["descripcion"],
+                        "meta_cantidad": existing_doc.get("meta_cantidad"),
+                        "importe_total_editable": existing_doc.get("importe_total_editable"),
+                        "fecha_inicio": existing_doc.get("fecha_inicio"),
+                        "fecha_fin": existing_doc.get("fecha_fin"),
+                    }
+                    lote_log.append({"tipo": "actualizado", "concepto_id": existing_id, "valor_anterior": valor_anterior})
+                    ops.append(UpdateOne(
+                        {"id": existing_id},
+                        {"$set": {
+                            "descripcion": row["descripcion"],
+                            "meta_cantidad": row["meta_cantidad_efectiva"],
+                            "importe_total_editable": row["importe_total_editable_efectivo"],
+                            "fecha_inicio": row["fecha_inicio_efectiva"],
+                            "fecha_fin": row["fecha_fin_efectiva"],
+                            "import_batch_id": import_batch_id,
+                        }},
+                    ))
+                else:
+                    cid = str(uuid.uuid4())
+                    lote_log.append({"tipo": "creado", "concepto_id": cid, "valor_anterior": None})
+                    ops.append(InsertOne({
+                        "id": cid, "partida_id": partida_id, "project_id": pid,
+                        "clave": row["clave"], "descripcion": row["descripcion"], "unidad": "UNIVERSAL",
+                        # Campos legado (cantidad/precio_unitario/meta) se dejan en
+                        # blanco/derivados mínimos para que _concepto_out no truene
+                        # al leer un concepto que NUNCA pasó por el alta manual
+                        # legado — importe_contratado legado queda en "0" hasta que
+                        # alguien lo edite a mano; el que manda para este concepto
+                        # es precio_unitario_dinamico (ver _concepto_tiene_datos_evm).
+                        "cantidad": row["meta_cantidad_efectiva"], "precio_unitario": "0", "meta": row["meta_cantidad_efectiva"],
+                        "periodicidad_meta": "SEMANAL",
+                        "meta_cantidad": row["meta_cantidad_efectiva"],
+                        "importe_total_editable": row["importe_total_editable_efectivo"],
+                        "fecha_inicio": row["fecha_inicio_efectiva"], "fecha_fin": row["fecha_fin_efectiva"],
+                        "activo": True, "created_at": datetime.now(timezone.utc), "created_by": user["id"],
+                        "import_batch_id": import_batch_id,
+                    }))
+
+            # Registrar el lote ANTES de ejecutarlo (ver docstring).
+            await sessions_col.update_one({"id": import_id}, {"$push": {"compensacion_log": {"$each": lote_log}}})
+            log_local.extend(lote_log)
+
+            try:
+                await conceptos_col.bulk_write(ops, ordered=True)
+            except BulkWriteError as bwe:
+                write_errors = bwe.details.get("writeErrors", [])
+                primer_error_idx = min((we["index"] for we in write_errors), default=0)
+                # ordered=True: todo lo ANTES de primer_error_idx sí se aplicó
+                # en este lote; lo de este lote desde ahí en adelante nunca se
+                # escribió, así que se descarta del log antes de compensar.
+                del log_local[len(log_local) - len(lote_log) + primer_error_idx:]
+                raise
+    except Exception as e:
+        log.error("[import_evm_commit] fallo a mitad del commit, compensando %d escrituras: %s", len(log_local), e)
+        await _compensar()
+        raise HTTPException(500, f"La importación falló a mitad de camino y se revirtió automáticamente (no se guardó nada): {e}")
+
+    creados = sum(1 for e in log_local if e["tipo"] == "creado")
+    actualizados = sum(1 for e in log_local if e["tipo"] == "actualizado")
+    for entry in log_local:
+        if entry["tipo"] == "creado":
+            await log_bitacora(pid, "import_evm", "concepto", entry["concepto_id"], None, None, f"creado desde Importador Maestro ({filename})", user)
+        else:
+            await log_bitacora(pid, "import_evm", "concepto", entry["concepto_id"], "importe_total_editable/fechas", None, "actualizado desde Importador Maestro", user)
+
+    con_error = sum(1 for r in vista if r["estado"] == "error")
+    descartados = sum(1 for r in vista if r["estado"] == "descartado")
+    return {
+        "creados": creados, "actualizados": actualizados, "omitidos": omitidos,
+        "con_error": con_error, "descartados": descartados, "import_batch_id": import_batch_id,
+    }
+
+
+@api.post("/projects/{pid}/conceptos/import_evm/sheets")
+async def import_evm_upload_sheets(pid: str, file: UploadFile = File(...), user: dict = Depends(require_role(ROLE_SUB, ROLE_COORD))):
+    """Paso 1 del Importador Maestro — mismo contrato que
+    import_upload_sheets del catálogo legado, colección de staging propia."""
+    await ensure_project_access(user, pid)
+    content = await file.read()
+    if len(content) > 15 * 1024 * 1024:
+        raise HTTPException(400, "Archivo demasiado grande (máx. 15MB)")
+    sheets = _read_workbook_sheets(file.filename or "archivo.xlsx", content)
+    candidatos = [cell for rows in sheets.values() for row in rows for cell in row]
+    convencion_detectada = detectar_convencion(candidatos)
+
+    import_id = str(uuid.uuid4())
+    await db.evm_import_sessions.insert_one({
+        "id": import_id, "project_id": pid, "user_id": user["id"], "filename": file.filename,
+        "sheets": {name: rows for name, rows in sheets.items()},
+        "convencion_decimal": convencion_detectada, "created_at": datetime.now(timezone.utc),
+    })
+    return {
+        "import_id": import_id, "sheet_names": list(sheets.keys()),
+        "requiere_seleccion_hoja": len(sheets) > 1, "convencion_detectada": convencion_detectada,
+    }
+
+
+@api.get("/conceptos/import_evm/{import_id}/headers")
+async def import_evm_headers(
+    import_id: str,
+    sheet: Optional[str] = None,
+    header_row_index: Optional[int] = None,
+    user: dict = Depends(require_role(ROLE_SUB, ROLE_COORD)),
+):
+    session = await db.evm_import_sessions.find_one({"id": import_id})
+    if not session:
+        raise HTTPException(404, "Sesión de importación no existe o expiró")
+    await ensure_project_access(user, session["project_id"])
+    sheet_name = sheet or next(iter(session["sheets"].keys()))
+    if sheet_name not in session["sheets"]:
+        raise HTTPException(400, f"La hoja '{sheet_name}' no existe en este archivo")
+    rows = session["sheets"][sheet_name]
+    if not rows:
+        raise HTTPException(400, "La hoja está vacía")
+
+    if header_row_index is None:
+        header_row_index = next((i for i, r in enumerate(rows[:15]) if _fila_parece_encabezado(r)), 0)
+    if header_row_index >= len(rows):
+        raise HTTPException(400, "header_row_index fuera de rango")
+
+    headers = [str(c) if c is not None else "" for c in rows[header_row_index]]
+    sample_rows = rows[header_row_index + 1: header_row_index + 6]
+    return {
+        "sheet": sheet_name, "header_row_index": header_row_index, "headers": headers,
+        "suggested_mapping": _propose_mapping_evm(headers), "sample_rows": sample_rows,
+        "total_rows": max(len(rows) - header_row_index - 1, 0),
+        "convencion_detectada": session.get("convencion_decimal"),
+        "preview_rows": rows[: min(len(rows), 15)],
+    }
+
+
+@api.post("/projects/{pid}/conceptos/import_evm/{import_id}/validate")
+async def import_evm_validate(pid: str, import_id: str, body: ImportValidateEvmIn, user: dict = Depends(require_role(ROLE_SUB, ROLE_COORD))):
+    await ensure_project_access(user, pid)
+    partida = await db.partidas.find_one({"id": body.partida_id, "project_id": pid})
+    if not partida:
+        raise HTTPException(404, "Partida no existe en este proyecto")
+    session = await db.evm_import_sessions.find_one({"id": import_id, "project_id": pid})
+    if not session:
+        raise HTTPException(404, "Sesión de importación no existe o expiró")
+    if body.sheet not in session["sheets"]:
+        raise HTTPException(400, f"La hoja '{body.sheet}' no existe en este archivo")
+
+    convencion: Optional[ConvencionDecimal] = body.convencion or session.get("convencion_decimal")
+    existing = await db.conceptos.find({"partida_id": body.partida_id, "activo": True}).to_list(length=10000)
+    existing_by_clave = {c["clave"]: c for c in existing}
+
+    filas = _validar_archivo_completo_evm(session["sheets"][body.sheet], body.header_row_index, body.mapping, convencion, existing_by_clave)
+
+    update_fields = {
+        "validated_rows": filas, "validated_sheet": body.sheet,
+        "validated_header_row_index": body.header_row_index, "validated_mapping": body.mapping.model_dump(),
+        "validated_partida_id": body.partida_id, "convencion_usada": convencion,
+        "validated_at": datetime.now(timezone.utc),
+    }
+    if "correcciones" not in session:
+        update_fields["correcciones"] = {}
+        update_fields["duplicados_accion"] = "omitir"
+    await db.evm_import_sessions.update_one({"id": import_id}, {"$set": update_fields})
+
+    vista = _calcular_vista_filas_evm(filas, session.get("correcciones") or {})
+    return {"resumen": _resumen_de_vista(vista), "convencion_usada": convencion}
+
+
+@api.get("/conceptos/import_evm/{import_id}/preview")
+async def import_evm_preview(import_id: str, page: int = 1, page_size: int = 50, user: dict = Depends(require_role(ROLE_SUB, ROLE_COORD))):
+    session = await db.evm_import_sessions.find_one({"id": import_id})
+    if not session:
+        raise HTTPException(404, "Sesión de importación no existe o expiró")
+    await ensure_project_access(user, session["project_id"])
+    validated_rows = session.get("validated_rows")
+    if validated_rows is None:
+        raise HTTPException(400, "Todavía no se valida esta importación. Llama primero a /validate.")
+
+    correcciones = session.get("correcciones") or {}
+    vista = _calcular_vista_filas_evm(validated_rows, correcciones)
+    resumen = _resumen_de_vista(vista)
+
+    page = max(page, 1)
+    page_size = max(1, min(page_size, 200))
+    start = (page - 1) * page_size
+    pagina = vista[start:start + page_size]
+    total_pages = max(1, (len(vista) + page_size - 1) // page_size)
+
+    return {
+        "resumen": resumen, "filas": pagina, "page": page, "page_size": page_size,
+        "total_pages": total_pages, "total_rows": len(vista),
+        "sheet": session.get("validated_sheet"), "partida_id": session.get("validated_partida_id"),
+        "convencion_usada": session.get("convencion_usada"), "duplicados_accion": session.get("duplicados_accion", "omitir"),
+    }
+
+
+@api.put("/conceptos/import_evm/{import_id}/rows/{fila}")
+async def import_evm_correct_row(import_id: str, fila: int, body: RowCorrectionEvmIn, user: dict = Depends(require_role(ROLE_SUB, ROLE_COORD))):
+    session = await db.evm_import_sessions.find_one({"id": import_id})
+    if not session:
+        raise HTTPException(404, "Sesión de importación no existe o expiró")
+    await ensure_project_access(user, session["project_id"])
+    validated_rows = session.get("validated_rows") or []
+    if not any(r["fila"] == fila for r in validated_rows):
+        raise HTTPException(404, f"Fila {fila} no existe en esta validación")
+
+    entry: dict = {}
+    if body.meta_cantidad is not None:
+        try:
+            valor = dec_to_str(to_decimal(body.meta_cantidad))
+        except Exception:
+            raise HTTPException(400, "meta inválida")
+        if to_decimal(valor) <= 0:
+            raise HTTPException(400, "meta debe ser mayor a 0")
+        entry["meta_cantidad"] = valor
+    if body.importe_total_editable is not None:
+        try:
+            entry["importe_total_editable"] = dec_to_str(to_decimal(body.importe_total_editable))
+        except Exception:
+            raise HTTPException(400, "importe inválido")
+    if body.fecha_inicio is not None:
+        try:
+            date.fromisoformat(body.fecha_inicio)
+        except ValueError:
+            raise HTTPException(400, "fecha_inicio inválida, se espera YYYY-MM-DD")
+        entry["fecha_inicio"] = body.fecha_inicio
+    if body.fecha_fin is not None:
+        try:
+            date.fromisoformat(body.fecha_fin)
+        except ValueError:
+            raise HTTPException(400, "fecha_fin inválida, se espera YYYY-MM-DD")
+        entry["fecha_fin"] = body.fecha_fin
+    if body.descartar:
+        entry["descartar"] = True
+
+    correcciones = session.get("correcciones") or {}
+    if entry:
+        correcciones[str(fila)] = entry
+    else:
+        correcciones.pop(str(fila), None)
+    await db.evm_import_sessions.update_one({"id": import_id}, {"$set": {"correcciones": correcciones}})
+
+    vista = _calcular_vista_filas_evm(validated_rows, correcciones)
+    fila_actualizada = next(r for r in vista if r["fila"] == fila)
+    return {"fila": fila_actualizada, "resumen": _resumen_de_vista(vista)}
+
+
+@api.put("/conceptos/import_evm/{import_id}/duplicados-accion")
+async def import_evm_set_duplicados_accion(import_id: str, body: DuplicadosAccionIn, user: dict = Depends(require_role(ROLE_SUB, ROLE_COORD))):
+    session = await db.evm_import_sessions.find_one({"id": import_id})
+    if not session:
+        raise HTTPException(404, "Sesión de importación no existe o expiró")
+    await ensure_project_access(user, session["project_id"])
+    await db.evm_import_sessions.update_one({"id": import_id}, {"$set": {"duplicados_accion": body.accion}})
+    return {"duplicados_accion": body.accion}
+
+
+@api.delete("/projects/{pid}/conceptos/import_evm/{import_id}")
+async def import_evm_descartar_sesion(pid: str, import_id: str, user: dict = Depends(require_role(ROLE_SUB, ROLE_COORD))):
+    await ensure_project_access(user, pid)
+    await db.evm_import_sessions.delete_one({"id": import_id, "project_id": pid})
+    return {"ok": True}
+
+
+@api.post("/projects/{pid}/conceptos/import_evm/{import_id}/commit")
+async def import_evm_commit(pid: str, import_id: str, user: dict = Depends(require_role(ROLE_SUB, ROLE_COORD))):
+    """Paso 4: aplica el resultado ya validado — no recibe body, todo lo
+    necesario ya quedó confirmado en la sesión de staging."""
+    await ensure_project_access(user, pid)
+    session = await db.evm_import_sessions.find_one({"id": import_id, "project_id": pid})
+    if not session:
+        raise HTTPException(404, "Sesión de importación no existe o expiró")
+    validated_rows = session.get("validated_rows")
+    if validated_rows is None:
+        raise HTTPException(400, "Todavía no se valida esta importación. Llama primero a /validate.")
+    partida_id = session.get("validated_partida_id")
+    partida = await db.partidas.find_one({"id": partida_id, "project_id": pid})
+    if not partida:
+        raise HTTPException(404, "La partida validada ya no existe en este proyecto")
+
+    correcciones = session.get("correcciones") or {}
+    duplicados_accion = session.get("duplicados_accion", "omitir")
+    vista = _calcular_vista_filas_evm(validated_rows, correcciones)
+
+    try:
+        resultado = await _ejecutar_commit_evm_con_compensacion(
+            db.conceptos, db.evm_import_sessions, _log_bitacora,
+            pid, import_id, partida_id, vista, duplicados_accion, user, session.get("filename"),
+        )
+    finally:
+        await db.evm_import_sessions.delete_one({"id": import_id})
+
+    return resultado
+
+
 # === Registro de avance =========================================================
 @api.post("/avances", response_model=RegistroAvanceOut)
 async def create_avance(body: RegistroAvanceIn, user: dict = Depends(current_user)):
@@ -12769,6 +14679,30 @@ async def create_avance(body: RegistroAvanceIn, user: dict = Depends(current_use
         if dup:
             return await _registro_avance_out(dup)
 
+    # --- Congelación histórica EVM (aditivo) ----------------------------
+    # El precio SIEMPRE se calcula en el servidor, nunca se acepta del
+    # body — si viniera del cliente, un dispositivo (o una cola offline
+    # vieja) podría inyectar un precio arbitrario. Si el concepto todavía
+    # no tiene datos EVM (meta_cantidad/importe_total_editable), se congela
+    # su precio_unitario estático de siempre — así el campo queda poblado
+    # de manera uniforme para avances viejos y nuevos, sin bloquear la
+    # captura de campo mientras el catálogo se termina de migrar.
+    if _concepto_tiene_datos_evm(concepto):
+        precio_congelado = compute_precio_unitario_dinamico(concepto["importe_total_editable"], concepto["meta_cantidad"])
+    else:
+        precio_congelado = to_decimal(concepto["precio_unitario"])
+    importe_congelado = to_decimal(body.cantidad_ejecutada) * precio_congelado
+
+    fuera_de_ventana = False
+    if concepto.get("fecha_inicio") and concepto.get("fecha_fin"):
+        try:
+            fecha_avance = date.fromisoformat(body.fecha)
+            fuera_de_ventana = not (
+                date.fromisoformat(concepto["fecha_inicio"]) <= fecha_avance <= date.fromisoformat(concepto["fecha_fin"])
+            )
+        except ValueError:
+            pass  # fecha del avance no es YYYY-MM-DD parseable: no bloquea la captura, solo no se puede comparar
+
     aid = str(uuid.uuid4())
     doc = {
         "id": aid,
@@ -12792,6 +14726,9 @@ async def create_avance(body: RegistroAvanceIn, user: dict = Depends(current_use
         "origen": "APP",
         "linea_base_batch_id": None,
         "es_retroceso": es_retroceso,
+        "precio_unitario_congelado": dec_to_str(precio_congelado),
+        "importe_ganado_congelado": dec_to_str(importe_congelado),
+        "fuera_de_ventana": fuera_de_ventana,
     }
     await db.registros_avance.insert_one(doc)
     return await _registro_avance_out(doc)
@@ -12929,6 +14866,317 @@ async def avances_resumen(
         precio = precios_por_concepto.get(d["concepto_id"], "0")
         total += compute_importe(d.get("cantidad_ejecutada", "0"), precio)
     return AvancesResumenOut(total_registros=len(docs), importe_total=dec_to_str(round_money(total)))
+
+
+# === Etapa EVM: Análisis de Periodos (Valor Ganado) ==========================
+def _prorrateo_concepto_en_ventana(concepto: dict, ventana_ini: date, ventana_fin: date) -> Decimal:
+    """PV que aporta UN concepto a la ventana consultada.
+
+    Fracción de días EXACTA con Decimal (nunca float): un concepto puede
+    durar varios años, y el margen de error de un float sí se nota al sumar
+    miles de conceptos. Devuelve 0 si el concepto no tiene datos EVM
+    todavía (ver _concepto_tiene_datos_evm) o no intersecta la ventana —
+    nunca lanza, un concepto sin migrar simplemente no aporta PV."""
+    if not _concepto_tiene_datos_evm(concepto) or not concepto.get("fecha_inicio") or not concepto.get("fecha_fin"):
+        return Decimal("0")
+    c_ini = date.fromisoformat(concepto["fecha_inicio"])
+    c_fin = date.fromisoformat(concepto["fecha_fin"])
+
+    overlap_ini = max(c_ini, ventana_ini)
+    overlap_fin = min(c_fin, ventana_fin)
+    if overlap_ini > overlap_fin:
+        return Decimal("0")
+
+    dias_en_ventana = (overlap_fin - overlap_ini).days + 1  # inclusivo
+    dias_totales = (c_fin - c_ini).days + 1
+    fraccion = Decimal(dias_en_ventana) / Decimal(dias_totales)
+    return fraccion * to_decimal(concepto["importe_total_editable"])
+    # No se redondea aquí — el redondeo a 2 decimales se hace UNA sola vez,
+    # sobre el total ya sumado, en el endpoint. Redondear por concepto y
+    # luego sumar miles de redondeos es justo el tipo de acumulación de
+    # error que to_decimal/round_money existen para evitar.
+
+
+def _rango_meses(c_ini: date, c_fin: date) -> List["tuple[date, date]"]:
+    """[(inicio_mes, fin_mes), ...] recortados a [c_ini, c_fin] — un par por
+    cada mes calendario que el concepto toca, el primero y el último
+    recortados a las fechas reales del concepto (no al 1 y al 30/31)."""
+    meses = []
+    cursor = date(c_ini.year, c_ini.month, 1)
+    while cursor <= c_fin:
+        if cursor.month == 12:
+            siguiente = date(cursor.year + 1, 1, 1)
+        else:
+            siguiente = date(cursor.year, cursor.month + 1, 1)
+        mes_ini = max(cursor, c_ini)
+        mes_fin = min(siguiente - timedelta(days=1), c_fin)
+        meses.append((mes_ini, mes_fin))
+        cursor = siguiente
+    return meses
+
+
+def _curva_mensual_concepto(concepto: dict) -> List[dict]:
+    """Reparte importe_total_editable en un valor por mes calendario dentro
+    de [fecha_inicio, fecha_fin] — para la Curva S del dashboard (Tarea 4).
+
+    A diferencia de _prorrateo_concepto_en_ventana (una sola fracción sobre
+    una ventana), aquí SÍ hay que garantizar que la suma de todos los meses
+    sea EXACTAMENTE importe_total_editable: cualquier residuo de la
+    división se asigna al ÚLTIMO mes, nunca se pierde ni se reparte
+    disperso (reparto de centavos estándar)."""
+    if not _concepto_tiene_datos_evm(concepto) or not concepto.get("fecha_inicio") or not concepto.get("fecha_fin"):
+        return []
+    c_ini = date.fromisoformat(concepto["fecha_inicio"])
+    c_fin = date.fromisoformat(concepto["fecha_fin"])
+    dias_totales = (c_fin - c_ini).days + 1
+    importe = to_decimal(concepto["importe_total_editable"])
+
+    meses = _rango_meses(c_ini, c_fin)
+    resultado = []
+    acumulado = Decimal("0")
+    for i, (mes_ini, mes_fin) in enumerate(meses):
+        if i == len(meses) - 1:
+            valor_mes = importe - acumulado  # último mes se lleva el residuo exacto
+        else:
+            dias_mes = (mes_fin - mes_ini).days + 1
+            valor_mes = importe * Decimal(dias_mes) / Decimal(dias_totales)
+            acumulado += valor_mes
+        resultado.append({"mes": mes_ini.strftime("%Y-%m"), "valor": dec_to_str(valor_mes)})
+    return resultado
+
+
+class AnalisisPeriodoOut(BaseModel):
+    project_id: str
+    start: str
+    end: str
+    pv: str  # Valor Planeado
+    ev: str  # Valor Ganado
+    ac: str  # Costo Real
+    spi: Optional[str] = None  # EV / PV — Schedule Performance Index
+    cpi: Optional[str] = None  # EV / AC — Cost Performance Index
+    variacion_cronograma: str  # EV - PV
+    variacion_costo: str       # EV - AC
+
+
+class ExcepcionEvmOut(BaseModel):
+    concepto_id: str
+    clave: str
+    descripcion: str
+    tipo: Literal["fuera_de_ventana", "sobre_meta"]
+    detalle: str
+
+
+class CurvaSOut(BaseModel):
+    meses: List[str]
+    planeado_acumulado: List[str]
+    ganado_acumulado: List[str]
+    real_acumulado: List[str]
+
+
+@api.get("/projects/{pid}/analisis_periodo", response_model=AnalisisPeriodoOut)
+async def analisis_periodo(pid: str, start: str, end: str, user: dict = Depends(current_user)):
+    """Motor EVM: PV analítico (nunca se guarda un prorrateo día por día en
+    Mongo, ver _prorrateo_concepto_en_ventana), EV desde lo ya CONGELADO en
+    cada RegistroAvance (nunca se recalcula con el precio de hoy — ver
+    create_avance), AC desde gastos_reales (captura manual de
+    administración)."""
+    await ensure_project_access(user, pid)
+    try:
+        ventana_ini, ventana_fin = date.fromisoformat(start), date.fromisoformat(end)
+    except ValueError:
+        raise HTTPException(400, "start/end deben ser YYYY-MM-DD")
+    if ventana_fin < ventana_ini:
+        raise HTTPException(400, "end no puede ser anterior a start")
+
+    conceptos = await db.conceptos.find({"project_id": pid, "activo": True}).to_list(length=100000)
+    pv_total = sum(
+        (_prorrateo_concepto_en_ventana(c, ventana_ini, ventana_fin) for c in conceptos),
+        start=Decimal("0"),
+    )
+
+    ev_total = Decimal("0")
+    async for a in db.registros_avance.find({"project_id": pid, "fecha": {"$gte": start, "$lte": end}}):
+        if a.get("importe_ganado_congelado") is not None:
+            ev_total += to_decimal(a["importe_ganado_congelado"])
+        # Avances capturados ANTES de la congelación (sin
+        # importe_ganado_congelado) simplemente no aportan EV — no hay
+        # precio histórico confiable que inventarles.
+
+    ac_total = Decimal("0")
+    async for g in db.gastos_reales.find({"project_id": pid, "fecha": {"$gte": start, "$lte": end}}):
+        ac_total += to_decimal(g["monto"])
+
+    # SPI/CPI son índices de desempeño, no dinero — se muestran a 4
+    # decimales (Decimal.quantize explícito con redondeo HALF_UP, nunca la
+    # división cruda: ev_total/pv_total sin redondear puede arrastrar ~28
+    # dígitos significativos del contexto de Decimal, inservible para UI).
+    CUATRO_DECIMALES = Decimal("0.0001")
+    spi = dec_to_str((ev_total / pv_total).quantize(CUATRO_DECIMALES, rounding=ROUND_HALF_UP)) if pv_total != 0 else None
+    cpi = dec_to_str((ev_total / ac_total).quantize(CUATRO_DECIMALES, rounding=ROUND_HALF_UP)) if ac_total != 0 else None
+
+    return AnalisisPeriodoOut(
+        project_id=pid, start=start, end=end,
+        pv=dec_to_str(round_money(pv_total)),
+        ev=dec_to_str(round_money(ev_total)),
+        ac=dec_to_str(round_money(ac_total)),
+        spi=spi, cpi=cpi,
+        variacion_cronograma=dec_to_str(round_money(ev_total - pv_total)),
+        variacion_costo=dec_to_str(round_money(ev_total - ac_total)),
+    )
+
+
+@api.get("/projects/{pid}/analisis_periodo/curva_s", response_model=CurvaSOut)
+async def analisis_periodo_curva_s(pid: str, user: dict = Depends(current_user)):
+    """Curva S completa del proyecto (todos los meses que tocan sus
+    conceptos EVM), para el gráfico de 3 líneas del dashboard — no depende
+    de start/end porque la curva se ve completa, la ventana de
+    start/end es solo para las tarjetas de analisis_periodo."""
+    await ensure_project_access(user, pid)
+    conceptos = await db.conceptos.find({"project_id": pid, "activo": True}).to_list(length=100000)
+
+    planeado_por_mes: Dict[str, Decimal] = {}
+    for c in conceptos:
+        for punto in _curva_mensual_concepto(c):
+            planeado_por_mes[punto["mes"]] = planeado_por_mes.get(punto["mes"], Decimal("0")) + to_decimal(punto["valor"])
+
+    ganado_por_mes: Dict[str, Decimal] = {}
+    async for a in db.registros_avance.find({"project_id": pid}):
+        if a.get("importe_ganado_congelado") is None or not a.get("fecha"):
+            continue
+        mes = a["fecha"][:7]  # "YYYY-MM-DD" -> "YYYY-MM"
+        ganado_por_mes[mes] = ganado_por_mes.get(mes, Decimal("0")) + to_decimal(a["importe_ganado_congelado"])
+
+    real_por_mes: Dict[str, Decimal] = {}
+    async for g in db.gastos_reales.find({"project_id": pid}):
+        mes = g["fecha"][:7]
+        real_por_mes[mes] = real_por_mes.get(mes, Decimal("0")) + to_decimal(g["monto"])
+
+    todos_los_meses = sorted(set(planeado_por_mes) | set(ganado_por_mes) | set(real_por_mes))
+    planeado_acum, ganado_acum, real_acum = Decimal("0"), Decimal("0"), Decimal("0")
+    planeado_serie, ganado_serie, real_serie = [], [], []
+    for mes in todos_los_meses:
+        planeado_acum += planeado_por_mes.get(mes, Decimal("0"))
+        ganado_acum += ganado_por_mes.get(mes, Decimal("0"))
+        real_acum += real_por_mes.get(mes, Decimal("0"))
+        planeado_serie.append(dec_to_str(round_money(planeado_acum)))
+        ganado_serie.append(dec_to_str(round_money(ganado_acum)))
+        real_serie.append(dec_to_str(round_money(real_acum)))
+
+    return CurvaSOut(meses=todos_los_meses, planeado_acumulado=planeado_serie, ganado_acumulado=ganado_serie, real_acumulado=real_serie)
+
+
+@api.get("/projects/{pid}/analisis_periodo/excepciones", response_model=List[ExcepcionEvmOut])
+async def analisis_periodo_excepciones(pid: str, user: dict = Depends(current_user)):
+    """Lista por excepción del dashboard (Tarea 4): conceptos con avances
+    fuera de su ventana fecha_inicio/fecha_fin, o cuyo acumulado ejecutado
+    superó meta_cantidad. Nunca bloquea nada — es solo para revisión."""
+    await ensure_project_access(user, pid)
+    conceptos = await db.conceptos.find({"project_id": pid, "activo": True}).to_list(length=100000)
+    conceptos_por_id = {c["id"]: c for c in conceptos}
+
+    excepciones: List[ExcepcionEvmOut] = []
+
+    concepto_ids_fuera_de_ventana: set = set()
+    async for a in db.registros_avance.find({"project_id": pid, "fuera_de_ventana": True}):
+        concepto_ids_fuera_de_ventana.add(a["concepto_id"])
+    for cid in concepto_ids_fuera_de_ventana:
+        c = conceptos_por_id.get(cid)
+        if not c:
+            continue
+        excepciones.append(ExcepcionEvmOut(
+            concepto_id=cid, clave=c["clave"], descripcion=c["descripcion"],
+            tipo="fuera_de_ventana",
+            detalle=f"Tiene avances capturados fuera de su ventana {c.get('fecha_inicio')} — {c.get('fecha_fin')}",
+        ))
+
+    for c in conceptos:
+        if not _concepto_tiene_datos_evm(c):
+            continue
+        modo_avance = "CANTIDAD"  # el chequeo de sobre-meta es sobre cantidad física, no aplica a PORCENTAJE
+        project = await db.projects.find_one({"id": pid})
+        if (project or {}).get("modo_avance") == "PORCENTAJE":
+            continue
+        ejecutado = to_decimal(await _concepto_ejecutado_acumulado(c["id"], modo_avance))
+        meta = to_decimal(c["meta_cantidad"])
+        if ejecutado > meta:
+            excepciones.append(ExcepcionEvmOut(
+                concepto_id=c["id"], clave=c["clave"], descripcion=c["descripcion"],
+                tipo="sobre_meta",
+                detalle=f"Ejecutado {dec_to_str(ejecutado)} supera la meta {dec_to_str(meta)}",
+            ))
+    return excepciones
+
+
+class GastoRealIn(BaseModel):
+    fecha: str  # "YYYY-MM-DD"
+    monto: str
+    concepto_texto: str  # descripción libre ("Nómina semana 12", "Factura #445") — AC es agregado, no por partida
+
+    @field_validator("monto")
+    @classmethod
+    def _v_monto(cls, v):
+        to_decimal(v)
+        return v
+
+    @field_validator("fecha")
+    @classmethod
+    def _v_fecha(cls, v):
+        try:
+            date.fromisoformat(v)
+        except ValueError:
+            raise ValueError(f"fecha inválida, se espera YYYY-MM-DD: {v!r}")
+        return v
+
+
+class GastoRealOut(BaseModel):
+    id: str
+    project_id: str
+    fecha: str
+    monto: str
+    concepto_texto: str
+    capturado_por: str
+    creado_en: datetime
+
+
+@api.post("/projects/{pid}/gastos_reales", response_model=GastoRealOut)
+async def create_gasto_real(pid: str, body: GastoRealIn, user: dict = Depends(require_role(ROLE_SUB, ROLE_COORD))):
+    """AC (Costo Real) del motor EVM: captura simple y manual — no intenta
+    reconciliar facturas/nómina automáticamente, solo registra el monto que
+    administración ya calculó fuera del sistema."""
+    await ensure_project_access(user, pid)
+    gid = str(uuid.uuid4())
+    doc = {
+        "id": gid, "project_id": pid, "fecha": body.fecha, "monto": body.monto,
+        "concepto_texto": body.concepto_texto.strip(),
+        "capturado_por": user["id"], "creado_en": datetime.now(timezone.utc),
+    }
+    await db.gastos_reales.insert_one(doc)
+    return GastoRealOut(**doc)
+
+
+@api.get("/projects/{pid}/gastos_reales", response_model=List[GastoRealOut])
+async def list_gastos_reales(pid: str, desde: Optional[str] = None, hasta: Optional[str] = None, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    query: dict = {"project_id": pid}
+    if desde or hasta:
+        rango: dict = {}
+        if desde:
+            rango["$gte"] = desde
+        if hasta:
+            rango["$lte"] = hasta
+        query["fecha"] = rango
+    docs = await db.gastos_reales.find(query).sort("fecha", -1).to_list(length=100000)
+    return [GastoRealOut(**d) for d in docs]
+
+
+@api.delete("/gastos_reales/{gasto_id}")
+async def delete_gasto_real(gasto_id: str, user: dict = Depends(require_role(ROLE_SUB, ROLE_COORD))):
+    gasto = await db.gastos_reales.find_one({"id": gasto_id})
+    if not gasto:
+        raise HTTPException(404, "Gasto no existe")
+    await ensure_project_access(user, gasto["project_id"])
+    await db.gastos_reales.delete_one({"id": gasto_id})
+    return {"ok": True}
 
 
 # === Exportar PDF ===============================================================

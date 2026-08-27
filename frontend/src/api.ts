@@ -215,7 +215,11 @@ export interface Project {
   template_docx?: string | null;
   template_pptx?: string | null;
   template_map?: string | null;
+  // GET /projects/{pid} ya NO trae el contenido de `general_data_images`
+  // (puede pesar hasta ~12-16MB) — solo el conteo. El contenido real se pide
+  // bajo demanda con api.getGeneralDataImages(pid) al abrir ese modal.
   general_data_images?: string[];
+  general_data_images_count?: number;
   // Configuración de Catálogo de Conceptos / avance — ver server.py
   // (ProjectOut). tipo_contrato y modo_avance son ejes independientes.
   tipo_contrato?: 'PRECIO_ALZADO' | 'PRECIOS_UNITARIOS';
@@ -290,7 +294,8 @@ export interface Invitation {
   puesto?: string | null;
   scope_node_id?: string | null;
   scope_node_ids: string[];
-  status: 'pending' | 'accepted' | 'revoked';
+  status: 'pending' | 'accepted' | 'revoked' | 'removed';
+  accepted_user_id?: string | null;
   created_at: string;
   expires_at: string;
 }
@@ -336,6 +341,26 @@ export interface Report {
    * caso es un placeholder local (`local-<client_id>`), no un id real del
    * backend todavia. */
   _queued?: boolean;
+  /** Reporte estructurado (opcional): id de la plantilla elegida y los
+   * valores capturados para sus campos dinámicos. Ver ReportTemplate. */
+  template_id?: string | null;
+  dynamic_data?: Record<string, any>;
+}
+
+export interface ReportTemplateField {
+  key: string;
+  label: string;
+  type: 'string' | 'number' | 'boolean' | 'select' | 'multiselect';
+  required: boolean;
+  options: string[];
+}
+
+export interface ReportTemplate {
+  id: string;
+  code: string;
+  name: string;
+  category: string;
+  fields: ReportTemplateField[];
 }
 
 export interface FeedItem {
@@ -441,6 +466,14 @@ export interface Minuta {
   author_name: string;
   author_role?: string;
   acuerdos: Acuerdo[];
+  pdf_file_id?: string | null;
+  pdf_original_name?: string | null;
+  pdf_mime_type?: string | null;
+  pdf_size?: number | null;
+  pdf_url?: string | null;
+  pdf_uploaded_at?: string | null;
+  pdf_uploaded_by?: string | null;
+  pdf_uploaded_by_name?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -501,6 +534,8 @@ export interface ProjectEvent {
   area_id?: string | null;
   area_name?: string | null;
   area_color?: string | null;
+  attendee_ids?: string[];
+  attendee_names?: string[];
   created_at: string;
   updated_at: string;
 }
@@ -606,6 +641,15 @@ export interface Concepto {
   // Calculados por el servidor
   importe_contratado: string;
   cantidad_ejecutada_acumulada: string;
+  // ---- Etapa EVM (aditivo) — null mientras el concepto no tenga datos EVM
+  // (importado por el Importador Maestro o editado a mano). Ver server.py,
+  // _concepto_tiene_datos_evm. ----------------------------------------
+  meta_cantidad?: string | null;
+  importe_total_editable?: string | null;
+  fecha_inicio?: string | null; // "YYYY-MM-DD"
+  fecha_fin?: string | null; // "YYYY-MM-DD"
+  /** precio_unitario_dinamico = importe_total_editable / meta_cantidad, calculado por el servidor — null si el concepto no tiene datos EVM. */
+  precio_unitario_dinamico?: string | null;
 }
 
 export interface ConceptoSearchResult extends Concepto {
@@ -692,6 +736,12 @@ export interface RegistroAvance {
   // anterior del mismo concepto — se permite (nunca se rechaza), pero se
   // marca para que la UI lo muestre. Siempre false fuera de ese modo.
   es_retroceso?: boolean;
+  // ---- Etapa EVM (aditivo) — congelado en el servidor al crear el avance,
+  // null solo para avances capturados ANTES de esta etapa. ---------------
+  precio_unitario_congelado?: string | null;
+  importe_ganado_congelado?: string | null;
+  /** true si `fecha` cayó fuera de [concepto.fecha_inicio, concepto.fecha_fin] al momento de capturar — nunca bloquea, solo se muestra en la Lista por Excepción. */
+  fuera_de_ventana?: boolean;
 }
 
 export interface AvancesResumen {
@@ -828,6 +878,113 @@ export interface SesionPendiente {
   validated_mapping: ImportMapping | null;
   validated_partida_id: string | null;
   convencion_usada: ConvencionDecimal | null;
+}
+
+// ---- Importador Maestro de Control de Obra (Etapa EVM) --------------------
+// Mismo wizard de 4 pasos que el catálogo legado (subir -> mapear -> validar
+// -> commit), pero mapea Clave/Descripción/Meta/Importe/Inicio/Fin en vez de
+// Clave/Descripción/Unidad/Cantidad/PU — ver server.py, sección
+// "Importador Maestro de Control de Obra". Colección de staging propia
+// (no comparte sesión con el catálogo legado).
+export interface ImportMappingEvm {
+  clave?: string;
+  descripcion?: string;
+  meta?: string;
+  importe?: string;
+  inicio?: string;
+  fin?: string;
+}
+
+// tipo incluye, además de los del catálogo legado: 'fecha_ilegible' | 'rango_fecha_invalido'
+export interface ImportFilaEvm {
+  fila: number;
+  clave: string | null;
+  descripcion: string | null;
+  meta_cantidad: string | null;
+  importe_total_editable: string | null;
+  fecha_inicio: string | null;
+  fecha_fin: string | null;
+  concepto_existente_id: string | null;
+  problemas: ImportProblema[];
+  // Calculados por _calcular_vista_filas_evm (overlay de correcciones aplicado):
+  meta_cantidad_efectiva: string | null;
+  importe_total_editable_efectivo: string | null;
+  fecha_inicio_efectiva: string | null;
+  fecha_fin_efectiva: string | null;
+  problemas_activos: ImportProblema[];
+  correccion: { meta_cantidad?: string; importe_total_editable?: string; fecha_inicio?: string; fecha_fin?: string; descartar?: boolean } | null;
+  estado: ImportEstadoFila;
+}
+
+export interface ImportValidateEvmResult {
+  resumen: ImportResumen;
+  convencion_usada: ConvencionDecimal | null;
+}
+
+export interface ImportPreviewEvmResponse {
+  resumen: ImportResumen;
+  filas: ImportFilaEvm[];
+  page: number;
+  page_size: number;
+  total_pages: number;
+  total_rows: number;
+  sheet: string | null;
+  partida_id: string | null;
+  convencion_usada: ConvencionDecimal | null;
+  duplicados_accion: 'omitir' | 'actualizar';
+}
+
+export interface ImportCommitEvmResult {
+  creados: number;
+  actualizados: number;
+  omitidos: number;
+  con_error: number;
+  descartados: number;
+  import_batch_id: string;
+}
+
+// ---- Análisis de Periodos EVM (Valor Ganado) -------------------------------
+export interface AnalisisPeriodo {
+  project_id: string;
+  start: string;
+  end: string;
+  /** Valor Planeado (PV) — string decimal exacto, ver src/utils/money.ts. */
+  pv: string;
+  /** Valor Ganado (EV). */
+  ev: string;
+  /** Costo Real (AC), desde gastos_reales. */
+  ac: string;
+  /** SPI = EV/PV — null si PV es 0 (nada planeado en la ventana). */
+  spi: string | null;
+  /** CPI = EV/AC — null si AC es 0 (nada de gasto real capturado). */
+  cpi: string | null;
+  variacion_cronograma: string;
+  variacion_costo: string;
+}
+
+export interface CurvaS {
+  meses: string[]; // "YYYY-MM", mismo orden que los 3 arreglos siguientes
+  planeado_acumulado: string[];
+  ganado_acumulado: string[];
+  real_acumulado: string[];
+}
+
+export interface ExcepcionEvm {
+  concepto_id: string;
+  clave: string;
+  descripcion: string;
+  tipo: 'fuera_de_ventana' | 'sobre_meta';
+  detalle: string;
+}
+
+export interface GastoReal {
+  id: string;
+  project_id: string;
+  fecha: string;
+  monto: string;
+  concepto_texto: string;
+  capturado_por: string;
+  creado_en: string;
 }
 
 // ---- Programa desglosado (Etapa 2 de la Ampliación del Catálogo) ----------
@@ -1144,6 +1301,11 @@ export const api = {
   deleteProjectTemplate: (pid: string, kind: 'pdf' | 'docx' | 'pptx' | 'map') =>
     request<Project>('DELETE', `/projects/${pid}/template/${kind}`),
 
+  // Carga bajo demanda del array completo (GET /projects/{pid} ya no lo trae
+  // por peso). Pedir solo al abrir el modal "Datos Generales".
+  getGeneralDataImages: (pid: string) =>
+    request<{ general_data_images: string[] }>('GET', `/projects/${pid}/general-data-images`),
+
   addGeneralDataImage: (pid: string, imageDataUrl: string) =>
     request<Project>('POST', `/projects/${pid}/general-data-images`, { image: imageDataUrl }),
 
@@ -1260,6 +1422,17 @@ export const api = {
   listInvitations: (pid: string) => request<Invitation[]>('GET', `/projects/${pid}/invitations`),
   createInvitation: (pid: string, body: any) => request<Invitation>('POST', `/projects/${pid}/invitations`, body),
   revokeInvitation: (iid: string) => request<{ ok: boolean }>('DELETE', `/invitations/${iid}`),
+  updateTeamMember: (pid: string, uid: string, body: { name?: string; email?: string; puesto?: string }) =>
+    request<User>('PATCH', `/projects/${pid}/team/${uid}`, body),
+  removeTeamMember: (pid: string, uid: string) =>
+    request<{ ok: boolean }>('DELETE', `/projects/${pid}/team/${uid}`),
+
+  getReportTemplates: () => request<ReportTemplate[]>('GET', '/report-templates'),
+  createReportTemplate: (body: { code: string; name: string; category: string; fields: ReportTemplateField[] }) =>
+    request<ReportTemplate>('POST', '/report-templates', body),
+  updateReportTemplate: (tid: string, body: { name?: string; category?: string; fields?: ReportTemplateField[] }) =>
+    request<ReportTemplate>('PUT', `/report-templates/${tid}`, body),
+  deleteReportTemplate: (tid: string) => request<{ ok: boolean }>('DELETE', `/report-templates/${tid}`),
 
   createReport: async (body: any): Promise<Report> => {
     // [OFFLINE 2026-08-07] Los especialistas capturan en obra, donde a
@@ -1419,8 +1592,8 @@ export const api = {
     return { blob: await res.blob(), filename: (m && m[1]) || `reporte_${period}.pptx` };
   },
 
-  listEvents: (pid: string, range: string = 'upcoming', limit = 500) =>
-    request<ProjectEvent[]>('GET', `/projects/${pid}/events?range=${range}&limit=${limit}`),
+  listEvents: (pid: string, range: string = 'upcoming', limit = 500, mine = false) =>
+    request<ProjectEvent[]>('GET', `/projects/${pid}/events?range=${range}&limit=${limit}${mine ? '&mine=1' : ''}`),
   createEvent: (pid: string, payload: any) => request<ProjectEvent>('POST', `/projects/${pid}/events`, payload),
   updateEvent: (eid: string, payload: any) => request<ProjectEvent>('PATCH', `/events/${eid}`, payload),
   deleteEvent: (eid: string) => request<{ ok: boolean }>('DELETE', `/events/${eid}`),
@@ -1450,6 +1623,62 @@ export const api = {
     request<Minuta>('PATCH', `/minutas/${mid}/acuerdos/${aid}`, { estado }),
   deleteMinuta: (mid: string) => request<{ ok: boolean }>('DELETE', `/minutas/${mid}`),
   minutasBadge: (pid: string) => request<MinutaBadge>('GET', `/projects/${pid}/minutas/badge`),
+
+  uploadMinutaPdf: async (
+    mid: string,
+    file: { uri: string; name: string; mimeType?: string | null },
+  ): Promise<Minuta> => {
+    if (!file || !file.uri) {
+      throw new ApiError(0, 'Archivo o URI no proporcionado');
+    }
+    const isWeb = Platform.OS === 'web';
+    const fileName = file.name || 'minuta.pdf';
+    const mime = file.mimeType || 'application/pdf';
+    const url = `${BASE}/minutas/${mid}/pdf`;
+
+    if (!isWeb) {
+      return nativeMultipartUpload<Minuta>(url, file.uri, fileName, mime, 'minuta_pdf');
+    }
+
+    const form = new FormData();
+    const resBlob = await fetch(file.uri);
+    const blob = await resBlob.blob();
+    try {
+      const f = new File([blob], fileName, { type: mime });
+      form.append('file', f);
+    } catch {
+      form.append('file', blob, fileName);
+    }
+    const headers = await authHeader();
+    const res = await fetch(url, { method: 'POST', headers, body: form as any });
+    const text = await res.text();
+    const data = text ? safeJson(text) : null;
+    if (!res.ok) {
+      const msg = (data && (data as any).detail) || `HTTP ${res.status}`;
+      throw new ApiError(res.status, typeof msg === 'string' ? msg : JSON.stringify(msg));
+    }
+    return data as Minuta;
+  },
+
+  downloadMinutaPdf: async (mid: string, fallbackFilename?: string): Promise<{ blob: Blob; filename: string; mime?: string }> => {
+    const headers = await authHeader();
+    const url = `${BASE}/minutas/${mid}/pdf`;
+    const res = await fetch(url, { method: 'GET', headers });
+    if (!res.ok) {
+      throw new ApiError(res.status, `HTTP ${res.status} al descargar el PDF`);
+    }
+    let filename = fallbackFilename || 'minuta.pdf';
+    const cd = res.headers.get('content-disposition') || res.headers.get('Content-Disposition') || '';
+    const m = /filename\*?=(?:UTF-8'')?"?([^";\n]+)"?/i.exec(cd);
+    if (m && m[1]) {
+      try { filename = decodeURIComponent(m[1]); } catch { filename = m[1]; }
+    }
+    const mime = res.headers.get('content-type') || undefined;
+    const blob = await res.blob();
+    return { blob, filename, mime: mime || undefined };
+  },
+
+  deleteMinutaPdf: (mid: string) => request<Minuta>('DELETE', `/minutas/${mid}/pdf`),
 
   // ---- Catálogo de Conceptos ------------------------------------------------
   listPartidas: (pid: string, incluirInactivas = false) =>
@@ -1589,6 +1818,68 @@ export const api = {
   importCatalogoCommit: (pid: string, importId: string) =>
     request<ImportCommitResult>('POST', `/projects/${pid}/conceptos/import/${importId}/commit`),
 
+  // ---- Importador Maestro de Control de Obra (Etapa EVM) --------------------
+  // Mismo patrón que importCatalogo* de arriba, colección/endpoints propios
+  // (no interfiere con el wizard legado mientras coexistan).
+  importEvmUploadSheets: async (
+    pid: string,
+    file: { uri: string; name: string; mimeType?: string | null },
+  ): Promise<ImportSheetsResponse> => {
+    if (!file || !file.uri) throw new ApiError(0, 'Archivo o URI no proporcionado');
+    const isWeb = Platform.OS === 'web';
+    const fileName = file.name || 'control_obra.xlsx';
+    const mime = file.mimeType || 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    const url = `${BASE}/projects/${pid}/conceptos/import_evm/sheets`;
+
+    if (!isWeb) {
+      return nativeMultipartUpload<ImportSheetsResponse>(url, file.uri, fileName, mime, 'import_evm');
+    }
+    const form = new FormData();
+    const resBlob = await fetch(file.uri);
+    const blob = await resBlob.blob();
+    try {
+      const f = new File([blob], fileName, { type: mime });
+      form.append('file', f);
+    } catch {
+      form.append('file', blob, fileName);
+    }
+    const headers = await authHeader();
+    const res = await fetch(url, { method: 'POST', headers, body: form as any });
+    const text = await res.text();
+    const data = text ? safeJson(text) : null;
+    if (!res.ok) {
+      const msg = (data && (data as any).detail) || `HTTP ${res.status}`;
+      throw new ApiError(res.status, typeof msg === 'string' ? msg : JSON.stringify(msg));
+    }
+    return data as ImportSheetsResponse;
+  },
+  importEvmHeaders: (importId: string, sheet?: string, headerRowIndex?: number) => {
+    const qs = new URLSearchParams();
+    if (sheet) qs.set('sheet', sheet);
+    if (headerRowIndex !== undefined) qs.set('header_row_index', String(headerRowIndex));
+    const suffix = qs.toString();
+    return request<ImportHeadersResponse>('GET', `/conceptos/import_evm/${importId}/headers${suffix ? `?${suffix}` : ''}`);
+  },
+  importEvmValidate: (pid: string, importId: string, payload: {
+    sheet: string; header_row_index?: number; mapping: ImportMappingEvm; partida_id: string; convencion?: ConvencionDecimal;
+  }) => request<ImportValidateEvmResult>('POST', `/projects/${pid}/conceptos/import_evm/${importId}/validate`, payload),
+  importEvmPreview: (importId: string, opts: { page?: number; page_size?: number } = {}) => {
+    const qs = new URLSearchParams();
+    if (opts.page) qs.set('page', String(opts.page));
+    if (opts.page_size) qs.set('page_size', String(opts.page_size));
+    const suffix = qs.toString();
+    return request<ImportPreviewEvmResponse>('GET', `/conceptos/import_evm/${importId}/preview${suffix ? `?${suffix}` : ''}`);
+  },
+  importEvmCorrectRow: (importId: string, fila: number, payload: {
+    meta_cantidad?: string; importe_total_editable?: string; fecha_inicio?: string; fecha_fin?: string; descartar?: boolean;
+  }) => request<{ fila: ImportFilaEvm; resumen: ImportResumen }>('PUT', `/conceptos/import_evm/${importId}/rows/${fila}`, payload),
+  importEvmSetDuplicadosAccion: (importId: string, accion: 'omitir' | 'actualizar') =>
+    request<{ duplicados_accion: string }>('PUT', `/conceptos/import_evm/${importId}/duplicados-accion`, { accion }),
+  importEvmDescartarSesion: (pid: string, importId: string) =>
+    request<{ ok: boolean }>('DELETE', `/projects/${pid}/conceptos/import_evm/${importId}`),
+  importEvmCommit: (pid: string, importId: string) =>
+    request<ImportCommitEvmResult>('POST', `/projects/${pid}/conceptos/import_evm/${importId}/commit`),
+
   // ---- Programa desglosado — mismo wizard, segundo destino -----------------
   programaImportSesionPendiente: (pid: string) =>
     request<ProgramaSesionPendiente | null>('GET', `/projects/${pid}/programa/import/pendiente`),
@@ -1709,6 +2000,25 @@ export const api = {
     const suffix = qs.toString();
     return request<AvancesResumen>('GET', `/projects/${pid}/avances/resumen${suffix ? `?${suffix}` : ''}`);
   },
+
+  // ---- Análisis de Periodos EVM (Valor Ganado) / Dashboard -----------------
+  analisisPeriodo: (pid: string, start: string, end: string) =>
+    request<AnalisisPeriodo>('GET', `/projects/${pid}/analisis_periodo?start=${start}&end=${end}`),
+  analisisPeriodoCurvaS: (pid: string) =>
+    request<CurvaS>('GET', `/projects/${pid}/analisis_periodo/curva_s`),
+  analisisPeriodoExcepciones: (pid: string) =>
+    request<ExcepcionEvm[]>('GET', `/projects/${pid}/analisis_periodo/excepciones`),
+
+  createGastoReal: (pid: string, payload: { fecha: string; monto: string; concepto_texto: string }) =>
+    request<GastoReal>('POST', `/projects/${pid}/gastos_reales`, payload),
+  listGastosReales: (pid: string, opts: { desde?: string; hasta?: string } = {}) => {
+    const qs = new URLSearchParams();
+    if (opts.desde) qs.set('desde', opts.desde);
+    if (opts.hasta) qs.set('hasta', opts.hasta);
+    const suffix = qs.toString();
+    return request<GastoReal[]>('GET', `/projects/${pid}/gastos_reales${suffix ? `?${suffix}` : ''}`);
+  },
+  deleteGastoReal: (gastoId: string) => request<{ ok: boolean }>('DELETE', `/gastos_reales/${gastoId}`),
 
   downloadCatalogoPdf: async (pid: string): Promise<{ blob: Blob; filename: string }> => {
     const tok = await getToken();

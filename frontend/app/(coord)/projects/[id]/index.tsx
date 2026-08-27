@@ -601,78 +601,6 @@ export default function ProjectDetailScreen() {
     }
   }
 
-  // === Configuracion del Catalogo de Conceptos / avance (Etapas 1 y 4) ======
-  function openCatalogoConfigModal() {
-    if (!project) return;
-    const p = project as any;
-    setTipoContratoDraft(p.tipo_contrato || 'PRECIOS_UNITARIOS');
-    setModoAvanceDraft(p.modo_avance || 'CANTIDAD');
-    setCadenciaDraft(p.cadencia_reporte || 'MENSUAL');
-    setDiaInicioSemanaDraft(p.dia_inicio_semana || 'LUNES');
-    setNombresNivelesDraft(p.nombres_niveles_partida || []);
-    setNombreNivelPartidaDraft('');
-    setNombreNivelConceptoDraft(p.nombre_nivel_concepto || '');
-    setUnidadesPersonalizadasDraft(p.unidades_personalizadas || []);
-    setUnidadPersonalizadaDraftTxt('');
-    setTituloModuloDraft(p.titulo_modulo_catalogo || '');
-    setCatalogoConfigModalOpen(true);
-  }
-
-  function addNombreNivel() {
-    const t = nombreNivelPartidaDraft.trim();
-    if (!t) return;
-    setNombresNivelesDraft((arr) => [...arr, t]); // orden importa (nivel 1, nivel 2...) -- no dedupe/reordena
-    setNombreNivelPartidaDraft('');
-  }
-
-  function addUnidadPersonalizada() {
-    const t = unidadPersonalizadaDraftTxt.trim().toUpperCase();
-    if (!t) return;
-    setUnidadesPersonalizadasDraft((arr) => Array.from(new Set([...arr, t])));
-    setUnidadPersonalizadaDraftTxt('');
-  }
-
-  // Cambiar tipo_contrato o modo_avance con datos ya cargados exige
-  // confirmacion explicita (server.py lo rechaza con 400 la primera vez) --
-  // el mensaje del propio backend explica la consecuencia, se reusa tal
-  // cual en el dialogo de confirmacion en vez de redactar una advertencia
-  // aparte que podria desincronizarse de la real.
-  async function saveCatalogoConfig(confirmar?: { tipoContrato?: boolean; modoAvance?: boolean }) {
-    if (!pid || catalogoConfigSaving) return;
-    try {
-      setCatalogoConfigSaving(true);
-      const upd = await api.updateProject(pid, {
-        tipo_contrato: tipoContratoDraft,
-        modo_avance: modoAvanceDraft,
-        cadencia_reporte: cadenciaDraft,
-        dia_inicio_semana: diaInicioSemanaDraft,
-        nombres_niveles_partida: nombresNivelesDraft,
-        nombre_nivel_concepto: nombreNivelConceptoDraft.trim() || null,
-        unidades_personalizadas: unidadesPersonalizadasDraft,
-        titulo_modulo_catalogo: tituloModuloDraft.trim() || null,
-        confirmar_cambio_tipo_contrato: !!confirmar?.tipoContrato,
-        confirmar_cambio_modo_avance: !!confirmar?.modoAvance,
-      } as any);
-      setProject((p) => ({ ...(p || ({} as any)), ...upd }));
-      setCatalogoConfigModalOpen(false);
-      Alert.alert('Guardado', 'La configuracion del catalogo se actualizo correctamente.');
-    } catch (e: any) {
-      const status = e instanceof ApiError ? e.status : 0;
-      const msg = e?.message || '';
-      if (status === 400 && /tipo_contrato/i.test(msg) && !confirmar?.tipoContrato) {
-        const ok = await confirm('Cambiar tipo de contrato', msg);
-        if (ok) { await saveCatalogoConfig({ ...confirmar, tipoContrato: true }); }
-      } else if (status === 400 && /modo_avance/i.test(msg) && !confirmar?.modoAvance) {
-        const ok = await confirm('Cambiar modo de avance', msg);
-        if (ok) { await saveCatalogoConfig({ ...confirmar, modoAvance: true }); }
-      } else {
-        Alert.alert('No se pudo guardar', msg || 'Intentalo nuevamente.');
-      }
-    } finally {
-      setCatalogoConfigSaving(false);
-    }
-  }
-
   // === Plantillas de exportacion (PDF/DOCX/PPTX/MAP) =========================
   const TPL_MIMES: Record<'pdf' | 'docx' | 'pptx' | 'map', string[]> = {
     pdf: ['application/pdf', '.pdf'],
@@ -760,7 +688,26 @@ export default function ProjectDetailScreen() {
   // emiten como slides/paginas dedicadas al inicio de las exportaciones.
   // ==========================================================================
   const [gdBusy, setGdBusy] = useState<'add' | number | null>(null);
-  const gdImages: string[] = (project as any)?.general_data_images || [];
+  // El contenido de las imagenes ya NO viaja con `project` (puede pesar
+  // varios MB) -- se pide bajo demanda solo al abrir este modal.
+  const [gdImages, setGdImages] = useState<string[]>([]);
+  const [gdImagesLoading, setGdImagesLoading] = useState(false);
+  const [gdImagesFetched, setGdImagesFetched] = useState(false);
+  const gdCount = gdImagesFetched ? gdImages.length : ((project as any)?.general_data_images_count ?? 0);
+
+  const loadGeneralDataImages = useCallback(async () => {
+    if (!pid || gdImagesFetched || gdImagesLoading) return;
+    setGdImagesLoading(true);
+    try {
+      const res = await api.getGeneralDataImages(pid);
+      setGdImages(res.general_data_images || []);
+      setGdImagesFetched(true);
+    } catch (e: any) {
+      Alert.alert('Error', e?.message || 'No se pudieron cargar las imagenes.');
+    } finally {
+      setGdImagesLoading(false);
+    }
+  }, [pid, gdImagesFetched, gdImagesLoading]);
 
   async function onAddGeneralDataImages() {
     if (gdBusy) return;
@@ -814,7 +761,12 @@ export default function ProjectDetailScreen() {
           errors.push(err?.message || 'error de red');
         }
       }
-      if (last) setProject((p) => ({ ...(p || ({} as any)), ...last }));
+      if (last) {
+        const { general_data_images: freshImages, ...rest } = last as any;
+        setProject((p) => ({ ...(p || ({} as any)), ...rest, general_data_images_count: (freshImages || []).length }));
+        setGdImages(freshImages || []);
+        setGdImagesFetched(true);
+      }
       if (uploaded === 0 && errors.length > 0) {
         // [DEBUG UI] Detalle COMPLETO de los errores (incluye URL, tamano y
         // mime enriquecidos por api.ts) para que el usuario pueda leerlos
@@ -854,7 +806,10 @@ export default function ProjectDetailScreen() {
     try {
       setGdBusy(idx);
       const upd = await api.deleteGeneralDataImage(pid, idx);
-      setProject((p) => ({ ...(p || ({} as any)), ...upd }));
+      const { general_data_images: freshImages, ...rest } = upd as any;
+      setProject((p) => ({ ...(p || ({} as any)), ...rest, general_data_images_count: (freshImages || []).length }));
+      setGdImages(freshImages || []);
+      setGdImagesFetched(true);
     } catch (e: any) {
       Alert.alert('No se pudo eliminar', e?.message || 'Intentalo nuevamente.');
     } finally {
@@ -899,6 +854,78 @@ export default function ProjectDetailScreen() {
       Alert.alert('No se pudo guardar', e?.message || 'Intentalo nuevamente.');
     } finally {
       setCatSaving(false);
+    }
+  }
+
+  // === Configuracion del Catalogo de Conceptos / avance (Etapas 1 y 4) ======
+  function openCatalogoConfigModal() {
+    if (!project) return;
+    const p = project as any;
+    setTipoContratoDraft(p.tipo_contrato || 'PRECIOS_UNITARIOS');
+    setModoAvanceDraft(p.modo_avance || 'CANTIDAD');
+    setCadenciaDraft(p.cadencia_reporte || 'MENSUAL');
+    setDiaInicioSemanaDraft(p.dia_inicio_semana || 'LUNES');
+    setNombresNivelesDraft(p.nombres_niveles_partida || []);
+    setNombreNivelPartidaDraft('');
+    setNombreNivelConceptoDraft(p.nombre_nivel_concepto || '');
+    setUnidadesPersonalizadasDraft(p.unidades_personalizadas || []);
+    setUnidadPersonalizadaDraftTxt('');
+    setTituloModuloDraft(p.titulo_modulo_catalogo || '');
+    setCatalogoConfigModalOpen(true);
+  }
+
+  function addNombreNivel() {
+    const t = nombreNivelPartidaDraft.trim();
+    if (!t) return;
+    setNombresNivelesDraft((arr) => [...arr, t]); // orden importa (nivel 1, nivel 2...) -- no dedupe/reordena
+    setNombreNivelPartidaDraft('');
+  }
+
+  function addUnidadPersonalizada() {
+    const t = unidadPersonalizadaDraftTxt.trim().toUpperCase();
+    if (!t) return;
+    setUnidadesPersonalizadasDraft((arr) => Array.from(new Set([...arr, t])));
+    setUnidadPersonalizadaDraftTxt('');
+  }
+
+  // Cambiar tipo_contrato o modo_avance con datos ya cargados exige
+  // confirmacion explicita (server.py lo rechaza con 400 la primera vez) --
+  // el mensaje del propio backend explica la consecuencia, se reusa tal
+  // cual en el dialogo de confirmacion en vez de redactar una advertencia
+  // aparte que podria desincronizarse de la real.
+  async function saveCatalogoConfig(confirmar?: { tipoContrato?: boolean; modoAvance?: boolean }) {
+    if (!pid || catalogoConfigSaving) return;
+    try {
+      setCatalogoConfigSaving(true);
+      const upd = await api.updateProject(pid, {
+        tipo_contrato: tipoContratoDraft,
+        modo_avance: modoAvanceDraft,
+        cadencia_reporte: cadenciaDraft,
+        dia_inicio_semana: diaInicioSemanaDraft,
+        nombres_niveles_partida: nombresNivelesDraft,
+        nombre_nivel_concepto: nombreNivelConceptoDraft.trim() || null,
+        unidades_personalizadas: unidadesPersonalizadasDraft,
+        titulo_modulo_catalogo: tituloModuloDraft.trim() || null,
+        confirmar_cambio_tipo_contrato: !!confirmar?.tipoContrato,
+        confirmar_cambio_modo_avance: !!confirmar?.modoAvance,
+      } as any);
+      setProject((p) => ({ ...(p || ({} as any)), ...upd }));
+      setCatalogoConfigModalOpen(false);
+      Alert.alert('Guardado', 'La configuracion del catalogo se actualizo correctamente.');
+    } catch (e: any) {
+      const status = e instanceof ApiError ? e.status : 0;
+      const msg = e?.message || '';
+      if (status === 400 && /tipo_contrato/i.test(msg) && !confirmar?.tipoContrato) {
+        const ok = await confirm('Cambiar tipo de contrato', msg);
+        if (ok) { await saveCatalogoConfig({ ...confirmar, tipoContrato: true }); }
+      } else if (status === 400 && /modo_avance/i.test(msg) && !confirmar?.modoAvance) {
+        const ok = await confirm('Cambiar modo de avance', msg);
+        if (ok) { await saveCatalogoConfig({ ...confirmar, modoAvance: true }); }
+      } else {
+        Alert.alert('No se pudo guardar', msg || 'Intentalo nuevamente.');
+      }
+    } finally {
+      setCatalogoConfigSaving(false);
     }
   }
 
@@ -1101,6 +1128,19 @@ export default function ProjectDetailScreen() {
               contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + 32 }]}
               ListHeaderComponent={
                 <>
+                  {/* Dashboard EVM (Valor Ganado) — destacado arriba de los
+                      accesos operativos diarios: es la vista ejecutiva de
+                      costo/tiempo del proyecto, no una captura de campo.
+                      Ver src/components/DashboardEVM.tsx. */}
+                  <View style={{ marginBottom: spacing.md }}>
+                    <ActionTile
+                      icon="stats-chart-outline"
+                      title="Control de Costos (EVM)"
+                      subtitle="Valor Ganado: SPI, CPI, Curva S y excepciones"
+                      onPress={() => router.push({ pathname: '/(coord)/projects/[id]/dashboard' as any, params: { id: pid } })}
+                    />
+                  </View>
+
                   {/* Registrar avance / Visualizar avance — accesos operativos
                       diarios (Catalogo de Conceptos en si, que es consulta y
                       administracion, se queda en la pestaña Configuracion). */}
@@ -1142,6 +1182,33 @@ export default function ProjectDetailScreen() {
                       </Text>
                     </View>
                     {!exportBusy && (
+                      <Ionicons name="chevron-forward" size={20} color="rgba(255,255,255,0.85)" />
+                    )}
+                  </Pressable>
+
+                  {/* Killer Feature . Resumen Ejecutivo con IA */}
+                  <Pressable
+                    onPress={openAiSummary}
+                    disabled={aiBusy}
+                    style={({ pressed }) => [
+                      styles.aiBtn,
+                      { marginBottom: spacing.md },
+                      aiBusy && { opacity: 0.7 },
+                      pressed && !aiBusy && { opacity: 0.92 },
+                    ]}
+                  >
+                    {aiBusy ? (
+                      <ActivityIndicator color="#fff" size="small" />
+                    ) : (
+                      <Ionicons name="sparkles" size={22} color="#fff" />
+                    )}
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.aiBtnTitle}>_ Generar Resumen Ejecutivo con IA</Text>
+                      <Text style={styles.aiBtnSub}>
+                        {aiBusy ? 'Analizando reportes del dia...' : 'Avances, actividades, personal y noticias (ultimas 24h)'}
+                      </Text>
+                    </View>
+                    {!aiBusy && (
                       <Ionicons name="chevron-forward" size={20} color="rgba(255,255,255,0.85)" />
                     )}
                   </Pressable>
@@ -1379,32 +1446,6 @@ export default function ProjectDetailScreen() {
               {/* Fuerza de Trabajo . Personal y Maquinaria derivados de los reportes */}
               <WorkforceTracker projectId={pid} />
 
-              {/* Killer Feature . Resumen Ejecutivo con IA */}
-              <Pressable
-                onPress={openAiSummary}
-                disabled={aiBusy}
-                style={({ pressed }) => [
-                  styles.aiBtn,
-                  aiBusy && { opacity: 0.7 },
-                  pressed && !aiBusy && { opacity: 0.92 },
-                ]}
-              >
-                {aiBusy ? (
-                  <ActivityIndicator color="#fff" size="small" />
-                ) : (
-                  <Ionicons name="sparkles" size={22} color="#fff" />
-                )}
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.aiBtnTitle}>_ Generar Resumen Ejecutivo con IA</Text>
-                  <Text style={styles.aiBtnSub}>
-                    {aiBusy ? 'Analizando reportes del dia...' : 'Avances, equipo y personal en 3 vinetas (ultimas 24h)'}
-                  </Text>
-                </View>
-                {!aiBusy && (
-                  <Ionicons name="chevron-forward" size={20} color="rgba(255,255,255,0.85)" />
-                )}
-              </Pressable>
-
               {/* Metas Diarias */}
               <DailyGoalsPanel projectId={pid} />
 
@@ -1494,11 +1535,11 @@ export default function ProjectDetailScreen() {
                 icon="images-outline"
                 title="Datos Generales"
                 subtitle={
-                  gdImages.length > 0
-                    ? `${gdImages.length} imagen${gdImages.length === 1 ? '' : 'es'} . presupuesto, programa, planos...`
+                  gdCount > 0
+                    ? `${gdCount} imagen${gdCount === 1 ? '' : 'es'} . presupuesto, programa, planos...`
                     : 'Sube imagenes (presupuesto, programa, planos, mapa...) que se incluiran al inicio del PDF/PPTX'
                 }
-                onPress={() => setGdModalOpen(true)}
+                onPress={() => { setGdModalOpen(true); loadGeneralDataImages(); }}
               />
               <ActionTile
                 icon="newspaper-outline"
@@ -1541,7 +1582,8 @@ export default function ProjectDetailScreen() {
               />
 
               {/* ===== Actividades Generales: vista curada de las actividades ya
-                  capturadas en reportes, en sus 3 niveles jerarquicos ===== */}
+                  capturadas en reportes — Generales, o por Ubicacion (fusiona
+                  los antiguos "Por Estacion"/"Por Poste") ===== */}
               <Text style={styles.sectionTitle}>Actividades Generales</Text>
               <ActionTile
                 icon="globe-outline"
@@ -1550,15 +1592,9 @@ export default function ProjectDetailScreen() {
                 onPress={() => router.push({ pathname: '/(coord)/projects/[id]/actividades-generales' as any, params: { id: pid, nivel: 'GENERAL' } })}
               />
               <ActionTile
-                icon="git-network-outline"
-                title="Por Estacion"
-                subtitle="Agrupadas por Subtramo"
-                onPress={() => router.push({ pathname: '/(coord)/projects/[id]/actividades-generales' as any, params: { id: pid, nivel: 'SUBTRAMO' } })}
-              />
-              <ActionTile
                 icon="location-outline"
-                title="Por Poste"
-                subtitle="Agrupadas por nodo hoja"
+                title="Por Ubicacion"
+                subtitle="Agrupadas por Subtramo o nodo hoja"
                 onPress={() => router.push({ pathname: '/(coord)/projects/[id]/actividades-generales' as any, params: { id: pid, nivel: 'NODO' } })}
               />
 
@@ -2018,286 +2054,6 @@ export default function ProjectDetailScreen() {
         </KeyboardAvoidingView>
       </Modal>
 
-      {/* ===== Modal: Identidad institucional (objeto + cliente + color) ===== */}
-      <Modal
-        visible={objetoModalOpen}
-        animationType="slide"
-        transparent
-        onRequestClose={() => !objetoSaving && setObjetoModalOpen(false)}
-      >
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-          keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 24}
-          style={styles.exportBackdrop}
-        >
-          <Pressable
-            style={StyleSheet.absoluteFill}
-            onPress={() => !objetoSaving && setObjetoModalOpen(false)}
-          />
-          <View style={[styles.exportSheet, styles.sheetSurface, { maxHeight: '88%' }]}>
-            <View style={styles.exportHandle} />
-            <View style={styles.exportHeader}>
-              <View style={styles.exportBack} />
-              <View style={{ flex: 1 }}>
-                <Text style={styles.exportTitle}>Identidad institucional</Text>
-                <Text style={styles.exportSubtitle}>
-                  Estos datos aparecen en las portadas y encabezados de los reportes exportados (PDF, Word, PowerPoint).
-                </Text>
-              </View>
-              <Pressable
-                onPress={() => !objetoSaving && setObjetoModalOpen(false)}
-                hitSlop={10}
-                style={styles.exportBack}
-              >
-                <Ionicons name="close" size={22} color={colors.text} />
-              </Pressable>
-            </View>
-            <ScrollView
-              keyboardShouldPersistTaps="handled"
-              contentContainerStyle={{ paddingHorizontal: spacing.md, paddingBottom: spacing.lg, gap: spacing.md }}
-            >
-              <View>
-                <Text style={styles.catLabel}>Cliente principal</Text>
-                <Text style={styles.catHelper}>
-                  Dependencia o entidad que contrata la obra (aparece como "CLIENTE" en la portada).
-                </Text>
-                <TextInput
-                  value={clienteDraft}
-                  onChangeText={setClienteDraft}
-                  placeholder="Ej. Gobierno de la Ciudad de Mexico - SOBSE"
-                  placeholderTextColor={colors.textMuted}
-                  style={styles.catInput}
-                />
-              </View>
-
-              <View>
-                <Text style={styles.catLabel}>Color institucional (#RRGGBB)</Text>
-                <Text style={styles.catHelper}>
-                  Color principal usado en banners, portadas y subtitulos de los reportes.
-                </Text>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-                  <TextInput
-                    value={colorDraft}
-                    onChangeText={setColorDraft}
-                    placeholder="#003366"
-                    placeholderTextColor={colors.textMuted}
-                    autoCapitalize="characters"
-                    style={[styles.catInput, { flex: 1 }]}
-                  />
-                  <View
-                    style={{
-                      width: 44,
-                      height: 44,
-                      borderRadius: radius.sm,
-                      borderWidth: 1,
-                      borderColor: colors.borderStrong,
-                      backgroundColor: /^#([0-9a-fA-F]{3}){1,2}$/.test((colorDraft || '').trim())
-                        ? colorDraft.trim()
-                        : '#003366',
-                    }}
-                  />
-                </View>
-              </View>
-
-              <View>
-                <Text style={styles.catLabel}>Color del texto de observaciones (#RRGGBB)</Text>
-                <Text style={styles.catHelper}>
-                  Color del pie de foto (observaciones) que acompana cada imagen en los reportes ejecutivos PDF/PPTX.
-                </Text>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-                  <TextInput
-                    value={reportTextColorDraft}
-                    onChangeText={setReportTextColorDraft}
-                    placeholder="#0F172A"
-                    placeholderTextColor={colors.textMuted}
-                    autoCapitalize="characters"
-                    style={[styles.catInput, { flex: 1 }]}
-                  />
-                  <View
-                    style={{
-                      width: 44,
-                      height: 44,
-                      borderRadius: radius.sm,
-                      borderWidth: 1,
-                      borderColor: colors.borderStrong,
-                      backgroundColor: /^#([0-9a-fA-F]{3}){1,2}$/.test((reportTextColorDraft || '').trim())
-                        ? reportTextColorDraft.trim()
-                        : '#0F172A',
-                    }}
-                  />
-                </View>
-              </View>
-
-              <View>
-                <Text style={styles.catLabel}>Objeto del contrato</Text>
-                <Text style={styles.catHelper}>
-                  Descripcion institucional del alcance del contrato (aparece en la portada como descripcion de la obra).
-                </Text>
-                <TextInput
-                  value={objetoDraft}
-                  onChangeText={setObjetoDraft}
-                  placeholder="Ej. Supervision tecnica de la construccion del Tramo III..."
-                  placeholderTextColor={colors.textMuted}
-                  multiline
-                  style={[styles.catInput, { minHeight: 90, textAlignVertical: 'top', paddingTop: 10 }]}
-                />
-              </View>
-
-              <Pressable
-                onPress={saveObjeto}
-                disabled={objetoSaving}
-                style={({ pressed }) => [
-                  styles.catSaveBtn,
-                  objetoSaving && { opacity: 0.7 },
-                  pressed && !objetoSaving && { opacity: 0.85 },
-                ]}
-              >
-                {objetoSaving ? (
-                  <ActivityIndicator color="#fff" />
-                ) : (
-                  <>
-                    <Ionicons name="save-outline" size={18} color="#fff" />
-                    <Text style={styles.catSaveTxt}>Guardar identidad</Text>
-                  </>
-                )}
-              </Pressable>
-            </ScrollView>
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
-
-      {/* ===== Modal: Datos Generales (imagenes multiples) ===== */}
-      <Modal
-        visible={gdModalOpen}
-        animationType="slide"
-        transparent
-        onRequestClose={() => gdBusy === null && setGdModalOpen(false)}
-      >
-        <Pressable
-          style={styles.exportBackdrop}
-          onPress={() => gdBusy === null && setGdModalOpen(false)}
-        />
-        <View style={[styles.exportSheet, styles.sheetSurface, { maxHeight: '88%' }]}>
-          <View style={styles.exportHandle} />
-          <View style={styles.exportHeader}>
-            <Pressable
-              style={styles.exportBack}
-              onPress={() => gdBusy === null && setGdModalOpen(false)}
-              hitSlop={10}
-            >
-              <Ionicons name="chevron-down" size={22} color={colors.text} />
-            </Pressable>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.exportTitle}>Datos Generales</Text>
-              <Text style={styles.exportSubtitle}>
-                Sube imagenes (presupuesto, programa, planos, mapa...) que se emitiran como slides/paginas dedicadas al inicio del PDF/PPTX.
-              </Text>
-            </View>
-          </View>
-          <ScrollView
-            style={{ marginTop: 12 }}
-            contentContainerStyle={{ paddingBottom: 24 }}
-            keyboardShouldPersistTaps="handled"
-          >
-            <Pressable
-              onPress={onAddGeneralDataImages}
-              disabled={gdBusy !== null}
-              style={({ pressed }) => ({
-                marginHorizontal: 20,
-                marginBottom: 16,
-                paddingVertical: 16,
-                borderRadius: radius.md,
-                backgroundColor: gdBusy === 'add' ? '#94A3B8' : colors.primary,
-                alignItems: 'center',
-                justifyContent: 'center',
-                flexDirection: 'row',
-                gap: 8,
-                opacity: pressed ? 0.9 : 1,
-                ...shadow.card,
-              })}
-            >
-              {gdBusy === 'add' ? (
-                <ActivityIndicator size="small" color="#fff" />
-              ) : (
-                <Ionicons name="add-circle" size={22} color="#fff" />
-              )}
-              <Text style={{ color: '#fff', fontWeight: '800', fontSize: 16 }}>
-                {gdBusy === 'add' ? 'Subiendo...' : '+ Agregar imagen(es)'}
-              </Text>
-            </Pressable>
-            {gdImages.length === 0 ? (
-              <View style={{ paddingHorizontal: 24, paddingVertical: 30, alignItems: 'center' }}>
-                <Ionicons name="images-outline" size={48} color={colors.textMuted} />
-                <Text style={{ color: colors.textMuted, textAlign: 'center', marginTop: 10, fontSize: 15 }}>
-                  Aun no has subido imagenes.
-                </Text>
-                <Text style={{ color: colors.textMuted, textAlign: 'center', marginTop: 4, fontSize: 12 }}>
-                  Maximo 5 MB por imagen . hasta 30 imagenes por proyecto.
-                </Text>
-                {/* Boton secundario redundante para no perder el CTA en el empty-state */}
-                <Pressable
-                  onPress={onAddGeneralDataImages}
-                  disabled={gdBusy !== null}
-                  style={({ pressed }) => ({
-                    marginTop: 22,
-                    paddingHorizontal: 22,
-                    paddingVertical: 12,
-                    borderRadius: radius.md,
-                    borderWidth: 1.5,
-                    borderColor: colors.primary,
-                    backgroundColor: pressed ? 'rgba(0,51,102,0.06)' : 'transparent',
-                    flexDirection: 'row',
-                    alignItems: 'center',
-                    gap: 8,
-                  })}
-                >
-                  <Ionicons name="cloud-upload-outline" size={20} color={colors.primary} />
-                  <Text style={{ color: colors.primary, fontWeight: '700', fontSize: 15 }}>
-                    Elegir de galeria
-                  </Text>
-                </Pressable>
-              </View>
-            ) : (
-              <View style={{ paddingHorizontal: 16, flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>
-                {gdImages.map((src, idx) => (
-                  <View
-                    key={idx}
-                    style={{
-                      width: '48%',
-                      backgroundColor: colors.surface,
-                      borderRadius: radius.md,
-                      borderWidth: 1,
-                      borderColor: colors.border,
-                      overflow: 'hidden',
-                    }}
-                  >
-                    <Image
-                      source={{ uri: src }}
-                      style={{ width: '100%', aspectRatio: 16 / 10, backgroundColor: '#F1F5F9' }}
-                      resizeMode="cover"
-                    />
-                    <View style={{ padding: 8, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <Text style={{ color: colors.textMuted, fontSize: 12 }}>#{idx + 1}</Text>
-                      <Pressable
-                        onPress={() => onDeleteGeneralDataImage(idx)}
-                        disabled={gdBusy !== null}
-                        hitSlop={8}
-                      >
-                        {gdBusy === idx ? (
-                          <ActivityIndicator size="small" color="#EF4444" />
-                        ) : (
-                          <Ionicons name="trash-outline" size={18} color="#EF4444" />
-                        )}
-                      </Pressable>
-                    </View>
-                  </View>
-                ))}
-              </View>
-            )}
-          </ScrollView>
-        </View>
-      </Modal>
-
       {/* ===== Modal: Configuracion del Catalogo de Conceptos / avance (Etapas 1 y 4) ===== */}
       <Modal
         visible={catalogoConfigModalOpen}
@@ -2532,6 +2288,290 @@ export default function ProjectDetailScreen() {
             </ScrollView>
           </View>
         </KeyboardAvoidingView>
+      </Modal>
+
+      {/* ===== Modal: Identidad institucional (objeto + cliente + color) ===== */}
+      <Modal
+        visible={objetoModalOpen}
+        animationType="slide"
+        transparent
+        onRequestClose={() => !objetoSaving && setObjetoModalOpen(false)}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 24}
+          style={styles.exportBackdrop}
+        >
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={() => !objetoSaving && setObjetoModalOpen(false)}
+          />
+          <View style={[styles.exportSheet, styles.sheetSurface, { maxHeight: '88%' }]}>
+            <View style={styles.exportHandle} />
+            <View style={styles.exportHeader}>
+              <View style={styles.exportBack} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.exportTitle}>Identidad institucional</Text>
+                <Text style={styles.exportSubtitle}>
+                  Estos datos aparecen en las portadas y encabezados de los reportes exportados (PDF, Word, PowerPoint).
+                </Text>
+              </View>
+              <Pressable
+                onPress={() => !objetoSaving && setObjetoModalOpen(false)}
+                hitSlop={10}
+                style={styles.exportBack}
+              >
+                <Ionicons name="close" size={22} color={colors.text} />
+              </Pressable>
+            </View>
+            <ScrollView
+              keyboardShouldPersistTaps="handled"
+              contentContainerStyle={{ paddingHorizontal: spacing.md, paddingBottom: spacing.lg, gap: spacing.md }}
+            >
+              <View>
+                <Text style={styles.catLabel}>Cliente principal</Text>
+                <Text style={styles.catHelper}>
+                  Dependencia o entidad que contrata la obra (aparece como "CLIENTE" en la portada).
+                </Text>
+                <TextInput
+                  value={clienteDraft}
+                  onChangeText={setClienteDraft}
+                  placeholder="Ej. Gobierno de la Ciudad de Mexico - SOBSE"
+                  placeholderTextColor={colors.textMuted}
+                  style={styles.catInput}
+                />
+              </View>
+
+              <View>
+                <Text style={styles.catLabel}>Color institucional (#RRGGBB)</Text>
+                <Text style={styles.catHelper}>
+                  Color principal usado en banners, portadas y subtitulos de los reportes.
+                </Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                  <TextInput
+                    value={colorDraft}
+                    onChangeText={setColorDraft}
+                    placeholder="#003366"
+                    placeholderTextColor={colors.textMuted}
+                    autoCapitalize="characters"
+                    style={[styles.catInput, { flex: 1 }]}
+                  />
+                  <View
+                    style={{
+                      width: 44,
+                      height: 44,
+                      borderRadius: radius.sm,
+                      borderWidth: 1,
+                      borderColor: colors.borderStrong,
+                      backgroundColor: /^#([0-9a-fA-F]{3}){1,2}$/.test((colorDraft || '').trim())
+                        ? colorDraft.trim()
+                        : '#003366',
+                    }}
+                  />
+                </View>
+              </View>
+
+              <View>
+                <Text style={styles.catLabel}>Color del texto de observaciones (#RRGGBB)</Text>
+                <Text style={styles.catHelper}>
+                  Color del pie de foto (observaciones) que acompana cada imagen en los reportes ejecutivos PDF/PPTX.
+                </Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                  <TextInput
+                    value={reportTextColorDraft}
+                    onChangeText={setReportTextColorDraft}
+                    placeholder="#0F172A"
+                    placeholderTextColor={colors.textMuted}
+                    autoCapitalize="characters"
+                    style={[styles.catInput, { flex: 1 }]}
+                  />
+                  <View
+                    style={{
+                      width: 44,
+                      height: 44,
+                      borderRadius: radius.sm,
+                      borderWidth: 1,
+                      borderColor: colors.borderStrong,
+                      backgroundColor: /^#([0-9a-fA-F]{3}){1,2}$/.test((reportTextColorDraft || '').trim())
+                        ? reportTextColorDraft.trim()
+                        : '#0F172A',
+                    }}
+                  />
+                </View>
+              </View>
+
+              <View>
+                <Text style={styles.catLabel}>Objeto del contrato</Text>
+                <Text style={styles.catHelper}>
+                  Descripcion institucional del alcance del contrato (aparece en la portada como descripcion de la obra).
+                </Text>
+                <TextInput
+                  value={objetoDraft}
+                  onChangeText={setObjetoDraft}
+                  placeholder="Ej. Supervision tecnica de la construccion del Tramo III..."
+                  placeholderTextColor={colors.textMuted}
+                  multiline
+                  style={[styles.catInput, { minHeight: 90, textAlignVertical: 'top', paddingTop: 10 }]}
+                />
+              </View>
+
+              <Pressable
+                onPress={saveObjeto}
+                disabled={objetoSaving}
+                style={({ pressed }) => [
+                  styles.catSaveBtn,
+                  objetoSaving && { opacity: 0.7 },
+                  pressed && !objetoSaving && { opacity: 0.85 },
+                ]}
+              >
+                {objetoSaving ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <>
+                    <Ionicons name="save-outline" size={18} color="#fff" />
+                    <Text style={styles.catSaveTxt}>Guardar identidad</Text>
+                  </>
+                )}
+              </Pressable>
+            </ScrollView>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      {/* ===== Modal: Datos Generales (imagenes multiples) ===== */}
+      <Modal
+        visible={gdModalOpen}
+        animationType="slide"
+        transparent
+        onRequestClose={() => gdBusy === null && setGdModalOpen(false)}
+      >
+        <Pressable
+          style={styles.exportBackdrop}
+          onPress={() => gdBusy === null && setGdModalOpen(false)}
+        />
+        <View style={[styles.exportSheet, styles.sheetSurface, { maxHeight: '88%' }]}>
+          <View style={styles.exportHandle} />
+          <View style={styles.exportHeader}>
+            <Pressable
+              style={styles.exportBack}
+              onPress={() => gdBusy === null && setGdModalOpen(false)}
+              hitSlop={10}
+            >
+              <Ionicons name="chevron-down" size={22} color={colors.text} />
+            </Pressable>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.exportTitle}>Datos Generales</Text>
+              <Text style={styles.exportSubtitle}>
+                Sube imagenes (presupuesto, programa, planos, mapa...) que se emitiran como slides/paginas dedicadas al inicio del PDF/PPTX.
+              </Text>
+            </View>
+          </View>
+          <ScrollView
+            style={{ marginTop: 12 }}
+            contentContainerStyle={{ paddingBottom: 24 }}
+            keyboardShouldPersistTaps="handled"
+          >
+            <Pressable
+              onPress={onAddGeneralDataImages}
+              disabled={gdBusy !== null}
+              style={({ pressed }) => ({
+                marginHorizontal: 20,
+                marginBottom: 16,
+                paddingVertical: 16,
+                borderRadius: radius.md,
+                backgroundColor: gdBusy === 'add' ? '#94A3B8' : colors.primary,
+                alignItems: 'center',
+                justifyContent: 'center',
+                flexDirection: 'row',
+                gap: 8,
+                opacity: pressed ? 0.9 : 1,
+                ...shadow.card,
+              })}
+            >
+              {gdBusy === 'add' ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <Ionicons name="add-circle" size={22} color="#fff" />
+              )}
+              <Text style={{ color: '#fff', fontWeight: '800', fontSize: 16 }}>
+                {gdBusy === 'add' ? 'Subiendo...' : '+ Agregar imagen(es)'}
+              </Text>
+            </Pressable>
+            {gdImagesLoading && !gdImagesFetched ? (
+              <View style={{ paddingVertical: 30, alignItems: 'center' }}>
+                <ActivityIndicator color={colors.primary} />
+              </View>
+            ) : gdImages.length === 0 ? (
+              <View style={{ paddingHorizontal: 24, paddingVertical: 30, alignItems: 'center' }}>
+                <Ionicons name="images-outline" size={48} color={colors.textMuted} />
+                <Text style={{ color: colors.textMuted, textAlign: 'center', marginTop: 10, fontSize: 15 }}>
+                  Aun no has subido imagenes.
+                </Text>
+                <Text style={{ color: colors.textMuted, textAlign: 'center', marginTop: 4, fontSize: 12 }}>
+                  Maximo 5 MB por imagen . hasta 30 imagenes por proyecto.
+                </Text>
+                {/* Boton secundario redundante para no perder el CTA en el empty-state */}
+                <Pressable
+                  onPress={onAddGeneralDataImages}
+                  disabled={gdBusy !== null}
+                  style={({ pressed }) => ({
+                    marginTop: 22,
+                    paddingHorizontal: 22,
+                    paddingVertical: 12,
+                    borderRadius: radius.md,
+                    borderWidth: 1.5,
+                    borderColor: colors.primary,
+                    backgroundColor: pressed ? 'rgba(0,51,102,0.06)' : 'transparent',
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 8,
+                  })}
+                >
+                  <Ionicons name="cloud-upload-outline" size={20} color={colors.primary} />
+                  <Text style={{ color: colors.primary, fontWeight: '700', fontSize: 15 }}>
+                    Elegir de galeria
+                  </Text>
+                </Pressable>
+              </View>
+            ) : (
+              <View style={{ paddingHorizontal: 16, flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>
+                {gdImages.map((src, idx) => (
+                  <View
+                    key={idx}
+                    style={{
+                      width: '48%',
+                      backgroundColor: colors.surface,
+                      borderRadius: radius.md,
+                      borderWidth: 1,
+                      borderColor: colors.border,
+                      overflow: 'hidden',
+                    }}
+                  >
+                    <Image
+                      source={{ uri: src }}
+                      style={{ width: '100%', aspectRatio: 16 / 10, backgroundColor: '#F1F5F9' }}
+                      resizeMode="cover"
+                    />
+                    <View style={{ padding: 8, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <Text style={{ color: colors.textMuted, fontSize: 12 }}>#{idx + 1}</Text>
+                      <Pressable
+                        onPress={() => onDeleteGeneralDataImage(idx)}
+                        disabled={gdBusy !== null}
+                        hitSlop={8}
+                      >
+                        {gdBusy === idx ? (
+                          <ActivityIndicator size="small" color="#EF4444" />
+                        ) : (
+                          <Ionicons name="trash-outline" size={18} color="#EF4444" />
+                        )}
+                      </Pressable>
+                    </View>
+                  </View>
+                ))}
+              </View>
+            )}
+          </ScrollView>
+        </View>
       </Modal>
 
       {/* ===== Modal: Plantillas de exportacion (PDF/DOCX/PPTX) ===== */}
