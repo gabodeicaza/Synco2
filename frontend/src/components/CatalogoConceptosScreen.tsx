@@ -23,9 +23,8 @@ import { ROLE_SUB, ROLE_COORD, APP_BRAND } from '@/src/utils/roles';
 import { UNIDADES, UNIDAD_LABELS, PERIODICIDAD_META_LABELS, Unidad } from '@/src/utils/unidades';
 import { formatMoney, formatCantidad, isValidDecimalInput, sumDecimalStringsAsCents, centsToDecimalString } from '@/src/utils/money';
 import { ImportarCatalogoModal } from '@/src/components/ImportarCatalogoModal';
-import { ImportarProgramaModal } from '@/src/components/ImportarProgramaModal';
+import { ImportarMaestroModal } from '@/src/components/ImportarMaestroModal';
 import { nombreNivel, nombreConcepto, tituloModuloCatalogo, pluralizar } from '@/src/utils/nombresNivel';
-import { ProgramaVersion } from '@/src/api';
 
 type ViewMode = 'partidas' | 'conceptos' | 'busqueda';
 
@@ -63,25 +62,11 @@ export default function CatalogoConceptosScreen({ projectId }: { projectId: stri
   const [importOpen, setImportOpen] = useState(false);
   const [nuevaPartidaOpen, setNuevaPartidaOpen] = useState(false);
 
-  // Programa desglosado (Etapa 2): panel de versiones + su propio wizard de
-  // importación, independiente del de catálogo (destino distinto, ver
-  // ImportarProgramaModal.tsx).
-  const [programaOpen, setProgramaOpen] = useState(false);
-  const [programaImportOpen, setProgramaImportOpen] = useState(false);
-  const [programaVersiones, setProgramaVersiones] = useState<ProgramaVersion[]>([]);
-  const [programaVersionesLoading, setProgramaVersionesLoading] = useState(false);
-
-  const loadProgramaVersiones = useCallback(async () => {
-    if (!projectId) return;
-    try {
-      setProgramaVersionesLoading(true);
-      setProgramaVersiones(await api.programaListVersiones(projectId));
-    } catch {
-      // best-effort: el panel de versiones no es crítico para el resto de la pantalla
-    } finally {
-      setProgramaVersionesLoading(false);
-    }
-  }, [projectId]);
+  // Importador único: para proyectos a PRECIO_ALZADO se usa el Importador
+  // Maestro (captura fecha_inicio/fecha_fin por concepto en el mismo paso,
+  // ver ImportarMaestroModal.tsx) — ya no hay un import de "Programa de
+  // obra" por separado, los datos se importan una sola vez.
+  const esPrecioAlzado = project?.tipo_contrato === 'PRECIO_ALZADO';
 
   const headerColor = project?.color_tema || colors.primary;
   const headerTextColor = contrastText(headerColor);
@@ -260,18 +245,7 @@ export default function CatalogoConceptosScreen({ projectId }: { projectId: stri
             />
           </Pressable>
           <Text style={[styles.brand, { color: headerTextColor }]}>{APP_BRAND}</Text>
-          {canImport ? (
-            <Pressable
-              onPress={() => { setProgramaOpen(true); loadProgramaVersiones(); }}
-              hitSlop={10}
-              style={styles.iconBtn}
-              accessibilityLabel="Programa de obra"
-            >
-              <Ionicons name="calendar-outline" size={20} color={headerTextColor} />
-            </Pressable>
-          ) : (
-            <View style={{ width: 32 }} />
-          )}
+          <View style={{ width: 32 }} />
         </View>
         <Text style={[styles.titleBar, { color: headerTextColor }]} numberOfLines={1}>
           {tituloModuloCatalogo(project).toUpperCase()} — {(project?.name || '').toUpperCase()}
@@ -368,17 +342,31 @@ export default function CatalogoConceptosScreen({ projectId }: { projectId: stri
         </Pressable>
       ) : null}
 
-      <ImportarCatalogoModal
-        visible={importOpen}
-        projectId={projectId}
-        partidas={partidas}
-        onClose={() => setImportOpen(false)}
-        onImported={() => {
-          setImportOpen(false);
-          loadPartidas();
-          if (selectedPartida) openPartida(selectedPartida);
-        }}
-      />
+      {esPrecioAlzado ? (
+        <ImportarMaestroModal
+          visible={importOpen}
+          projectId={projectId}
+          partidas={partidas}
+          onClose={() => setImportOpen(false)}
+          onImported={() => {
+            setImportOpen(false);
+            loadPartidas();
+            if (selectedPartida) openPartida(selectedPartida);
+          }}
+        />
+      ) : (
+        <ImportarCatalogoModal
+          visible={importOpen}
+          projectId={projectId}
+          partidas={partidas}
+          onClose={() => setImportOpen(false)}
+          onImported={() => {
+            setImportOpen(false);
+            loadPartidas();
+            if (selectedPartida) openPartida(selectedPartida);
+          }}
+        />
+      )}
 
       <NuevaPartidaModal
         visible={nuevaPartidaOpen}
@@ -392,96 +380,9 @@ export default function CatalogoConceptosScreen({ projectId }: { projectId: stri
         onCreada={() => { setNuevaPartidaOpen(false); loadPartidas(); }}
       />
 
-      <ProgramaVersionesModal
-        visible={programaOpen}
-        versiones={programaVersiones}
-        loading={programaVersionesLoading}
-        canImport={canImport}
-        onClose={() => setProgramaOpen(false)}
-        onImportar={() => { setProgramaOpen(false); setProgramaImportOpen(true); }}
-      />
-      <ImportarProgramaModal
-        visible={programaImportOpen}
-        projectId={projectId}
-        onClose={() => setProgramaImportOpen(false)}
-        onImported={() => {
-          setProgramaImportOpen(false);
-          loadProgramaVersiones();
-          setProgramaOpen(true);
-        }}
-      />
     </View>
   );
 }
-
-// ============================================================================
-// Programa desglosado (Etapa 2) — panel de versiones + entrada al wizard de
-// importación. Los programas se REPROGRAMAN: cada importación crea una
-// versión nueva sin borrar las anteriores, así que esto es solo un
-// historial de lectura + un botón, nada que editar aquí.
-// ============================================================================
-function ProgramaVersionesModal({
-  visible, versiones, loading, canImport, onClose, onImportar,
-}: {
-  visible: boolean;
-  versiones: ProgramaVersion[];
-  loading: boolean;
-  canImport: boolean;
-  onClose: () => void;
-  onImportar: () => void;
-}) {
-  return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <View style={styles.nuevaPartidaBackdrop}>
-        <View style={styles.nuevaPartidaCard}>
-          <Text style={styles.nuevaPartidaTitle}>Programa de obra</Text>
-          {loading ? (
-            <ActivityIndicator color={colors.primary} style={{ marginTop: 16 }} />
-          ) : versiones.length === 0 ? (
-            <Text style={styles.nuevaPartidaPadreTxt}>Todavía no se ha importado ningún programa.</Text>
-          ) : (
-            <ScrollView style={{ maxHeight: 320, marginTop: 8 }}>
-              {versiones.map((v) => (
-                <View key={v.id} style={progStyles.versionRow}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={progStyles.versionEtiqueta} numberOfLines={1}>{v.etiqueta}</Text>
-                    <Text style={progStyles.versionFecha}>{new Date(v.fecha_importacion).toLocaleDateString()}</Text>
-                  </View>
-                  {v.vigente ? (
-                    <View style={progStyles.vigenteBadge}>
-                      <Text style={progStyles.vigenteBadgeTxt}>VIGENTE</Text>
-                    </View>
-                  ) : null}
-                </View>
-              ))}
-            </ScrollView>
-          )}
-          <View style={{ flexDirection: 'row', gap: 10, marginTop: 16 }}>
-            <Pressable onPress={onClose} style={[styles.nuevaPartidaBtn, { backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border }]}>
-              <Text style={{ color: colors.text, fontWeight: '700' }}>Cerrar</Text>
-            </Pressable>
-            {canImport ? (
-              <Pressable onPress={onImportar} style={[styles.nuevaPartidaBtn, { backgroundColor: colors.primary }]}>
-                <Text style={{ color: '#fff', fontWeight: '700' }}>Importar programa</Text>
-              </Pressable>
-            ) : null}
-          </View>
-        </View>
-      </View>
-    </Modal>
-  );
-}
-
-const progStyles = StyleSheet.create({
-  versionRow: {
-    flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 10,
-    borderBottomWidth: 1, borderBottomColor: colors.border,
-  },
-  versionEtiqueta: { fontSize: 13, fontWeight: '700', color: colors.text },
-  versionFecha: { fontSize: 11, color: colors.textMuted, marginTop: 2 },
-  vigenteBadge: { backgroundColor: colors.success, borderRadius: radius.full, paddingHorizontal: 8, paddingVertical: 3 },
-  vigenteBadgeTxt: { fontSize: 10, fontWeight: '800', color: '#fff' },
-});
 
 // ============================================================================
 // Crear partida — mínimo necesario (clave + nombre) para poder tener un
