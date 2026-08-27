@@ -1721,4 +1721,24 @@ export const api = {
     const m = cd.match(/filename="?([^"]+)"?/);
     return { blob: await res.blob(), filename: (m && m[1]) || 'catalogo_conceptos.pdf' };
   },
+
+  downloadAvancePeriodoPdf: async (
+    pid: string,
+    opts: { desde?: string; hasta?: string; partida_id?: string } = {},
+  ): Promise<{ blob: Blob; filename: string }> => {
+    const tok = await getToken();
+    const qs = new URLSearchParams();
+    if (opts.desde) qs.set('desde', opts.desde);
+    if (opts.hasta) qs.set('hasta', opts.hasta);
+    if (opts.partida_id) qs.set('partida_id', opts.partida_id);
+    const suffix = qs.toString();
+    const res = await fetch(`${BASE}/projects/${pid}/export/avance_periodo.pdf${suffix ? `?${suffix}` : ''}`, {
+      method: 'GET',
+      headers: tok ? { Authorization: `Bearer ${tok}` } : {},
+    });
+    if (!res.ok) throw new ApiError(res.status, await _downloadErrorMessage(res, 'Error al descargar PDF'));
+    const cd = res.headers.get('Content-Disposition') || '';
+    const m = cd.match(/filename="?([^"]+)"?/);
+    return { blob: await res.blob(), filename: (m && m[1]) || 'avance_periodo.pdf' };
+  },
 };

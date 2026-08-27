@@ -13039,6 +13039,176 @@ async def export_catalogo_pdf(pid: str, user: dict = Depends(current_user)):
     )
 
 
+@api.get("/projects/{pid}/export/avance_periodo.pdf")
+async def export_avance_periodo_pdf(
+    pid: str,
+    desde: Optional[str] = None,
+    hasta: Optional[str] = None,
+    partida_id: Optional[str] = None,
+    user: dict = Depends(current_user),
+):
+    """PDF del avance del periodo (pantalla 'Visualizar avance'): filas =
+    conceptos en los que se gastó dinero en el periodo, columnas = días con
+    registros, celda = importe gastado ese día en ese concepto. Incluye fila
+    de totales por día y total general del periodo. Mismos filtros que
+    list_avances/avances_resumen. Mismo criterio que export_catalogo_pdf:
+    render bloqueante (reportlab) en thread aparte, 100% en memoria."""
+    await ensure_project_access(user, pid)
+    proj = await db.projects.find_one({"id": pid})
+    if not proj:
+        raise HTTPException(404, "Proyecto no existe")
+
+    query: dict = {"project_id": pid}
+    if desde or hasta:
+        rango: dict = {}
+        if desde:
+            rango["$gte"] = desde
+        if hasta:
+            rango["$lte"] = hasta
+        query["fecha"] = rango
+    if partida_id:
+        partida_ids = await _partida_subtree_ids_en_proyecto(pid, partida_id)
+        conceptos_filtro = await db.conceptos.find({"partida_id": {"$in": partida_ids}}).to_list(length=100000)
+        query["concepto_id"] = {"$in": [c["id"] for c in conceptos_filtro]}
+    docs = await db.registros_avance.find(query).to_list(length=100000)
+
+    concepto_ids = list({d["concepto_id"] for d in docs})
+    conceptos_por_id: dict = {}
+    if concepto_ids:
+        cs = await db.conceptos.find({"id": {"$in": concepto_ids}}).to_list(length=len(concepto_ids))
+        conceptos_por_id = {c["id"]: c for c in cs}
+
+    # Importe por (concepto_id, fecha) — suma si hay varios registros el
+    # mismo día para el mismo concepto (nunca se sobreescriben entre sí).
+    importes: dict = {}
+    fechas_set: set = set()
+    for d in docs:
+        cid = d["concepto_id"]
+        c = conceptos_por_id.get(cid)
+        if not c:
+            continue  # concepto ya no existe/no accesible — se omite del reporte
+        importe = compute_importe(d.get("cantidad_ejecutada", "0"), c.get("precio_unitario", "0"))
+        if importe == 0:
+            continue
+        fecha = d["fecha"]
+        fechas_set.add(fecha)
+        key = (cid, fecha)
+        importes[key] = importes.get(key, Decimal("0")) + importe
+
+    concepto_ids_con_gasto = sorted({cid for (cid, _f) in importes.keys()})
+    conceptos_out = sort_by_clave([conceptos_por_id[cid] for cid in concepto_ids_con_gasto])
+    fechas = sorted(fechas_set)
+
+    project_name = proj.get("name", "Proyecto")
+    project_color = _sanitize_color_hex(proj.get("color_tema")) or "#003366"
+
+    if desde and hasta:
+        periodo_label = f"DEL {desde} AL {hasta}"
+    elif desde:
+        periodo_label = f"DESDE {desde}"
+    elif hasta:
+        periodo_label = f"HASTA {hasta}"
+    else:
+        periodo_label = "TODO EL PROYECTO"
+
+    def _build_pdf_blocking() -> bytes:
+        from reportlab.lib.pagesizes import A4, landscape
+        from reportlab.lib.units import cm
+        from reportlab.lib.colors import HexColor, white
+        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.enums import TA_RIGHT, TA_CENTER
+
+        buf = io.BytesIO()
+        doc = SimpleDocTemplate(
+            buf, pagesize=landscape(A4),
+            topMargin=1.2 * cm, bottomMargin=1.2 * cm, leftMargin=1.2 * cm, rightMargin=1.2 * cm,
+        )
+        styles = getSampleStyleSheet()
+        title_style = ParagraphStyle("AvTitle", parent=styles["Heading1"], textColor=HexColor(project_color), fontSize=15)
+        subtitle_style = ParagraphStyle("AvSubtitle", parent=styles["Heading3"], fontSize=10, textColor=HexColor("#475569"), spaceAfter=8)
+        cell_style = ParagraphStyle("AvCell", parent=styles["BodyText"], fontSize=7, leading=8)
+        money_style = ParagraphStyle("AvMoney", parent=styles["BodyText"], fontSize=7, leading=8, alignment=TA_RIGHT)
+        header_style = ParagraphStyle("AvHeader", parent=styles["BodyText"], fontSize=7, leading=8, textColor=white, alignment=TA_CENTER)
+
+        story = [
+            Paragraph(f"AVANCE POR PERIODO — {project_name}", title_style),
+            Paragraph(periodo_label, subtitle_style),
+        ]
+
+        if not conceptos_out or not fechas:
+            story.append(Paragraph("Sin registros de avance en este periodo.", styles["BodyText"]))
+            doc.build(story)
+            return buf.getvalue()
+
+        CONCEPTO_COL = 6.5 * cm
+        TOTAL_COL = 2.2 * cm
+        DIA_COL = 1.7 * cm
+        usable = landscape(A4)[0] - 2.4 * cm
+        dias_por_pagina = max(1, int((usable - CONCEPTO_COL - TOTAL_COL) // DIA_COL))
+        bloques = [fechas[i:i + dias_por_pagina] for i in range(0, len(fechas), dias_por_pagina)]
+
+        total_general = Decimal("0")
+        for bi, bloque in enumerate(bloques):
+            col_widths = [CONCEPTO_COL] + [DIA_COL] * len(bloque) + [TOTAL_COL]
+            header_row = [Paragraph("CONCEPTO", header_style)]
+            header_row += [Paragraph(f"{f[8:10]}/{f[5:7]}", header_style) for f in bloque]
+            header_row += [Paragraph("TOTAL", header_style)]
+            rows = [header_row]
+
+            totales_col = {f: Decimal("0") for f in bloque}
+            for c in conceptos_out:
+                fila = [Paragraph(f'{c["clave"]} — {c.get("descripcion", "")}', cell_style)]
+                total_fila = Decimal("0")
+                for f in bloque:
+                    v = importes.get((c["id"], f), Decimal("0"))
+                    totales_col[f] += v
+                    total_fila += v
+                    fila.append(Paragraph(dec_to_str(round_money(v)) if v else "-", money_style))
+                fila.append(Paragraph(dec_to_str(round_money(total_fila)), money_style))
+                rows.append(fila)
+
+            fila_total = [Paragraph("TOTAL DEL DÍA", cell_style)]
+            total_bloque = Decimal("0")
+            for f in bloque:
+                fila_total.append(Paragraph(dec_to_str(round_money(totales_col[f])), money_style))
+                total_bloque += totales_col[f]
+            fila_total.append(Paragraph(dec_to_str(round_money(total_bloque)), money_style))
+            rows.append(fila_total)
+            total_general += total_bloque
+
+            table = Table(rows, colWidths=col_widths, repeatRows=1)
+            table.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), HexColor(project_color)),
+                ("TEXTCOLOR", (0, 0), (-1, 0), white),
+                ("GRID", (0, 0), (-1, -2), 0.4, HexColor("#CBD5E1")),
+                ("LINEABOVE", (0, -1), (-1, -1), 0.8, HexColor("#94A3B8")),
+                ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -2), [white, HexColor("#F8FAFC")]),
+            ]))
+            story.append(table)
+            if bi < len(bloques) - 1:
+                story.append(PageBreak())
+
+        story.append(Spacer(1, 14))
+        story.append(Paragraph(
+            f"TOTAL GASTADO EN EL PERIODO: {dec_to_str(round_money(total_general))}",
+            ParagraphStyle("AvTotal", parent=styles["Heading2"], alignment=TA_RIGHT),
+        ))
+        doc.build(story)
+        return buf.getvalue()
+
+    pdf_bytes = await asyncio.to_thread(_build_pdf_blocking)
+    frag_periodo = _safe_filename_fragment(f"{desde or 'inicio'}_{hasta or 'fin'}")
+    fname = f"avance_periodo_{_safe_filename_fragment(project_name)}_{frag_periodo}.pdf"
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
 # === PROGRAMA DESGLOSADO — wizard de importación y versionado ==============
 # Segundo destino del MISMO wizard de importación (subir -> hoja -> mapear ->
 # validar/preview -> commit) que ya existe para el catálogo. Sesión propia
