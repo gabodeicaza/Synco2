@@ -3614,6 +3614,10 @@ class TeamMemberPatch(BaseModel):
     name: Optional[str] = None
     email: Optional[EmailStr] = None
     puesto: Optional[str] = None
+    # Área/disciplina — editable tanto para Especialista como para
+    # Sub-coordinador (antes solo se podía asignar al invitar). Cadena vacía
+    # = quitar el área (permitido solo para sub-coordinador, ver abajo).
+    area_id: Optional[str] = None
 
 
 @api.patch("/projects/{pid}/team/{uid}")
@@ -3641,6 +3645,15 @@ async def update_team_member(
         update["email"] = email
     if body.puesto is not None:
         update["puesto"] = body.puesto.strip() or None
+    if body.area_id is not None:
+        area_id_val = body.area_id.strip() or None
+        if not area_id_val and member.get("role") == ROLE_ESPECIALISTA:
+            raise HTTPException(400, "Especialista requiere area_id")
+        if area_id_val:
+            area = await db.areas.find_one({"id": area_id_val, "project_id": pid})
+            if not area:
+                raise HTTPException(404, "area_id inválido")
+        update["area_id"] = area_id_val
 
     if update:
         await db.users.update_one({"id": uid}, {"$set": update})

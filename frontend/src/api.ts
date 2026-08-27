@@ -1422,7 +1422,7 @@ export const api = {
   listInvitations: (pid: string) => request<Invitation[]>('GET', `/projects/${pid}/invitations`),
   createInvitation: (pid: string, body: any) => request<Invitation>('POST', `/projects/${pid}/invitations`, body),
   revokeInvitation: (iid: string) => request<{ ok: boolean }>('DELETE', `/invitations/${iid}`),
-  updateTeamMember: (pid: string, uid: string, body: { name?: string; email?: string; puesto?: string }) =>
+  updateTeamMember: (pid: string, uid: string, body: { name?: string; email?: string; puesto?: string; area_id?: string }) =>
     request<User>('PATCH', `/projects/${pid}/team/${uid}`, body),
   removeTeamMember: (pid: string, uid: string) =>
     request<{ ok: boolean }>('DELETE', `/projects/${pid}/team/${uid}`),
