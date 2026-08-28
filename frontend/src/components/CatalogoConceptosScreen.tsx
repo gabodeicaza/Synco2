@@ -22,7 +22,6 @@ import { confirm } from '@/src/utils/confirm';
 import { ROLE_SUB, ROLE_COORD, APP_BRAND } from '@/src/utils/roles';
 import { UNIDADES, UNIDAD_LABELS, PERIODICIDAD_META_LABELS, Unidad } from '@/src/utils/unidades';
 import { formatMoney, formatCantidad, isValidDecimalInput, sumDecimalStringsAsCents, centsToDecimalString } from '@/src/utils/money';
-import { ImportarCatalogoModal } from '@/src/components/ImportarCatalogoModal';
 import { ImportarMaestroModal } from '@/src/components/ImportarMaestroModal';
 import { nombreNivel, nombreConcepto, tituloModuloCatalogo, pluralizar } from '@/src/utils/nombresNivel';
 
@@ -62,11 +61,13 @@ export default function CatalogoConceptosScreen({ projectId }: { projectId: stri
   const [importOpen, setImportOpen] = useState(false);
   const [nuevaPartidaOpen, setNuevaPartidaOpen] = useState(false);
 
-  // Importador único: para proyectos a PRECIO_ALZADO se usa el Importador
-  // Maestro (captura fecha_inicio/fecha_fin por concepto en el mismo paso,
-  // ver ImportarMaestroModal.tsx) — ya no hay un import de "Programa de
-  // obra" por separado, los datos se importan una sola vez.
-  const esPrecioAlzado = project?.tipo_contrato === 'PRECIO_ALZADO';
+  // Importador único para todos los proyectos, sin importar tipo_contrato:
+  // el Importador Maestro (captura fecha_inicio/fecha_fin por concepto en
+  // el mismo paso, ver ImportarMaestroModal.tsx) funciona igual en
+  // PRECIO_ALZADO y PRECIOS_UNITARIOS porque _concepto_tiene_datos_evm en
+  // el backend decide por CONCEPTO (no por proyecto) qué campos leer — no
+  // hay ningún otro lugar del sistema que condicione algo a tipo_contrato,
+  // así que restringir el importador a un tipo de contrato era artificial.
 
   const headerColor = project?.color_tema || colors.primary;
   const headerTextColor = contrastText(headerColor);
@@ -379,31 +380,17 @@ export default function CatalogoConceptosScreen({ projectId }: { projectId: stri
         </Pressable>
       ) : null}
 
-      {esPrecioAlzado ? (
-        <ImportarMaestroModal
-          visible={importOpen}
-          projectId={projectId}
-          partidas={partidas}
-          onClose={() => setImportOpen(false)}
-          onImported={() => {
-            setImportOpen(false);
-            loadPartidas();
-            if (selectedPartida) openPartida(selectedPartida);
-          }}
-        />
-      ) : (
-        <ImportarCatalogoModal
-          visible={importOpen}
-          projectId={projectId}
-          partidas={partidas}
-          onClose={() => setImportOpen(false)}
-          onImported={() => {
-            setImportOpen(false);
-            loadPartidas();
-            if (selectedPartida) openPartida(selectedPartida);
-          }}
-        />
-      )}
+      <ImportarMaestroModal
+        visible={importOpen}
+        projectId={projectId}
+        partidas={partidas}
+        onClose={() => setImportOpen(false)}
+        onImported={() => {
+          setImportOpen(false);
+          loadPartidas();
+          if (selectedPartida) openPartida(selectedPartida);
+        }}
+      />
 
       <NuevaPartidaModal
         visible={nuevaPartidaOpen}
