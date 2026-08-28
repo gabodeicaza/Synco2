@@ -141,6 +141,40 @@ def _assert_write_allowed(user: dict) -> None:
 
 MEASUREMENT_TYPES = {"coord_latlon", "cadenamiento", "eje", "nivel"}
 
+# === Catálogo de módulos (sistema Multi-Proyecto Modular) ===================
+# Cada plantilla vive bajo exactamente una cadencia de captura — no se infiere
+# de los datos, la fija este catálogo. El Coordinador General enciende/apaga
+# estas plantillas por proyecto (ver `modulos` en ProjectIn/Patch/Out); si una
+# clave no aparece aquí, se ignora al guardar (evita que un payload arbitrario
+# cree módulos "fantasma" que ninguna pantalla sabe renderizar).
+MODULOS_DIARIOS = {"seguridad_higiene"}
+MODULOS_SEMANALES = {"forestal_arbolado"}
+MODULOS_MENSUALES: set = set()
+MODULOS_CATALOG = {
+    "reportes_diarios": MODULOS_DIARIOS,
+    "reportes_semanales": MODULOS_SEMANALES,
+    "reportes_mensuales": MODULOS_MENSUALES,
+}
+
+
+def _sanitize_modulos(value: Optional[dict]) -> dict:
+    """Normaliza el objeto `modulos`: sólo conserva claves conocidas por
+    categoría (ver MODULOS_CATALOG) con valor bool; el resto (categorías o
+    módulos desconocidos) se descarta en silencio. Los módulos no
+    mencionados explícitamente en `value` quedan apagados por default —
+    nunca se asume "encendido" para un módulo nuevo sin confirmación
+    explícita del Coordinador."""
+    out: dict = {}
+    value = value or {}
+    for categoria, claves_validas in MODULOS_CATALOG.items():
+        cat_in = value.get(categoria) if isinstance(value, dict) else None
+        cat_out = {}
+        for clave in claves_validas:
+            v = cat_in.get(clave) if isinstance(cat_in, dict) else None
+            cat_out[clave] = bool(v) if isinstance(v, bool) else False
+        out[categoria] = cat_out
+    return out
+
 
 def _sanitize_reference_files(items) -> list:
     """Valida y limpia la lista de archivos de referencia.
@@ -268,6 +302,12 @@ class ProjectIn(BaseModel):
     # referencia del plan corta sábado a sábado, así que no se puede asumir
     # lunes como en un calendario ISO estándar.
     dia_inicio_semana: Literal["LUNES", "MARTES", "MIERCOLES", "JUEVES", "VIERNES", "SABADO", "DOMINGO"] = "LUNES"
+    # === Sistema Multi-Proyecto Modular (Etapa 5) ===
+    # Plantillas encendidas/apagadas para este proyecto, agrupadas por
+    # cadencia de captura. Ver MODULOS_CATALOG — nunca se guarda una clave
+    # fuera de ese catálogo. Default: todo apagado (el Coordinador las
+    # activa explícitamente al crear o configurar el proyecto).
+    modulos: Optional[dict] = None
 
 
 class ProjectPatch(BaseModel):
@@ -340,6 +380,7 @@ class ProjectOut(BaseModel):
     titulo_modulo_catalogo: str = ""
     cadencia_reporte: str = "MENSUAL"
     dia_inicio_semana: str = "LUNES"
+    modulos: dict = Field(default_factory=dict)
     created_by: str
     created_at: datetime
     archived: bool = False
@@ -926,6 +967,12 @@ async def startup_event():
     await db.programa_distribucion.create_index([("programa_version_id", 1)])
     await db.report_templates.create_index("code", unique=True)
     await db.report_templates.create_index("id", unique=True)
+    await db.forestal_registros.create_index("id", unique=True)
+    await db.forestal_registros.create_index([("project_id", 1), ("created_at", -1)])
+    await db.seguridad_reportes.create_index("id", unique=True)
+    await db.seguridad_reportes.create_index([("project_id", 1), ("created_at", -1)])
+    await db.seguridad_checklist.create_index("id", unique=True)
+    await db.seguridad_checklist.create_index([("project_id", 1), ("created_at", -1)])
 
     # --- Seed de plantillas de reporte estructurado (idempotente por `code`) ---
     try:
@@ -1346,6 +1393,7 @@ async def list_projects(user: dict = Depends(current_user)):
         it.setdefault("contratistas_list", [])
         it.setdefault("contratos_list", [])
         it.setdefault("minuta_code_prefix", None)
+        it["modulos"] = _sanitize_modulos(it.get("modulos"))
     return items
 
 
@@ -1377,6 +1425,7 @@ async def create_project(body: ProjectIn, user: dict = Depends(require_role(ROLE
         "titulo_modulo_catalogo": (body.titulo_modulo_catalogo or "").strip(),
         "cadencia_reporte": body.cadencia_reporte,
         "dia_inicio_semana": body.dia_inicio_semana,
+        "modulos": _sanitize_modulos(body.modulos),
         "created_by": user["id"],
         "created_at": datetime.now(timezone.utc),
         "archived": False,
@@ -1419,6 +1468,7 @@ async def get_project(pid: str, user: dict = Depends(current_user)):
     p.setdefault("titulo_modulo_catalogo", "")
     p.setdefault("cadencia_reporte", "MENSUAL")
     p.setdefault("dia_inicio_semana", "LUNES")
+    p["modulos"] = _sanitize_modulos(p.get("modulos"))
     return p
 
 
@@ -1547,6 +1597,7 @@ def _project_public(p: dict) -> dict:
     p.setdefault("titulo_modulo_catalogo", "")
     p.setdefault("cadencia_reporte", "MENSUAL")
     p.setdefault("dia_inicio_semana", "LUNES")
+    p["modulos"] = _sanitize_modulos(p.get("modulos"))
     return p
 
 
@@ -1577,6 +1628,36 @@ async def set_project_catalogos(
     return _project_public(p)
 
 
+@api.put("/projects/{pid}/modulos")
+async def set_project_modulos(
+    pid: str,
+    body: dict,
+    user: dict = Depends(require_role(ROLE_COORD)),
+):
+    """Enciende/apaga módulos (plantillas) del proyecto, agrupados por
+    cadencia de captura (ver MODULOS_CATALOG). Sólo Coordinador General.
+
+    Actualización PARCIAL por diseño: sólo se tocan las claves de módulo que
+    vienen explícitamente en el body — las demás conservan su valor actual.
+    Togglear "forestal_arbolado" nunca debe apagar de rebote
+    "seguridad_higiene" sólo porque el cliente no lo mandó en el payload.
+    """
+    existing = await db.projects.find_one({"id": pid})
+    if not existing:
+        raise HTTPException(404, "Proyecto no existe")
+    merged = _sanitize_modulos(existing.get("modulos"))
+    for categoria, claves_validas in MODULOS_CATALOG.items():
+        incoming = body.get(categoria) if isinstance(body, dict) else None
+        if not isinstance(incoming, dict):
+            continue
+        for clave, valor in incoming.items():
+            if clave in claves_validas and isinstance(valor, bool):
+                merged[categoria][clave] = valor
+    await db.projects.update_one({"id": pid}, {"$set": {"modulos": merged}})
+    p = await db.projects.find_one({"id": pid})
+    return _project_public(p)
+
+
 @api.delete("/projects/{pid}")
 async def archive_project(pid: str, user: dict = Depends(require_role(ROLE_COORD))):
     await db.projects.update_one({"id": pid}, {"$set": {"archived": True}})
@@ -1602,6 +1683,204 @@ async def set_reference_files(
     if r.matched_count == 0:
         raise HTTPException(404, "Proyecto no existe")
     return {"ok": True, "reference_files": cleaned}
+
+
+# === MÓDULOS PILOTO (sistema Multi-Proyecto Modular) =======================
+# Ambas plantillas comparten el mismo criterio de acceso que `reports` /
+# `announcements`: cualquier miembro del proyecto captura (Especialista y
+# Sub-Coordinador en campo), cualquier miembro lee, y el gate real de
+# "¿está prendido este módulo?" ya lo resuelve el menú del frontend — aquí
+# sólo se valida en servidor por si un cliente viejo/desincronizado intenta
+# escribir en un módulo que el Coordinador apagó para este proyecto.
+def _ensure_modulo_activo(project: dict, categoria: str, clave: str) -> None:
+    modulos = _sanitize_modulos(project.get("modulos"))
+    if not modulos.get(categoria, {}).get(clave):
+        raise HTTPException(403, "Este módulo no está activado para este proyecto")
+
+
+class ForestalRegistroIn(BaseModel):
+    node_id: Optional[str] = None  # Estación/ubicación (árbol de nodos), si aplica
+    estacion_nombre: Optional[str] = None  # Fallback de texto libre si no hay node_id
+    tipo: Literal["poda", "trasplante", "derribo"]
+    cantidad: int = 1
+    fecha: Optional[str] = None  # ISO date; default = hoy
+    notas: Optional[str] = None
+    images: List[str] = Field(default_factory=list)  # base64
+
+
+class ForestalRegistroOut(BaseModel):
+    id: str
+    project_id: str
+    node_id: Optional[str] = None
+    estacion_nombre: Optional[str] = None
+    tipo: str
+    cantidad: int
+    fecha: str
+    notas: Optional[str] = None
+    images: List[str] = Field(default_factory=list)
+    captured_by: str
+    captured_by_name: str
+    created_at: datetime
+
+
+@api.get("/projects/{pid}/forestal-registros")
+async def list_forestal_registros(pid: str, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    cursor = db.forestal_registros.find({"project_id": pid}).sort("created_at", -1)
+    items = await cursor.to_list(length=1000)
+    for it in items:
+        it.pop("_id", None)
+    return items
+
+
+@api.post("/projects/{pid}/forestal-registros")
+async def create_forestal_registro(pid: str, body: ForestalRegistroIn, user: dict = Depends(current_user)):
+    _assert_write_allowed(user)
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "reportes_semanales", "forestal_arbolado")
+    if body.cantidad < 1:
+        raise HTTPException(400, "cantidad debe ser >= 1")
+    node_name = body.estacion_nombre
+    if body.node_id:
+        node = await db.location_nodes.find_one({"id": body.node_id, "project_id": pid})
+        if not node:
+            raise HTTPException(400, "Nodo no existe en este proyecto")
+        node_name = node.get("name")
+    doc = {
+        "id": str(uuid.uuid4()),
+        "project_id": pid,
+        "node_id": body.node_id,
+        "estacion_nombre": (node_name or "").strip() or None,
+        "tipo": body.tipo,
+        "cantidad": body.cantidad,
+        "fecha": body.fecha or datetime.now(MX_TZ).date().isoformat(),
+        "notas": (body.notas or "").strip() or None,
+        "images": body.images[:10],
+        "captured_by": user["id"],
+        "captured_by_name": user["name"],
+        "created_at": datetime.now(timezone.utc),
+    }
+    await db.forestal_registros.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api.get("/projects/{pid}/forestal-registros/resumen")
+async def resumen_forestal_registros(pid: str, user: dict = Depends(current_user)):
+    """Tabla resumen por estación (podas/trasplantes/derribos) + contadores
+    globales de ejecución, para el dashboard de Forestal y Arbolado."""
+    await ensure_project_access(user, pid)
+    cursor = db.forestal_registros.aggregate([
+        {"$match": {"project_id": pid}},
+        {"$group": {
+            "_id": {"estacion": {"$ifNull": ["$estacion_nombre", "Sin estación"]}, "tipo": "$tipo"},
+            "total": {"$sum": "$cantidad"},
+        }},
+    ])
+    rows = await cursor.to_list(length=5000)
+    por_estacion: Dict[str, Dict[str, int]] = {}
+    contadores = {"poda": 0, "trasplante": 0, "derribo": 0}
+    for r in rows:
+        estacion = r["_id"]["estacion"]
+        tipo = r["_id"]["tipo"]
+        total = r["total"]
+        por_estacion.setdefault(estacion, {"poda": 0, "trasplante": 0, "derribo": 0})
+        por_estacion[estacion][tipo] = total
+        if tipo in contadores:
+            contadores[tipo] += total
+    tabla = [
+        {"estacion": estacion, **conteos}
+        for estacion, conteos in sorted(por_estacion.items())
+    ]
+    return {"tabla": tabla, "contadores": contadores}
+
+
+class SeguridadReporteIn(BaseModel):
+    node_id: Optional[str] = None
+    fecha: Optional[str] = None  # ISO date; default = hoy
+    descripcion: str
+    acciones_tomadas: Optional[str] = None
+    severidad: Literal["leve", "moderado", "grave"] = "leve"
+    images: List[str] = Field(default_factory=list)  # base64
+
+
+@api.get("/projects/{pid}/seguridad-reportes")
+async def list_seguridad_reportes(pid: str, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    cursor = db.seguridad_reportes.find({"project_id": pid}).sort("created_at", -1)
+    items = await cursor.to_list(length=1000)
+    for it in items:
+        it.pop("_id", None)
+    return items
+
+
+@api.post("/projects/{pid}/seguridad-reportes")
+async def create_seguridad_reporte(pid: str, body: SeguridadReporteIn, user: dict = Depends(current_user)):
+    _assert_write_allowed(user)
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "reportes_diarios", "seguridad_higiene")
+    descripcion = body.descripcion.strip()
+    if not descripcion:
+        raise HTTPException(400, "Descripción requerida")
+    doc = {
+        "id": str(uuid.uuid4()),
+        "project_id": pid,
+        "node_id": body.node_id,
+        "fecha": body.fecha or datetime.now(MX_TZ).date().isoformat(),
+        "descripcion": descripcion,
+        "acciones_tomadas": (body.acciones_tomadas or "").strip() or None,
+        "severidad": body.severidad,
+        "images": body.images[:10],
+        "captured_by": user["id"],
+        "captured_by_name": user["name"],
+        "created_at": datetime.now(timezone.utc),
+    }
+    await db.seguridad_reportes.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+class SeguridadChecklistItemIn(BaseModel):
+    item: str
+    tipo: Literal["preventiva", "correctiva"] = "preventiva"
+    cumplido: bool = False
+    notas: Optional[str] = None
+
+
+class SeguridadChecklistIn(BaseModel):
+    fecha: Optional[str] = None
+    items: List[SeguridadChecklistItemIn] = Field(default_factory=list)
+
+
+@api.get("/projects/{pid}/seguridad-checklist")
+async def list_seguridad_checklist(pid: str, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    cursor = db.seguridad_checklist.find({"project_id": pid}).sort("created_at", -1)
+    items = await cursor.to_list(length=500)
+    for it in items:
+        it.pop("_id", None)
+    return items
+
+
+@api.post("/projects/{pid}/seguridad-checklist")
+async def create_seguridad_checklist(pid: str, body: SeguridadChecklistIn, user: dict = Depends(current_user)):
+    _assert_write_allowed(user)
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "reportes_diarios", "seguridad_higiene")
+    if not body.items:
+        raise HTTPException(400, "El checklist necesita al menos un elemento")
+    doc = {
+        "id": str(uuid.uuid4()),
+        "project_id": pid,
+        "fecha": body.fecha or datetime.now(MX_TZ).date().isoformat(),
+        "items": [it.model_dump() for it in body.items],
+        "captured_by": user["id"],
+        "captured_by_name": user["name"],
+        "created_at": datetime.now(timezone.utc),
+    }
+    await db.seguridad_checklist.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
 
 
 # === LOCATION NODES (Árbol Recursivo) =======================================

@@ -2,14 +2,16 @@
 // Inicio de Sub-coordinador y Especialista. Agrupa accesos que antes vivian
 // sueltos en cada dashboard: Archivos de consulta, Fuerza de trabajo y
 // Cerrar sesion.
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Alert, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '@/src/auth-context';
+import { api, ModulosConfig } from '@/src/api';
 import { colors, radius, shadow, spacing } from '@/src/theme';
 import { confirm } from '@/src/utils/confirm';
+import { MODULOS_CATALOG, CATEGORIA_LABEL, CATEGORIA_ORDEN } from '@/src/utils/modulos';
 
 type HeaderMenuProps = {
   // Grupo de rutas desde el que se abre el menu, para navegar a la pantalla
@@ -27,8 +29,25 @@ export function HeaderMenu({ basePath, projectId }: HeaderMenuProps) {
   const [catalogoOpen, setCatalogoOpen] = useState(false);
   const [actividadesOpen, setActividadesOpen] = useState(false);
 
+  // Sistema Multi-Proyecto Modular: qué plantillas están encendidas para el
+  // proyecto actual (ver src/utils/modulos.ts para el catálogo del lado del
+  // cliente). Se resuelve al abrir el menú — no en cada render — para no
+  // disparar un GET /projects/{pid} de más por cada vez que se pinta el
+  // header. Si falla o el proyecto no tiene nada configurado, ningún módulo
+  // piloto aparece (nunca se asume "encendido" por default).
+  const [modulos, setModulos] = useState<ModulosConfig | null>(null);
+  const fetchedForRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!open || !projectId) return;
+    if (fetchedForRef.current === projectId) return;
+    fetchedForRef.current = projectId;
+    api.getProject(projectId)
+      .then((p) => setModulos(p.modulos || null))
+      .catch(() => setModulos(null));
+  }, [open, projectId]);
+
   function goTo(
-    screen: 'archivos-consulta' | 'fuerza-de-trabajo' | 'acceso-predio' | 'registrar-avance' | 'catalogo-conceptos' | 'visualizar-avance' | 'actividades-generales' | 'mensajes' | 'calendario' | 'dashboard-evm',
+    screen: string,
     extraParams?: Record<string, string>,
   ) {
     setOpen(false);
@@ -121,6 +140,25 @@ export function HeaderMenu({ basePath, projectId }: HeaderMenuProps) {
               // y Sub-Coordinador, por eso no se ofrece a Especialista.
               <MenuItem icon="shield-checkmark-outline" label="Acceso al Predio" onPress={() => goTo('acceso-predio')} />
             ) : null}
+
+            {/* Sistema Multi-Proyecto Modular: solo aparecen los módulos que
+                el Coordinador encendió para ESTE proyecto (ver `modulos` en
+                GET /projects/{pid} y src/utils/modulos.ts). Si `modulos` aún
+                no cargó o el proyecto no tiene nada activo, esta sección no
+                pinta nada — nunca se asume "encendido" por default. */}
+            {CATEGORIA_ORDEN.map((categoria) => {
+              const activos = MODULOS_CATALOG[categoria].filter((m) => !!modulos?.[categoria]?.[m.key]);
+              if (activos.length === 0) return null;
+              return (
+                <View key={categoria}>
+                  <Text style={styles.groupLabel}>{CATEGORIA_LABEL[categoria]}</Text>
+                  {activos.map((m) => (
+                    <MenuItem key={m.key} icon={m.icon} label={m.label} onPress={() => goTo(m.screen)} />
+                  ))}
+                </View>
+              );
+            })}
+
             <View style={styles.divider} />
             <MenuItem icon="log-out-outline" label="Cerrar sesion" onPress={onLogout} destructive />
           </View>
@@ -210,5 +248,15 @@ const styles = StyleSheet.create({
     height: 1,
     backgroundColor: colors.border,
     marginVertical: spacing.xs,
+  },
+  groupLabel: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: colors.textMuted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    paddingHorizontal: spacing.md,
+    paddingTop: spacing.xs,
+    paddingBottom: 2,
   },
 });

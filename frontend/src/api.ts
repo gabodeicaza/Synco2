@@ -193,6 +193,75 @@ export interface ReferenceFile {
   uploaded_at?: string;
 }
 
+// === Sistema Multi-Proyecto Modular =========================================
+// Espejo de MODULOS_CATALOG en server.py. Cada plantilla vive bajo
+// exactamente una cadencia — si se agrega una plantilla nueva, se declara
+// aquí Y en el backend (server.py MODULOS_CATALOG), nunca solo en un lado.
+export interface ModulosConfig {
+  reportes_diarios: Record<string, boolean>;
+  reportes_semanales: Record<string, boolean>;
+  reportes_mensuales: Record<string, boolean>;
+}
+
+export const MODULOS_VACIOS: ModulosConfig = {
+  reportes_diarios: { seguridad_higiene: false },
+  reportes_semanales: { forestal_arbolado: false },
+  reportes_mensuales: {},
+};
+
+export type ModuloCategoria = keyof ModulosConfig;
+
+export interface ForestalRegistro {
+  id: string;
+  project_id: string;
+  node_id?: string | null;
+  estacion_nombre?: string | null;
+  tipo: 'poda' | 'trasplante' | 'derribo';
+  cantidad: number;
+  fecha: string;
+  notas?: string | null;
+  images: string[];
+  captured_by: string;
+  captured_by_name: string;
+  created_at: string;
+}
+
+export interface ForestalResumen {
+  tabla: { estacion: string; poda: number; trasplante: number; derribo: number }[];
+  contadores: { poda: number; trasplante: number; derribo: number };
+}
+
+export interface SeguridadReporte {
+  id: string;
+  project_id: string;
+  node_id?: string | null;
+  fecha: string;
+  descripcion: string;
+  acciones_tomadas?: string | null;
+  severidad: 'leve' | 'moderado' | 'grave';
+  images: string[];
+  captured_by: string;
+  captured_by_name: string;
+  created_at: string;
+}
+
+export interface SeguridadChecklistItem {
+  item: string;
+  tipo: 'preventiva' | 'correctiva';
+  cumplido: boolean;
+  notas?: string | null;
+}
+
+export interface SeguridadChecklist {
+  id: string;
+  project_id: string;
+  fecha: string;
+  items: SeguridadChecklistItem[];
+  captured_by: string;
+  captured_by_name: string;
+  created_at: string;
+}
+
 export interface Project {
   id: string;
   name: string;
@@ -235,6 +304,10 @@ export interface Project {
   // consultar; RegistroAvance.fecha siempre guarda la fecha exacta.
   cadencia_reporte?: 'DIARIA' | 'SEMANAL' | 'MENSUAL';
   dia_inicio_semana?: 'LUNES' | 'MARTES' | 'MIERCOLES' | 'JUEVES' | 'VIERNES' | 'SABADO' | 'DOMINGO';
+  // Sistema Multi-Proyecto Modular: plantillas encendidas/apagadas por
+  // cadencia de captura. Ver MODULOS_CATALOG en server.py — claves no
+  // reconocidas ahí nunca llegan aquí.
+  modulos?: ModulosConfig;
   created_by: string;
   created_at: string;
   archived?: boolean;
@@ -1418,6 +1491,28 @@ export const api = {
   deleteArea: (aid: string) => request<{ ok: boolean }>('DELETE', `/areas/${aid}`),
 
   setProjectCatalogos: (pid: string, body: any) => request<Project>('PUT', `/projects/${pid}/catalogos`, body),
+  // Sistema Multi-Proyecto Modular: PUT parcial — solo hay que mandar la(s)
+  // categoria(s) que cambiaron (ver server.py set_project_modulos).
+  setProjectModulos: (pid: string, body: Partial<ModulosConfig>) =>
+    request<Project>('PUT', `/projects/${pid}/modulos`, body),
+
+  // === Módulo piloto: Forestal y Arbolado ===
+  listForestalRegistros: (pid: string) => request<ForestalRegistro[]>('GET', `/projects/${pid}/forestal-registros`),
+  createForestalRegistro: (pid: string, body: {
+    node_id?: string | null; estacion_nombre?: string | null; tipo: 'poda' | 'trasplante' | 'derribo';
+    cantidad: number; fecha?: string; notas?: string | null; images?: string[];
+  }) => request<ForestalRegistro>('POST', `/projects/${pid}/forestal-registros`, body),
+  forestalResumen: (pid: string) => request<ForestalResumen>('GET', `/projects/${pid}/forestal-registros/resumen`),
+
+  // === Módulo piloto: Seguridad e Higiene ===
+  listSeguridadReportes: (pid: string) => request<SeguridadReporte[]>('GET', `/projects/${pid}/seguridad-reportes`),
+  createSeguridadReporte: (pid: string, body: {
+    node_id?: string | null; fecha?: string; descripcion: string; acciones_tomadas?: string | null;
+    severidad?: 'leve' | 'moderado' | 'grave'; images?: string[];
+  }) => request<SeguridadReporte>('POST', `/projects/${pid}/seguridad-reportes`, body),
+  listSeguridadChecklist: (pid: string) => request<SeguridadChecklist[]>('GET', `/projects/${pid}/seguridad-checklist`),
+  createSeguridadChecklist: (pid: string, body: { fecha?: string; items: SeguridadChecklistItem[] }) =>
+    request<SeguridadChecklist>('POST', `/projects/${pid}/seguridad-checklist`, body),
 
   listInvitations: (pid: string) => request<Invitation[]>('GET', `/projects/${pid}/invitations`),
   createInvitation: (pid: string, body: any) => request<Invitation>('POST', `/projects/${pid}/invitations`, body),

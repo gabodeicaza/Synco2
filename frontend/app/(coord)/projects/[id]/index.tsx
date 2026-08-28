@@ -1157,6 +1157,25 @@ export default function ProjectDetailScreen() {
                       subtitle="Reporte de avance por periodo"
                       onPress={() => router.push({ pathname: '/(coord)/projects/[id]/visualizar-avance' as any, params: { id: pid } })}
                     />
+                    {/* Módulos piloto del sistema Multi-Proyecto Modular — solo
+                        aparecen si el Coordinador los encendió para este
+                        proyecto (ver pestaña Configuracion > Módulos). */}
+                    {project?.modulos?.reportes_semanales?.forestal_arbolado ? (
+                      <ActionTile
+                        icon="leaf-outline"
+                        title="Forestal y Arbolado"
+                        subtitle="Podas, trasplantes y derribos por estación"
+                        onPress={() => router.push({ pathname: '/(coord)/projects/[id]/forestal-arbolado' as any, params: { id: pid } })}
+                      />
+                    ) : null}
+                    {project?.modulos?.reportes_diarios?.seguridad_higiene ? (
+                      <ActionTile
+                        icon="shield-checkmark-outline"
+                        title="Seguridad e Higiene"
+                        subtitle="Reporte de accidentes y checklist preventivo/correctivo"
+                        onPress={() => router.push({ pathname: '/(coord)/projects/[id]/seguridad-higiene' as any, params: { id: pid } })}
+                      />
+                    ) : null}
                   </View>
 
                   {/* Boton GRANDE: Exportar Reportes (PDF / Word / PPT / Excel) _ arriba de los filtros a peticion del Coord. General */}
@@ -1506,6 +1525,12 @@ export default function ProjectDetailScreen() {
                 title="Invitaciones"
                 subtitle="Genera tokens para Sub-Coord. y Especialistas"
                 onPress={() => router.push({ pathname: '/(coord)/projects/[id]/invitations', params: { id: pid } })}
+              />
+              <ActionTile
+                icon="apps-outline"
+                title="Módulos"
+                subtitle="Enciende/apaga plantillas por cadencia (Diario, Semanal, Mensual)"
+                onPress={() => router.push({ pathname: '/(coord)/projects/[id]/modulos' as any, params: { id: pid } })}
               />
               <ActionTile
                 icon="color-palette-outline"
