@@ -1,1 +1,0 @@
-{"dependencies":[],"output":[{"data":{"code":"__d(function(g,r,i,a,m,e,d){m.exports=function(){}});","lineCount":1,"map":[[1,28,17,0,"module"],[1,30,17,7,"exports"],[1,38,13,0],[1,49,14,2],[1,50,17,22],[1,53]],"functionMap":{"names":["<global>","noop"],"mappings":"AAA;ACY;CDE"},"hasCjsExports":true},"type":"js/module"}]}

@@ -1,1 +1,0 @@
-{"dependencies":[],"output":[{"data":{"code":"__d(function(g,r,i,a,m,e,d){'use strict';m.exports=Function.prototype.call});","lineCount":1,"map":[[1,28,1,0],[1,41,4,0,"module"],[1,43,4,7,"exports"],[1,51,4,17,"Function"],[1,60,4,26,"prototype"],[1,70,4,36,"call"],[1,74,4,41],[1,77]],"functionMap":{"names":["<global>"],"mappings":"AAA"},"hasCjsExports":true},"type":"js/module"}]}

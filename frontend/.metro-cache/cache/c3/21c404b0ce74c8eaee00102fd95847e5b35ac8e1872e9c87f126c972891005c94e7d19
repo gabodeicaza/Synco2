@@ -1,1 +1,0 @@
-{"dependencies":[],"output":[{"data":{"code":"__d(function(g,r,i,a,m,e,d){m.exports=function(){return!1}});","lineCount":1,"map":[[1,28,18,0,"module"],[1,30,18,7,"exports"],[1,38,14,0],[1,49,15,2],[1,56,15,9],[1,57,16,0],[1,58,18,27],[1,61]],"functionMap":{"names":["<global>","stubFalse"],"mappings":"AAA;ACa;CDE"},"hasCjsExports":true},"type":"js/module"}]}
