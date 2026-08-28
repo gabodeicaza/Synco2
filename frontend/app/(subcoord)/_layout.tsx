@@ -106,6 +106,11 @@ export default function SubCoordLayout() {
             null _ sin esto aparecia un boton "acceso-pre..." no deseado en
             la barra inferior, junto a "Minutas". */}
         <Tabs.Screen name="acceso-predio" options={{ href: null }} />
+        {/* Sistema Multi-Proyecto Modular: plantillas piloto, alcanzables
+            solo via router.push desde el menu hamburgues (HeaderMenu),
+            nunca como tab fijo — mismo motivo que acceso-predio arriba. */}
+        <Tabs.Screen name="forestal-arbolado" options={{ href: null }} />
+        <Tabs.Screen name="seguridad-higiene" options={{ href: null }} />
       </Tabs>
       <OfflineQueueIndicator />
     </View>

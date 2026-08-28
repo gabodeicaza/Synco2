@@ -97,6 +97,11 @@ export default function SpecLayout() {
         <Tabs.Screen name="actividades-generales" options={{ href: null }} />
         {/* Dashboard EVM (Valor Ganado) _ alcanzable via router.push (menu hamburgues), sin tab visible. */}
         <Tabs.Screen name="dashboard-evm" options={{ href: null }} />
+        {/* Sistema Multi-Proyecto Modular: plantillas piloto, alcanzables
+            solo via router.push desde el menu hamburgues (HeaderMenu),
+            nunca como tab fijo. */}
+        <Tabs.Screen name="forestal-arbolado" options={{ href: null }} />
+        <Tabs.Screen name="seguridad-higiene" options={{ href: null }} />
       </Tabs>
       <OfflineQueueIndicator />
     </View>
