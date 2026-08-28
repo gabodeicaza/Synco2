@@ -8,31 +8,74 @@
 // El resultado (`onSave`) es un nuevo data URI base64 que reemplaza a la
 // foto original en el arreglo `images` del reporte; la foto original no se
 // modifica hasta que el usuario toca "Guardar".
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Modal, View, Text, StyleSheet, Pressable, Image, ActivityIndicator,
   PanResponder, TextInput, useWindowDimensions, Platform,
 } from 'react-native';
-import Svg, { Ellipse, Line, Polygon, Text as SvgText } from 'react-native-svg';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import Svg, { Ellipse, Line, Polygon, Rect, Text as SvgText } from 'react-native-svg';
 import { captureRef } from 'react-native-view-shot';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, radius, spacing } from '@/src/theme';
 
-type Tool = 'circle' | 'rect' | 'arrow' | 'text';
+type Tool = 'select' | 'circle' | 'rect' | 'arrow' | 'text';
 
 type Shape =
-  | { tool: 'circle'; color: string; x1: number; y1: number; x2: number; y2: number }
-  | { tool: 'rect'; color: string; x1: number; y1: number; x2: number; y2: number }
-  | { tool: 'arrow'; color: string; x1: number; y1: number; x2: number; y2: number }
-  | { tool: 'text'; color: string; x: number; y: number; text: string };
+  | { id: number; tool: 'circle'; color: string; x1: number; y1: number; x2: number; y2: number }
+  | { id: number; tool: 'rect'; color: string; x1: number; y1: number; x2: number; y2: number }
+  | { id: number; tool: 'arrow'; color: string; x1: number; y1: number; x2: number; y2: number }
+  | { id: number; tool: 'text'; color: string; x: number; y: number; text: string };
 
 const COLORS = ['#EF4444', '#F59E0B', '#22C55E', '#2563EB', '#FFFFFF', '#000000'];
 const TOOLS: { key: Tool; icon: React.ComponentProps<typeof Ionicons>['name'] }[] = [
+  { key: 'select', icon: 'move-outline' },
   { key: 'circle', icon: 'ellipse-outline' },
   { key: 'rect', icon: 'square-outline' },
   { key: 'arrow', icon: 'arrow-up-outline' },
   { key: 'text', icon: 'text-outline' },
 ];
+
+// Distancia mínima de tolerancia al tocar una figura (dedo grueso vs. trazo
+// delgado de 4px) — misma tolerancia para el hit-test de todas las
+// herramientas de la barra "mover".
+const HIT_PAD = 14;
+
+function distToSegment(px: number, py: number, x1: number, y1: number, x2: number, y2: number): number {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const lenSq = dx * dx + dy * dy;
+  let t = lenSq === 0 ? 0 : ((px - x1) * dx + (py - y1) * dy) / lenSq;
+  t = Math.max(0, Math.min(1, t));
+  const cx = x1 + t * dx;
+  const cy = y1 + t * dy;
+  return Math.hypot(px - cx, py - cy);
+}
+
+function boundingBoxOf(s: Shape): { x: number; y: number; w: number; h: number } {
+  if (s.tool === 'text') {
+    const w = Math.max(20, s.text.length * 11);
+    return { x: s.x - 4, y: s.y - 24, w: w + 8, h: 30 };
+  }
+  const minX = Math.min(s.x1, s.x2);
+  const maxX = Math.max(s.x1, s.x2);
+  const minY = Math.min(s.y1, s.y2);
+  const maxY = Math.max(s.y1, s.y2);
+  return { x: minX - 6, y: minY - 6, w: maxX - minX + 12, h: maxY - minY + 12 };
+}
+
+function hitTestShape(s: Shape, x: number, y: number): boolean {
+  if (s.tool === 'arrow') return distToSegment(x, y, s.x1, s.y1, s.x2, s.y2) <= HIT_PAD;
+  const box = boundingBoxOf(s);
+  return x >= box.x - HIT_PAD && x <= box.x + box.w + HIT_PAD && y >= box.y - HIT_PAD && y <= box.y + box.h + HIT_PAD;
+}
+
+function hitTest(list: Shape[], x: number, y: number): number | null {
+  for (let i = list.length - 1; i >= 0; i--) {
+    if (hitTestShape(list[i], x, y)) return list[i].id;
+  }
+  return null;
+}
 
 interface Props {
   visible: boolean;
@@ -43,15 +86,26 @@ interface Props {
 
 export function PhotoAnnotator({ visible, imageUri, onClose, onSave }: Props) {
   const { width: winWidth, height: winHeight } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
   const [canvasSize, setCanvasSize] = useState<{ width: number; height: number } | null>(null);
   const [tool, setTool] = useState<Tool>('circle');
   const [color, setColor] = useState(COLORS[0]);
   const [shapes, setShapes] = useState<Shape[]>([]);
   const [draft, setDraft] = useState<Shape | null>(null);
+  const [selectedId, setSelectedId] = useState<number | null>(null);
   const [textPrompt, setTextPrompt] = useState<{ x: number; y: number } | null>(null);
   const [textDraft, setTextDraft] = useState('');
   const [saving, setSaving] = useState(false);
   const shotRef = useRef<View>(null);
+  const shapesRef = useRef<Shape[]>([]);
+  const idCounterRef = useRef(0);
+  const dragRef = useRef<{ id: number; startX: number; startY: number; orig: Shape } | null>(null);
+
+  useEffect(() => { shapesRef.current = shapes; }, [shapes]);
+
+  // Al cambiar de herramienta se suelta cualquier selección — evita borrar
+  // por accidente una figura que quedó seleccionada al tocar otra cosa.
+  useEffect(() => { setSelectedId(null); dragRef.current = null; }, [tool]);
 
   const maxWidth = winWidth - spacing.md * 2;
   const maxHeight = winHeight * 0.62;
@@ -68,7 +122,9 @@ export function PhotoAnnotator({ visible, imageUri, onClose, onSave }: Props) {
       },
       () => setCanvasSize({ width: maxWidth, height: maxWidth * 0.75 }),
     );
-    setShapes([]); setDraft(null); setTextPrompt(null); setTextDraft('');
+    setShapes([]); setDraft(null); setSelectedId(null); setTextPrompt(null); setTextDraft('');
+    idCounterRef.current = 0;
+    dragRef.current = null;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible, imageUri]);
 
@@ -77,25 +133,53 @@ export function PhotoAnnotator({ visible, imageUri, onClose, onSave }: Props) {
       onStartShouldSetPanResponder: () => true,
       onPanResponderGrant: (evt) => {
         const { locationX: x, locationY: y } = evt.nativeEvent;
+        if (tool === 'select') {
+          const hitId = hitTest(shapesRef.current, x, y);
+          setSelectedId(hitId);
+          const orig = hitId !== null ? shapesRef.current.find((s) => s.id === hitId) || null : null;
+          dragRef.current = orig ? { id: hitId as number, startX: x, startY: y, orig } : null;
+          return;
+        }
         if (tool === 'text') {
           setTextPrompt({ x, y });
           setTextDraft('');
           return;
         }
-        setDraft({ tool, color, x1: x, y1: y, x2: x, y2: y } as Shape);
+        setDraft({ tool, color, id: -1, x1: x, y1: y, x2: x, y2: y } as Shape);
       },
       onPanResponderMove: (evt) => {
-        if (tool === 'text') return;
         const { locationX: x, locationY: y } = evt.nativeEvent;
+        if (tool === 'select') {
+          const drag = dragRef.current;
+          if (!drag) return;
+          const dx = x - drag.startX;
+          const dy = y - drag.startY;
+          setShapes((cur) => cur.map((s) => {
+            if (s.id !== drag.id) return s;
+            if (drag.orig.tool === 'text' && s.tool === 'text') {
+              return { ...s, x: drag.orig.x + dx, y: drag.orig.y + dy };
+            }
+            if (drag.orig.tool !== 'text' && s.tool !== 'text') {
+              return { ...s, x1: drag.orig.x1 + dx, y1: drag.orig.y1 + dy, x2: drag.orig.x2 + dx, y2: drag.orig.y2 + dy };
+            }
+            return s;
+          }));
+          return;
+        }
+        if (tool === 'text') return;
         setDraft((d) => (d && d.tool !== 'text' ? { ...d, x2: x, y2: y } : d));
       },
       onPanResponderRelease: () => {
+        if (tool === 'select') {
+          dragRef.current = null;
+          return;
+        }
         setDraft((d) => {
           if (d && d.tool !== 'text') {
             const dx = Math.abs(d.x2 - d.x1);
             const dy = Math.abs(d.y2 - d.y1);
             // Ignora toques sin arrastre real (evita figuras invisibles de 0px).
-            if (dx > 4 || dy > 4) setShapes((cur) => [...cur, d]);
+            if (dx > 4 || dy > 4) setShapes((cur) => [...cur, { ...d, id: idCounterRef.current++ } as Shape]);
           }
           return null;
         });
@@ -107,13 +191,20 @@ export function PhotoAnnotator({ visible, imageUri, onClose, onSave }: Props) {
   function confirmarTexto() {
     if (!textPrompt) return;
     const t = textDraft.trim();
-    if (t) setShapes((cur) => [...cur, { tool: 'text', color, x: textPrompt.x, y: textPrompt.y, text: t }]);
+    if (t) setShapes((cur) => [...cur, { tool: 'text', color, id: idCounterRef.current++, x: textPrompt.x, y: textPrompt.y, text: t }]);
     setTextPrompt(null);
     setTextDraft('');
   }
 
   function deshacer() {
     setShapes((cur) => cur.slice(0, -1));
+    setSelectedId(null);
+  }
+
+  function borrarSeleccionado() {
+    if (selectedId === null) return;
+    setShapes((cur) => cur.filter((s) => s.id !== selectedId));
+    setSelectedId(null);
   }
 
   async function guardar() {
@@ -130,16 +221,24 @@ export function PhotoAnnotator({ visible, imageUri, onClose, onSave }: Props) {
     }
   }
 
-  function renderShape(s: Shape, idx: number) {
+  function renderShape(s: Shape, idx: number, selected: boolean) {
+    const key = s.id === -1 ? `draft-${idx}` : s.id;
+    const selectionOverlay = selected ? (() => {
+      const box = boundingBoxOf(s);
+      return <Rect x={box.x} y={box.y} width={box.w} height={box.h} stroke="#38BDF8" strokeWidth={1.5} strokeDasharray="4,4" fill="none" />;
+    })() : null;
+
     if (s.tool === 'circle') {
       const rx = Math.abs(s.x2 - s.x1) / 2;
       const ry = Math.abs(s.y2 - s.y1) / 2;
       return (
-        <Ellipse
-          key={idx}
-          cx={(s.x1 + s.x2) / 2} cy={(s.y1 + s.y2) / 2} rx={rx || 1} ry={ry || 1}
-          stroke={s.color} strokeWidth={4} fill="none"
-        />
+        <React.Fragment key={key}>
+          {selectionOverlay}
+          <Ellipse
+            cx={(s.x1 + s.x2) / 2} cy={(s.y1 + s.y2) / 2} rx={rx || 1} ry={ry || 1}
+            stroke={s.color} strokeWidth={4} fill="none"
+          />
+        </React.Fragment>
       );
     }
     if (s.tool === 'rect') {
@@ -148,11 +247,13 @@ export function PhotoAnnotator({ visible, imageUri, onClose, onSave }: Props) {
       const w = Math.abs(s.x2 - s.x1);
       const h = Math.abs(s.y2 - s.y1);
       return (
-        <Polygon
-          key={idx}
-          points={`${x},${y} ${x + w},${y} ${x + w},${y + h} ${x},${y + h}`}
-          stroke={s.color} strokeWidth={4} fill="none"
-        />
+        <React.Fragment key={key}>
+          {selectionOverlay}
+          <Polygon
+            points={`${x},${y} ${x + w},${y} ${x + w},${y + h} ${x},${y + h}`}
+            stroke={s.color} strokeWidth={4} fill="none"
+          />
+        </React.Fragment>
       );
     }
     if (s.tool === 'arrow') {
@@ -163,7 +264,8 @@ export function PhotoAnnotator({ visible, imageUri, onClose, onSave }: Props) {
       const p2x = s.x2 - headLen * Math.cos(angle + Math.PI / 7);
       const p2y = s.y2 - headLen * Math.sin(angle + Math.PI / 7);
       return (
-        <React.Fragment key={idx}>
+        <React.Fragment key={key}>
+          {selectionOverlay}
           <Line x1={s.x1} y1={s.y1} x2={s.x2} y2={s.y2} stroke={s.color} strokeWidth={4} />
           <Polygon points={`${s.x2},${s.y2} ${p1x},${p1y} ${p2x},${p2y}`} fill={s.color} />
         </React.Fragment>
@@ -172,14 +274,16 @@ export function PhotoAnnotator({ visible, imageUri, onClose, onSave }: Props) {
     // texto — contorno oscuro simulado con un segundo trazo detrás para que
     // se lea sobre fotos claras u oscuras por igual.
     return (
-      <SvgText
-        key={idx}
-        x={s.x} y={s.y}
-        fill={s.color} stroke="#00000080" strokeWidth={0.5}
-        fontSize={22} fontWeight="bold"
-      >
-        {s.text}
-      </SvgText>
+      <React.Fragment key={key}>
+        {selectionOverlay}
+        <SvgText
+          x={s.x} y={s.y}
+          fill={s.color} stroke="#00000080" strokeWidth={0.5}
+          fontSize={22} fontWeight="bold"
+        >
+          {s.text}
+        </SvgText>
+      </React.Fragment>
     );
   }
 
@@ -210,14 +314,14 @@ export function PhotoAnnotator({ visible, imageUri, onClose, onSave }: Props) {
             >
               <Image source={{ uri: imageUri }} style={StyleSheet.absoluteFill} resizeMode="stretch" />
               <Svg width={canvasSize.width} height={canvasSize.height} style={StyleSheet.absoluteFill}>
-                {shapes.map(renderShape)}
-                {draft ? renderShape(draft, -1) : null}
+                {shapes.map((s, i) => renderShape(s, i, s.id === selectedId))}
+                {draft ? renderShape(draft, -1, false) : null}
               </Svg>
             </View>
           )}
         </View>
 
-        <View style={styles.toolbar}>
+        <View style={[styles.toolbar, { paddingBottom: spacing.md + insets.bottom }]}>
           <View style={styles.toolRow}>
             {TOOLS.map((t) => (
               <Pressable
@@ -231,6 +335,9 @@ export function PhotoAnnotator({ visible, imageUri, onClose, onSave }: Props) {
             <View style={styles.toolDivider} />
             <Pressable onPress={deshacer} disabled={shapes.length === 0} style={[styles.toolBtn, shapes.length === 0 && { opacity: 0.4 }]}>
               <Ionicons name="arrow-undo-outline" size={20} color={colors.textBody} />
+            </Pressable>
+            <Pressable onPress={borrarSeleccionado} disabled={selectedId === null} style={[styles.toolBtn, selectedId === null && { opacity: 0.4 }]}>
+              <Ionicons name="trash-outline" size={20} color={selectedId === null ? colors.textBody : '#F87171'} />
             </Pressable>
           </View>
           <View style={styles.colorRow}>
