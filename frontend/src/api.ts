@@ -1687,6 +1687,8 @@ export const api = {
     request<Partida>('POST', '/partidas', payload),
   updatePartida: (id: string, payload: { clave?: string; nombre?: string; orden?: number; activo?: boolean; partida_padre_id?: string; quitar_padre?: boolean }) =>
     request<Partida>('PATCH', `/partidas/${id}`, payload),
+  deletePartida: (id: string) =>
+    request<{ ok: boolean; partidas_borradas: number; conceptos_borrados: number }>('DELETE', `/partidas/${id}`),
 
   listConceptos: (partidaId: string, incluirInactivos = false) =>
     request<Concepto[]>('GET', `/partidas/${partidaId}/conceptos${incluirInactivos ? '?incluir_inactivos=true' : ''}`),
@@ -1698,6 +1700,7 @@ export const api = {
     clave: string; descripcion: string; unidad: string; cantidad: string;
     precio_unitario: string; meta: string; periodicidad_meta: 'SEMANAL' | 'MENSUAL'; activo: boolean;
   }>) => request<Concepto>('PATCH', `/conceptos/${id}`, payload),
+  deleteConcepto: (id: string) => request<{ ok: boolean }>('DELETE', `/conceptos/${id}`),
   conceptoBitacora: (conceptoId: string) => request<BitacoraCambio[]>('GET', `/conceptos/${conceptoId}/bitacora`),
 
   searchConceptos: (pid: string, opts: { q?: string; unidad?: string } = {}) => {
@@ -2061,5 +2064,25 @@ export const api = {
     const cd = res.headers.get('Content-Disposition') || '';
     const m = cd.match(/filename="?([^"]+)"?/);
     return { blob: await res.blob(), filename: (m && m[1]) || 'avance_periodo.pdf' };
+  },
+
+  downloadAvancePeriodoXlsx: async (
+    pid: string,
+    opts: { desde?: string; hasta?: string; partida_id?: string } = {},
+  ): Promise<{ blob: Blob; filename: string }> => {
+    const tok = await getToken();
+    const qs = new URLSearchParams();
+    if (opts.desde) qs.set('desde', opts.desde);
+    if (opts.hasta) qs.set('hasta', opts.hasta);
+    if (opts.partida_id) qs.set('partida_id', opts.partida_id);
+    const suffix = qs.toString();
+    const res = await fetch(`${BASE}/projects/${pid}/export/avance_periodo.xlsx${suffix ? `?${suffix}` : ''}`, {
+      method: 'GET',
+      headers: tok ? { Authorization: `Bearer ${tok}` } : {},
+    });
+    if (!res.ok) throw new ApiError(res.status, await _downloadErrorMessage(res, 'Error al descargar Excel'));
+    const cd = res.headers.get('Content-Disposition') || '';
+    const m = cd.match(/filename="?([^"]+)"?/);
+    return { blob: await res.blob(), filename: (m && m[1]) || 'avance_periodo.xlsx' };
   },
 };

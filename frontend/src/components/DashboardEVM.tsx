@@ -13,6 +13,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, FlatList, RefreshControl } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import Svg, { Polyline, Line as SvgLine } from 'react-native-svg';
 
@@ -194,7 +195,12 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <View style={[styles.headerWrap, { paddingTop: insets.top + spacing.xs, backgroundColor: colors.primary }]}>
-        <Text style={styles.headerTitle}>Control de Obra — Valor Ganado</Text>
+        <View style={styles.headerTopRow}>
+          <Pressable onPress={() => router.back()} hitSlop={10} style={styles.headerBackBtn}>
+            <Ionicons name="chevron-back" size={22} color="#fff" />
+          </Pressable>
+          <Text style={styles.headerTitle}>Control de Obra — Valor Ganado</Text>
+        </View>
       </View>
 
       <ScrollView
@@ -275,7 +281,9 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
 const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   headerWrap: { paddingHorizontal: spacing.md, paddingBottom: spacing.md },
-  headerTitle: { fontSize: 18, fontWeight: '700', color: '#fff' },
+  headerTopRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  headerBackBtn: { width: 28, height: 28, alignItems: 'center', justifyContent: 'center', marginLeft: -6 },
+  headerTitle: { fontSize: 18, fontWeight: '700', color: '#fff', flex: 1 },
   rangoRow: { flexDirection: 'row', gap: 8, marginBottom: spacing.md },
   rangoChip: {
     paddingHorizontal: 12, paddingVertical: 6, borderRadius: radius.full,

@@ -58,6 +58,13 @@ export default function CoordLayout() {
         }}
       />
       <Tabs.Screen
+        name="noticias"
+        options={{
+          title: 'Noticias',
+          tabBarIcon: ({ color, size }) => <Ionicons name="newspaper" size={size} color={color} />,
+        }}
+      />
+      <Tabs.Screen
         name="calendario"
         options={{
           title: 'Calendario',

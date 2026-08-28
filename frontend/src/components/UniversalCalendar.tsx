@@ -151,10 +151,11 @@ export default function UniversalCalendar({ projectId, userId, isCoord }: Props)
   }, [items, selectedDate]);
 
   function canEdit(e: ProjectEvent): boolean {
-    // Los "Inicio de X" / "Fin de X" son virtuales (calculados desde las
-    // fechas del concepto, ver server.py list_events) — no existen en
-    // db.events, así que nunca son editables/eliminables desde aquí.
-    if (e.id.startsWith('concepto-inicio:') || e.id.startsWith('concepto-fin:')) return false;
+    // Los "Inicio de X" / "Fin de X" y "Minuta: X" son virtuales (calculados
+    // desde el concepto o la minuta real, ver server.py list_events) — no
+    // existen en db.events, así que nunca son editables/eliminables desde
+    // aquí (la minuta se edita desde su propia pantalla).
+    if (e.id.startsWith('concepto-inicio:') || e.id.startsWith('concepto-fin:') || e.id.startsWith('minuta:')) return false;
     return Boolean(isCoord || (userId && e.author_id === userId));
   }
 
