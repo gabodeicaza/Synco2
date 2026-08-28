@@ -4726,6 +4726,13 @@ async def list_events(
     safe_limit = max(1, min(int(limit or 500), 1000))
     cursor = db.events.find(q).sort("start_at", sort_dir).limit(safe_limit)
     items = await cursor.to_list(length=safe_limit)
+    # Mongo devuelve `start_at` naive (sin tzinfo) al leer, aunque se guardó
+    # con tzinfo en create_event — normalizar aquí evita "can't compare
+    # offset-naive and offset-aware datetimes" al mezclar estos eventos más
+    # abajo con los virtuales (que sí llevan tzinfo explícito).
+    for it in items:
+        if it.get("start_at") and it["start_at"].tzinfo is None:
+            it["start_at"] = it["start_at"].replace(tzinfo=timezone.utc)
 
     # Eventos virtuales "Inicio de <clave>" / "Fin de <clave>" sintetizados
     # desde Concepto.fecha_inicio/fecha_fin (Catálogo a Precio Alzado) — NO
