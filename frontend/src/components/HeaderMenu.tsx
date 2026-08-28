@@ -11,7 +11,7 @@ import { useAuth } from '@/src/auth-context';
 import { api, ModulosConfig } from '@/src/api';
 import { colors, radius, shadow, spacing } from '@/src/theme';
 import { confirm } from '@/src/utils/confirm';
-import { MODULOS_CATALOG, CATEGORIA_LABEL, CATEGORIA_ORDEN } from '@/src/utils/modulos';
+import { modulosActivosPorArea } from '@/src/utils/modulos';
 
 type HeaderMenuProps = {
   // Grupo de rutas desde el que se abre el menu, para navegar a la pantalla
@@ -143,21 +143,20 @@ export function HeaderMenu({ basePath, projectId }: HeaderMenuProps) {
 
             {/* Sistema Multi-Proyecto Modular: solo aparecen los módulos que
                 el Coordinador encendió para ESTE proyecto (ver `modulos` en
-                GET /projects/{pid} y src/utils/modulos.ts). Si `modulos` aún
-                no cargó o el proyecto no tiene nada activo, esta sección no
-                pinta nada — nunca se asume "encendido" por default. */}
-            {CATEGORIA_ORDEN.map((categoria) => {
-              const activos = MODULOS_CATALOG[categoria].filter((m) => !!modulos?.[categoria]?.[m.key]);
-              if (activos.length === 0) return null;
-              return (
-                <View key={categoria}>
-                  <Text style={styles.groupLabel}>{CATEGORIA_LABEL[categoria]}</Text>
-                  {activos.map((m) => (
-                    <MenuItem key={m.key} icon={m.icon} label={m.label} onPress={() => goTo(m.screen)} />
-                  ))}
-                </View>
-              );
-            })}
+                GET /projects/{pid} y src/utils/modulos.ts), agrupados por
+                área temática (Ambiental, Seguridad...) — NO por cadencia de
+                captura, esa clasificación es solo interna/de la pantalla de
+                configuración del Coordinador. Si `modulos` aún no cargó o el
+                proyecto no tiene nada activo, esta sección no pinta nada —
+                nunca se asume "encendido" por default. */}
+            {modulosActivosPorArea(modulos).map(({ area, modulos: activos }) => (
+              <View key={area}>
+                <Text style={styles.groupLabel}>{area}</Text>
+                {activos.map((m) => (
+                  <MenuItem key={m.key} icon={m.icon} label={m.label} onPress={() => goTo(m.screen)} />
+                ))}
+              </View>
+            ))}
 
             <View style={styles.divider} />
             <MenuItem icon="log-out-outline" label="Cerrar sesion" onPress={onLogout} destructive />
