@@ -56,8 +56,9 @@ export default function InvitationsScreen() {
   const load = useCallback(async () => {
     try {
       setError(null);
-      const items = await api.listInvitations(pid);
+      const [items, a] = await Promise.all([api.listInvitations(pid), api.listAreas(pid)]);
       setInvitations(items || []);
+      setAreas(a || []);
     } catch (e: any) {
       setError(e?.message || 'Error al cargar invitaciones');
     } finally {
@@ -172,6 +173,7 @@ export default function InvitationsScreen() {
   const [editName, setEditName] = useState('');
   const [editEmail, setEditEmail] = useState('');
   const [editPuesto, setEditPuesto] = useState('');
+  const [editAreaId, setEditAreaId] = useState<string | null>(null);
   const [editSaving, setEditSaving] = useState(false);
 
   function openEdit(inv: Invitation) {
@@ -179,6 +181,7 @@ export default function InvitationsScreen() {
     setEditName(inv.name);
     setEditEmail(inv.email);
     setEditPuesto(inv.puesto || '');
+    setEditAreaId(inv.area_id || null);
   }
 
   async function saveEdit() {
@@ -187,12 +190,14 @@ export default function InvitationsScreen() {
     const email = editEmail.trim().toLowerCase();
     if (!name) return Alert.alert('Campo requerido', 'Ingresa el nombre');
     if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return Alert.alert('Correo inválido', 'Ingresa un correo válido');
+    if (editTarget.role === ROLE_ESP && !editAreaId) return Alert.alert('Campo requerido', 'Selecciona el área');
     try {
       setEditSaving(true);
       await api.updateTeamMember(pid, editTarget.accepted_user_id, {
         name,
         email,
         puesto: editTarget.role === ROLE_ESP ? (editPuesto.trim() || undefined) : undefined,
+        area_id: editAreaId || '',
       });
       setEditTarget(null);
       await load();
@@ -360,6 +365,24 @@ export default function InvitationsScreen() {
                 <>
                   <Text style={styles.label}>Puesto</Text>
                   <TextInput value={editPuesto} onChangeText={setEditPuesto} style={styles.inputSimple} placeholder="Puesto" />
+                </>
+              )}
+
+              {(editTarget?.role === ROLE_ESP || editTarget?.role === ROLE_SUB) && (
+                <>
+                  <Text style={styles.label}>Área {editTarget?.role === ROLE_SUB ? '(opcional)' : ''}</Text>
+                  <View style={styles.areaRow}>
+                    {editTarget?.role === ROLE_SUB && (
+                      <Pressable onPress={() => setEditAreaId(null)} style={[styles.areaPill, !editAreaId && styles.areaPillOn]}>
+                        <Text>Obra Civil</Text>
+                      </Pressable>
+                    )}
+                    {areas.map((a) => (
+                      <Pressable key={a.id} onPress={() => setEditAreaId(a.id)} style={[styles.areaPill, editAreaId === a.id && styles.areaPillOn]}>
+                        <Text>{a.name}</Text>
+                      </Pressable>
+                    ))}
+                  </View>
                 </>
               )}
 

@@ -3,7 +3,7 @@
 // partida y totales agrupados por concepto.
 import React, { useCallback, useEffect, useState } from 'react';
 import {
-  View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, StatusBar,
+  View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, StatusBar, Alert,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
@@ -13,6 +13,7 @@ import { api, AvancesResumen, Concepto, Partida, Project, RegistroAvance } from 
 import { colors, radius, shadow, spacing } from '@/src/theme';
 import { APP_BRAND } from '@/src/utils/roles';
 import { formatCantidad, formatMoney } from '@/src/utils/money';
+import { downloadBlob } from '@/src/utils/downloadBlob';
 import { RangoFechasPicker } from '@/src/components/RangoFechasPicker';
 import {
   RangoFechas, rangoEstaSemana, rangoEsteMes, rangoMesAnterior, formatearRangoLegible,
@@ -43,6 +44,7 @@ export default function VisualizarAvanceScreen({ projectId }: { projectId: strin
   const [resumen, setResumen] = useState<AvancesResumen | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [exportando, setExportando] = useState(false);
 
   function elegirAtajo(a: AtajoRango) {
     if (a === 'personalizado') { setCalendarioAbierto(true); return; }
@@ -95,6 +97,23 @@ export default function VisualizarAvanceScreen({ projectId }: { projectId: strin
 
   useEffect(() => { load(); }, [load]);
 
+  const exportarPdf = useCallback(async () => {
+    if (!projectId || exportando) return;
+    setExportando(true);
+    try {
+      const { blob, filename } = await api.downloadAvancePeriodoPdf(projectId, {
+        desde: rango?.desde,
+        hasta: rango?.hasta,
+        partida_id: partidaFiltro || undefined,
+      });
+      await downloadBlob(blob, filename, 'application/pdf');
+    } catch (e: any) {
+      Alert.alert('No se pudo generar el PDF', e?.message || 'Intentalo nuevamente.');
+    } finally {
+      setExportando(false);
+    }
+  }, [projectId, rango?.desde, rango?.hasta, partidaFiltro, exportando]);
+
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <StatusBar barStyle="light-content" />
@@ -110,12 +129,29 @@ export default function VisualizarAvanceScreen({ projectId }: { projectId: strin
         <Text style={styles.rangoTxt}>
           {rango ? formatearRangoLegible(rango.desde, rango.hasta) : 'Todo el proyecto'}
         </Text>
-        {atajo === 'personalizado' ? (
-          <Pressable onPress={() => elegirAtajo('todo')} style={styles.limpiarFiltroBtn} hitSlop={8}>
-            <Ionicons name="close-circle-outline" size={13} color={colors.primary} />
-            <Text style={styles.limpiarFiltroTxt}>Limpiar filtro</Text>
-          </Pressable>
-        ) : null}
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+          {atajo === 'personalizado' ? (
+            <Pressable onPress={() => elegirAtajo('todo')} style={styles.limpiarFiltroBtn} hitSlop={8}>
+              <Ionicons name="close-circle-outline" size={13} color={colors.primary} />
+              <Text style={styles.limpiarFiltroTxt}>Limpiar filtro</Text>
+            </Pressable>
+          ) : null}
+          {avances.length > 0 ? (
+            <Pressable
+              onPress={exportarPdf}
+              disabled={exportando}
+              style={[styles.exportPdfBtn, exportando && { opacity: 0.6 }]}
+              hitSlop={8}
+            >
+              {exportando ? (
+                <ActivityIndicator size="small" color={colors.primary} />
+              ) : (
+                <Ionicons name="document-text-outline" size={13} color={colors.primary} />
+              )}
+              <Text style={styles.exportPdfTxt}>Exportar PDF</Text>
+            </Pressable>
+          ) : null}
+        </View>
       </View>
 
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.presetRow} contentContainerStyle={{ gap: 6, paddingHorizontal: spacing.md }}>
@@ -213,6 +249,12 @@ const styles = StyleSheet.create({
   rangoTxt: { fontSize: 12, color: colors.textMuted, textTransform: 'capitalize' },
   limpiarFiltroBtn: { flexDirection: 'row', alignItems: 'center', gap: 3 },
   limpiarFiltroTxt: { fontSize: 11, fontWeight: '700', color: colors.primary },
+  exportPdfBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    paddingHorizontal: 10, paddingVertical: 5, borderRadius: radius.full,
+    borderWidth: 1, borderColor: colors.primary, backgroundColor: colors.surface,
+  },
+  exportPdfTxt: { fontSize: 11, fontWeight: '700', color: colors.primary },
 
   presetRow: { maxHeight: 40 },
   chip: {

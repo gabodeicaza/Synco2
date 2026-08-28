@@ -231,6 +231,10 @@ export interface Project {
   // deriva — fallback "Catálogo de Conceptos" si vacío (ver nombresNivel.ts
   // para el porqué de no derivarlo).
   titulo_modulo_catalogo?: string;
+  // Cadencia de reporte (Etapa 4) — solo controla cómo se agrupa al
+  // consultar; RegistroAvance.fecha siempre guarda la fecha exacta.
+  cadencia_reporte?: 'DIARIA' | 'SEMANAL' | 'MENSUAL';
+  dia_inicio_semana?: 'LUNES' | 'MARTES' | 'MIERCOLES' | 'JUEVES' | 'VIERNES' | 'SABADO' | 'DOMINGO';
   created_by: string;
   created_at: string;
   archived?: boolean;
@@ -1418,7 +1422,7 @@ export const api = {
   listInvitations: (pid: string) => request<Invitation[]>('GET', `/projects/${pid}/invitations`),
   createInvitation: (pid: string, body: any) => request<Invitation>('POST', `/projects/${pid}/invitations`, body),
   revokeInvitation: (iid: string) => request<{ ok: boolean }>('DELETE', `/invitations/${iid}`),
-  updateTeamMember: (pid: string, uid: string, body: { name?: string; email?: string; puesto?: string }) =>
+  updateTeamMember: (pid: string, uid: string, body: { name?: string; email?: string; puesto?: string; area_id?: string }) =>
     request<User>('PATCH', `/projects/${pid}/team/${uid}`, body),
   removeTeamMember: (pid: string, uid: string) =>
     request<{ ok: boolean }>('DELETE', `/projects/${pid}/team/${uid}`),
@@ -1875,6 +1879,17 @@ export const api = {
     request<{ ok: boolean }>('DELETE', `/projects/${pid}/conceptos/import_evm/${importId}`),
   importEvmCommit: (pid: string, importId: string) =>
     request<ImportCommitEvmResult>('POST', `/projects/${pid}/conceptos/import_evm/${importId}/commit`),
+  downloadImportEvmPlantilla: async (): Promise<{ blob: Blob; filename: string }> => {
+    const tok = await getToken();
+    const res = await fetch(`${BASE}/conceptos/import_evm/plantilla.xlsx`, {
+      method: 'GET',
+      headers: tok ? { Authorization: `Bearer ${tok}` } : {},
+    });
+    if (!res.ok) throw new ApiError(res.status, await _downloadErrorMessage(res, 'Error al descargar la plantilla'));
+    const cd = res.headers.get('Content-Disposition') || '';
+    const m = cd.match(/filename="?([^"]+)"?/);
+    return { blob: await res.blob(), filename: (m && m[1]) || 'plantilla_catalogo_conceptos.xlsx' };
+  },
 
   // ---- Programa desglosado — mismo wizard, segundo destino -----------------
   programaImportSesionPendiente: (pid: string) =>
@@ -2026,5 +2041,25 @@ export const api = {
     const cd = res.headers.get('Content-Disposition') || '';
     const m = cd.match(/filename="?([^"]+)"?/);
     return { blob: await res.blob(), filename: (m && m[1]) || 'catalogo_conceptos.pdf' };
+  },
+
+  downloadAvancePeriodoPdf: async (
+    pid: string,
+    opts: { desde?: string; hasta?: string; partida_id?: string } = {},
+  ): Promise<{ blob: Blob; filename: string }> => {
+    const tok = await getToken();
+    const qs = new URLSearchParams();
+    if (opts.desde) qs.set('desde', opts.desde);
+    if (opts.hasta) qs.set('hasta', opts.hasta);
+    if (opts.partida_id) qs.set('partida_id', opts.partida_id);
+    const suffix = qs.toString();
+    const res = await fetch(`${BASE}/projects/${pid}/export/avance_periodo.pdf${suffix ? `?${suffix}` : ''}`, {
+      method: 'GET',
+      headers: tok ? { Authorization: `Bearer ${tok}` } : {},
+    });
+    if (!res.ok) throw new ApiError(res.status, await _downloadErrorMessage(res, 'Error al descargar PDF'));
+    const cd = res.headers.get('Content-Disposition') || '';
+    const m = cd.match(/filename="?([^"]+)"?/);
+    return { blob: await res.blob(), filename: (m && m[1]) || 'avance_periodo.pdf' };
   },
 };

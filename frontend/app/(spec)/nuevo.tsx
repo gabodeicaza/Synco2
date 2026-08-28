@@ -19,6 +19,7 @@ import { useAuth } from '@/src/auth-context';
 import { dayjs, CDMX_TZ } from '@/src/utils/tz';
 import { shareWithAutoRecover } from '@/src/utils/share';
 import { buildReportShareText } from '@/src/utils/reportText';
+import { PhotoAnnotator } from '@/src/components/PhotoAnnotator';
 
 // Persistence Keys
 const CATALOG_PERSONAL_KEY = 'syncsite_catalog_personal';
@@ -79,6 +80,7 @@ export default function NewReportScreen() {
   const [equipo, setEquipo] = useState<DynItem[]>([]);
   const [images, setImages] = useState<string[]>([]);
   const [captions, setCaptions] = useState<string[]>(['', '']);
+  const [annotatorIdx, setAnnotatorIdx] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
   const [successReport, setSuccessReport] = useState<Report | null>(null);
 
@@ -628,6 +630,9 @@ export default function NewReportScreen() {
                 <View key={idx} style={{ width: 200 }}>
                   <View style={styles.photoWrapBig}>
                     <Image source={{ uri: img }} style={styles.photo} />
+                    <Pressable onPress={() => setAnnotatorIdx(idx)} style={styles.photoMark}>
+                      <Ionicons name="brush" size={16} color="#fff" />
+                    </Pressable>
                     <Pressable onPress={() => setImages(images.filter((_, i) => i !== idx))} style={styles.photoDel}>
                       <Ionicons name="close-circle" size={22} color={colors.error} />
                     </Pressable>
@@ -664,6 +669,17 @@ export default function NewReportScreen() {
 
       {/* MODAL EXITO (Imagen 7) */}
       <SuccessModal visible={!!successReport} report={successReport} project={project} user={user} reportTemplates={reportTemplates} onClose={() => { resetForm(); router.back(); }} />
+
+      <PhotoAnnotator
+        visible={annotatorIdx !== null}
+        imageUri={annotatorIdx !== null ? images[annotatorIdx] : null}
+        onClose={() => setAnnotatorIdx(null)}
+        onSave={(uri) => {
+          if (annotatorIdx === null) return;
+          setImages((cur) => cur.map((im, i) => (i === annotatorIdx ? uri : im)));
+          setAnnotatorIdx(null);
+        }}
+      />
     </KeyboardAvoidingView>
   );
 }
@@ -992,6 +1008,10 @@ const styles = StyleSheet.create({
   photoWrap: { width: 80, height: 80, borderRadius: 12, overflow: 'hidden' },
   photo: { width: '100%', height: '100%' },
   photoDel: { position: 'absolute', top: 2, right: 2 },
+  photoMark: {
+    position: 'absolute', bottom: 6, left: 6, width: 28, height: 28, borderRadius: 14,
+    backgroundColor: 'rgba(15,23,42,0.65)', alignItems: 'center', justifyContent: 'center',
+  },
   incidencias: { fontSize: 12, color: '#64748B', textAlign: 'center' },
   photoWrapBig: { width: 200, height: 150, borderRadius: 12, overflow: 'hidden' },
   captionInputBig: { fontSize: 13, color: '#1E293B', backgroundColor: '#F1F5F9', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 8, marginTop: 8, minHeight: 80, borderWidth: 1, borderColor: '#E2E8F0' },
