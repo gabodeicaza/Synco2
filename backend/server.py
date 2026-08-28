@@ -6762,6 +6762,13 @@ async def export_reports_pdf(
     # Rango DD-MM-YYYY (sin "Hoy"/"Ayer")
     fechas_label = f"{_fmt_fecha_dd_mm_yyyy(start_dt)} a {_fmt_fecha_dd_mm_yyyy(end_dt)}"
 
+    # Sistema Multi-Proyecto Modular: sección de cierre con Forestal y
+    # Arbolado / Seguridad e Higiene, solo si el Coordinador los encendió
+    # para este proyecto — ver _gather_modulos_export_data. Se calcula ANTES
+    # del render bloqueante (requiere Mongo) y se captura como closure en
+    # _build_pdf_blocking.
+    modulos_data = await _gather_modulos_export_data(pid, proj, start_dt, end_dt)
+
     # ========================================================================
     # DIMENSIONES DINÁMICAS DEL CANVAS
     # Si el proyecto tiene plantilla PDF, adoptamos EXACTAMENTE las
@@ -6843,6 +6850,145 @@ async def export_reports_pdf(
         TOP_MARGIN_PDF = 4.0 * cm
         BOTTOM_MARGIN_PDF = 2.0 * cm
         total_reportes = sum(len(v) for v in reports_by_node.values())
+
+        def _draw_modulos_closing_pages():
+            """Sección de cierre: Forestal y Arbolado / Seguridad e Higiene
+            (sistema Multi-Proyecto Modular) — SOLO si el módulo está
+            encendido para este proyecto (ver modulos_data). Se llama desde
+            AMBAS salidas de _build_pdf_blocking (con y sin reportes
+            normales en el período) para que un proyecto sin actividad de
+            campo pero con actividad forestal/seguridad no se quede sin
+            esas páginas."""
+            nonlocal page_num
+            content_w = PW - 3.0 * cm
+            left_x = 1.5 * cm
+            top_y = PH - TOP_MARGIN_PDF
+            bottom_y = BOTTOM_MARGIN_PDF
+            body_style = ParagraphStyle(
+                "modulosBody", fontName="Helvetica", fontSize=10, leading=13, textColor=TEXT,
+            )
+
+            def _section_header(titulo: str) -> float:
+                c.setFillColor(TEXT)
+                c.setFont("Helvetica-Bold", 28)
+                c.drawCentredString(PW / 2, top_y, titulo)
+                y = top_y - 28 * 1.4
+                c.setFillColor(MUTED)
+                c.setFont("Helvetica", 11)
+                c.drawCentredString(PW / 2, y, f"Período: {fechas_label}")
+                return y - 11 * 2.2
+
+            forestal = modulos_data.get("forestal")
+            if forestal is not None:
+                y = _section_header("FORESTAL Y ARBOLADO")
+                cont = forestal["contadores"]
+                c.setFillColor(TEXT)
+                c.setFont("Helvetica-Bold", 14)
+                c.drawCentredString(
+                    PW / 2, y,
+                    f"Podas: {cont['poda']}    Trasplantes: {cont['trasplante']}    Derribos: {cont['derribo']}",
+                )
+                y -= 14 * 2.2
+                if forestal["tabla"]:
+                    data = [["Estación", "Podas", "Trasplantes", "Derribos"]]
+                    for t in forestal["tabla"]:
+                        data.append([t["estacion"], str(t["poda"]), str(t["trasplante"]), str(t["derribo"])])
+                    tbl = Table(data, colWidths=[content_w * 0.4, content_w * 0.2, content_w * 0.2, content_w * 0.2])
+                    tbl.setStyle(TableStyle([
+                        ("BACKGROUND", (0, 0), (-1, 0), BRAND),
+                        ("TEXTCOLOR", (0, 0), (-1, 0), WHITE),
+                        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                        ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
+                        ("FONTSIZE", (0, 0), (-1, -1), 10),
+                        ("ALIGN", (1, 0), (-1, -1), "CENTER"),
+                        ("GRID", (0, 0), (-1, -1), 0.5, BORDER),
+                        ("TOPPADDING", (0, 0), (-1, -1), 5),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                    ]))
+                    tw, th = tbl.wrapOn(c, content_w, y - bottom_y)
+                    tbl.drawOn(c, left_x, y - th)
+                else:
+                    c.setFillColor(MUTED)
+                    c.setFont("Helvetica-Oblique", 12)
+                    c.drawCentredString(PW / 2, y - 0.5 * cm, "Sin registros forestales en este período.")
+                c.showPage()
+                page_num += 1
+
+            seguridad = modulos_data.get("seguridad")
+            if seguridad is not None:
+                y = _section_header("SEGURIDAD E HIGIENE")
+                c.setFillColor(TEXT)
+                c.setFont("Helvetica-Bold", 14)
+                c.drawString(left_x, y, "Reportes de accidentes")
+                y -= 14 * 1.8
+
+                def _ensure_space(need: float):
+                    nonlocal y
+                    if y - need < bottom_y:
+                        c.showPage()
+                        page_num_holder[0] += 1
+                        y = top_y
+
+                page_num_holder = [page_num]
+                reportes = seguridad["reportes"]
+                if reportes:
+                    for rep in reportes:
+                        _ensure_space(3.5 * cm)
+                        c.setFillColor(TEXT)
+                        c.setFont("Helvetica-Bold", 11)
+                        c.drawString(left_x, y, f"{rep.get('fecha', '—')} · {(rep.get('severidad') or '').upper()}")
+                        y -= 11 * 1.5
+                        desc = _xml_escape(rep.get("descripcion") or "(sin descripción)")
+                        p = Paragraph(desc, body_style)
+                        pw, ph = p.wrapOn(c, content_w, y - bottom_y)
+                        p.drawOn(c, left_x, y - ph)
+                        y -= ph + 4
+                        if rep.get("acciones_tomadas"):
+                            acc = Paragraph(f"<b>Acciones tomadas:</b> {_xml_escape(rep['acciones_tomadas'])}", body_style)
+                            pw2, ph2 = acc.wrapOn(c, content_w, y - bottom_y)
+                            acc.drawOn(c, left_x, y - ph2)
+                            y -= ph2 + 4
+                        c.setFillColor(MUTED)
+                        c.setFont("Helvetica-Oblique", 9)
+                        c.drawString(left_x, y, f"Reportó: {rep.get('captured_by_name') or '—'}")
+                        y -= 9 * 2.0
+                else:
+                    c.setFillColor(MUTED)
+                    c.setFont("Helvetica-Oblique", 11)
+                    c.drawString(left_x, y, "Sin reportes de accidentes en este período.")
+                    y -= 11 * 2.0
+                page_num = page_num_holder[0]
+
+                _ensure_space(2.0 * cm)
+                c.setFillColor(TEXT)
+                c.setFont("Helvetica-Bold", 14)
+                c.drawString(left_x, y, "Checklist preventivo / correctivo")
+                y -= 14 * 1.8
+                page_num_holder = [page_num]
+                checklists = seguridad["checklists"]
+                if checklists:
+                    for chk in checklists:
+                        _ensure_space(1.5 * cm)
+                        c.setFillColor(TEXT)
+                        c.setFont("Helvetica-Bold", 11)
+                        c.drawString(left_x, y, f"{chk.get('fecha', '—')} · {chk.get('captured_by_name') or '—'}")
+                        y -= 11 * 1.6
+                        for it in chk.get("items") or []:
+                            _ensure_space(1.0 * cm)
+                            marca = "[X]" if it.get("cumplido") else "[ ]"
+                            c.setFillColor(TEXT)
+                            c.setFont("Helvetica", 10)
+                            c.drawString(left_x + 0.4 * cm, y, f"{marca} ({it.get('tipo', '')}) {it.get('item', '')}")
+                            y -= 10 * 1.5
+                        y -= 6
+                else:
+                    c.setFillColor(MUTED)
+                    c.setFont("Helvetica-Oblique", 11)
+                    c.drawString(left_x, y, "Sin checklist capturado en este período.")
+                page_num = page_num_holder[0]
+
+                c.showPage()
+                page_num += 1
 
         # --- PORTADA INSTITUCIONAL ----------------------------------------
         # La página 0 del template PDF aporta el diseño y los logos. Aquí
@@ -7108,6 +7254,11 @@ async def export_reports_pdf(
             c.setFont("Helvetica-Oblique", 14)
             c.drawCentredString(PW / 2, PH / 2, "No hay reportes para el período seleccionado.")
             c.showPage()
+            page_num += 1
+            # Un proyecto sin reportes de campo puede seguir teniendo
+            # actividad forestal/seguridad ese período — la sección de
+            # cierre se pinta igual, nunca depende de total_reportes.
+            _draw_modulos_closing_pages()
             c.save()
             return buf.getvalue(), section_page_indices, [], _gd_page_count
 
@@ -8454,6 +8605,10 @@ async def export_reports_pdf(
         # desglosado por Tramo y por puesto/descripción.
         _emit_recuento_general()
 
+        # Sistema Multi-Proyecto Modular: Forestal y Arbolado / Seguridad e
+        # Higiene, al final de todo — solo si están encendidos.
+        _draw_modulos_closing_pages()
+
         c.save()
         return buf.getvalue(), section_page_indices, area_page_indices, _gd_page_count
 
@@ -8754,6 +8909,58 @@ def _safe_export_filename(name: str, period: str, ext: str) -> str:
     return f"reporte_{safe}_{period}_{ts}.{ext}"
 
 
+async def _gather_modulos_export_data(pid: str, proj: dict, start_dt: datetime, end_dt: datetime) -> dict:
+    """Datos de los módulos piloto (sistema Multi-Proyecto Modular) para la
+    sección de cierre de los reportes exportados (PDF/DOCX/PPTX).
+
+    Regla explícita del Coordinador: un módulo apagado para el proyecto
+    NUNCA aparece en la impresión, sin importar si tiene datos capturados
+    (`out[clave]` queda None). Uno encendido SIEMPRE aparece, aunque no haya
+    nada capturado en el período — la sección se pinta con "sin registros",
+    nunca se omite en silencio, para que quede claro que el módulo está
+    activo pero no tuvo actividad ese período.
+
+    Se filtra por `created_at` (mismo criterio que `reports`), NO por el
+    campo `fecha` (string) — created_at es el datetime real de captura y
+    ya viene consistente en UTC aware desde cada endpoint de creación."""
+    modulos = _sanitize_modulos(proj.get("modulos"))
+    out: dict = {"forestal": None, "seguridad": None}
+    date_q = {"created_at": {"$gte": start_dt, "$lte": end_dt}}
+
+    if modulos.get("reportes_semanales", {}).get("forestal_arbolado"):
+        cursor = db.forestal_registros.aggregate([
+            {"$match": {"project_id": pid, **date_q}},
+            {"$group": {
+                "_id": {"estacion": {"$ifNull": ["$estacion_nombre", "Sin estación"]}, "tipo": "$tipo"},
+                "total": {"$sum": "$cantidad"},
+            }},
+        ])
+        rows = await cursor.to_list(length=5000)
+        por_estacion: Dict[str, Dict[str, int]] = {}
+        contadores = {"poda": 0, "trasplante": 0, "derribo": 0}
+        for r in rows:
+            estacion = r["_id"]["estacion"]
+            tipo = r["_id"]["tipo"]
+            total = r["total"]
+            por_estacion.setdefault(estacion, {"poda": 0, "trasplante": 0, "derribo": 0})
+            por_estacion[estacion][tipo] = total
+            if tipo in contadores:
+                contadores[tipo] += total
+        tabla = [{"estacion": estacion, **conteos} for estacion, conteos in sorted(por_estacion.items())]
+        out["forestal"] = {"tabla": tabla, "contadores": contadores}
+
+    if modulos.get("reportes_diarios", {}).get("seguridad_higiene"):
+        reportes = await db.seguridad_reportes.find(
+            {"project_id": pid, **date_q}
+        ).sort("created_at", 1).to_list(length=2000)
+        checklists = await db.seguridad_checklist.find(
+            {"project_id": pid, **date_q}
+        ).sort("created_at", 1).to_list(length=500)
+        out["seguridad"] = {"reportes": reportes, "checklists": checklists}
+
+    return out
+
+
 @api.get("/projects/{pid}/export/reports.docx")
 async def export_reports_docx(
     pid: str,
@@ -8813,6 +9020,11 @@ async def export_reports_docx(
         area = await db.areas.find_one({"id": area_id, "project_id": pid})
         if area:
             area_label = f"Área: {area.get('name', '—')}"
+
+    # Sistema Multi-Proyecto Modular: sección de cierre con Forestal y
+    # Arbolado / Seguridad e Higiene, solo si el Coordinador los encendió
+    # para este proyecto — ver _gather_modulos_export_data.
+    modulos_data = await _gather_modulos_export_data(pid, proj, start_dt, end_dt)
 
     def _build_docx_blocking() -> bytes:
         """Motor DOCX estrictamente MONOCROMÁTICO, enfocado a LECTURA
@@ -9125,6 +9337,133 @@ async def export_reports_docx(
             er.font.size = Pt(12)
             er.font.color.rgb = MUTED_RGB
 
+        # ---- Sección de cierre: módulos del sistema Multi-Proyecto Modular
+        # (Forestal y Arbolado / Seguridad e Higiene) — solo si el
+        # Coordinador los encendió para este proyecto. Ver modulos_data /
+        # _gather_modulos_export_data. Mismo período que el resto del export.
+        def _mod_section_title(text: str):
+            p = doc.add_paragraph()
+            r = p.add_run(text)
+            r.bold = True
+            r.font.size = Pt(18)
+            r.font.color.rgb = BRAND_RGB
+
+        def _mod_period_sub():
+            p = doc.add_paragraph()
+            r = p.add_run(f"Período: {fechas_label}")
+            r.italic = True
+            r.font.size = Pt(10)
+            r.font.color.rgb = MUTED_RGB
+
+        def _mod_table(headers: list, rows: list):
+            table = doc.add_table(rows=1, cols=len(headers))
+            table.style = "Table Grid"
+            for i, h in enumerate(headers):
+                cell_p = table.rows[0].cells[i].paragraphs[0]
+                cr = cell_p.add_run(h)
+                cr.bold = True
+                cr.font.size = Pt(10)
+                cr.font.color.rgb = BRAND_RGB
+            for row in rows:
+                cells = table.add_row().cells
+                for i, val in enumerate(row):
+                    cp = cells[i].paragraphs[0]
+                    cvr = cp.add_run(str(val))
+                    cvr.font.size = Pt(10)
+                    cvr.font.color.rgb = TEXT_RGB
+
+        forestal = modulos_data.get("forestal")
+        if forestal is not None:
+            doc.add_page_break()
+            _mod_section_title("FORESTAL Y ARBOLADO")
+            _mod_period_sub()
+            doc.add_paragraph()
+            cont = forestal["contadores"]
+            cp = doc.add_paragraph()
+            cr = cp.add_run(
+                f"Podas: {cont['poda']}    Trasplantes: {cont['trasplante']}    Derribos: {cont['derribo']}"
+            )
+            cr.bold = True
+            cr.font.size = Pt(13)
+            cr.font.color.rgb = TEXT_RGB
+            doc.add_paragraph()
+            if forestal["tabla"]:
+                doc.add_paragraph().add_run("Resumen por estación").bold = True
+                _mod_table(
+                    ["Estación", "Podas", "Trasplantes", "Derribos"],
+                    [[t["estacion"], t["poda"], t["trasplante"], t["derribo"]] for t in forestal["tabla"]],
+                )
+            else:
+                ep = doc.add_paragraph()
+                er2 = ep.add_run("Sin registros forestales en este período.")
+                er2.italic = True
+                er2.font.size = Pt(11)
+                er2.font.color.rgb = MUTED_RGB
+
+        seguridad = modulos_data.get("seguridad")
+        if seguridad is not None:
+            doc.add_page_break()
+            _mod_section_title("SEGURIDAD E HIGIENE")
+            _mod_period_sub()
+            doc.add_paragraph()
+
+            doc.add_paragraph().add_run("Reportes de accidentes").bold = True
+            if seguridad["reportes"]:
+                for rep in seguridad["reportes"]:
+                    rp = doc.add_paragraph()
+                    rl = rp.add_run(f"{rep.get('fecha', '—')} · {(rep.get('severidad') or '').upper()}")
+                    rl.bold = True
+                    rl.font.size = Pt(11)
+                    rl.font.color.rgb = BRAND_RGB
+                    dp = doc.add_paragraph()
+                    dr = dp.add_run(rep.get("descripcion") or "(sin descripción)")
+                    dr.font.size = Pt(11)
+                    dr.font.color.rgb = TEXT_RGB
+                    if rep.get("acciones_tomadas"):
+                        ap = doc.add_paragraph()
+                        al = ap.add_run("Acciones tomadas: ")
+                        al.bold = True
+                        al.font.size = Pt(10)
+                        al.font.color.rgb = MUTED_RGB
+                        av = ap.add_run(rep["acciones_tomadas"])
+                        av.font.size = Pt(10)
+                        av.font.color.rgb = TEXT_RGB
+                    ap2 = doc.add_paragraph()
+                    ar2 = ap2.add_run(f"Reportó: {rep.get('captured_by_name') or '—'}")
+                    ar2.italic = True
+                    ar2.font.size = Pt(9)
+                    ar2.font.color.rgb = SUBTLE_RGB
+                    doc.add_paragraph()
+            else:
+                ep2 = doc.add_paragraph()
+                er3 = ep2.add_run("Sin reportes de accidentes en este período.")
+                er3.italic = True
+                er3.font.size = Pt(11)
+                er3.font.color.rgb = MUTED_RGB
+
+            doc.add_paragraph()
+            doc.add_paragraph().add_run("Checklist preventivo / correctivo").bold = True
+            if seguridad["checklists"]:
+                for chk in seguridad["checklists"]:
+                    cp2 = doc.add_paragraph()
+                    cl2 = cp2.add_run(f"{chk.get('fecha', '—')} · {chk.get('captured_by_name') or '—'}")
+                    cl2.bold = True
+                    cl2.font.size = Pt(11)
+                    cl2.font.color.rgb = BRAND_RGB
+                    for it in chk.get("items") or []:
+                        ip = doc.add_paragraph(style=None)
+                        marca = "✓" if it.get("cumplido") else "✗"
+                        ir = ip.add_run(f"  {marca} [{it.get('tipo', '')}] {it.get('item', '')}")
+                        ir.font.size = Pt(10)
+                        ir.font.color.rgb = TEXT_RGB
+                    doc.add_paragraph()
+            else:
+                ep3 = doc.add_paragraph()
+                er4 = ep3.add_run("Sin checklist capturado en este período.")
+                er4.italic = True
+                er4.font.size = Pt(11)
+                er4.font.color.rgb = MUTED_RGB
+
         buf = io.BytesIO()
         doc.save(buf)
         return buf.getvalue()
@@ -9234,6 +9573,11 @@ async def export_reports_pptx(
     _ch = project_color.lstrip("#")
     BRAND_RGB = (int(_ch[0:2], 16), int(_ch[2:4], 16), int(_ch[4:6], 16))
     fechas_label = f"{_fmt_fecha_dd_mm_yyyy(start_dt)} a {_fmt_fecha_dd_mm_yyyy(end_dt)}"
+
+    # Sistema Multi-Proyecto Modular: slides de cierre con Forestal y
+    # Arbolado / Seguridad e Higiene, solo si el Coordinador los encendió
+    # para este proyecto — ver _gather_modulos_export_data.
+    modulos_data = await _gather_modulos_export_data(pid, proj, start_dt, end_dt)
 
     # Título ejecutivo dependiendo del tipo de reporte.
     _report_title_map = {
@@ -9844,6 +10188,126 @@ async def export_reports_pptx(
 
                     idx = chunk_end
 
+        def _emit_modulos_closing_slides() -> None:
+            """Slides de cierre: Forestal y Arbolado / Seguridad e Higiene
+            (sistema Multi-Proyecto Modular) — SOLO si el módulo está
+            encendido para este proyecto (ver modulos_data / mismo criterio
+            que el motor PDF)."""
+            MARGIN_X = Cm(1.5)
+            content_w = SW - 2 * MARGIN_X
+            top_y = Cm(1.6)
+            bottom_y = SH - Cm(1.2)
+
+            def _new_slide(titulo: str):
+                slide = _clone_membrete()
+                add_text(slide, MARGIN_X, top_y, content_w, Cm(1.3), titulo,
+                         size=32, bold=True, color=READABLE_BRAND_RGB, align=PP_ALIGN.CENTER)
+                add_text(slide, MARGIN_X, top_y + Cm(1.3), content_w, Cm(0.8),
+                         f"Período: {fechas_label}", size=12, italic=True, color=WF_MUTED_RGB,
+                         align=PP_ALIGN.CENTER)
+                return slide, top_y + Cm(2.5)
+
+            def _draw_table(slide, x, y, headers, rows):
+                col_w = int(content_w / len(headers))
+                header_h = Cm(1.0)
+                row_h = Cm(0.9)
+                _wf_rect(slide, x, y, content_w, header_h, fill_rgb=BRAND_RGB)
+                for i, h in enumerate(headers):
+                    add_text(slide, x + i * col_w, y, col_w, header_h, h,
+                             size=12, bold=True, color=HEADER_TEXT_RGB, align=PP_ALIGN.CENTER)
+                cy = y + header_h
+                for row in rows:
+                    _wf_rect(slide, x, cy, content_w, row_h, fill_rgb=WF_WHITE_RGB,
+                             line_rgb=WF_BORDER_RGB, line_pt=0.75)
+                    for i, val in enumerate(row):
+                        add_text(slide, x + i * col_w, cy, col_w, row_h, str(val),
+                                 size=11, color=WF_TEXT_RGB, align=PP_ALIGN.CENTER)
+                    cy += row_h
+                return cy
+
+            forestal = modulos_data.get("forestal")
+            if forestal is not None:
+                slide, y = _new_slide("FORESTAL Y ARBOLADO")
+                cont = forestal["contadores"]
+                add_text(
+                    slide, MARGIN_X, y, content_w, Cm(1.0),
+                    f"Podas: {cont['poda']}    Trasplantes: {cont['trasplante']}    Derribos: {cont['derribo']}",
+                    size=16, bold=True, color=WF_TEXT_RGB, align=PP_ALIGN.CENTER,
+                )
+                y += Cm(1.4)
+                if forestal["tabla"]:
+                    rows = [[t["estacion"], t["poda"], t["trasplante"], t["derribo"]] for t in forestal["tabla"]]
+                    _draw_table(slide, MARGIN_X, y, ["Estación", "Podas", "Trasplantes", "Derribos"], rows)
+                else:
+                    add_text(
+                        slide, MARGIN_X, y, content_w, Cm(1.0),
+                        "Sin registros forestales en este período.",
+                        size=13, italic=True, color=WF_MUTED_RGB, align=PP_ALIGN.CENTER,
+                    )
+
+            seguridad = modulos_data.get("seguridad")
+            if seguridad is not None:
+                slide, y = _new_slide("SEGURIDAD E HIGIENE")
+                add_text(slide, MARGIN_X, y, content_w, Cm(0.8), "Reportes de accidentes",
+                         size=15, bold=True, color=WF_TEXT_RGB)
+                y += Cm(1.0)
+                reportes = seguridad["reportes"]
+                if reportes:
+                    for rep in reportes:
+                        if y > bottom_y - Cm(2.5):
+                            slide, y = _new_slide("SEGURIDAD E HIGIENE (continúa)")
+                        linea = (
+                            f"{rep.get('fecha', '—')} · {(rep.get('severidad') or '').upper()} — "
+                            f"{rep.get('descripcion') or '(sin descripción)'}"
+                        )
+                        add_text(slide, MARGIN_X, y, content_w, Cm(1.2), linea, size=11, color=WF_TEXT_RGB)
+                        y += Cm(1.3)
+                        if rep.get("acciones_tomadas"):
+                            add_text(
+                                slide, MARGIN_X + Cm(0.3), y, content_w - Cm(0.3), Cm(1.0),
+                                f"Acciones: {rep['acciones_tomadas']}", size=10, italic=True, color=WF_MUTED_RGB,
+                            )
+                            y += Cm(1.1)
+                else:
+                    add_text(
+                        slide, MARGIN_X, y, content_w, Cm(0.8),
+                        "Sin reportes de accidentes en este período.", size=12, italic=True, color=WF_MUTED_RGB,
+                    )
+                    y += Cm(1.0)
+
+                y += Cm(0.4)
+                if y > bottom_y - Cm(2.0):
+                    slide, y = _new_slide("SEGURIDAD E HIGIENE — Checklist")
+                add_text(slide, MARGIN_X, y, content_w, Cm(0.8), "Checklist preventivo / correctivo",
+                         size=15, bold=True, color=WF_TEXT_RGB)
+                y += Cm(1.0)
+                checklists = seguridad["checklists"]
+                if checklists:
+                    for chk in checklists:
+                        if y > bottom_y - Cm(1.5):
+                            slide, y = _new_slide("SEGURIDAD E HIGIENE — Checklist (continúa)")
+                        add_text(
+                            slide, MARGIN_X, y, content_w, Cm(0.8),
+                            f"{chk.get('fecha', '—')} · {chk.get('captured_by_name') or '—'}",
+                            size=12, bold=True, color=WF_TEXT_RGB,
+                        )
+                        y += Cm(0.9)
+                        for it in chk.get("items") or []:
+                            if y > bottom_y - Cm(0.9):
+                                slide, y = _new_slide("SEGURIDAD E HIGIENE — Checklist (continúa)")
+                            marca = "[X]" if it.get("cumplido") else "[ ]"
+                            add_text(
+                                slide, MARGIN_X + Cm(0.4), y, content_w - Cm(0.4), Cm(0.7),
+                                f"{marca} ({it.get('tipo', '')}) {it.get('item', '')}", size=10, color=WF_TEXT_RGB,
+                            )
+                            y += Cm(0.7)
+                        y += Cm(0.3)
+                else:
+                    add_text(
+                        slide, MARGIN_X, y, content_w, Cm(0.8),
+                        "Sin checklist capturado en este período.", size=12, italic=True, color=WF_MUTED_RGB,
+                    )
+
         def _emit_subtramo_summary_slide(subtramo_id: Optional[str]) -> None:
             """Emite (si hay datos) la slide de resumen del Subtramo
             `subtramo_id` para todo el período exportado — al final de la
@@ -10396,6 +10860,10 @@ async def export_reports_pptx(
         # Slide(s) de cierre: RECUENTO GENERAL del período completo,
         # desglosado por Tramo y por puesto/descripción.
         _emit_recuento_general_slides()
+
+        # Sistema Multi-Proyecto Modular: Forestal y Arbolado / Seguridad e
+        # Higiene, al final de todo — solo si están encendidos.
+        _emit_modulos_closing_slides()
 
         # ==============================================================
         # TEXTOS DE PORTADA PRINCIPAL — se inyectan al FINAL para que las
