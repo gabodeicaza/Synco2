@@ -16,7 +16,7 @@ import { colors, radius, shadow, spacing } from '@/src/theme';
 import { APP_BRAND } from '@/src/utils/roles';
 import { UNIDAD_LABELS, Unidad } from '@/src/utils/unidades';
 import { nombreConcepto } from '@/src/utils/nombresNivel';
-import { formatCantidad, isValidDecimalInput } from '@/src/utils/money';
+import { decimalStringToCents, formatCantidad, isValidDecimalInput, pctDeDecimales } from '@/src/utils/money';
 import { dayjs, CDMX_TZ } from '@/src/utils/tz';
 import { esPorcentajeValido, esRetrocesoLocal } from '@/src/utils/avancePorcentaje';
 
@@ -181,6 +181,31 @@ export default function RegistrarAvanceScreen({ projectId }: { projectId: string
               Unidad: {UNIDAD_LABELS[selected.unidad as Unidad] || selected.unidad} · Contratado: {formatCantidad(selected.cantidad)}
             </Text>
 
+            {/* Avance acumulado a la fecha — fracción + porcentaje. Antes solo
+                se veía en la tarjeta de resultados de búsqueda y desaparecía
+                justo al seleccionar el concepto, que es cuando más se
+                necesita para decidir cuánto capturar. */}
+            {(() => {
+              const avanceFraccionTxt = esPorcentaje
+                ? `${formatCantidad(selected.cantidad_ejecutada_acumulada)}%`
+                : `${formatCantidad(selected.cantidad_ejecutada_acumulada)} / ${formatCantidad(selected.cantidad)} ${selected.unidad}`;
+              const avancePct = esPorcentaje
+                ? decimalStringToCents(selected.cantidad_ejecutada_acumulada) / 100
+                : pctDeDecimales(selected.cantidad_ejecutada_acumulada, selected.cantidad);
+              const barWidth = Math.max(0, Math.min(100, avancePct));
+              return (
+                <View style={styles.progressBox}>
+                  <View style={styles.progressBoxRow}>
+                    <Text style={styles.progressFraction}>{avanceFraccionTxt}</Text>
+                    <Text style={styles.progressPctTxt}>{formatCantidad(String(avancePct))}%</Text>
+                  </View>
+                  <View style={styles.progressBarTrack}>
+                    <View style={[styles.progressBarFill, { width: `${barWidth}%` }]} />
+                  </View>
+                </View>
+              );
+            })()}
+
             {esPorcentaje ? (
               <>
                 <View style={styles.pctLabelRow}>
@@ -331,6 +356,13 @@ const styles = StyleSheet.create({
   selectedClave: { fontSize: 18, fontWeight: '800', color: colors.text },
   selectedDesc: { fontSize: 14, color: colors.textBody },
   selectedMeta: { fontSize: 12, color: colors.textMuted },
+
+  progressBox: { backgroundColor: colors.bg, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, padding: 10, gap: 6 },
+  progressBoxRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  progressFraction: { fontSize: 14, fontWeight: '700', color: colors.text },
+  progressPctTxt: { fontSize: 14, fontWeight: '800', color: colors.primary },
+  progressBarTrack: { height: 8, borderRadius: radius.full, backgroundColor: colors.border, overflow: 'hidden' },
+  progressBarFill: { height: '100%', borderRadius: radius.full, backgroundColor: colors.primary },
 
   fieldLabel: { fontSize: 12, fontWeight: '700', color: colors.textMuted, marginTop: 8 },
   qtyInput: {

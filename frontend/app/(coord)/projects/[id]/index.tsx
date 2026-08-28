@@ -1502,6 +1502,16 @@ export default function ProjectDetailScreen() {
 
               <Text style={styles.sectionTitle}>Configuracion del proyecto</Text>
 
+              {/* Hub del sistema Multi-Proyecto Modular — primer tile a
+                  propósito: es donde se encienden/apagan Forestal y
+                  Arbolado, Seguridad e Higiene, etc. para este proyecto (sin
+                  esto quedan invisibles en el menú de Sub-Coord/Especialista). */}
+              <ActionTile
+                icon="apps-outline"
+                title="Módulos"
+                subtitle="Enciende/apaga Forestal y Arbolado, Seguridad e Higiene y demás plantillas"
+                onPress={() => router.push({ pathname: '/(coord)/projects/[id]/modulos' as any, params: { id: pid } })}
+              />
               <ActionTile
                 icon="git-network-outline"
                 title="Arbol de nodos"
@@ -1525,12 +1535,6 @@ export default function ProjectDetailScreen() {
                 title="Invitaciones"
                 subtitle="Genera tokens para Sub-Coord. y Especialistas"
                 onPress={() => router.push({ pathname: '/(coord)/projects/[id]/invitations', params: { id: pid } })}
-              />
-              <ActionTile
-                icon="apps-outline"
-                title="Módulos"
-                subtitle="Enciende/apaga plantillas por cadencia (Diario, Semanal, Mensual)"
-                onPress={() => router.push({ pathname: '/(coord)/projects/[id]/modulos' as any, params: { id: pid } })}
               />
               <ActionTile
                 icon="color-palette-outline"

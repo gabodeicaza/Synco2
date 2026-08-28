@@ -57,3 +57,14 @@ export function sumDecimalStringsAsCents(values: Array<string | null | undefined
 export function isValidDecimalInput(value: string): boolean {
   return /^-?\d+(\.\d{1,2})?$/.test(value.trim());
 }
+
+/** % que representa `parte` de `total` (ambos decimales exactos), a 1 decimal.
+ * Solo para MOSTRAR en UI — no es aritmética de dinero, un float aquí es
+ * aceptable porque nunca se vuelve a guardar. `total` en 0 devuelve 0 (no
+ * NaN/Infinity) para no romper el render con un concepto recién creado. */
+export function pctDeDecimales(parte: string | null | undefined, total: string | null | undefined): number {
+  const totalCents = decimalStringToCents(total);
+  if (totalCents <= 0) return 0;
+  const parteCents = decimalStringToCents(parte);
+  return Math.round((parteCents / totalCents) * 1000) / 10;
+}
