@@ -45,6 +45,7 @@ export default function VisualizarAvanceScreen({ projectId }: { projectId: strin
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [exportando, setExportando] = useState(false);
+  const [exportandoXlsx, setExportandoXlsx] = useState(false);
 
   function elegirAtajo(a: AtajoRango) {
     if (a === 'personalizado') { setCalendarioAbierto(true); return; }
@@ -114,6 +115,23 @@ export default function VisualizarAvanceScreen({ projectId }: { projectId: strin
     }
   }, [projectId, rango?.desde, rango?.hasta, partidaFiltro, exportando]);
 
+  const exportarXlsx = useCallback(async () => {
+    if (!projectId || exportandoXlsx) return;
+    setExportandoXlsx(true);
+    try {
+      const { blob, filename } = await api.downloadAvancePeriodoXlsx(projectId, {
+        desde: rango?.desde,
+        hasta: rango?.hasta,
+        partida_id: partidaFiltro || undefined,
+      });
+      await downloadBlob(blob, filename, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    } catch (e: any) {
+      Alert.alert('No se pudo generar el Excel', e?.message || 'Intentalo nuevamente.');
+    } finally {
+      setExportandoXlsx(false);
+    }
+  }, [projectId, rango?.desde, rango?.hasta, partidaFiltro, exportandoXlsx]);
+
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <StatusBar barStyle="light-content" />
@@ -137,19 +155,34 @@ export default function VisualizarAvanceScreen({ projectId }: { projectId: strin
             </Pressable>
           ) : null}
           {avances.length > 0 ? (
-            <Pressable
-              onPress={exportarPdf}
-              disabled={exportando}
-              style={[styles.exportPdfBtn, exportando && { opacity: 0.6 }]}
-              hitSlop={8}
-            >
-              {exportando ? (
-                <ActivityIndicator size="small" color={colors.primary} />
-              ) : (
-                <Ionicons name="document-text-outline" size={13} color={colors.primary} />
-              )}
-              <Text style={styles.exportPdfTxt}>Exportar PDF</Text>
-            </Pressable>
+            <>
+              <Pressable
+                onPress={exportarXlsx}
+                disabled={exportandoXlsx}
+                style={[styles.exportXlsxBtn, exportandoXlsx && { opacity: 0.6 }]}
+                hitSlop={8}
+              >
+                {exportandoXlsx ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Ionicons name="grid-outline" size={13} color="#fff" />
+                )}
+                <Text style={styles.exportXlsxTxt}>Exportar Excel</Text>
+              </Pressable>
+              <Pressable
+                onPress={exportarPdf}
+                disabled={exportando}
+                style={[styles.exportPdfBtn, exportando && { opacity: 0.6 }]}
+                hitSlop={8}
+              >
+                {exportando ? (
+                  <ActivityIndicator size="small" color={colors.primary} />
+                ) : (
+                  <Ionicons name="document-text-outline" size={13} color={colors.primary} />
+                )}
+                <Text style={styles.exportPdfTxt}>PDF</Text>
+              </Pressable>
+            </>
           ) : null}
         </View>
       </View>
@@ -249,6 +282,12 @@ const styles = StyleSheet.create({
   rangoTxt: { fontSize: 12, color: colors.textMuted, textTransform: 'capitalize' },
   limpiarFiltroBtn: { flexDirection: 'row', alignItems: 'center', gap: 3 },
   limpiarFiltroTxt: { fontSize: 11, fontWeight: '700', color: colors.primary },
+  exportXlsxBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    paddingHorizontal: 10, paddingVertical: 5, borderRadius: radius.full,
+    backgroundColor: colors.primary,
+  },
+  exportXlsxTxt: { fontSize: 11, fontWeight: '700', color: '#fff' },
   exportPdfBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
     paddingHorizontal: 10, paddingVertical: 5, borderRadius: radius.full,

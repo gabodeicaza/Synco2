@@ -4454,10 +4454,10 @@ async def list_events(
     # calendario nunca se desincronice si el concepto cambia de fecha o se
     # borra. Se omiten en la vista "mine" (esos filtros son de autor/
     # asistente, que no aplica a un concepto).
+    start_today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    virtuales: List[dict] = []
     if not mine:
-        start_today = now.replace(hour=0, minute=0, second=0, microsecond=0)
         partida_ids = [p["id"] async for p in db.partidas.find({"project_id": pid}, {"id": 1})]
-        virtuales: List[dict] = []
         if partida_ids:
             async for c in db.conceptos.find(
                 {"partida_id": {"$in": partida_ids}, "$or": [{"fecha_inicio": {"$ne": None}}, {"fecha_fin": {"$ne": None}}]},
@@ -4482,13 +4482,35 @@ async def list_events(
                         "author_id": "catalogo", "author_name": "Catálogo de conceptos",
                         "created_at": dt, "updated_at": dt,
                     })
-        if range == "upcoming":
-            virtuales = [v for v in virtuales if v["start_at"] >= start_today]
-        elif range == "past":
-            virtuales = [v for v in virtuales if v["start_at"] < start_today]
-        items = items + virtuales
-        items.sort(key=lambda it: it["start_at"], reverse=(range == "past"))
-        items = items[:safe_limit]
+
+    # Eventos virtuales "Minuta: <código — título>" sintetizados desde
+    # db.minutas.fecha_reunion — mismo criterio que los de concepto (no se
+    # guardan en db.events, se calculan en cada consulta). A diferencia de
+    # los de concepto, sí respetan "mine" (autor o involucrado), porque una
+    # minuta sí tiene dueño/participantes reales.
+    minuta_q: dict = {"project_id": pid, "fecha_reunion": {"$ne": None}}
+    if mine:
+        minuta_q["$or"] = [{"author_id": user["id"]}, {"involved_ids": user["id"]}]
+    async for m in db.minutas.find(
+        minuta_q, {"id": 1, "codigo": 1, "titulo": 1, "fecha_reunion": 1, "author_id": 1, "author_name": 1},
+    ):
+        dt = datetime.fromisoformat(m["fecha_reunion"]).replace(tzinfo=timezone.utc)
+        etiqueta = f"{m.get('codigo', '')} — {m.get('titulo', '')}".strip(" —")
+        virtuales.append({
+            "id": f"minuta:{m['id']}", "project_id": pid,
+            "title": f"Minuta: {etiqueta}", "description": None, "location": None,
+            "start_at": dt, "end_at": None, "area_id": None,
+            "author_id": m.get("author_id") or "minutas", "author_name": m.get("author_name") or "Minutas",
+            "created_at": dt, "updated_at": dt,
+        })
+
+    if range == "upcoming":
+        virtuales = [v for v in virtuales if v["start_at"] >= start_today]
+    elif range == "past":
+        virtuales = [v for v in virtuales if v["start_at"] < start_today]
+    items = items + virtuales
+    items.sort(key=lambda it: it["start_at"], reverse=(range == "past"))
+    items = items[:safe_limit]
 
     # Enriquecer con area_name + area_color (en batch).
     area_ids = {it.get("area_id") for it in items if it.get("area_id")}
@@ -13094,6 +13116,23 @@ async def update_partida(partida_id: str, body: PartidaPatch, user: dict = Depen
     return await _partida_out(updated, all_partidas)
 
 
+@api.delete("/partidas/{partida_id}")
+async def delete_partida(partida_id: str, user: dict = Depends(require_role(ROLE_SUB, ROLE_COORD))):
+    """Borra una carpeta/partida completa — en cascada, incluyendo TODA su
+    subtree (subpartidas a cualquier profundidad) y los conceptos dentro de
+    ellas. Es baja lógica (activo=false, mismo criterio que PATCH .../activo)
+    para no perder el historial de avances ya capturados sobre esos
+    conceptos — pero no bloquea el borrado si ya tienen avances, a petición
+    explícita del usuario (2026-08-28)."""
+    partida = await db.partidas.find_one({"id": partida_id})
+    if not partida:
+        raise HTTPException(404, "Partida no existe")
+    subtree_ids = await _partida_subtree_ids_en_proyecto(partida["project_id"], partida_id)
+    r_partidas = await db.partidas.update_many({"id": {"$in": subtree_ids}}, {"$set": {"activo": False}})
+    r_conceptos = await db.conceptos.update_many({"partida_id": {"$in": subtree_ids}}, {"$set": {"activo": False}})
+    return {"ok": True, "partidas_borradas": r_partidas.modified_count, "conceptos_borrados": r_conceptos.modified_count}
+
+
 # === Conceptos =================================================================
 @api.get("/partidas/{partida_id}/conceptos", response_model=List[ConceptoOut])
 async def list_conceptos(partida_id: str, incluir_inactivos: bool = False, user: dict = Depends(current_user)):
@@ -13214,6 +13253,18 @@ async def update_concepto(concepto_id: str, body: ConceptoPatch, user: dict = De
         await db.conceptos.update_one({"id": concepto_id}, {"$set": upd})
     updated = await db.conceptos.find_one({"id": concepto_id})
     return await _concepto_out(updated)
+
+
+@api.delete("/conceptos/{concepto_id}")
+async def delete_concepto(concepto_id: str, user: dict = Depends(require_role(ROLE_SUB, ROLE_COORD))):
+    """Borra un concepto — baja lógica (activo=false), sin bloquear aunque
+    ya tenga avances registrados (preserva el historial, solo lo oculta del
+    catálogo activo — a petición explícita del usuario, 2026-08-28)."""
+    concepto = await db.conceptos.find_one({"id": concepto_id})
+    if not concepto:
+        raise HTTPException(404, "Concepto no existe")
+    await db.conceptos.update_one({"id": concepto_id}, {"$set": {"activo": False}})
+    return {"ok": True}
 
 
 @api.get("/projects/{pid}/conceptos/search", response_model=List[dict])
@@ -15573,6 +15624,148 @@ async def export_avance_periodo_pdf(
     return StreamingResponse(
         io.BytesIO(pdf_bytes),
         media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
+@api.get("/projects/{pid}/export/avance_periodo.xlsx")
+async def export_avance_periodo_xlsx(
+    pid: str,
+    desde: Optional[str] = None,
+    hasta: Optional[str] = None,
+    partida_id: Optional[str] = None,
+    user: dict = Depends(current_user),
+):
+    """Excel del avance del periodo — misma matriz conceptos x días que
+    export_avance_periodo_pdf (mismos filtros/criterio de agregación), en
+    formato editable/exportable a hojas de cálculo. Es el formato que el
+    usuario usa como principal; el PDF queda como alternativa de solo
+    lectura."""
+    await ensure_project_access(user, pid)
+    proj = await db.projects.find_one({"id": pid})
+    if not proj:
+        raise HTTPException(404, "Proyecto no existe")
+
+    query: dict = {"project_id": pid}
+    if desde or hasta:
+        rango: dict = {}
+        if desde:
+            rango["$gte"] = desde
+        if hasta:
+            rango["$lte"] = hasta
+        query["fecha"] = rango
+    if partida_id:
+        partida_ids = await _partida_subtree_ids_en_proyecto(pid, partida_id)
+        conceptos_filtro = await db.conceptos.find({"partida_id": {"$in": partida_ids}}).to_list(length=100000)
+        query["concepto_id"] = {"$in": [c["id"] for c in conceptos_filtro]}
+    docs = await db.registros_avance.find(query).to_list(length=100000)
+
+    concepto_ids = list({d["concepto_id"] for d in docs})
+    conceptos_por_id: dict = {}
+    if concepto_ids:
+        cs = await db.conceptos.find({"id": {"$in": concepto_ids}}).to_list(length=len(concepto_ids))
+        conceptos_por_id = {c["id"]: c for c in cs}
+
+    importes: dict = {}
+    fechas_set: set = set()
+    for d in docs:
+        cid = d["concepto_id"]
+        c = conceptos_por_id.get(cid)
+        if not c:
+            continue
+        importe = compute_importe(d.get("cantidad_ejecutada", "0"), c.get("precio_unitario", "0"))
+        if importe == 0:
+            continue
+        fecha = d["fecha"]
+        fechas_set.add(fecha)
+        key = (cid, fecha)
+        importes[key] = importes.get(key, Decimal("0")) + importe
+
+    concepto_ids_con_gasto = sorted({cid for (cid, _f) in importes.keys()})
+    conceptos_out = sort_by_clave([conceptos_por_id[cid] for cid in concepto_ids_con_gasto])
+    fechas = sorted(fechas_set)
+
+    project_name = proj.get("name", "Proyecto")
+    if desde and hasta:
+        periodo_label = f"Del {desde} al {hasta}"
+    elif desde:
+        periodo_label = f"Desde {desde}"
+    elif hasta:
+        periodo_label = f"Hasta {hasta}"
+    else:
+        periodo_label = "Todo el proyecto"
+
+    def _build_xlsx_blocking() -> bytes:
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment
+        from openpyxl.utils import get_column_letter
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Avance del periodo"
+
+        ws.cell(row=1, column=1, value=f"AVANCE POR PERIODO — {project_name}").font = Font(bold=True, size=13)
+        ws.cell(row=2, column=1, value=periodo_label).font = Font(italic=True, color="475569")
+
+        if not conceptos_out or not fechas:
+            ws.cell(row=4, column=1, value="Sin registros de avance en este periodo.")
+            buf = io.BytesIO()
+            wb.save(buf)
+            buf.seek(0)
+            return buf.getvalue()
+
+        header_row_idx = 4
+        headers = ["Concepto"] + fechas + ["Total"]
+        for col, h in enumerate(headers, start=1):
+            cell = ws.cell(row=header_row_idx, column=col, value=h)
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = PatternFill("solid", fgColor="1E3A8A")
+            cell.alignment = Alignment(horizontal="center")
+
+        totales_col = {f: Decimal("0") for f in fechas}
+        r = header_row_idx + 1
+        for c in conceptos_out:
+            ws.cell(row=r, column=1, value=f'{c["clave"]} — {c.get("descripcion", "")}')
+            total_fila = Decimal("0")
+            for i, f in enumerate(fechas, start=2):
+                v = importes.get((c["id"], f), Decimal("0"))
+                totales_col[f] += v
+                total_fila += v
+                if v:
+                    ws.cell(row=r, column=i, value=float(round_money(v)))
+            ws.cell(row=r, column=len(headers), value=float(round_money(total_fila))).font = Font(bold=True)
+            r += 1
+
+        total_general = Decimal("0")
+        ws.cell(row=r, column=1, value="TOTAL DEL DÍA").font = Font(bold=True)
+        for i, f in enumerate(fechas, start=2):
+            ws.cell(row=r, column=i, value=float(round_money(totales_col[f]))).font = Font(bold=True)
+            total_general += totales_col[f]
+        ws.cell(row=r, column=len(headers), value=float(round_money(total_general))).font = Font(bold=True)
+
+        r += 2
+        ws.cell(row=r, column=1, value=f"TOTAL GASTADO EN EL PERIODO: {dec_to_str(round_money(total_general))}").font = Font(bold=True, size=12)
+
+        money_fmt = '#,##0.00'
+        for col in range(2, len(headers) + 1):
+            for row in range(header_row_idx + 1, r - 1):
+                ws.cell(row=row, column=col).number_format = money_fmt
+        ws.column_dimensions["A"].width = 50
+        for i in range(2, len(headers) + 1):
+            ws.column_dimensions[get_column_letter(i)].width = 14
+        ws.freeze_panes = ws.cell(row=header_row_idx + 1, column=2).coordinate
+
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        return buf.getvalue()
+
+    xlsx_bytes = await asyncio.to_thread(_build_xlsx_blocking)
+    frag_periodo = _safe_filename_fragment(f"{desde or 'inicio'}_{hasta or 'fin'}")
+    fname = f"avance_periodo_{_safe_filename_fragment(project_name)}_{frag_periodo}.xlsx"
+    return StreamingResponse(
+        io.BytesIO(xlsx_bytes),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{fname}"'},
     )
 

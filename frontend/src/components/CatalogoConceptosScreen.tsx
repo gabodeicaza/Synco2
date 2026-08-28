@@ -209,6 +209,40 @@ export default function CatalogoConceptosScreen({ projectId }: { projectId: stri
     }
   }
 
+  async function borrarPartida(p: Partida) {
+    const esCarpeta = tienePartidasHijas(p);
+    const ok = await confirm(
+      `Borrar ${nombreNivel(project, breadcrumb.length).toLowerCase()}`,
+      esCarpeta
+        ? `Se borrará "${p.clave} — ${p.nombre}" y TODO lo que contiene (subcarpetas y ${pluralizar(nombreConcepto(project)).toLowerCase()}). Esta acción no se puede deshacer desde la app.`
+        : `Se borrará "${p.clave} — ${p.nombre}" y sus ${pluralizar(nombreConcepto(project)).toLowerCase()}. Esta acción no se puede deshacer desde la app.`,
+      { confirmText: 'Borrar', destructive: true },
+    );
+    if (!ok) return;
+    try {
+      await api.deletePartida(p.id);
+      await loadPartidas();
+    } catch (e: any) {
+      Alert.alert('No se pudo borrar', e?.message || 'Intentalo nuevamente.');
+    }
+  }
+
+  async function borrarConcepto(c: Concepto) {
+    const ok = await confirm(
+      `Borrar ${nombreConcepto(project).toLowerCase()}`,
+      `Se borrará "${c.clave} — ${c.descripcion}". Esta acción no se puede deshacer desde la app.`,
+      { confirmText: 'Borrar', destructive: true },
+    );
+    if (!ok) return;
+    try {
+      await api.deleteConcepto(c.id);
+      setConceptos((list) => list.filter((x) => x.id !== c.id));
+      await loadPartidas();
+    } catch (e: any) {
+      Alert.alert('No se pudo borrar', e?.message || 'Intentalo nuevamente.');
+    }
+  }
+
   if (loading) {
     return (
       <View style={styles.center}>
@@ -316,6 +350,8 @@ export default function CatalogoConceptosScreen({ projectId }: { projectId: stri
           onPressPartida={onPressPartidaRow}
           onVerConceptos={openPartida}
           canImport={canImport}
+          canEdit={canEdit}
+          onDeletePartida={borrarPartida}
           onNuevaPartida={() => setNuevaPartidaOpen(true)}
         />
       ) : (
@@ -328,6 +364,7 @@ export default function CatalogoConceptosScreen({ projectId }: { projectId: stri
           onToggleExpand={(id) => setExpandedId((cur) => (cur === id ? null : id))}
           canEdit={canEdit}
           onSaveField={saveField}
+          onDeleteConcepto={borrarConcepto}
           tableView={tableView}
           onToggleTableView={() => setTableView((v) => !v)}
           headerColor={headerColor}
@@ -472,7 +509,7 @@ function NuevaPartidaModal({
 // ============================================================================
 function PartidasList({
   project, depth, partidas, totalCatalogoCents, esRaiz, breadcrumb, onIrABreadcrumb,
-  tienePartidasHijas, onAbrirCarpeta, onPressPartida, onVerConceptos, canImport, onNuevaPartida,
+  tienePartidasHijas, onAbrirCarpeta, onPressPartida, onVerConceptos, canImport, canEdit, onDeletePartida, onNuevaPartida,
 }: {
   project: Project | null;
   depth: number;
@@ -486,6 +523,8 @@ function PartidasList({
   onPressPartida: (p: Partida) => void;
   onVerConceptos: (p: Partida) => void;
   canImport: boolean;
+  canEdit: boolean;
+  onDeletePartida: (p: Partida) => void;
   onNuevaPartida: () => void;
 }) {
   const nivelActual = nombreNivel(project, depth);
@@ -557,6 +596,15 @@ function PartidasList({
                 >
                   <Ionicons name={esCarpeta ? 'list-outline' : 'folder-open-outline'} size={16} color={colors.primary} />
                 </Pressable>
+                {canEdit ? (
+                  <Pressable
+                    onPress={(e) => { e.stopPropagation(); onDeletePartida(p); }}
+                    hitSlop={8}
+                    style={styles.verConceptosBtn}
+                  >
+                    <Ionicons name="trash-outline" size={16} color={colors.error} />
+                  </Pressable>
+                ) : null}
                 <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
               </Pressable>
             );
@@ -575,7 +623,7 @@ function PartidasList({
 // Nivel 2 — conceptos de una partida (acordeón + vista tabla)
 // ============================================================================
 function ConceptosList({
-  project, depth, conceptos, loading, expandedId, onToggleExpand, canEdit, onSaveField, tableView, onToggleTableView, headerColor, subtotalCents,
+  project, depth, conceptos, loading, expandedId, onToggleExpand, canEdit, onSaveField, onDeleteConcepto, tableView, onToggleTableView, headerColor, subtotalCents,
 }: {
   project: Project | null;
   depth: number;
@@ -585,6 +633,7 @@ function ConceptosList({
   onToggleExpand: (id: string) => void;
   canEdit: boolean;
   onSaveField: (c: Concepto, field: 'precio_unitario' | 'meta', value: string) => void;
+  onDeleteConcepto: (c: Concepto) => void;
   tableView: boolean;
   onToggleTableView: () => void;
   headerColor: string;
@@ -617,6 +666,7 @@ function ConceptosList({
               onToggle={() => onToggleExpand(c.id)}
               canEdit={canEdit}
               onSaveField={onSaveField}
+              onDelete={onDeleteConcepto}
             />
           ))}
         </ScrollView>
@@ -633,13 +683,14 @@ function ConceptosList({
 }
 
 function ConceptoRow({
-  concepto, expanded, onToggle, canEdit, onSaveField,
+  concepto, expanded, onToggle, canEdit, onSaveField, onDelete,
 }: {
   concepto: Concepto;
   expanded: boolean;
   onToggle: () => void;
   canEdit: boolean;
   onSaveField: (c: Concepto, field: 'precio_unitario' | 'meta', value: string) => void;
+  onDelete: (c: Concepto) => void;
 }) {
   return (
     <View style={styles.conceptoCard}>
@@ -682,6 +733,12 @@ function ConceptoRow({
             label="Ejecutado acumulado"
             value={`${formatCantidad(concepto.cantidad_ejecutada_acumulada)} de ${formatCantidad(concepto.cantidad)} ${concepto.unidad}`}
           />
+          {canEdit ? (
+            <Pressable onPress={() => onDelete(concepto)} style={styles.deleteConceptoBtn} hitSlop={8}>
+              <Ionicons name="trash-outline" size={14} color={colors.error} />
+              <Text style={styles.deleteConceptoTxt}>Borrar concepto</Text>
+            </Pressable>
+          ) : null}
         </View>
       ) : null}
     </View>
@@ -903,6 +960,12 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: colors.primary, borderRadius: radius.sm, paddingHorizontal: 8, paddingVertical: 4,
     fontSize: 13, minWidth: 80, textAlign: 'right', color: colors.text,
   },
+  deleteConceptoBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    marginTop: 4, paddingVertical: 8, borderRadius: radius.sm,
+    borderWidth: 1, borderColor: colors.error,
+  },
+  deleteConceptoTxt: { fontSize: 12, fontWeight: '700', color: colors.error },
 
   // Vista tabla
   tableHeaderRow: { flexDirection: 'row' },
