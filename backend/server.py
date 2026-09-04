@@ -7164,24 +7164,34 @@ async def export_reports_pdf(
         total_reportes = sum(len(v) for v in reports_by_node.values())
 
         def _draw_modulos_closing_pages():
-            """Sección de cierre: Forestal y Arbolado / Seguridad e Higiene /
-            Gestión de Riesgos / Estudios y Proyecto Ejecutivo / Impacto
-            Ambiental (sistema Multi-Proyecto Modular) — cada una SOLO si el
-            módulo está encendido para este proyecto (ver modulos_data). Se
-            llama desde AMBAS salidas de _build_pdf_blocking (con y sin
-            reportes normales en el período) para que un proyecto sin
-            actividad de campo pero con actividad en algún módulo piloto no
-            se quede sin esas páginas."""
+            """Sección de cierre GENÉRICA del sistema Multi-Proyecto Modular:
+            recorre `modulos_data` (ver `_gather_modulos_export_data`) y
+            dibuja cada módulo activo a partir de sus bloques declarativos
+            (summary/table/list) — esta función NO conoce el nombre de
+            ningún módulo ni su forma de datos particular, así que un
+            módulo nuevo (actual o futuro) aparece impreso automáticamente
+            en cuanto `_gather_modulos_export_data` lo agrega a `out` con
+            ese esquema, sin tocar ni una línea de aquí. Se llama desde
+            AMBAS salidas de _build_pdf_blocking (con y sin reportes
+            normales en el período) para que un proyecto sin actividad de
+            campo pero con actividad en algún módulo piloto no se quede sin
+            esas páginas."""
             nonlocal page_num
             content_w = PW - 3.0 * cm
             left_x = 1.5 * cm
             top_y = PH - TOP_MARGIN_PDF
             bottom_y = BOTTOM_MARGIN_PDF
+            y = top_y
             body_style = ParagraphStyle(
                 "modulosBody", fontName="Helvetica", fontSize=10, leading=13, textColor=TEXT,
             )
+            cell_style = ParagraphStyle(
+                "modulosCell", fontName="Helvetica", fontSize=9, leading=11, textColor=TEXT,
+            )
+            HEADING_COLORS = {"good": HexColor("#16A34A"), "bad": HexColor("#DC2626")}
 
-            def _section_header(titulo: str) -> float:
+            def _section_header(titulo: str) -> None:
+                nonlocal y
                 c.setFillColor(TEXT)
                 c.setFont("Helvetica-Bold", 28)
                 c.drawCentredString(PW / 2, top_y, titulo)
@@ -7189,284 +7199,111 @@ async def export_reports_pdf(
                 c.setFillColor(MUTED)
                 c.setFont("Helvetica", 11)
                 c.drawCentredString(PW / 2, y, f"Período: {fechas_label}")
-                return y - 11 * 2.2
+                y -= 11 * 2.2
 
-            forestal = modulos_data.get("forestal")
-            if forestal is not None:
-                y = _section_header("FORESTAL Y ARBOLADO")
-                cont = forestal["contadores"]
-                c.setFillColor(TEXT)
-                c.setFont("Helvetica-Bold", 14)
-                c.drawCentredString(
-                    PW / 2, y,
-                    f"Podas: {cont['poda']}    Trasplantes: {cont['trasplante']}    Derribos: {cont['derribo']}",
-                )
-                y -= 14 * 2.2
-                if forestal["tabla"]:
-                    data = [["Estación", "Podas", "Trasplantes", "Derribos"]]
-                    for t in forestal["tabla"]:
-                        data.append([t["estacion"], str(t["poda"]), str(t["trasplante"]), str(t["derribo"])])
-                    tbl = Table(data, colWidths=[content_w * 0.4, content_w * 0.2, content_w * 0.2, content_w * 0.2])
-                    tbl.setStyle(TableStyle([
-                        ("BACKGROUND", (0, 0), (-1, 0), BRAND),
-                        ("TEXTCOLOR", (0, 0), (-1, 0), WHITE),
-                        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                        ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
-                        ("FONTSIZE", (0, 0), (-1, -1), 10),
-                        ("ALIGN", (1, 0), (-1, -1), "CENTER"),
-                        ("GRID", (0, 0), (-1, -1), 0.5, BORDER),
-                        ("TOPPADDING", (0, 0), (-1, -1), 5),
-                        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-                    ]))
-                    tw, th = tbl.wrapOn(c, content_w, y - bottom_y)
-                    tbl.drawOn(c, left_x, y - th)
-                else:
-                    c.setFillColor(MUTED)
-                    c.setFont("Helvetica-Oblique", 12)
-                    c.drawCentredString(PW / 2, y - 0.5 * cm, "Sin registros forestales en este período.")
-                c.showPage()
-                page_num += 1
+            def _ensure_space(need: float) -> None:
+                nonlocal y, page_num
+                if y - need < bottom_y:
+                    c.showPage()
+                    page_num += 1
+                    y = top_y
 
-            seguridad = modulos_data.get("seguridad")
-            if seguridad is not None:
-                y = _section_header("SEGURIDAD E HIGIENE")
-                c.setFillColor(TEXT)
-                c.setFont("Helvetica-Bold", 14)
-                c.drawString(left_x, y, "Reportes de accidentes")
-                y -= 14 * 1.8
+            def _draw_heading(text: str, color_key=None) -> None:
+                nonlocal y
+                _ensure_space(1.2 * cm)
+                c.setFillColor(HEADING_COLORS.get(color_key, TEXT))
+                c.setFont("Helvetica-Bold", 13)
+                c.drawString(left_x, y, text)
+                y -= 13 * 1.8
 
-                def _ensure_space(need: float):
-                    nonlocal y
-                    if y - need < bottom_y:
-                        c.showPage()
-                        page_num_holder[0] += 1
-                        y = top_y
+            def _draw_empty(text: str) -> None:
+                nonlocal y
+                c.setFillColor(MUTED)
+                c.setFont("Helvetica-Oblique", 11)
+                c.drawString(left_x, y, text)
+                y -= 11 * 2.0
 
-                page_num_holder = [page_num]
-                reportes = seguridad["reportes"]
-                if reportes:
-                    for rep in reportes:
-                        _ensure_space(3.5 * cm)
-                        c.setFillColor(TEXT)
-                        c.setFont("Helvetica-Bold", 11)
-                        c.drawString(left_x, y, f"{rep.get('fecha', '—')} · {(rep.get('severidad') or '').upper()}")
-                        y -= 11 * 1.5
-                        desc = _xml_escape(rep.get("descripcion") or "(sin descripción)")
-                        p = Paragraph(desc, body_style)
-                        pw, ph = p.wrapOn(c, content_w, y - bottom_y)
-                        p.drawOn(c, left_x, y - ph)
-                        y -= ph + 4
-                        if rep.get("acciones_tomadas"):
-                            acc = Paragraph(f"<b>Acciones tomadas:</b> {_xml_escape(rep['acciones_tomadas'])}", body_style)
-                            pw2, ph2 = acc.wrapOn(c, content_w, y - bottom_y)
-                            acc.drawOn(c, left_x, y - ph2)
-                            y -= ph2 + 4
-                        c.setFillColor(MUTED)
-                        c.setFont("Helvetica-Oblique", 9)
-                        c.drawString(left_x, y, f"Reportó: {rep.get('captured_by_name') or '—'}")
-                        y -= 9 * 2.0
-                else:
-                    c.setFillColor(MUTED)
-                    c.setFont("Helvetica-Oblique", 11)
-                    c.drawString(left_x, y, "Sin reportes de accidentes en este período.")
-                    y -= 11 * 2.0
-                page_num = page_num_holder[0]
-
+            def _draw_summary_block(block: dict) -> None:
+                nonlocal y
                 _ensure_space(2.0 * cm)
                 c.setFillColor(TEXT)
                 c.setFont("Helvetica-Bold", 14)
-                c.drawString(left_x, y, "Checklist preventivo / correctivo")
-                y -= 14 * 1.8
-                page_num_holder = [page_num]
-                checklists = seguridad["checklists"]
-                if checklists:
-                    for chk in checklists:
-                        _ensure_space(1.5 * cm)
+                c.drawCentredString(PW / 2, y, block["text"])
+                y -= 14 * 2.2
+
+            def _draw_table_block(block: dict) -> None:
+                nonlocal y
+                if block.get("heading"):
+                    _draw_heading(block["heading"])
+                rows = block.get("rows") or []
+                if not rows:
+                    _draw_empty(block.get("empty_text", "Sin datos en este período."))
+                    return
+                headers = block["headers"]
+                widths = block.get("col_widths") or [1.0 / len(headers)] * len(headers)
+                data = [headers]
+                for row in rows:
+                    data.append([Paragraph(_xml_escape(str(v)), cell_style) for v in row])
+                tbl = Table(data, colWidths=[content_w * w for w in widths])
+                tbl.setStyle(TableStyle([
+                    ("BACKGROUND", (0, 0), (-1, 0), BRAND),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), WHITE),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("FONTSIZE", (0, 0), (-1, 0), 10),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("GRID", (0, 0), (-1, -1), 0.5, BORDER),
+                    ("TOPPADDING", (0, 0), (-1, -1), 5),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                ]))
+                _ensure_space(2.0 * cm)
+                tw, th = tbl.wrapOn(c, content_w, y - bottom_y)
+                tbl.drawOn(c, left_x, y - th)
+                y -= th + 14 * 1.2
+
+            def _draw_list_block(block: dict) -> None:
+                nonlocal y
+                if block.get("heading"):
+                    _draw_heading(block["heading"], block.get("heading_color"))
+                items = block.get("items") or []
+                if not items:
+                    _draw_empty(block.get("empty_text", "Sin datos en este período."))
+                    return
+                for it in items:
+                    _ensure_space(2.5 * cm)
+                    if it.get("title"):
                         c.setFillColor(TEXT)
                         c.setFont("Helvetica-Bold", 11)
-                        c.drawString(left_x, y, f"{chk.get('fecha', '—')} · {chk.get('captured_by_name') or '—'}")
-                        y -= 11 * 1.6
-                        for it in chk.get("items") or []:
-                            _ensure_space(1.0 * cm)
-                            marca = "[X]" if it.get("cumplido") else "[ ]"
-                            c.setFillColor(TEXT)
-                            c.setFont("Helvetica", 10)
-                            c.drawString(left_x + 0.4 * cm, y, f"{marca} ({it.get('tipo', '')}) {it.get('item', '')}")
-                            y -= 10 * 1.5
-                        y -= 6
-                else:
-                    c.setFillColor(MUTED)
-                    c.setFont("Helvetica-Oblique", 11)
-                    c.drawString(left_x, y, "Sin checklist capturado en este período.")
-                page_num = page_num_holder[0]
-
-                c.showPage()
-                page_num += 1
-
-            riesgos = modulos_data.get("riesgos")
-            if riesgos is not None:
-                y = _section_header("GESTIÓN DE RIESGOS")
-                tabla = riesgos["tabla"]
-                if tabla:
-                    cell_style = ParagraphStyle(
-                        "riesgosCell", fontName="Helvetica", fontSize=9, leading=11, textColor=TEXT,
-                    )
-                    data = [["Estación/Poste", "Descripción del riesgo", "Propuesta de control", "% Avance"]]
-                    for r in tabla:
-                        data.append([
-                            Paragraph(_xml_escape(r.get("estacion_nombre") or "—"), cell_style),
-                            Paragraph(_xml_escape(r.get("descripcion_riesgo") or ""), cell_style),
-                            Paragraph(_xml_escape(r.get("propuesta_control") or ""), cell_style),
-                            f"{r.get('porcentaje_avance', 0)}%",
-                        ])
-                    tbl = Table(data, colWidths=[content_w * 0.18, content_w * 0.34, content_w * 0.34, content_w * 0.14])
-                    tbl.setStyle(TableStyle([
-                        ("BACKGROUND", (0, 0), (-1, 0), BRAND),
-                        ("TEXTCOLOR", (0, 0), (-1, 0), WHITE),
-                        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                        ("FONTSIZE", (0, 0), (-1, 0), 10),
-                        ("ALIGN", (3, 0), (3, -1), "CENTER"),
-                        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                        ("GRID", (0, 0), (-1, -1), 0.5, BORDER),
-                        ("TOPPADDING", (0, 0), (-1, -1), 5),
-                        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-                    ]))
-                    tw, th = tbl.wrapOn(c, content_w, y - bottom_y)
-                    tbl.drawOn(c, left_x, y - th)
-                else:
-                    c.setFillColor(MUTED)
-                    c.setFont("Helvetica-Oblique", 12)
-                    c.drawCentredString(PW / 2, y - 0.5 * cm, "Sin riesgos registrados en este período.")
-                c.showPage()
-                page_num += 1
-
-            estudios = modulos_data.get("estudios")
-            if estudios is not None:
-                y = _section_header("ESTUDIOS Y PROYECTO EJECUTIVO")
-                c.setFillColor(TEXT)
-                c.setFont("Helvetica-Bold", 14)
-                c.drawString(left_x, y, "Avance por actividad")
-                y -= 14 * 1.8
-                actividades = estudios["actividades"]
-                if actividades:
-                    data = [["Actividad", "% Avance"]]
-                    for a in actividades:
-                        data.append([a.get("nombre", "—"), f"{a.get('porcentaje_avance', 0)}%"])
-                    tbl = Table(data, colWidths=[content_w * 0.7, content_w * 0.3])
-                    tbl.setStyle(TableStyle([
-                        ("BACKGROUND", (0, 0), (-1, 0), BRAND),
-                        ("TEXTCOLOR", (0, 0), (-1, 0), WHITE),
-                        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                        ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
-                        ("FONTSIZE", (0, 0), (-1, -1), 10),
-                        ("ALIGN", (1, 0), (1, -1), "CENTER"),
-                        ("GRID", (0, 0), (-1, -1), 0.5, BORDER),
-                        ("TOPPADDING", (0, 0), (-1, -1), 5),
-                        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-                    ]))
-                    tw, th = tbl.wrapOn(c, content_w, y - bottom_y)
-                    tbl.drawOn(c, left_x, y - th)
-                    y -= th + 14 * 1.5
-                else:
-                    c.setFillColor(MUTED)
-                    c.setFont("Helvetica-Oblique", 11)
-                    c.drawString(left_x, y, "Sin actividades registradas en este período.")
-                    y -= 11 * 2.0
-
-                def _ensure_space_est(need: float):
-                    nonlocal y
-                    if y - need < bottom_y:
-                        c.showPage()
-                        est_page_holder[0] += 1
-                        y = top_y
-
-                est_page_holder = [page_num]
-                _ensure_space_est(2.0 * cm)
-                c.setFillColor(TEXT)
-                c.setFont("Helvetica-Bold", 14)
-                c.drawString(left_x, y, "Bitácora por disciplina")
-                y -= 14 * 1.8
-                bitacora = estudios["bitacora"]
-                if bitacora:
-                    for b in bitacora:
-                        _ensure_space_est(2.0 * cm)
-                        c.setFillColor(TEXT)
-                        c.setFont("Helvetica-Bold", 11)
-                        disciplina_label = ESTUDIOS_DISCIPLINA_LABEL.get(b.get("disciplina"), b.get("disciplina") or "—")
-                        c.drawString(left_x, y, f"{b.get('fecha', '—')} · {disciplina_label}")
+                        c.drawString(left_x, y, it["title"])
                         y -= 11 * 1.5
-                        texto = Paragraph(_xml_escape(b.get("texto") or ""), body_style)
-                        pw, ph = texto.wrapOn(c, content_w, y - bottom_y)
-                        texto.drawOn(c, left_x, y - ph)
-                        y -= ph + 4
+                    body_p = Paragraph(_xml_escape(it.get("body") or ""), body_style)
+                    pw, ph = body_p.wrapOn(c, content_w, y - bottom_y)
+                    body_p.drawOn(c, left_x, y - ph)
+                    y -= ph + 3
+                    if it.get("extra"):
+                        extra_p = Paragraph(_xml_escape(it["extra"]), body_style)
+                        pw2, ph2 = extra_p.wrapOn(c, content_w, y - bottom_y)
+                        extra_p.drawOn(c, left_x, y - ph2)
+                        y -= ph2 + 3
+                    if it.get("meta"):
                         c.setFillColor(MUTED)
                         c.setFont("Helvetica-Oblique", 9)
-                        c.drawString(left_x, y, f"Registró: {b.get('captured_by_name') or '—'}")
+                        c.drawString(left_x, y, it["meta"])
                         y -= 9 * 2.0
-                else:
-                    c.setFillColor(MUTED)
-                    c.setFont("Helvetica-Oblique", 11)
-                    c.drawString(left_x, y, "Sin notas de bitácora en este período.")
-                page_num = est_page_holder[0]
+                    else:
+                        y -= 4
 
-                c.showPage()
-                page_num += 1
+            _BLOCK_RENDERERS = {
+                "summary": _draw_summary_block,
+                "table": _draw_table_block,
+                "list": _draw_list_block,
+            }
 
-            ambiental = modulos_data.get("ambiental")
-            if ambiental is not None:
-                y = _section_header("IMPACTO AMBIENTAL")
-
-                def _ensure_space_amb(need: float):
-                    nonlocal y
-                    if y - need < bottom_y:
-                        c.showPage()
-                        amb_page_holder[0] += 1
-                        y = top_y
-
-                def _draw_audit_item(it: dict):
-                    nonlocal y
-                    _ensure_space_amb(1.6 * cm)
-                    desc = Paragraph(_xml_escape(it.get("descripcion") or ""), body_style)
-                    pw, ph = desc.wrapOn(c, content_w - 0.5 * cm, y - bottom_y)
-                    desc.drawOn(c, left_x + 0.5 * cm, y - ph)
-                    y -= ph + 2
-                    c.setFillColor(MUTED)
-                    c.setFont("Helvetica-Oblique", 9)
-                    c.drawString(left_x + 0.5 * cm, y, f"{it.get('fecha', '—')} · {it.get('captured_by_name') or '—'}")
-                    y -= 9 * 1.8
-
-                amb_page_holder = [page_num]
-                c.setFillColor(HexColor("#16A34A"))
-                c.setFont("Helvetica-Bold", 14)
-                c.drawString(left_x, y, "Cumplimientos")
-                y -= 14 * 1.8
-                cumplimientos = ambiental["cumplimientos"]
-                if cumplimientos:
-                    for it in cumplimientos:
-                        _draw_audit_item(it)
-                else:
-                    c.setFillColor(MUTED)
-                    c.setFont("Helvetica-Oblique", 11)
-                    c.drawString(left_x, y, "Sin cumplimientos registrados en este período.")
-                    y -= 11 * 2.0
-                page_num = amb_page_holder[0]
-
-                _ensure_space_amb(2.0 * cm)
-                amb_page_holder = [page_num]
-                c.setFillColor(HexColor("#DC2626"))
-                c.setFont("Helvetica-Bold", 14)
-                c.drawString(left_x, y, "Incumplimientos / Observaciones")
-                y -= 14 * 1.8
-                incumplimientos = ambiental["incumplimientos"]
-                if incumplimientos:
-                    for it in incumplimientos:
-                        _draw_audit_item(it)
-                else:
-                    c.setFillColor(MUTED)
-                    c.setFont("Helvetica-Oblique", 11)
-                    c.drawString(left_x, y, "Sin incumplimientos registrados en este período.")
-                page_num = amb_page_holder[0]
-
+            for _mod_data in modulos_data.values():
+                if _mod_data is None:
+                    continue
+                _section_header(_mod_data["titulo"])
+                for block in _mod_data["blocks"]:
+                    _BLOCK_RENDERERS[block["type"]](block)
                 c.showPage()
                 page_num += 1
 
@@ -9415,11 +9252,42 @@ def _modulos_categoria_para_export(period_type: Optional[str], period: str) -> s
     return "reportes_diarios"
 
 
+# Sistema Multi-Proyecto Modular — esquema GENÉRICO de "bloques imprimibles".
+# Los 3 motores de exportación (PDF/DOCX/PPTX) NUNCA conocen el nombre de un
+# módulo ni su forma de datos particular: solo saben dibujar estos 3 tipos
+# de bloque. Un módulo nuevo (actual o futuro) sólo necesita:
+#   1) agregar su clave a MODULOS_KEYS,
+#   2) agregar una entrada a `out` en `_gather_modulos_export_data` (abajo)
+#      con {"titulo": "...", "blocks": [...]} usando estos 3 tipos,
+# y aparece impreso en PDF/DOCX/PPTX sin tocar ninguno de los 3 motores. El
+# interruptor por informe (Diario/Semanal/Mensual, ver
+# `_modulos_categoria_para_export`) es la ÚNICA puerta: si `activos.get(key)`
+# es falso, esa entrada de `out` queda None y el módulo no aparece en NADA
+# de lo impreso, sin importar qué datos tenga capturados.
+#
+# Tipos de bloque:
+#   {"type": "summary", "text": str}
+#       Una línea destacada (ej. contadores globales).
+#   {"type": "table", "heading": str|None, "headers": [str,...],
+#    "rows": [[str,...], ...], "col_widths": [float,...]|None,
+#    "empty_text": str}
+#       Tabla simple. `col_widths` son fracciones que suman 1.0 (si se
+#       omite, columnas iguales). Si `rows` viene vacío se pinta
+#       `empty_text` en su lugar — nunca se omite la sección en silencio.
+#   {"type": "list", "heading": str|None,
+#    "heading_color": "good"|"bad"|None, "items": [
+#       {"title": str|None, "body": str, "extra": str|None, "meta": str|None},
+#       ...
+#    ], "empty_text": str}
+#       Lista de viñetas/tarjetas (reportes, notas de bitácora, auditoría).
+#       `heading_color` permite un encabezado verde ("good") o rojo ("bad")
+#       — ej. Cumplimientos vs. Incumplimientos en Impacto Ambiental.
 async def _gather_modulos_export_data(
     pid: str, proj: dict, start_dt: datetime, end_dt: datetime, categoria: str,
 ) -> dict:
     """Datos de los módulos piloto (sistema Multi-Proyecto Modular) para la
-    sección de cierre de los reportes exportados (PDF/DOCX/PPTX).
+    sección de cierre de los reportes exportados (PDF/DOCX/PPTX), en el
+    esquema genérico de bloques descrito arriba.
 
     `categoria` (reportes_diarios/semanales/mensuales, ver
     `_modulos_categoria_para_export`) decide qué toggle del Coordinador se
@@ -9430,9 +9298,9 @@ async def _gather_modulos_export_data(
     Regla explícita del Coordinador: un módulo apagado para esta categoría
     NUNCA aparece en la impresión, sin importar si tiene datos capturados
     (`out[clave]` queda None). Uno encendido SIEMPRE aparece, aunque no haya
-    nada capturado en el período — la sección se pinta con "sin registros",
-    nunca se omite en silencio, para que quede claro que el módulo está
-    activo pero no tuvo actividad ese período.
+    nada capturado en el período — cada bloque trae su propio `empty_text`,
+    nunca se omite la sección en silencio, para que quede claro que el
+    módulo está activo pero no tuvo actividad ese período.
 
     Se filtra por `created_at` (mismo criterio que `reports`), NO por el
     campo `fecha` (string) — created_at es el datetime real de captura y
@@ -9441,6 +9309,13 @@ async def _gather_modulos_export_data(
     activos = modulos.get(categoria, {})
     out: dict = {"forestal": None, "seguridad": None, "riesgos": None, "estudios": None, "ambiental": None}
     date_q = {"created_at": {"$gte": start_dt, "$lte": end_dt}}
+    # Riesgos y Estudios son matrices mutables (el % de avance se actualiza
+    # in situ, no se recrea la fila) — una fila cuenta para el período si se
+    # creó O se actualizó dentro de él, no sólo si se creó.
+    mutable_date_q = {"$or": [
+        {"created_at": {"$gte": start_dt, "$lte": end_dt}},
+        {"updated_at": {"$gte": start_dt, "$lte": end_dt}},
+    ]}
 
     if activos.get("forestal_arbolado"):
         cursor = db.forestal_registros.aggregate([
@@ -9462,7 +9337,23 @@ async def _gather_modulos_export_data(
             if tipo in contadores:
                 contadores[tipo] += total
         tabla = [{"estacion": estacion, **conteos} for estacion, conteos in sorted(por_estacion.items())]
-        out["forestal"] = {"tabla": tabla, "contadores": contadores}
+        out["forestal"] = {
+            "titulo": "FORESTAL Y ARBOLADO",
+            "blocks": [
+                {
+                    "type": "summary",
+                    "text": f"Podas: {contadores['poda']}    Trasplantes: {contadores['trasplante']}    Derribos: {contadores['derribo']}",
+                },
+                {
+                    "type": "table",
+                    "heading": None,
+                    "headers": ["Estación", "Podas", "Trasplantes", "Derribos"],
+                    "rows": [[t["estacion"], str(t["poda"]), str(t["trasplante"]), str(t["derribo"])] for t in tabla],
+                    "col_widths": [0.4, 0.2, 0.2, 0.2],
+                    "empty_text": "Sin registros forestales en este período.",
+                },
+            ],
+        }
 
     if activos.get("seguridad_higiene"):
         reportes = await db.seguridad_reportes.find(
@@ -9471,21 +9362,52 @@ async def _gather_modulos_export_data(
         checklists = await db.seguridad_checklist.find(
             {"project_id": pid, **date_q}
         ).sort("created_at", 1).to_list(length=500)
-        out["seguridad"] = {"reportes": reportes, "checklists": checklists}
-
-    # Riesgos y Estudios son matrices mutables (el % de avance se actualiza
-    # in situ, no se recrea la fila) — una fila cuenta para el período si se
-    # creó O se actualizó dentro de él, no sólo si se creó.
-    mutable_date_q = {"$or": [
-        {"created_at": {"$gte": start_dt, "$lte": end_dt}},
-        {"updated_at": {"$gte": start_dt, "$lte": end_dt}},
-    ]}
+        reporte_items = [{
+            "title": f"{r.get('fecha', '—')} · {(r.get('severidad') or '').upper()}",
+            "body": r.get("descripcion") or "(sin descripción)",
+            "extra": f"Acciones tomadas: {r['acciones_tomadas']}" if r.get("acciones_tomadas") else None,
+            "meta": f"Reportó: {r.get('captured_by_name') or '—'}",
+        } for r in reportes]
+        checklist_items = [{
+            "title": f"{chk.get('fecha', '—')} · {it.get('tipo', '')}",
+            "body": f"{'[X]' if it.get('cumplido') else '[ ]'} {it.get('item', '')}",
+            "extra": None,
+            "meta": chk.get("captured_by_name") or "—",
+        } for chk in checklists for it in (chk.get("items") or [])]
+        out["seguridad"] = {
+            "titulo": "SEGURIDAD E HIGIENE",
+            "blocks": [
+                {
+                    "type": "list", "heading": "Reportes de accidentes", "heading_color": None,
+                    "items": reporte_items, "empty_text": "Sin reportes de accidentes en este período.",
+                },
+                {
+                    "type": "list", "heading": "Checklist preventivo / correctivo", "heading_color": None,
+                    "items": checklist_items, "empty_text": "Sin checklist capturado en este período.",
+                },
+            ],
+        }
 
     if activos.get("gestion_riesgos"):
         registros = await db.riesgos_registros.find(
             {"project_id": pid, **mutable_date_q}
         ).sort("estacion_nombre", 1).to_list(length=2000)
-        out["riesgos"] = {"tabla": registros}
+        out["riesgos"] = {
+            "titulo": "GESTIÓN DE RIESGOS",
+            "blocks": [{
+                "type": "table",
+                "heading": None,
+                "headers": ["Estación/Poste", "Descripción del riesgo", "Propuesta de control", "% Avance"],
+                "rows": [[
+                    r.get("estacion_nombre") or "—",
+                    r.get("descripcion_riesgo") or "",
+                    r.get("propuesta_control") or "",
+                    f"{r.get('porcentaje_avance', 0)}%",
+                ] for r in registros],
+                "col_widths": [0.18, 0.34, 0.34, 0.14],
+                "empty_text": "Sin riesgos registrados en este período.",
+            }],
+        }
 
     if activos.get("estudios_proyecto"):
         actividades = await db.estudios_actividades.find(
@@ -9494,15 +9416,56 @@ async def _gather_modulos_export_data(
         bitacora = await db.estudios_bitacora.find(
             {"project_id": pid, **date_q}
         ).sort("created_at", 1).to_list(length=2000)
-        out["estudios"] = {"actividades": actividades, "bitacora": bitacora}
+        bitacora_items = [{
+            "title": f"{b.get('fecha', '—')} · {ESTUDIOS_DISCIPLINA_LABEL.get(b.get('disciplina'), b.get('disciplina') or '—')}",
+            "body": b.get("texto") or "",
+            "extra": None,
+            "meta": f"Registró: {b.get('captured_by_name') or '—'}",
+        } for b in bitacora]
+        out["estudios"] = {
+            "titulo": "ESTUDIOS Y PROYECTO EJECUTIVO",
+            "blocks": [
+                {
+                    "type": "table", "heading": "Avance por actividad",
+                    "headers": ["Actividad", "% Avance"],
+                    "rows": [[a.get("nombre", "—"), f"{a.get('porcentaje_avance', 0)}%"] for a in actividades],
+                    "col_widths": [0.7, 0.3],
+                    "empty_text": "Sin actividades registradas en este período.",
+                },
+                {
+                    "type": "list", "heading": "Bitácora por disciplina", "heading_color": None,
+                    "items": bitacora_items, "empty_text": "Sin notas de bitácora en este período.",
+                },
+            ],
+        }
 
     if activos.get("impacto_ambiental"):
         auditoria = await db.ambiental_auditoria.find(
             {"project_id": pid, **date_q}
         ).sort("created_at", 1).to_list(length=2000)
+
+        def _audit_items(tipo: str) -> list:
+            return [{
+                "title": None,
+                "body": a.get("descripcion") or "",
+                "extra": None,
+                "meta": f"{a.get('fecha', '—')} · {a.get('captured_by_name') or '—'}",
+            } for a in auditoria if a.get("tipo") == tipo]
+
         out["ambiental"] = {
-            "cumplimientos": [a for a in auditoria if a.get("tipo") == "cumplimiento"],
-            "incumplimientos": [a for a in auditoria if a.get("tipo") == "incumplimiento"],
+            "titulo": "IMPACTO AMBIENTAL",
+            "blocks": [
+                {
+                    "type": "list", "heading": "Cumplimientos", "heading_color": "good",
+                    "items": _audit_items("cumplimiento"),
+                    "empty_text": "Sin cumplimientos registrados en este período.",
+                },
+                {
+                    "type": "list", "heading": "Incumplimientos / Observaciones", "heading_color": "bad",
+                    "items": _audit_items("incumplimiento"),
+                    "empty_text": "Sin incumplimientos registrados en este período.",
+                },
+            ],
         }
 
     return out
@@ -9885,11 +9848,17 @@ async def export_reports_docx(
             er.font.size = Pt(12)
             er.font.color.rgb = MUTED_RGB
 
-        # ---- Sección de cierre: módulos del sistema Multi-Proyecto Modular
-        # (Forestal y Arbolado / Seguridad e Higiene / Gestión de Riesgos /
-        # Estudios y Proyecto Ejecutivo / Impacto Ambiental) — cada una solo
-        # si el Coordinador la encendió para este informe. Ver modulos_data /
-        # _gather_modulos_export_data. Mismo período que el resto del export.
+        # ---- Sección de cierre GENÉRICA del sistema Multi-Proyecto Modular:
+        # recorre `modulos_data` (ver `_gather_modulos_export_data`) y
+        # escribe cada módulo activo a partir de sus bloques declarativos
+        # (summary/table/list) — este bloque NO conoce el nombre de ningún
+        # módulo ni su forma de datos particular, así que un módulo nuevo
+        # (actual o futuro) aparece impreso automáticamente en cuanto
+        # `_gather_modulos_export_data` lo agrega a `out` con ese esquema,
+        # sin tocar ni una línea de aquí. Mismo período que el resto del
+        # export.
+        HEADING_RGB = {"good": RGBColor(0x16, 0xA3, 0x4A), "bad": RGBColor(0xDC, 0x26, 0x26)}
+
         def _mod_section_title(text: str):
             p = doc.add_paragraph()
             r = p.add_run(text)
@@ -9921,207 +9890,83 @@ async def export_reports_docx(
                     cvr.font.size = Pt(10)
                     cvr.font.color.rgb = TEXT_RGB
 
-        forestal = modulos_data.get("forestal")
-        if forestal is not None:
-            doc.add_page_break()
-            _mod_section_title("FORESTAL Y ARBOLADO")
-            _mod_period_sub()
-            doc.add_paragraph()
-            cont = forestal["contadores"]
-            cp = doc.add_paragraph()
-            cr = cp.add_run(
-                f"Podas: {cont['poda']}    Trasplantes: {cont['trasplante']}    Derribos: {cont['derribo']}"
-            )
-            cr.bold = True
-            cr.font.size = Pt(13)
-            cr.font.color.rgb = TEXT_RGB
-            doc.add_paragraph()
-            if forestal["tabla"]:
-                doc.add_paragraph().add_run("Resumen por estación").bold = True
-                _mod_table(
-                    ["Estación", "Podas", "Trasplantes", "Derribos"],
-                    [[t["estacion"], t["poda"], t["trasplante"], t["derribo"]] for t in forestal["tabla"]],
-                )
+        def _mod_heading(text: str, color_key=None):
+            p = doc.add_paragraph()
+            r = p.add_run(text)
+            r.bold = True
+            r.font.size = Pt(13)
+            r.font.color.rgb = HEADING_RGB.get(color_key, BRAND_RGB)
+
+        def _mod_empty(text: str):
+            p = doc.add_paragraph()
+            r = p.add_run(text)
+            r.italic = True
+            r.font.size = Pt(11)
+            r.font.color.rgb = MUTED_RGB
+
+        def _mod_summary_block(block: dict):
+            p = doc.add_paragraph()
+            r = p.add_run(block["text"])
+            r.bold = True
+            r.font.size = Pt(13)
+            r.font.color.rgb = TEXT_RGB
+
+        def _mod_table_block(block: dict):
+            if block.get("heading"):
+                _mod_heading(block["heading"])
+            rows = block.get("rows") or []
+            if rows:
+                _mod_table(block["headers"], rows)
             else:
-                ep = doc.add_paragraph()
-                er2 = ep.add_run("Sin registros forestales en este período.")
-                er2.italic = True
-                er2.font.size = Pt(11)
-                er2.font.color.rgb = MUTED_RGB
+                _mod_empty(block.get("empty_text", "Sin datos en este período."))
 
-        seguridad = modulos_data.get("seguridad")
-        if seguridad is not None:
-            doc.add_page_break()
-            _mod_section_title("SEGURIDAD E HIGIENE")
-            _mod_period_sub()
-            doc.add_paragraph()
-
-            doc.add_paragraph().add_run("Reportes de accidentes").bold = True
-            if seguridad["reportes"]:
-                for rep in seguridad["reportes"]:
-                    rp = doc.add_paragraph()
-                    rl = rp.add_run(f"{rep.get('fecha', '—')} · {(rep.get('severidad') or '').upper()}")
-                    rl.bold = True
-                    rl.font.size = Pt(11)
-                    rl.font.color.rgb = BRAND_RGB
-                    dp = doc.add_paragraph()
-                    dr = dp.add_run(rep.get("descripcion") or "(sin descripción)")
-                    dr.font.size = Pt(11)
-                    dr.font.color.rgb = TEXT_RGB
-                    if rep.get("acciones_tomadas"):
-                        ap = doc.add_paragraph()
-                        al = ap.add_run("Acciones tomadas: ")
-                        al.bold = True
-                        al.font.size = Pt(10)
-                        al.font.color.rgb = MUTED_RGB
-                        av = ap.add_run(rep["acciones_tomadas"])
-                        av.font.size = Pt(10)
-                        av.font.color.rgb = TEXT_RGB
-                    ap2 = doc.add_paragraph()
-                    ar2 = ap2.add_run(f"Reportó: {rep.get('captured_by_name') or '—'}")
-                    ar2.italic = True
-                    ar2.font.size = Pt(9)
-                    ar2.font.color.rgb = SUBTLE_RGB
-                    doc.add_paragraph()
-            else:
-                ep2 = doc.add_paragraph()
-                er3 = ep2.add_run("Sin reportes de accidentes en este período.")
-                er3.italic = True
-                er3.font.size = Pt(11)
-                er3.font.color.rgb = MUTED_RGB
-
-            doc.add_paragraph()
-            doc.add_paragraph().add_run("Checklist preventivo / correctivo").bold = True
-            if seguridad["checklists"]:
-                for chk in seguridad["checklists"]:
-                    cp2 = doc.add_paragraph()
-                    cl2 = cp2.add_run(f"{chk.get('fecha', '—')} · {chk.get('captured_by_name') or '—'}")
-                    cl2.bold = True
-                    cl2.font.size = Pt(11)
-                    cl2.font.color.rgb = BRAND_RGB
-                    for it in chk.get("items") or []:
-                        ip = doc.add_paragraph(style=None)
-                        marca = "✓" if it.get("cumplido") else "✗"
-                        ir = ip.add_run(f"  {marca} [{it.get('tipo', '')}] {it.get('item', '')}")
-                        ir.font.size = Pt(10)
-                        ir.font.color.rgb = TEXT_RGB
-                    doc.add_paragraph()
-            else:
-                ep3 = doc.add_paragraph()
-                er4 = ep3.add_run("Sin checklist capturado en este período.")
-                er4.italic = True
-                er4.font.size = Pt(11)
-                er4.font.color.rgb = MUTED_RGB
-
-        riesgos = modulos_data.get("riesgos")
-        if riesgos is not None:
-            doc.add_page_break()
-            _mod_section_title("GESTIÓN DE RIESGOS")
-            _mod_period_sub()
-            doc.add_paragraph()
-            tabla = riesgos["tabla"]
-            if tabla:
-                _mod_table(
-                    ["Estación/Poste", "Descripción del riesgo", "Propuesta de control", "% Avance"],
-                    [[
-                        r.get("estacion_nombre") or "—",
-                        r.get("descripcion_riesgo") or "",
-                        r.get("propuesta_control") or "",
-                        f"{r.get('porcentaje_avance', 0)}%",
-                    ] for r in tabla],
-                )
-            else:
-                ep4 = doc.add_paragraph()
-                er5 = ep4.add_run("Sin riesgos registrados en este período.")
-                er5.italic = True
-                er5.font.size = Pt(11)
-                er5.font.color.rgb = MUTED_RGB
-
-        estudios = modulos_data.get("estudios")
-        if estudios is not None:
-            doc.add_page_break()
-            _mod_section_title("ESTUDIOS Y PROYECTO EJECUTIVO")
-            _mod_period_sub()
-            doc.add_paragraph()
-
-            doc.add_paragraph().add_run("Avance por actividad").bold = True
-            actividades = estudios["actividades"]
-            if actividades:
-                _mod_table(
-                    ["Actividad", "% Avance"],
-                    [[a.get("nombre", "—"), f"{a.get('porcentaje_avance', 0)}%"] for a in actividades],
-                )
-            else:
-                ep5 = doc.add_paragraph()
-                er6 = ep5.add_run("Sin actividades registradas en este período.")
-                er6.italic = True
-                er6.font.size = Pt(11)
-                er6.font.color.rgb = MUTED_RGB
-
-            doc.add_paragraph()
-            doc.add_paragraph().add_run("Bitácora por disciplina").bold = True
-            bitacora = estudios["bitacora"]
-            if bitacora:
-                for b in bitacora:
-                    bp = doc.add_paragraph()
-                    bl = bp.add_run(
-                        f"{b.get('fecha', '—')} · {ESTUDIOS_DISCIPLINA_LABEL.get(b.get('disciplina'), b.get('disciplina') or '—')}"
-                    )
-                    bl.bold = True
-                    bl.font.size = Pt(11)
-                    bl.font.color.rgb = BRAND_RGB
+        def _mod_list_block(block: dict):
+            if block.get("heading"):
+                _mod_heading(block["heading"], block.get("heading_color"))
+            items = block.get("items") or []
+            if not items:
+                _mod_empty(block.get("empty_text", "Sin datos en este período."))
+                return
+            for it in items:
+                if it.get("title"):
                     tp = doc.add_paragraph()
-                    tr = tp.add_run(b.get("texto") or "")
+                    tr = tp.add_run(it["title"])
+                    tr.bold = True
                     tr.font.size = Pt(11)
-                    tr.font.color.rgb = TEXT_RGB
-                    sp = doc.add_paragraph()
-                    sr = sp.add_run(f"Registró: {b.get('captured_by_name') or '—'}")
-                    sr.italic = True
-                    sr.font.size = Pt(9)
-                    sr.font.color.rgb = SUBTLE_RGB
-                    doc.add_paragraph()
-            else:
-                ep6 = doc.add_paragraph()
-                er7 = ep6.add_run("Sin notas de bitácora en este período.")
-                er7.italic = True
-                er7.font.size = Pt(11)
-                er7.font.color.rgb = MUTED_RGB
+                    tr.font.color.rgb = BRAND_RGB
+                bp = doc.add_paragraph()
+                br = bp.add_run(it.get("body") or "")
+                br.font.size = Pt(11)
+                br.font.color.rgb = TEXT_RGB
+                if it.get("extra"):
+                    ep = doc.add_paragraph()
+                    er = ep.add_run(it["extra"])
+                    er.italic = True
+                    er.font.size = Pt(10)
+                    er.font.color.rgb = MUTED_RGB
+                if it.get("meta"):
+                    mp = doc.add_paragraph()
+                    mr = mp.add_run(it["meta"])
+                    mr.italic = True
+                    mr.font.size = Pt(9)
+                    mr.font.color.rgb = SUBTLE_RGB
+                doc.add_paragraph()
 
-        ambiental = modulos_data.get("ambiental")
-        if ambiental is not None:
+        _MOD_BLOCK_RENDERERS = {
+            "summary": _mod_summary_block,
+            "table": _mod_table_block,
+            "list": _mod_list_block,
+        }
+
+        for _mod_data in modulos_data.values():
+            if _mod_data is None:
+                continue
             doc.add_page_break()
-            _mod_section_title("IMPACTO AMBIENTAL")
+            _mod_section_title(_mod_data["titulo"])
             _mod_period_sub()
             doc.add_paragraph()
-
-            def _mod_audit_list(titulo: str, items: list):
-                tp2 = doc.add_paragraph()
-                tr2 = tp2.add_run(titulo)
-                tr2.bold = True
-                tr2.font.size = Pt(13)
-                tr2.font.color.rgb = TEXT_RGB
-                if items:
-                    for it in items:
-                        ip2 = doc.add_paragraph()
-                        ir2 = ip2.add_run(it.get("descripcion") or "")
-                        ir2.font.size = Pt(11)
-                        ir2.font.color.rgb = TEXT_RGB
-                        sp2 = doc.add_paragraph()
-                        sr2 = sp2.add_run(f"{it.get('fecha', '—')} · {it.get('captured_by_name') or '—'}")
-                        sr2.italic = True
-                        sr2.font.size = Pt(9)
-                        sr2.font.color.rgb = SUBTLE_RGB
-                        doc.add_paragraph()
-                else:
-                    ep7 = doc.add_paragraph()
-                    er8 = ep7.add_run("Sin registros en este período.")
-                    er8.italic = True
-                    er8.font.size = Pt(11)
-                    er8.font.color.rgb = MUTED_RGB
-
-            _mod_audit_list("Cumplimientos", ambiental["cumplimientos"])
-            doc.add_paragraph()
-            _mod_audit_list("Incumplimientos / Observaciones", ambiental["incumplimientos"])
+            for block in _mod_data["blocks"]:
+                _MOD_BLOCK_RENDERERS[block["type"]](block)
 
         buf = io.BytesIO()
         doc.save(buf)
@@ -10849,15 +10694,20 @@ async def export_reports_pptx(
                     idx = chunk_end
 
         def _emit_modulos_closing_slides() -> None:
-            """Slides de cierre: Forestal y Arbolado / Seguridad e Higiene /
-            Gestión de Riesgos / Estudios y Proyecto Ejecutivo / Impacto
-            Ambiental (sistema Multi-Proyecto Modular) — cada una SOLO si el
-            módulo está encendido para este proyecto (ver modulos_data /
-            mismo criterio que el motor PDF)."""
+            """Slides de cierre GENÉRICAS del sistema Multi-Proyecto Modular:
+            recorre `modulos_data` (ver `_gather_modulos_export_data`) y
+            arma cada módulo activo a partir de sus bloques declarativos
+            (summary/table/list) — esta función NO conoce el nombre de
+            ningún módulo ni su forma de datos particular, así que un
+            módulo nuevo (actual o futuro) aparece impreso automáticamente
+            en cuanto `_gather_modulos_export_data` lo agrega a `out` con
+            ese esquema, sin tocar ni una línea de aquí (mismo criterio que
+            el motor PDF)."""
             MARGIN_X = Cm(1.5)
             content_w = SW - 2 * MARGIN_X
             top_y = Cm(1.6)
             bottom_y = SH - Cm(1.2)
+            HEADING_RGB = {"good": (0x16, 0xA3, 0x4A), "bad": (0xDC, 0x26, 0x26)}
 
             def _new_slide(titulo: str):
                 slide = _clone_membrete()
@@ -10881,183 +10731,76 @@ async def export_reports_pptx(
                     _wf_rect(slide, x, cy, content_w, row_h, fill_rgb=WF_WHITE_RGB,
                              line_rgb=WF_BORDER_RGB, line_pt=0.75)
                     for i, val in enumerate(row):
-                        add_text(slide, x + i * col_w, cy, col_w, row_h, str(val),
+                        add_text(slide, x + i * col_w, cy, col_w, row_h, str(val)[:90],
                                  size=11, color=WF_TEXT_RGB, align=PP_ALIGN.CENTER)
                     cy += row_h
                 return cy
 
-            forestal = modulos_data.get("forestal")
-            if forestal is not None:
-                slide, y = _new_slide("FORESTAL Y ARBOLADO")
-                cont = forestal["contadores"]
-                add_text(
-                    slide, MARGIN_X, y, content_w, Cm(1.0),
-                    f"Podas: {cont['poda']}    Trasplantes: {cont['trasplante']}    Derribos: {cont['derribo']}",
-                    size=16, bold=True, color=WF_TEXT_RGB, align=PP_ALIGN.CENTER,
-                )
-                y += Cm(1.4)
-                if forestal["tabla"]:
-                    rows = [[t["estacion"], t["poda"], t["trasplante"], t["derribo"]] for t in forestal["tabla"]]
-                    _draw_table(slide, MARGIN_X, y, ["Estación", "Podas", "Trasplantes", "Derribos"], rows)
+            state: dict = {}
+
+            def _ensure_space(titulo_continua: str, need) -> None:
+                if state["y"] > bottom_y - need:
+                    state["slide"], state["y"] = _new_slide(titulo_continua)
+
+            def _draw_heading(titulo_continua: str, text: str, color_key=None) -> None:
+                _ensure_space(titulo_continua, Cm(1.2))
+                add_text(state["slide"], MARGIN_X, state["y"], content_w, Cm(0.8), text,
+                         size=15, bold=True, color=HEADING_RGB.get(color_key, WF_TEXT_RGB))
+                state["y"] += Cm(1.0)
+
+            def _draw_empty(text: str) -> None:
+                add_text(state["slide"], MARGIN_X, state["y"], content_w, Cm(0.8), text,
+                         size=12, italic=True, color=WF_MUTED_RGB)
+                state["y"] += Cm(1.0)
+
+            def _draw_summary_block(titulo_continua: str, block: dict) -> None:
+                add_text(state["slide"], MARGIN_X, state["y"], content_w, Cm(1.0), block["text"],
+                         size=16, bold=True, color=WF_TEXT_RGB, align=PP_ALIGN.CENTER)
+                state["y"] += Cm(1.4)
+
+            def _draw_table_block(titulo_continua: str, block: dict) -> None:
+                if block.get("heading"):
+                    _draw_heading(titulo_continua, block["heading"])
+                rows = block.get("rows") or []
+                if rows:
+                    state["y"] = _draw_table(state["slide"], MARGIN_X, state["y"], block["headers"], rows)
+                    state["y"] += Cm(0.4)
                 else:
-                    add_text(
-                        slide, MARGIN_X, y, content_w, Cm(1.0),
-                        "Sin registros forestales en este período.",
-                        size=13, italic=True, color=WF_MUTED_RGB, align=PP_ALIGN.CENTER,
-                    )
+                    _draw_empty(block.get("empty_text", "Sin datos en este período."))
 
-            seguridad = modulos_data.get("seguridad")
-            if seguridad is not None:
-                slide, y = _new_slide("SEGURIDAD E HIGIENE")
-                add_text(slide, MARGIN_X, y, content_w, Cm(0.8), "Reportes de accidentes",
-                         size=15, bold=True, color=WF_TEXT_RGB)
-                y += Cm(1.0)
-                reportes = seguridad["reportes"]
-                if reportes:
-                    for rep in reportes:
-                        if y > bottom_y - Cm(2.5):
-                            slide, y = _new_slide("SEGURIDAD E HIGIENE (continúa)")
-                        linea = (
-                            f"{rep.get('fecha', '—')} · {(rep.get('severidad') or '').upper()} — "
-                            f"{rep.get('descripcion') or '(sin descripción)'}"
-                        )
-                        add_text(slide, MARGIN_X, y, content_w, Cm(1.2), linea, size=11, color=WF_TEXT_RGB)
-                        y += Cm(1.3)
-                        if rep.get("acciones_tomadas"):
-                            add_text(
-                                slide, MARGIN_X + Cm(0.3), y, content_w - Cm(0.3), Cm(1.0),
-                                f"Acciones: {rep['acciones_tomadas']}", size=10, italic=True, color=WF_MUTED_RGB,
-                            )
-                            y += Cm(1.1)
-                else:
-                    add_text(
-                        slide, MARGIN_X, y, content_w, Cm(0.8),
-                        "Sin reportes de accidentes en este período.", size=12, italic=True, color=WF_MUTED_RGB,
-                    )
-                    y += Cm(1.0)
+            def _draw_list_block(titulo_continua: str, block: dict) -> None:
+                if block.get("heading"):
+                    _draw_heading(titulo_continua, block["heading"], block.get("heading_color"))
+                items = block.get("items") or []
+                if not items:
+                    _draw_empty(block.get("empty_text", "Sin datos en este período."))
+                    return
+                for it in items:
+                    _ensure_space(titulo_continua, Cm(1.4))
+                    partes = [p for p in (it.get("title"), it.get("body"), it.get("extra")) if p]
+                    linea = " — ".join(partes)
+                    add_text(state["slide"], MARGIN_X, state["y"], content_w, Cm(1.2), linea,
+                             size=11, color=WF_TEXT_RGB)
+                    state["y"] += Cm(1.3)
+                    if it.get("meta"):
+                        add_text(state["slide"], MARGIN_X, state["y"], content_w, Cm(0.7), it["meta"],
+                                 size=9, italic=True, color=WF_MUTED_RGB)
+                        state["y"] += Cm(0.7)
 
-                y += Cm(0.4)
-                if y > bottom_y - Cm(2.0):
-                    slide, y = _new_slide("SEGURIDAD E HIGIENE — Checklist")
-                add_text(slide, MARGIN_X, y, content_w, Cm(0.8), "Checklist preventivo / correctivo",
-                         size=15, bold=True, color=WF_TEXT_RGB)
-                y += Cm(1.0)
-                checklists = seguridad["checklists"]
-                if checklists:
-                    for chk in checklists:
-                        if y > bottom_y - Cm(1.5):
-                            slide, y = _new_slide("SEGURIDAD E HIGIENE — Checklist (continúa)")
-                        add_text(
-                            slide, MARGIN_X, y, content_w, Cm(0.8),
-                            f"{chk.get('fecha', '—')} · {chk.get('captured_by_name') or '—'}",
-                            size=12, bold=True, color=WF_TEXT_RGB,
-                        )
-                        y += Cm(0.9)
-                        for it in chk.get("items") or []:
-                            if y > bottom_y - Cm(0.9):
-                                slide, y = _new_slide("SEGURIDAD E HIGIENE — Checklist (continúa)")
-                            marca = "[X]" if it.get("cumplido") else "[ ]"
-                            add_text(
-                                slide, MARGIN_X + Cm(0.4), y, content_w - Cm(0.4), Cm(0.7),
-                                f"{marca} ({it.get('tipo', '')}) {it.get('item', '')}", size=10, color=WF_TEXT_RGB,
-                            )
-                            y += Cm(0.7)
-                        y += Cm(0.3)
-                else:
-                    add_text(
-                        slide, MARGIN_X, y, content_w, Cm(0.8),
-                        "Sin checklist capturado en este período.", size=12, italic=True, color=WF_MUTED_RGB,
-                    )
+            _BLOCK_RENDERERS = {
+                "summary": _draw_summary_block,
+                "table": _draw_table_block,
+                "list": _draw_list_block,
+            }
 
-            riesgos = modulos_data.get("riesgos")
-            if riesgos is not None:
-                slide, y = _new_slide("GESTIÓN DE RIESGOS")
-                tabla = riesgos["tabla"]
-                if tabla:
-                    rows = [[
-                        r.get("estacion_nombre") or "—",
-                        (r.get("descripcion_riesgo") or "")[:80],
-                        (r.get("propuesta_control") or "")[:80],
-                        f"{r.get('porcentaje_avance', 0)}%",
-                    ] for r in tabla]
-                    _draw_table(
-                        slide, MARGIN_X, y,
-                        ["Estación/Poste", "Descripción del riesgo", "Propuesta de control", "% Avance"], rows,
-                    )
-                else:
-                    add_text(
-                        slide, MARGIN_X, y, content_w, Cm(1.0),
-                        "Sin riesgos registrados en este período.",
-                        size=13, italic=True, color=WF_MUTED_RGB, align=PP_ALIGN.CENTER,
-                    )
-
-            estudios = modulos_data.get("estudios")
-            if estudios is not None:
-                slide, y = _new_slide("ESTUDIOS Y PROYECTO EJECUTIVO")
-                add_text(slide, MARGIN_X, y, content_w, Cm(0.8), "Avance por actividad",
-                         size=15, bold=True, color=WF_TEXT_RGB)
-                y += Cm(1.0)
-                actividades = estudios["actividades"]
-                if actividades:
-                    rows = [[a.get("nombre", "—"), f"{a.get('porcentaje_avance', 0)}%"] for a in actividades]
-                    y = _draw_table(slide, MARGIN_X, y, ["Actividad", "% Avance"], rows)
-                    y += Cm(0.4)
-                else:
-                    add_text(
-                        slide, MARGIN_X, y, content_w, Cm(0.8),
-                        "Sin actividades registradas en este período.", size=12, italic=True, color=WF_MUTED_RGB,
-                    )
-                    y += Cm(1.0)
-
-                if y > bottom_y - Cm(2.0):
-                    slide, y = _new_slide("ESTUDIOS Y PROYECTO EJECUTIVO — Bitácora")
-                add_text(slide, MARGIN_X, y, content_w, Cm(0.8), "Bitácora por disciplina",
-                         size=15, bold=True, color=WF_TEXT_RGB)
-                y += Cm(1.0)
-                bitacora = estudios["bitacora"]
-                if bitacora:
-                    for b in bitacora:
-                        if y > bottom_y - Cm(1.6):
-                            slide, y = _new_slide("ESTUDIOS Y PROYECTO EJECUTIVO — Bitácora (continúa)")
-                        disciplina_label = ESTUDIOS_DISCIPLINA_LABEL.get(b.get("disciplina"), b.get("disciplina") or "—")
-                        linea = f"{b.get('fecha', '—')} · {disciplina_label} — {b.get('texto') or ''}"
-                        add_text(slide, MARGIN_X, y, content_w, Cm(1.2), linea, size=11, color=WF_TEXT_RGB)
-                        y += Cm(1.3)
-                else:
-                    add_text(
-                        slide, MARGIN_X, y, content_w, Cm(0.8),
-                        "Sin notas de bitácora en este período.", size=12, italic=True, color=WF_MUTED_RGB,
-                    )
-
-            ambiental = modulos_data.get("ambiental")
-            if ambiental is not None:
-                slide, y = _new_slide("IMPACTO AMBIENTAL")
-                AMB_GOOD_RGB = (0x16, 0xA3, 0x4A)
-                AMB_BAD_RGB = (0xDC, 0x26, 0x26)
-
-                def _draw_audit_block(titulo: str, color: tuple, items: list):
-                    nonlocal slide, y
-                    if y > bottom_y - Cm(1.6):
-                        slide, y = _new_slide("IMPACTO AMBIENTAL (continúa)")
-                    add_text(slide, MARGIN_X, y, content_w, Cm(0.8), titulo, size=15, bold=True, color=color)
-                    y += Cm(1.0)
-                    if items:
-                        for it in items:
-                            if y > bottom_y - Cm(1.4):
-                                slide, y = _new_slide("IMPACTO AMBIENTAL (continúa)")
-                            linea = f"{it.get('fecha', '—')} — {it.get('descripcion') or ''}"
-                            add_text(slide, MARGIN_X, y, content_w, Cm(1.1), linea, size=11, color=WF_TEXT_RGB)
-                            y += Cm(1.2)
-                    else:
-                        add_text(
-                            slide, MARGIN_X, y, content_w, Cm(0.8),
-                            "Sin registros en este período.", size=12, italic=True, color=WF_MUTED_RGB,
-                        )
-                        y += Cm(1.0)
-
-                _draw_audit_block("Cumplimientos", AMB_GOOD_RGB, ambiental["cumplimientos"])
-                y += Cm(0.4)
-                _draw_audit_block("Incumplimientos / Observaciones", AMB_BAD_RGB, ambiental["incumplimientos"])
+            for _mod_data in modulos_data.values():
+                if _mod_data is None:
+                    continue
+                titulo = _mod_data["titulo"]
+                state["slide"], state["y"] = _new_slide(titulo)
+                titulo_continua = f"{titulo} (continúa)"
+                for block in _mod_data["blocks"]:
+                    _BLOCK_RENDERERS[block["type"]](titulo_continua, block)
 
         def _emit_subtramo_summary_slide(subtramo_id: Optional[str]) -> None:
             """Emite (si hay datos) la slide de resumen del Subtramo
