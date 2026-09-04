@@ -11,16 +11,29 @@
 // también usa — react-native-svg funciona igual en Android/iOS/Web sin
 // tocar una sola dependencia nueva.
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, FlatList, RefreshControl } from 'react-native';
+import {
+  View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, FlatList, RefreshControl,
+  Modal, TextInput, KeyboardAvoidingView, Platform, Alert,
+} from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import Svg, { Polyline, Line as SvgLine } from 'react-native-svg';
 
-import { api, AnalisisPeriodo, CurvaS, ExcepcionEvm } from '@/src/api';
-import { colors, spacing, radius } from '@/src/theme';
-import { formatMoney } from '@/src/utils/money';
+import { api, AnalisisPeriodo, CurvaS, ExcepcionEvm, ActividadEvm, ActividadesEvm, GastoReal } from '@/src/api';
+import { colors, spacing, radius, shadow } from '@/src/theme';
+import { Button } from '@/src/components/Button';
+import { confirm } from '@/src/utils/confirm';
+import { formatMoney, isValidDecimalInput } from '@/src/utils/money';
 import { dayjs, CDMX_TZ } from '@/src/utils/tz';
+
+const FECHA_ISO_RE = /^\d{4}-\d{2}-\d{2}$/;
+type TabActividades = 'pendientes' | 'actuales' | 'por_venir';
+const TABS_ACTIVIDADES: { key: TabActividades; label: string }[] = [
+  { key: 'pendientes', label: 'Pendientes' },
+  { key: 'actuales', label: 'Actuales' },
+  { key: 'por_venir', label: 'Por venir' },
+];
 
 type RangoRapido = 'mes_actual' | 'ultimos_3_meses' | 'proyecto_completo';
 
@@ -125,18 +138,34 @@ function LeyendaItem({ color, label }: { color: string; label: string }) {
   );
 }
 
+const EXCEPCION_META: Record<ExcepcionEvm['tipo'], { icon: keyof typeof Ionicons.glyphMap; color: string }> = {
+  fuera_de_ventana: { icon: 'time-outline', color: colors.warning },
+  sobre_meta: { icon: 'trending-up-outline', color: colors.error },
+  atrasado: { icon: 'alert-circle-outline', color: colors.error },
+};
+
 function ExcepcionRow({ item }: { item: ExcepcionEvm }) {
-  const esFueraDeVentana = item.tipo === 'fuera_de_ventana';
+  const meta = EXCEPCION_META[item.tipo];
   return (
     <View style={styles.excepcionRow}>
-      <Ionicons
-        name={esFueraDeVentana ? 'time-outline' : 'trending-up-outline'}
-        size={18}
-        color={esFueraDeVentana ? colors.warning : colors.error}
-      />
+      <Ionicons name={meta.icon} size={18} color={meta.color} />
       <View style={{ flex: 1 }}>
         <Text style={styles.excepcionClave}>{item.clave} · {item.descripcion}</Text>
         <Text style={styles.excepcionDetalle}>{item.detalle}</Text>
+      </View>
+    </View>
+  );
+}
+
+function ActividadCard({ item, tab }: { item: ActividadEvm; tab: TabActividades }) {
+  const acento = tab === 'pendientes' ? colors.error : tab === 'actuales' ? colors.primary : colors.textMuted;
+  return (
+    <View style={[styles.actividadCard, { borderLeftColor: acento }]}>
+      <Text style={styles.actividadClave}>{item.clave} · {item.descripcion}</Text>
+      <Text style={styles.actividadFechas}>{item.fecha_inicio} → {item.fecha_fin}</Text>
+      <View style={styles.actividadFooterRow}>
+        <Text style={styles.actividadEjecutado}>{item.ejecutado} de {item.meta_cantidad} {item.unidad}</Text>
+        <Text style={[styles.actividadPct, { color: acento }]}>{item.porcentaje_avance}%</Text>
       </View>
     </View>
   );
@@ -151,6 +180,19 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
   const [analisis, setAnalisis] = useState<AnalisisPeriodo | null>(null);
   const [curva, setCurva] = useState<CurvaS | null>(null);
   const [excepciones, setExcepciones] = useState<ExcepcionEvm[]>([]);
+  const [actividades, setActividades] = useState<ActividadesEvm | null>(null);
+  const [tabActividades, setTabActividades] = useState<TabActividades>('pendientes');
+  const [gastos, setGastos] = useState<GastoReal[]>([]);
+
+  // Modal "Registrar gasto real (AC)" — fecha libre en vez de selector nativo
+  // (mismo criterio que fecha_reunion en MinutasView.tsx): así se puede
+  // capturar un gasto de un mes anterior que no se registró a tiempo, no
+  // solo el gasto de hoy.
+  const [gastoFormOpen, setGastoFormOpen] = useState(false);
+  const [gastoFecha, setGastoFecha] = useState(() => dayjs().tz(CDMX_TZ).format('YYYY-MM-DD'));
+  const [gastoMonto, setGastoMonto] = useState('');
+  const [gastoDescripcion, setGastoDescripcion] = useState('');
+  const [savingGasto, setSavingGasto] = useState(false);
 
   const cargar = useCallback(async (rangoActual: RangoRapido, curvaPrevia: CurvaS | null) => {
     if (!projectId) return;
@@ -161,16 +203,69 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
       const curvaResp = await api.analisisPeriodoCurvaS(projectId);
       setCurva(curvaResp);
       const { start, end } = rangoDesde(rangoActual, curvaResp || curvaPrevia);
-      const [analisisResp, excepcionesResp] = await Promise.all([
+      const [analisisResp, excepcionesResp, actividadesResp, gastosResp] = await Promise.all([
         api.analisisPeriodo(projectId, start, end),
         api.analisisPeriodoExcepciones(projectId),
+        api.analisisPeriodoActividades(projectId),
+        api.listGastosReales(projectId),
       ]);
       setAnalisis(analisisResp);
       setExcepciones(excepcionesResp);
+      setActividades(actividadesResp);
+      setGastos(gastosResp);
     } catch (e: any) {
       setError(e?.message || 'No se pudo cargar el dashboard EVM');
     }
   }, [projectId]);
+
+  function openGastoForm() {
+    setGastoFecha(dayjs().tz(CDMX_TZ).format('YYYY-MM-DD'));
+    setGastoMonto('');
+    setGastoDescripcion('');
+    setGastoFormOpen(true);
+  }
+
+  async function onSaveGasto() {
+    if (!FECHA_ISO_RE.test(gastoFecha)) {
+      Alert.alert('Fecha inválida', 'Usa el formato AAAA-MM-DD, por ejemplo 2026-02-15.');
+      return;
+    }
+    if (!isValidDecimalInput(gastoMonto) || Number(gastoMonto) <= 0) {
+      Alert.alert('Monto inválido', 'Ingresa un número mayor a 0, con hasta 2 decimales.');
+      return;
+    }
+    if (!gastoDescripcion.trim()) {
+      Alert.alert('Falta información', 'Describe brevemente el gasto (ej. "Nómina semana 12").');
+      return;
+    }
+    try {
+      setSavingGasto(true);
+      await api.createGastoReal(projectId, {
+        fecha: gastoFecha, monto: gastoMonto, concepto_texto: gastoDescripcion.trim(),
+      });
+      setGastoFormOpen(false);
+      await cargar(rango, curva);
+    } catch (e: any) {
+      Alert.alert('No se pudo guardar', e?.message || 'Intentalo nuevamente.');
+    } finally {
+      setSavingGasto(false);
+    }
+  }
+
+  async function onDeleteGasto(g: GastoReal) {
+    const ok = await confirm(
+      'Borrar gasto real',
+      `¿Borrar "${g.concepto_texto}" (${formatMoney(g.monto)}, ${g.fecha})? Esto afecta el AC y el CPI ya calculados.`,
+      { confirmText: 'Borrar', destructive: true },
+    );
+    if (!ok) return;
+    try {
+      await api.deleteGastoReal(g.id);
+      await cargar(rango, curva);
+    } catch (e: any) {
+      Alert.alert('No se pudo borrar', e?.message || 'Intentalo nuevamente.');
+    }
+  }
 
   useEffect(() => {
     setLoading(true);
@@ -259,12 +354,44 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
           </>
         ) : null}
 
+        <View style={styles.seccionHeaderRow}>
+          <Text style={styles.seccionTitulo}>Gasto real (AC)</Text>
+          <Pressable onPress={openGastoForm} style={styles.addBtn}>
+            <Ionicons name="add" size={16} color={colors.primary} />
+            <Text style={styles.addBtnTxt}>Registrar gasto</Text>
+          </Pressable>
+        </View>
+        {gastos.length === 0 ? (
+          <Text style={styles.sinExcepciones}>
+            Aún no has capturado ningún gasto real — por eso CPI y Variación de costo no reflejan nada. Registra uno,
+            aunque sea de un mes anterior que no se haya capturado a tiempo.
+          </Text>
+        ) : (
+          <FlatList
+            data={gastos}
+            keyExtractor={(g) => g.id}
+            scrollEnabled={false}
+            renderItem={({ item }) => (
+              <View style={styles.gastoRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.gastoTxt}>{item.concepto_texto}</Text>
+                  <Text style={styles.gastoFecha}>{item.fecha}</Text>
+                </View>
+                <Text style={styles.gastoMonto}>{formatMoney(item.monto)}</Text>
+                <Pressable onPress={() => onDeleteGasto(item)} hitSlop={8} style={{ marginLeft: 8 }}>
+                  <Ionicons name="trash-outline" size={16} color={colors.error} />
+                </Pressable>
+              </View>
+            )}
+          />
+        )}
+
         <Text style={styles.seccionTitulo}>Curva S</Text>
         {curva ? <CurvaSChart curva={curva} /> : null}
 
         <Text style={styles.seccionTitulo}>Lista por excepción ({excepciones.length})</Text>
         {excepciones.length === 0 ? (
-          <Text style={styles.sinExcepciones}>Sin anomalías: ningún avance fuera de ventana ni concepto sobre meta.</Text>
+          <Text style={styles.sinExcepciones}>Sin anomalías: ningún avance fuera de ventana, concepto sobre meta, ni actividad atrasada.</Text>
         ) : (
           <FlatList
             data={excepciones}
@@ -273,7 +400,80 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
             scrollEnabled={false}
           />
         )}
+
+        <Text style={styles.seccionTitulo}>Control de actividades</Text>
+        <View style={styles.tabsRow}>
+          {TABS_ACTIVIDADES.map((t) => {
+            const count = actividades ? actividades[t.key].length : 0;
+            return (
+              <Pressable
+                key={t.key}
+                onPress={() => setTabActividades(t.key)}
+                style={[styles.tabBtn, tabActividades === t.key && styles.tabBtnActive]}
+              >
+                <Text style={[styles.tabTxt, tabActividades === t.key && styles.tabTxtActive]}>
+                  {t.label} ({count})
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+        {!actividades || actividades[tabActividades].length === 0 ? (
+          <Text style={styles.sinExcepciones}>
+            {tabActividades === 'pendientes' ? 'Ninguna actividad atrasada.'
+              : tabActividades === 'actuales' ? 'Ninguna actividad dentro de su ventana hoy.'
+              : 'Ninguna actividad programada todavía sin empezar.'}
+          </Text>
+        ) : (
+          <FlatList
+            data={actividades[tabActividades]}
+            keyExtractor={(item) => item.concepto_id}
+            scrollEnabled={false}
+            renderItem={({ item }) => <ActividadCard item={item} tab={tabActividades} />}
+          />
+        )}
       </ScrollView>
+
+      <Modal visible={gastoFormOpen} transparent animationType="slide" onRequestClose={() => setGastoFormOpen(false)}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>Registrar gasto real</Text>
+
+            <Text style={styles.fieldLabel}>Fecha (AAAA-MM-DD)</Text>
+            <TextInput
+              value={gastoFecha}
+              onChangeText={setGastoFecha}
+              placeholder="2026-02-15"
+              placeholderTextColor={colors.textMuted}
+              style={styles.input}
+            />
+
+            <Text style={styles.fieldLabel}>Monto</Text>
+            <TextInput
+              value={gastoMonto}
+              onChangeText={setGastoMonto}
+              keyboardType="decimal-pad"
+              placeholder="200000.00"
+              placeholderTextColor={colors.textMuted}
+              style={styles.input}
+            />
+
+            <Text style={styles.fieldLabel}>Descripción</Text>
+            <TextInput
+              value={gastoDescripcion}
+              onChangeText={setGastoDescripcion}
+              placeholder="Ej. Nómina semana 12, Factura #445..."
+              placeholderTextColor={colors.textMuted}
+              style={styles.input}
+            />
+
+            <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
+              <Button label="Cancelar" variant="secondary" onPress={() => setGastoFormOpen(false)} style={{ flex: 1 }} />
+              <Button label="Guardar" loading={savingGasto} onPress={onSaveGasto} style={{ flex: 1 }} />
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
     </View>
   );
 }
@@ -323,4 +523,42 @@ const styles = StyleSheet.create({
   },
   excepcionClave: { fontSize: 13, fontWeight: '700', color: colors.text },
   excepcionDetalle: { fontSize: 12, color: colors.textMuted, marginTop: 2 },
+  seccionHeaderRow: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    marginTop: spacing.md, marginBottom: 8,
+  },
+  addBtn: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  addBtnTxt: { fontSize: 12, fontWeight: '700', color: colors.primary },
+  gastoRow: {
+    flexDirection: 'row', alignItems: 'center', paddingVertical: 8,
+    borderBottomWidth: 1, borderBottomColor: colors.border,
+  },
+  gastoTxt: { fontSize: 13, fontWeight: '600', color: colors.text },
+  gastoFecha: { fontSize: 11, color: colors.textMuted, marginTop: 2 },
+  gastoMonto: { fontSize: 13, fontWeight: '700', color: colors.text },
+  tabsRow: { flexDirection: 'row', gap: 8, marginBottom: 8 },
+  tabBtn: {
+    flex: 1, alignItems: 'center', paddingVertical: 8, borderRadius: radius.full,
+    borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface,
+  },
+  tabBtnActive: { backgroundColor: colors.primary, borderColor: colors.primary },
+  tabTxt: { fontSize: 12, fontWeight: '700', color: colors.text },
+  tabTxtActive: { color: '#fff' },
+  actividadCard: {
+    backgroundColor: colors.surface, borderRadius: 10, borderWidth: 1, borderColor: colors.border,
+    borderLeftWidth: 4, padding: 10, marginBottom: 8, ...shadow.card,
+  },
+  actividadClave: { fontSize: 13, fontWeight: '700', color: colors.text },
+  actividadFechas: { fontSize: 11, color: colors.textMuted, marginTop: 2 },
+  actividadFooterRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 6 },
+  actividadEjecutado: { fontSize: 12, color: colors.textBody },
+  actividadPct: { fontSize: 13, fontWeight: '800' },
+  modalBackdrop: { flex: 1, backgroundColor: 'rgba(15,23,42,0.45)', justifyContent: 'flex-end' },
+  modalCard: { backgroundColor: colors.surface, borderTopLeftRadius: radius.lg, borderTopRightRadius: radius.lg, padding: spacing.lg },
+  modalTitle: { fontSize: 16, fontWeight: '800', color: colors.text, marginBottom: spacing.md },
+  fieldLabel: { fontSize: 12, fontWeight: '700', color: colors.textMuted, marginBottom: 6, marginTop: spacing.sm },
+  input: {
+    borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, paddingHorizontal: 12, paddingVertical: 10,
+    fontSize: 14, color: colors.text, backgroundColor: colors.bg,
+  },
 });

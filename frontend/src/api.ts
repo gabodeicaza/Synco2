@@ -1110,8 +1110,27 @@ export interface ExcepcionEvm {
   concepto_id: string;
   clave: string;
   descripcion: string;
-  tipo: 'fuera_de_ventana' | 'sobre_meta';
+  tipo: 'fuera_de_ventana' | 'sobre_meta' | 'atrasado';
   detalle: string;
+}
+
+export interface ActividadEvm {
+  concepto_id: string;
+  clave: string;
+  descripcion: string;
+  fecha_inicio: string;
+  fecha_fin: string;
+  meta_cantidad: string;
+  ejecutado: string;
+  unidad: string;
+  /** 0-100. */
+  porcentaje_avance: string;
+}
+
+export interface ActividadesEvm {
+  pendientes: ActividadEvm[];
+  actuales: ActividadEvm[];
+  por_venir: ActividadEvm[];
 }
 
 export interface GastoReal {
@@ -2210,6 +2229,8 @@ export const api = {
     request<CurvaS>('GET', `/projects/${pid}/analisis_periodo/curva_s`),
   analisisPeriodoExcepciones: (pid: string) =>
     request<ExcepcionEvm[]>('GET', `/projects/${pid}/analisis_periodo/excepciones`),
+  analisisPeriodoActividades: (pid: string) =>
+    request<ActividadesEvm>('GET', `/projects/${pid}/analisis_periodo/actividades`),
 
   createGastoReal: (pid: string, payload: { fecha: string; monto: string; concepto_texto: string }) =>
     request<GastoReal>('POST', `/projects/${pid}/gastos_reales`, payload),

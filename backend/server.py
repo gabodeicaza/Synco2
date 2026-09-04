@@ -16423,7 +16423,7 @@ class ExcepcionEvmOut(BaseModel):
     concepto_id: str
     clave: str
     descripcion: str
-    tipo: Literal["fuera_de_ventana", "sobre_meta"]
+    tipo: Literal["fuera_de_ventana", "sobre_meta", "atrasado"]
     detalle: str
 
 
@@ -16529,11 +16529,19 @@ async def analisis_periodo_curva_s(pid: str, user: dict = Depends(current_user))
 @api.get("/projects/{pid}/analisis_periodo/excepciones", response_model=List[ExcepcionEvmOut])
 async def analisis_periodo_excepciones(pid: str, user: dict = Depends(current_user)):
     """Lista por excepción del dashboard (Tarea 4): conceptos con avances
-    fuera de su ventana fecha_inicio/fecha_fin, o cuyo acumulado ejecutado
-    superó meta_cantidad. Nunca bloquea nada — es solo para revisión."""
+    fuera de su ventana fecha_inicio/fecha_fin, cuyo acumulado ejecutado
+    superó meta_cantidad, o cuya fecha_fin YA PASÓ sin haber alcanzado la
+    meta ("atrasado") — este último es el más común en un proyecto recién
+    arrancado: un concepto sin UN SOLO avance capturado nunca puede tener
+    "avances fuera de ventana" (no hay avances que revisar), así que sin
+    este chequeo se veía como si no hubiera ninguna anomalía aunque todo el
+    catálogo estuviera vencido. Nunca bloquea nada — es solo para revisión."""
     await ensure_project_access(user, pid)
+    project = await db.projects.find_one({"id": pid})
+    modo_avance = (project or {}).get("modo_avance", "CANTIDAD")
     conceptos = await db.conceptos.find({"project_id": pid, "activo": True}).to_list(length=100000)
     conceptos_por_id = {c["id"]: c for c in conceptos}
+    hoy = datetime.now(MX_TZ).date()
 
     excepciones: List[ExcepcionEvmOut] = []
 
@@ -16550,22 +16558,96 @@ async def analisis_periodo_excepciones(pid: str, user: dict = Depends(current_us
             detalle=f"Tiene avances capturados fuera de su ventana {c.get('fecha_inicio')} — {c.get('fecha_fin')}",
         ))
 
+    # El chequeo de sobre-meta/atrasado es sobre cantidad física — en modo
+    # PORCENTAJE el "ejecutado" ya es un 0-100 (estado reportado), no una
+    # cantidad comparable contra meta_cantidad.
+    if modo_avance != "PORCENTAJE":
+        for c in conceptos:
+            if not _concepto_tiene_datos_evm(c):
+                continue
+            ejecutado = to_decimal(await _concepto_ejecutado_acumulado(c["id"], modo_avance))
+            meta = to_decimal(c["meta_cantidad"])
+            if ejecutado > meta:
+                excepciones.append(ExcepcionEvmOut(
+                    concepto_id=c["id"], clave=c["clave"], descripcion=c["descripcion"],
+                    tipo="sobre_meta",
+                    detalle=f"Ejecutado {dec_to_str(ejecutado)} supera la meta {dec_to_str(meta)}",
+                ))
+            elif c.get("fecha_fin") and date.fromisoformat(c["fecha_fin"]) < hoy and ejecutado < meta:
+                excepciones.append(ExcepcionEvmOut(
+                    concepto_id=c["id"], clave=c["clave"], descripcion=c["descripcion"],
+                    tipo="atrasado",
+                    detalle=f"Debía terminar el {c['fecha_fin']} y lleva {dec_to_str(ejecutado)} de {dec_to_str(meta)} {c.get('unidad', 'UNIVERSAL')}",
+                ))
+    return excepciones
+
+
+class ActividadEvmOut(BaseModel):
+    concepto_id: str
+    clave: str
+    descripcion: str
+    fecha_inicio: str
+    fecha_fin: str
+    meta_cantidad: str
+    ejecutado: str
+    unidad: str
+    porcentaje_avance: str  # 0-100
+
+
+class ActividadesEvmOut(BaseModel):
+    pendientes: List[ActividadEvmOut]  # fecha_fin ya pasó y no se completó (mismo criterio que la excepción "atrasado")
+    actuales: List[ActividadEvmOut]    # hoy cae dentro de fecha_inicio..fecha_fin
+    por_venir: List[ActividadEvmOut]   # fecha_inicio todavía no llega
+
+
+@api.get("/projects/{pid}/analisis_periodo/actividades", response_model=ActividadesEvmOut)
+async def analisis_periodo_actividades(pid: str, user: dict = Depends(current_user)):
+    """3 categorías de control del dashboard (Tarea 5): actividades
+    PENDIENTES (ya venció su fecha_fin y no alcanzó la meta), ACTUALES (hoy
+    cae dentro de su ventana) y POR VENIR (su ventana todavía no empieza —
+    para dar visibilidad de lo que sigue, no solo de lo que ya se atrasó).
+
+    Solo conceptos con datos EVM (fecha_inicio/fecha_fin, ver
+    _concepto_tiene_datos_evm): un concepto sin fechas no se puede ubicar en
+    el tiempo, así que no cae en ninguna categoría. Un concepto ya
+    completado a tiempo (fecha_fin pasada Y ejecutado >= meta) tampoco cae
+    en ninguna — ya no requiere seguimiento."""
+    await ensure_project_access(user, pid)
+    project = await db.projects.find_one({"id": pid})
+    modo_avance = (project or {}).get("modo_avance", "CANTIDAD")
+    hoy = datetime.now(MX_TZ).date()
+    conceptos = await db.conceptos.find({"project_id": pid, "activo": True}).to_list(length=100000)
+
+    pendientes: List[ActividadEvmOut] = []
+    actuales: List[ActividadEvmOut] = []
+    por_venir: List[ActividadEvmOut] = []
+
     for c in conceptos:
-        if not _concepto_tiene_datos_evm(c):
+        if not _concepto_tiene_datos_evm(c) or not c.get("fecha_inicio") or not c.get("fecha_fin"):
             continue
-        modo_avance = "CANTIDAD"  # el chequeo de sobre-meta es sobre cantidad física, no aplica a PORCENTAJE
-        project = await db.projects.find_one({"id": pid})
-        if (project or {}).get("modo_avance") == "PORCENTAJE":
-            continue
+        fecha_inicio_d = date.fromisoformat(c["fecha_inicio"])
+        fecha_fin_d = date.fromisoformat(c["fecha_fin"])
         ejecutado = to_decimal(await _concepto_ejecutado_acumulado(c["id"], modo_avance))
         meta = to_decimal(c["meta_cantidad"])
-        if ejecutado > meta:
-            excepciones.append(ExcepcionEvmOut(
-                concepto_id=c["id"], clave=c["clave"], descripcion=c["descripcion"],
-                tipo="sobre_meta",
-                detalle=f"Ejecutado {dec_to_str(ejecutado)} supera la meta {dec_to_str(meta)}",
-            ))
-    return excepciones
+        pct = (ejecutado / meta * to_decimal("100")) if meta != 0 else to_decimal("0")
+        item = ActividadEvmOut(
+            concepto_id=c["id"], clave=c["clave"], descripcion=c["descripcion"],
+            fecha_inicio=c["fecha_inicio"], fecha_fin=c["fecha_fin"],
+            meta_cantidad=dec_to_str(meta), ejecutado=dec_to_str(ejecutado),
+            unidad=c.get("unidad", "UNIVERSAL"),
+            porcentaje_avance=dec_to_str(round_money(pct)),
+        )
+        if fecha_fin_d < hoy and ejecutado < meta:
+            pendientes.append(item)
+        elif fecha_inicio_d <= hoy <= fecha_fin_d:
+            actuales.append(item)
+        elif fecha_inicio_d > hoy:
+            por_venir.append(item)
+
+    pendientes.sort(key=lambda a: a.fecha_fin)
+    actuales.sort(key=lambda a: a.fecha_fin)
+    por_venir.sort(key=lambda a: a.fecha_inicio)
+    return ActividadesEvmOut(pendientes=pendientes, actuales=actuales, por_venir=por_venir)
 
 
 class GastoRealIn(BaseModel):
