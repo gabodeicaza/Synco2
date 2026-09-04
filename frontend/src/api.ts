@@ -1139,8 +1139,23 @@ export interface GastoReal {
   fecha: string;
   monto: string;
   concepto_texto: string;
+  /** Liga opcional a un Concepto del catálogo (null = gasto agregado, sin concepto específico). */
+  concepto_id?: string | null;
+  concepto_clave?: string | null;
   capturado_por: string;
   creado_en: string;
+}
+
+export interface GastoRealImportError {
+  fila: number;
+  motivo: string;
+}
+
+export interface GastoRealImportResult {
+  total_filas: number;
+  creados: number;
+  errores: GastoRealImportError[];
+  errores_truncados: boolean;
 }
 
 // ---- Programa desglosado (Etapa 2 de la Ampliación del Catálogo) ----------
@@ -2232,7 +2247,7 @@ export const api = {
   analisisPeriodoActividades: (pid: string) =>
     request<ActividadesEvm>('GET', `/projects/${pid}/analisis_periodo/actividades`),
 
-  createGastoReal: (pid: string, payload: { fecha: string; monto: string; concepto_texto: string }) =>
+  createGastoReal: (pid: string, payload: { fecha: string; monto: string; concepto_texto: string; concepto_clave?: string }) =>
     request<GastoReal>('POST', `/projects/${pid}/gastos_reales`, payload),
   listGastosReales: (pid: string, opts: { desde?: string; hasta?: string } = {}) => {
     const qs = new URLSearchParams();
@@ -2242,6 +2257,54 @@ export const api = {
     return request<GastoReal[]>('GET', `/projects/${pid}/gastos_reales${suffix ? `?${suffix}` : ''}`);
   },
   deleteGastoReal: (gastoId: string) => request<{ ok: boolean }>('DELETE', `/gastos_reales/${gastoId}`),
+
+  // Importador masivo de Gasto Real (AC) — plantilla fija Clave/Fecha/Monto/
+  // Descripción, un solo request (sin wizard de mapeo/staging, ver
+  // server.py import_gastos_reales) pensado para cargar de golpe miles de
+  // filas de gasto histórico.
+  importGastosReales: async (
+    pid: string,
+    file: { uri: string; name: string; mimeType?: string | null },
+  ): Promise<GastoRealImportResult> => {
+    if (!file || !file.uri) throw new ApiError(0, 'Archivo o URI no proporcionado');
+    const isWeb = Platform.OS === 'web';
+    const fileName = file.name || 'gasto_real.xlsx';
+    const mime = file.mimeType || 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    const url = `${BASE}/projects/${pid}/gastos_reales/import`;
+
+    if (!isWeb) {
+      return nativeMultipartUpload<GastoRealImportResult>(url, file.uri, fileName, mime, 'gasto_real_import');
+    }
+    const form = new FormData();
+    const resBlob = await fetch(file.uri);
+    const blob = await resBlob.blob();
+    try {
+      const f = new File([blob], fileName, { type: mime });
+      form.append('file', f);
+    } catch {
+      form.append('file', blob, fileName);
+    }
+    const headers = await authHeader();
+    const res = await fetch(url, { method: 'POST', headers, body: form as any });
+    const text = await res.text();
+    const data = text ? safeJson(text) : null;
+    if (!res.ok) {
+      const msg = (data && (data as any).detail) || `HTTP ${res.status}`;
+      throw new ApiError(res.status, typeof msg === 'string' ? msg : JSON.stringify(msg));
+    }
+    return data as GastoRealImportResult;
+  },
+  downloadGastosRealesPlantilla: async (): Promise<{ blob: Blob; filename: string }> => {
+    const tok = await getToken();
+    const res = await fetch(`${BASE}/gastos_reales/import/plantilla.xlsx`, {
+      method: 'GET',
+      headers: tok ? { Authorization: `Bearer ${tok}` } : {},
+    });
+    if (!res.ok) throw new ApiError(res.status, await _downloadErrorMessage(res, 'Error al descargar la plantilla'));
+    const cd = res.headers.get('Content-Disposition') || '';
+    const m = cd.match(/filename="?([^"]+)"?/);
+    return { blob: await res.blob(), filename: (m && m[1]) || 'plantilla_gasto_real.xlsx' };
+  },
 
   downloadCatalogoPdf: async (pid: string): Promise<{ blob: Blob; filename: string }> => {
     const tok = await getToken();

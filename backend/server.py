@@ -16653,7 +16653,13 @@ async def analisis_periodo_actividades(pid: str, user: dict = Depends(current_us
 class GastoRealIn(BaseModel):
     fecha: str  # "YYYY-MM-DD"
     monto: str
-    concepto_texto: str  # descripción libre ("Nómina semana 12", "Factura #445") — AC es agregado, no por partida
+    concepto_texto: str  # descripción libre ("Nómina semana 12", "Factura #445")
+    # Liga opcional (en captura manual) a un Concepto del catálogo, por
+    # clave — igual que el resto de los importadores, nunca se pide el id
+    # interno al usuario. AC puede seguir siendo agregado (sin concepto_clave,
+    # ej. gastos generales/indirectos) o amarrado a un concepto específico
+    # para poder comparar EV vs AC por concepto, no solo a nivel proyecto.
+    concepto_clave: Optional[str] = None
 
     @field_validator("monto")
     @classmethod
@@ -16677,6 +16683,8 @@ class GastoRealOut(BaseModel):
     fecha: str
     monto: str
     concepto_texto: str
+    concepto_id: Optional[str] = None
+    concepto_clave: Optional[str] = None
     capturado_por: str
     creado_en: datetime
 
@@ -16687,10 +16695,20 @@ async def create_gasto_real(pid: str, body: GastoRealIn, user: dict = Depends(re
     reconciliar facturas/nómina automáticamente, solo registra el monto que
     administración ya calculó fuera del sistema."""
     await ensure_project_access(user, pid)
+    concepto_id = None
+    concepto_clave = None
+    if body.concepto_clave:
+        clave = body.concepto_clave.strip()
+        concepto = await db.conceptos.find_one({"project_id": pid, "clave": clave})
+        if not concepto:
+            raise HTTPException(404, f"No existe ningún concepto con clave '{clave}' en este proyecto")
+        concepto_id = concepto["id"]
+        concepto_clave = concepto["clave"]
     gid = str(uuid.uuid4())
     doc = {
         "id": gid, "project_id": pid, "fecha": body.fecha, "monto": body.monto,
         "concepto_texto": body.concepto_texto.strip(),
+        "concepto_id": concepto_id, "concepto_clave": concepto_clave,
         "capturado_por": user["id"], "creado_en": datetime.now(timezone.utc),
     }
     await db.gastos_reales.insert_one(doc)
@@ -16710,6 +16728,187 @@ async def list_gastos_reales(pid: str, desde: Optional[str] = None, hasta: Optio
         query["fecha"] = rango
     docs = await db.gastos_reales.find(query).sort("fecha", -1).to_list(length=100000)
     return [GastoRealOut(**d) for d in docs]
+
+
+class GastoRealImportErrorOut(BaseModel):
+    fila: int
+    motivo: str
+
+
+class GastoRealImportResultOut(BaseModel):
+    total_filas: int
+    creados: int
+    errores: List[GastoRealImportErrorOut]
+    errores_truncados: bool  # True si hubo más errores de los que se listan en `errores`
+
+
+_GASTO_REAL_IMPORT_MAX_ERRORES = 200
+
+
+@api.get("/gastos_reales/import/plantilla.xlsx")
+async def gastos_reales_import_plantilla(user: dict = Depends(current_user)):
+    """Plantilla descargable para el importador masivo de Gasto Real —
+    columnas Clave/Fecha/Monto/Descripción, una fila de ejemplo y una hoja
+    de instrucciones (mismo criterio que /conceptos/import_evm/plantilla.xlsx)."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Gasto real"
+
+    headers = ["Clave", "Fecha", "Monto", "Descripción"]
+    for col, h in enumerate(headers, start=1):
+        cell = ws.cell(row=1, column=col, value=h)
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="1E3A8A")
+        cell.alignment = Alignment(horizontal="center")
+
+    ejemplo = ["C-001", date(2026, 2, 15), "200000.00", "Nómina semana 7"]
+    for col, v in enumerate(ejemplo, start=1):
+        cell = ws.cell(row=2, column=col, value=v)
+        if col == 2:
+            cell.number_format = "DD/MM/YYYY"
+
+    for i, w in enumerate([14, 14, 14, 40], start=1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+    ws.freeze_panes = "A2"
+
+    ws2 = wb.create_sheet("Instrucciones")
+    instrucciones = [
+        "Cómo llenar esta plantilla para el importador masivo de Gasto Real (AC)",
+        "",
+        "1. Clave: la clave de un concepto que YA EXISTA en el catálogo de este proyecto (ej. C-001). "
+        "Si la clave no existe, esa fila se reporta como error y no se importa — el resto del archivo sí se procesa.",
+        "2. Fecha: fecha en que se realizó el gasto. DEBE ser una celda con formato de FECHA de Excel, "
+        "como en la fila de ejemplo — si Excel la trae como texto no se va a leer.",
+        "3. Monto: importe gastado ese día para ese concepto (número, hasta 2 decimales).",
+        "4. Descripción (opcional): texto libre (ej. \"Nómina semana 7\", \"Factura #445\"). "
+        "Si se deja vacía, se usa la descripción del concepto.",
+        "",
+        "No hay límite práctico de filas — está pensado para cargar de golpe meses o años de gasto histórico.",
+        "No borres la fila de encabezado (fila 1). La fila 2 es solo un ejemplo — bórrala antes de importar.",
+    ]
+    for i, txt in enumerate(instrucciones, start=1):
+        c = ws2.cell(row=i, column=1, value=txt)
+        if i == 1:
+            c.font = Font(bold=True, size=13, color="1E3A8A")
+    ws2.column_dimensions["A"].width = 110
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="plantilla_gasto_real.xlsx"'},
+    )
+
+
+@api.post("/projects/{pid}/gastos_reales/import", response_model=GastoRealImportResultOut)
+async def import_gastos_reales(
+    pid: str, file: UploadFile = File(...), user: dict = Depends(require_role(ROLE_SUB, ROLE_COORD)),
+):
+    """Importador masivo de Gasto Real (AC) — pensado para cargar de golpe
+    meses/años de gasto histórico (miles de filas) en vez de captura manual
+    una por una (ver create_gasto_real). A diferencia de los demás
+    importadores del proyecto, NO usa el wizard de 4 pasos (subir → mapear →
+    validar → comitear): la plantilla es FIJA (Clave/Fecha/Monto/
+    Descripción, ver /gastos_reales/import/plantilla.xlsx), así que no hay
+    mapeo de columnas que negociar; y un GastoReal no tiene noción de
+    "duplicado" (dos facturas del mismo concepto el mismo día son
+    perfectamente válidas), así que tampoco hace falta una sesión de
+    staging con corrección interactiva. Se valida y comitea en un solo
+    request — las filas con error simplemente no se insertan y se
+    reportan para corregirlas en el Excel y volver a subir solo esas.
+
+    A diferencia de la captura manual (donde concepto_clave es opcional),
+    aquí CADA fila debe ligar a un concepto ya existente en el proyecto:
+    si vas a importar miles de gastos históricos es para poder comparar
+    EV vs AC por concepto, no para acumular un bulto agregado."""
+    await ensure_project_access(user, pid)
+    content = await file.read()
+    sheets = _read_workbook_sheets(file.filename or "archivo.xlsx", content)
+    if not sheets:
+        raise HTTPException(400, "El archivo no tiene hojas legibles")
+    rows = next(iter(sheets.values()))
+    if len(rows) < 2:
+        raise HTTPException(400, "El archivo no tiene filas de datos (solo encabezado, o está vacío)")
+
+    headers = [str(c).strip() if c is not None else "" for c in rows[0]]
+    normalized = [_normalize_text(h) for h in headers]
+
+    def find_col(*keywords: str) -> Optional[int]:
+        for idx, h in enumerate(normalized):
+            if any(kw in h for kw in keywords):
+                return idx
+        return None
+
+    idx_clave = find_col("clave", "concepto")
+    idx_fecha = find_col("fecha")
+    idx_monto = find_col("monto", "importe")
+    idx_desc = find_col("descripcion", "descripción", "nota")
+    if idx_clave is None or idx_fecha is None or idx_monto is None:
+        raise HTTPException(
+            400,
+            "El archivo debe tener columnas Clave, Fecha y Monto (Descripción es opcional). "
+            "Descarga la plantilla en /gastos_reales/import/plantilla.xlsx.",
+        )
+
+    data_rows = rows[1:]
+    montos_raw = [r[idx_monto] if idx_monto < len(r) else None for r in data_rows]
+    convencion = detectar_convencion(montos_raw)
+
+    conceptos = await db.conceptos.find({"project_id": pid}).to_list(length=100000)
+    conceptos_por_clave = {c["clave"]: c for c in conceptos}
+
+    docs: List[dict] = []
+    errores: List[dict] = []
+    ahora = datetime.now(timezone.utc)
+    for i, row in enumerate(data_rows):
+        fila_num = i + 2  # +1 por encabezado (fila 1), +1 porque Excel es 1-based
+        clave_raw = row[idx_clave] if idx_clave < len(row) else None
+        if clave_raw in (None, ""):
+            continue  # fila vacía/de relleno, se ignora silenciosamente
+
+        clave = str(clave_raw).strip()
+        concepto = conceptos_por_clave.get(clave)
+        if not concepto:
+            errores.append({"fila": fila_num, "motivo": f"No existe ningún concepto con clave '{clave}' en este proyecto"})
+            continue
+
+        fecha_raw = row[idx_fecha] if idx_fecha < len(row) else None
+        fecha_iso = _fecha_excel_a_iso(fecha_raw)
+        if fecha_iso is None:
+            errores.append({"fila": fila_num, "motivo": f"Fecha inválida o no es una celda de fecha de Excel: {fecha_raw!r}"})
+            continue
+
+        monto_raw = row[idx_monto] if idx_monto < len(row) else None
+        try:
+            monto = _parse_celda_numerica(monto_raw, convencion)
+        except (CeldaErrorExcelError, NumeroAmbiguoError, ValueError) as e:
+            errores.append({"fila": fila_num, "motivo": str(e)})
+            continue
+
+        desc_raw = row[idx_desc] if idx_desc is not None and idx_desc < len(row) else None
+        descripcion = (str(desc_raw).strip() if desc_raw is not None else "") or concepto["descripcion"]
+
+        docs.append({
+            "id": str(uuid.uuid4()), "project_id": pid, "fecha": fecha_iso, "monto": dec_to_str(monto),
+            "concepto_texto": descripcion, "concepto_id": concepto["id"], "concepto_clave": concepto["clave"],
+            "capturado_por": user["id"], "creado_en": ahora,
+        })
+
+    if docs:
+        await db.gastos_reales.insert_many(docs)
+
+    truncados = len(errores) > _GASTO_REAL_IMPORT_MAX_ERRORES
+    return GastoRealImportResultOut(
+        total_filas=len(data_rows), creados=len(docs),
+        errores=[GastoRealImportErrorOut(**e) for e in errores[:_GASTO_REAL_IMPORT_MAX_ERRORES]],
+        errores_truncados=truncados,
+    )
 
 
 @api.delete("/gastos_reales/{gasto_id}")

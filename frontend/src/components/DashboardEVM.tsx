@@ -19,12 +19,14 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import Svg, { Polyline, Line as SvgLine } from 'react-native-svg';
+import * as DocumentPicker from 'expo-document-picker';
 
-import { api, AnalisisPeriodo, CurvaS, ExcepcionEvm, ActividadEvm, ActividadesEvm, GastoReal } from '@/src/api';
+import { api, AnalisisPeriodo, CurvaS, ExcepcionEvm, ActividadEvm, ActividadesEvm, GastoReal, GastoRealImportResult } from '@/src/api';
 import { colors, spacing, radius, shadow } from '@/src/theme';
 import { Button } from '@/src/components/Button';
 import { confirm } from '@/src/utils/confirm';
 import { formatMoney, isValidDecimalInput } from '@/src/utils/money';
+import { downloadBlob } from '@/src/utils/downloadBlob';
 import { dayjs, CDMX_TZ } from '@/src/utils/tz';
 
 const FECHA_ISO_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -192,7 +194,10 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
   const [gastoFecha, setGastoFecha] = useState(() => dayjs().tz(CDMX_TZ).format('YYYY-MM-DD'));
   const [gastoMonto, setGastoMonto] = useState('');
   const [gastoDescripcion, setGastoDescripcion] = useState('');
+  const [gastoClave, setGastoClave] = useState('');
   const [savingGasto, setSavingGasto] = useState(false);
+  const [importandoGastos, setImportandoGastos] = useState(false);
+  const [descargandoPlantilla, setDescargandoPlantilla] = useState(false);
 
   const cargar = useCallback(async (rangoActual: RangoRapido, curvaPrevia: CurvaS | null) => {
     if (!projectId) return;
@@ -207,7 +212,10 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
         api.analisisPeriodo(projectId, start, end),
         api.analisisPeriodoExcepciones(projectId),
         api.analisisPeriodoActividades(projectId),
-        api.listGastosReales(projectId),
+        // Acotado al mismo rango que las tarjetas — un proyecto con miles de
+        // gastos importados no debe renderizar todo el historial de golpe
+        // (ver import_gastos_reales); "Proyecto completo" sí trae todo.
+        api.listGastosReales(projectId, { desde: start, hasta: end }),
       ]);
       setAnalisis(analisisResp);
       setExcepciones(excepcionesResp);
@@ -222,6 +230,7 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
     setGastoFecha(dayjs().tz(CDMX_TZ).format('YYYY-MM-DD'));
     setGastoMonto('');
     setGastoDescripcion('');
+    setGastoClave('');
     setGastoFormOpen(true);
   }
 
@@ -242,6 +251,7 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
       setSavingGasto(true);
       await api.createGastoReal(projectId, {
         fecha: gastoFecha, monto: gastoMonto, concepto_texto: gastoDescripcion.trim(),
+        concepto_clave: gastoClave.trim() || undefined,
       });
       setGastoFormOpen(false);
       await cargar(rango, curva);
@@ -249,6 +259,52 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
       Alert.alert('No se pudo guardar', e?.message || 'Intentalo nuevamente.');
     } finally {
       setSavingGasto(false);
+    }
+  }
+
+  async function onDescargarPlantillaGastos() {
+    if (descargandoPlantilla) return;
+    setDescargandoPlantilla(true);
+    try {
+      const { blob, filename } = await api.downloadGastosRealesPlantilla();
+      await downloadBlob(blob, filename, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    } catch (e: any) {
+      Alert.alert('No se pudo descargar la plantilla', e?.message || 'Intentalo nuevamente.');
+    } finally {
+      setDescargandoPlantilla(false);
+    }
+  }
+
+  async function onImportarGastosExcel() {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: [
+          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          'application/vnd.ms-excel',
+          'text/csv',
+        ],
+        copyToCacheDirectory: true,
+      });
+      if (result.canceled || !result.assets?.[0]) return;
+      const asset = result.assets[0];
+
+      setImportandoGastos(true);
+      const res: GastoRealImportResult = await api.importGastosReales(projectId, {
+        uri: asset.uri, name: asset.name || 'gasto_real.xlsx', mimeType: asset.mimeType,
+      });
+      const detalleErrores = res.errores.slice(0, 10).map((e) => `Fila ${e.fila}: ${e.motivo}`).join('\n');
+      const masErrores = res.errores.length > 10 ? `\n...y ${res.errores.length - 10} más.` : '';
+      const truncNota = res.errores_truncados ? '\n\n(Se muestran solo los primeros 200 errores del archivo.)' : '';
+      Alert.alert(
+        res.creados > 0 ? 'Importación completada' : 'No se importó ningún gasto',
+        `${res.creados} de ${res.total_filas} filas importadas.` +
+          (res.errores.length > 0 ? `\n\n${res.errores.length} con error:\n${detalleErrores}${masErrores}${truncNota}` : ''),
+      );
+      if (res.creados > 0) await cargar(rango, curva);
+    } catch (e: any) {
+      Alert.alert('No se pudo importar el archivo', e?.message || 'Intentalo nuevamente.');
+    } finally {
+      setImportandoGastos(false);
     }
   }
 
@@ -361,10 +417,24 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
             <Text style={styles.addBtnTxt}>Registrar gasto</Text>
           </Pressable>
         </View>
+        <View style={styles.importRow}>
+          <Pressable onPress={onImportarGastosExcel} disabled={importandoGastos} style={styles.importBtn}>
+            {importandoGastos ? (
+              <ActivityIndicator size="small" color={colors.primary} />
+            ) : (
+              <Ionicons name="document-attach-outline" size={16} color={colors.primary} />
+            )}
+            <Text style={styles.addBtnTxt}>Importar desde Excel</Text>
+          </Pressable>
+          <Pressable onPress={onDescargarPlantillaGastos} disabled={descargandoPlantilla} style={styles.importBtn}>
+            <Ionicons name="download-outline" size={16} color={colors.textMuted} />
+            <Text style={styles.plantillaTxt}>Descargar plantilla</Text>
+          </Pressable>
+        </View>
         {gastos.length === 0 ? (
           <Text style={styles.sinExcepciones}>
             Aún no has capturado ningún gasto real — por eso CPI y Variación de costo no reflejan nada. Registra uno,
-            aunque sea de un mes anterior que no se haya capturado a tiempo.
+            aunque sea de un mes anterior que no se haya capturado a tiempo, o importa un Excel con miles de una vez.
           </Text>
         ) : (
           <FlatList
@@ -374,7 +444,9 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
             renderItem={({ item }) => (
               <View style={styles.gastoRow}>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.gastoTxt}>{item.concepto_texto}</Text>
+                  <Text style={styles.gastoTxt}>
+                    {item.concepto_clave ? `${item.concepto_clave} · ` : ''}{item.concepto_texto}
+                  </Text>
                   <Text style={styles.gastoFecha}>{item.fecha}</Text>
                 </View>
                 <Text style={styles.gastoMonto}>{formatMoney(item.monto)}</Text>
@@ -467,6 +539,16 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
               style={styles.input}
             />
 
+            <Text style={styles.fieldLabel}>Clave del concepto (opcional)</Text>
+            <TextInput
+              value={gastoClave}
+              onChangeText={setGastoClave}
+              placeholder="Ej. C-001 — déjalo vacío si es gasto general"
+              placeholderTextColor={colors.textMuted}
+              autoCapitalize="characters"
+              style={styles.input}
+            />
+
             <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
               <Button label="Cancelar" variant="secondary" onPress={() => setGastoFormOpen(false)} style={{ flex: 1 }} />
               <Button label="Guardar" loading={savingGasto} onPress={onSaveGasto} style={{ flex: 1 }} />
@@ -529,6 +611,9 @@ const styles = StyleSheet.create({
   },
   addBtn: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   addBtnTxt: { fontSize: 12, fontWeight: '700', color: colors.primary },
+  importRow: { flexDirection: 'row', gap: spacing.md, marginBottom: 8 },
+  importBtn: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  plantillaTxt: { fontSize: 12, fontWeight: '600', color: colors.textMuted },
   gastoRow: {
     flexDirection: 'row', alignItems: 'center', paddingVertical: 8,
     borderBottomWidth: 1, borderBottomColor: colors.border,
