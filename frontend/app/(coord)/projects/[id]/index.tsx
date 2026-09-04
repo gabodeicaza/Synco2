@@ -1177,6 +1177,30 @@ export default function ProjectDetailScreen() {
                         onPress={() => router.push({ pathname: '/(coord)/projects/[id]/seguridad-higiene' as any, params: { id: pid } })}
                       />
                     ) : null}
+                    {moduloActivo(project?.modulos, 'gestion_riesgos') ? (
+                      <ActionTile
+                        icon="warning-outline"
+                        title="Gestión de Riesgos"
+                        subtitle="Matriz de riesgos por estación/poste y propuesta de control"
+                        onPress={() => router.push({ pathname: '/(coord)/projects/[id]/gestion-riesgos' as any, params: { id: pid } })}
+                      />
+                    ) : null}
+                    {moduloActivo(project?.modulos, 'estudios_proyecto') ? (
+                      <ActionTile
+                        icon="document-text-outline"
+                        title="Estudios y Proyecto Ejecutivo"
+                        subtitle="Avance por disciplina y bitácora de campo"
+                        onPress={() => router.push({ pathname: '/(coord)/projects/[id]/estudios-proyecto' as any, params: { id: pid } })}
+                      />
+                    ) : null}
+                    {moduloActivo(project?.modulos, 'impacto_ambiental') ? (
+                      <ActionTile
+                        icon="earth-outline"
+                        title="Impacto Ambiental"
+                        subtitle="Auditoría de cumplimientos e incumplimientos"
+                        onPress={() => router.push({ pathname: '/(coord)/projects/[id]/impacto-ambiental' as any, params: { id: pid } })}
+                      />
+                    ) : null}
                   </View>
 
                   {/* Boton GRANDE: Exportar Reportes (PDF / Word / PPT / Excel) _ arriba de los filtros a peticion del Coord. General */}

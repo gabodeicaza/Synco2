@@ -265,6 +265,66 @@ export interface SeguridadChecklist {
   created_at: string;
 }
 
+export interface RiesgoRegistro {
+  id: string;
+  project_id: string;
+  node_id?: string | null;
+  estacion_nombre?: string | null;
+  descripcion_riesgo: string;
+  propuesta_control: string;
+  porcentaje_avance: number;
+  notas?: string | null;
+  captured_by: string;
+  captured_by_name: string;
+  created_at: string;
+  updated_at?: string;
+}
+
+export interface EstudioActividad {
+  id: string;
+  project_id: string;
+  nombre: string;
+  porcentaje_avance: number;
+  orden: number;
+  captured_by: string;
+  captured_by_name: string;
+  created_at: string;
+  updated_at?: string;
+}
+
+export type EstudioDisciplina = 'mecanica_suelos' | 'topografia' | 'hidrologico' | 'instalaciones';
+
+export const ESTUDIO_DISCIPLINA_LABEL: Record<EstudioDisciplina, string> = {
+  mecanica_suelos: 'Mecánica de Suelos',
+  topografia: 'Topografía',
+  hidrologico: 'Hidrológico',
+  instalaciones: 'Instalaciones',
+};
+
+export interface EstudioBitacoraEntry {
+  id: string;
+  project_id: string;
+  disciplina: EstudioDisciplina;
+  texto: string;
+  fecha: string;
+  captured_by: string;
+  captured_by_name: string;
+  created_at: string;
+}
+
+export interface AmbientalAuditoriaItem {
+  id: string;
+  project_id: string;
+  tipo: 'cumplimiento' | 'incumplimiento';
+  descripcion: string;
+  fecha: string;
+  notas?: string | null;
+  images: string[];
+  captured_by: string;
+  captured_by_name: string;
+  created_at: string;
+}
+
 export interface Project {
   id: string;
   name: string;
@@ -1517,6 +1577,35 @@ export const api = {
   listSeguridadChecklist: (pid: string) => request<SeguridadChecklist[]>('GET', `/projects/${pid}/seguridad-checklist`),
   createSeguridadChecklist: (pid: string, body: { fecha?: string; items: SeguridadChecklistItem[] }) =>
     request<SeguridadChecklist>('POST', `/projects/${pid}/seguridad-checklist`, body),
+
+  // === Módulo piloto: Gestión de Riesgos ===
+  listRiesgosRegistros: (pid: string) => request<RiesgoRegistro[]>('GET', `/projects/${pid}/riesgos-registros`),
+  createRiesgoRegistro: (pid: string, body: {
+    node_id?: string | null; estacion_nombre?: string | null; descripcion_riesgo: string;
+    propuesta_control: string; porcentaje_avance?: number; notas?: string | null;
+  }) => request<RiesgoRegistro>('POST', `/projects/${pid}/riesgos-registros`, body),
+  updateRiesgoRegistro: (pid: string, rid: string, body: Partial<{
+    estacion_nombre: string | null; descripcion_riesgo: string; propuesta_control: string;
+    porcentaje_avance: number; notas: string | null;
+  }>) => request<RiesgoRegistro>('PATCH', `/projects/${pid}/riesgos-registros/${rid}`, body),
+
+  // === Módulo piloto: Estudios y Proyecto Ejecutivo ===
+  listEstudiosActividades: (pid: string) => request<EstudioActividad[]>('GET', `/projects/${pid}/estudios-actividades`),
+  createEstudioActividad: (pid: string, body: { nombre: string; porcentaje_avance?: number; orden?: number }) =>
+    request<EstudioActividad>('POST', `/projects/${pid}/estudios-actividades`, body),
+  updateEstudioActividad: (pid: string, aid: string, body: Partial<{ nombre: string; porcentaje_avance: number; orden: number }>) =>
+    request<EstudioActividad>('PATCH', `/projects/${pid}/estudios-actividades/${aid}`, body),
+  deleteEstudioActividad: (pid: string, aid: string) =>
+    request<{ ok: boolean }>('DELETE', `/projects/${pid}/estudios-actividades/${aid}`),
+  listEstudiosBitacora: (pid: string) => request<EstudioBitacoraEntry[]>('GET', `/projects/${pid}/estudios-bitacora`),
+  createEstudioBitacora: (pid: string, body: { disciplina: EstudioDisciplina; texto: string; fecha?: string }) =>
+    request<EstudioBitacoraEntry>('POST', `/projects/${pid}/estudios-bitacora`, body),
+
+  // === Módulo piloto: Impacto Ambiental ===
+  listAmbientalAuditoria: (pid: string) => request<AmbientalAuditoriaItem[]>('GET', `/projects/${pid}/ambiental-auditoria`),
+  createAmbientalAuditoria: (pid: string, body: {
+    tipo: 'cumplimiento' | 'incumplimiento'; descripcion: string; fecha?: string; notas?: string | null; images?: string[];
+  }) => request<AmbientalAuditoriaItem>('POST', `/projects/${pid}/ambiental-auditoria`, body),
 
   listInvitations: (pid: string) => request<Invitation[]>('GET', `/projects/${pid}/invitations`),
   createInvitation: (pid: string, body: any) => request<Invitation>('POST', `/projects/${pid}/invitations`, body),

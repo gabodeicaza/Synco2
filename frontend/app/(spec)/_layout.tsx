@@ -102,6 +102,9 @@ export default function SpecLayout() {
             nunca como tab fijo. */}
         <Tabs.Screen name="forestal-arbolado" options={{ href: null }} />
         <Tabs.Screen name="seguridad-higiene" options={{ href: null }} />
+        <Tabs.Screen name="gestion-riesgos" options={{ href: null }} />
+        <Tabs.Screen name="estudios-proyecto" options={{ href: null }} />
+        <Tabs.Screen name="impacto-ambiental" options={{ href: null }} />
       </Tabs>
       <OfflineQueueIndicator />
     </View>

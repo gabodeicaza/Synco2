@@ -20,6 +20,9 @@ export default function ProjectLayout() {
       <Stack.Screen name="modulos" />
       <Stack.Screen name="forestal-arbolado" />
       <Stack.Screen name="seguridad-higiene" />
+      <Stack.Screen name="gestion-riesgos" />
+      <Stack.Screen name="estudios-proyecto" />
+      <Stack.Screen name="impacto-ambiental" />
     </Stack>
   );
 }

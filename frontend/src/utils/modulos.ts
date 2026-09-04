@@ -1,5 +1,5 @@
 // Sistema Multi-Proyecto Modular — catálogo de plantillas del lado del
-// frontend. Espejo de MODULOS_CATALOG en backend/server.py: agregar una
+// frontend. Espejo de MODULOS_KEYS en backend/server.py: agregar una
 // plantilla nueva requiere declararla en AMBOS lados (aquí para que la
 // pantalla de configuración y el menú hamburguesa sepan pintarla; en el
 // backend para que la sanitización de `modulos` no la descarte).
@@ -8,11 +8,7 @@
 // categorías de informe (Diario/Semanal/Mensual, ver CATEGORIA_ORDEN) — ya
 // no vive bajo una única cadencia fija. El Coordinador decide, por módulo y
 // por informe, si quiere ver ahí el recuento de actividades (pantalla de
-// configuración, ver app/(coord)/projects/[id]/modulos.tsx). Espejo de
-// MODULOS_KEYS en backend/server.py: agregar una plantilla nueva requiere
-// declararla en AMBOS lados (aquí para que la config y el menú hamburguesa
-// sepan pintarla; en el backend para que la sanitización de `modulos` no la
-// descarte).
+// configuración, ver app/(coord)/projects/[id]/modulos.tsx).
 //
 // `area` (disciplina: Ambiental, Seguridad...) es un eje independiente que
 // organiza el MENÚ hamburguesa (ver HeaderMenu.tsx). Es un tag fijo del
@@ -53,6 +49,30 @@ export const MODULOS: ModuloDef[] = [
     screen: 'forestal-arbolado',
     area: 'Ambiental',
   },
+  {
+    key: 'gestion_riesgos',
+    label: 'Gestión de Riesgos',
+    subtitle: 'Matriz de riesgos por estación/poste y propuesta de control',
+    icon: 'warning-outline',
+    screen: 'gestion-riesgos',
+    area: 'Riesgos',
+  },
+  {
+    key: 'estudios_proyecto',
+    label: 'Estudios y Proyecto Ejecutivo',
+    subtitle: 'Avance por disciplina y bitácora de campo',
+    icon: 'document-text-outline',
+    screen: 'estudios-proyecto',
+    area: 'Ingeniería',
+  },
+  {
+    key: 'impacto_ambiental',
+    label: 'Impacto Ambiental',
+    subtitle: 'Auditoría de cumplimientos e incumplimientos',
+    icon: 'earth-outline',
+    screen: 'impacto-ambiental',
+    area: 'Ambiental',
+  },
 ];
 
 export const CATEGORIA_LABEL: Record<ModuloCategoria, string> = {
@@ -66,7 +86,7 @@ export const CATEGORIA_ORDEN: ModuloCategoria[] = ['reportes_diarios', 'reportes
 // Orden fijo de áreas conocidas — evita que el menú reordene encabezados
 // entre sesiones a medida que se activan/desactivan módulos. Un área nueva
 // que no esté aquí se agrega al final, en orden alfabético.
-export const AREAS_ORDEN: string[] = ['Ambiental', 'Seguridad'];
+export const AREAS_ORDEN: string[] = ['Ambiental', 'Seguridad', 'Riesgos', 'Ingeniería'];
 
 /** ¿Está encendido este módulo en AL MENOS UNA de las 3 categorías de
  * informe? Es el criterio de "el módulo está activo para este proyecto" —

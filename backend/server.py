@@ -151,7 +151,10 @@ MEASUREMENT_TYPES = {"coord_latlon", "cadenamiento", "eje", "nivel"}
 # una clave no aparece aquí, se ignora al guardar `modulos` (evita que un
 # payload arbitrario cree módulos "fantasma" que ninguna pantalla sabe
 # renderizar).
-MODULOS_KEYS = {"seguridad_higiene", "forestal_arbolado"}
+MODULOS_KEYS = {
+    "seguridad_higiene", "forestal_arbolado",
+    "gestion_riesgos", "estudios_proyecto", "impacto_ambiental",
+}
 MODULOS_DIARIOS = MODULOS_KEYS
 MODULOS_SEMANALES = MODULOS_KEYS
 MODULOS_MENSUALES = MODULOS_KEYS
@@ -980,6 +983,14 @@ async def startup_event():
     await db.seguridad_reportes.create_index([("project_id", 1), ("created_at", -1)])
     await db.seguridad_checklist.create_index("id", unique=True)
     await db.seguridad_checklist.create_index([("project_id", 1), ("created_at", -1)])
+    await db.riesgos_registros.create_index("id", unique=True)
+    await db.riesgos_registros.create_index([("project_id", 1), ("created_at", -1)])
+    await db.estudios_actividades.create_index("id", unique=True)
+    await db.estudios_actividades.create_index([("project_id", 1), ("orden", 1)])
+    await db.estudios_bitacora.create_index("id", unique=True)
+    await db.estudios_bitacora.create_index([("project_id", 1), ("created_at", -1)])
+    await db.ambiental_auditoria.create_index("id", unique=True)
+    await db.ambiental_auditoria.create_index([("project_id", 1), ("created_at", -1)])
 
     # --- Seed de plantillas de reporte estructurado (idempotente por `code`) ---
     try:
@@ -1893,6 +1904,292 @@ async def create_seguridad_checklist(pid: str, body: SeguridadChecklistIn, user:
         "created_at": datetime.now(timezone.utc),
     }
     await db.seguridad_checklist.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+class RiesgoRegistroIn(BaseModel):
+    node_id: Optional[str] = None  # Estación/poste (árbol de nodos), si aplica
+    estacion_nombre: Optional[str] = None  # Fallback de texto libre si no hay node_id
+    descripcion_riesgo: str
+    propuesta_control: str
+    porcentaje_avance: int = 0
+    notas: Optional[str] = None
+
+
+class RiesgoRegistroPatch(BaseModel):
+    """PATCH parcial — la matriz es interactiva: el uso típico es sólo
+    actualizar `porcentaje_avance` a medida que se ejecuta la propuesta de
+    control, sin crear un registro nuevo por cada avance."""
+    estacion_nombre: Optional[str] = None
+    descripcion_riesgo: Optional[str] = None
+    propuesta_control: Optional[str] = None
+    porcentaje_avance: Optional[int] = None
+    notas: Optional[str] = None
+
+
+@api.get("/projects/{pid}/riesgos-registros")
+async def list_riesgos_registros(pid: str, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    cursor = db.riesgos_registros.find({"project_id": pid}).sort("created_at", -1)
+    items = await cursor.to_list(length=1000)
+    for it in items:
+        it.pop("_id", None)
+    return items
+
+
+@api.post("/projects/{pid}/riesgos-registros")
+async def create_riesgo_registro(pid: str, body: RiesgoRegistroIn, user: dict = Depends(current_user)):
+    _assert_write_allowed(user)
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "gestion_riesgos")
+    descripcion = body.descripcion_riesgo.strip()
+    propuesta = body.propuesta_control.strip()
+    if not descripcion:
+        raise HTTPException(400, "Descripción del riesgo requerida")
+    if not propuesta:
+        raise HTTPException(400, "Propuesta de control requerida")
+    if not (0 <= body.porcentaje_avance <= 100):
+        raise HTTPException(400, "porcentaje_avance debe estar entre 0 y 100")
+    node_name = body.estacion_nombre
+    if body.node_id:
+        node = await db.location_nodes.find_one({"id": body.node_id, "project_id": pid})
+        if not node:
+            raise HTTPException(400, "Nodo no existe en este proyecto")
+        node_name = node.get("name")
+    doc = {
+        "id": str(uuid.uuid4()),
+        "project_id": pid,
+        "node_id": body.node_id,
+        "estacion_nombre": (node_name or "").strip() or None,
+        "descripcion_riesgo": descripcion,
+        "propuesta_control": propuesta,
+        "porcentaje_avance": body.porcentaje_avance,
+        "notas": (body.notas or "").strip() or None,
+        "captured_by": user["id"],
+        "captured_by_name": user["name"],
+        "created_at": datetime.now(timezone.utc),
+        "updated_at": datetime.now(timezone.utc),
+    }
+    await db.riesgos_registros.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api.patch("/projects/{pid}/riesgos-registros/{rid}")
+async def update_riesgo_registro(pid: str, rid: str, body: RiesgoRegistroPatch, user: dict = Depends(current_user)):
+    _assert_write_allowed(user)
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "gestion_riesgos")
+    existing = await db.riesgos_registros.find_one({"id": rid, "project_id": pid})
+    if not existing:
+        raise HTTPException(404, "Registro no existe")
+    upd: dict = {}
+    if body.estacion_nombre is not None:
+        upd["estacion_nombre"] = body.estacion_nombre.strip() or None
+    if body.descripcion_riesgo is not None:
+        v = body.descripcion_riesgo.strip()
+        if not v:
+            raise HTTPException(400, "Descripción del riesgo requerida")
+        upd["descripcion_riesgo"] = v
+    if body.propuesta_control is not None:
+        v = body.propuesta_control.strip()
+        if not v:
+            raise HTTPException(400, "Propuesta de control requerida")
+        upd["propuesta_control"] = v
+    if body.porcentaje_avance is not None:
+        if not (0 <= body.porcentaje_avance <= 100):
+            raise HTTPException(400, "porcentaje_avance debe estar entre 0 y 100")
+        upd["porcentaje_avance"] = body.porcentaje_avance
+    if body.notas is not None:
+        upd["notas"] = body.notas.strip() or None
+    if upd:
+        upd["updated_at"] = datetime.now(timezone.utc)
+        await db.riesgos_registros.update_one({"id": rid, "project_id": pid}, {"$set": upd})
+    doc = await db.riesgos_registros.find_one({"id": rid, "project_id": pid})
+    doc.pop("_id", None)
+    return doc
+
+
+# --- Estudios y Proyecto Ejecutivo: barras de avance por actividad general +
+# bitácora de viñetas por disciplina. ---
+class EstudioActividadIn(BaseModel):
+    nombre: str  # Libre — ej. "SIGG", "Trabajo de campo", "Anexos"
+    porcentaje_avance: int = 0
+    orden: Optional[int] = None
+
+
+class EstudioActividadPatch(BaseModel):
+    nombre: Optional[str] = None
+    porcentaje_avance: Optional[int] = None
+    orden: Optional[int] = None
+
+
+@api.get("/projects/{pid}/estudios-actividades")
+async def list_estudios_actividades(pid: str, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    cursor = db.estudios_actividades.find({"project_id": pid}).sort("orden", 1)
+    items = await cursor.to_list(length=500)
+    for it in items:
+        it.pop("_id", None)
+    return items
+
+
+@api.post("/projects/{pid}/estudios-actividades")
+async def create_estudio_actividad(pid: str, body: EstudioActividadIn, user: dict = Depends(current_user)):
+    _assert_write_allowed(user)
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "estudios_proyecto")
+    nombre = body.nombre.strip()
+    if not nombre:
+        raise HTTPException(400, "Nombre de la actividad requerido")
+    if not (0 <= body.porcentaje_avance <= 100):
+        raise HTTPException(400, "porcentaje_avance debe estar entre 0 y 100")
+    orden = body.orden
+    if orden is None:
+        last = await db.estudios_actividades.find({"project_id": pid}).sort("orden", -1).limit(1).to_list(length=1)
+        orden = (last[0]["orden"] + 1) if last else 0
+    doc = {
+        "id": str(uuid.uuid4()),
+        "project_id": pid,
+        "nombre": nombre,
+        "porcentaje_avance": body.porcentaje_avance,
+        "orden": orden,
+        "captured_by": user["id"],
+        "captured_by_name": user["name"],
+        "created_at": datetime.now(timezone.utc),
+        "updated_at": datetime.now(timezone.utc),
+    }
+    await db.estudios_actividades.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api.patch("/projects/{pid}/estudios-actividades/{aid}")
+async def update_estudio_actividad(pid: str, aid: str, body: EstudioActividadPatch, user: dict = Depends(current_user)):
+    _assert_write_allowed(user)
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "estudios_proyecto")
+    existing = await db.estudios_actividades.find_one({"id": aid, "project_id": pid})
+    if not existing:
+        raise HTTPException(404, "Actividad no existe")
+    upd: dict = {}
+    if body.nombre is not None:
+        v = body.nombre.strip()
+        if not v:
+            raise HTTPException(400, "Nombre de la actividad requerido")
+        upd["nombre"] = v
+    if body.porcentaje_avance is not None:
+        if not (0 <= body.porcentaje_avance <= 100):
+            raise HTTPException(400, "porcentaje_avance debe estar entre 0 y 100")
+        upd["porcentaje_avance"] = body.porcentaje_avance
+    if body.orden is not None:
+        upd["orden"] = body.orden
+    if upd:
+        upd["updated_at"] = datetime.now(timezone.utc)
+        await db.estudios_actividades.update_one({"id": aid, "project_id": pid}, {"$set": upd})
+    doc = await db.estudios_actividades.find_one({"id": aid, "project_id": pid})
+    doc.pop("_id", None)
+    return doc
+
+
+@api.delete("/projects/{pid}/estudios-actividades/{aid}")
+async def delete_estudio_actividad(pid: str, aid: str, user: dict = Depends(current_user)):
+    _assert_write_allowed(user)
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "estudios_proyecto")
+    await db.estudios_actividades.delete_one({"id": aid, "project_id": pid})
+    return {"ok": True}
+
+
+ESTUDIOS_DISCIPLINAS = ["mecanica_suelos", "topografia", "hidrologico", "instalaciones"]
+ESTUDIOS_DISCIPLINA_LABEL = {
+    "mecanica_suelos": "Mecánica de Suelos",
+    "topografia": "Topografía",
+    "hidrologico": "Hidrológico",
+    "instalaciones": "Instalaciones",
+}
+
+
+class EstudioBitacoraIn(BaseModel):
+    disciplina: Literal["mecanica_suelos", "topografia", "hidrologico", "instalaciones"]
+    texto: str
+    fecha: Optional[str] = None
+
+
+@api.get("/projects/{pid}/estudios-bitacora")
+async def list_estudios_bitacora(pid: str, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    cursor = db.estudios_bitacora.find({"project_id": pid}).sort("created_at", -1)
+    items = await cursor.to_list(length=1000)
+    for it in items:
+        it.pop("_id", None)
+    return items
+
+
+@api.post("/projects/{pid}/estudios-bitacora")
+async def create_estudio_bitacora(pid: str, body: EstudioBitacoraIn, user: dict = Depends(current_user)):
+    _assert_write_allowed(user)
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "estudios_proyecto")
+    texto = body.texto.strip()
+    if not texto:
+        raise HTTPException(400, "Texto de la bitácora requerido")
+    doc = {
+        "id": str(uuid.uuid4()),
+        "project_id": pid,
+        "disciplina": body.disciplina,
+        "texto": texto,
+        "fecha": body.fecha or datetime.now(MX_TZ).date().isoformat(),
+        "captured_by": user["id"],
+        "captured_by_name": user["name"],
+        "created_at": datetime.now(timezone.utc),
+    }
+    await db.estudios_bitacora.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+# --- Impacto Ambiental: auditoría comparativa cumplimientos/incumplimientos. ---
+class AmbientalAuditoriaIn(BaseModel):
+    tipo: Literal["cumplimiento", "incumplimiento"]
+    descripcion: str
+    fecha: Optional[str] = None
+    notas: Optional[str] = None
+    images: List[str] = Field(default_factory=list)  # base64
+
+
+@api.get("/projects/{pid}/ambiental-auditoria")
+async def list_ambiental_auditoria(pid: str, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    cursor = db.ambiental_auditoria.find({"project_id": pid}).sort("created_at", -1)
+    items = await cursor.to_list(length=1000)
+    for it in items:
+        it.pop("_id", None)
+    return items
+
+
+@api.post("/projects/{pid}/ambiental-auditoria")
+async def create_ambiental_auditoria(pid: str, body: AmbientalAuditoriaIn, user: dict = Depends(current_user)):
+    _assert_write_allowed(user)
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "impacto_ambiental")
+    descripcion = body.descripcion.strip()
+    if not descripcion:
+        raise HTTPException(400, "Descripción requerida")
+    doc = {
+        "id": str(uuid.uuid4()),
+        "project_id": pid,
+        "tipo": body.tipo,
+        "descripcion": descripcion,
+        "fecha": body.fecha or datetime.now(MX_TZ).date().isoformat(),
+        "notas": (body.notas or "").strip() or None,
+        "images": body.images[:10],
+        "captured_by": user["id"],
+        "captured_by_name": user["name"],
+        "created_at": datetime.now(timezone.utc),
+    }
+    await db.ambiental_auditoria.insert_one(doc)
     doc.pop("_id", None)
     return doc
 
