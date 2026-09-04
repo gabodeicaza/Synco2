@@ -194,9 +194,12 @@ export interface ReferenceFile {
 }
 
 // === Sistema Multi-Proyecto Modular =========================================
-// Espejo de MODULOS_CATALOG en server.py. Cada plantilla vive bajo
-// exactamente una cadencia — si se agrega una plantilla nueva, se declara
-// aquí Y en el backend (server.py MODULOS_CATALOG), nunca solo en un lado.
+// Espejo de MODULOS_KEYS en server.py. Cada plantilla puede encenderse
+// independientemente en cualquiera de las 3 categorías (son 3 interruptores
+// por módulo, no una cadencia fija) — ver src/utils/modulos.ts para el
+// catálogo y el criterio de "módulo activo". Si se agrega una plantilla
+// nueva, se declara aquí Y en el backend (server.py MODULOS_KEYS), nunca
+// solo en un lado.
 export interface ModulosConfig {
   reportes_diarios: Record<string, boolean>;
   reportes_semanales: Record<string, boolean>;
@@ -204,9 +207,9 @@ export interface ModulosConfig {
 }
 
 export const MODULOS_VACIOS: ModulosConfig = {
-  reportes_diarios: { seguridad_higiene: false },
-  reportes_semanales: { forestal_arbolado: false },
-  reportes_mensuales: {},
+  reportes_diarios: { seguridad_higiene: false, forestal_arbolado: false },
+  reportes_semanales: { seguridad_higiene: false, forestal_arbolado: false },
+  reportes_mensuales: { seguridad_higiene: false, forestal_arbolado: false },
 };
 
 export type ModuloCategoria = keyof ModulosConfig;
@@ -304,9 +307,10 @@ export interface Project {
   // consultar; RegistroAvance.fecha siempre guarda la fecha exacta.
   cadencia_reporte?: 'DIARIA' | 'SEMANAL' | 'MENSUAL';
   dia_inicio_semana?: 'LUNES' | 'MARTES' | 'MIERCOLES' | 'JUEVES' | 'VIERNES' | 'SABADO' | 'DOMINGO';
-  // Sistema Multi-Proyecto Modular: plantillas encendidas/apagadas por
-  // cadencia de captura. Ver MODULOS_CATALOG en server.py — claves no
-  // reconocidas ahí nunca llegan aquí.
+  // Sistema Multi-Proyecto Modular: plantillas encendidas/apagadas, con un
+  // interruptor independiente por categoría de informe (Diario/Semanal/
+  // Mensual). Ver MODULOS_KEYS en server.py — claves no reconocidas ahí
+  // nunca llegan aquí.
   modulos?: ModulosConfig;
   created_by: string;
   created_at: string;

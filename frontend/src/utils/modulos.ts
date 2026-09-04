@@ -4,17 +4,22 @@
 // pantalla de configuración y el menú hamburguesa sepan pintarla; en el
 // backend para que la sanitización de `modulos` no la descarte).
 //
-// Dos ejes de clasificación independientes, cada uno con su propio uso:
-//   - `categoria` (cadencia de captura: Diario/Semanal/Mensual) — organiza
-//     la pantalla de configuración del Coordinador (ver
-//     app/(coord)/projects/[id]/modulos.tsx) y sigue viviendo en el backend
-//     (`modulos.reportes_diarios/semanales/mensuales`).
-//   - `area` (disciplina: Ambiental, Seguridad...) — organiza el MENÚ
-//     hamburguesa (ver HeaderMenu.tsx). Es un tag fijo del catálogo, NO la
-//     lista de Áreas/Disciplinas configurable por proyecto
-//     (`/projects/{pid}/areas`, ej. "Topografía, Geotecnia..."): esa lista
-//     varía libremente por proyecto y no garantiza tener "Ambiental" o
-//     "Seguridad", así que amarrar el menú a ella sería frágil.
+// Cada plantilla puede encenderse INDEPENDIENTEMENTE en cualquiera de las 3
+// categorías de informe (Diario/Semanal/Mensual, ver CATEGORIA_ORDEN) — ya
+// no vive bajo una única cadencia fija. El Coordinador decide, por módulo y
+// por informe, si quiere ver ahí el recuento de actividades (pantalla de
+// configuración, ver app/(coord)/projects/[id]/modulos.tsx). Espejo de
+// MODULOS_KEYS en backend/server.py: agregar una plantilla nueva requiere
+// declararla en AMBOS lados (aquí para que la config y el menú hamburguesa
+// sepan pintarla; en el backend para que la sanitización de `modulos` no la
+// descarte).
+//
+// `area` (disciplina: Ambiental, Seguridad...) es un eje independiente que
+// organiza el MENÚ hamburguesa (ver HeaderMenu.tsx). Es un tag fijo del
+// catálogo, NO la lista de Áreas/Disciplinas configurable por proyecto
+// (`/projects/{pid}/areas`, ej. "Topografía, Geotecnia..."): esa lista
+// varía libremente por proyecto y no garantiza tener "Ambiental" o
+// "Seguridad", así que amarrar el menú a ella sería frágil.
 import type { Ionicons } from '@expo/vector-icons';
 import type { ModuloCategoria, ModulosConfig } from '@/src/api';
 
@@ -31,29 +36,24 @@ export type ModuloDef = {
   area: string;
 };
 
-export const MODULOS_CATALOG: Record<ModuloCategoria, ModuloDef[]> = {
-  reportes_diarios: [
-    {
-      key: 'seguridad_higiene',
-      label: 'Seguridad e Higiene',
-      subtitle: 'Reporte de accidentes y checklist preventivo/correctivo',
-      icon: 'shield-checkmark-outline',
-      screen: 'seguridad-higiene',
-      area: 'Seguridad',
-    },
-  ],
-  reportes_semanales: [
-    {
-      key: 'forestal_arbolado',
-      label: 'Forestal y Arbolado',
-      subtitle: 'Podas, trasplantes y derribos por estación',
-      icon: 'leaf-outline',
-      screen: 'forestal-arbolado',
-      area: 'Ambiental',
-    },
-  ],
-  reportes_mensuales: [],
-};
+export const MODULOS: ModuloDef[] = [
+  {
+    key: 'seguridad_higiene',
+    label: 'Seguridad e Higiene',
+    subtitle: 'Reporte de accidentes y checklist preventivo/correctivo',
+    icon: 'shield-checkmark-outline',
+    screen: 'seguridad-higiene',
+    area: 'Seguridad',
+  },
+  {
+    key: 'forestal_arbolado',
+    label: 'Forestal y Arbolado',
+    subtitle: 'Podas, trasplantes y derribos por estación',
+    icon: 'leaf-outline',
+    screen: 'forestal-arbolado',
+    area: 'Ambiental',
+  },
+];
 
 export const CATEGORIA_LABEL: Record<ModuloCategoria, string> = {
   reportes_diarios: 'Diario',
@@ -68,20 +68,22 @@ export const CATEGORIA_ORDEN: ModuloCategoria[] = ['reportes_diarios', 'reportes
 // que no esté aquí se agrega al final, en orden alfabético.
 export const AREAS_ORDEN: string[] = ['Ambiental', 'Seguridad'];
 
-/** Todas las plantillas del catálogo, sin importar su cadencia — para
- * recorrer/filtrar por área sin repetir la iteración de MODULOS_CATALOG. */
-export function todosLosModulos(): ModuloDef[] {
-  return CATEGORIA_ORDEN.flatMap((categoria) => MODULOS_CATALOG[categoria]);
+/** ¿Está encendido este módulo en AL MENOS UNA de las 3 categorías de
+ * informe? Es el criterio de "el módulo está activo para este proyecto" —
+ * controla acceso de captura y visibilidad en el menú hamburguesa. Cuál
+ * categoría específica está prendida solo importa para decidir en qué
+ * informe exportado aparece el recuento (ver backend
+ * `_modulos_categoria_para_export`), no para esta pregunta. */
+export function moduloActivo(modulos: ModulosConfig | null | undefined, key: string): boolean {
+  return CATEGORIA_ORDEN.some((categoria) => !!modulos?.[categoria]?.[key]);
 }
 
-/** Agrupa las plantillas ENCENDIDAS para un proyecto por área temática,
- * en el orden de AREAS_ORDEN (áreas no listadas ahí van al final,
- * alfabéticamente). Usado por el menú hamburguesa — ver HeaderMenu.tsx. */
+/** Agrupa las plantillas ENCENDIDAS (en cualquier categoría) para un
+ * proyecto por área temática, en el orden de AREAS_ORDEN (áreas no
+ * listadas ahí van al final, alfabéticamente). Usado por el menú
+ * hamburguesa — ver HeaderMenu.tsx. */
 export function modulosActivosPorArea(modulos: ModulosConfig | null | undefined): { area: string; modulos: ModuloDef[] }[] {
-  const activos = todosLosModulos().filter((m) => {
-    const categoria = CATEGORIA_ORDEN.find((c) => MODULOS_CATALOG[c].includes(m))!;
-    return !!modulos?.[categoria]?.[m.key];
-  });
+  const activos = MODULOS.filter((m) => moduloActivo(modulos, m.key));
   const porArea = new Map<string, ModuloDef[]>();
   for (const m of activos) {
     if (!porArea.has(m.area)) porArea.set(m.area, []);

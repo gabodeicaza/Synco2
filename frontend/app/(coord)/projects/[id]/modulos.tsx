@@ -1,9 +1,14 @@
 // Configuración de módulos (sistema Multi-Proyecto Modular) — exclusiva del
-// Coordinador General. Enciende/apaga, por proyecto, las plantillas
-// disponibles agrupadas por cadencia de captura (Diario/Semanal/Mensual).
-// Un módulo apagado desaparece del menú hamburguesa de Sub-Coordinador y
-// Especialista (ver src/components/HeaderMenu.tsx) y el backend rechaza
-// escrituras a sus endpoints (ver _ensure_modulo_activo en server.py).
+// Coordinador General. Cada plantilla tiene un interruptor INDEPENDIENTE en
+// cada una de las 3 categorías de informe (Diario/Semanal/Mensual): no es
+// "en qué cadencia vive el módulo" sino "en cuáles informes exportados
+// quiero ver el recuento de sus actividades" — un módulo puede aparecer en
+// más de uno, o en ninguno.
+// El módulo se considera activo (aparece en el menú hamburguesa de
+// Sub-Coordinador/Especialista y admite captura, ver
+// src/utils/modulos.ts#moduloActivo) si tiene AL MENOS UN interruptor
+// encendido en cualquiera de las 3 categorías; el backend rechaza
+// escrituras si ninguno lo está (ver _ensure_modulo_activo en server.py).
 import React, { useCallback, useEffect, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, ActivityIndicator, Pressable, Alert, Switch } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -11,10 +16,14 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { api, ModulosConfig, ModuloCategoria, Project } from '@/src/api';
 import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
-import { MODULOS_CATALOG, CATEGORIA_LABEL, CATEGORIA_ORDEN } from '@/src/utils/modulos';
+import { MODULOS, CATEGORIA_LABEL, CATEGORIA_ORDEN } from '@/src/utils/modulos';
 
 function vacio(): ModulosConfig {
   return { reportes_diarios: {}, reportes_semanales: {}, reportes_mensuales: {} };
+}
+
+function savingKey(categoria: ModuloCategoria, key: string): string {
+  return `${categoria}:${key}`;
 }
 
 export default function ModulosConfigScreen() {
@@ -23,7 +32,7 @@ export default function ModulosConfigScreen() {
   const pid = (Array.isArray(id) ? id[0] : id) || '';
 
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState<string | null>(null); // key en curso
+  const [saving, setSaving] = useState<string | null>(null); // `${categoria}:${key}` en curso
   const [project, setProject] = useState<Project | null>(null);
   const [draft, setDraft] = useState<ModulosConfig>(vacio());
 
@@ -50,7 +59,7 @@ export default function ModulosConfigScreen() {
     const previous = draft;
     // Optimista: refleja el cambio de inmediato, revierte si el guardado falla.
     setDraft((d) => ({ ...d, [categoria]: { ...d[categoria], [key]: value } }));
-    setSaving(key);
+    setSaving(savingKey(categoria, key));
     try {
       const upd = await api.setProjectModulos(pid, { [categoria]: { [key]: value } } as Partial<ModulosConfig>);
       setProject(upd);
@@ -85,42 +94,41 @@ export default function ModulosConfigScreen() {
 
       <ScrollView contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + spacing.xl }]}>
         <Text style={styles.helpTxt}>
-          Enciende las plantillas que este proyecto va a usar. Un módulo apagado desaparece del
-          menú de Sub-Coordinador y Especialista.
+          Cada plantilla tiene un interruptor por informe: enciéndelo en Diario, Semanal y/o
+          Mensual para indicar en cuáles quieres que aparezca el recuento de sus actividades al
+          exportar. Con al menos uno encendido, la plantilla queda disponible para capturar datos
+          y aparece en el menú de Sub-Coordinador y Especialista.
         </Text>
 
-        {CATEGORIA_ORDEN.map((categoria) => {
-          const modulos = MODULOS_CATALOG[categoria];
-          if (modulos.length === 0) return null;
-          return (
-            <View key={categoria} style={{ marginBottom: spacing.lg }}>
-              <Text style={styles.sectionTitle}>{CATEGORIA_LABEL[categoria]}</Text>
-              <View style={styles.card}>
-                {modulos.map((m, idx) => {
-                  const value = !!draft[categoria]?.[m.key];
-                  return (
-                    <View key={m.key} style={[styles.row, idx > 0 && styles.rowBorder]}>
-                      <Ionicons name={m.icon} size={20} color={colors.primary} />
-                      <View style={{ flex: 1 }}>
-                        <Text style={styles.rowTitle}>{m.label}</Text>
-                        <Text style={styles.rowSub}>{m.subtitle}</Text>
-                      </View>
-                      {saving === m.key ? (
-                        <ActivityIndicator size="small" color={colors.primary} />
-                      ) : (
-                        <Switch
-                          value={value}
-                          onValueChange={(v) => onToggle(categoria, m.key, v)}
-                          trackColor={{ false: colors.border, true: colors.primary }}
-                        />
-                      )}
+        {CATEGORIA_ORDEN.map((categoria) => (
+          <View key={categoria} style={{ marginBottom: spacing.lg }}>
+            <Text style={styles.sectionTitle}>{CATEGORIA_LABEL[categoria]}</Text>
+            <View style={styles.card}>
+              {MODULOS.map((m, idx) => {
+                const value = !!draft[categoria]?.[m.key];
+                const key = savingKey(categoria, m.key);
+                return (
+                  <View key={m.key} style={[styles.row, idx > 0 && styles.rowBorder]}>
+                    <Ionicons name={m.icon} size={20} color={colors.primary} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.rowTitle}>{m.label}</Text>
+                      <Text style={styles.rowSub}>{m.subtitle}</Text>
                     </View>
-                  );
-                })}
-              </View>
+                    {saving === key ? (
+                      <ActivityIndicator size="small" color={colors.primary} />
+                    ) : (
+                      <Switch
+                        value={value}
+                        onValueChange={(v) => onToggle(categoria, m.key, v)}
+                        trackColor={{ false: colors.border, true: colors.primary }}
+                      />
+                    )}
+                  </View>
+                );
+              })}
             </View>
-          );
-        })}
+          </View>
+        ))}
       </ScrollView>
     </View>
   );

@@ -142,14 +142,19 @@ def _assert_write_allowed(user: dict) -> None:
 MEASUREMENT_TYPES = {"coord_latlon", "cadenamiento", "eje", "nivel"}
 
 # === Catálogo de módulos (sistema Multi-Proyecto Modular) ===================
-# Cada plantilla vive bajo exactamente una cadencia de captura — no se infiere
-# de los datos, la fija este catálogo. El Coordinador General enciende/apaga
-# estas plantillas por proyecto (ver `modulos` en ProjectIn/Patch/Out); si una
-# clave no aparece aquí, se ignora al guardar (evita que un payload arbitrario
-# cree módulos "fantasma" que ninguna pantalla sabe renderizar).
-MODULOS_DIARIOS = {"seguridad_higiene"}
-MODULOS_SEMANALES = {"forestal_arbolado"}
-MODULOS_MENSUALES: set = set()
+# Cada plantilla puede encenderse independientemente en cualquiera de las 3
+# categorías de informe (Diario/Semanal/Mensual) — un módulo NO vive bajo una
+# única cadencia fija. El Coordinador decide, por informe, si el recuento de
+# actividades de esa plantilla debe aparecer ahí (ver `_ensure_modulo_activo`
+# para el gate de captura/menú — OR entre las 3 categorías — y
+# `_modulos_categoria_para_export` para qué categoría manda al exportar). Si
+# una clave no aparece aquí, se ignora al guardar `modulos` (evita que un
+# payload arbitrario cree módulos "fantasma" que ninguna pantalla sabe
+# renderizar).
+MODULOS_KEYS = {"seguridad_higiene", "forestal_arbolado"}
+MODULOS_DIARIOS = MODULOS_KEYS
+MODULOS_SEMANALES = MODULOS_KEYS
+MODULOS_MENSUALES = MODULOS_KEYS
 MODULOS_CATALOG = {
     "reportes_diarios": MODULOS_DIARIOS,
     "reportes_semanales": MODULOS_SEMANALES,
@@ -303,10 +308,12 @@ class ProjectIn(BaseModel):
     # lunes como en un calendario ISO estándar.
     dia_inicio_semana: Literal["LUNES", "MARTES", "MIERCOLES", "JUEVES", "VIERNES", "SABADO", "DOMINGO"] = "LUNES"
     # === Sistema Multi-Proyecto Modular (Etapa 5) ===
-    # Plantillas encendidas/apagadas para este proyecto, agrupadas por
-    # cadencia de captura. Ver MODULOS_CATALOG — nunca se guarda una clave
-    # fuera de ese catálogo. Default: todo apagado (el Coordinador las
-    # activa explícitamente al crear o configurar el proyecto).
+    # Plantillas encendidas/apagadas para este proyecto — cada una con un
+    # interruptor independiente por categoría de informe (Diario/Semanal/
+    # Mensual, ver MODULOS_CATALOG): decide en cuáles informes exportados
+    # aparece su recuento. Nunca se guarda una clave fuera de ese catálogo.
+    # Default: todo apagado (el Coordinador las activa explícitamente al
+    # crear o configurar el proyecto).
     modulos: Optional[dict] = None
 
 
@@ -1634,8 +1641,10 @@ async def set_project_modulos(
     body: dict,
     user: dict = Depends(require_role(ROLE_COORD)),
 ):
-    """Enciende/apaga módulos (plantillas) del proyecto, agrupados por
-    cadencia de captura (ver MODULOS_CATALOG). Sólo Coordinador General.
+    """Enciende/apaga módulos (plantillas) del proyecto, por categoría de
+    informe — Diario/Semanal/Mensual (ver MODULOS_CATALOG). Un mismo módulo
+    puede estar encendido en varias categorías a la vez. Sólo Coordinador
+    General.
 
     Actualización PARCIAL por diseño: sólo se tocan las claves de módulo que
     vienen explícitamente en el body — las demás conservan su valor actual.
@@ -1692,9 +1701,14 @@ async def set_reference_files(
 # "¿está prendido este módulo?" ya lo resuelve el menú del frontend — aquí
 # sólo se valida en servidor por si un cliente viejo/desincronizado intenta
 # escribir en un módulo que el Coordinador apagó para este proyecto.
-def _ensure_modulo_activo(project: dict, categoria: str, clave: str) -> None:
+def _ensure_modulo_activo(project: dict, clave: str) -> None:
+    """El módulo se considera activo (captura permitida) si está encendido
+    en AL MENOS UNA de las 3 categorías de informe — un módulo puede estar
+    apagado en Diario pero prendido en Semanal, y la captura sigue
+    disponible; lo único que cambia por categoría es en qué informe
+    exportado aparece su recuento (ver `_modulos_categoria_para_export`)."""
     modulos = _sanitize_modulos(project.get("modulos"))
-    if not modulos.get(categoria, {}).get(clave):
+    if not any(modulos.get(categoria, {}).get(clave) for categoria in MODULOS_CATALOG):
         raise HTTPException(403, "Este módulo no está activado para este proyecto")
 
 
@@ -1737,7 +1751,7 @@ async def list_forestal_registros(pid: str, user: dict = Depends(current_user)):
 async def create_forestal_registro(pid: str, body: ForestalRegistroIn, user: dict = Depends(current_user)):
     _assert_write_allowed(user)
     project = await ensure_project_access(user, pid)
-    _ensure_modulo_activo(project, "reportes_semanales", "forestal_arbolado")
+    _ensure_modulo_activo(project, "forestal_arbolado")
     if body.cantidad < 1:
         raise HTTPException(400, "cantidad debe ser >= 1")
     node_name = body.estacion_nombre
@@ -1818,7 +1832,7 @@ async def list_seguridad_reportes(pid: str, user: dict = Depends(current_user)):
 async def create_seguridad_reporte(pid: str, body: SeguridadReporteIn, user: dict = Depends(current_user)):
     _assert_write_allowed(user)
     project = await ensure_project_access(user, pid)
-    _ensure_modulo_activo(project, "reportes_diarios", "seguridad_higiene")
+    _ensure_modulo_activo(project, "seguridad_higiene")
     descripcion = body.descripcion.strip()
     if not descripcion:
         raise HTTPException(400, "Descripción requerida")
@@ -1866,7 +1880,7 @@ async def list_seguridad_checklist(pid: str, user: dict = Depends(current_user))
 async def create_seguridad_checklist(pid: str, body: SeguridadChecklistIn, user: dict = Depends(current_user)):
     _assert_write_allowed(user)
     project = await ensure_project_access(user, pid)
-    _ensure_modulo_activo(project, "reportes_diarios", "seguridad_higiene")
+    _ensure_modulo_activo(project, "seguridad_higiene")
     if not body.items:
         raise HTTPException(400, "El checklist necesita al menos un elemento")
     doc = {
@@ -6767,7 +6781,8 @@ async def export_reports_pdf(
     # para este proyecto — ver _gather_modulos_export_data. Se calcula ANTES
     # del render bloqueante (requiere Mongo) y se captura como closure en
     # _build_pdf_blocking.
-    modulos_data = await _gather_modulos_export_data(pid, proj, start_dt, end_dt)
+    modulos_categoria = _modulos_categoria_para_export(period_type, period)
+    modulos_data = await _gather_modulos_export_data(pid, proj, start_dt, end_dt, modulos_categoria)
 
     # ========================================================================
     # DIMENSIONES DINÁMICAS DEL CANVAS
@@ -8909,11 +8924,45 @@ def _safe_export_filename(name: str, period: str, ext: str) -> str:
     return f"reporte_{safe}_{period}_{ts}.{ext}"
 
 
-async def _gather_modulos_export_data(pid: str, proj: dict, start_dt: datetime, end_dt: datetime) -> dict:
+def _modulos_categoria_para_export(period_type: Optional[str], period: str) -> str:
+    """Decide qué categoría de `modulos` (reportes_diarios/semanales/mensuales)
+    manda al exportar, para saber si el recuento de cada módulo debe
+    aparecer en ESTE informe — el Coordinador configura, por módulo y por
+    categoría, en qué informes quiere ver el recuento (ver
+    app/(coord)/projects/[id]/modulos.tsx).
+
+    Un `period_type` explícito (informe categorizado: Diario/Semanal/Mensual)
+    manda. Si no viene (export ad-hoc con `period`), se infiere del período:
+    Hoy/Ayer → diario, Semana → semanal, Mes → mensual — mismo criterio que
+    el resto del sistema de informes categorizados."""
+    pt = _normalize_period_type(period_type)
+    if pt == "diario":
+        return "reportes_diarios"
+    if pt == "semanal":
+        return "reportes_semanales"
+    if pt == "mensual":
+        return "reportes_mensuales"
+    p = (period or "today").lower().strip()
+    if p in ("week", "semana", "semanal"):
+        return "reportes_semanales"
+    if p in ("month", "mes", "mensual"):
+        return "reportes_mensuales"
+    return "reportes_diarios"
+
+
+async def _gather_modulos_export_data(
+    pid: str, proj: dict, start_dt: datetime, end_dt: datetime, categoria: str,
+) -> dict:
     """Datos de los módulos piloto (sistema Multi-Proyecto Modular) para la
     sección de cierre de los reportes exportados (PDF/DOCX/PPTX).
 
-    Regla explícita del Coordinador: un módulo apagado para el proyecto
+    `categoria` (reportes_diarios/semanales/mensuales, ver
+    `_modulos_categoria_para_export`) decide qué toggle del Coordinador se
+    consulta: un módulo puede estar activo para captura pero apagado para
+    ESTE informe en particular — el Coordinador elige, por módulo, en qué
+    informes quiere ver el recuento.
+
+    Regla explícita del Coordinador: un módulo apagado para esta categoría
     NUNCA aparece en la impresión, sin importar si tiene datos capturados
     (`out[clave]` queda None). Uno encendido SIEMPRE aparece, aunque no haya
     nada capturado en el período — la sección se pinta con "sin registros",
@@ -8924,10 +8973,11 @@ async def _gather_modulos_export_data(pid: str, proj: dict, start_dt: datetime, 
     campo `fecha` (string) — created_at es el datetime real de captura y
     ya viene consistente en UTC aware desde cada endpoint de creación."""
     modulos = _sanitize_modulos(proj.get("modulos"))
+    activos = modulos.get(categoria, {})
     out: dict = {"forestal": None, "seguridad": None}
     date_q = {"created_at": {"$gte": start_dt, "$lte": end_dt}}
 
-    if modulos.get("reportes_semanales", {}).get("forestal_arbolado"):
+    if activos.get("forestal_arbolado"):
         cursor = db.forestal_registros.aggregate([
             {"$match": {"project_id": pid, **date_q}},
             {"$group": {
@@ -8949,7 +8999,7 @@ async def _gather_modulos_export_data(pid: str, proj: dict, start_dt: datetime, 
         tabla = [{"estacion": estacion, **conteos} for estacion, conteos in sorted(por_estacion.items())]
         out["forestal"] = {"tabla": tabla, "contadores": contadores}
 
-    if modulos.get("reportes_diarios", {}).get("seguridad_higiene"):
+    if activos.get("seguridad_higiene"):
         reportes = await db.seguridad_reportes.find(
             {"project_id": pid, **date_q}
         ).sort("created_at", 1).to_list(length=2000)
@@ -9024,7 +9074,8 @@ async def export_reports_docx(
     # Sistema Multi-Proyecto Modular: sección de cierre con Forestal y
     # Arbolado / Seguridad e Higiene, solo si el Coordinador los encendió
     # para este proyecto — ver _gather_modulos_export_data.
-    modulos_data = await _gather_modulos_export_data(pid, proj, start_dt, end_dt)
+    modulos_categoria = _modulos_categoria_para_export(period_type, period)
+    modulos_data = await _gather_modulos_export_data(pid, proj, start_dt, end_dt, modulos_categoria)
 
     def _build_docx_blocking() -> bytes:
         """Motor DOCX estrictamente MONOCROMÁTICO, enfocado a LECTURA
@@ -9577,7 +9628,8 @@ async def export_reports_pptx(
     # Sistema Multi-Proyecto Modular: slides de cierre con Forestal y
     # Arbolado / Seguridad e Higiene, solo si el Coordinador los encendió
     # para este proyecto — ver _gather_modulos_export_data.
-    modulos_data = await _gather_modulos_export_data(pid, proj, start_dt, end_dt)
+    modulos_categoria = _modulos_categoria_para_export(period_type, period)
+    modulos_data = await _gather_modulos_export_data(pid, proj, start_dt, end_dt, modulos_categoria)
 
     # Título ejecutivo dependiendo del tipo de reporte.
     _report_title_map = {

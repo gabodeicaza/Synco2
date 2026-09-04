@@ -23,6 +23,7 @@ import { WeatherWidget } from '@/src/components/WeatherWidget';
 import { HistoryCalendarModal } from '@/src/components/HistoryCalendarModal';
 import { ReportPreviewSheet } from '@/src/components/ReportPreviewSheet';
 import { fmtDateTimeCDMX } from '@/src/utils/tz';
+import { moduloActivo } from '@/src/utils/modulos';
 
 // Limite cliente coherente con backend (20 MB). Evita subidas que el servidor rechazaria.
 const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
@@ -1160,7 +1161,7 @@ export default function ProjectDetailScreen() {
                     {/* Módulos piloto del sistema Multi-Proyecto Modular — solo
                         aparecen si el Coordinador los encendió para este
                         proyecto (ver pestaña Configuracion > Módulos). */}
-                    {project?.modulos?.reportes_semanales?.forestal_arbolado ? (
+                    {moduloActivo(project?.modulos, 'forestal_arbolado') ? (
                       <ActionTile
                         icon="leaf-outline"
                         title="Forestal y Arbolado"
@@ -1168,7 +1169,7 @@ export default function ProjectDetailScreen() {
                         onPress={() => router.push({ pathname: '/(coord)/projects/[id]/forestal-arbolado' as any, params: { id: pid } })}
                       />
                     ) : null}
-                    {project?.modulos?.reportes_diarios?.seguridad_higiene ? (
+                    {moduloActivo(project?.modulos, 'seguridad_higiene') ? (
                       <ActionTile
                         icon="shield-checkmark-outline"
                         title="Seguridad e Higiene"
