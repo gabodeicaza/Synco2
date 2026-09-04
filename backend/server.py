@@ -13189,6 +13189,49 @@ def _concepto_tiene_datos_evm(doc: dict) -> bool:
     return bool(doc.get("meta_cantidad")) and bool(doc.get("importe_total_editable"))
 
 
+# --- Fuente única de verdad para dinero de un Concepto/RegistroAvance -------
+# Un Concepto importado por el Importador Maestro (Etapa EVM) SIEMPRE trae
+# precio_unitario="0" a propósito (ver _ejecutar_commit_evm_con_compensacion)
+# — su precio real es importe_total_editable / meta_cantidad. Cualquier
+# lugar del código que sume o valorice dinero de un concepto DEBE pasar por
+# estos helpers en vez de leer `cantidad`/`precio_unitario` directamente, o
+# todo concepto EVM aparece con $0.00 (fue exactamente el bug: catálogo,
+# subtotales de partida, avance ponderado y reportes de avance por periodo
+# leían el campo legado a mano).
+def _concepto_precio_efectivo(doc: dict) -> Decimal:
+    """Precio por unidad verdadero: dinámico (importe_total_editable /
+    meta_cantidad) si el concepto tiene datos EVM, si no el precio_unitario
+    estático de siempre."""
+    if _concepto_tiene_datos_evm(doc):
+        return compute_precio_unitario_dinamico(doc["importe_total_editable"], doc["meta_cantidad"])
+    return to_decimal(doc.get("precio_unitario", "0"))
+
+
+def _concepto_importe_efectivo(doc: dict) -> Decimal:
+    """Importe total contratado verdadero: importe_total_editable
+    directamente si el concepto tiene datos EVM (evita arrastrar el
+    redondeo de precio_unitario_dinamico × meta_cantidad), si no
+    cantidad × precio_unitario de siempre."""
+    if _concepto_tiene_datos_evm(doc):
+        return to_decimal(doc["importe_total_editable"])
+    return compute_importe(doc.get("cantidad", "0"), doc.get("precio_unitario", "0"))
+
+
+def _registro_importe_efectivo(registro: dict, concepto: Optional[dict]) -> Decimal:
+    """Importe verdadero de UN RegistroAvance. Prioriza el campo ya
+    congelado en captura (`importe_ganado_congelado`, ver create_avance) —
+    así conserva el precio HISTÓRICO exacto del momento en que se capturó,
+    aunque el concepto haya cambiado de precio (o de importe_total_editable)
+    después. Solo recalcula desde el precio VIGENTE del concepto como
+    fallback, para avances capturados antes de que ese campo existiera."""
+    congelado = registro.get("importe_ganado_congelado")
+    if congelado is not None:
+        return to_decimal(congelado)
+    if not concepto:
+        return Decimal("0")
+    return to_decimal(registro.get("cantidad_ejecutada", "0")) * _concepto_precio_efectivo(concepto)
+
+
 def sum_decimales(values) -> Decimal:
     total = Decimal("0")
     for v in values:
@@ -14167,7 +14210,7 @@ async def _concepto_ejecutado_acumulado(concepto_id: str, modo_avance: str = "CA
 
 
 async def _concepto_out(doc: dict) -> ConceptoOut:
-    importe = compute_importe(doc["cantidad"], doc["precio_unitario"])
+    importe = _concepto_importe_efectivo(doc)
     project = await db.projects.find_one({"id": doc["project_id"]})
     modo_avance = (project or {}).get("modo_avance", "CANTIDAD")
     ejecutado = await _concepto_ejecutado_acumulado(doc["id"], modo_avance)
@@ -14237,7 +14280,7 @@ async def _partida_out(doc: dict, all_partidas: List[dict]) -> PartidaOut:
     importe_total = to_decimal("0")
     avance_ponderado_num = to_decimal("0")
     for c in conceptos:
-        importe_c = compute_importe(c["cantidad"], c["precio_unitario"])
+        importe_c = _concepto_importe_efectivo(c)
         importe_total += importe_c
         ejecutado = to_decimal(await _concepto_ejecutado_acumulado(c["id"], modo_avance))
         if modo_avance == "PORCENTAJE":
@@ -16276,14 +16319,13 @@ async def avances_resumen(
         query["concepto_id"] = {"$in": [c["id"] for c in conceptos]}
     docs = await db.registros_avance.find(query).to_list(length=100000)
     concepto_ids = list({d["concepto_id"] for d in docs})
-    precios_por_concepto: dict = {}
+    conceptos_por_id_resumen: dict = {}
     if concepto_ids:
         cs = await db.conceptos.find({"id": {"$in": concepto_ids}}).to_list(length=len(concepto_ids))
-        precios_por_concepto = {c["id"]: c.get("precio_unitario", "0") for c in cs}
+        conceptos_por_id_resumen = {c["id"]: c for c in cs}
     total = Decimal("0")
     for d in docs:
-        precio = precios_por_concepto.get(d["concepto_id"], "0")
-        total += compute_importe(d.get("cantidad_ejecutada", "0"), precio)
+        total += _registro_importe_efectivo(d, conceptos_por_id_resumen.get(d["concepto_id"]))
     return AvancesResumenOut(total_registros=len(docs), importe_total=dec_to_str(round_money(total)))
 
 
@@ -16754,7 +16796,7 @@ async def export_avance_periodo_pdf(
         c = conceptos_por_id.get(cid)
         if not c:
             continue  # concepto ya no existe/no accesible — se omite del reporte
-        importe = compute_importe(d.get("cantidad_ejecutada", "0"), c.get("precio_unitario", "0"))
+        importe = _registro_importe_efectivo(d, c)
         if importe == 0:
             continue
         fecha = d["fecha"]
@@ -16921,7 +16963,7 @@ async def export_avance_periodo_xlsx(
         c = conceptos_por_id.get(cid)
         if not c:
             continue
-        importe = compute_importe(d.get("cantidad_ejecutada", "0"), c.get("precio_unitario", "0"))
+        importe = _registro_importe_efectivo(d, c)
         if importe == 0:
             continue
         fecha = d["fecha"]

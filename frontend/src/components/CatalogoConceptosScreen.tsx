@@ -27,6 +27,25 @@ import { ImportarMaestroModal } from '@/src/components/ImportarMaestroModal';
 import { nombreNivel, nombreConcepto, tituloModuloCatalogo, pluralizar } from '@/src/utils/nombresNivel';
 
 type ViewMode = 'partidas' | 'conceptos' | 'busqueda';
+type ConceptoEditableField = 'precio_unitario' | 'meta' | 'importe_total_editable';
+
+// Etapa EVM (Importador Maestro): un concepto migrado nunca guarda un
+// precio_unitario/importe_contratado legado útil (quedan en "0" a
+// propósito, ver server.py _ejecutar_commit_evm_con_compensacion) — su
+// precio real es precio_unitario_dinamico (importe_total_editable /
+// meta_cantidad, ya calculado por el servidor). Sin este chequeo, todo
+// concepto importado por el Importador Maestro se ve con $0.00 aquí.
+function conceptoTieneEvm(c: Concepto): boolean {
+  return !!(c.meta_cantidad && c.importe_total_editable);
+}
+
+/** Precio unitario a MOSTRAR — dinámico (ya calculado por el servidor) si
+ * el concepto tiene datos EVM, si no el precio_unitario estático. Nunca
+ * leer `c.precio_unitario` directo en una vista: para un concepto EVM
+ * siempre vale "0". */
+function conceptoPrecioMostrado(c: Concepto): string {
+  return conceptoTieneEvm(c) ? (c.precio_unitario_dinamico || '0') : c.precio_unitario;
+}
 
 export default function CatalogoConceptosScreen({ projectId }: { projectId: string }) {
   const insets = useSafeAreaInsets();
@@ -190,15 +209,23 @@ export default function CatalogoConceptosScreen({ projectId }: { projectId: stri
     [conceptos],
   );
 
-  async function saveField(concepto: Concepto, field: 'precio_unitario' | 'meta', value: string) {
+  async function saveField(concepto: Concepto, field: ConceptoEditableField, value: string) {
     if (!isValidDecimalInput(value)) {
       Alert.alert('Valor inválido', 'Ingresa un número con hasta 2 decimales.');
       return;
     }
-    const label = field === 'precio_unitario' ? 'precio unitario' : 'meta (ritmo)';
+    const labels: Record<ConceptoEditableField, string> = {
+      precio_unitario: 'precio unitario',
+      meta: 'meta (ritmo)',
+      importe_total_editable: 'importe contratado',
+    };
+    const label = labels[field];
+    const esDinero = field !== 'meta';
+    const fmt = (v: string) => (esDinero ? formatMoney(v) : formatCantidad(v));
+    const actual = field === 'importe_total_editable' ? (concepto.importe_total_editable || '0') : concepto[field];
     const ok = await confirm(
       `Actualizar ${label}`,
-      `${nombreConcepto(project)} ${concepto.clave}: cambiar ${label} de ${field === 'precio_unitario' ? formatMoney(concepto[field]) : formatCantidad(concepto[field])} a ${field === 'precio_unitario' ? formatMoney(value) : formatCantidad(value)}.`,
+      `${nombreConcepto(project)} ${concepto.clave}: cambiar ${label} de ${fmt(actual)} a ${fmt(value)}.`,
     );
     if (!ok) return;
     try {
@@ -632,7 +659,7 @@ function ConceptosList({
   expandedId: string | null;
   onToggleExpand: (id: string) => void;
   canEdit: boolean;
-  onSaveField: (c: Concepto, field: 'precio_unitario' | 'meta', value: string) => void;
+  onSaveField: (c: Concepto, field: ConceptoEditableField, value: string) => void;
   onDeleteConcepto: (c: Concepto) => void;
   tableView: boolean;
   onToggleTableView: () => void;
@@ -689,7 +716,7 @@ function ConceptoRow({
   expanded: boolean;
   onToggle: () => void;
   canEdit: boolean;
-  onSaveField: (c: Concepto, field: 'precio_unitario' | 'meta', value: string) => void;
+  onSaveField: (c: Concepto, field: ConceptoEditableField, value: string) => void;
   onDelete: (c: Concepto) => void;
 }) {
   return (
@@ -712,16 +739,33 @@ function ConceptoRow({
       {expanded ? (
         <View style={styles.conceptoDetail}>
           <Text style={styles.detailDescFull}>{concepto.descripcion}</Text>
-          <DetailField label="Unidad" value={UNIDAD_LABELS[concepto.unidad as Unidad] || concepto.unidad} />
-          <DetailField label="Cantidad contratada" value={`${formatCantidad(concepto.cantidad)} ${concepto.unidad}`} />
-          <EditableDetailField
-            label="Precio unitario"
-            value={formatMoney(concepto.precio_unitario)}
-            rawValue={concepto.precio_unitario}
-            canEdit={canEdit}
-            onSave={(v) => onSaveField(concepto, 'precio_unitario', v)}
+          <DetailField
+            label="Cantidad contratada"
+            value={`${formatCantidad(concepto.cantidad)} ${UNIDAD_LABELS[concepto.unidad as Unidad] || concepto.unidad}`}
           />
-          <DetailField label="Importe contratado" value={formatMoney(concepto.importe_contratado)} bold />
+          {conceptoTieneEvm(concepto) ? (
+            <>
+              <DetailField label="Precio unitario (calculado)" value={formatMoney(concepto.precio_unitario_dinamico || '0')} />
+              <EditableDetailField
+                label="Importe contratado"
+                value={formatMoney(concepto.importe_total_editable || '0')}
+                rawValue={concepto.importe_total_editable || '0'}
+                canEdit={canEdit}
+                onSave={(v) => onSaveField(concepto, 'importe_total_editable', v)}
+              />
+            </>
+          ) : (
+            <>
+              <EditableDetailField
+                label="Precio unitario"
+                value={formatMoney(concepto.precio_unitario)}
+                rawValue={concepto.precio_unitario}
+                canEdit={canEdit}
+                onSave={(v) => onSaveField(concepto, 'precio_unitario', v)}
+              />
+              <DetailField label="Importe contratado" value={formatMoney(concepto.importe_contratado)} bold />
+            </>
+          )}
           <EditableDetailField
             label="Meta (ritmo)"
             value={`${formatCantidad(concepto.meta)} ${concepto.unidad} / ${PERIODICIDAD_META_LABELS[concepto.periodicidad_meta].toLowerCase()}`}
@@ -834,7 +878,7 @@ function ConceptosTable({ conceptos, headerColor }: { conceptos: Concepto[]; hea
               <Text style={[styles.tableCell, { width: 320 }]}>{c.descripcion}</Text>
               <Text style={[styles.tableCell, { width: 80 }]}>{c.unidad}</Text>
               <Text style={[styles.tableCell, { width: 100, textAlign: 'right' }]}>{formatCantidad(c.cantidad)}</Text>
-              <Text style={[styles.tableCell, { width: 110, textAlign: 'right' }]}>{formatMoney(c.precio_unitario)}</Text>
+              <Text style={[styles.tableCell, { width: 110, textAlign: 'right' }]}>{formatMoney(conceptoPrecioMostrado(c))}</Text>
               <Text style={[styles.tableCell, { width: 130, textAlign: 'right' }]}>{formatMoney(c.importe_contratado)}</Text>
             </View>
           ))}
