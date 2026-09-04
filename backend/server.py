@@ -7164,13 +7164,14 @@ async def export_reports_pdf(
         total_reportes = sum(len(v) for v in reports_by_node.values())
 
         def _draw_modulos_closing_pages():
-            """Sección de cierre: Forestal y Arbolado / Seguridad e Higiene
-            (sistema Multi-Proyecto Modular) — SOLO si el módulo está
-            encendido para este proyecto (ver modulos_data). Se llama desde
-            AMBAS salidas de _build_pdf_blocking (con y sin reportes
-            normales en el período) para que un proyecto sin actividad de
-            campo pero con actividad forestal/seguridad no se quede sin
-            esas páginas."""
+            """Sección de cierre: Forestal y Arbolado / Seguridad e Higiene /
+            Gestión de Riesgos / Estudios y Proyecto Ejecutivo / Impacto
+            Ambiental (sistema Multi-Proyecto Modular) — cada una SOLO si el
+            módulo está encendido para este proyecto (ver modulos_data). Se
+            llama desde AMBAS salidas de _build_pdf_blocking (con y sin
+            reportes normales en el período) para que un proyecto sin
+            actividad de campo pero con actividad en algún módulo piloto no
+            se quede sin esas páginas."""
             nonlocal page_num
             content_w = PW - 3.0 * cm
             left_x = 1.5 * cm
@@ -7298,6 +7299,173 @@ async def export_reports_pdf(
                     c.setFont("Helvetica-Oblique", 11)
                     c.drawString(left_x, y, "Sin checklist capturado en este período.")
                 page_num = page_num_holder[0]
+
+                c.showPage()
+                page_num += 1
+
+            riesgos = modulos_data.get("riesgos")
+            if riesgos is not None:
+                y = _section_header("GESTIÓN DE RIESGOS")
+                tabla = riesgos["tabla"]
+                if tabla:
+                    cell_style = ParagraphStyle(
+                        "riesgosCell", fontName="Helvetica", fontSize=9, leading=11, textColor=TEXT,
+                    )
+                    data = [["Estación/Poste", "Descripción del riesgo", "Propuesta de control", "% Avance"]]
+                    for r in tabla:
+                        data.append([
+                            Paragraph(_xml_escape(r.get("estacion_nombre") or "—"), cell_style),
+                            Paragraph(_xml_escape(r.get("descripcion_riesgo") or ""), cell_style),
+                            Paragraph(_xml_escape(r.get("propuesta_control") or ""), cell_style),
+                            f"{r.get('porcentaje_avance', 0)}%",
+                        ])
+                    tbl = Table(data, colWidths=[content_w * 0.18, content_w * 0.34, content_w * 0.34, content_w * 0.14])
+                    tbl.setStyle(TableStyle([
+                        ("BACKGROUND", (0, 0), (-1, 0), BRAND),
+                        ("TEXTCOLOR", (0, 0), (-1, 0), WHITE),
+                        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                        ("FONTSIZE", (0, 0), (-1, 0), 10),
+                        ("ALIGN", (3, 0), (3, -1), "CENTER"),
+                        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                        ("GRID", (0, 0), (-1, -1), 0.5, BORDER),
+                        ("TOPPADDING", (0, 0), (-1, -1), 5),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                    ]))
+                    tw, th = tbl.wrapOn(c, content_w, y - bottom_y)
+                    tbl.drawOn(c, left_x, y - th)
+                else:
+                    c.setFillColor(MUTED)
+                    c.setFont("Helvetica-Oblique", 12)
+                    c.drawCentredString(PW / 2, y - 0.5 * cm, "Sin riesgos registrados en este período.")
+                c.showPage()
+                page_num += 1
+
+            estudios = modulos_data.get("estudios")
+            if estudios is not None:
+                y = _section_header("ESTUDIOS Y PROYECTO EJECUTIVO")
+                c.setFillColor(TEXT)
+                c.setFont("Helvetica-Bold", 14)
+                c.drawString(left_x, y, "Avance por actividad")
+                y -= 14 * 1.8
+                actividades = estudios["actividades"]
+                if actividades:
+                    data = [["Actividad", "% Avance"]]
+                    for a in actividades:
+                        data.append([a.get("nombre", "—"), f"{a.get('porcentaje_avance', 0)}%"])
+                    tbl = Table(data, colWidths=[content_w * 0.7, content_w * 0.3])
+                    tbl.setStyle(TableStyle([
+                        ("BACKGROUND", (0, 0), (-1, 0), BRAND),
+                        ("TEXTCOLOR", (0, 0), (-1, 0), WHITE),
+                        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                        ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
+                        ("FONTSIZE", (0, 0), (-1, -1), 10),
+                        ("ALIGN", (1, 0), (1, -1), "CENTER"),
+                        ("GRID", (0, 0), (-1, -1), 0.5, BORDER),
+                        ("TOPPADDING", (0, 0), (-1, -1), 5),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                    ]))
+                    tw, th = tbl.wrapOn(c, content_w, y - bottom_y)
+                    tbl.drawOn(c, left_x, y - th)
+                    y -= th + 14 * 1.5
+                else:
+                    c.setFillColor(MUTED)
+                    c.setFont("Helvetica-Oblique", 11)
+                    c.drawString(left_x, y, "Sin actividades registradas en este período.")
+                    y -= 11 * 2.0
+
+                def _ensure_space_est(need: float):
+                    nonlocal y
+                    if y - need < bottom_y:
+                        c.showPage()
+                        est_page_holder[0] += 1
+                        y = top_y
+
+                est_page_holder = [page_num]
+                _ensure_space_est(2.0 * cm)
+                c.setFillColor(TEXT)
+                c.setFont("Helvetica-Bold", 14)
+                c.drawString(left_x, y, "Bitácora por disciplina")
+                y -= 14 * 1.8
+                bitacora = estudios["bitacora"]
+                if bitacora:
+                    for b in bitacora:
+                        _ensure_space_est(2.0 * cm)
+                        c.setFillColor(TEXT)
+                        c.setFont("Helvetica-Bold", 11)
+                        disciplina_label = ESTUDIOS_DISCIPLINA_LABEL.get(b.get("disciplina"), b.get("disciplina") or "—")
+                        c.drawString(left_x, y, f"{b.get('fecha', '—')} · {disciplina_label}")
+                        y -= 11 * 1.5
+                        texto = Paragraph(_xml_escape(b.get("texto") or ""), body_style)
+                        pw, ph = texto.wrapOn(c, content_w, y - bottom_y)
+                        texto.drawOn(c, left_x, y - ph)
+                        y -= ph + 4
+                        c.setFillColor(MUTED)
+                        c.setFont("Helvetica-Oblique", 9)
+                        c.drawString(left_x, y, f"Registró: {b.get('captured_by_name') or '—'}")
+                        y -= 9 * 2.0
+                else:
+                    c.setFillColor(MUTED)
+                    c.setFont("Helvetica-Oblique", 11)
+                    c.drawString(left_x, y, "Sin notas de bitácora en este período.")
+                page_num = est_page_holder[0]
+
+                c.showPage()
+                page_num += 1
+
+            ambiental = modulos_data.get("ambiental")
+            if ambiental is not None:
+                y = _section_header("IMPACTO AMBIENTAL")
+
+                def _ensure_space_amb(need: float):
+                    nonlocal y
+                    if y - need < bottom_y:
+                        c.showPage()
+                        amb_page_holder[0] += 1
+                        y = top_y
+
+                def _draw_audit_item(it: dict):
+                    nonlocal y
+                    _ensure_space_amb(1.6 * cm)
+                    desc = Paragraph(_xml_escape(it.get("descripcion") or ""), body_style)
+                    pw, ph = desc.wrapOn(c, content_w - 0.5 * cm, y - bottom_y)
+                    desc.drawOn(c, left_x + 0.5 * cm, y - ph)
+                    y -= ph + 2
+                    c.setFillColor(MUTED)
+                    c.setFont("Helvetica-Oblique", 9)
+                    c.drawString(left_x + 0.5 * cm, y, f"{it.get('fecha', '—')} · {it.get('captured_by_name') or '—'}")
+                    y -= 9 * 1.8
+
+                amb_page_holder = [page_num]
+                c.setFillColor(HexColor("#16A34A"))
+                c.setFont("Helvetica-Bold", 14)
+                c.drawString(left_x, y, "Cumplimientos")
+                y -= 14 * 1.8
+                cumplimientos = ambiental["cumplimientos"]
+                if cumplimientos:
+                    for it in cumplimientos:
+                        _draw_audit_item(it)
+                else:
+                    c.setFillColor(MUTED)
+                    c.setFont("Helvetica-Oblique", 11)
+                    c.drawString(left_x, y, "Sin cumplimientos registrados en este período.")
+                    y -= 11 * 2.0
+                page_num = amb_page_holder[0]
+
+                _ensure_space_amb(2.0 * cm)
+                amb_page_holder = [page_num]
+                c.setFillColor(HexColor("#DC2626"))
+                c.setFont("Helvetica-Bold", 14)
+                c.drawString(left_x, y, "Incumplimientos / Observaciones")
+                y -= 14 * 1.8
+                incumplimientos = ambiental["incumplimientos"]
+                if incumplimientos:
+                    for it in incumplimientos:
+                        _draw_audit_item(it)
+                else:
+                    c.setFillColor(MUTED)
+                    c.setFont("Helvetica-Oblique", 11)
+                    c.drawString(left_x, y, "Sin incumplimientos registrados en este período.")
+                page_num = amb_page_holder[0]
 
                 c.showPage()
                 page_num += 1
@@ -9271,7 +9439,7 @@ async def _gather_modulos_export_data(
     ya viene consistente en UTC aware desde cada endpoint de creación."""
     modulos = _sanitize_modulos(proj.get("modulos"))
     activos = modulos.get(categoria, {})
-    out: dict = {"forestal": None, "seguridad": None}
+    out: dict = {"forestal": None, "seguridad": None, "riesgos": None, "estudios": None, "ambiental": None}
     date_q = {"created_at": {"$gte": start_dt, "$lte": end_dt}}
 
     if activos.get("forestal_arbolado"):
@@ -9304,6 +9472,38 @@ async def _gather_modulos_export_data(
             {"project_id": pid, **date_q}
         ).sort("created_at", 1).to_list(length=500)
         out["seguridad"] = {"reportes": reportes, "checklists": checklists}
+
+    # Riesgos y Estudios son matrices mutables (el % de avance se actualiza
+    # in situ, no se recrea la fila) — una fila cuenta para el período si se
+    # creó O se actualizó dentro de él, no sólo si se creó.
+    mutable_date_q = {"$or": [
+        {"created_at": {"$gte": start_dt, "$lte": end_dt}},
+        {"updated_at": {"$gte": start_dt, "$lte": end_dt}},
+    ]}
+
+    if activos.get("gestion_riesgos"):
+        registros = await db.riesgos_registros.find(
+            {"project_id": pid, **mutable_date_q}
+        ).sort("estacion_nombre", 1).to_list(length=2000)
+        out["riesgos"] = {"tabla": registros}
+
+    if activos.get("estudios_proyecto"):
+        actividades = await db.estudios_actividades.find(
+            {"project_id": pid, **mutable_date_q}
+        ).sort("orden", 1).to_list(length=500)
+        bitacora = await db.estudios_bitacora.find(
+            {"project_id": pid, **date_q}
+        ).sort("created_at", 1).to_list(length=2000)
+        out["estudios"] = {"actividades": actividades, "bitacora": bitacora}
+
+    if activos.get("impacto_ambiental"):
+        auditoria = await db.ambiental_auditoria.find(
+            {"project_id": pid, **date_q}
+        ).sort("created_at", 1).to_list(length=2000)
+        out["ambiental"] = {
+            "cumplimientos": [a for a in auditoria if a.get("tipo") == "cumplimiento"],
+            "incumplimientos": [a for a in auditoria if a.get("tipo") == "incumplimiento"],
+        }
 
     return out
 
@@ -9686,8 +9886,9 @@ async def export_reports_docx(
             er.font.color.rgb = MUTED_RGB
 
         # ---- Sección de cierre: módulos del sistema Multi-Proyecto Modular
-        # (Forestal y Arbolado / Seguridad e Higiene) — solo si el
-        # Coordinador los encendió para este proyecto. Ver modulos_data /
+        # (Forestal y Arbolado / Seguridad e Higiene / Gestión de Riesgos /
+        # Estudios y Proyecto Ejecutivo / Impacto Ambiental) — cada una solo
+        # si el Coordinador la encendió para este informe. Ver modulos_data /
         # _gather_modulos_export_data. Mismo período que el resto del export.
         def _mod_section_title(text: str):
             p = doc.add_paragraph()
@@ -9811,6 +10012,116 @@ async def export_reports_docx(
                 er4.italic = True
                 er4.font.size = Pt(11)
                 er4.font.color.rgb = MUTED_RGB
+
+        riesgos = modulos_data.get("riesgos")
+        if riesgos is not None:
+            doc.add_page_break()
+            _mod_section_title("GESTIÓN DE RIESGOS")
+            _mod_period_sub()
+            doc.add_paragraph()
+            tabla = riesgos["tabla"]
+            if tabla:
+                _mod_table(
+                    ["Estación/Poste", "Descripción del riesgo", "Propuesta de control", "% Avance"],
+                    [[
+                        r.get("estacion_nombre") or "—",
+                        r.get("descripcion_riesgo") or "",
+                        r.get("propuesta_control") or "",
+                        f"{r.get('porcentaje_avance', 0)}%",
+                    ] for r in tabla],
+                )
+            else:
+                ep4 = doc.add_paragraph()
+                er5 = ep4.add_run("Sin riesgos registrados en este período.")
+                er5.italic = True
+                er5.font.size = Pt(11)
+                er5.font.color.rgb = MUTED_RGB
+
+        estudios = modulos_data.get("estudios")
+        if estudios is not None:
+            doc.add_page_break()
+            _mod_section_title("ESTUDIOS Y PROYECTO EJECUTIVO")
+            _mod_period_sub()
+            doc.add_paragraph()
+
+            doc.add_paragraph().add_run("Avance por actividad").bold = True
+            actividades = estudios["actividades"]
+            if actividades:
+                _mod_table(
+                    ["Actividad", "% Avance"],
+                    [[a.get("nombre", "—"), f"{a.get('porcentaje_avance', 0)}%"] for a in actividades],
+                )
+            else:
+                ep5 = doc.add_paragraph()
+                er6 = ep5.add_run("Sin actividades registradas en este período.")
+                er6.italic = True
+                er6.font.size = Pt(11)
+                er6.font.color.rgb = MUTED_RGB
+
+            doc.add_paragraph()
+            doc.add_paragraph().add_run("Bitácora por disciplina").bold = True
+            bitacora = estudios["bitacora"]
+            if bitacora:
+                for b in bitacora:
+                    bp = doc.add_paragraph()
+                    bl = bp.add_run(
+                        f"{b.get('fecha', '—')} · {ESTUDIOS_DISCIPLINA_LABEL.get(b.get('disciplina'), b.get('disciplina') or '—')}"
+                    )
+                    bl.bold = True
+                    bl.font.size = Pt(11)
+                    bl.font.color.rgb = BRAND_RGB
+                    tp = doc.add_paragraph()
+                    tr = tp.add_run(b.get("texto") or "")
+                    tr.font.size = Pt(11)
+                    tr.font.color.rgb = TEXT_RGB
+                    sp = doc.add_paragraph()
+                    sr = sp.add_run(f"Registró: {b.get('captured_by_name') or '—'}")
+                    sr.italic = True
+                    sr.font.size = Pt(9)
+                    sr.font.color.rgb = SUBTLE_RGB
+                    doc.add_paragraph()
+            else:
+                ep6 = doc.add_paragraph()
+                er7 = ep6.add_run("Sin notas de bitácora en este período.")
+                er7.italic = True
+                er7.font.size = Pt(11)
+                er7.font.color.rgb = MUTED_RGB
+
+        ambiental = modulos_data.get("ambiental")
+        if ambiental is not None:
+            doc.add_page_break()
+            _mod_section_title("IMPACTO AMBIENTAL")
+            _mod_period_sub()
+            doc.add_paragraph()
+
+            def _mod_audit_list(titulo: str, items: list):
+                tp2 = doc.add_paragraph()
+                tr2 = tp2.add_run(titulo)
+                tr2.bold = True
+                tr2.font.size = Pt(13)
+                tr2.font.color.rgb = TEXT_RGB
+                if items:
+                    for it in items:
+                        ip2 = doc.add_paragraph()
+                        ir2 = ip2.add_run(it.get("descripcion") or "")
+                        ir2.font.size = Pt(11)
+                        ir2.font.color.rgb = TEXT_RGB
+                        sp2 = doc.add_paragraph()
+                        sr2 = sp2.add_run(f"{it.get('fecha', '—')} · {it.get('captured_by_name') or '—'}")
+                        sr2.italic = True
+                        sr2.font.size = Pt(9)
+                        sr2.font.color.rgb = SUBTLE_RGB
+                        doc.add_paragraph()
+                else:
+                    ep7 = doc.add_paragraph()
+                    er8 = ep7.add_run("Sin registros en este período.")
+                    er8.italic = True
+                    er8.font.size = Pt(11)
+                    er8.font.color.rgb = MUTED_RGB
+
+            _mod_audit_list("Cumplimientos", ambiental["cumplimientos"])
+            doc.add_paragraph()
+            _mod_audit_list("Incumplimientos / Observaciones", ambiental["incumplimientos"])
 
         buf = io.BytesIO()
         doc.save(buf)
@@ -10538,10 +10849,11 @@ async def export_reports_pptx(
                     idx = chunk_end
 
         def _emit_modulos_closing_slides() -> None:
-            """Slides de cierre: Forestal y Arbolado / Seguridad e Higiene
-            (sistema Multi-Proyecto Modular) — SOLO si el módulo está
-            encendido para este proyecto (ver modulos_data / mismo criterio
-            que el motor PDF)."""
+            """Slides de cierre: Forestal y Arbolado / Seguridad e Higiene /
+            Gestión de Riesgos / Estudios y Proyecto Ejecutivo / Impacto
+            Ambiental (sistema Multi-Proyecto Modular) — cada una SOLO si el
+            módulo está encendido para este proyecto (ver modulos_data /
+            mismo criterio que el motor PDF)."""
             MARGIN_X = Cm(1.5)
             content_w = SW - 2 * MARGIN_X
             top_y = Cm(1.6)
@@ -10656,6 +10968,96 @@ async def export_reports_pptx(
                         slide, MARGIN_X, y, content_w, Cm(0.8),
                         "Sin checklist capturado en este período.", size=12, italic=True, color=WF_MUTED_RGB,
                     )
+
+            riesgos = modulos_data.get("riesgos")
+            if riesgos is not None:
+                slide, y = _new_slide("GESTIÓN DE RIESGOS")
+                tabla = riesgos["tabla"]
+                if tabla:
+                    rows = [[
+                        r.get("estacion_nombre") or "—",
+                        (r.get("descripcion_riesgo") or "")[:80],
+                        (r.get("propuesta_control") or "")[:80],
+                        f"{r.get('porcentaje_avance', 0)}%",
+                    ] for r in tabla]
+                    _draw_table(
+                        slide, MARGIN_X, y,
+                        ["Estación/Poste", "Descripción del riesgo", "Propuesta de control", "% Avance"], rows,
+                    )
+                else:
+                    add_text(
+                        slide, MARGIN_X, y, content_w, Cm(1.0),
+                        "Sin riesgos registrados en este período.",
+                        size=13, italic=True, color=WF_MUTED_RGB, align=PP_ALIGN.CENTER,
+                    )
+
+            estudios = modulos_data.get("estudios")
+            if estudios is not None:
+                slide, y = _new_slide("ESTUDIOS Y PROYECTO EJECUTIVO")
+                add_text(slide, MARGIN_X, y, content_w, Cm(0.8), "Avance por actividad",
+                         size=15, bold=True, color=WF_TEXT_RGB)
+                y += Cm(1.0)
+                actividades = estudios["actividades"]
+                if actividades:
+                    rows = [[a.get("nombre", "—"), f"{a.get('porcentaje_avance', 0)}%"] for a in actividades]
+                    y = _draw_table(slide, MARGIN_X, y, ["Actividad", "% Avance"], rows)
+                    y += Cm(0.4)
+                else:
+                    add_text(
+                        slide, MARGIN_X, y, content_w, Cm(0.8),
+                        "Sin actividades registradas en este período.", size=12, italic=True, color=WF_MUTED_RGB,
+                    )
+                    y += Cm(1.0)
+
+                if y > bottom_y - Cm(2.0):
+                    slide, y = _new_slide("ESTUDIOS Y PROYECTO EJECUTIVO — Bitácora")
+                add_text(slide, MARGIN_X, y, content_w, Cm(0.8), "Bitácora por disciplina",
+                         size=15, bold=True, color=WF_TEXT_RGB)
+                y += Cm(1.0)
+                bitacora = estudios["bitacora"]
+                if bitacora:
+                    for b in bitacora:
+                        if y > bottom_y - Cm(1.6):
+                            slide, y = _new_slide("ESTUDIOS Y PROYECTO EJECUTIVO — Bitácora (continúa)")
+                        disciplina_label = ESTUDIOS_DISCIPLINA_LABEL.get(b.get("disciplina"), b.get("disciplina") or "—")
+                        linea = f"{b.get('fecha', '—')} · {disciplina_label} — {b.get('texto') or ''}"
+                        add_text(slide, MARGIN_X, y, content_w, Cm(1.2), linea, size=11, color=WF_TEXT_RGB)
+                        y += Cm(1.3)
+                else:
+                    add_text(
+                        slide, MARGIN_X, y, content_w, Cm(0.8),
+                        "Sin notas de bitácora en este período.", size=12, italic=True, color=WF_MUTED_RGB,
+                    )
+
+            ambiental = modulos_data.get("ambiental")
+            if ambiental is not None:
+                slide, y = _new_slide("IMPACTO AMBIENTAL")
+                AMB_GOOD_RGB = (0x16, 0xA3, 0x4A)
+                AMB_BAD_RGB = (0xDC, 0x26, 0x26)
+
+                def _draw_audit_block(titulo: str, color: tuple, items: list):
+                    nonlocal slide, y
+                    if y > bottom_y - Cm(1.6):
+                        slide, y = _new_slide("IMPACTO AMBIENTAL (continúa)")
+                    add_text(slide, MARGIN_X, y, content_w, Cm(0.8), titulo, size=15, bold=True, color=color)
+                    y += Cm(1.0)
+                    if items:
+                        for it in items:
+                            if y > bottom_y - Cm(1.4):
+                                slide, y = _new_slide("IMPACTO AMBIENTAL (continúa)")
+                            linea = f"{it.get('fecha', '—')} — {it.get('descripcion') or ''}"
+                            add_text(slide, MARGIN_X, y, content_w, Cm(1.1), linea, size=11, color=WF_TEXT_RGB)
+                            y += Cm(1.2)
+                    else:
+                        add_text(
+                            slide, MARGIN_X, y, content_w, Cm(0.8),
+                            "Sin registros en este período.", size=12, italic=True, color=WF_MUTED_RGB,
+                        )
+                        y += Cm(1.0)
+
+                _draw_audit_block("Cumplimientos", AMB_GOOD_RGB, ambiental["cumplimientos"])
+                y += Cm(0.4)
+                _draw_audit_block("Incumplimientos / Observaciones", AMB_BAD_RGB, ambiental["incumplimientos"])
 
         def _emit_subtramo_summary_slide(subtramo_id: Optional[str]) -> None:
             """Emite (si hay datos) la slide de resumen del Subtramo
