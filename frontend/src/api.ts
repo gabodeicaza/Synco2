@@ -1720,9 +1720,9 @@ export const api = {
   // EXPO_PUBLIC_* que no se empaquetan en builds nativos de EAS, y de
   // llamar a un proveedor de IA directo desde el telefono con una key/modelo
   // que puede quedar invalido sin que el cliente se entere.
-  aiSummary: (pid: string) =>
+  aiSummary: (pid: string, periodo: 'diario' | 'semanal' | 'mensual' = 'diario') =>
     request<{ summary: string; reports_count: number; period_hours: number; generated_at: string }>(
-      'POST', `/projects/${pid}/ai_summary`,
+      'POST', `/projects/${pid}/ai_summary?periodo=${periodo}`,
     ),
 
   listAnnouncements: (pid: string) => request<Announcement[]>('GET', `/projects/${pid}/announcements`),

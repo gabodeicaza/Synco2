@@ -66,6 +66,7 @@ export default function SubCoordDashboard() {
   const [aiError, setAiError] = useState<string | null>(null);
   const [aiMeta, setAiMeta] = useState<{ reports_count: number; period_hours: number } | null>(null);
   const [aiCopied, setAiCopied] = useState(false);
+  const [aiPeriodo, setAiPeriodo] = useState<'diario' | 'semanal' | 'mensual'>('diario');
 
   // Estado para compartir reporte individual
   const [sharingReportId, setSharingReportId] = useState<string | null>(null);
@@ -299,14 +300,14 @@ export default function SubCoordDashboard() {
   // `const`, esa referencia caia en zona muerta temporal y lanzaba
   // "Cannot access 'runAiSummary' before initialization" en cada render,
   // rompiendo la pantalla completa (no solo el boton de resumen IA).
-  const runAiSummary = useCallback(async () => {
+  const runAiSummary = useCallback(async (periodoOverride?: 'diario' | 'semanal' | 'mensual') => {
     if (!pid) return;
     try {
       setAiBusy(true);
       setAiError(null);
       setAiSummary(null);
       setAiMeta(null);
-      const res = await api.aiSummary(pid);
+      const res = await api.aiSummary(pid, periodoOverride ?? aiPeriodo);
       setAiSummary(res.summary);
       setAiMeta({ reports_count: res.reports_count, period_hours: res.period_hours });
     } catch (e: any) {
@@ -314,7 +315,13 @@ export default function SubCoordDashboard() {
     } finally {
       setAiBusy(false);
     }
-  }, [pid]);
+  }, [pid, aiPeriodo]);
+
+  const changeAiPeriodo = useCallback(async (p: 'diario' | 'semanal' | 'mensual') => {
+    if (p === aiPeriodo) return;
+    setAiPeriodo(p);
+    await runAiSummary(p);
+  }, [aiPeriodo, runAiSummary]);
 
   const openAiSummary = useCallback(async () => {
     setAiOpen(true);
@@ -1039,9 +1046,32 @@ export default function SubCoordDashboard() {
               </Pressable>
             </View>
 
+            <View style={styles.aiPeriodoRow}>
+              {([
+                ['diario', 'Hoy'],
+                ['semanal', 'Semana'],
+                ['mensual', 'Mes'],
+              ] as const).map(([key, label]) => (
+                <Pressable
+                  key={key}
+                  onPress={() => changeAiPeriodo(key)}
+                  disabled={aiBusy}
+                  style={({ pressed }) => [
+                    styles.aiPeriodoBtn,
+                    aiPeriodo === key && styles.aiPeriodoBtnActive,
+                    (aiBusy || pressed) && { opacity: 0.7 },
+                  ]}
+                >
+                  <Text style={[styles.aiPeriodoTxt, aiPeriodo === key && styles.aiPeriodoTxtActive]}>
+                    {label}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+
             {aiMeta && (
               <Text style={styles.aiMeta}>
-                {aiMeta.reports_count} reportes _ ultimas {aiMeta.period_hours}h
+                {aiMeta.reports_count} reportes _ {aiMeta.period_hours}h
               </Text>
             )}
 
@@ -1062,7 +1092,7 @@ export default function SubCoordDashboard() {
 
             <View style={styles.aiActions}>
               <Pressable
-                onPress={runAiSummary}
+                onPress={() => runAiSummary()}
                 disabled={aiBusy}
                 style={({ pressed }) => [
                   styles.aiSecBtn,
@@ -1927,6 +1957,11 @@ const styles = StyleSheet.create({
   aiTitle: { fontSize: 17, fontWeight: '900', color: colors.text },
   aiClose: { padding: 4 },
   aiMeta: { fontSize: 11, color: colors.textMuted, fontWeight: '700' },
+  aiPeriodoRow: { flexDirection: 'row', gap: 6, backgroundColor: colors.bg, borderRadius: radius.md, padding: 3 },
+  aiPeriodoBtn: { flex: 1, paddingVertical: 7, borderRadius: radius.sm, alignItems: 'center' },
+  aiPeriodoBtnActive: { backgroundColor: colors.primary },
+  aiPeriodoTxt: { fontSize: 12, fontWeight: '700', color: colors.textMuted },
+  aiPeriodoTxtActive: { color: '#fff' },
   aiBody: { fontSize: 14, color: colors.text, lineHeight: 21, fontWeight: '500' },
   aiError: { fontSize: 13, color: '#dc2626', fontWeight: '700' },
   aiLoading: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: spacing.md },

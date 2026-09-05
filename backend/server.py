@@ -11511,19 +11511,39 @@ class AISummaryResponse(BaseModel):
 
 
 @api.post("/projects/{pid}/ai_summary", response_model=AISummaryResponse)
-async def project_ai_summary(pid: str, user: dict = Depends(current_user)):
-    """Genera un resumen ejecutivo (3 viñetas) usando IA con base en los
-    reportes de las últimas 24h del proyecto. Disponible para todos los roles
-    con acceso al proyecto."""
+async def project_ai_summary(
+    pid: str,
+    periodo: Literal["diario", "semanal", "mensual"] = Query("diario"),
+    user: dict = Depends(current_user),
+):
+    """Genera un resumen ejecutivo (5 viñetas) usando IA con base en los
+    reportes del período elegido del proyecto. Disponible para todos los
+    roles con acceso al proyecto.
+
+    `periodo` (default "diario", compatible con clientes viejos que no lo
+    envían): "diario" = desde las 00:00 CDMX de hoy; "semanal" = desde el
+    domingo de la semana natural en curso (mismo criterio que
+    `_week_bounds_for`, usado en los exports PDF/PPTX); "mensual" = desde el
+    día 1 del mes en curso.
+    """
     await ensure_project_access(user, pid)
 
     if not GEMINI_API_KEY:
         raise HTTPException(500, "GEMINI_API_KEY no configurada en el servidor.")
 
-    # [FIX] Día natural: desde 00:00:00 CDMX hoy
     now_mx = datetime.now(timezone.utc).astimezone(MX_TZ)
-    since_mx = now_mx.replace(hour=0, minute=0, second=0, microsecond=0)
+    if periodo == "semanal":
+        week_start_date, _ = _week_bounds_for(now_mx.date())
+        since_mx = datetime(
+            week_start_date.year, week_start_date.month, week_start_date.day,
+            0, 0, 0, tzinfo=MX_TZ,
+        )
+    elif periodo == "mensual":
+        since_mx = now_mx.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    else:
+        since_mx = now_mx.replace(hour=0, minute=0, second=0, microsecond=0)
     since = since_mx.astimezone(timezone.utc)
+    period_hours = max(1, round((datetime.now(timezone.utc) - since).total_seconds() / 3600))
 
     q: dict = {"project_id": pid, "created_at": {"$gte": since}}
     # Aplica el mismo scope RBAC que el feed.
@@ -11543,13 +11563,14 @@ async def project_ai_summary(pid: str, user: dict = Depends(current_user)):
     if not raw and not ann_raw:
         return AISummaryResponse(
             summary=(
-                "• Avances: no disponible en los reportes (sin reportes en las últimas 24h).\n"
+                "• Avances: no disponible en los reportes (sin reportes en el período).\n"
                 "• Actividades: no disponible en los reportes.\n"
                 "• Fuerza laboral: no disponible en los reportes.\n"
+                "• Incidencias: sin incidencias importantes/urgentes en el período.\n"
                 "• Noticias: no hay noticias vigentes."
             ),
             reports_count=0,
-            period_hours=24,
+            period_hours=period_hours,
             generated_at=datetime.now(timezone.utc),
         )
 
@@ -11571,7 +11592,23 @@ async def project_ai_summary(pid: str, user: dict = Depends(current_user)):
             f"Actividades: {actividades} | Contratista: {contratista} | "
             f"Personal: {personnel} | Equipo: {equipment} | Capturó: {captured_by}"
         )
-    body = "\n".join(lines) if lines else "(sin reportes en las últimas 24h)"
+    body = "\n".join(lines) if lines else "(sin reportes en el período)"
+
+    # Incidencias: reportes con severidad "importante" o "urgente" dentro del
+    # mismo período/scope ya consultado — reusa `raw` en vez de una segunda
+    # query. `_normalize_severidad_list` cubre tanto el formato legacy
+    # (string escalar) como el actual (lista) de `severidad` en Mongo.
+    inc_lines: List[str] = []
+    for r in raw:
+        sevs = _normalize_severidad_list(r.get("severidad"))
+        if not any(s in ("importante", "urgente") for s in sevs):
+            continue
+        path = " › ".join(r.get("node_path_names") or []) or "(sin nodo)"
+        texto = (r.get("incidencias") or r.get("observaciones") or "").strip() or "—"
+        created = r.get("created_at")
+        created_s = created.isoformat() if isinstance(created, datetime) else str(created)
+        inc_lines.append(f"- [{created_s}] {path} | Severidad: {', '.join(sevs)} | {texto}")
+    inc_body = "\n".join(inc_lines) if inc_lines else "(sin incidencias importantes/urgentes en el período)"
 
     ann_lines: List[str] = []
     for a in ann_raw:
@@ -11589,18 +11626,23 @@ async def project_ai_summary(pid: str, user: dict = Depends(current_user)):
         "2) NO PUEDES FALLAR.\n"
         "3) TU ÚNICA FUNCIÓN ES RESUMIR EXACTAMENTE LO QUE DICEN LOS REPORTES Y NOTICIAS, SIN AGREGAR "
         "INTERPRETACIONES, CIFRAS NI NOMBRES QUE NO APAREZCAN EN EL TEXTO FUENTE.\n"
-        "4) ESTRUCTURA: EXACTAMENTE 4 VIÑETAS EJECUTIVAS Y NADA MÁS, EN ESTE ORDEN:\n"
+        "4) ESTRUCTURA: EXACTAMENTE 5 VIÑETAS EJECUTIVAS Y NADA MÁS, EN ESTE ORDEN:\n"
         "   • Avances: qué se avanzó y dónde (nodo/tramo), según el campo Avance de los reportes.\n"
         "   • Actividades: qué actividades se realizaron, según el campo Actividades de los reportes.\n"
         "   • Fuerza laboral: personal y equipo/maquinaria que estuvieron en obra.\n"
-        "   • Noticias: anuncios vigentes del proyecto (últimas 24h).\n\n"
+        "   • Incidencias: desviaciones o eventos reportados con severidad 'importante' o 'urgente', "
+        "según el campo Incidencias/Severidad de los reportes.\n"
+        "   • Noticias: anuncios vigentes del proyecto.\n\n"
         "Responde SIEMPRE en español. Cada viñeta debe iniciar con '• ' y el nombre de su categoría "
         "seguido de dos puntos (ej. '• Avances: ...'). Cero relleno, sin introducciones ni cierres, "
-        "sin viñetas adicionales fuera de las 4 indicadas."
+        "sin viñetas adicionales fuera de las 5 indicadas."
     )
+    periodo_label = {"diario": "las últimas 24 horas", "semanal": "la semana en curso", "mensual": "el mes en curso"}[periodo]
     user_text = (
-        f"Reportes de las últimas 24 horas del proyecto (id={pid}). "
+        f"Reportes de {periodo_label} del proyecto (id={pid}). "
         f"Total: {len(raw)} entradas.\n\n{body}\n\n"
+        f"De esas entradas, las que tienen severidad 'importante' o 'urgente' (para la viñeta "
+        f"Incidencias). Total: {len(inc_lines)} entradas.\n\n{inc_body}\n\n"
         f"Noticias vigentes del proyecto. Total: {len(ann_raw)} entradas.\n\n{ann_body}\n\n"
         "Genera el resumen ejecutivo solicitado, usando SOLO lo anterior."
     )
@@ -11615,7 +11657,7 @@ async def project_ai_summary(pid: str, user: dict = Depends(current_user)):
                 json={
                     "system_instruction": {"parts": [{"text": system_message}]},
                     "contents": [{"parts": [{"text": user_text}]}],
-                    "generationConfig": {"maxOutputTokens": 400},
+                    "generationConfig": {"maxOutputTokens": 500},
                 },
             )
             if resp.status_code != 200:
@@ -11638,7 +11680,7 @@ async def project_ai_summary(pid: str, user: dict = Depends(current_user)):
     return AISummaryResponse(
         summary=summary,
         reports_count=len(raw),
-        period_hours=24,
+        period_hours=period_hours,
         generated_at=datetime.now(timezone.utc),
     )
 
