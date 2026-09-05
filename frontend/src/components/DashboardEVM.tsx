@@ -13,12 +13,12 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, FlatList, RefreshControl,
-  Modal, TextInput, KeyboardAvoidingView, Platform, Alert,
+  Modal, TextInput, KeyboardAvoidingView, Platform, Alert, useWindowDimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import Svg, { Polyline, Line as SvgLine } from 'react-native-svg';
+import Svg, { Polyline, Line as SvgLine, Text as SvgText } from 'react-native-svg';
 import * as DocumentPicker from 'expo-document-picker';
 
 import { api, AnalisisPeriodo, CurvaS, ExcepcionEvm, ActividadEvm, ActividadesEvm, GastoReal, GastoRealImportResult } from '@/src/api';
@@ -74,6 +74,30 @@ function KpiCard({ label, valor, sub, color }: { label: string; valor: string; s
   );
 }
 
+/** Compacta un monto a K/M/B SOLO para etiquetas del eje Y — nunca se usa
+ * para dinero real (persistido, sumado, comparado); es puramente de
+ * despliegue, igual que el resto de la geometría de este chart. */
+function formatMoneyCompact(n: number): string {
+  const sign = n < 0 ? '-' : '';
+  const abs = Math.abs(n);
+  if (abs >= 1e9) return `${sign}$${(abs / 1e9).toFixed(1)}B`;
+  if (abs >= 1e6) return `${sign}$${(abs / 1e6).toFixed(1)}M`;
+  if (abs >= 1e3) return `${sign}$${(abs / 1e3).toFixed(0)}K`;
+  return `${sign}$${abs.toFixed(0)}`;
+}
+
+// Tamaño ~3x el original (320x160) a pedido del Coordinador, con ejes
+// rotulados y un tick por MES (desglose completo) en vez de solo el primero
+// y el último — con ancho fijo por mes y scroll horizontal para que nunca
+// se amontonen las etiquetas, sin importar cuántos meses abarque el proyecto.
+const CURVA_PAD_LEFT = 60;
+const CURVA_PAD_RIGHT = 16;
+const CURVA_PAD_TOP = 20;
+const CURVA_PAD_BOTTOM = 40;
+const CURVA_HEIGHT = 480;
+const CURVA_PX_POR_MES = 56;
+const CURVA_Y_TICKS = 5;
+
 /** Curva S de 3 líneas (Planeado/Ganado/Real) dibujada a mano con
  * react-native-svg — los 3 arreglos de CurvaS ya vienen acumulados y en el
  * mismo orden de meses, así que solo hay que normalizar a coordenadas de
@@ -81,26 +105,28 @@ function KpiCard({ label, valor, sub, color }: { label: string; valor: string; s
  * del gráfico (posición de un punto en píxeles), nunca se recalculan ni se
  * guardan — no es el caso que la regla de Decimal-siempre está protegiendo. */
 function CurvaSChart({ curva }: { curva: CurvaS }) {
-  const width = 320;
-  const height = 160;
-  const padding = 24;
+  const { width: windowWidth } = useWindowDimensions();
+  const n = curva.meses.length;
+  const minInnerWidth = windowWidth - spacing.md * 2 - CURVA_PAD_LEFT - CURVA_PAD_RIGHT;
+  const innerWidth = Math.max(minInnerWidth, (n <= 1 ? 1 : n - 1) * CURVA_PX_POR_MES);
+  const width = innerWidth + CURVA_PAD_LEFT + CURVA_PAD_RIGHT;
+  const height = CURVA_HEIGHT;
 
-  const series = useMemo(() => {
+  const { series, max } = useMemo(() => {
     const planeado = curva.planeado_acumulado.map(Number);
     const ganado = curva.ganado_acumulado.map(Number);
     const real = curva.real_acumulado.map(Number);
-    const max = Math.max(1, ...planeado, ...ganado, ...real);
-    const n = curva.meses.length;
+    const maxVal = Math.max(1, ...planeado, ...ganado, ...real);
     const puntos = (serie: number[]) =>
       serie
         .map((v, i) => {
-          const x = n <= 1 ? padding : padding + (i / (n - 1)) * (width - 2 * padding);
-          const y = height - padding - (v / max) * (height - 2 * padding);
+          const x = n <= 1 ? CURVA_PAD_LEFT : CURVA_PAD_LEFT + (i / (n - 1)) * innerWidth;
+          const y = height - CURVA_PAD_BOTTOM - (v / maxVal) * (height - CURVA_PAD_TOP - CURVA_PAD_BOTTOM);
           return `${x},${y}`;
         })
         .join(' ');
-    return { planeado: puntos(planeado), ganado: puntos(ganado), real: puntos(real) };
-  }, [curva]);
+    return { series: { planeado: puntos(planeado), ganado: puntos(ganado), real: puntos(real) }, max: maxVal };
+  }, [curva, innerWidth, height, n]);
 
   if (!curva.meses.length) {
     return (
@@ -110,22 +136,45 @@ function CurvaSChart({ curva }: { curva: CurvaS }) {
     );
   }
 
+  const yTicks = Array.from({ length: CURVA_Y_TICKS + 1 }, (_, i) => (max / CURVA_Y_TICKS) * i);
+
   return (
     <View>
-      <Svg width={width} height={height}>
-        <SvgLine x1={padding} y1={height - padding} x2={width - padding} y2={height - padding} stroke={colors.border} strokeWidth={1} />
-        <Polyline points={series.planeado} fill="none" stroke={colors.textMuted} strokeWidth={2} />
-        <Polyline points={series.ganado} fill="none" stroke={colors.primary} strokeWidth={2} />
-        <Polyline points={series.real} fill="none" stroke={colors.error} strokeWidth={2} />
-      </Svg>
+      <Text style={styles.ejeYTitulo}>Importe acumulado (MXN)</Text>
+      <ScrollView horizontal showsHorizontalScrollIndicator>
+        <Svg width={width} height={height}>
+          {yTicks.map((v, i) => {
+            const y = height - CURVA_PAD_BOTTOM - (v / max) * (height - CURVA_PAD_TOP - CURVA_PAD_BOTTOM);
+            return (
+              <React.Fragment key={`y-${i}`}>
+                <SvgLine x1={CURVA_PAD_LEFT} y1={y} x2={width - CURVA_PAD_RIGHT} y2={y} stroke={colors.border} strokeWidth={1} />
+                <SvgText x={CURVA_PAD_LEFT - 6} y={y + 3} fontSize={10} fill={colors.textMuted} textAnchor="end">
+                  {formatMoneyCompact(v)}
+                </SvgText>
+              </React.Fragment>
+            );
+          })}
+          {curva.meses.map((mes, i) => {
+            const x = n <= 1 ? CURVA_PAD_LEFT : CURVA_PAD_LEFT + (i / (n - 1)) * innerWidth;
+            return (
+              <React.Fragment key={mes}>
+                <SvgLine x1={x} y1={CURVA_PAD_TOP} x2={x} y2={height - CURVA_PAD_BOTTOM} stroke={colors.border} strokeWidth={0.5} />
+                <SvgText x={x} y={height - CURVA_PAD_BOTTOM + 16} fontSize={10} fill={colors.textMuted} textAnchor="middle">
+                  {mes}
+                </SvgText>
+              </React.Fragment>
+            );
+          })}
+          <Polyline points={series.planeado} fill="none" stroke={colors.textMuted} strokeWidth={2.5} />
+          <Polyline points={series.ganado} fill="none" stroke={colors.primary} strokeWidth={2.5} />
+          <Polyline points={series.real} fill="none" stroke={colors.error} strokeWidth={2.5} />
+        </Svg>
+      </ScrollView>
+      <Text style={styles.ejeXTitulo}>Mes</Text>
       <View style={styles.leyendaRow}>
         <LeyendaItem color={colors.textMuted} label="Planeado" />
         <LeyendaItem color={colors.primary} label="Ganado" />
         <LeyendaItem color={colors.error} label="Real" />
-      </View>
-      <View style={styles.ejeMesesRow}>
-        <Text style={styles.ejeMesTxt}>{curva.meses[0]}</Text>
-        <Text style={styles.ejeMesTxt}>{curva.meses[curva.meses.length - 1]}</Text>
       </View>
     </View>
   );
@@ -592,12 +641,12 @@ const styles = StyleSheet.create({
   seccionTitulo: { fontSize: 15, fontWeight: '700', color: colors.text, marginTop: spacing.md, marginBottom: 8 },
   curvaVacia: { padding: 16, backgroundColor: colors.surface, borderRadius: 12, borderWidth: 1, borderColor: colors.border },
   curvaVaciaTxt: { color: colors.textMuted, fontSize: 12 },
-  leyendaRow: { flexDirection: 'row', gap: 16, marginTop: 6, justifyContent: 'center' },
+  ejeYTitulo: { fontSize: 11, fontWeight: '700', color: colors.textMuted, marginBottom: 4, marginLeft: CURVA_PAD_LEFT },
+  ejeXTitulo: { fontSize: 11, fontWeight: '700', color: colors.textMuted, marginTop: 2, textAlign: 'center' },
+  leyendaRow: { flexDirection: 'row', gap: 16, marginTop: 8, justifyContent: 'center' },
   leyendaItem: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   leyendaDot: { width: 8, height: 8, borderRadius: 4 },
   leyendaTxt: { fontSize: 11, color: colors.textMuted },
-  ejeMesesRow: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 24, marginTop: 2 },
-  ejeMesTxt: { fontSize: 10, color: colors.textMuted },
   sinExcepciones: { fontSize: 12, color: colors.textMuted, fontStyle: 'italic' },
   excepcionRow: {
     flexDirection: 'row', gap: 10, alignItems: 'flex-start', paddingVertical: 10,
