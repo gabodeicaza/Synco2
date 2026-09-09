@@ -560,6 +560,11 @@ class ReportIn(BaseModel):
     # encolar un reporte sin conexion. Permite deduplicar si el mismo
     # reporte se reintenta (ver db.reports índice único sparse sobre esto).
     client_id: Optional[str] = None
+    # [OFFLINE 2026-09-09] Hora real de captura en el dispositivo (antes de
+    # encolar sin conexion). Si el reporte tarda en sincronizarse, evita que
+    # se le asigne la hora de sincronizacion como `created_at` -- ver uso en
+    # el endpoint de creación.
+    captured_at: Optional[datetime] = None
     # Reporte estructurado (opcional): id de la plantilla elegida (ver
     # ReportTemplate) y los valores capturados para sus campos dinámicos.
     template_id: Optional[str] = None
@@ -3458,6 +3463,23 @@ async def create_report(body: ReportIn, user: dict = Depends(current_user)):
     if body.images:
         thumbnail_b64 = await asyncio.to_thread(_compress_image_b64, body.images[0])
 
+    # [OFFLINE 2026-09-09] Si el cliente mandó `captured_at` (hora real de
+    # captura en el dispositivo, fijada ANTES de encolar sin conexión), se usa
+    # como `created_at` en vez de la hora de llegada al servidor -- de lo
+    # contrario un reporte capturado tarde y sincronizado horas/días después
+    # (o pasada la medianoche) se fecha con la hora de sincronización y
+    # desaparece silenciosamente del informe Diario del día en que en
+    # realidad se capturó. Se tolera un rango razonable alrededor de "ahora"
+    # para no confiar ciegamente en relojes de dispositivo mal configurados.
+    now_utc = datetime.now(timezone.utc)
+    effective_created_at = now_utc
+    if body.captured_at is not None:
+        cap = body.captured_at
+        if cap.tzinfo is None:
+            cap = cap.replace(tzinfo=timezone.utc)
+        if (now_utc - timedelta(days=14)) <= cap <= (now_utc + timedelta(minutes=10)):
+            effective_created_at = cap
+
     doc = {
         "id": str(uuid.uuid4()),
         "project_id": body.project_id,
@@ -3494,7 +3516,7 @@ async def create_report(body: ReportIn, user: dict = Depends(current_user)):
         "unidad": (body.unidad or "m").strip() or "m",
         "captured_by": user["id"],
         "captured_by_name": user["name"],
-        "created_at": datetime.now(timezone.utc),
+        "created_at": effective_created_at,
         "template_id": body.template_id or None,
         "dynamic_data": body.dynamic_data or {},
     }
