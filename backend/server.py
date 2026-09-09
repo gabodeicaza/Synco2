@@ -11589,14 +11589,28 @@ async def project_ai_summary(pid: str, user: dict = Depends(current_user)):
         "2) NO PUEDES FALLAR.\n"
         "3) TU ÚNICA FUNCIÓN ES RESUMIR EXACTAMENTE LO QUE DICEN LOS REPORTES Y NOTICIAS, SIN AGREGAR "
         "INTERPRETACIONES, CIFRAS NI NOMBRES QUE NO APAREZCAN EN EL TEXTO FUENTE.\n"
-        "4) ESTRUCTURA: EXACTAMENTE 4 VIÑETAS EJECUTIVAS Y NADA MÁS, EN ESTE ORDEN:\n"
+        "4) ESTRUCTURA BASE: ESTAS 4 VIÑETAS SIEMPRE, EN ESTE ORDEN:\n"
         "   • Avances: qué se avanzó y dónde (nodo/tramo), según el campo Avance de los reportes.\n"
         "   • Actividades: qué actividades se realizaron, según el campo Actividades de los reportes.\n"
         "   • Fuerza laboral: personal y equipo/maquinaria que estuvieron en obra.\n"
         "   • Noticias: anuncios vigentes del proyecto (últimas 24h).\n\n"
+        "5) DESARROLLA CADA VIÑETA CON TODO EL DETALLE QUE EXISTA EN LOS REPORTES FUENTE: si hay "
+        "información suficiente, usa varias oraciones (no una sola línea genérica) mencionando "
+        "explícitamente nodos/tramos afectados, cifras y unidades de avance tal como aparecen, "
+        "nombres de contratistas, cantidades y nombres de personal/equipo, y agrupa o compara entre "
+        "distintas áreas o tramos cuando el mismo campo aparezca repetido en varios reportes. Nunca "
+        "resumas de más comprimiendo detalles que sí están en el texto fuente: entre más rico sea el "
+        "reporte fuente, más rica debe ser la viñeta. Solo usa 'No disponible en los reportes' cuando "
+        "realmente no haya nada que reportar para esa categoría.\n"
+        "6) VIÑETA ADICIONAL OPCIONAL: si tras cubrir las 4 categorías anteriores identificas en el "
+        "campo Actividades u otro campo información relevante que no encaje en ninguna de ellas "
+        "(p. ej. pendientes, incidencias, riesgos o bloqueos mencionados explícitamente por quien "
+        "capturó el reporte), agrégala al final como '• Observaciones adicionales: ...'. Agrega esta "
+        "viñeta SOLO si hay contenido real y literal que reportar; nunca la inventes ni la agregues "
+        "vacía.\n\n"
         "Responde SIEMPRE en español. Cada viñeta debe iniciar con '• ' y el nombre de su categoría "
-        "seguido de dos puntos (ej. '• Avances: ...'). Cero relleno, sin introducciones ni cierres, "
-        "sin viñetas adicionales fuera de las 4 indicadas."
+        "seguido de dos puntos (ej. '• Avances: ...'). Sin introducciones ni cierres genéricos fuera "
+        "de las viñetas."
     )
     user_text = (
         f"Reportes de las últimas 24 horas del proyecto (id={pid}). "
@@ -11615,7 +11629,7 @@ async def project_ai_summary(pid: str, user: dict = Depends(current_user)):
                 json={
                     "system_instruction": {"parts": [{"text": system_message}]},
                     "contents": [{"parts": [{"text": user_text}]}],
-                    "generationConfig": {"maxOutputTokens": 400},
+                    "generationConfig": {"maxOutputTokens": 1400},
                 },
             )
             if resp.status_code != 200:
