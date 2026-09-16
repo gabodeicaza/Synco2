@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, ActivityIndicator, Pressable, Alert, TextInput,
 } from 'react-native';
@@ -9,6 +9,61 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { api, Project } from '@/src/api';
 import { colors, radius, shadow, spacing } from '@/src/theme';
 import { parseExcel, mapPersonalRows } from '@/src/utils/excel';
+
+/** Categorias conocidas para agrupar el personal por rol. */
+const PERSONAL_CATEGORIES: { label: string; keywords: string[] }[] = [
+  { label: 'Ingenieros', keywords: ['ingenier'] },
+  { label: 'Residentes', keywords: ['residente'] },
+  { label: 'Supervisores', keywords: ['supervisor'] },
+  { label: 'Topografos', keywords: ['topograf'] },
+  { label: 'Maestros', keywords: ['maestro'] },
+  { label: 'Oficiales', keywords: ['oficial'] },
+  { label: 'Ayudantes', keywords: ['ayudante'] },
+  { label: 'Operadores', keywords: ['operador'] },
+  { label: 'Electricistas', keywords: ['electricista'] },
+  { label: 'Albaniles', keywords: ['albanil'] },
+  { label: 'Soldadores', keywords: ['soldador'] },
+  { label: 'Choferes', keywords: ['chofer', 'conductor'] },
+  { label: 'Almacenistas', keywords: ['almacenista'] },
+  { label: 'Seguridad e Higiene', keywords: ['seguridad', 'higiene'] },
+  { label: 'Peones', keywords: ['peon'] },
+];
+const OTHERS_LABEL = 'Otros';
+
+function normalizeKey(s: string): string {
+  const lower = s.toLowerCase().trim();
+  try {
+    if (!lower.normalize) return lower;
+    return lower.normalize('NFD')
+      .split('')
+      .filter((ch) => { const code = ch.charCodeAt(0); return code < 0x0300 || code > 0x036f; })
+      .join('');
+  } catch {
+    return lower;
+  }
+}
+
+function categorize(item: string): string {
+  const n = normalizeKey(item);
+  const found = PERSONAL_CATEGORIES.find((cat) => cat.keywords.some((kw) => n.includes(kw)));
+  return found ? found.label : OTHERS_LABEL;
+}
+
+function groupPersonal(list: string[]): { label: string; items: string[] }[] {
+  const map = new Map<string, string[]>();
+  list.forEach((item) => {
+    const label = categorize(item);
+    if (!map.has(label)) map.set(label, []);
+    map.get(label)!.push(item);
+  });
+  return Array.from(map.entries())
+    .sort(([a], [b]) => {
+      if (a === OTHERS_LABEL) return 1;
+      if (b === OTHERS_LABEL) return -1;
+      return a.localeCompare(b, 'es');
+    })
+    .map(([label, items]) => ({ label, items }));
+}
 
 export default function PersonalManagementScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -34,6 +89,8 @@ export default function PersonalManagementScreen() {
   }, [pid]);
 
   useEffect(() => { load(); }, [load]);
+
+  const groups = useMemo(() => groupPersonal(list), [list]);
 
   async function save(newList: string[]) {
     if (busy) return;
@@ -133,13 +190,25 @@ export default function PersonalManagementScreen() {
           <ActivityIndicator color={colors.primary} style={{ marginTop: 40 }} />
         ) : (
           <View style={styles.list}>
-            {list.map((item, idx) => (
-              <View key={`${item}-${idx}`} style={styles.item}>
-                <Ionicons name="person-outline" size={18} color={colors.textMuted} />
-                <Text style={styles.itemTxt}>{item}</Text>
-                <Pressable onPress={() => onRemove(item)} disabled={busy} hitSlop={10}>
-                  <Ionicons name="trash-outline" size={18} color={colors.error} />
-                </Pressable>
+            {groups.map((group) => (
+              <View key={group.label} style={styles.group}>
+                <View style={styles.groupHeader}>
+                  <Text style={styles.groupHeaderText}>{group.label}</Text>
+                  <View style={styles.groupBadge}>
+                    <Text style={styles.groupBadgeText}>{group.items.length}</Text>
+                  </View>
+                </View>
+                <View style={styles.groupItems}>
+                  {group.items.map((item, idx) => (
+                    <View key={`${item}-${idx}`} style={styles.item}>
+                      <Ionicons name="person-outline" size={18} color={colors.textMuted} />
+                      <Text style={styles.itemTxt}>{item}</Text>
+                      <Pressable onPress={() => onRemove(item)} disabled={busy} hitSlop={10}>
+                        <Ionicons name="trash-outline" size={18} color={colors.error} />
+                      </Pressable>
+                    </View>
+                  ))}
+                </View>
               </View>
             ))}
             {list.length === 0 && (
@@ -165,7 +234,13 @@ const styles = StyleSheet.create({
   inputRow: { flexDirection: 'row', gap: 10 },
   input: { flex: 1, height: 48, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, paddingHorizontal: 12, fontSize: 15, color: colors.text, backgroundColor: colors.bg },
   addBtn: { width: 48, height: 48, backgroundColor: colors.primary, borderRadius: radius.md, alignItems: 'center', justifyContent: 'center' },
-  list: { gap: 8 },
+  list: { gap: 16 },
+  group: { gap: 6 },
+  groupHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 4 },
+  groupHeaderText: { fontSize: 13, fontWeight: '800', color: colors.primary, textTransform: 'uppercase', letterSpacing: 0.5 },
+  groupBadge: { backgroundColor: colors.primaryLight, borderRadius: 10, paddingHorizontal: 8, paddingVertical: 2, minWidth: 24, alignItems: 'center' },
+  groupBadgeText: { fontSize: 11, fontWeight: '800', color: colors.primary },
+  groupItems: { gap: 8 },
   item: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.surface, padding: 12, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, gap: 12 },
   itemTxt: { flex: 1, fontSize: 14, fontWeight: '600', color: colors.text },
   empty: { textAlign: 'center', color: colors.textMuted, marginTop: 40, fontStyle: 'italic' },

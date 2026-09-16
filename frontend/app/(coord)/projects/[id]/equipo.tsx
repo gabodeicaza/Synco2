@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, ActivityIndicator, Pressable, Alert, TextInput,
 } from 'react-native';
@@ -39,6 +39,47 @@ function unpack(s: string): EquipoRow {
   };
 }
 
+/**
+ * Normaliza un nombre de equipo para agrupar variantes ("Retroexcavadora",
+ * "RETROEXCAVADORA CAT", "Retro-excavadora") bajo la misma categoria.
+ */
+function stripAccents(s: string): string {
+  try {
+    if (!s.normalize) return s;
+    return s.normalize('NFD')
+      .split('')
+      .filter((ch) => { const code = ch.charCodeAt(0); return code < 0x0300 || code > 0x036f; })
+      .join('');
+  } catch {
+    return s;
+  }
+}
+
+function normalizeKey(s: string): string {
+  const res = stripAccents(s.toLowerCase().trim());
+  return res.replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+interface EquipoGroup {
+  key: string;
+  label: string;
+  entries: { item: EquipoRow; idx: number }[];
+}
+
+function groupEquipo(list: EquipoRow[]): EquipoGroup[] {
+  const map = new Map<string, EquipoGroup>();
+  list.forEach((item, idx) => {
+    const key = normalizeKey(item.nombre) || '_sin_nombre';
+    let group = map.get(key);
+    if (!group) {
+      group = { key, label: item.nombre || 'Sin nombre', entries: [] };
+      map.set(key, group);
+    }
+    group.entries.push({ item, idx });
+  });
+  return Array.from(map.values()).sort((a, b) => a.label.localeCompare(b.label, 'es'));
+}
+
 export default function EquipmentManagementScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const pid = id as string;
@@ -69,6 +110,8 @@ export default function EquipmentManagementScreen() {
   }, [pid]);
 
   useEffect(() => { load(); }, [load]);
+
+  const groups = useMemo(() => groupEquipo(list), [list]);
 
   async function save(newList: EquipoRow[]) {
     if (busy) return;
@@ -208,20 +251,34 @@ export default function EquipmentManagementScreen() {
           <ActivityIndicator color={colors.primary} style={{ marginTop: 40 }} />
         ) : (
           <View style={styles.list}>
-            {list.map((item, idx) => (
-              <View key={idx} style={styles.item}>
-                <View style={{ flex: 1, gap: 2 }}>
-                  <Text style={styles.itemTitle}>{item.nombre}</Text>
-                  {(item.marca || item.modelo) && (
-                    <Text style={styles.itemSub}>{item.marca || ''} {item.modelo || ''}</Text>
-                  )}
-                  {item.serie && (
-                    <Text style={styles.itemSerie}>S/N: {item.serie}</Text>
-                  )}
+            {groups.map((group) => (
+              <View key={group.key} style={styles.group}>
+                <View style={styles.groupHeader}>
+                  <Text style={styles.groupHeaderText}>{group.label}</Text>
+                  <View style={styles.groupBadge}>
+                    <Text style={styles.groupBadgeText}>{group.entries.length}</Text>
+                  </View>
                 </View>
-                <Pressable onPress={() => onRemove(idx)} disabled={busy} hitSlop={10}>
-                  <Ionicons name="trash-outline" size={18} color={colors.error} />
-                </Pressable>
+                <View style={styles.groupItems}>
+                  {group.entries.map(({ item, idx }) => (
+                    <View key={idx} style={styles.item}>
+                      <View style={{ flex: 1, gap: 2 }}>
+                        {(item.marca || item.modelo) && (
+                          <Text style={styles.itemSub}>{item.marca || ''} {item.modelo || ''}</Text>
+                        )}
+                        {item.serie && (
+                          <Text style={styles.itemSerie}>S/N: {item.serie}</Text>
+                        )}
+                        {!item.marca && !item.modelo && !item.serie && (
+                          <Text style={styles.itemSub}>Sin datos adicionales</Text>
+                        )}
+                      </View>
+                      <Pressable onPress={() => onRemove(idx)} disabled={busy} hitSlop={10}>
+                        <Ionicons name="trash-outline" size={18} color={colors.error} />
+                      </Pressable>
+                    </View>
+                  ))}
+                </View>
               </View>
             ))}
             {list.length === 0 && (
@@ -248,7 +305,13 @@ const styles = StyleSheet.create({
   input: { height: 48, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, paddingHorizontal: 12, fontSize: 15, color: colors.text, backgroundColor: colors.bg },
   addBtn: { height: 48, backgroundColor: colors.primary, borderRadius: radius.md, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 8 },
   addBtnTxt: { color: '#fff', fontWeight: '800', fontSize: 14 },
-  list: { gap: 8 },
+  list: { gap: 16 },
+  group: { gap: 6 },
+  groupHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 4 },
+  groupHeaderText: { fontSize: 13, fontWeight: '800', color: colors.primary, textTransform: 'uppercase', letterSpacing: 0.5 },
+  groupBadge: { backgroundColor: colors.primaryLight, borderRadius: 10, paddingHorizontal: 8, paddingVertical: 2, minWidth: 24, alignItems: 'center' },
+  groupBadgeText: { fontSize: 11, fontWeight: '800', color: colors.primary },
+  groupItems: { gap: 8 },
   item: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.surface, padding: 12, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, gap: 12 },
   itemTitle: { fontSize: 14, fontWeight: '800', color: colors.text },
   itemSub: { fontSize: 12, color: colors.textBody, fontWeight: '600' },

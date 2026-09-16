@@ -1525,6 +1525,12 @@ const styles = StyleSheet.create({
   tileSub: { fontSize: 12, color: colors.textMuted, marginTop: 2 },
   soonBadge: { fontSize: 9, fontWeight: '800', color: colors.primary, backgroundColor: colors.primaryLight, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, textTransform: 'uppercase', letterSpacing: 0.5 },
 
+  // Sprint blocks
+  sprintBlock: {
+    paddingHorizontal: spacing.md,
+    marginTop: spacing.md,
+  },
+
   // Chips
   sectionLabel: {
     fontSize: 11,

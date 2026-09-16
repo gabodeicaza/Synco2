@@ -28,6 +28,7 @@ export default function InvitationsScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
 
   // Wizard state
   const [wizardOpen, setWizardOpen] = useState(false);
@@ -68,6 +69,32 @@ export default function InvitationsScreen() {
   }, [pid]);
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
+
+  const filteredInvitations = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return invitations;
+    return invitations.filter((inv) =>
+      inv.name.toLowerCase().includes(q) || inv.email.toLowerCase().includes(q)
+    );
+  }, [invitations, search]);
+
+  const groupedInvitations = useMemo(() => {
+    const NO_AREA_LABEL = 'Obra Civil';
+    const map = new Map<string, { areaName: string; items: Invitation[] }>();
+    for (const inv of filteredInvitations) {
+      const key = inv.area_id || '_sin_area';
+      let group = map.get(key);
+      if (!group) {
+        const areaName = inv.area_id
+          ? areas.find((a) => a.id === inv.area_id)?.name || 'Area desconocida'
+          : NO_AREA_LABEL;
+        group = { areaName, items: [] };
+        map.set(key, group);
+      }
+      group.items.push(inv);
+    }
+    return Array.from(map.values()).sort((a, b) => a.areaName.localeCompare(b.areaName, 'es'));
+  }, [filteredInvitations, areas]);
 
   async function openWizard() {
     setStep(0); setRole('especialista');
@@ -262,6 +289,22 @@ export default function InvitationsScreen() {
           </Pressable>
         </View>
 
+        <View style={styles.searchBar}>
+          <Ionicons name="search" size={18} color={colors.textMuted} />
+          <TextInput
+            value={search}
+            onChangeText={setSearch}
+            placeholder="Buscar por nombre o correo..."
+            style={styles.searchInput}
+            autoCapitalize="none"
+          />
+          {!!search && (
+            <Pressable onPress={() => setSearch('')} hitSlop={10}>
+              <Ionicons name="close-circle" size={18} color={colors.textMuted} />
+            </Pressable>
+          )}
+        </View>
+
         <ScrollView
           style={styles.flex1}
           contentContainerStyle={{ flexGrow: 1, padding: spacing.md, paddingBottom: 120 }}
@@ -269,17 +312,31 @@ export default function InvitationsScreen() {
         >
           {loading ? (
             <ActivityIndicator color={colors.primary} style={{ marginTop: 40 }} />
-          ) : invitations.map((inv) => (
-            <InviteCard
-              key={inv.id}
-              inv={inv}
-              onCopyToken={() => copyToken(inv.token)}
-              onCopyLink={() => copyLink(inv.token)}
-              onShare={() => shareInvite(inv)}
-              onRevoke={() => revoke(inv)}
-              onEdit={() => openEdit(inv)}
-              onRemove={() => removeMember(inv)}
-            />
+          ) : groupedInvitations.length === 0 ? (
+            <Text style={styles.emptyText}>
+              {search ? `Sin resultados para "${search}"` : 'Aun no hay invitaciones.'}
+            </Text>
+          ) : groupedInvitations.map((group) => (
+            <View key={group.areaName} style={styles.group}>
+              <View style={styles.groupHeader}>
+                <Text style={styles.groupHeaderText}>{group.areaName}</Text>
+                <View style={styles.groupBadge}>
+                  <Text style={styles.groupBadgeText}>{group.items.length}</Text>
+                </View>
+              </View>
+              {group.items.map((inv) => (
+                <InviteCard
+                  key={inv.id}
+                  inv={inv}
+                  onCopyToken={() => copyToken(inv.token)}
+                  onCopyLink={() => copyLink(inv.token)}
+                  onShare={() => shareInvite(inv)}
+                  onRevoke={() => revoke(inv)}
+                  onEdit={() => openEdit(inv)}
+                  onRemove={() => removeMember(inv)}
+                />
+              ))}
+            </View>
           ))}
         </ScrollView>
 
@@ -579,6 +636,16 @@ const styles = StyleSheet.create({
   iconBtn: { padding: 5, marginRight: 10 },
   importHeaderBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, borderWidth: 1, borderColor: colors.primary, borderRadius: 20, paddingHorizontal: 10, paddingVertical: 6 },
   importHeaderBtnTxt: { fontSize: 11, fontWeight: '800', color: colors.primary },
+
+  searchBar: { flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: spacing.md, marginTop: spacing.sm, paddingHorizontal: 12, height: 44, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface },
+  searchInput: { flex: 1, fontSize: 14, color: colors.text },
+
+  group: { marginBottom: spacing.md, gap: 8 },
+  groupHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 4, marginBottom: 2 },
+  groupHeaderText: { fontSize: 13, fontWeight: '800', color: colors.primary, textTransform: 'uppercase', letterSpacing: 0.5 },
+  groupBadge: { backgroundColor: colors.primaryLight, borderRadius: 10, paddingHorizontal: 8, paddingVertical: 2, minWidth: 24, alignItems: 'center' },
+  groupBadgeText: { fontSize: 11, fontWeight: '800', color: colors.primary },
+  emptyText: { textAlign: 'center', color: colors.textMuted, marginTop: 40, fontStyle: 'italic' },
 
   modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' },
   modalCard: { backgroundColor: 'white', borderTopLeftRadius: 20, borderTopRightRadius: 20, overflow: 'hidden' },
