@@ -17,6 +17,7 @@ import { confirm } from '@/src/utils/confirm';
 import { ReportPeriod, periodToInformeType } from '@/src/components/PeriodSheet';
 import { downloadBlob } from '@/src/utils/downloadBlob';
 import { WorkforceTracker } from '@/src/components/WorkforceTracker';
+import { DailyGoalsPanel } from '@/src/components/DailyGoalsPanel';
 import { WeatherWidget } from '@/src/components/WeatherWidget';
 import { HistoryCalendarModal } from '@/src/components/HistoryCalendarModal';
 import { ReportPreviewSheet } from '@/src/components/ReportPreviewSheet';
@@ -194,8 +195,8 @@ export default function ProjectDetailScreen() {
   const [aiMeta, setAiMeta] = useState<{ reports_count: number; period_hours: number } | null>(null);
   const [aiCopied, setAiCopied] = useState(false);
 
-  // Tabs: Operacion / Configuracion
-  const [activeTab, setActiveTab] = useState<'operacion' | 'cortecaja' | 'configuracion'>('operacion');
+  // Tabs: Reportes / Operacion / Configuracion
+  const [activeTab, setActiveTab] = useState<'reportes' | 'operacion' | 'configuracion'>('reportes');
 
   // Exportacion unificada (3 pasos: periodo -> area -> formato)
   const [exportOpen, setExportOpen] = useState(false);
@@ -1069,9 +1070,22 @@ export default function ProjectDetailScreen() {
         </View>
       ) : (
         <>
-          {/* ===== Pestanas: Operacion / Fuerza Laboral / Configuracion (justo debajo del header) ===== */}
+          {/* ===== Pestanas: Reportes / Operacion / Configuracion (justo debajo del header) ===== */}
           <View style={styles.tabBarWrap}>
             <View style={styles.tabBar}>
+              <Pressable
+                onPress={() => setActiveTab('reportes')}
+                style={[styles.tabBtn, activeTab === 'reportes' && styles.tabBtnActive]}
+              >
+                <Ionicons
+                  name="document-text-outline"
+                  size={16}
+                  color={activeTab === 'reportes' ? '#fff' : colors.text}
+                />
+                <Text style={[styles.tabTxt, activeTab === 'reportes' && styles.tabTxtActive]} numberOfLines={1}>
+                  Reportes
+                </Text>
+              </Pressable>
               <Pressable
                 onPress={() => setActiveTab('operacion')}
                 style={[styles.tabBtn, activeTab === 'operacion' && styles.tabBtnActive]}
@@ -1083,19 +1097,6 @@ export default function ProjectDetailScreen() {
                 />
                 <Text style={[styles.tabTxt, activeTab === 'operacion' && styles.tabTxtActive]} numberOfLines={1}>
                   Operacion
-                </Text>
-              </Pressable>
-              <Pressable
-                onPress={() => setActiveTab('cortecaja')}
-                style={[styles.tabBtn, activeTab === 'cortecaja' && styles.tabBtnActive]}
-              >
-                <Ionicons
-                  name="people-outline"
-                  size={16}
-                  color={activeTab === 'cortecaja' ? '#fff' : colors.text}
-                />
-                <Text style={[styles.tabTxt, activeTab === 'cortecaja' && styles.tabTxtActive]} numberOfLines={1}>
-                  Fuerza Laboral
                 </Text>
               </Pressable>
               <Pressable
@@ -1114,8 +1115,8 @@ export default function ProjectDetailScreen() {
             </View>
           </View>
 
-          {activeTab === 'operacion' ? (
-            /* ===== TAB 1: OPERACION - feed limpio (filtros + busqueda + tarjetas) ===== */
+          {activeTab === 'reportes' ? (
+            /* ===== TAB 1: REPORTES - feed limpio (filtros + busqueda + tarjetas) + herramientas de reportes + resumen IA ===== */
             <FlatList
               data={filteredReports}
               keyExtractor={(r) => r.id}
@@ -1125,95 +1126,6 @@ export default function ProjectDetailScreen() {
               contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + 32 }]}
               ListHeaderComponent={
                 <>
-                  {/* Dashboard EVM (Valor Ganado) — destacado arriba de los
-                      accesos operativos diarios: es la vista ejecutiva de
-                      costo/tiempo del proyecto, no una captura de campo.
-                      Ver src/components/DashboardEVM.tsx. */}
-                  <View style={{ marginBottom: spacing.md, gap: spacing.sm }}>
-                    <ActionTile
-                      icon="stats-chart-outline"
-                      title="Control de Costos (EVM)"
-                      subtitle="Valor Ganado: SPI, CPI, Curva S y excepciones"
-                      onPress={() => router.push({ pathname: '/(coord)/projects/[id]/dashboard' as any, params: { id: pid } })}
-                    />
-                    {/* Plano de Avance y Presentación — siempre visibles
-                        (como Dashboard EVM), no pasan por el toggle de
-                        módulos por proyecto. */}
-                    <ActionTile
-                      icon="map-outline"
-                      title="Plano de Avance"
-                      subtitle="Marcadores de estado sobre planos y blueprints"
-                      onPress={() => router.push({ pathname: '/(coord)/projects/[id]/plano-avance' as any, params: { id: pid } })}
-                    />
-                    <ActionTile
-                      icon="easel-outline"
-                      title="Presentación"
-                      subtitle="Informe de actividades semanal — preview y exportar a PPTX"
-                      onPress={() => router.push({ pathname: '/(coord)/projects/[id]/presentacion' as any, params: { id: pid } })}
-                    />
-                  </View>
-
-                  {/* Registrar avance / Visualizar avance — accesos operativos
-                      diarios (Catalogo de Conceptos en si, que es consulta y
-                      administracion, se queda en la pestaña Configuracion). */}
-                  <View style={{ gap: spacing.sm, marginBottom: spacing.md }}>
-                    <ActionTile
-                      icon="create-outline"
-                      title="Registrar avance"
-                      subtitle="Captura diaria en campo — cuanto se ejecuto hoy"
-                      onPress={() => router.push({ pathname: '/(coord)/projects/[id]/registrar-avance' as any, params: { id: pid } })}
-                    />
-                    <ActionTile
-                      icon="bar-chart-outline"
-                      title="Visualizar avance"
-                      subtitle="Reporte de avance por periodo"
-                      onPress={() => router.push({ pathname: '/(coord)/projects/[id]/visualizar-avance' as any, params: { id: pid } })}
-                    />
-                    {/* Módulos piloto del sistema Multi-Proyecto Modular — solo
-                        aparecen si el Coordinador los encendió para este
-                        proyecto (ver pestaña Configuracion > Módulos). */}
-                    {moduloActivo(project?.modulos, 'forestal_arbolado') ? (
-                      <ActionTile
-                        icon="leaf-outline"
-                        title="Forestal y Arbolado"
-                        subtitle="Podas, trasplantes y derribos por estación"
-                        onPress={() => router.push({ pathname: '/(coord)/projects/[id]/forestal-arbolado' as any, params: { id: pid } })}
-                      />
-                    ) : null}
-                    {moduloActivo(project?.modulos, 'seguridad_higiene') ? (
-                      <ActionTile
-                        icon="shield-checkmark-outline"
-                        title="Seguridad e Higiene"
-                        subtitle="Reporte de accidentes y checklist preventivo/correctivo"
-                        onPress={() => router.push({ pathname: '/(coord)/projects/[id]/seguridad-higiene' as any, params: { id: pid } })}
-                      />
-                    ) : null}
-                    {moduloActivo(project?.modulos, 'gestion_riesgos') ? (
-                      <ActionTile
-                        icon="warning-outline"
-                        title="Gestión de Riesgos"
-                        subtitle="Matriz de riesgos por estación/poste y propuesta de control"
-                        onPress={() => router.push({ pathname: '/(coord)/projects/[id]/gestion-riesgos' as any, params: { id: pid } })}
-                      />
-                    ) : null}
-                    {moduloActivo(project?.modulos, 'estudios_proyecto') ? (
-                      <ActionTile
-                        icon="document-text-outline"
-                        title="Estudios y Proyecto Ejecutivo"
-                        subtitle="Avance por disciplina y bitácora de campo"
-                        onPress={() => router.push({ pathname: '/(coord)/projects/[id]/estudios-proyecto' as any, params: { id: pid } })}
-                      />
-                    ) : null}
-                    {moduloActivo(project?.modulos, 'impacto_ambiental') ? (
-                      <ActionTile
-                        icon="earth-outline"
-                        title="Impacto Ambiental"
-                        subtitle="Auditoría de cumplimientos e incumplimientos"
-                        onPress={() => router.push({ pathname: '/(coord)/projects/[id]/impacto-ambiental' as any, params: { id: pid } })}
-                      />
-                    ) : null}
-                  </View>
-
                   {/* Boton GRANDE: Exportar Reportes (PDF / Word / PPT / Excel) _ arriba de los filtros a peticion del Coord. General */}
                   <Pressable
                     onPress={openExportFlow}
@@ -1490,16 +1402,99 @@ export default function ProjectDetailScreen() {
                 ) : null
               }
             />
-          ) : activeTab === 'cortecaja' ? (
-            /* ===== TAB 2: FUERZA LABORAL - personal y maquinaria (corte de caja diario) ===== */
+          ) : activeTab === 'operacion' ? (
+            /* ===== TAB 2: OPERACION - modulos, fuerza laboral, costos y accesos operativos diarios ===== */
             <ScrollView
               contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + 32 }]}
             >
+              {/* Módulos piloto del sistema Multi-Proyecto Modular — solo
+                  aparecen si el Coordinador los encendió para este proyecto
+                  (ver pestaña Configuracion > Módulos). */}
+              <View style={{ gap: spacing.sm, marginBottom: spacing.md }}>
+                {moduloActivo(project?.modulos, 'forestal_arbolado') ? (
+                  <ActionTile
+                    icon="leaf-outline"
+                    title="Forestal y Arbolado"
+                    subtitle="Podas, trasplantes y derribos por estación"
+                    onPress={() => router.push({ pathname: '/(coord)/projects/[id]/forestal-arbolado' as any, params: { id: pid } })}
+                  />
+                ) : null}
+                {moduloActivo(project?.modulos, 'seguridad_higiene') ? (
+                  <ActionTile
+                    icon="shield-checkmark-outline"
+                    title="Seguridad e Higiene"
+                    subtitle="Reporte de accidentes y checklist preventivo/correctivo"
+                    onPress={() => router.push({ pathname: '/(coord)/projects/[id]/seguridad-higiene' as any, params: { id: pid } })}
+                  />
+                ) : null}
+                {moduloActivo(project?.modulos, 'gestion_riesgos') ? (
+                  <ActionTile
+                    icon="warning-outline"
+                    title="Gestión de Riesgos"
+                    subtitle="Matriz de riesgos por estación/poste y propuesta de control"
+                    onPress={() => router.push({ pathname: '/(coord)/projects/[id]/gestion-riesgos' as any, params: { id: pid } })}
+                  />
+                ) : null}
+                {moduloActivo(project?.modulos, 'estudios_proyecto') ? (
+                  <ActionTile
+                    icon="document-text-outline"
+                    title="Estudios y Proyecto Ejecutivo"
+                    subtitle="Avance por disciplina y bitácora de campo"
+                    onPress={() => router.push({ pathname: '/(coord)/projects/[id]/estudios-proyecto' as any, params: { id: pid } })}
+                  />
+                ) : null}
+                {moduloActivo(project?.modulos, 'impacto_ambiental') ? (
+                  <ActionTile
+                    icon="earth-outline"
+                    title="Impacto Ambiental"
+                    subtitle="Auditoría de cumplimientos e incumplimientos"
+                    onPress={() => router.push({ pathname: '/(coord)/projects/[id]/impacto-ambiental' as any, params: { id: pid } })}
+                  />
+                ) : null}
+              </View>
+
               {/* Clima de la zona del proyecto */}
               <WeatherWidget projectId={pid} nodes={flatNodes} />
 
               {/* Fuerza de Trabajo . Personal y Maquinaria derivados de los reportes */}
               <WorkforceTracker projectId={pid} />
+
+              {/* Metas Diarias */}
+              <DailyGoalsPanel projectId={pid} />
+
+              {/* Control de Costos (EVM) */}
+              <View style={{ marginTop: spacing.md, gap: spacing.sm }}>
+                <ActionTile
+                  icon="stats-chart-outline"
+                  title="Control de Costos (EVM)"
+                  subtitle="Valor Ganado: SPI, CPI, Curva S y excepciones"
+                  onPress={() => router.push({ pathname: '/(coord)/projects/[id]/dashboard' as any, params: { id: pid } })}
+                />
+                <ActionTile
+                  icon="create-outline"
+                  title="Registrar avance"
+                  subtitle="Captura diaria en campo — cuanto se ejecuto hoy"
+                  onPress={() => router.push({ pathname: '/(coord)/projects/[id]/registrar-avance' as any, params: { id: pid } })}
+                />
+                <ActionTile
+                  icon="easel-outline"
+                  title="Presentación"
+                  subtitle="Informe de actividades semanal — preview y exportar a PPTX"
+                  onPress={() => router.push({ pathname: '/(coord)/projects/[id]/presentacion' as any, params: { id: pid } })}
+                />
+                <ActionTile
+                  icon="bar-chart-outline"
+                  title="Visualizar avance"
+                  subtitle="Reporte de avance por periodo"
+                  onPress={() => router.push({ pathname: '/(coord)/projects/[id]/visualizar-avance' as any, params: { id: pid } })}
+                />
+                <ActionTile
+                  icon="map-outline"
+                  title="Plano de Avance"
+                  subtitle="Marcadores de estado sobre planos y blueprints"
+                  onPress={() => router.push({ pathname: '/(coord)/projects/[id]/plano-avance' as any, params: { id: pid } })}
+                />
+              </View>
             </ScrollView>
           ) : (
             /* ===== TAB 3: CONFIGURACION - administracion del proyecto ===== */

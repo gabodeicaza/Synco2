@@ -793,6 +793,16 @@ export interface ProjectEvent {
   updated_at: string;
 }
 
+export interface DailyGoal {
+  id: string;
+  project_id: string;
+  text: string;
+  is_completed: boolean;
+  created_at: string;
+  created_by: string;
+  created_by_name?: string;
+}
+
 // ---- Clima (Open-Meteo, sin API key) ---------------------------------------
 export interface WeatherNow {
   tempC: number;
@@ -2066,6 +2076,11 @@ export const api = {
   deleteReport: (rid: string) => request<{ ok: boolean }>('DELETE', `/reports/${rid}`),
 
   listProjectUsers: (pid: string) => request<User[]>('GET', `/projects/${pid}/users`),
+
+  listDailyGoals: (pid: string) => request<DailyGoal[]>('GET', `/projects/${pid}/daily_goals`),
+  createDailyGoal: (pid: string, text: string) => request<DailyGoal>('POST', `/projects/${pid}/daily_goals`, { text }),
+  updateDailyGoal: (pid: string, gid: string, payload: any) => request<DailyGoal>('PATCH', `/projects/${pid}/daily_goals/${gid}`, payload),
+  deleteDailyGoal: (pid: string, gid: string) => request<{ ok: boolean }>('DELETE', `/projects/${pid}/daily_goals/${gid}`),
 
   listMinutas: (pid: string, opts: any = {}) => {
     const qs = new URLSearchParams();

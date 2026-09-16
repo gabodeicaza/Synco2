@@ -27,6 +27,7 @@ import { api, FeedItem, LocationNode, Project, ProjectEvent } from '@/src/api';
 import { colors, radius, shadow, spacing, areaTone } from '@/src/theme';
 import { roleLabel } from '@/src/utils/roles';
 import { HeaderMenu } from '@/src/components/HeaderMenu';
+import { DailyGoalsPanel } from '@/src/components/DailyGoalsPanel';
 import { MyMeetingsPanel } from '@/src/components/MyMeetingsPanel';
 import { ReportPreviewSheet } from '@/src/components/ReportPreviewSheet';
 import { periodToInformeType } from '@/src/components/PeriodSheet';
@@ -772,6 +773,11 @@ export default function SubCoordDashboard() {
         ) : (
           <>
             <MyMeetingsPanel items={myMeetings} loading={myMeetingsLoading} />
+
+            {/* DailyGoalsPanel */}
+            <View style={styles.sprintBlock}>
+              <DailyGoalsPanel projectId={pid} />
+            </View>
 
             {/* Boton Resumen Ejecutivo IA */}
             <View style={styles.exportRow}>

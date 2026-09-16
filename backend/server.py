@@ -921,6 +921,10 @@ async def startup_event():
     # nodos (list_nodes) — antes escaneaba todo el historial de reportes del
     # proyecto sin índice en cada carga del hub.
     await db.reports.create_index([("project_id", 1), ("node_id", 1), ("ultima_lectura", 1)])
+    await db.daily_goals.create_index("project_id")
+    # TTL: "Metas del día" caducan solas a las 24h de creadas — antes se
+    # quedaban visibles para siempre, contradiciendo su propio nombre.
+    await db.daily_goals.create_index("created_at", expireAfterSeconds=86400)
     await db.actividades_curadas.create_index([("project_id", 1), ("area_id", 1)])
     await db.actividades_curadas.create_index("reporte_origen_id")
     await db.actividades_curadas.create_index("id")
@@ -12838,6 +12842,87 @@ async def export_reports_pptx(
         media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
         headers={"Content-Disposition": f'attachment; filename="{fname}"'},
     )
+
+
+# === DAILY GOALS (Metas del día por proyecto) ==============================
+class DailyGoalIn(BaseModel):
+    text: str
+
+
+class DailyGoalPatch(BaseModel):
+    text: Optional[str] = None
+    is_completed: Optional[bool] = None
+
+
+def _goal_out(doc: dict) -> dict:
+    doc.pop("_id", None)
+    return doc
+
+
+@api.get("/projects/{pid}/daily_goals")
+async def list_daily_goals(pid: str, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    cur = db.daily_goals.find({"project_id": pid}).sort("created_at", 1)
+    out = []
+    async for d in cur:
+        out.append(_goal_out(d))
+    return out
+
+
+@api.post("/projects/{pid}/daily_goals")
+async def create_daily_goal(pid: str, body: DailyGoalIn, user: dict = Depends(current_user)):
+    if user["role"] not in (ROLE_COORD, ROLE_JEFE, ROLE_SUB):
+        raise HTTPException(403, "Solo coord, jefe o sub-coordinador pueden crear metas")
+    await ensure_project_access(user, pid)
+    text = (body.text or "").strip()
+    if not text:
+        raise HTTPException(400, "El texto es obligatorio")
+    gid = str(uuid.uuid4())
+    doc = {
+        "id": gid,
+        "project_id": pid,
+        "text": text,
+        "is_completed": False,
+        "created_at": datetime.now(timezone.utc),
+        "created_by": user["id"],
+        "created_by_name": user.get("name", ""),
+    }
+    await db.daily_goals.insert_one(doc)
+    return _goal_out(doc)
+
+
+@api.patch("/projects/{pid}/daily_goals/{gid}")
+async def update_daily_goal(pid: str, gid: str, body: DailyGoalPatch, user: dict = Depends(current_user)):
+    if user["role"] not in (ROLE_COORD, ROLE_JEFE, ROLE_SUB):
+        raise HTTPException(403, "Solo coord, jefe o sub-coordinador pueden modificar metas")
+    await ensure_project_access(user, pid)
+    upd: dict = {}
+    if body.text is not None:
+        t = body.text.strip()
+        if not t:
+            raise HTTPException(400, "Texto inválido")
+        upd["text"] = t
+    if body.is_completed is not None:
+        upd["is_completed"] = bool(body.is_completed)
+    if upd:
+        res = await db.daily_goals.update_one({"id": gid, "project_id": pid}, {"$set": upd})
+        if res.matched_count == 0:
+            raise HTTPException(404, "Meta no encontrada")
+    out = await db.daily_goals.find_one({"id": gid, "project_id": pid})
+    if not out:
+        raise HTTPException(404, "Meta no encontrada")
+    return _goal_out(out)
+
+
+@api.delete("/projects/{pid}/daily_goals/{gid}")
+async def delete_daily_goal(pid: str, gid: str, user: dict = Depends(current_user)):
+    if user["role"] not in (ROLE_COORD, ROLE_JEFE, ROLE_SUB):
+        raise HTTPException(403, "Solo coord, jefe o sub-coordinador pueden eliminar metas")
+    await ensure_project_access(user, pid)
+    res = await db.daily_goals.delete_one({"id": gid, "project_id": pid})
+    if res.deleted_count == 0:
+        raise HTTPException(404, "Meta no encontrada")
+    return {"ok": True}
 
 
 # === AI Summary (Resumen Ejecutivo con IA) ==================================
