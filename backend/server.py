@@ -989,6 +989,8 @@ async def startup_event():
     await db.report_templates.create_index("id", unique=True)
     await db.forestal_registros.create_index("id", unique=True)
     await db.forestal_registros.create_index([("project_id", 1), ("created_at", -1)])
+    await db.forestal_autorizado.create_index("id", unique=True)
+    await db.forestal_autorizado.create_index([("project_id", 1), ("orden", 1)])
     await db.seguridad_reportes.create_index("id", unique=True)
     await db.seguridad_reportes.create_index([("project_id", 1), ("created_at", -1)])
     await db.seguridad_checklist.create_index("id", unique=True)
@@ -1855,6 +1857,127 @@ async def resumen_forestal_registros(pid: str, user: dict = Depends(current_user
         for estacion, conteos in sorted(por_estacion.items())
     ]
     return {"tabla": tabla, "contadores": contadores}
+
+
+@api.get("/projects/{pid}/forestal-registros/semanal")
+async def resumen_forestal_semanal(pid: str, desde: str, user: dict = Depends(current_user)):
+    """Actividades ejecutadas de una semana (6 días, lunes a sábado, a
+    partir de `desde`), para la tabla 'ACTIVIDADES EJECUTADAS SEMANA DEL...'
+    del dashboard de Forestal y Arbolado."""
+    await ensure_project_access(user, pid)
+    try:
+        inicio = date.fromisoformat(desde)
+    except ValueError:
+        raise HTTPException(400, "desde debe ser una fecha ISO (YYYY-MM-DD)")
+    fechas = [(inicio + timedelta(days=i)).isoformat() for i in range(6)]
+    cursor = db.forestal_registros.aggregate([
+        {"$match": {"project_id": pid, "fecha": {"$gte": fechas[0], "$lte": fechas[-1]}}},
+        {"$group": {"_id": {"fecha": "$fecha", "tipo": "$tipo"}, "total": {"$sum": "$cantidad"}}},
+    ])
+    rows = await cursor.to_list(length=5000)
+    por_fecha: Dict[str, Dict[str, int]] = {f: {"poda": 0, "trasplante": 0, "derribo": 0} for f in fechas}
+    for r in rows:
+        f = r["_id"]["fecha"]
+        tipo = r["_id"]["tipo"]
+        if f in por_fecha and tipo in por_fecha[f]:
+            por_fecha[f][tipo] = r["total"]
+    dias = []
+    subtotal = {"poda": 0, "trasplante": 0, "derribo": 0}
+    for f in fechas:
+        conteos = por_fecha[f]
+        for k in subtotal:
+            subtotal[k] += conteos[k]
+        dias.append({"fecha": f, **conteos, "total": sum(conteos.values())})
+    subtotal["total"] = sum(subtotal.values())
+    return {"desde": fechas[0], "hasta": fechas[-1], "dias": dias, "subtotal": subtotal}
+
+
+class ForestalAutorizadoIn(BaseModel):
+    estacion: str
+    orden: int = 0
+    poda: int = 0
+    trasplante: int = 0
+    derribo: int = 0
+    total_dictaminados: int = 0
+
+
+class ForestalAutorizadoPatch(BaseModel):
+    estacion: Optional[str] = None
+    orden: Optional[int] = None
+    poda: Optional[int] = None
+    trasplante: Optional[int] = None
+    derribo: Optional[int] = None
+    total_dictaminados: Optional[int] = None
+
+
+@api.get("/projects/{pid}/forestal-autorizado")
+async def list_forestal_autorizado(pid: str, user: dict = Depends(current_user)):
+    """Renglones del 'RESUMEN ARBOLADO AUTORIZADO MEDIANTE RESOLUCIÓN
+    ADMVA.' (baseline por estación, editable por Coordinador/Sub-Coord) —
+    dato de origen legal, independiente de lo ejecutado en forestal_registros."""
+    await ensure_project_access(user, pid)
+    cursor = db.forestal_autorizado.find({"project_id": pid}).sort("orden", 1)
+    items = await cursor.to_list(length=200)
+    for it in items:
+        it.pop("_id", None)
+    return items
+
+
+@api.post("/projects/{pid}/forestal-autorizado")
+async def create_forestal_autorizado(
+    pid: str, body: ForestalAutorizadoIn, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB)),
+):
+    await ensure_project_access(user, pid)
+    estacion = body.estacion.strip()
+    if not estacion:
+        raise HTTPException(400, "estacion es requerida")
+    doc = {
+        "id": str(uuid.uuid4()),
+        "project_id": pid,
+        "estacion": estacion,
+        "orden": body.orden,
+        "poda": body.poda,
+        "trasplante": body.trasplante,
+        "derribo": body.derribo,
+        "total_dictaminados": body.total_dictaminados,
+        "updated_by": user["id"],
+        "updated_by_name": user["name"],
+        "updated_at": datetime.now(timezone.utc),
+    }
+    await db.forestal_autorizado.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api.patch("/projects/{pid}/forestal-autorizado/{row_id}")
+async def update_forestal_autorizado(
+    pid: str, row_id: str, body: ForestalAutorizadoPatch, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB)),
+):
+    await ensure_project_access(user, pid)
+    row = await db.forestal_autorizado.find_one({"id": row_id, "project_id": pid})
+    if not row:
+        raise HTTPException(404, "Renglón no existe")
+    upd = {k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None}
+    if "estacion" in upd:
+        upd["estacion"] = upd["estacion"].strip()
+        if not upd["estacion"]:
+            raise HTTPException(400, "estacion no puede quedar vacía")
+    upd["updated_by"] = user["id"]
+    upd["updated_by_name"] = user["name"]
+    upd["updated_at"] = datetime.now(timezone.utc)
+    await db.forestal_autorizado.update_one({"id": row_id}, {"$set": upd})
+    row.update(upd)
+    row.pop("_id", None)
+    return row
+
+
+@api.delete("/projects/{pid}/forestal-autorizado/{row_id}")
+async def delete_forestal_autorizado(
+    pid: str, row_id: str, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB)),
+):
+    await ensure_project_access(user, pid)
+    await db.forestal_autorizado.delete_one({"id": row_id, "project_id": pid})
+    return {"ok": True}
 
 
 class SeguridadReporteIn(BaseModel):
