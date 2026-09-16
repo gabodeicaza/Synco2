@@ -1,5 +1,5 @@
 // Dashboard de Sub-coordinador (Fase 4) _ UI unificada con (spec)/index.tsx
-// Layout: fondo azul + hero card + stat cards + paneles + exportar + alertas + feed
+// Layout: fondo azul + hero card + stat cards + exportar + feed
 import React, { useCallback, useEffect, useMemo, useRef, useState, memo } from 'react';
 import {
   ActivityIndicator,
@@ -27,8 +27,6 @@ import { api, FeedItem, LocationNode, Project, ProjectEvent } from '@/src/api';
 import { colors, radius, shadow, spacing, areaTone } from '@/src/theme';
 import { roleLabel } from '@/src/utils/roles';
 import { HeaderMenu } from '@/src/components/HeaderMenu';
-import { DailyGoalsPanel } from '@/src/components/DailyGoalsPanel';
-import { NodeProgressPanel } from '@/src/components/NodeProgressPanel';
 import { MyMeetingsPanel } from '@/src/components/MyMeetingsPanel';
 import { ReportPreviewSheet } from '@/src/components/ReportPreviewSheet';
 import { periodToInformeType } from '@/src/components/PeriodSheet';
@@ -38,12 +36,6 @@ import {
   getStartOfTodayCDMX, getStartOfNaturalWeekCDMX, getStartOfNaturalMonthCDMX
 } from '@/src/utils/tz';
 import { shareWithAutoRecover } from '@/src/utils/share';
-
-type ProgressRow = {
-  node: LocationNode;
-  count: number;
-  pct: number; // 0..100
-};
 
 export default function SubCoordDashboard() {
   const insets = useSafeAreaInsets();
@@ -256,37 +248,6 @@ export default function SubCoordDashboard() {
     const n = nodes.find((x) => x.id === sid);
     return n?.name || null;
   }, [nodes, user]);
-
-  const progressRows: ProgressRow[] = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const r of filteredReports) {
-      const anyR: any = r;
-      const raw = anyR.avance ?? anyR.medicion ?? 0;
-      const val = parseFloat(String(raw));
-      const inc = Number.isFinite(val) ? val : 0;
-      counts.set(r.node_id, (counts.get(r.node_id) || 0) + inc);
-    }
-    const rows: ProgressRow[] = [];
-    for (const n of nodes) {
-      if (typeof n.meta === 'number' && (n.meta || 0) > 0) {
-        const count = counts.get(n.id) || 0;
-        const pct = Math.min(100, Math.round((count / (n.meta || 1)) * 100));
-        rows.push({ node: n, count, pct });
-      }
-    }
-    return rows;
-  }, [nodes, filteredReports]);
-
-  const globalPct = useMemo(() => {
-    if (progressRows.length === 0) return 0;
-    const sum = progressRows.reduce((acc, r) => acc + r.pct, 0);
-    return Math.round(sum / progressRows.length);
-  }, [progressRows]);
-
-  const alerts = useMemo(
-    () => progressRows.filter((r) => r.pct < 50).sort((a, b) => a.pct - b.pct),
-    [progressRows],
-  );
 
   const todayReports = useMemo(
     () => [...filteredReports].sort((a, b) => (a.created_at < b.created_at ? 1 : -1)).slice(0, 12),
@@ -542,12 +503,6 @@ export default function SubCoordDashboard() {
     }
   }
 
-  function getProgressColor(pct: number) {
-    if (pct >= 100) return colors.success;
-    if (pct >= 50) return colors.primary;
-    return colors.error;
-  }
-
   // [DELETE] formatTime local ya no se usa, usamos fmtTimeCDMX de tz.ts
 
   const currentProject = projects.find((p) => p.id === pid);
@@ -596,10 +551,6 @@ export default function SubCoordDashboard() {
                 <Text style={styles.heroTitle} numberOfLines={1}>
                   {currentProject?.name || 'Sin proyecto'}
                 </Text>
-              </View>
-              <View style={styles.heroLeavesPill}>
-                <Ionicons name="speedometer" size={11} color={colors.primary} />
-                <Text style={styles.heroLeavesTxt}>{globalPct}%</Text>
               </View>
             </View>
             <Text style={styles.heroPuesto}>
@@ -822,16 +773,6 @@ export default function SubCoordDashboard() {
           <>
             <MyMeetingsPanel items={myMeetings} loading={myMeetingsLoading} />
 
-            {/* DailyGoalsPanel */}
-            <View style={styles.sprintBlock}>
-              <DailyGoalsPanel projectId={pid} />
-            </View>
-
-            {/* NodeProgressPanel _ con guardia defensiva */}
-            <View style={styles.sprintBlock}>
-              <NodeProgressPanel projectId={pid} reports={reports || []} nodes={nodes} />
-            </View>
-
             {/* Boton Resumen Ejecutivo IA */}
             <View style={styles.exportRow}>
               <Pressable
@@ -878,68 +819,6 @@ export default function SubCoordDashboard() {
                 </View>
                 <Ionicons name="chevron-forward" size={20} color="rgba(255,255,255,0.85)" />
               </Pressable>
-            </View>
-
-            {/* Alertas Semaforo */}
-            <View style={styles.cardWrap}>
-              <View style={styles.card}>
-                <View style={styles.cardHeader}>
-                  <View style={[styles.cardIcon, { backgroundColor: colors.error }]}>
-                    <Ionicons name="warning" size={16} color="#fff" />
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.cardTitle}>Alertas Semaforo</Text>
-                    <Text style={styles.cardSubtitle}>
-                      Nodos con avance menor al 50% de su meta
-                    </Text>
-                  </View>
-                  <View style={styles.badge}>
-                    <Text style={styles.badgeTxt}>{alerts.length}</Text>
-                  </View>
-                </View>
-
-                {alerts.length === 0 ? (
-                  <View style={styles.emptyInline}>
-                    <Ionicons name="checkmark-circle" size={18} color={colors.success} />
-                    <Text style={styles.emptyInlineTxt}>
-                      Sin alertas activas. Todos los nodos con meta van bien.
-                    </Text>
-                  </View>
-                ) : (
-                  <View style={{ gap: spacing.sm }}>
-                    {alerts.slice(0, 10).map((r) => (
-                      <View key={r.node.id} style={styles.alertRow}>
-                        <View style={[styles.dot, { backgroundColor: getProgressColor(r.pct) }]} />
-                        <View style={{ flex: 1 }}>
-                          <Text style={styles.alertName} numberOfLines={1}>
-                            {r.node.name}
-                          </Text>
-                          <View style={styles.alertMiniBar}>
-                            <View
-                              style={[
-                                styles.alertMiniFill,
-                                {
-                                  width: `${Math.max(4, r.pct)}%`,
-                                  backgroundColor: getProgressColor(r.pct),
-                                },
-                              ]}
-                            />
-                          </View>
-                          <Text style={styles.alertMeta}>
-                            {r.count} / {r.node.meta} reportes
-                          </Text>
-                        </View>
-                        <Text style={[styles.alertPct, { color: getProgressColor(r.pct) }]}>
-                          {r.pct}%
-                        </Text>
-                      </View>
-                    ))}
-                    {alerts.length > 10 && (
-                      <Text style={styles.alertMore}>+{alerts.length - 10} mas_</Text>
-                    )}
-                  </View>
-                )}
-              </View>
             </View>
 
             {/* Reportes Recientes con boton compartir WhatsApp */}
@@ -1640,45 +1519,6 @@ const styles = StyleSheet.create({
   tileSub: { fontSize: 12, color: colors.textMuted, marginTop: 2 },
   soonBadge: { fontSize: 9, fontWeight: '800', color: colors.primary, backgroundColor: colors.primaryLight, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, textTransform: 'uppercase', letterSpacing: 0.5 },
 
-  // Sprint blocks
-  sprintBlock: {
-    paddingHorizontal: spacing.md,
-    marginTop: spacing.md,
-  },
-
-  // Card wrap (alerts)
-  cardWrap: {
-    paddingHorizontal: spacing.md,
-    marginTop: spacing.md,
-  },
-  card: {
-    backgroundColor: colors.surface,
-    borderRadius: radius.lg,
-    padding: spacing.md,
-    gap: spacing.sm,
-    ...shadow.card,
-  },
-  cardHeader: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
-  cardIcon: {
-    width: 32,
-    height: 32,
-    borderRadius: radius.full,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  cardTitle: { fontSize: 15, fontWeight: '800', color: colors.text },
-  cardSubtitle: { fontSize: 11, color: colors.textMuted, marginTop: 2, fontWeight: '600' },
-  badge: {
-    minWidth: 26,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: radius.full,
-    backgroundColor: colors.errorBg,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  badgeTxt: { fontSize: 12, fontWeight: '900', color: colors.error },
-
   // Chips
   sectionLabel: {
     fontSize: 11,
@@ -1739,28 +1579,6 @@ const styles = StyleSheet.create({
   },
   exportMainTitle: { color: '#fff', fontSize: 16, fontWeight: '800', letterSpacing: 0.3 },
   exportMainSub: { color: 'rgba(255,255,255,0.85)', fontSize: 12, fontWeight: '600', marginTop: 2 },
-
-  // Alerts list
-  alertRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingVertical: 6 },
-  dot: { width: 10, height: 10, borderRadius: 5 },
-  alertName: { fontSize: 13, fontWeight: '800', color: colors.text },
-  alertMiniBar: {
-    height: 5,
-    borderRadius: radius.full,
-    backgroundColor: colors.border,
-    overflow: 'hidden',
-    marginTop: 4,
-  },
-  alertMiniFill: { height: '100%', borderRadius: radius.full },
-  alertMeta: { fontSize: 11, color: colors.textMuted, fontWeight: '700', marginTop: 2 },
-  alertPct: { fontSize: 14, fontWeight: '900', minWidth: 44, textAlign: 'right' },
-  alertMore: {
-    fontSize: 11,
-    color: colors.textMuted,
-    fontWeight: '700',
-    textAlign: 'center',
-    marginTop: 4,
-  },
 
   // Feed
   feedHeaderRow: {
@@ -1905,8 +1723,6 @@ const styles = StyleSheet.create({
   },
   emptyTitle: { fontSize: 15, fontWeight: '800', color: colors.text },
   emptyMsg: { fontSize: 12, color: colors.textBody, textAlign: 'center', lineHeight: 18 },
-  emptyInline: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8 },
-  emptyInlineTxt: { fontSize: 13, color: colors.textMuted, flex: 1, fontWeight: '600' },
 
   // AI Modal
   aiBackdrop: {

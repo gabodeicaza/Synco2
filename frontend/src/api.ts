@@ -312,6 +312,92 @@ export interface EstudioBitacoraEntry {
   created_at: string;
 }
 
+// === Plano de Avance (marcadores de estado sobre un plano/blueprint) =====
+// Marcadores EMBEBIDOS en el plano — sin historial, solo el estado vigente
+// importa. Coordenadas en fracciones 0-1 del ancho/alto de la imagen base.
+export type PlanoMarkerEstatus = 'sin_iniciar' | 'en_proceso' | 'terminado';
+
+export interface PlanoMarker {
+  id: string;
+  tipo: 'punto' | 'segmento';
+  label: string;
+  x: number;
+  y: number;
+  x2?: number | null;
+  y2?: number | null;
+  estatus: PlanoMarkerEstatus;
+  updated_by: string;
+  updated_by_name: string;
+  updated_at: string;
+}
+
+export interface PlanoAvance {
+  id: string;
+  project_id: string;
+  nombre: string;
+  imagen?: string; // ausente en el listado (GET .../planos-avance), presente en el detalle
+  markers: PlanoMarker[];
+  created_by: string;
+  created_by_name: string;
+  created_at: string;
+  updated_at: string;
+}
+
+// === Presentación (Informe de Actividades semanal) =========================
+export type EstudioDisciplinaAvanceEstatus = 'en_proceso' | 'terminado';
+
+export interface EstudioDisciplinaAvance {
+  id: string;
+  project_id: string;
+  node_id: string | null; // null = seguimiento GLOBAL del proyecto
+  disciplina: string;
+  porcentaje: number;
+  estatus: EstudioDisciplinaAvanceEstatus;
+  updated_by: string;
+  updated_by_name: string;
+  updated_at: string;
+}
+
+export interface InformacionParticularFoto {
+  photo: string;
+  caption: string;
+  destacado: boolean;
+  destacado_label?: string | null;
+}
+
+export interface InformacionParticularBloque {
+  titulo: string;
+  node_id?: string | null;
+  actividades: string[];
+  fotos: InformacionParticularFoto[];
+}
+
+export type PresentacionSeccionTipo =
+  | 'portada' | 'mapa_general' | 'divisor' | 'financiero'
+  | 'seguimiento_estudios' | 'croquis_estacion' | 'informacion_particular' | 'avance_grafico';
+
+export interface PresentacionSeccion {
+  id: string;
+  tipo: PresentacionSeccionTipo;
+  orden: number;
+  titulo?: string | null;
+  node_id?: string | null;
+  plano_id?: string | null;
+  bloques?: InformacionParticularBloque[];
+}
+
+export interface Presentacion {
+  id: string;
+  project_id: string;
+  fecha: string;
+  titulo: string;
+  secciones: PresentacionSeccion[];
+  created_by: string;
+  created_by_name: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface AmbientalAuditoriaItem {
   id: string;
   project_id: string;
@@ -389,7 +475,6 @@ export interface LocationNode {
   target_lat?: number | null;
   target_lon?: number | null;
   target_elev?: number | null;
-  meta?: number | null;
   avance_actual?: number | null;
   metadata?: Record<string, any> | null;
   cover_image?: string | null;
@@ -429,12 +514,43 @@ export interface Invitation {
   role: 'sub_coordinador' | 'especialista';
   area_id?: string | null;
   puesto?: string | null;
+  no_control?: string | null;
   scope_node_id?: string | null;
   scope_node_ids: string[];
   status: 'pending' | 'accepted' | 'revoked' | 'removed';
   accepted_user_id?: string | null;
   created_at: string;
   expires_at: string;
+}
+
+// === Carga masiva de invitaciones por Excel ================================
+export type InvitationBulkEstado = 'ok' | 'error' | 'duplicado';
+
+export interface InvitationBulkRow {
+  fila: number;
+  no_control?: string | null;
+  name: string;
+  puesto?: string | null;
+  area_name?: string | null;
+  role?: 'sub_coordinador' | 'especialista' | null;
+  email: string;
+  area_id?: string | null;
+  estado: InvitationBulkEstado;
+  motivo?: string | null;
+}
+
+export interface InvitationBulkValidateResponse {
+  resumen: { total: number; ok: number; error: number; duplicado: number };
+  filas: InvitationBulkRow[];
+}
+
+export interface InvitationBulkCommitResult {
+  creados: number;
+  omitidos: number;
+  con_error: number;
+  invitations: Invitation[];
+  errores: InvitationBulkRow[];
+  duplicados: InvitationBulkRow[];
 }
 
 export interface Report {
@@ -675,16 +791,6 @@ export interface ProjectEvent {
   attendee_names?: string[];
   created_at: string;
   updated_at: string;
-}
-
-export interface DailyGoal {
-  id: string;
-  project_id: string;
-  text: string;
-  is_completed: boolean;
-  created_at: string;
-  created_by: string;
-  created_by_name?: string;
 }
 
 // ---- Clima (Open-Meteo, sin API key) ---------------------------------------
@@ -1274,6 +1380,8 @@ export const api = {
   login: (email: string, password: string) =>
     request<{ token: string; user: User }>('POST', '/auth/login', { email, password }),
   me: () => request<User>('GET', '/auth/me'),
+  changePassword: (current_password: string, new_password: string) =>
+    request<{ ok: boolean }>('POST', '/auth/change_password', { current_password, new_password }),
 
   listCoordinators: () => request<User[]>('GET', '/admin/coordinators'),
   createCoordinator: (body: { name: string; email: string; password: string }) =>
@@ -1348,6 +1456,62 @@ export const api = {
     }
     return data as LocationNode;
   },
+
+  // `nombre` va como QUERY PARAM (no campo de FormData): `nativeMultipartUpload`
+  // arma el multipart solo con `file` y no soporta campos de texto extra — ver
+  // nota en `upload_plano_avance` (backend/server.py).
+  uploadPlanoAvance: async (
+    pid: string,
+    nombre: string,
+    file: { uri: string; name: string; mimeType?: string | null },
+  ): Promise<PlanoAvance> => {
+    if (!file || !file.uri) {
+      Alert.alert('Error de Subida', 'No se ha seleccionado ninguna imagen para el plano.');
+      throw new ApiError(0, 'Archivo o URI no proporcionado');
+    }
+    const isWeb = Platform.OS === 'web';
+    const fileName = file.name || 'plano.jpg';
+    const mime = file.mimeType || 'image/jpeg';
+    const url = `${BASE}/projects/${pid}/planos-avance?nombre=${encodeURIComponent(nombre)}`;
+
+    if (!isWeb) {
+      return nativeMultipartUpload<PlanoAvance>(url, file.uri, fileName, mime, 'plano');
+    }
+
+    const form = new FormData();
+    const resBlob = await fetch(file.uri);
+    const blob = await resBlob.blob();
+    try {
+      const f = new File([blob], fileName, { type: mime });
+      form.append('file', f);
+    } catch {
+      form.append('file', blob, fileName);
+    }
+    const headers = await authHeader();
+    const res = await fetch(url, { method: 'POST', headers, body: form as any });
+    const text = await res.text();
+    const data = text ? safeJson(text) : null;
+    if (!res.ok) {
+      const msg = (data && (data as any).detail) || `HTTP ${res.status}`;
+      throw new ApiError(res.status, typeof msg === 'string' ? msg : JSON.stringify(msg));
+    }
+    return data as PlanoAvance;
+  },
+  listPlanosAvance: (pid: string) => request<PlanoAvance[]>('GET', `/projects/${pid}/planos-avance`),
+  getPlanoAvance: (pid: string, planoId: string) => request<PlanoAvance>('GET', `/projects/${pid}/planos-avance/${planoId}`),
+  updatePlanoAvance: (pid: string, planoId: string, body: Partial<{ nombre: string }>) =>
+    request<PlanoAvance>('PATCH', `/projects/${pid}/planos-avance/${planoId}`, body),
+  deletePlanoAvance: (pid: string, planoId: string) =>
+    request<{ ok: boolean }>('DELETE', `/projects/${pid}/planos-avance/${planoId}`),
+  createPlanoMarker: (pid: string, planoId: string, body: {
+    tipo: 'punto' | 'segmento'; label: string; x: number; y: number; x2?: number; y2?: number; estatus?: PlanoMarkerEstatus;
+  }) => request<PlanoMarker>('POST', `/projects/${pid}/planos-avance/${planoId}/markers`, body),
+  updatePlanoMarker: (pid: string, planoId: string, markerId: string, body: Partial<{
+    label: string; x: number; y: number; x2: number; y2: number; estatus: PlanoMarkerEstatus;
+  }>) => request<PlanoMarker>('PATCH', `/projects/${pid}/planos-avance/${planoId}/markers/${markerId}`, body),
+  deletePlanoMarker: (pid: string, planoId: string, markerId: string) =>
+    request<{ ok: boolean }>('DELETE', `/projects/${pid}/planos-avance/${planoId}/markers/${markerId}`),
+  planoSnapshotUrl: (pid: string, planoId: string) => `${BASE}/projects/${pid}/planos-avance/${planoId}/snapshot.png`,
 
   deleteNodeCover: (pid: string, nid: string) =>
     request<LocationNode>('DELETE', `/projects/${pid}/nodes/${nid}/cover`),
@@ -1635,6 +1799,37 @@ export const api = {
   createEstudioBitacora: (pid: string, body: { disciplina: EstudioDisciplina; texto: string; fecha?: string }) =>
     request<EstudioBitacoraEntry>('POST', `/projects/${pid}/estudios-bitacora`, body),
 
+  // === Presentación: seguimiento de Estudios y Análisis por disciplina ===
+  // (catálogo FIJO de 10 disciplinas, distinto del EstudioActividad libre de
+  // arriba — ver frontend/src/utils/estudioDisciplinas.ts)
+  listEstudioDisciplinaAvance: (pid: string, nodeId?: string | null) =>
+    request<EstudioDisciplinaAvance[]>('GET', `/projects/${pid}/estudios-disciplina-avance${nodeId !== undefined && nodeId !== null ? `?node_id=${nodeId}` : ''}`),
+  upsertEstudioDisciplinaAvance: (pid: string, body: {
+    node_id?: string | null; disciplina: string; porcentaje: number; estatus: EstudioDisciplinaAvanceEstatus;
+  }) => request<EstudioDisciplinaAvance>('PUT', `/projects/${pid}/estudios-disciplina-avance`, body),
+
+  // === Presentación (Informe de Actividades semanal) ===
+  listPresentaciones: (pid: string) => request<Presentacion[]>('GET', `/projects/${pid}/presentaciones`),
+  createPresentacion: (pid: string, body: { fecha: string; titulo?: string }) =>
+    request<Presentacion>('POST', `/projects/${pid}/presentaciones`, { project_id: pid, ...body }),
+  getPresentacion: (pid: string, presId: string) => request<Presentacion>('GET', `/projects/${pid}/presentaciones/${presId}`),
+  updatePresentacion: (pid: string, presId: string, body: Partial<{ fecha: string; titulo: string }>) =>
+    request<Presentacion>('PATCH', `/projects/${pid}/presentaciones/${presId}`, body),
+  deletePresentacion: (pid: string, presId: string) =>
+    request<{ ok: boolean }>('DELETE', `/projects/${pid}/presentaciones/${presId}`),
+  addPresentacionSeccion: (pid: string, presId: string, body: {
+    tipo: PresentacionSeccionTipo; orden?: number; titulo?: string; node_id?: string; plano_id?: string;
+    bloques?: InformacionParticularBloque[];
+  }) => request<PresentacionSeccion>('POST', `/projects/${pid}/presentaciones/${presId}/secciones`, body),
+  updatePresentacionSeccion: (pid: string, presId: string, secId: string, body: Partial<{
+    orden: number; titulo: string; node_id: string; plano_id: string;
+  }>) => request<PresentacionSeccion>('PATCH', `/projects/${pid}/presentaciones/${presId}/secciones/${secId}`, body),
+  deletePresentacionSeccion: (pid: string, presId: string, secId: string) =>
+    request<{ ok: boolean }>('DELETE', `/projects/${pid}/presentaciones/${presId}/secciones/${secId}`),
+  updateInformacionParticular: (pid: string, presId: string, secId: string, bloques: InformacionParticularBloque[]) =>
+    request<PresentacionSeccion>('PATCH', `/projects/${pid}/presentaciones/${presId}/secciones/${secId}/informacion-particular`, { bloques }),
+  presentacionExportUrl: (pid: string, presId: string) => `${BASE}/projects/${pid}/presentaciones/${presId}/export.pptx`,
+
   // === Módulo piloto: Impacto Ambiental ===
   listAmbientalAuditoria: (pid: string) => request<AmbientalAuditoriaItem[]>('GET', `/projects/${pid}/ambiental-auditoria`),
   createAmbientalAuditoria: (pid: string, body: {
@@ -1644,10 +1839,59 @@ export const api = {
   listInvitations: (pid: string) => request<Invitation[]>('GET', `/projects/${pid}/invitations`),
   createInvitation: (pid: string, body: any) => request<Invitation>('POST', `/projects/${pid}/invitations`, body),
   revokeInvitation: (iid: string) => request<{ ok: boolean }>('DELETE', `/invitations/${iid}`),
-  updateTeamMember: (pid: string, uid: string, body: { name?: string; email?: string; puesto?: string; area_id?: string }) =>
+  updateTeamMember: (pid: string, uid: string, body: { name?: string; email?: string; puesto?: string; no_control?: string; area_id?: string }) =>
     request<User>('PATCH', `/projects/${pid}/team/${uid}`, body),
   removeTeamMember: (pid: string, uid: string) =>
     request<{ ok: boolean }>('DELETE', `/projects/${pid}/team/${uid}`),
+  resetTeamMemberPassword: (pid: string, uid: string) =>
+    request<{ ok: boolean; temp_password: string }>('POST', `/projects/${pid}/team/${uid}/reset_password`),
+
+  // ---- Carga masiva de invitaciones por Excel ------------------------------
+  downloadInvitationsBulkPlantilla: async (pid: string): Promise<{ blob: Blob; filename: string }> => {
+    const tok = await getToken();
+    const res = await fetch(`${BASE}/projects/${pid}/invitations/bulk_import/plantilla.xlsx`, {
+      method: 'GET',
+      headers: tok ? { Authorization: `Bearer ${tok}` } : {},
+    });
+    if (!res.ok) throw new ApiError(res.status, await _downloadErrorMessage(res, 'Error al descargar la plantilla'));
+    const cd = res.headers.get('Content-Disposition') || '';
+    const m = cd.match(/filename="?([^"]+)"?/);
+    return { blob: await res.blob(), filename: (m && m[1]) || 'plantilla_invitaciones_synco.xlsx' };
+  },
+  invitationsBulkValidate: async (
+    pid: string,
+    file: { uri: string; name: string; mimeType?: string | null },
+  ): Promise<InvitationBulkValidateResponse> => {
+    if (!file || !file.uri) throw new ApiError(0, 'Archivo o URI no proporcionado');
+    const isWeb = Platform.OS === 'web';
+    const fileName = file.name || 'invitaciones.xlsx';
+    const mime = file.mimeType || 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    const url = `${BASE}/projects/${pid}/invitations/bulk_import/validate`;
+
+    if (!isWeb) {
+      return nativeMultipartUpload<InvitationBulkValidateResponse>(url, file.uri, fileName, mime, 'invitaciones_bulk');
+    }
+    const form = new FormData();
+    const resBlob = await fetch(file.uri);
+    const blob = await resBlob.blob();
+    try {
+      const f = new File([blob], fileName, { type: mime });
+      form.append('file', f);
+    } catch {
+      form.append('file', blob, fileName);
+    }
+    const headers = await authHeader();
+    const res = await fetch(url, { method: 'POST', headers, body: form as any });
+    const text = await res.text();
+    const data = text ? safeJson(text) : null;
+    if (!res.ok) {
+      const msg = (data && (data as any).detail) || `HTTP ${res.status}`;
+      throw new ApiError(res.status, typeof msg === 'string' ? msg : JSON.stringify(msg));
+    }
+    return data as InvitationBulkValidateResponse;
+  },
+  invitationsBulkCommit: (pid: string, rows: InvitationBulkRow[]) =>
+    request<InvitationBulkCommitResult>('POST', `/projects/${pid}/invitations/bulk_import/commit`, { rows }),
 
   getReportTemplates: () => request<ReportTemplate[]>('GET', '/report-templates'),
   createReportTemplate: (body: { code: string; name: string; category: string; fields: ReportTemplateField[] }) =>
@@ -1822,11 +2066,6 @@ export const api = {
   deleteReport: (rid: string) => request<{ ok: boolean }>('DELETE', `/reports/${rid}`),
 
   listProjectUsers: (pid: string) => request<User[]>('GET', `/projects/${pid}/users`),
-
-  listDailyGoals: (pid: string) => request<DailyGoal[]>('GET', `/projects/${pid}/daily_goals`),
-  createDailyGoal: (pid: string, text: string) => request<DailyGoal>('POST', `/projects/${pid}/daily_goals`, { text }),
-  updateDailyGoal: (pid: string, gid: string, payload: any) => request<DailyGoal>('PATCH', `/projects/${pid}/daily_goals/${gid}`, payload),
-  deleteDailyGoal: (pid: string, gid: string) => request<{ ok: boolean }>('DELETE', `/projects/${pid}/daily_goals/${gid}`),
 
   listMinutas: (pid: string, opts: any = {}) => {
     const qs = new URLSearchParams();
@@ -2242,6 +2481,8 @@ export const api = {
     request<AnalisisPeriodo>('GET', `/projects/${pid}/analisis_periodo?start=${start}&end=${end}`),
   analisisPeriodoCurvaS: (pid: string) =>
     request<CurvaS>('GET', `/projects/${pid}/analisis_periodo/curva_s`),
+  analisisPeriodoPresupuestoTotal: (pid: string) =>
+    request<{ project_id: string; presupuesto_total: string }>('GET', `/projects/${pid}/analisis_periodo/presupuesto_total`),
   analisisPeriodoExcepciones: (pid: string) =>
     request<ExcepcionEvm[]>('GET', `/projects/${pid}/analisis_periodo/excepciones`),
   analisisPeriodoActividades: (pid: string) =>

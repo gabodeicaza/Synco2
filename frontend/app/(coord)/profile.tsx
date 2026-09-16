@@ -82,6 +82,20 @@ export default function CoordProfile() {
           </Pressable>
         )}
 
+        <Pressable
+          onPress={() => router.push('/(coord)/cambiar-password')}
+          style={({ pressed }) => [styles.actionTile, pressed && { opacity: 0.85 }]}
+        >
+          <View style={styles.actionIcon}>
+            <Ionicons name="key" size={20} color={colors.primary} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.actionTitle}>Cambiar mi contraseña</Text>
+            <Text style={styles.actionSub}>Actualiza tu contraseña dando la actual</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
+        </Pressable>
+
         <Button label="Cerrar sesion" variant="danger" onPress={onLogout} fullWidth />
       </ScrollView>
     </View>

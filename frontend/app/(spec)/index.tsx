@@ -24,8 +24,6 @@ import { api, FeedItem, FeedResponse, Project, ProjectEvent } from '@/src/api';
 import { storage } from '@/src/utils/storage';
 import { ReportPeriod, periodToInformeType } from '@/src/components/PeriodSheet';
 import { downloadBlob } from '@/src/utils/downloadBlob';
-import { DailyGoalsPanel } from '@/src/components/DailyGoalsPanel';
-import { NodeProgressPanel } from '@/src/components/NodeProgressPanel';
 import { MyMeetingsPanel } from '@/src/components/MyMeetingsPanel';
 import { ReportPreviewSheet } from '@/src/components/ReportPreviewSheet';
 import { HistoryCalendarModal } from '@/src/components/HistoryCalendarModal';
@@ -326,11 +324,7 @@ export default function SpecFeedScreen() {
       </View>
 
       {projectId ? (
-        <>
-          <MyMeetingsPanel items={myMeetings} loading={myMeetingsLoading} />
-          <View style={styles.sprintBlock}><DailyGoalsPanel projectId={projectId} /></View>
-          <View style={styles.sprintBlock}><NodeProgressPanel projectId={projectId} reports={reports} /></View>
-        </>
+        <MyMeetingsPanel items={myMeetings} loading={myMeetingsLoading} />
       ) : null}
 
       <ExportRow busy={exportBusy} onPress={openExportFlow} />
@@ -503,7 +497,9 @@ const HeroCard = memo(({ user, project }: any) => {
           </View>
           <View style={styles.heroLeavesPill}>
             <Ionicons name="flag" size={11} color={colors.primary} />
-            <Text style={styles.heroLeavesTxt}>{(user?.scope_node_ids || []).length} hojas</Text>
+            <Text style={styles.heroLeavesTxt}>
+              {(user?.scope_node_ids || []).length > 0 ? `${user.scope_node_ids.length} hojas` : 'Todo el proyecto'}
+            </Text>
           </View>
         </View>
         {user?.puesto ? <Text style={styles.heroPuesto}>{user.puesto}</Text> : null}
@@ -708,7 +704,6 @@ const styles = StyleSheet.create({
   statIcon: { width: 28, height: 28, borderRadius: 14, alignItems: 'center', justifyContent: 'center', marginBottom: 4 },
   statValue: { fontSize: 22, fontWeight: '900', color: colors.text },
   statLabel: { fontSize: 10, color: colors.textMuted, fontWeight: '800', textTransform: 'uppercase' },
-  sprintBlock: { paddingHorizontal: spacing.md, marginTop: spacing.md },
   exportRow: { paddingHorizontal: spacing.md, marginTop: spacing.md },
   exportMainBtn: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: colors.primary, padding: spacing.md, borderRadius: radius.lg, ...shadow.card },
   exportMainTitle: { color: '#fff', fontSize: 16, fontWeight: '800' },

@@ -242,7 +242,7 @@ export default function TreeBuilderScreen() {
     }
   }
 
-  async function onSave(payload: { name: string; is_leaf: boolean; measurement_type: MeasurementType | null; target_lat: number | null; target_lon: number | null; target_elev: number | null; meta: number | null; acceso_predio: string | null; situacion_social: string | null }) {
+  async function onSave(payload: { name: string; is_leaf: boolean; measurement_type: MeasurementType | null; target_lat: number | null; target_lon: number | null; target_elev: number | null; acceso_predio: string | null; situacion_social: string | null }) {
     if (!editor) return;
     try {
       const isCoordLeaf = payload.is_leaf && payload.measurement_type === 'coord_latlon';
@@ -256,7 +256,6 @@ export default function TreeBuilderScreen() {
           name: payload.name,
           is_leaf: payload.is_leaf,
           measurement_type: payload.is_leaf ? payload.measurement_type : null,
-          meta: payload.meta,
           acceso_predio: payload.acceso_predio,
           situacion_social: payload.situacion_social,
           ...targets,
@@ -269,7 +268,6 @@ export default function TreeBuilderScreen() {
           name: payload.name,
           is_leaf: payload.is_leaf,
           measurement_type: payload.is_leaf ? payload.measurement_type : null,
-          meta: payload.meta,
           acceso_predio: payload.acceso_predio,
           situacion_social: payload.situacion_social,
           ...targets,
@@ -554,7 +552,7 @@ function NodeEditorModal({
   editor: EditorMode | null;
   pid: string;
   onClose: () => void;
-  onSave: (p: { name: string; is_leaf: boolean; measurement_type: MeasurementType | null; target_lat: number | null; target_lon: number | null; target_elev: number | null; meta: number | null; acceso_predio: string | null; situacion_social: string | null }) => Promise<void>;
+  onSave: (p: { name: string; is_leaf: boolean; measurement_type: MeasurementType | null; target_lat: number | null; target_lon: number | null; target_elev: number | null; acceso_predio: string | null; situacion_social: string | null }) => Promise<void>;
   onCoverChanged?: () => Promise<void> | void;
 }) {
   const insets = useSafeAreaInsets();
@@ -564,7 +562,6 @@ function NodeEditorModal({
   const [tLat, setTLat] = useState('');
   const [tLon, setTLon] = useState('');
   const [tElev, setTElev] = useState('');
-  const [metaStr, setMetaStr] = useState('');
   const [accesoPredio, setAccesoPredio] = useState<string | null>(null);
   const [situacionSocial, setSituacionSocial] = useState('');
   const [busy, setBusy] = useState(false);
@@ -585,14 +582,12 @@ function NodeEditorModal({
       setTLat(n.target_lat != null ? String(n.target_lat) : '');
       setTLon(n.target_lon != null ? String(n.target_lon) : '');
       setTElev(n.target_elev != null ? String(n.target_elev) : '');
-      setMetaStr(n.meta != null ? String(n.meta) : '');
       setAccesoPredio(n.acceso_predio || null);
       setSituacionSocial(n.situacion_social || '');
       setCoverUri(n.cover_image || null);
     } else {
       setName(''); setIsLeaf(false); setMtype(null);
       setTLat(''); setTLon(''); setTElev('');
-      setMetaStr('');
       setAccesoPredio(null);
       setSituacionSocial('');
       setCoverUri(null);
@@ -654,12 +649,6 @@ function NodeEditorModal({
     }
     setBusy(true);
     try {
-      const parsedMeta = (() => {
-        const s = (metaStr || '').trim().replace(',', '.');
-        if (!s) return null;
-        const n = Number(s);
-        return Number.isFinite(n) && n >= 0 ? n : null;
-      })();
       await onSave({
         name: n,
         is_leaf: isLeaf,
@@ -667,7 +656,6 @@ function NodeEditorModal({
         target_lat: parsedLat,
         target_lon: parsedLon,
         target_elev: parsedElev,
-        meta: parsedMeta,
         acceso_predio: isSubtramoContext ? accesoPredio : null,
         situacion_social: isSubtramoContext ? (situacionSocial.trim() || null) : null,
       });
@@ -802,27 +790,6 @@ function NodeEditorModal({
                     returnKeyType="done"
                   />
                 </View>
-              </View>
-
-              <View>
-                <Text style={styles.label}>Meta (opcional)</Text>
-                <View style={styles.inputWrap}>
-                  <Ionicons name="flag-outline" size={18} color={colors.textMuted} />
-                  <TextInput
-                    value={metaStr}
-                    onChangeText={setMetaStr}
-                    placeholder="Ej. 100 (total de metros a excavar)"
-                    placeholderTextColor={colors.textMuted}
-                    style={styles.input}
-                    keyboardType="numbers-and-punctuation"
-                    autoCorrect={false}
-                    editable={!busy}
-                    returnKeyType="done"
-                  />
-                </View>
-                <Text style={styles.metaHelp}>
-                  Cantidad total a alcanzar en este nodo (m, m_, piezas, etc.). Se usa para calcular el avance en el Panel de Progreso.
-                </Text>
               </View>
 
               {/* === Acceso al Predio / Situacion Social - solo Subtramo (profundidad 1) === */}

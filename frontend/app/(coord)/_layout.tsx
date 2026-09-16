@@ -82,6 +82,8 @@ export default function CoordLayout() {
       <Tabs.Screen name="projects/[id]" options={{ href: null }} />
       <Tabs.Screen name="coordinators" options={{ href: null }} />
       <Tabs.Screen name="report-templates" options={{ href: null }} />
+      {/* Cambiar mi contraseña — alcanzable desde Mi perfil, sin tab visible. */}
+      <Tabs.Screen name="cambiar-password" options={{ href: null }} />
     </Tabs>
   );
 }

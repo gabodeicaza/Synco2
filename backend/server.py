@@ -226,6 +226,11 @@ class LoginIn(BaseModel):
     password: str
 
 
+class ChangePasswordIn(BaseModel):
+    current_password: str
+    new_password: str
+
+
 class BootstrapIn(BaseModel):
     secret: str
     email: EmailStr
@@ -241,6 +246,7 @@ class UserOut(BaseModel):
     area: Optional[str] = None
     area_id: Optional[str] = None
     puesto: Optional[str] = None
+    no_control: Optional[str] = None
     scope_node_id: Optional[str] = None
     scope_node_ids: List[str] = Field(default_factory=list)
     project_ids: List[str] = Field(default_factory=list)
@@ -409,9 +415,6 @@ class LocationNodeIn(BaseModel):
     target_lat: Optional[float] = None
     target_lon: Optional[float] = None
     target_elev: Optional[float] = None
-    # Meta/objetivo numérico del nodo (p.ej. metros lineales, puntos, etc.).
-    # Se utiliza para calcular % de avance vs. última lectura registrada.
-    meta: Optional[float] = None
     # Estatus de acceso al predio y situación social/liberación física, capturados
     # a nivel de nodo (vigentes al momento de consulta, no por reporte/período).
     # Usados en la página de resumen por subtramo del export PDF/PPTX.
@@ -462,9 +465,14 @@ class InvitationIn(BaseModel):
     email: EmailStr
     name: str
     role: Literal["sub_coordinador", "especialista", "jefe_proyecto"]
-    # Sub-coordinador: scope_node_id (un nodo padre)
+    no_control: Optional[str] = None
+    # Sub-coordinador: scope_node_id (legacy — el sub-coordinador ya tiene
+    # acceso GLOBAL al proyecto, este campo ya no se valida ni se usa para
+    # restringir nada, se conserva solo por compatibilidad con datos viejos)
     scope_node_id: Optional[str] = None
-    # Especialista: area_id, puesto, scope_node_ids (lista de hojas)
+    # Especialista: area_id, puesto. scope_node_ids queda vacío por defecto:
+    # un especialista sin scope_node_ids tiene acceso GLOBAL al proyecto
+    # (ver `ensure_project_access`/checks de scope en reportes y nodos).
     area_id: Optional[str] = None
     puesto: Optional[str] = None
     scope_node_ids: List[str] = Field(default_factory=list)
@@ -480,6 +488,7 @@ class InvitationOut(BaseModel):
     role: str
     area_id: Optional[str] = None
     puesto: Optional[str] = None
+    no_control: Optional[str] = None
     scope_node_id: Optional[str] = None
     scope_node_ids: List[str] = Field(default_factory=list)
     status: str  # "pending" | "accepted" | "revoked"
@@ -819,6 +828,7 @@ def user_to_out(u: dict) -> dict:
         "area": u.get("area"),
         "area_id": u.get("area_id"),
         "puesto": u.get("puesto"),
+        "no_control": u.get("no_control"),
         "scope_node_id": u.get("scope_node_id"),
         "scope_node_ids": u.get("scope_node_ids") or [],
         "project_ids": u.get("project_ids") or [],
@@ -911,10 +921,6 @@ async def startup_event():
     # nodos (list_nodes) — antes escaneaba todo el historial de reportes del
     # proyecto sin índice en cada carga del hub.
     await db.reports.create_index([("project_id", 1), ("node_id", 1), ("ultima_lectura", 1)])
-    await db.daily_goals.create_index("project_id")
-    # TTL: "Metas del día" caducan solas a las 24h de creadas — antes se
-    # quedaban visibles para siempre, contradiciendo su propio nombre.
-    await db.daily_goals.create_index("created_at", expireAfterSeconds=86400)
     await db.actividades_curadas.create_index([("project_id", 1), ("area_id", 1)])
     await db.actividades_curadas.create_index("reporte_origen_id")
     await db.actividades_curadas.create_index("id")
@@ -991,6 +997,17 @@ async def startup_event():
     await db.estudios_bitacora.create_index([("project_id", 1), ("created_at", -1)])
     await db.ambiental_auditoria.create_index("id", unique=True)
     await db.ambiental_auditoria.create_index([("project_id", 1), ("created_at", -1)])
+    # Presentación — seguimiento de estudios por disciplina: un valor
+    # ACTUAL por (proyecto, estación|None=global, disciplina), nunca una
+    # lista histórica — de ahí el índice único que habilita upsert real.
+    await db.estudio_disciplina_avance.create_index("id", unique=True)
+    await db.estudio_disciplina_avance.create_index(
+        [("project_id", 1), ("node_id", 1), ("disciplina", 1)], unique=True,
+    )
+    await db.planos_avance.create_index("id", unique=True)
+    await db.planos_avance.create_index([("project_id", 1), ("created_at", -1)])
+    await db.presentaciones.create_index("id", unique=True)
+    await db.presentaciones.create_index([("project_id", 1), ("fecha", -1)])
 
     # --- Seed de plantillas de reporte estructurado (idempotente por `code`) ---
     try:
@@ -1168,6 +1185,22 @@ async def login(body: LoginIn):
 @api.get("/auth/me")
 async def me(user: dict = Depends(current_user)):
     return user_to_out(user)
+
+
+@api.post("/auth/change_password")
+async def change_password(body: ChangePasswordIn, user: dict = Depends(current_user)):
+    """Auto-servicio: cualquier usuario autenticado cambia su propia
+    contraseña dando la actual. Distinto de POST .../reset_password (que
+    genera una temporal y solo puede ejecutarlo un Coordinador sobre un
+    Sub-coordinador/Especialista) — aquí el usuario ya sabe su contraseña
+    y solo la reemplaza por una elegida por él mismo."""
+    if not verify_pw(body.current_password, user["password"]):
+        raise HTTPException(401, "Contraseña actual incorrecta")
+    new_pw = (body.new_password or "").strip()
+    if len(new_pw) < 6:
+        raise HTTPException(400, "La nueva contraseña debe tener mínimo 6 caracteres")
+    await db.users.update_one({"id": user["id"]}, {"$set": {"password": hash_pw(new_pw)}})
+    return {"ok": True}
 
 
 # === PUSH NOTIFICATIONS (Expo) ==============================================
@@ -2150,6 +2183,91 @@ async def create_estudio_bitacora(pid: str, body: EstudioBitacoraIn, user: dict 
     return doc
 
 
+# --- Presentación: seguimiento de Estudios y Análisis por disciplina -------
+# Catálogo FIJO de 10 disciplinas (a diferencia de EstudioActividad arriba,
+# que es una lista libre de nombres) — necesario para la infografía de línea
+# de tiempo del reporte semanal "Presentación", global y por Estación.
+# Espejo obligatorio en frontend/src/utils/estudioDisciplinas.ts (mismo
+# criterio que MODULOS_KEYS/modulos.ts: agregar una disciplina requiere
+# declararla en AMBOS lados).
+ESTUDIO_DISCIPLINA_AVANCE_KEYS = [
+    "topografia", "vuelo_lidar", "msu_mecanica_suelos", "salvamento_arqueologico",
+    "urbano", "ambiental", "geofisica", "hidrologico", "riesgos", "instalaciones_municipales",
+]
+ESTUDIO_DISCIPLINA_AVANCE_LABEL = {
+    "topografia": "Topografía",
+    "vuelo_lidar": "Vuelo Lidar",
+    "msu_mecanica_suelos": "MSU",
+    "salvamento_arqueologico": "Salvamento Arqueológico",
+    "urbano": "Urbano",
+    "ambiental": "Ambiental",
+    "geofisica": "Geofísica",
+    "hidrologico": "Hidrológico",
+    "riesgos": "Riesgos",
+    "instalaciones_municipales": "Instalaciones Municipales",
+}
+
+
+class EstudioDisciplinaAvanceIn(BaseModel):
+    node_id: Optional[str] = None  # None = seguimiento GLOBAL del proyecto
+    disciplina: Literal[
+        "topografia", "vuelo_lidar", "msu_mecanica_suelos", "salvamento_arqueologico",
+        "urbano", "ambiental", "geofisica", "hidrologico", "riesgos", "instalaciones_municipales",
+    ]
+    porcentaje: int = 0
+    estatus: Literal["en_proceso", "terminado"] = "en_proceso"
+
+
+@api.get("/projects/{pid}/estudios-disciplina-avance")
+async def list_estudio_disciplina_avance(pid: str, node_id: Optional[str] = None, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    query: dict = {"project_id": pid}
+    if node_id is not None:
+        query["node_id"] = node_id
+    # Sin filtro: devuelve TODAS las filas (globales y por estación) — el
+    # cliente las agrupa en memoria para la vista dual Global/por-Estación
+    # de la sección "Seguimiento a Estudios y Análisis" de Presentación.
+    items = await db.estudio_disciplina_avance.find(query).to_list(length=1000)
+    for it in items:
+        it.pop("_id", None)
+    return items
+
+
+@api.put("/projects/{pid}/estudios-disciplina-avance")
+async def upsert_estudio_disciplina_avance(pid: str, body: EstudioDisciplinaAvanceIn, user: dict = Depends(current_user)):
+    """Historial EDITABLE, no captura: un solo documento vigente por
+    (proyecto, estación|global, disciplina) — cada llamada actualiza ese
+    valor en su lugar en vez de apilar una fila nueva cada semana."""
+    _assert_write_allowed(user)
+    await ensure_project_access(user, pid)
+    if not (0 <= body.porcentaje <= 100):
+        raise HTTPException(400, "porcentaje debe estar entre 0 y 100")
+    if body.node_id is not None:
+        node = await db.location_nodes.find_one({"id": body.node_id, "project_id": pid})
+        if not node:
+            raise HTTPException(404, "Estación (node_id) no existe en este proyecto")
+    key = {"project_id": pid, "node_id": body.node_id, "disciplina": body.disciplina}
+    now = datetime.now(timezone.utc)
+    existing = await db.estudio_disciplina_avance.find_one(key)
+    upd = {
+        **key,
+        "porcentaje": body.porcentaje,
+        "estatus": body.estatus,
+        "updated_by": user["id"],
+        "updated_by_name": user["name"],
+        "updated_at": now,
+    }
+    if existing:
+        await db.estudio_disciplina_avance.update_one({"id": existing["id"]}, {"$set": upd})
+        doc_id = existing["id"]
+    else:
+        doc_id = str(uuid.uuid4())
+        await db.estudio_disciplina_avance.insert_one({"id": doc_id, **upd})
+    doc = await db.estudio_disciplina_avance.find_one({"id": doc_id})
+    doc.pop("_id", None)
+    return doc
+
+
 # --- Impacto Ambiental: auditoría comparativa cumplimientos/incumplimientos. ---
 class AmbientalAuditoriaIn(BaseModel):
     tipo: Literal["cumplimiento", "incumplimiento"]
@@ -2346,7 +2464,6 @@ async def create_node(pid: str, body: LocationNodeIn, user: dict = Depends(requi
         "target_lat": body.target_lat if is_coord_leaf else None,
         "target_lon": body.target_lon if is_coord_leaf else None,
         "target_elev": body.target_elev if is_coord_leaf else None,
-        "meta": body.meta if body.is_leaf else None,
         "acceso_predio": body.acceso_predio,
         "situacion_social": body.situacion_social,
         "created_at": datetime.now(timezone.utc),
@@ -2364,7 +2481,6 @@ class NodePatch(BaseModel):
     target_lat: Optional[float] = None
     target_lon: Optional[float] = None
     target_elev: Optional[float] = None
-    meta: Optional[float] = None
     acceso_predio: Optional[str] = None
     situacion_social: Optional[str] = None
     # None = no tocar (deja el default: antes fijo a "solo Subtramo,
@@ -2417,13 +2533,6 @@ async def update_node(nid: str, body: NodePatch, user: dict = Depends(require_ro
     for fld, val in (("target_lat", body.target_lat), ("target_lon", body.target_lon), ("target_elev", body.target_elev)):
         if val is not None and is_coord_leaf:
             upd[fld] = val
-    # Meta numérica: válida sólo para nodos hoja; si se manda en no-hoja se ignora.
-    if body.meta is not None:
-        if final_is_leaf:
-            upd["meta"] = float(body.meta)
-        # Si el nodo deja de ser hoja, limpiamos meta más abajo.
-    if upd.get("is_leaf") is False:
-        upd["meta"] = None
     if body.acceso_predio is not None:
         upd["acceso_predio"] = body.acceso_predio.strip()
     if body.situacion_social is not None:
@@ -2502,6 +2611,966 @@ async def delete_node_cover(
     updated = await db.location_nodes.find_one({"id": nid})
     updated.pop("_id", None)
     return updated
+
+
+# === PLANO DE AVANCE (marcadores de estado sobre un plano/blueprint) =======
+# Cada plano vive como un documento con sus marcadores EMBEBIDOS (sin
+# colección aparte ni historial — solo importa el estado vigente). Coordenadas
+# de marcador en FRACCIONES 0-1 del ancho/alto de la imagen base, para que el
+# overlay escale igual sin importar la resolución de pantalla.
+_PLANO_MIME = {"image/jpeg", "image/jpg", "image/png", "image/webp"}
+_PLANO_MAX_BYTES = 10 * 1024 * 1024  # 10 MB — planos escaneados a mayor resolución que fotos de campo
+
+_PLANO_MARKER_ESTADO_COLOR = {
+    "sin_iniciar": "#DC2626",
+    "en_proceso": "#D97706",
+    "terminado": "#16A34A",
+}
+# Campos del PATCH que SOLO Coordinador/Sub-Coordinador pueden tocar —
+# reposicionar o renombrar un marcador es "definir estructura", no captura
+# de campo. `estatus` es el único que Especialista también puede escribir.
+_PLANO_MARKER_CAMPOS_ESTRUCTURA = ("label", "x", "y", "x2", "y2")
+
+
+class PlanoMarkerIn(BaseModel):
+    tipo: Literal["punto", "segmento"]
+    label: str
+    x: float
+    y: float
+    x2: Optional[float] = None
+    y2: Optional[float] = None
+    estatus: Literal["sin_iniciar", "en_proceso", "terminado"] = "sin_iniciar"
+
+
+class PlanoMarkerPatch(BaseModel):
+    label: Optional[str] = None
+    x: Optional[float] = None
+    y: Optional[float] = None
+    x2: Optional[float] = None
+    y2: Optional[float] = None
+    estatus: Optional[Literal["sin_iniciar", "en_proceso", "terminado"]] = None
+
+
+class PlanoAvancePatch(BaseModel):
+    nombre: Optional[str] = None
+
+
+@api.post("/projects/{pid}/planos-avance")
+async def upload_plano_avance(
+    pid: str,
+    nombre: str,
+    file: UploadFile = File(...),
+    user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB)),
+):
+    """Crea un Plano de Avance nuevo a partir de una imagen (JPG/PNG/WebP,
+    máx 10 MB) — mismo patrón base64-data-URL de `upload_node_cover` arriba.
+    `nombre` va como QUERY PARAM (no Form field): el helper de subida nativo
+    del frontend (`nativeMultipartUpload`, api.ts) arma el multipart solo con
+    `file` y no soporta campos de texto adicionales — evita tocar ese helper
+    compartido por Node Cover y otras subidas."""
+    nombre = nombre.strip()
+    if not nombre:
+        raise HTTPException(400, "Nombre del plano requerido")
+    content_type = (file.content_type or "").lower()
+    if content_type and content_type not in _PLANO_MIME:
+        raise HTTPException(415, f"Formato no soportado: {content_type}. Usa JPG/PNG/WebP.")
+    raw = await file.read(_PLANO_MAX_BYTES + 1)
+    if len(raw) > _PLANO_MAX_BYTES:
+        raise HTTPException(413, f"Imagen demasiado grande (máx {_PLANO_MAX_BYTES // (1024*1024)} MB).")
+    import base64 as _b64
+    mime = content_type or "image/jpeg"
+    data_url = f"data:{mime};base64,{_b64.b64encode(raw).decode('ascii')}"
+    now = datetime.now(timezone.utc)
+    doc = {
+        "id": str(uuid.uuid4()),
+        "project_id": pid,
+        "nombre": nombre,
+        "imagen": data_url,
+        "markers": [],
+        "created_by": user["id"],
+        "created_by_name": user["name"],
+        "created_at": now,
+        "updated_at": now,
+    }
+    await db.planos_avance.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api.get("/projects/{pid}/planos-avance")
+async def list_planos_avance(pid: str, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    # Excluye `imagen` (pesada, base64) del listado — la imagen completa
+    # solo se sirve en el detalle, mismo criterio que ensure_project_access
+    # excluye general_data_images de la carga por default.
+    cursor = db.planos_avance.find({"project_id": pid}, {"imagen": 0}).sort("created_at", -1)
+    items = await cursor.to_list(length=500)
+    for it in items:
+        it.pop("_id", None)
+    return items
+
+
+@api.get("/projects/{pid}/planos-avance/{plano_id}")
+async def get_plano_avance(pid: str, plano_id: str, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    doc = await db.planos_avance.find_one({"id": plano_id, "project_id": pid})
+    if not doc:
+        raise HTTPException(404, "Plano no existe")
+    doc.pop("_id", None)
+    return doc
+
+
+@api.patch("/projects/{pid}/planos-avance/{plano_id}")
+async def update_plano_avance(
+    pid: str, plano_id: str, body: PlanoAvancePatch, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB)),
+):
+    doc = await db.planos_avance.find_one({"id": plano_id, "project_id": pid})
+    if not doc:
+        raise HTTPException(404, "Plano no existe")
+    upd: dict = {}
+    if body.nombre is not None:
+        v = body.nombre.strip()
+        if not v:
+            raise HTTPException(400, "Nombre del plano requerido")
+        upd["nombre"] = v
+    if upd:
+        upd["updated_at"] = datetime.now(timezone.utc)
+        await db.planos_avance.update_one({"id": plano_id}, {"$set": upd})
+    out = await db.planos_avance.find_one({"id": plano_id})
+    out.pop("_id", None)
+    return out
+
+
+@api.delete("/projects/{pid}/planos-avance/{plano_id}")
+async def delete_plano_avance(pid: str, plano_id: str, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB))):
+    await db.planos_avance.delete_one({"id": plano_id, "project_id": pid})
+    return {"ok": True}
+
+
+@api.post("/projects/{pid}/planos-avance/{plano_id}/markers")
+async def create_plano_marker(
+    pid: str, plano_id: str, body: PlanoMarkerIn, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB)),
+):
+    plano = await db.planos_avance.find_one({"id": plano_id, "project_id": pid})
+    if not plano:
+        raise HTTPException(404, "Plano no existe")
+    label = body.label.strip()
+    if not label:
+        raise HTTPException(400, "Etiqueta del marcador requerida")
+    if body.tipo == "segmento" and (body.x2 is None or body.y2 is None):
+        raise HTTPException(400, "Marcador de segmento requiere x2/y2")
+    now = datetime.now(timezone.utc)
+    marker = {
+        "id": str(uuid.uuid4()),
+        "tipo": body.tipo,
+        "label": label,
+        "x": body.x, "y": body.y,
+        "x2": body.x2, "y2": body.y2,
+        "estatus": body.estatus,
+        "updated_by": user["id"],
+        "updated_by_name": user["name"],
+        "updated_at": now,
+    }
+    await db.planos_avance.update_one({"id": plano_id}, {"$push": {"markers": marker}, "$set": {"updated_at": now}})
+    return marker
+
+
+@api.patch("/projects/{pid}/planos-avance/{plano_id}/markers/{marker_id}")
+async def update_plano_marker(
+    pid: str, plano_id: str, marker_id: str, body: PlanoMarkerPatch, user: dict = Depends(current_user),
+):
+    """Único endpoint para todo cambio de marcador — el rol requerido
+    depende de QUÉ campos trae el body, no de la ruta: cualquier rol de
+    escritura (Coord/Sub/Especialista) puede actualizar `estatus`, pero
+    reposicionar/renombrar (label/x/y/x2/y2) es exclusivo de
+    Coordinador/Sub-Coordinador — "definir el plano" vs. "reportar avance
+    sobre él"."""
+    _assert_write_allowed(user)
+    await ensure_project_access(user, pid)
+    tocando_estructura = any(
+        getattr(body, campo) is not None for campo in _PLANO_MARKER_CAMPOS_ESTRUCTURA
+    )
+    if tocando_estructura and user["role"] not in (ROLE_COORD, ROLE_SUB):
+        raise HTTPException(403, "Solo Coordinador/Sub-Coordinador puede reposicionar o renombrar marcadores")
+    plano = await db.planos_avance.find_one({"id": plano_id, "project_id": pid})
+    if not plano:
+        raise HTTPException(404, "Plano no existe")
+    markers = plano.get("markers") or []
+    idx = next((i for i, m in enumerate(markers) if m["id"] == marker_id), None)
+    if idx is None:
+        raise HTTPException(404, "Marcador no existe")
+    now = datetime.now(timezone.utc)
+    marker = dict(markers[idx])
+    if body.label is not None:
+        v = body.label.strip()
+        if not v:
+            raise HTTPException(400, "Etiqueta del marcador requerida")
+        marker["label"] = v
+    for campo in ("x", "y", "x2", "y2"):
+        val = getattr(body, campo)
+        if val is not None:
+            marker[campo] = val
+    if body.estatus is not None:
+        marker["estatus"] = body.estatus
+    marker["updated_by"] = user["id"]
+    marker["updated_by_name"] = user["name"]
+    marker["updated_at"] = now
+    await db.planos_avance.update_one(
+        {"id": plano_id, "markers.id": marker_id},
+        {"$set": {"markers.$": marker, "updated_at": now}},
+    )
+    return marker
+
+
+@api.delete("/projects/{pid}/planos-avance/{plano_id}/markers/{marker_id}")
+async def delete_plano_marker(
+    pid: str, plano_id: str, marker_id: str, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB)),
+):
+    await db.planos_avance.update_one(
+        {"id": plano_id, "project_id": pid},
+        {"$pull": {"markers": {"id": marker_id}}, "$set": {"updated_at": datetime.now(timezone.utc)}},
+    )
+    return {"ok": True}
+
+
+def _bake_plano_snapshot(plano: dict) -> bytes:
+    """Hornea los marcadores vigentes sobre la imagen base del plano y
+    devuelve PNG bytes — usado por el endpoint de snapshot y por la
+    exportación PPTX de Presentación. La vista EN VIVO en la app usa un
+    overlay SVG (ver PlanoMarkerOverlay.tsx); esto solo produce una imagen
+    plana embebible en el reporte."""
+    import base64 as _b64
+    from PIL import Image as _PILImage, ImageDraw as _ImageDraw
+
+    raw = _b64.b64decode(_strip_b64_prefix(plano["imagen"]))
+    img = _PILImage.open(io.BytesIO(raw)).convert("RGB")
+    w, h = img.size
+    draw = _ImageDraw.Draw(img)
+    radius = max(8, int(min(w, h) * 0.014))
+    line_width = max(4, int(min(w, h) * 0.01))
+    for m in (plano.get("markers") or []):
+        color = _PLANO_MARKER_ESTADO_COLOR.get(m.get("estatus"), "#94A3B8")
+        if m.get("tipo") == "segmento" and m.get("x2") is not None and m.get("y2") is not None:
+            x1, y1 = m["x"] * w, m["y"] * h
+            x2, y2 = m["x2"] * w, m["y2"] * h
+            draw.line([(x1, y1), (x2, y2)], fill=color, width=line_width)
+        else:
+            cx, cy = m["x"] * w, m["y"] * h
+            draw.ellipse(
+                [cx - radius, cy - radius, cx + radius, cy + radius],
+                fill=color, outline="#FFFFFF", width=max(2, radius // 6),
+            )
+    out = io.BytesIO()
+    img.save(out, format="PNG")
+    return out.getvalue()
+
+
+@api.get("/projects/{pid}/planos-avance/{plano_id}/snapshot.png")
+async def plano_avance_snapshot(pid: str, plano_id: str, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    plano = await db.planos_avance.find_one({"id": plano_id, "project_id": pid})
+    if not plano:
+        raise HTTPException(404, "Plano no existe")
+    png_bytes = _bake_plano_snapshot(plano)
+    return StreamingResponse(io.BytesIO(png_bytes), media_type="image/png")
+
+
+# === PRESENTACIÓN (Informe de Actividades semanal) =========================
+# Documento con SECCIONES embebidas (mismo criterio que `markers` en
+# planos_avance): una Presentación se lee/escribe siempre como un todo al
+# armar el preview/export, así que embeber evita N+1 queries. Cada tipo de
+# sección guarda solo lo que NO puede calcularse en vivo — croquis_estacion
+# y avance_grafico, por ejemplo, solo guardan una referencia (node_id /
+# plano_id): la imagen/datos se leen del nodo/plano VIGENTE al momento de
+# previsualizar o exportar, nunca se duplican aquí. financiero,
+# seguimiento_estudios, mapa_general y portada no guardan nada propio en
+# absoluto — se calculan enteramente en vivo desde otras colecciones.
+class InformacionParticularFotoIn(BaseModel):
+    photo: str  # base64 data URL
+    caption: str = ""
+    destacado: bool = False
+    destacado_label: Optional[str] = None  # texto libre del callout (ej. "Problemática social")
+
+
+class InformacionParticularBloqueIn(BaseModel):
+    titulo: str
+    node_id: Optional[str] = None  # si se liga, jala acceso_predio/situacion_social del nodo en vivo
+    actividades: List[str] = Field(default_factory=list)  # texto libre, independiente de EVM/actividades
+    fotos: List[InformacionParticularFotoIn] = Field(default_factory=list)
+
+
+class PresentacionSeccionIn(BaseModel):
+    tipo: Literal[
+        "portada", "mapa_general", "divisor", "financiero",
+        "seguimiento_estudios", "croquis_estacion", "informacion_particular",
+        "avance_grafico",
+    ]
+    orden: int = 0
+    titulo: Optional[str] = None  # "divisor" (ej. "FINANCIERO"); libre, no atado a Área
+    node_id: Optional[str] = None  # "croquis_estacion"
+    plano_id: Optional[str] = None  # "avance_grafico"
+    bloques: List[InformacionParticularBloqueIn] = Field(default_factory=list)  # "informacion_particular"
+
+
+class PresentacionSeccionPatch(BaseModel):
+    orden: Optional[int] = None
+    titulo: Optional[str] = None
+    node_id: Optional[str] = None
+    plano_id: Optional[str] = None
+
+
+class PresentacionIn(BaseModel):
+    project_id: str
+    fecha: str  # ISO date, mostrada en la Portada
+    titulo: str = "INFORME DE ACTIVIDADES"
+
+
+class PresentacionPatch(BaseModel):
+    fecha: Optional[str] = None
+    titulo: Optional[str] = None
+
+
+@api.post("/projects/{pid}/presentaciones")
+async def create_presentacion(pid: str, body: PresentacionIn, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB))):
+    try:
+        date.fromisoformat(body.fecha)
+    except ValueError:
+        raise HTTPException(400, "fecha debe ser YYYY-MM-DD")
+    titulo = (body.titulo or "INFORME DE ACTIVIDADES").strip() or "INFORME DE ACTIVIDADES"
+    now = datetime.now(timezone.utc)
+    doc = {
+        "id": str(uuid.uuid4()),
+        "project_id": pid,
+        "fecha": body.fecha,
+        "titulo": titulo,
+        "secciones": [],
+        "created_by": user["id"],
+        "created_by_name": user["name"],
+        "created_at": now,
+        "updated_at": now,
+    }
+    await db.presentaciones.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api.get("/projects/{pid}/presentaciones")
+async def list_presentaciones(pid: str, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    # Excluye `secciones` del listado (puede incluir fotos base64 pesadas) —
+    # el detalle completo solo se sirve en GET .../presentaciones/{id}.
+    cursor = db.presentaciones.find({"project_id": pid}, {"secciones": 0}).sort("fecha", -1)
+    items = await cursor.to_list(length=500)
+    for it in items:
+        it.pop("_id", None)
+    return items
+
+
+@api.get("/projects/{pid}/presentaciones/{pres_id}")
+async def get_presentacion(pid: str, pres_id: str, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    doc = await db.presentaciones.find_one({"id": pres_id, "project_id": pid})
+    if not doc:
+        raise HTTPException(404, "Presentación no existe")
+    doc.pop("_id", None)
+    return doc
+
+
+@api.patch("/projects/{pid}/presentaciones/{pres_id}")
+async def update_presentacion(
+    pid: str, pres_id: str, body: PresentacionPatch, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB)),
+):
+    doc = await db.presentaciones.find_one({"id": pres_id, "project_id": pid})
+    if not doc:
+        raise HTTPException(404, "Presentación no existe")
+    upd: dict = {}
+    if body.fecha is not None:
+        try:
+            date.fromisoformat(body.fecha)
+        except ValueError:
+            raise HTTPException(400, "fecha debe ser YYYY-MM-DD")
+        upd["fecha"] = body.fecha
+    if body.titulo is not None:
+        v = body.titulo.strip()
+        if not v:
+            raise HTTPException(400, "Título requerido")
+        upd["titulo"] = v
+    if upd:
+        upd["updated_at"] = datetime.now(timezone.utc)
+        await db.presentaciones.update_one({"id": pres_id}, {"$set": upd})
+    out = await db.presentaciones.find_one({"id": pres_id})
+    out.pop("_id", None)
+    return out
+
+
+@api.delete("/projects/{pid}/presentaciones/{pres_id}")
+async def delete_presentacion(pid: str, pres_id: str, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB))):
+    await db.presentaciones.delete_one({"id": pres_id, "project_id": pid})
+    return {"ok": True}
+
+
+async def _validate_presentacion_seccion_refs(pid: str, body) -> None:
+    """Valida que node_id/plano_id referenciados existan en este proyecto —
+    son los mismos ids que se resuelven EN VIVO al armar preview/export, así
+    que una referencia rota fallaría silenciosamente ahí si no se valida aquí."""
+    node_id = getattr(body, "node_id", None)
+    if node_id:
+        node = await db.location_nodes.find_one({"id": node_id, "project_id": pid})
+        if not node:
+            raise HTTPException(404, "node_id no existe en este proyecto")
+    plano_id = getattr(body, "plano_id", None)
+    if plano_id:
+        plano = await db.planos_avance.find_one({"id": plano_id, "project_id": pid})
+        if not plano:
+            raise HTTPException(404, "plano_id no existe en este proyecto")
+
+
+@api.post("/projects/{pid}/presentaciones/{pres_id}/secciones")
+async def create_presentacion_seccion(
+    pid: str, pres_id: str, body: PresentacionSeccionIn, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB)),
+):
+    pres = await db.presentaciones.find_one({"id": pres_id, "project_id": pid})
+    if not pres:
+        raise HTTPException(404, "Presentación no existe")
+    await _validate_presentacion_seccion_refs(pid, body)
+    if body.tipo == "divisor" and not (body.titulo or "").strip():
+        raise HTTPException(400, "Sección 'divisor' requiere titulo")
+    if body.tipo == "croquis_estacion" and not body.node_id:
+        raise HTTPException(400, "Sección 'croquis_estacion' requiere node_id")
+    if body.tipo == "avance_grafico" and not body.plano_id:
+        raise HTTPException(400, "Sección 'avance_grafico' requiere plano_id")
+    now = datetime.now(timezone.utc)
+    seccion = {
+        "id": str(uuid.uuid4()),
+        "tipo": body.tipo,
+        "orden": body.orden,
+        "titulo": (body.titulo or "").strip() or None,
+        "node_id": body.node_id,
+        "plano_id": body.plano_id,
+        "bloques": [b.model_dump() for b in body.bloques] if body.tipo == "informacion_particular" else [],
+    }
+    await db.presentaciones.update_one(
+        {"id": pres_id}, {"$push": {"secciones": seccion}, "$set": {"updated_at": now}},
+    )
+    return seccion
+
+
+@api.patch("/projects/{pid}/presentaciones/{pres_id}/secciones/{sec_id}")
+async def update_presentacion_seccion(
+    pid: str, pres_id: str, sec_id: str, body: PresentacionSeccionPatch,
+    user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB)),
+):
+    await _validate_presentacion_seccion_refs(pid, body)
+    pres = await db.presentaciones.find_one({"id": pres_id, "project_id": pid})
+    if not pres:
+        raise HTTPException(404, "Presentación no existe")
+    secciones = pres.get("secciones") or []
+    idx = next((i for i, s in enumerate(secciones) if s["id"] == sec_id), None)
+    if idx is None:
+        raise HTTPException(404, "Sección no existe")
+    seccion = dict(secciones[idx])
+    if body.orden is not None:
+        seccion["orden"] = body.orden
+    if body.titulo is not None:
+        seccion["titulo"] = body.titulo.strip() or None
+    if body.node_id is not None:
+        seccion["node_id"] = body.node_id
+    if body.plano_id is not None:
+        seccion["plano_id"] = body.plano_id
+    now = datetime.now(timezone.utc)
+    await db.presentaciones.update_one(
+        {"id": pres_id, "secciones.id": sec_id},
+        {"$set": {"secciones.$": seccion, "updated_at": now}},
+    )
+    return seccion
+
+
+@api.delete("/projects/{pid}/presentaciones/{pres_id}/secciones/{sec_id}")
+async def delete_presentacion_seccion(
+    pid: str, pres_id: str, sec_id: str, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB)),
+):
+    await db.presentaciones.update_one(
+        {"id": pres_id, "project_id": pid},
+        {"$pull": {"secciones": {"id": sec_id}}, "$set": {"updated_at": datetime.now(timezone.utc)}},
+    )
+    return {"ok": True}
+
+
+class InformacionParticularBloquesPatch(BaseModel):
+    bloques: List[InformacionParticularBloqueIn] = Field(default_factory=list)
+
+
+@api.patch("/projects/{pid}/presentaciones/{pres_id}/secciones/{sec_id}/informacion-particular")
+async def update_informacion_particular(
+    pid: str, pres_id: str, sec_id: str, body: InformacionParticularBloquesPatch, user: dict = Depends(current_user),
+):
+    """Reemplaza el arreglo `bloques` COMPLETO — captura de campo (texto de
+    actividades y fotos), por eso usa el permiso amplio (`_assert_write_allowed`,
+    Coord/Sub/Especialista) en vez de `require_role`, a diferencia de los
+    endpoints de estructura del documento arriba (crear/borrar/reordenar
+    secciones sí es exclusivo de Coord/Sub)."""
+    _assert_write_allowed(user)
+    await ensure_project_access(user, pid)
+    pres = await db.presentaciones.find_one({"id": pres_id, "project_id": pid})
+    if not pres:
+        raise HTTPException(404, "Presentación no existe")
+    secciones = pres.get("secciones") or []
+    idx = next((i for i, s in enumerate(secciones) if s["id"] == sec_id), None)
+    if idx is None:
+        raise HTTPException(404, "Sección no existe")
+    if secciones[idx]["tipo"] != "informacion_particular":
+        raise HTTPException(400, "Esta sección no es de tipo informacion_particular")
+    for b in body.bloques:
+        if b.node_id:
+            node = await db.location_nodes.find_one({"id": b.node_id, "project_id": pid})
+            if not node:
+                raise HTTPException(404, f"node_id '{b.node_id}' no existe en este proyecto")
+    seccion = dict(secciones[idx])
+    seccion["bloques"] = [b.model_dump() for b in body.bloques]
+    now = datetime.now(timezone.utc)
+    await db.presentaciones.update_one(
+        {"id": pres_id, "secciones.id": sec_id},
+        {"$set": {"secciones.$": seccion, "updated_at": now}},
+    )
+    return seccion
+
+
+def _force_pptx_theme_font(prs, font_name: str = "Arial") -> None:
+    """Fuerza majorFont/minorFont del tema de cada slide master a `font_name`.
+
+    Ningún run del motor PPTX (`export_presentacion_pptx`/`export_reports_pptx`
+    y sus closures `add_text`/etc.) fija `run.font.name` explícitamente — son
+    decenas de `paragraph.add_run(...)` sin tocar la tipografía. Sin esta
+    llamada, ese texto hereda el tema por default de PowerPoint (Calibri) o el
+    de la plantilla subida por el Coordinador, mientras que el motor PDF usa
+    Helvetica en todo el documento — de ahí que el PPTX se vea con una
+    tipografía distinta al PDF pese a ser "el mismo" reporte. Arial es el
+    sustituto más cercano a Helvetica realmente instalado en Windows/Office.
+    Se llama UNA vez, justo después de resolver `prs` (venga de plantilla o
+    en blanco) y antes de dibujar cualquier slide — así cualquier run sin
+    `font.name` explícito hereda esto en vez del tema original."""
+    try:
+        from pptx.opc.constants import RELATIONSHIP_TYPE as _RT
+        _A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
+        for _master in prs.slide_masters:
+            _theme_el = _master.part.part_related_by(_RT.THEME)._element
+            for _tag in ("majorFont", "minorFont"):
+                _font_el = _theme_el.find(f".//{{{_A_NS}}}{_tag}")
+                if _font_el is None:
+                    continue
+                _latin_el = _font_el.find(f"{{{_A_NS}}}latin")
+                if _latin_el is not None:
+                    _latin_el.set("typeface", font_name)
+    except Exception:
+        pass  # Nunca debe tronar un export por esto — degradar a tema original.
+
+
+@api.get("/projects/{pid}/presentaciones/{pres_id}/export.pptx")
+async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(current_user)):
+    """Exporta una Presentación como PPTX real, reusando el mismo patrón de
+    "todo fondo proviene del membrete subido por el Coordinador" que
+    `export_reports_pptx` (ver `_clone_slide`/`_clone_membrete` ahí) — estas
+    closures se reimplementan aquí (no se pueden importar: son funciones
+    anidadas de ese otro endpoint), pero el PATRÓN es idéntico a propósito.
+    Sin plantilla subida, genera slides en blanco sin decoración."""
+    await ensure_project_access(user, pid)
+    proj = await db.projects.find_one({"id": pid})
+    if not proj:
+        raise HTTPException(404, "Proyecto no existe")
+    pres = await db.presentaciones.find_one({"id": pres_id, "project_id": pid})
+    if not pres:
+        raise HTTPException(404, "Presentación no existe")
+
+    secciones = sorted(pres.get("secciones") or [], key=lambda s: s.get("orden", 0))
+
+    # --- Resolver datos EN VIVO de cada sección (I/O a Mongo, antes del hilo bloqueante) ---
+    node_ids = {s["node_id"] for s in secciones if s.get("node_id")}
+    for s in secciones:
+        if s.get("tipo") == "informacion_particular":
+            for b in (s.get("bloques") or []):
+                if b.get("node_id"):
+                    node_ids.add(b["node_id"])
+    nodes_by_id: dict = {}
+    if node_ids:
+        async for n in db.location_nodes.find({"id": {"$in": list(node_ids)}, "project_id": pid}):
+            nodes_by_id[n["id"]] = n
+
+    plano_ids = {s["plano_id"] for s in secciones if s.get("tipo") == "avance_grafico" and s.get("plano_id")}
+    planos_by_id: dict = {}
+    if plano_ids:
+        async for p in db.planos_avance.find({"id": {"$in": list(plano_ids)}, "project_id": pid}):
+            planos_by_id[p["id"]] = p
+
+    analisis: Optional[dict] = None
+    presupuesto_total_str: Optional[str] = None
+    if any(s.get("tipo") == "financiero" for s in secciones):
+        try:
+            end_d = date.fromisoformat(pres["fecha"])
+            start_d = end_d - timedelta(days=6)
+            conceptos = await db.conceptos.find({"project_id": pid, "activo": True}).to_list(length=100000)
+            pv_total = sum((_prorrateo_concepto_en_ventana(c, start_d, end_d) for c in conceptos), start=Decimal("0"))
+            ev_total = Decimal("0")
+            async for a in db.registros_avance.find({"project_id": pid, "fecha": {"$gte": start_d.isoformat(), "$lte": end_d.isoformat()}}):
+                if a.get("importe_ganado_congelado") is not None:
+                    ev_total += to_decimal(a["importe_ganado_congelado"])
+            ac_total = Decimal("0")
+            async for g in db.gastos_reales.find({"project_id": pid, "fecha": {"$gte": start_d.isoformat(), "$lte": end_d.isoformat()}}):
+                ac_total += to_decimal(g["monto"])
+            CUATRO_DEC = Decimal("0.0001")
+            spi = (ev_total / pv_total).quantize(CUATRO_DEC, rounding=ROUND_HALF_UP) if pv_total != 0 else None
+            cpi = (ev_total / ac_total).quantize(CUATRO_DEC, rounding=ROUND_HALF_UP) if ac_total != 0 else None
+            analisis = {
+                "pv": round_money(pv_total), "ev": round_money(ev_total), "ac": round_money(ac_total),
+                "spi": spi, "cpi": cpi,
+                "variacion_cronograma": round_money(ev_total - pv_total), "variacion_costo": round_money(ev_total - ac_total),
+            }
+            presupuesto_total = sum((_concepto_importe_efectivo(c) for c in conceptos), start=Decimal("0"))
+            presupuesto_total_str = dec_to_str(round_money(presupuesto_total))
+        except Exception:
+            analisis = None
+
+    disciplina_rows: list = []
+    if any(s.get("tipo") == "seguimiento_estudios" for s in secciones):
+        disciplina_rows = await db.estudio_disciplina_avance.find({"project_id": pid}).to_list(length=1000)
+
+    general_images: List[str] = []
+    if any(s.get("tipo") == "mapa_general" for s in secciones):
+        gproj = await db.projects.find_one({"id": pid}, {"general_data_images": 1})
+        general_images = (gproj or {}).get("general_data_images") or []
+
+    project_color = proj.get("color_tema") or "#1E40AF"
+
+    def _build_presentacion_pptx_blocking() -> bytes:
+        import base64 as _b64
+        from copy import deepcopy as _deepcopy
+        from pptx import Presentation
+        from pptx.dml.color import RGBColor as _PRGBColor
+        from pptx.enum.shapes import MSO_SHAPE as _MSO_SHAPE
+        from pptx.enum.text import PP_ALIGN as _PP_ALIGN
+        from pptx.oxml.ns import qn as _qn
+        from pptx.util import Cm as _Cm, Pt as _Pt
+
+        tpl_pptx = _get_project_template(proj, "pptx")
+        tpl_cover_slide = None
+        tpl_master_slide = None
+        prs = None
+        if tpl_pptx:
+            try:
+                src = Presentation(tpl_pptx)
+                n_tpl = len(src.slides)
+                if n_tpl > 0:
+                    tpl_cover_slide = src.slides[0]
+                    tpl_master_slide = src.slides[1] if n_tpl > 1 else src.slides[0]
+                    prs = src
+            except Exception:
+                prs = None
+        if prs is None:
+            prs = Presentation()
+            prs.slide_width = _Cm(29.7)
+            prs.slide_height = _Cm(21.0)
+        _force_pptx_theme_font(prs, "Arial")
+        SW, SH = prs.slide_width, prs.slide_height
+        MARGIN_X = _Cm(1.5)
+        TOP_MARGIN = _Cm(2.2)
+        BOTTOM_MARGIN = _Cm(1.2)
+        content_w = SW - 2 * MARGIN_X
+        blank = prs.slide_layouts[6] if len(prs.slide_layouts) > 6 else prs.slide_layouts[-1]
+        n_seed_slides = len(prs.slides)  # slides ORIGINALES de la plantilla — se borran al final, ver abajo
+
+        def _clone_slide(source_slide):
+            """Clona una slide (portada o membrete) reparando rIds de imagen —
+            mismo algoritmo que `_clone_slide` en `export_reports_pptx`
+            (server.py), reimplementado aquí porque esa es una closure
+            anidada no importable."""
+            if source_slide is None:
+                return prs.slides.add_slide(blank)
+            try:
+                _IMG_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image"
+                _EMBED = _qn("r:embed")
+                _LINK = _qn("r:link")
+                new_slide = prs.slides.add_slide(source_slide.slide_layout)
+                for shp in list(new_slide.shapes):
+                    try:
+                        shp.element.getparent().remove(shp.element)
+                    except Exception:
+                        pass
+                for shp in source_slide.shapes:
+                    try:
+                        new_el = _deepcopy(shp.element)
+                        skip = False
+                        for blip in new_el.iter(_qn("a:blip")):
+                            for attr in (_EMBED, _LINK):
+                                old_rid = blip.get(attr)
+                                if not old_rid:
+                                    continue
+                                try:
+                                    image_part = source_slide.part.related_part(old_rid)
+                                    new_rid = new_slide.part.relate_to(image_part, _IMG_REL)
+                                    blip.set(attr, new_rid)
+                                except Exception:
+                                    skip = True
+                                    break
+                            if skip:
+                                break
+                        if skip:
+                            continue
+                        new_slide.shapes._spTree.insert_element_before(new_el, "p:extLst")
+                    except Exception:
+                        continue
+                return new_slide
+            except Exception:
+                return prs.slides.add_slide(blank)
+
+        def _clone_membrete():
+            return _clone_slide(tpl_master_slide)
+
+        def _clone_cover_bg():
+            return _clone_slide(tpl_cover_slide) if tpl_cover_slide else _clone_membrete()
+
+        def add_text(slide, x, y, w, h, text, *, size=14, bold=False, color=(0x0F, 0x17, 0x2A), align=_PP_ALIGN.LEFT):
+            tb = slide.shapes.add_textbox(x, y, w, h)
+            tf = tb.text_frame
+            tf.word_wrap = True
+            p = tf.paragraphs[0]
+            p.alignment = align
+            run = p.add_run()
+            run.text = str(text)
+            run.font.size = _Pt(size)
+            run.font.bold = bold
+            run.font.color.rgb = _PRGBColor(*color)
+            return tb
+
+        def _rect(slide, x, y, w, h, fill_rgb=None):
+            sh = slide.shapes.add_shape(_MSO_SHAPE.RECTANGLE, x, y, w, h)
+            sh.shadow.inherit = False
+            if fill_rgb is not None:
+                sh.fill.solid()
+                sh.fill.fore_color.rgb = _PRGBColor(*fill_rgb)
+            else:
+                sh.fill.background()
+            sh.line.fill.background()
+            return sh
+
+        def _hex_to_rgb(hx: str):
+            hx = (hx or "1E40AF").lstrip("#")
+            return tuple(int(hx[i:i + 2], 16) for i in (0, 2, 4))
+
+        def add_picture_b64(slide, b64_str, x, y, w, h):
+            if not b64_str:
+                return
+            try:
+                raw = _b64.b64decode(_strip_b64_prefix(b64_str))
+                slide.shapes.add_picture(io.BytesIO(raw), x, y, width=w, height=h)
+            except Exception:
+                pass
+
+        BRAND_RGB = _hex_to_rgb(_readable_dark_hex(project_color))
+        BRAND_RAW_RGB = _hex_to_rgb(project_color)
+        TEXT_RGB = (0x0F, 0x17, 0x2A)
+        MUTED_RGB = (0x64, 0x74, 0x8B)
+        WHITE_RGB = (0xFF, 0xFF, 0xFF)
+
+        def slide_portada():
+            slide = _clone_cover_bg()
+            add_text(slide, MARGIN_X, SH / 2 - _Cm(1.4), content_w, _Cm(1.6), pres.get("titulo") or "INFORME DE ACTIVIDADES",
+                     size=28, bold=True, color=BRAND_RGB, align=_PP_ALIGN.CENTER)
+            add_text(slide, MARGIN_X, SH / 2 + _Cm(0.3), content_w, _Cm(0.8), pres.get("fecha") or "",
+                     size=14, color=MUTED_RGB, align=_PP_ALIGN.CENTER)
+
+        def slide_divisor(titulo):
+            slide = _clone_membrete()
+            add_text(slide, MARGIN_X, SH / 2 - _Cm(0.8), content_w, _Cm(1.6), (titulo or "").upper(),
+                     size=26, bold=True, color=BRAND_RGB, align=_PP_ALIGN.CENTER)
+
+        def slide_mapa_general():
+            slide = _clone_membrete()
+            if general_images:
+                add_picture_b64(slide, general_images[0], MARGIN_X, TOP_MARGIN, content_w, SH - TOP_MARGIN - BOTTOM_MARGIN)
+            else:
+                add_text(slide, MARGIN_X, TOP_MARGIN, content_w, _Cm(1), "Sin imagen de mapa general configurada.",
+                         size=13, color=MUTED_RGB, align=_PP_ALIGN.CENTER)
+
+        def slide_financiero():
+            slide = _clone_membrete()
+            y = TOP_MARGIN
+            add_text(slide, MARGIN_X, y, content_w, _Cm(0.9), "FINANCIERO", size=20, bold=True, color=BRAND_RGB, align=_PP_ALIGN.CENTER)
+            y += _Cm(1.1)
+            if not analisis:
+                add_text(slide, MARGIN_X, y, content_w, _Cm(1), "Sin datos financieros (EVM) disponibles para este periodo.",
+                         size=13, color=MUTED_RGB, align=_PP_ALIGN.CENTER)
+                return
+            kpis = [
+                ("Presupuesto total", f"${presupuesto_total_str}" if presupuesto_total_str else "—"),
+                ("Valor Planeado (PV)", f"${dec_to_str(analisis['pv'])}"),
+                ("Valor Ganado (EV)", f"${dec_to_str(analisis['ev'])}"),
+                ("Costo Real (AC)", f"${dec_to_str(analisis['ac'])}"),
+                ("SPI", dec_to_str(analisis['spi']) if analisis['spi'] is not None else "—"),
+                ("CPI", dec_to_str(analisis['cpi']) if analisis['cpi'] is not None else "—"),
+                ("Variación cronograma", f"${dec_to_str(analisis['variacion_cronograma'])}"),
+                ("Variación costo", f"${dec_to_str(analisis['variacion_costo'])}"),
+            ]
+            cols = 4
+            card_w = int((content_w - _Cm(0.4) * (cols - 1)) / cols)
+            card_h = _Cm(2.6)
+            for i, (label, value) in enumerate(kpis):
+                col, row = i % cols, i // cols
+                x = int(MARGIN_X + col * (card_w + _Cm(0.4)))
+                yy = int(y + row * (card_h + _Cm(0.4)))
+                _rect(slide, x, yy, card_w, card_h)
+                add_text(slide, x + _Cm(0.15), yy + _Cm(0.15), card_w - _Cm(0.3), _Cm(0.7), label,
+                         size=9, bold=True, color=MUTED_RGB, align=_PP_ALIGN.CENTER)
+                add_text(slide, x + _Cm(0.15), yy + _Cm(0.9), card_w - _Cm(0.3), _Cm(1.2), value,
+                         size=14, bold=True, color=TEXT_RGB, align=_PP_ALIGN.CENTER)
+
+        def slide_seguimiento_estudios():
+            slide = _clone_membrete()
+            y = TOP_MARGIN
+            add_text(slide, MARGIN_X, y, content_w, _Cm(0.9), "SEGUIMIENTO A ESTUDIOS Y ANÁLISIS",
+                     size=18, bold=True, color=BRAND_RGB, align=_PP_ALIGN.CENTER)
+            y = int(y + _Cm(1.0))
+            por_disciplina = {r["disciplina"]: r for r in disciplina_rows if r.get("node_id") is None}
+            n_rows = len(ESTUDIO_DISCIPLINA_AVANCE_KEYS)
+            row_h = int((SH - BOTTOM_MARGIN - y) / n_rows)
+            for i, k in enumerate(ESTUDIO_DISCIPLINA_AVANCE_KEYS):
+                pct = (por_disciplina.get(k) or {}).get("porcentaje", 0) or 0
+                yy = y + i * row_h
+                add_text(slide, MARGIN_X, yy, _Cm(4.5), row_h, ESTUDIO_DISCIPLINA_AVANCE_LABEL[k], size=10, bold=True, color=TEXT_RGB)
+                bar_x = int(MARGIN_X + _Cm(4.7))
+                bar_w = int(content_w - _Cm(4.7) - _Cm(1.3))
+                bar_y = int(yy + row_h * 0.3)
+                bar_h = max(1, int(row_h * 0.4))
+                _rect(slide, bar_x, bar_y, bar_w, bar_h, fill_rgb=(0xE2, 0xE8, 0xF0))
+                fill_w = int(bar_w * (pct / 100.0))
+                if fill_w > 0:
+                    _rect(slide, bar_x, bar_y, fill_w, bar_h, fill_rgb=BRAND_RAW_RGB)
+                add_text(slide, bar_x + bar_w + _Cm(0.1), yy, _Cm(1.2), row_h, f"{pct}%", size=10, bold=True, color=TEXT_RGB, align=_PP_ALIGN.RIGHT)
+
+        def slide_croquis_estacion(node_id):
+            slide = _clone_membrete()
+            node = nodes_by_id.get(node_id) or {}
+            add_picture_b64(slide, node.get("cover_image"), MARGIN_X, TOP_MARGIN, content_w, SH - TOP_MARGIN - BOTTOM_MARGIN)
+            _rect(slide, MARGIN_X, SH - BOTTOM_MARGIN - _Cm(1.0), content_w, _Cm(1.0), fill_rgb=(0x0F, 0x17, 0x2A))
+            add_text(slide, MARGIN_X + _Cm(0.2), SH - BOTTOM_MARGIN - _Cm(0.9), content_w - _Cm(0.4), _Cm(0.8),
+                     node.get("name") or "Estación", size=16, bold=True, color=WHITE_RGB)
+
+        def _foto_grid(slide, fotos, x, y, w, h, cols):
+            if not fotos:
+                return
+            rows = math.ceil(len(fotos) / cols)
+            gap = _Cm(0.2)
+            cell_w = int((w - gap * (cols - 1)) / cols)
+            cell_h = int((h - gap * (rows - 1)) / rows)
+            for i, f in enumerate(fotos):
+                col, row = i % cols, i // cols
+                cx = int(x + col * (cell_w + gap))
+                cy = int(y + row * (cell_h + gap))
+                add_picture_b64(slide, f.get("photo"), cx, cy, cell_w, cell_h)
+                if f.get("destacado"):
+                    _rect(slide, cx, cy, cell_w, _Cm(0.5), fill_rgb=(0xFE, 0xF3, 0xC7))
+                    add_text(slide, cx + _Cm(0.05), cy, cell_w - _Cm(0.1), _Cm(0.45),
+                             f.get("destacado_label") or "Destacado", size=7, bold=True, color=(0x92, 0x40, 0x0E), align=_PP_ALIGN.CENTER)
+                cap = f.get("caption") or ""
+                if cap:
+                    cap_y = int(cy + cell_h - _Cm(0.5))
+                    _rect(slide, cx, cap_y, cell_w, _Cm(0.5), fill_rgb=(0x0F, 0x17, 0x2A))
+                    add_text(slide, cx + _Cm(0.05), cap_y, cell_w - _Cm(0.1), _Cm(0.45), cap, size=7, color=WHITE_RGB, align=_PP_ALIGN.CENTER)
+
+        def slide_informacion_particular(seccion):
+            bloques = seccion.get("bloques") or []
+            if not bloques:
+                slide = _clone_membrete()
+                add_text(slide, MARGIN_X, TOP_MARGIN, content_w, _Cm(1), "Sección sin contenido todavía.",
+                         size=13, color=MUTED_RGB, align=_PP_ALIGN.CENTER)
+                return
+            for bloque in bloques:
+                slide = _clone_membrete()
+                y = TOP_MARGIN
+                add_text(slide, MARGIN_X, y, content_w, _Cm(0.8), bloque.get("titulo") or "", size=18, bold=True, color=BRAND_RGB)
+                y = int(y + _Cm(0.9))
+                node = nodes_by_id.get(bloque.get("node_id")) if bloque.get("node_id") else None
+                left_w = int(content_w * 0.42)
+                yy = y
+                if node and (node.get("acceso_predio") or node.get("situacion_social")):
+                    add_text(slide, MARGIN_X, yy, left_w, _Cm(0.5), "ACCESO AL PREDIO", size=10, bold=True, color=BRAND_RGB)
+                    yy = int(yy + _Cm(0.5))
+                    _rect(slide, MARGIN_X, yy, left_w, _Cm(0.7), fill_rgb=(0x94, 0xA3, 0xB8))
+                    add_text(slide, MARGIN_X, yy, left_w, _Cm(0.7), (node.get("acceso_predio") or "Sin especificar").upper(),
+                             size=11, bold=True, color=WHITE_RGB, align=_PP_ALIGN.CENTER)
+                    yy = int(yy + _Cm(0.9))
+                    add_text(slide, MARGIN_X, yy, left_w, _Cm(0.5), "SITUACIÓN SOCIAL", size=10, bold=True, color=BRAND_RGB)
+                    yy = int(yy + _Cm(0.5))
+                    add_text(slide, MARGIN_X, yy, left_w, _Cm(2.0), node.get("situacion_social") or "Sin información registrada",
+                             size=9, color=TEXT_RGB)
+                    yy = int(yy + _Cm(2.1))
+                add_text(slide, MARGIN_X, yy, left_w, _Cm(0.5), "ACTIVIDADES", size=10, bold=True, color=BRAND_RGB)
+                yy = int(yy + _Cm(0.5))
+                acts = bloque.get("actividades") or []
+                acts_text = "\n".join(f"• {a}" for a in acts) if acts else "Sin actividades capturadas"
+                add_text(slide, MARGIN_X, yy, left_w, int(SH - BOTTOM_MARGIN - yy), acts_text, size=9, color=TEXT_RGB)
+
+                fotos = bloque.get("fotos") or []
+                right_x = int(MARGIN_X + left_w + _Cm(0.4))
+                right_w = int(content_w - left_w - _Cm(0.4))
+                _foto_grid(slide, fotos, right_x, y, right_w, int(SH - BOTTOM_MARGIN - y), cols=3 if len(fotos) > 4 else 2)
+
+        def slide_avance_grafico(plano_id):
+            slide = _clone_membrete()
+            plano = planos_by_id.get(plano_id)
+            if not plano:
+                add_text(slide, MARGIN_X, TOP_MARGIN, content_w, _Cm(1), "Plano no encontrado.",
+                         size=13, color=MUTED_RGB, align=_PP_ALIGN.CENTER)
+                return
+            add_text(slide, MARGIN_X, TOP_MARGIN - _Cm(0.7), content_w, _Cm(0.6), plano.get("nombre") or "",
+                     size=14, bold=True, color=BRAND_RGB)
+            try:
+                snap = _bake_plano_snapshot(plano)
+                slide.shapes.add_picture(io.BytesIO(snap), MARGIN_X, TOP_MARGIN, width=content_w, height=int(SH - TOP_MARGIN - BOTTOM_MARGIN))
+            except Exception:
+                add_picture_b64(slide, plano.get("imagen"), MARGIN_X, TOP_MARGIN, content_w, int(SH - TOP_MARGIN - BOTTOM_MARGIN))
+
+        for s in secciones:
+            tipo = s.get("tipo")
+            if tipo == "portada":
+                slide_portada()
+            elif tipo == "mapa_general":
+                slide_mapa_general()
+            elif tipo == "divisor":
+                slide_divisor(s.get("titulo"))
+            elif tipo == "financiero":
+                slide_financiero()
+            elif tipo == "seguimiento_estudios":
+                slide_seguimiento_estudios()
+            elif tipo == "croquis_estacion":
+                slide_croquis_estacion(s.get("node_id"))
+            elif tipo == "informacion_particular":
+                slide_informacion_particular(s)
+            elif tipo == "avance_grafico":
+                slide_avance_grafico(s.get("plano_id"))
+
+        # Borra las slides ORIGINALES de la plantilla (solo sirvieron de
+        # semilla para clonar vía `_clone_slide` — nunca deben aparecer en
+        # el documento final). Siempre índice 0: al removerlo, la siguiente
+        # semilla ocupa esa posición.
+        for _ in range(n_seed_slides):
+            try:
+                rId = prs.slides._sldIdLst[0].rId
+                prs.part.drop_rel(rId)
+                del prs.slides._sldIdLst[0]
+            except Exception:
+                break
+
+        buf = io.BytesIO()
+        prs.save(buf)
+        return buf.getvalue()
+
+    pptx_bytes = await asyncio.to_thread(_build_presentacion_pptx_blocking)
+    safe_name = re.sub(r"[^A-Za-z0-9_-]+", "_", pres.get("titulo") or "presentacion")[:60] or "presentacion"
+    fname = f"{safe_name}_{pres.get('fecha', '')}.pptx"
+    return StreamingResponse(
+        io.BytesIO(pptx_bytes),
+        media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
 
 
 # === BULK UPLOAD GENÉRICO DE NODOS DESDE EXCEL/CSV =========================
@@ -3101,43 +4170,41 @@ async def list_invites(pid: str, user: dict = Depends(require_role(ROLE_COORD)))
     return items
 
 
-@api.post("/projects/{pid}/invitations")
-async def create_invite(pid: str, body: InvitationIn, user: dict = Depends(require_role(ROLE_COORD))):
-    if body.project_id != pid:
-        raise HTTPException(400, "project_id mismatch")
-    project = await ensure_project_access(user, pid)
-    email = body.email.lower()
-    # Validaciones por rol (deben ejecutarse antes del auto-link para validar pertenencia al proyecto)
-    if body.role == "sub_coordinador":
-        if not body.scope_node_id:
-            raise HTTPException(400, "Sub-coordinador requiere scope_node_id")
-        node = await db.location_nodes.find_one({"id": body.scope_node_id, "project_id": pid})
-        if not node:
-            raise HTTPException(404, "scope_node_id inválido")
+async def _validate_and_build_invitation_doc(
+    pid: str, project: dict, *, email: str, name: str, role: str,
+    area_id: Optional[str], puesto: Optional[str], no_control: Optional[str],
+) -> dict:
+    """Valida las reglas de negocio de una invitación y arma el doc listo para
+    insertar. Compartido por el alta individual (wizard) y la carga masiva por
+    Excel (`/invitations/bulk_import/*`) para no duplicar la lógica.
+
+    NOTA scope de nodos: sub-coordinador y especialista ya NO requieren
+    seleccionar nodos del árbol — ambos roles tienen acceso GLOBAL al
+    proyecto una vez aceptada la invitación (ver checks de `scope_node_ids`
+    en reportes/nodos, que tratan una lista vacía como "sin restricción").
+    `scope_node_id`/`scope_node_ids` se conservan en el esquema solo por
+    compatibilidad con datos viejos.
+    """
+    email = email.lower().strip()
+    name = (name or "").strip()
+    if not name:
+        raise HTTPException(400, "Nombre requerido")
+    if role == "sub_coordinador":
         # Área/disciplina opcional del sub-coordinador — se usa en los exports
         # ejecutivos (PDF/PPTX) para etiquetar los reportes bajo esta disciplina.
         # Si NO se asigna, exports usan "Obra Civil" como fallback.
-        if body.area_id:
-            area = await db.areas.find_one({"id": body.area_id, "project_id": pid})
+        if area_id:
+            area = await db.areas.find_one({"id": area_id, "project_id": pid})
             if not area:
                 raise HTTPException(404, "area_id inválido para sub-coordinador")
-    elif body.role == "especialista":
-        if not body.area_id:
+    elif role == "especialista":
+        if not area_id:
             raise HTTPException(400, "Especialista requiere area_id")
-        area = await db.areas.find_one({"id": body.area_id, "project_id": pid})
+        area = await db.areas.find_one({"id": area_id, "project_id": pid})
         if not area:
             raise HTTPException(404, "area_id inválido")
-        if not body.scope_node_ids:
-            raise HTTPException(400, "Especialista requiere al menos 1 scope_node_id")
-        # Todos deben ser hojas del proyecto
-        nodes = await db.location_nodes.find(
-            {"id": {"$in": body.scope_node_ids}, "project_id": pid}
-        ).to_list(length=1000)
-        if len(nodes) != len(body.scope_node_ids):
-            raise HTTPException(400, "scope_node_ids contiene IDs inválidos")
-        for n in nodes:
-            if not n.get("is_leaf"):
-                raise HTTPException(400, f"Nodo '{n['name']}' no es hoja")
+    elif role != "jefe_proyecto":
+        raise HTTPException(400, f"Rol inválido: {role}")
     # ====================================================================
     # REGLA GLOBAL: 1 USUARIO = 1 PROYECTO
     # --------------------------------------------------------------------
@@ -3155,23 +4222,35 @@ async def create_invite(pid: str, body: InvitationIn, user: dict = Depends(requi
     })
     if pending_in_other:
         raise HTTPException(400, "Este usuario ya está asignado a otro proyecto")
-    tok = secrets.token_urlsafe(24)
-    doc = {
+    return {
         "id": str(uuid.uuid4()),
-        "token": tok,
+        "token": secrets.token_urlsafe(24),
         "project_id": pid,
         "project_name": project["name"],
         "email": email,
-        "name": body.name.strip(),
-        "role": body.role,
-        "area_id": body.area_id,
-        "puesto": (body.puesto or "").strip() or None,
-        "scope_node_id": body.scope_node_id,
-        "scope_node_ids": body.scope_node_ids or [],
+        "name": name,
+        "role": role,
+        "area_id": area_id,
+        "puesto": (puesto or "").strip() or None,
+        "no_control": (no_control or "").strip() or None,
+        "scope_node_id": None,
+        "scope_node_ids": [],
         "status": "pending",
         "created_at": datetime.now(timezone.utc),
         "expires_at": datetime.now(timezone.utc) + timedelta(days=30),
     }
+
+
+@api.post("/projects/{pid}/invitations")
+async def create_invite(pid: str, body: InvitationIn, user: dict = Depends(require_role(ROLE_COORD))):
+    if body.project_id != pid:
+        raise HTTPException(400, "project_id mismatch")
+    project = await ensure_project_access(user, pid)
+    doc = await _validate_and_build_invitation_doc(
+        pid, project,
+        email=body.email, name=body.name, role=body.role,
+        area_id=body.area_id, puesto=body.puesto, no_control=body.no_control,
+    )
     await db.invitations.insert_one(doc)
     doc.pop("_id", None)
     return doc
@@ -3246,6 +4325,7 @@ async def accept_invite(body: AcceptInviteIn):
         "area": area_name,
         "area_id": inv.get("area_id"),
         "puesto": inv.get("puesto"),
+        "no_control": inv.get("no_control"),
         "scope_node_id": inv.get("scope_node_id"),
         "scope_node_ids": inv.get("scope_node_ids") or [],
         "project_ids": [inv["project_id"]],
@@ -3256,6 +4336,249 @@ async def accept_invite(body: AcceptInviteIn):
         {"id": inv["id"]}, {"$set": {"status": "accepted", "accepted_at": datetime.now(timezone.utc), "accepted_user_id": uid}}
     )
     return {"token": make_token(uid), "user": user_to_out(user_doc)}
+
+
+# === INVITATIONS: CARGA MASIVA POR EXCEL ====================================
+# Formato fijo de columnas (A→G), sin fila de encabezado alternativa ni
+# mapeo configurable (a diferencia de los importadores de catálogo/gasto
+# real): No. (se ignora) | No. de Control | Iniciales | Puesto | Área |
+# Rol (especialista/subcoordinador) | Correo. La fila 1 siempre es
+# encabezado; los datos empiezan en la fila 2.
+class InvitationBulkRowIn(BaseModel):
+    fila: Optional[int] = None
+    no_control: Optional[str] = None
+    name: str
+    puesto: Optional[str] = None
+    area_name: Optional[str] = None
+    role: Optional[str] = None
+    email: str
+
+
+class InvitationBulkCommitIn(BaseModel):
+    rows: List[InvitationBulkRowIn]
+
+
+def _normalize_bulk_role(raw: Any) -> Optional[str]:
+    key = _normalize_text(str(raw or "")).replace("-", "").replace("_", "").replace(" ", "")
+    if key in {"especialista", "esp", "e"}:
+        return "especialista"
+    if key in {"subcoordinador", "subcoord", "sub", "s"}:
+        return "sub_coordinador"
+    return None
+
+
+def _parse_bulk_invitation_rows(filename: str, content: bytes) -> List[dict]:
+    sheets = _read_workbook_sheets(filename, content)
+    first_sheet = next(iter(sheets.values()), [])
+    data_rows = first_sheet[1:] if len(first_sheet) > 1 else []
+    rows: List[dict] = []
+    for idx, row in enumerate(data_rows):
+        if not row or all(c is None or str(c).strip() == "" for c in row):
+            continue
+        def cell(i: int):
+            return row[i] if i < len(row) else None
+        rows.append({
+            "fila": idx + 2,  # +1 por encabezado (fila 1), +1 porque Excel es 1-based
+            "no_control": cell(1),
+            "name": cell(2),
+            "puesto": cell(3),
+            "area_name": cell(4),
+            "role_raw": cell(5),
+            "email": cell(6),
+        })
+    return rows
+
+
+async def _validate_bulk_invitation_row(
+    fila: int, no_control: Any, name: Any, puesto: Any, area_name: Any, role_raw: Any, email: Any,
+    *, pid: str, areas_by_name: dict, seen_emails: set,
+) -> dict:
+    """Valida una fila de la carga masiva de invitaciones. Se reutiliza tal
+    cual desde `/bulk_import/validate` (vista previa, no persiste nada) y
+    desde `/bulk_import/commit` (re-valida justo antes de insertar, para no
+    confiar en lo que el cliente devolvió de la vista previa)."""
+    name_clean = str(name or "").strip()
+    email_clean = str(email or "").strip().lower()
+    area_name_clean = str(area_name or "").strip()
+    role = _normalize_bulk_role(role_raw)
+    area_id: Optional[str] = None
+    estado = "ok"
+    motivo: Optional[str] = None
+
+    if not name_clean:
+        estado, motivo = "error", "Iniciales vacías"
+    elif not email_clean or not re.match(r"^[^\s@]+@[^\s@]+\.[^\s@]+$", email_clean):
+        estado, motivo = "error", "Correo inválido"
+    elif role is None:
+        estado, motivo = "error", 'Rol inválido — usa "especialista" o "subcoordinador"'
+    elif email_clean in seen_emails:
+        estado, motivo = "error", "Correo duplicado dentro del archivo"
+
+    if estado == "ok" and area_name_clean:
+        area = areas_by_name.get(_normalize_text(area_name_clean))
+        if area:
+            area_id = area["id"]
+        else:
+            estado, motivo = "error", f'Área "{area_name_clean}" no existe en el proyecto — créala primero en Áreas'
+
+    if estado == "ok" and role == "especialista" and not area_id:
+        estado, motivo = "error", "Especialista requiere Área (columna vacía o no encontrada)"
+
+    if estado == "ok" and await db.users.find_one({"email": email_clean}):
+        estado, motivo = "error", "Ya existe un usuario con este correo (en otro proyecto)"
+
+    if estado == "ok" and await db.invitations.find_one(
+        {"email": email_clean, "status": "pending", "project_id": {"$ne": pid}}
+    ):
+        estado, motivo = "error", "Ya tiene una invitación pendiente en otro proyecto"
+
+    if estado == "ok" and await db.invitations.find_one(
+        {"email": email_clean, "status": "pending", "project_id": pid}
+    ):
+        estado, motivo = "duplicado", "Ya existe una invitación pendiente para este correo en este proyecto"
+
+    if estado != "error":
+        seen_emails.add(email_clean)
+
+    return {
+        "fila": fila,
+        "no_control": str(no_control).strip() if no_control not in (None, "") else None,
+        "name": name_clean,
+        "puesto": str(puesto).strip() if puesto not in (None, "") else None,
+        "area_name": area_name_clean or None,
+        "role": role,
+        "email": email_clean,
+        "area_id": area_id,
+        "estado": estado,
+        "motivo": motivo,
+    }
+
+
+@api.get("/projects/{pid}/invitations/bulk_import/plantilla.xlsx")
+async def invitations_bulk_template(pid: str, user: dict = Depends(require_role(ROLE_COORD))):
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.utils import get_column_letter
+
+    await ensure_project_access(user, pid)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Invitaciones"
+    headers = ["No.", "No. de Control", "Iniciales", "Puesto", "Área", "Rol", "Correo"]
+    header_fill = PatternFill(start_color="1E40AF", end_color="1E40AF", fill_type="solid")
+    header_font = Font(color="FFFFFF", bold=True)
+    for col, h in enumerate(headers, start=1):
+        c = ws.cell(row=1, column=col, value=h)
+        c.font = header_font
+        c.fill = header_fill
+        c.alignment = Alignment(wrap_text=True, vertical="center")
+    ws.append([1, "1234", "J. Pérez", "Ingeniero de campo", "Estructura", "especialista", "jperez@example.com"])
+    ws.append([2, "5678", "A. López", "Supervisor de obra", "", "subcoordinador", "alopez@example.com"])
+    for col, width in enumerate([6, 16, 20, 24, 18, 20, 30], start=1):
+        ws.column_dimensions[get_column_letter(col)].width = width
+
+    ws2 = wb.create_sheet("Instrucciones")
+    instrucciones = [
+        "Cómo llenar esta plantilla:",
+        "1. No.: solo cuenta cuántas personas hay, no se importa.",
+        "2. No. de Control: número de control interno de la persona (opcional).",
+        "3. Iniciales: nombre corto con el que se identificará a la persona en la app.",
+        "4. Puesto: puesto de la persona.",
+        '5. Área: debe coincidir EXACTAMENTE con una de las áreas ya creadas en el proyecto (pantalla Áreas). '
+        'Obligatoria para especialista; opcional para subcoordinador.',
+        '6. Rol: escribe "especialista" o "subcoordinador" (sin acentos; mayúsculas/minúsculas no importan).',
+        "7. Correo: correo con el que la persona iniciará sesión. No puede repetirse ni estar ya asignado a otro proyecto.",
+    ]
+    for i, line in enumerate(instrucciones, start=1):
+        ws2.cell(row=i, column=1, value=line)
+    ws2.column_dimensions["A"].width = 100
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="plantilla_invitaciones_synco.xlsx"'},
+    )
+
+
+@api.post("/projects/{pid}/invitations/bulk_import/validate")
+async def invitations_bulk_validate(
+    pid: str, file: UploadFile = File(...), user: dict = Depends(require_role(ROLE_COORD)),
+):
+    await ensure_project_access(user, pid)
+    content = await file.read()
+    raw_rows = _parse_bulk_invitation_rows(file.filename or "invitaciones.xlsx", content)
+    if not raw_rows:
+        raise HTTPException(400, "El archivo no tiene filas de datos (deben empezar en la fila 2).")
+    if len(raw_rows) > 500:
+        raise HTTPException(400, "Máximo 500 personas por archivo.")
+
+    areas = await db.areas.find({"project_id": pid}).to_list(length=1000)
+    areas_by_name = {_normalize_text(a["name"]): a for a in areas}
+    seen_emails: set = set()
+
+    filas = []
+    for r in raw_rows:
+        filas.append(await _validate_bulk_invitation_row(
+            r["fila"], r["no_control"], r["name"], r["puesto"], r["area_name"], r["role_raw"], r["email"],
+            pid=pid, areas_by_name=areas_by_name, seen_emails=seen_emails,
+        ))
+    resumen = {
+        "total": len(filas),
+        "ok": sum(1 for r in filas if r["estado"] == "ok"),
+        "error": sum(1 for r in filas if r["estado"] == "error"),
+        "duplicado": sum(1 for r in filas if r["estado"] == "duplicado"),
+    }
+    return {"resumen": resumen, "filas": filas}
+
+
+@api.post("/projects/{pid}/invitations/bulk_import/commit")
+async def invitations_bulk_commit(
+    pid: str, body: InvitationBulkCommitIn, user: dict = Depends(require_role(ROLE_COORD)),
+):
+    project = await ensure_project_access(user, pid)
+    if not body.rows:
+        raise HTTPException(400, "No hay filas para importar")
+    if len(body.rows) > 500:
+        raise HTTPException(400, "Máximo 500 personas por archivo.")
+
+    areas = await db.areas.find({"project_id": pid}).to_list(length=1000)
+    areas_by_name = {_normalize_text(a["name"]): a for a in areas}
+    seen_emails: set = set()
+
+    creados: List[dict] = []
+    omitidos: List[dict] = []
+    errores: List[dict] = []
+    for i, row_in in enumerate(body.rows):
+        fila = row_in.fila or (i + 2)
+        validado = await _validate_bulk_invitation_row(
+            fila, row_in.no_control, row_in.name, row_in.puesto, row_in.area_name, row_in.role, row_in.email,
+            pid=pid, areas_by_name=areas_by_name, seen_emails=seen_emails,
+        )
+        if validado["estado"] == "ok":
+            doc = await _validate_and_build_invitation_doc(
+                pid, project,
+                email=validado["email"], name=validado["name"], role=validado["role"],
+                area_id=validado["area_id"], puesto=validado["puesto"], no_control=validado["no_control"],
+            )
+            await db.invitations.insert_one(doc)
+            doc.pop("_id", None)
+            creados.append(doc)
+        elif validado["estado"] == "duplicado":
+            omitidos.append(validado)
+        else:
+            errores.append(validado)
+
+    return {
+        "creados": len(creados),
+        "omitidos": len(omitidos),
+        "con_error": len(errores),
+        "invitations": creados,
+        "errores": errores,
+        "duplicados": omitidos,
+    }
 
 
 # === REPORTS ================================================================
@@ -3366,10 +4689,11 @@ async def create_report(body: ReportIn, user: dict = Depends(current_user)):
         raise HTTPException(404, "Nodo no existe en este proyecto")
     if not node.get("is_leaf"):
         raise HTTPException(400, "Solo se puede capturar en nodos hoja")
-    if user["role"] == ROLE_ESPECIALISTA:
-        if body.node_id not in (user.get("scope_node_ids") or []):
+    if user["role"] == ROLE_ESPECIALISTA and (user.get("scope_node_ids") or []):
+        if body.node_id not in user["scope_node_ids"]:
             raise HTTPException(403, "Nodo no está en tu scope autorizado")
     # Sub-coordinador: scope GLOBAL (puede capturar en cualquier hoja del proyecto).
+    # Especialista sin scope_node_ids asignado: acceso GLOBAL (igual que sub-coordinador).
     # ====================================================================
     # FALLBACK DE COORDENADAS DESDE metadata DEL NODO (pre-validación)
     # --------------------------------------------------------------------
@@ -3627,10 +4951,10 @@ async def node_history(pid: str, nid: str, user: dict = Depends(current_user)):
     node = await db.location_nodes.find_one({"id": nid, "project_id": pid})
     if not node:
         raise HTTPException(404, "Nodo no existe en este proyecto")
-    if user["role"] == ROLE_ESPECIALISTA:
-        if nid not in (user.get("scope_node_ids") or []):
+    if user["role"] == ROLE_ESPECIALISTA and (user.get("scope_node_ids") or []):
+        if nid not in user["scope_node_ids"]:
             raise HTTPException(403, "Nodo no está en tu scope autorizado")
-    # Sub-coordinador: acceso GLOBAL (sin restricción de scope).
+    # Sub-coordinador / Especialista sin scope: acceso GLOBAL (sin restricción).
 
     last = await db.reports.find_one(
         {"project_id": pid, "node_id": nid},
@@ -3666,10 +4990,9 @@ async def node_history(pid: str, nid: str, user: dict = Depends(current_user)):
 async def list_reports(pid: str, user: dict = Depends(current_user)):
     await ensure_project_access(user, pid)
     q: dict = {"project_id": pid}
-    if user["role"] == ROLE_ESPECIALISTA:
-        scope = user.get("scope_node_ids") or []
-        q["node_id"] = {"$in": scope}
-    # Sub-coordinador: acceso GLOBAL al listado de reportes (sin filtro de scope).
+    if user["role"] == ROLE_ESPECIALISTA and (user.get("scope_node_ids") or []):
+        q["node_id"] = {"$in": user["scope_node_ids"]}
+    # Sub-coordinador / Especialista sin scope: acceso GLOBAL al listado (sin filtro).
     items = await db.reports.find(q).sort("created_at", -1).to_list(length=2000)
     for it in items:
         it.pop("_id", None)
@@ -3794,10 +5117,9 @@ async def reports_feed(
     """
     await ensure_project_access(user, pid)
     query: dict = {"project_id": pid}
-    if user["role"] == ROLE_ESPECIALISTA:
-        scope = user.get("scope_node_ids") or []
-        query["node_id"] = {"$in": scope}
-    # Sub-coordinador/Coordinador: feed GLOBAL del proyecto (sin restricción de scope).
+    if user["role"] == ROLE_ESPECIALISTA and (user.get("scope_node_ids") or []):
+        query["node_id"] = {"$in": user["scope_node_ids"]}
+    # Sub-coordinador/Coordinador/Especialista sin scope: feed GLOBAL (sin restricción).
 
     since_dt: Optional[datetime] = None
     if since:
@@ -3940,10 +5262,10 @@ async def get_report(rid: str, user: dict = Depends(current_user)):
         raise HTTPException(404, "Reporte no existe")
     await ensure_project_access(user, r["project_id"])
     # Scope check
-    if user["role"] == ROLE_ESPECIALISTA:
-        if r["node_id"] not in (user.get("scope_node_ids") or []):
+    if user["role"] == ROLE_ESPECIALISTA and (user.get("scope_node_ids") or []):
+        if r["node_id"] not in user["scope_node_ids"]:
             raise HTTPException(403, "Sin acceso a este reporte")
-    # Sub-coordinador: acceso GLOBAL (sin filtro de scope).
+    # Sub-coordinador / Especialista sin scope: acceso GLOBAL (sin filtro).
     r.pop("_id", None)
     r["severidad"] = _normalize_severidad_list(r.get("severidad"))
     return r
@@ -3962,8 +5284,8 @@ async def get_report_collage(rid: str, user: dict = Depends(current_user)):
     if not r:
         raise HTTPException(404, "Reporte no existe")
     await ensure_project_access(user, r["project_id"])
-    if user["role"] == ROLE_ESPECIALISTA:
-        if r["node_id"] not in (user.get("scope_node_ids") or []):
+    if user["role"] == ROLE_ESPECIALISTA and (user.get("scope_node_ids") or []):
+        if r["node_id"] not in user["scope_node_ids"]:
             raise HTTPException(403, "Sin acceso a este reporte")
     imgs = (r.get("images") or [])[:4]
     if not imgs:
@@ -4067,8 +5389,9 @@ async def patch_report_captions(
     r = await db.reports.find_one({"id": rid})
     if not r:
         raise HTTPException(404, "Reporte no existe")
-    # Autorización: autor original o roles supervisores.
-    if user.get("role") not in (ROLE_COORD, ROLE_JEFE) and r.get("captured_by") != user["id"]:
+    # Autorización: autor original o roles supervisores (Coord General, Jefe
+    # de Proyecto, Sub-Coordinador — mismo criterio que severity/workforce-entry).
+    if user.get("role") not in (ROLE_COORD, ROLE_JEFE, ROLE_SUB) and r.get("captured_by") != user["id"]:
         raise HTTPException(403, "Solo el autor o un Coordinador puede editar descripciones")
     # Sanitizamos: máximo 160 chars por caption y sólo se guardan hasta el
     # número real de imágenes que tiene el reporte (tope duro = 2 en export).
@@ -4204,6 +5527,7 @@ class TeamMemberPatch(BaseModel):
     name: Optional[str] = None
     email: Optional[EmailStr] = None
     puesto: Optional[str] = None
+    no_control: Optional[str] = None
     # Área/disciplina — editable tanto para Especialista como para
     # Sub-coordinador (antes solo se podía asignar al invitar). Cadena vacía
     # = quitar el área (permitido solo para sub-coordinador, ver abajo).
@@ -4235,20 +5559,61 @@ async def update_team_member(
         update["email"] = email
     if body.puesto is not None:
         update["puesto"] = body.puesto.strip() or None
+    if body.no_control is not None:
+        update["no_control"] = body.no_control.strip() or None
     if body.area_id is not None:
         area_id_val = body.area_id.strip() or None
         if not area_id_val and member.get("role") == ROLE_ESPECIALISTA:
             raise HTTPException(400, "Especialista requiere area_id")
+        area_name_val = None
         if area_id_val:
             area = await db.areas.find_one({"id": area_id_val, "project_id": pid})
             if not area:
                 raise HTTPException(404, "area_id inválido")
+            area_name_val = area.get("name")
         update["area_id"] = area_id_val
+        # [FIX] `area` es una copia del nombre del área resuelta en el momento
+        # de la invitación (ver `_normalize_area_name`, usada para agrupar los
+        # reportes de un sub-coordinador en exports ejecutivos). Si solo se
+        # actualiza `area_id` aquí, esa copia queda obsoleta para siempre y
+        # los exports del sub-coordinador siguen mostrando el área vieja
+        # aunque el Coordinador haya reasignado el área desde el perfil.
+        update["area"] = area_name_val
 
     if update:
         await db.users.update_one({"id": uid}, {"$set": update})
         member.update(update)
     return user_to_out(member)
+
+
+_TEMP_PASSWORD_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # sin 0/O/1/I para evitar confusión al dictarla
+
+
+def _generate_temp_password(length: int = 8) -> str:
+    return "".join(secrets.choice(_TEMP_PASSWORD_ALPHABET) for _ in range(length))
+
+
+@api.post("/projects/{pid}/team/{uid}/reset_password")
+async def reset_team_member_password(pid: str, uid: str, user: dict = Depends(require_role(ROLE_COORD))):
+    """Genera una contraseña temporal nueva para un Sub-coordinador o
+    Especialista que la olvidó, sin borrar su perfil ni su historial.
+
+    Las contraseñas se guardan con bcrypt (hash de un solo sentido, ver
+    `hash_pw`) — nunca se puede "ver" la contraseña que el usuario eligió,
+    así que la única forma de recuperar el acceso es asignarle una nueva.
+    La contraseña en texto plano solo se devuelve UNA VEZ en esta respuesta
+    para que el Coordinador se la comparta al usuario; no queda guardada en
+    ningún lado.
+    """
+    await ensure_project_access(user, pid)
+    member = await db.users.find_one({"id": uid, "project_ids": pid})
+    if not member:
+        raise HTTPException(404, "Miembro no encontrado en este proyecto")
+    if member.get("role") not in TEAM_EDITABLE_ROLES:
+        raise HTTPException(400, "Solo se puede restablecer la contraseña de Sub-coordinadores y Especialistas")
+    temp_password = _generate_temp_password()
+    await db.users.update_one({"id": uid}, {"$set": {"password": hash_pw(temp_password)}})
+    return {"ok": True, "temp_password": temp_password}
 
 
 @api.delete("/projects/{pid}/team/{uid}")
@@ -4395,15 +5760,16 @@ async def update_announcement(
     body: AnnouncementPatch,
     user: dict = Depends(current_user),
 ):
-    """Editable por el autor o por cualquier Coordinador General."""
+    """Editable por el autor, cualquier Coordinador General o Sub-Coordinador
+    (mismo criterio que severity/workforce-entry/captions de reportes)."""
     a = await db.announcements.find_one({"id": aid})
     if not a:
         raise HTTPException(404, "Noticia no existe")
     await ensure_project_access(user, a["project_id"])
     is_author = a.get("author_id") == user["id"]
-    is_coord = user["role"] == ROLE_COORD
+    is_coord = user["role"] in (ROLE_COORD, ROLE_SUB)
     if not (is_author or is_coord):
-        raise HTTPException(403, "Sólo el autor o un Coordinador puede editar")
+        raise HTTPException(403, "Sólo el autor, un Coordinador o un Sub-Coordinador puede editar")
     update: dict = {}
     if body.title is not None:
         t = body.title.strip()
@@ -4469,15 +5835,15 @@ async def update_announcement(
 
 @api.delete("/announcements/{aid}")
 async def delete_announcement(aid: str, user: dict = Depends(current_user)):
-    """Eliminable por el autor o por cualquier Coordinador General."""
+    """Eliminable por el autor, cualquier Coordinador General o Sub-Coordinador."""
     a = await db.announcements.find_one({"id": aid})
     if not a:
         raise HTTPException(404, "Noticia no existe")
     await ensure_project_access(user, a["project_id"])
     is_author = a.get("author_id") == user["id"]
-    is_coord = user["role"] == ROLE_COORD
+    is_coord = user["role"] in (ROLE_COORD, ROLE_SUB)
     if not (is_author or is_coord):
-        raise HTTPException(403, "Sólo el autor o un Coordinador puede eliminar")
+        raise HTTPException(403, "Sólo el autor, un Coordinador o un Sub-Coordinador puede eliminar")
     await db.announcements.delete_one({"id": aid})
     return {"ok": True}
 
@@ -7009,6 +8375,17 @@ async def export_reports_pdf(
     # captura individual es su propia fila — ver `_workforce_raw_rows_by_subtramo`).
     resource_raw_rows_by_subtramo = _workforce_raw_rows_by_subtramo(workforce_reports_by_node, nodes_by_id)
     actividades_by_subtramo = _actividades_by_subtramo(workforce_reports_by_node, nodes_by_id)
+    # Numeración "ESTACIÓN N." del título de la página-resumen por Subtramo
+    # (formato de referencia del cliente) — orden del árbol del proyecto
+    # completo (no solo los subtramos con datos en este período), mismo
+    # criterio que `subtramo_order_index` en `_actividades_generales_core`.
+    _subtramo_ordinal = {
+        n["id"]: i + 1
+        for i, n in enumerate(
+            sorted((n for n in nodes_by_id.values() if n.get("depth") == 1),
+                   key=lambda n: (n.get("order", 0), n.get("name", "")))
+        )
+    }
     # Página(s) de cierre "RECUENTO GENERAL": consolidado del período
     # completo, agrupado por el nivel de agregación configurado (parámetros
     # de la request > preferencia guardada del proyecto > 'subtramo' por
@@ -7028,6 +8405,19 @@ async def export_reports_pdf(
     # nunca el texto crudo del reporte. Un solo prefetch para todo el
     # proyecto/rango, ANTES del render bloqueante (requiere Mongo).
     actividades_curadas_idx = await _actividades_curadas_resumen_por_area(pid, start_dt, end_dt, user)
+    # Mismo criterio para la página-resumen por Subtramo: sus viñetas
+    # "ACTIVIDADES" deben reflejar ediciones del hub igual que el bloque de
+    # Área de arriba — antes leían `report.actividades` crudo
+    # (`_actividades_by_subtramo`), así que un cambio en el hub se veía en
+    # un lado del PDF pero no en éste. Se sobreescribe por Subtramo solo
+    # donde el hub tiene datos; si algún Subtramo queda sin cobertura ahí,
+    # conserva el texto crudo ya calculado arriba como respaldo.
+    actividades_curadas_by_subtramo = await _actividades_curadas_resumen_por_subtramo(
+        pid, start_dt, end_dt, user, nodes_by_id,
+    )
+    for _sid, _textos in actividades_curadas_by_subtramo.items():
+        if _textos:
+            actividades_by_subtramo[_sid] = _textos
     # Tabla consolidada "Actividades por Área" (justo después de Datos
     # Generales, ver `_draw_actividades_por_area_section` más abajo) —
     # mismo prefetch, distinta forma (conserva ubicación por fila).
@@ -7870,14 +9260,22 @@ async def export_reports_pdf(
             # COLUMNA IZQUIERDA
             # =================================================================
             y = top_y
+            # Título en 2 líneas (formato de referencia del cliente):
+            # "ESTACIÓN N." (chico) arriba, nombre de la estación (grande)
+            # abajo — antes era una sola línea con solo el nombre.
+            _ordinal = _subtramo_ordinal.get((subtramo_node or {}).get("id"))
             _draw_badge_icon(left_x + BADGE_R, y - BADGE_R - 0.05 * cm, BADGE_R, "structure")
             c.setFillColor(BRAND)
+            if _ordinal is not None:
+                c.setFont("Helvetica-Bold", 10.5)
+                c.drawString(left_x + 2 * BADGE_R + 0.3 * cm, y - BADGE_R - 0.05 * cm - 10.5 * 0.32 + 0.16 * cm,
+                             f"ESTACIÓN {_ordinal}.")
             c.setFont("Helvetica-Bold", 15)
             title_txt = subtramo_name.upper()
             while c.stringWidth(title_txt, "Helvetica-Bold", 15) > col_w - (2 * BADGE_R + 0.3 * cm) and len(title_txt) > 8:
                 title_txt = title_txt[:-2] + "…"
-            c.drawString(left_x + 2 * BADGE_R + 0.3 * cm, y - BADGE_R - 0.05 * cm - 15 * 0.32, title_txt)
-            y -= 1.35 * cm
+            c.drawString(left_x + 2 * BADGE_R + 0.3 * cm, y - BADGE_R - 0.05 * cm - 15 * 0.32 - 0.42 * cm, title_txt)
+            y -= 1.75 * cm
             c.setStrokeColor(BRAND)
             c.setLineWidth(1.4)
             c.line(left_x, y, left_x + col_w, y)
@@ -7901,26 +9299,20 @@ async def export_reports_pdf(
                 c.setFont("Helvetica-Bold", 11)
                 status_label = (acceso_predio or "Sin especificar").strip().upper()
                 c.drawCentredString(left_x + col_w / 2, y - box_h / 2 - 0.14 * cm, status_label)
-                y -= box_h + 0.18 * cm
-                c.setFillColor(MUTED)
-                c.setFont("Helvetica-Oblique", 6.8)
-                for ln in _wrap_lines(
-                    "Refleja el estatus vigente al momento de exportar, no necesariamente el del período de este reporte.",
-                    col_w, "Helvetica-Oblique", 6.8, 2,
-                ):
-                    c.drawString(left_x, y, ln)
-                    y -= 0.3 * cm
-                y -= 0.18 * cm
+                # FIX: se quita la nota de vigencia ("Refleja el estatus...")
+                # para calzar exacto con el formato de referencia del
+                # cliente, que va directo del badge a la siguiente sección.
+                y -= box_h + 0.30 * cm
 
                 # --- SITUACIÓN SOCIAL ------------------------------------------
-                y = _section_title(left_x, y, col_w, "Situación Social - Liberación Física del Predio")
+                y = _section_title(left_x, y, col_w, "Situación Social-Liberación Física del Predio")
                 situ_items = [ln.strip() for ln in (situacion_social or "").splitlines() if ln.strip()]
                 situ_h = min(3.4 * cm, max(1.2 * cm, y - bottom_y))
                 y = _draw_bullets(left_x, y, col_w, situ_items, situ_h, max_items=5)
                 y -= 0.28 * cm
 
             # --- ACTIVIDADES ---------------------------------------------------
-            y = _section_title(left_x, y, col_w, "Actividades")
+            y = _section_title(left_x, y, col_w, "Se supervisa las siguientes actividades")
             act_h = max(1.0 * cm, y - bottom_y)
             _draw_bullets(left_x, y, col_w, actividades or [], act_h, max_items=6)
 
@@ -7946,28 +9338,28 @@ async def export_reports_pdf(
             wind = w.get("wind_kmh")
             precip = w.get("precipitation_mm")
             aqi = w.get("us_aqi")
+            # FIX: formato de referencia del cliente — una sola fila de 4
+            # columnas SIN bordes (antes: cuadrícula 2x2 con recuadro por
+            # celda), etiqueta "Label:" en altas y bajas en vez de
+            # VERSALITAS, y unidades/decimales exactos del formato ("5.8
+            # km/hr.", "53.8 ICA" — el valor crudo de AQI, no la categoría).
             cells = [
-                ("TEMPERATURA", f"{temp:.0f}°C" if temp is not None else "—"),
-                ("VIENTO", f"{wind:.0f} km/h" if wind is not None else "—"),
-                ("PRECIPITACIÓN", f"{precip:.1f} mm" if precip is not None else "—"),
-                ("CALIDAD DEL AIRE", f"{int(aqi)} · {_us_aqi_label(aqi)}" if aqi is not None else "—"),
+                ("Temperatura:", f"{temp:.0f}° C" if temp is not None else "—"),
+                ("Viento:", f"{wind:.1f} km/hr." if wind is not None else "—"),
+                ("Precipitación:", f"{precip:.1f} mm" if precip is not None else "—"),
+                ("Calidad del aire:", f"{aqi:.1f} ICA" if aqi is not None else "—"),
             ]
-            cell_w, cell_h = col_w / 2.0, 1.35 * cm
+            cell_w, cell_h = col_w / 4.0, 1.1 * cm
             grid_top = y
             for i, (label, val) in enumerate(cells):
-                row, colx = divmod(i, 2)
-                cx = right_x + colx * cell_w
-                cy = grid_top - row * cell_h
-                c.setStrokeColor(BORDER)
-                c.setLineWidth(0.75)
-                c.rect(cx, cy - cell_h, cell_w, cell_h, fill=0, stroke=1)
-                c.setFillColor(MUTED)
-                c.setFont("Helvetica-Bold", 7)
-                c.drawString(cx + 0.2 * cm, cy - 0.38 * cm, label)
+                cx = right_x + i * cell_w
                 c.setFillColor(TEXT)
-                c.setFont("Helvetica-Bold", 12.5)
-                c.drawString(cx + 0.2 * cm, cy - cell_h + 0.32 * cm, val)
-            y = grid_top - 2 * cell_h - 0.4 * cm
+                c.setFont("Helvetica-Bold", 7.5)
+                for ln in _wrap_lines(label, cell_w - 0.15 * cm, "Helvetica-Bold", 7.5, 2):
+                    c.drawString(cx, grid_top - 0.34 * cm, ln)
+                c.setFont("Helvetica-Bold", 10.5)
+                c.drawString(cx, grid_top - cell_h + 0.28 * cm, val)
+            y = grid_top - cell_h - 0.3 * cm
 
             # --- TABLAS GEMELAS FUERZA DE TRABAJO | MAQUINARIA Y EQUIPO -----
             # FIX 2026-08-11 · REDISEÑO SEGÚN SPEC DE PRODUCTO
@@ -10043,6 +11435,15 @@ async def export_reports_pptx(
     # ejecutivo — reemplaza el panel dual agrupado por Tramo (nodo raíz).
     resource_consolidated_by_subtramo = _workforce_consolidated_by_subtramo(workforce_reports_by_node, nodes_by_id)
     actividades_by_subtramo = _actividades_by_subtramo(workforce_reports_by_node, nodes_by_id)
+    # Numeración "ESTACIÓN N." del título de la slide-resumen por Subtramo —
+    # ver la misma nota en export_reports_pdf.
+    _subtramo_ordinal = {
+        n["id"]: i + 1
+        for i, n in enumerate(
+            sorted((n for n in nodes_by_id.values() if n.get("depth") == 1),
+                   key=lambda n: (n.get("order", 0), n.get("name", "")))
+        )
+    }
     # Slide(s) de cierre "RECUENTO GENERAL": consolidado del período
     # completo, agrupado por el nivel de agregación configurado — ver la
     # misma nota en export_reports_pdf.
@@ -10058,6 +11459,15 @@ async def export_reports_pptx(
     # dentro de cada bloque de Área del cuerpo del PPTX — ver la misma nota
     # en export_reports_pdf.
     actividades_curadas_idx = await _actividades_curadas_resumen_por_area(pid, start_dt, end_dt, user)
+    # Página-resumen por Subtramo: misma corrección que en export_reports_pdf
+    # — sus viñetas "ACTIVIDADES" ahora reflejan ediciones del hub en vez de
+    # leer `report.actividades` crudo.
+    actividades_curadas_by_subtramo = await _actividades_curadas_resumen_por_subtramo(
+        pid, start_dt, end_dt, user, nodes_by_id,
+    )
+    for _sid, _textos in actividades_curadas_by_subtramo.items():
+        if _textos:
+            actividades_by_subtramo[_sid] = _textos
     # Tabla consolidada "Actividades por Área" (ver la misma nota en
     # export_reports_pdf / `_draw_actividades_por_area_section`).
     actividades_tabla_por_area = await _actividades_tabla_por_area(pid, start_dt, end_dt, user)
@@ -10140,6 +11550,7 @@ async def export_reports_pptx(
             prs = Presentation()
             prs.slide_width = Cm(29.7)
             prs.slide_height = Cm(21.0)
+        _force_pptx_theme_font(prs, "Arial")
         SW, SH = prs.slide_width, prs.slide_height
         # Margen superior seguro para no invadir logos/encabezado del membrete.
         TOP_MARGIN = Cm(3.5)
@@ -10411,13 +11822,21 @@ async def export_reports_pptx(
                 return y + Cm(0.6)
 
             # ---- COLUMNA IZQUIERDA ------------------------------------------
+            # Título en 2 líneas (formato de referencia del cliente):
+            # "ESTACIÓN N." (chico) + nombre de la estación (grande) — ver
+            # la misma nota en draw_subtramo_summary_page (motor PDF).
             y = top_y
+            _ordinal = _subtramo_ordinal.get((subtramo_node or {}).get("id"))
             cx, cy = left_x + BADGE_R, y + BADGE_R
             _wf_structure_icon(slide, cx, cy, BADGE_R)
-            add_text(slide, left_x + 2 * BADGE_R + Cm(0.3), y + int(BADGE_R * 0.35),
+            if _ordinal is not None:
+                add_text(slide, left_x + 2 * BADGE_R + Cm(0.3), y + int(BADGE_R * 0.1),
+                         col_w - 2 * BADGE_R - Cm(0.3), Cm(0.5),
+                         f"ESTACIÓN {_ordinal}.", size=12, bold=True, color=READABLE_BRAND_RGB)
+            add_text(slide, left_x + 2 * BADGE_R + Cm(0.3), y + int(BADGE_R * 0.35) + Cm(0.42),
                      col_w - 2 * BADGE_R - Cm(0.3), Cm(0.8),
                      subtramo_name.upper(), size=17, bold=True, color=READABLE_BRAND_RGB)
-            y += Cm(1.4)
+            y += Cm(1.8)
             _wf_rect(slide, left_x, y, col_w, Pt(1.6), fill_rgb=BRAND_RGB)
             y += Cm(0.35)
 
@@ -10436,23 +11855,20 @@ async def export_reports_pptx(
                 _wf_rect(slide, left_x, y, col_w, box_h, fill_rgb=acceso_rgb)
                 add_text(slide, left_x, y, col_w, box_h, (acceso_predio or "Sin especificar").strip().upper(),
                          size=13, bold=True, color=WF_WHITE_RGB, align=PP_ALIGN.CENTER)
-                y += box_h + Cm(0.15)
-                add_text(
-                    slide, left_x, y, col_w, Cm(0.7),
-                    "Refleja el estatus vigente al momento de exportar, no necesariamente el del período de este reporte.",
-                    size=7.5, italic=True, color=WF_MUTED_RGB,
-                )
-                y += Cm(0.75)
+                # FIX: se quita la nota de vigencia para calzar exacto con
+                # el formato de referencia del cliente — ver la misma nota
+                # en draw_subtramo_summary_page (motor PDF).
+                y += box_h + Cm(0.3)
 
                 # --- Situación Social -------------------------------------------
-                y = _section_title(left_x, y, col_w, "Situación Social - Liberación Física del Predio")
+                y = _section_title(left_x, y, col_w, "Situación Social-Liberación Física del Predio")
                 situ_items = [ln.strip() for ln in (situacion_social or "").splitlines() if ln.strip()]
                 situ_h = Cm(3.2)
                 _wf_bullets(slide, left_x, y, col_w, situ_h, situ_items, max_items=4, font_size=10.5)
                 y += situ_h + Cm(0.2)
 
             # --- Actividades ------------------------------------------------------
-            y = _section_title(left_x, y, col_w, "Actividades")
+            y = _section_title(left_x, y, col_w, "Se supervisa las siguientes actividades")
             act_h = max(Cm(1.5), bottom_y - y)
             _wf_bullets(slide, left_x, y, col_w, act_h, actividades or [], max_items=6, font_size=10.5)
 
@@ -10473,31 +11889,33 @@ async def export_reports_pptx(
             wind = w.get("wind_kmh")
             precip = w.get("precipitation_mm")
             aqi = w.get("us_aqi")
+            # FIX: formato de referencia del cliente — una sola fila de 4
+            # columnas SIN bordes, etiqueta "Label:" en altas y bajas, y
+            # unidades/decimales exactos — ver la misma nota en
+            # draw_subtramo_summary_page (motor PDF).
             cells = [
-                ("TEMPERATURA", f"{temp:.0f}°C" if temp is not None else "—"),
-                ("VIENTO", f"{wind:.0f} km/h" if wind is not None else "—"),
-                ("PRECIPITACIÓN", f"{precip:.1f} mm" if precip is not None else "—"),
-                ("CALIDAD DEL AIRE", f"{int(aqi)} · {_us_aqi_label(aqi)}" if aqi is not None else "—"),
+                ("Temperatura:", f"{temp:.0f}° C" if temp is not None else "—"),
+                ("Viento:", f"{wind:.1f} km/hr." if wind is not None else "—"),
+                ("Precipitación:", f"{precip:.1f} mm" if precip is not None else "—"),
+                ("Calidad del aire:", f"{aqi:.1f} ICA" if aqi is not None else "—"),
             ]
-            cell_w, cell_h = col_w // 2, Cm(1.5)
+            cell_w, cell_h = col_w // 4, Cm(1.1)
             grid_top = y
             for i, (label, val) in enumerate(cells):
-                row, colx = divmod(i, 2)
-                cx2 = right_x + colx * cell_w
-                cy2 = grid_top + row * cell_h
-                _wf_rect(slide, cx2, cy2, cell_w, cell_h, line_rgb=WF_BORDER_RGB, line_pt=0.75)
-                add_text(slide, cx2 + Cm(0.15), cy2 + Cm(0.1), cell_w - Cm(0.3), Cm(0.4),
-                         label, size=8, bold=True, color=WF_MUTED_RGB)
-                add_text(slide, cx2 + Cm(0.15), cy2 + Cm(0.55), cell_w - Cm(0.3), Cm(0.8),
-                         val, size=15, bold=True, color=WF_TEXT_RGB)
-            y = grid_top + 2 * cell_h + Cm(0.35)
+                cx2 = right_x + i * cell_w
+                add_text(slide, cx2, grid_top, cell_w - Cm(0.1), Cm(0.45),
+                         label, size=8.5, bold=True, color=WF_TEXT_RGB)
+                add_text(slide, cx2, grid_top + Cm(0.42), cell_w - Cm(0.1), Cm(0.6),
+                         val, size=13, bold=True, color=WF_TEXT_RGB)
+            y = grid_top + cell_h + Cm(0.3)
 
             # --- Mini-tablas FUERZA DE TRABAJO | MAQUINARIA Y EQUIPO ------------
             tbl_gutter = Cm(0.5)
             tbl_w = (col_w - tbl_gutter) // 2
             tbl_avail_h = bottom_y - y
 
-            def _draw_mini_table(x: int, y_top: int, w: int, title: str, rows: list, icon_kind: str) -> None:
+            def _draw_mini_table(x: int, y_top: int, w: int, title: str, rows: list, icon_kind: str,
+                                  col1_header: str = "RECURSO") -> None:
                 mini_r = int(Cm(0.4))
                 HEADER_H = Cm(0.75)
                 ROW_H = Cm(0.5)
@@ -10511,9 +11929,9 @@ async def export_reports_pptx(
                          w - 2 * mini_r - Cm(0.2), Cm(0.6), title.upper(), size=10.5, bold=True, color=READABLE_BRAND_RGB)
                 yy = y_top + 2 * mini_r + Cm(0.15)
                 _wf_rect(slide, x, yy, w, HEADER_H, fill_rgb=BRAND_RGB)
-                add_text(slide, x + Cm(0.15), yy + Cm(0.08), int(w * 0.6), HEADER_H - Cm(0.1), "RECURSO",
+                add_text(slide, x + Cm(0.15), yy + Cm(0.08), int(w * 0.6), HEADER_H - Cm(0.1), col1_header,
                          size=9, bold=True, color=HEADER_TEXT_RGB)
-                add_text(slide, x + int(w * 0.55), yy + Cm(0.08), int(w * 0.4), HEADER_H - Cm(0.1), "CANT.",
+                add_text(slide, x + int(w * 0.55), yy + Cm(0.08), int(w * 0.4), HEADER_H - Cm(0.1), "CANTIDAD",
                          size=9, bold=True, color=HEADER_TEXT_RGB, align=PP_ALIGN.RIGHT)
                 yy += HEADER_H
                 total_qty = sum(r["qty"] for r in rows)
@@ -10545,8 +11963,9 @@ async def export_reports_pptx(
                 add_text(slide, x + int(w * 0.4), yy + Cm(0.1), int(w * 0.55), TOTAL_H - Cm(0.15),
                          str(total_qty), size=10, bold=True, color=READABLE_BRAND_RGB, align=PP_ALIGN.RIGHT)
 
-            _draw_mini_table(right_x, y, tbl_w, "Fuerza de Trabajo", personal_rows, "person")
-            _draw_mini_table(right_x + tbl_w + tbl_gutter, y, tbl_w, "Maquinaria y Equipo", maquinaria_rows, "gear")
+            _draw_mini_table(right_x, y, tbl_w, "Fuerza de Trabajo", personal_rows, "person", col1_header="PERSONAL")
+            _draw_mini_table(right_x + tbl_w + tbl_gutter, y, tbl_w, "Maquinaria y Equipo", maquinaria_rows, "gear",
+                              col1_header="MAQUINARIA Y EQUIPO")
 
         _emitted_recuento_general_title = False
 
@@ -11421,87 +12840,6 @@ async def export_reports_pptx(
     )
 
 
-# === DAILY GOALS (Metas del día por proyecto) ==============================
-class DailyGoalIn(BaseModel):
-    text: str
-
-
-class DailyGoalPatch(BaseModel):
-    text: Optional[str] = None
-    is_completed: Optional[bool] = None
-
-
-def _goal_out(doc: dict) -> dict:
-    doc.pop("_id", None)
-    return doc
-
-
-@api.get("/projects/{pid}/daily_goals")
-async def list_daily_goals(pid: str, user: dict = Depends(current_user)):
-    await ensure_project_access(user, pid)
-    cur = db.daily_goals.find({"project_id": pid}).sort("created_at", 1)
-    out = []
-    async for d in cur:
-        out.append(_goal_out(d))
-    return out
-
-
-@api.post("/projects/{pid}/daily_goals")
-async def create_daily_goal(pid: str, body: DailyGoalIn, user: dict = Depends(current_user)):
-    if user["role"] not in (ROLE_COORD, ROLE_JEFE, ROLE_SUB):
-        raise HTTPException(403, "Solo coord, jefe o sub-coordinador pueden crear metas")
-    await ensure_project_access(user, pid)
-    text = (body.text or "").strip()
-    if not text:
-        raise HTTPException(400, "El texto es obligatorio")
-    gid = str(uuid.uuid4())
-    doc = {
-        "id": gid,
-        "project_id": pid,
-        "text": text,
-        "is_completed": False,
-        "created_at": datetime.now(timezone.utc),
-        "created_by": user["id"],
-        "created_by_name": user.get("name", ""),
-    }
-    await db.daily_goals.insert_one(doc)
-    return _goal_out(doc)
-
-
-@api.patch("/projects/{pid}/daily_goals/{gid}")
-async def update_daily_goal(pid: str, gid: str, body: DailyGoalPatch, user: dict = Depends(current_user)):
-    if user["role"] not in (ROLE_COORD, ROLE_JEFE, ROLE_SUB):
-        raise HTTPException(403, "Solo coord, jefe o sub-coordinador pueden modificar metas")
-    await ensure_project_access(user, pid)
-    upd: dict = {}
-    if body.text is not None:
-        t = body.text.strip()
-        if not t:
-            raise HTTPException(400, "Texto inválido")
-        upd["text"] = t
-    if body.is_completed is not None:
-        upd["is_completed"] = bool(body.is_completed)
-    if upd:
-        res = await db.daily_goals.update_one({"id": gid, "project_id": pid}, {"$set": upd})
-        if res.matched_count == 0:
-            raise HTTPException(404, "Meta no encontrada")
-    out = await db.daily_goals.find_one({"id": gid, "project_id": pid})
-    if not out:
-        raise HTTPException(404, "Meta no encontrada")
-    return _goal_out(out)
-
-
-@api.delete("/projects/{pid}/daily_goals/{gid}")
-async def delete_daily_goal(pid: str, gid: str, user: dict = Depends(current_user)):
-    if user["role"] not in (ROLE_COORD, ROLE_JEFE, ROLE_SUB):
-        raise HTTPException(403, "Solo coord, jefe o sub-coordinador pueden eliminar metas")
-    await ensure_project_access(user, pid)
-    res = await db.daily_goals.delete_one({"id": gid, "project_id": pid})
-    if res.deleted_count == 0:
-        raise HTTPException(404, "Meta no encontrada")
-    return {"ok": True}
-
-
 # === AI Summary (Resumen Ejecutivo con IA) ==================================
 class AISummaryResponse(BaseModel):
     summary: str
@@ -11527,10 +12865,9 @@ async def project_ai_summary(pid: str, user: dict = Depends(current_user)):
 
     q: dict = {"project_id": pid, "created_at": {"$gte": since}}
     # Aplica el mismo scope RBAC que el feed.
-    if user["role"] == ROLE_ESPECIALISTA:
-        scope = user.get("scope_node_ids") or []
-        q["node_id"] = {"$in": scope}
-    # Sub-coordinador: scope GLOBAL (sin restricción).
+    if user["role"] == ROLE_ESPECIALISTA and (user.get("scope_node_ids") or []):
+        q["node_id"] = {"$in": user["scope_node_ids"]}
+    # Sub-coordinador / Especialista sin scope: acceso GLOBAL (sin restricción).
 
     raw = await db.reports.find(q).sort("created_at", -1).to_list(length=500)
 
@@ -12773,6 +14110,46 @@ def _actividades_por_area_index(items: list) -> dict:
         else:
             nodo.setdefault((it.get("node_id"), aid), []).append(texto)
     return {"general": general, "subtramo": subtramo, "nodo": nodo}
+
+
+def _actividades_por_subtramo_index(items: list, nodes_by_id: dict) -> dict:
+    """Misma fuente que `_actividades_por_area_index` (curada-o-virtual, ya
+    resuelta a texto editado cuando aplica), indexada por Subtramo en vez de
+    por Área — usada por la página-resumen de Subtramo del PDF/PPTX
+    (`_emit_subtramo_summary`) para que sus viñetas "ACTIVIDADES" reflejen
+    ediciones del hub Actividades Generales igual que ya lo hace el bloque
+    "Resumen de Actividades Generales" del Área. Un item de nivel NODO
+    (poste) se agrega al Subtramo ancestro vía `_subtramo_id_for`; uno ya a
+    nivel SUBTRAMO usa su propio `node_id`. Los de nivel GENERAL no cuelgan
+    de ningún Subtramo y se excluyen. Pura — sin Mongo, testeable directo."""
+    out: dict = {}
+    for it in items:
+        texto = (it.get("texto") or "").strip()
+        if not texto:
+            continue
+        nivel = it.get("nivel")
+        if nivel == NIVEL_GENERAL:
+            continue
+        node_id = it.get("node_id")
+        subtramo_id = node_id if nivel == NIVEL_SUBTRAMO else _subtramo_id_for(node_id, nodes_by_id)
+        if not subtramo_id:
+            continue
+        bucket = out.setdefault(subtramo_id, [])
+        if not bucket or bucket[-1] != texto:
+            bucket.append(texto)
+    return out
+
+
+async def _actividades_curadas_resumen_por_subtramo(pid: str, start_dt: datetime, end_dt: datetime,
+                                                      user: dict, nodes_by_id: dict) -> dict:
+    """Prefetch equivalente a `_actividades_curadas_resumen_por_area` pero
+    indexado por Subtramo — misma fuente (`_actividades_generales_core`,
+    curada-o-virtual), llamada independiente (mismo patrón ya usado por
+    `_actividades_tabla_por_area`, que tampoco comparte el prefetch de
+    por-Área)."""
+    rango = {"$gte": start_dt, "$lte": end_dt}
+    items = await _actividades_generales_core(pid, None, rango, user, incluir_ocultas=False)
+    return _actividades_por_subtramo_index(items, nodes_by_id)
 
 
 def _actividades_resumen_para_bloque(idx: dict, node_id: str, subtramo_id: Optional[str],
@@ -16498,6 +17875,22 @@ async def analisis_periodo(pid: str, start: str, end: str, user: dict = Depends(
         variacion_cronograma=dec_to_str(round_money(ev_total - pv_total)),
         variacion_costo=dec_to_str(round_money(ev_total - ac_total)),
     )
+
+
+@api.get("/projects/{pid}/analisis_periodo/presupuesto_total")
+async def analisis_periodo_presupuesto_total(pid: str, user: dict = Depends(current_user)):
+    """Presupuesto total del proyecto (suma del importe efectivo de todos
+    los conceptos activos) — NO depende de start/end como AnalisisPeriodoOut,
+    por eso vive en su propio endpoint en vez de sumarse a ese modelo.
+    Usa `_concepto_importe_efectivo` (fuente única de verdad para dinero de
+    un Concepto, ver nota junto a esa función) para que conceptos legado
+    (cantidad×precio_unitario) y conceptos EVM (importe_total_editable)
+    sumen correctamente por igual — sumar importe_total_editable a secas
+    dejaría en $0 cualquier concepto que no haya migrado a Etapa EVM."""
+    await ensure_project_access(user, pid)
+    conceptos = await db.conceptos.find({"project_id": pid, "activo": True}).to_list(length=100000)
+    total = sum((_concepto_importe_efectivo(c) for c in conceptos), start=Decimal("0"))
+    return {"project_id": pid, "presupuesto_total": dec_to_str(round_money(total))}
 
 
 @api.get("/projects/{pid}/analisis_periodo/curva_s", response_model=CurvaSOut)

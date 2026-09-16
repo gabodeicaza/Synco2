@@ -383,7 +383,7 @@ export function ReportPreviewSheet({
                   onPress={() => toggleSeverity('urgente')}
                   style={[styles.sevBtnSmall, { borderColor: '#DC2626' }, currentSeveridad.includes('urgente') && { backgroundColor: '#DC2626' }]}
                 >
-                  <Text style={[styles.sevBtnTxt, currentSeveridad.includes('urgente') ? { color: '#fff' } : { color: '#DC2626' }]}>Mens.</Text>
+                  <Text style={[styles.sevBtnTxt, currentSeveridad.includes('urgente') ? { color: '#fff' } : { color: '#DC2626' }]}>Mensual</Text>
                 </TouchableOpacity>
                 {savingSev && <ActivityIndicator size="small" color="#1E40AF" />}
               </View>

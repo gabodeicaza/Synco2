@@ -16,8 +16,6 @@ import { Button } from '@/src/components/Button';
 import { confirm } from '@/src/utils/confirm';
 import { ReportPeriod, periodToInformeType } from '@/src/components/PeriodSheet';
 import { downloadBlob } from '@/src/utils/downloadBlob';
-import { DailyGoalsPanel } from '@/src/components/DailyGoalsPanel';
-import { NodeProgressPanel } from '@/src/components/NodeProgressPanel';
 import { WorkforceTracker } from '@/src/components/WorkforceTracker';
 import { WeatherWidget } from '@/src/components/WeatherWidget';
 import { HistoryCalendarModal } from '@/src/components/HistoryCalendarModal';
@@ -161,7 +159,7 @@ export default function ProjectDetailScreen() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Reports para alimentar NodeProgressPanel y HistoryCalendarModal
+  // Reports para alimentar HistoryCalendarModal
   const [reports, setReports] = useState<FeedItem[]>([]);
   const [calendarOpen, setCalendarOpen] = useState(false);
 
@@ -174,9 +172,7 @@ export default function ProjectDetailScreen() {
   // Antes arrancaba en 'all' -> cada apertura del proyecto disparaba una
   // consulta sin acotar por fecha sobre TODO el historial de reportes,
   // aunque el feed ya estuviera paginado (PAGE_SIZE) del lado del cliente.
-  // NodeProgressPanel no depende de esto para su avance (usa
-  // `avance_actual`, ya acumulado del lado del servidor), así que acotar el
-  // arranque a "hoy" no pierde precisión, solo evita la consulta pesada.
+  // Acotar el arranque a "hoy" no pierde precisión, solo evita la consulta pesada.
   const [selectedTimeFilter, setSelectedTimeFilter] = useState<'today' | 'week' | 'month' | 'all'>('today');
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [selectedStatusFilter, setSelectedStatusFilter] = useState<'incidencia' | 'avance' | null>(null);
@@ -285,8 +281,8 @@ export default function ProjectDetailScreen() {
   // Nodos raiz (Tramos) y Areas para los chips de filtro. Se cargan aparte
   // (livianos, sin imagenes) para no depender de cuanto se haya paginado.
   // Se usa listNodes (plano) en vez de getTree (arbol anidado) porque el
-  // resultado plano tambien alimenta WeatherWidget y NodeProgressPanel,
-  // evitando que cada uno haga su propio GET /nodes redundante.
+  // resultado plano tambien alimenta WeatherWidget, evitando que cada uno
+  // haga su propio GET /nodes redundante.
   const [nodes, setNodes] = useState<string[]>([]);
   const [flatNodes, setFlatNodes] = useState<LocationNode[]>([]);
   const [areas, setAreas] = useState<string[]>([]);
@@ -1133,12 +1129,27 @@ export default function ProjectDetailScreen() {
                       accesos operativos diarios: es la vista ejecutiva de
                       costo/tiempo del proyecto, no una captura de campo.
                       Ver src/components/DashboardEVM.tsx. */}
-                  <View style={{ marginBottom: spacing.md }}>
+                  <View style={{ marginBottom: spacing.md, gap: spacing.sm }}>
                     <ActionTile
                       icon="stats-chart-outline"
                       title="Control de Costos (EVM)"
                       subtitle="Valor Ganado: SPI, CPI, Curva S y excepciones"
                       onPress={() => router.push({ pathname: '/(coord)/projects/[id]/dashboard' as any, params: { id: pid } })}
+                    />
+                    {/* Plano de Avance y Presentación — siempre visibles
+                        (como Dashboard EVM), no pasan por el toggle de
+                        módulos por proyecto. */}
+                    <ActionTile
+                      icon="map-outline"
+                      title="Plano de Avance"
+                      subtitle="Marcadores de estado sobre planos y blueprints"
+                      onPress={() => router.push({ pathname: '/(coord)/projects/[id]/plano-avance' as any, params: { id: pid } })}
+                    />
+                    <ActionTile
+                      icon="easel-outline"
+                      title="Presentación"
+                      subtitle="Informe de actividades semanal — preview y exportar a PPTX"
+                      onPress={() => router.push({ pathname: '/(coord)/projects/[id]/presentacion' as any, params: { id: pid } })}
                     />
                   </View>
 
@@ -1489,12 +1500,6 @@ export default function ProjectDetailScreen() {
 
               {/* Fuerza de Trabajo . Personal y Maquinaria derivados de los reportes */}
               <WorkforceTracker projectId={pid} />
-
-              {/* Metas Diarias */}
-              <DailyGoalsPanel projectId={pid} />
-
-              {/* Avance por Nodo */}
-              <NodeProgressPanel projectId={pid} reports={reports} nodes={flatNodes} />
             </ScrollView>
           ) : (
             /* ===== TAB 3: CONFIGURACION - administracion del proyecto ===== */

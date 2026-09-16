@@ -1,0 +1,536 @@
+// Plano de Avance — lista de planos (blueprints) del proyecto + editor de
+// marcadores de estado (punto o segmento, rojo/ámbar/verde) sobre cada uno.
+// Mismo patrón "un componente hace todo, rutas delgadas por rol" que
+// EstudiosProyectoScreen.tsx. Definir/reposicionar marcadores es exclusivo
+// de Coordinador/Sub-Coordinador; actualizar SOLO el estado de un marcador
+// ya colocado lo puede hacer cualquier rol de escritura (Especialista
+// incluido) — el backend aplica el mismo criterio en PATCH .../markers/{id}.
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, TextInput, Alert, Modal,
+  KeyboardAvoidingView, Platform, useWindowDimensions, Image as RNImage,
+} from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { router } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
+import * as ImagePicker from 'expo-image-picker';
+import * as ImageManipulator from 'expo-image-manipulator';
+import { api, PlanoAvance, PlanoMarker, PlanoMarkerEstatus, Project } from '@/src/api';
+import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
+import { Button } from '@/src/components/Button';
+import { confirm } from '@/src/utils/confirm';
+import { useAuth } from '@/src/auth-context';
+import { ROLE_COORD, ROLE_SUB } from '@/src/utils/roles';
+import { PlanoMarkerOverlay, PLANO_MARKER_ESTADO_COLOR, PLANO_MARKER_ESTADO_LABEL } from '@/src/components/PlanoMarkerOverlay';
+
+type AddMode = 'none' | 'punto' | 'segmento';
+type LabelPromptDraft = { x: number; y: number; x2?: number; y2?: number };
+
+export default function PlanoAvanceScreen({ projectId }: { projectId: string }) {
+  const insets = useSafeAreaInsets();
+  const { width: winWidth, height: winHeight } = useWindowDimensions();
+  const { user } = useAuth();
+  const canEditEstructura = user?.role === ROLE_COORD || user?.role === ROLE_SUB;
+
+  const [loading, setLoading] = useState(true);
+  const [project, setProject] = useState<Project | null>(null);
+  const [planos, setPlanos] = useState<PlanoAvance[]>([]);
+
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [detail, setDetail] = useState<PlanoAvance | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [imgSize, setImgSize] = useState<{ width: number; height: number } | null>(null);
+
+  const [addMode, setAddMode] = useState<AddMode>('none');
+  const [segmentDraft, setSegmentDraft] = useState<{ x: number; y: number } | null>(null);
+  const [labelPrompt, setLabelPrompt] = useState<LabelPromptDraft | null>(null);
+  const [labelDraft, setLabelDraft] = useState('');
+  const [savingMarker, setSavingMarker] = useState(false);
+
+  const [markerModal, setMarkerModal] = useState<PlanoMarker | null>(null);
+  const [renamePrompt, setRenamePrompt] = useState(false);
+  const [renameDraft, setRenameDraft] = useState('');
+
+  const [newPlanoOpen, setNewPlanoOpen] = useState(false);
+  const [nombreDraft, setNombreDraft] = useState('');
+  const [uploading, setUploading] = useState(false);
+
+  const headerColor = project?.color_tema || colors.primary;
+  const headerTextColor = contrastText(headerColor);
+
+  const loadList = useCallback(async () => {
+    if (!projectId) return;
+    try {
+      setLoading(true);
+      const [proj, items] = await Promise.all([api.getProject(projectId), api.listPlanosAvance(projectId)]);
+      setProject(proj);
+      setPlanos(items);
+    } catch (e: any) {
+      Alert.alert('Error', e?.message || 'No se pudo cargar Plano de Avance.');
+    } finally {
+      setLoading(false);
+    }
+  }, [projectId]);
+
+  useEffect(() => { loadList(); }, [loadList]);
+
+  const loadDetail = useCallback(async (planoId: string) => {
+    try {
+      setDetailLoading(true);
+      const doc = await api.getPlanoAvance(projectId, planoId);
+      setDetail(doc);
+    } catch (e: any) {
+      Alert.alert('Error', e?.message || 'No se pudo cargar el plano.');
+      setSelectedId(null);
+    } finally {
+      setDetailLoading(false);
+    }
+  }, [projectId]);
+
+  useEffect(() => {
+    if (selectedId) loadDetail(selectedId);
+    else { setDetail(null); setImgSize(null); setAddMode('none'); setSegmentDraft(null); }
+  }, [selectedId, loadDetail]);
+
+  // Recalcula el tamaño de despliegue a partir de las dimensiones reales de
+  // la imagen (misma técnica que PhotoAnnotator.tsx) para que los
+  // marcadores en coords-fracción queden alineados 1:1.
+  const maxW = winWidth - spacing.md * 2;
+  const maxH = winHeight * 0.55;
+  useEffect(() => {
+    if (!detail?.imagen) { setImgSize(null); return; }
+    RNImage.getSize(
+      detail.imagen,
+      (w, h) => {
+        const ratio = Math.min(maxW / w, maxH / h, 1);
+        setImgSize({ width: w * ratio, height: h * ratio });
+      },
+      () => setImgSize({ width: maxW, height: maxW * 0.75 }),
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detail?.imagen]);
+
+  function handleOverlayTap(hit: PlanoMarker | null, xFrac: number, yFrac: number) {
+    if (addMode === 'punto') {
+      setLabelPrompt({ x: xFrac, y: yFrac });
+      setLabelDraft('');
+      return;
+    }
+    if (addMode === 'segmento') {
+      if (!segmentDraft) {
+        setSegmentDraft({ x: xFrac, y: yFrac });
+      } else {
+        setLabelPrompt({ x: segmentDraft.x, y: segmentDraft.y, x2: xFrac, y2: yFrac });
+        setLabelDraft('');
+        setSegmentDraft(null);
+      }
+      return;
+    }
+    if (hit) setMarkerModal(hit);
+  }
+
+  async function onSaveNewMarker() {
+    if (!detail || !labelPrompt) return;
+    const label = labelDraft.trim();
+    if (!label) {
+      Alert.alert('Falta información', 'Escribe una etiqueta para el marcador.');
+      return;
+    }
+    try {
+      setSavingMarker(true);
+      await api.createPlanoMarker(projectId, detail.id, {
+        tipo: labelPrompt.x2 != null ? 'segmento' : 'punto',
+        label,
+        x: labelPrompt.x, y: labelPrompt.y,
+        x2: labelPrompt.x2, y2: labelPrompt.y2,
+        estatus: 'sin_iniciar',
+      });
+      setLabelPrompt(null);
+      setAddMode('none');
+      await loadDetail(detail.id);
+    } catch (e: any) {
+      Alert.alert('No se pudo guardar', e?.message || 'Intentalo nuevamente.');
+    } finally {
+      setSavingMarker(false);
+    }
+  }
+
+  async function onSetEstatus(estatus: PlanoMarkerEstatus) {
+    if (!detail || !markerModal) return;
+    try {
+      await api.updatePlanoMarker(projectId, detail.id, markerModal.id, { estatus });
+      setMarkerModal(null);
+      await loadDetail(detail.id);
+    } catch (e: any) {
+      Alert.alert('No se pudo actualizar', e?.message || 'Intentalo nuevamente.');
+    }
+  }
+
+  async function onRenameMarker() {
+    if (!detail || !markerModal) return;
+    const label = renameDraft.trim();
+    if (!label) return;
+    try {
+      await api.updatePlanoMarker(projectId, detail.id, markerModal.id, { label });
+      setRenamePrompt(false);
+      setMarkerModal(null);
+      await loadDetail(detail.id);
+    } catch (e: any) {
+      Alert.alert('No se pudo renombrar', e?.message || 'Intentalo nuevamente.');
+    }
+  }
+
+  async function onDeleteMarker() {
+    if (!detail || !markerModal) return;
+    const ok = await confirm('Eliminar marcador', `¿Eliminar "${markerModal.label}"?`, { confirmText: 'Eliminar', destructive: true });
+    if (!ok) return;
+    try {
+      await api.deletePlanoMarker(projectId, detail.id, markerModal.id);
+      setMarkerModal(null);
+      await loadDetail(detail.id);
+    } catch (e: any) {
+      Alert.alert('No se pudo eliminar', e?.message || 'Intentalo nuevamente.');
+    }
+  }
+
+  async function onDeletePlano(p: PlanoAvance) {
+    const ok = await confirm('Eliminar plano', `¿Eliminar "${p.nombre}" y todos sus marcadores?`, { confirmText: 'Eliminar', destructive: true });
+    if (!ok) return;
+    try {
+      await api.deletePlanoAvance(projectId, p.id);
+      await loadList();
+    } catch (e: any) {
+      Alert.alert('No se pudo eliminar', e?.message || 'Intentalo nuevamente.');
+    }
+  }
+
+  async function pickAndCreatePlano() {
+    const nombre = nombreDraft.trim();
+    if (!nombre) {
+      Alert.alert('Falta información', 'Dale un nombre al plano (ej. "Cimentación").');
+      return;
+    }
+    try {
+      if (Platform.OS !== 'web') {
+        const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+        if (!perm.granted) {
+          Alert.alert('Sin permiso', 'No hay permiso para acceder a la galería.');
+          return;
+        }
+      }
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: false,
+        quality: 0.9,
+        exif: false,
+      });
+      if (result.canceled || !result.assets?.[0]) return;
+      const asset = result.assets[0];
+      let uri = asset.uri;
+      let mime = asset.mimeType || 'image/jpeg';
+      let name = asset.fileName || `plano_${Date.now()}.jpg`;
+
+      // Planos se leen a detalle (etiquetas de pilas, nomenclatura) — se
+      // limita el redimensionado a 2200px de ancho, más holgado que el de
+      // portadas de nodo (1600px), para no perder legibilidad.
+      try {
+        const manipulated = await ImageManipulator.manipulateAsync(
+          uri, [{ resize: { width: 2200 } }], { compress: 0.9, format: ImageManipulator.SaveFormat.JPEG },
+        );
+        uri = manipulated.uri;
+        mime = 'image/jpeg';
+        if (!/\.jpe?g$/i.test(name)) name = name.replace(/\.[^.]+$/, '') + '.jpg';
+      } catch { /* si falla el manipulador, subimos el original */ }
+
+      if (Platform.OS === 'android' && !uri.startsWith('file://') && !uri.startsWith('content://')) {
+        uri = `file://${uri.replace(/^\/+/, '')}`;
+      }
+
+      setUploading(true);
+      const created = await api.uploadPlanoAvance(projectId, nombre, { uri, name, mimeType: mime });
+      setNewPlanoOpen(false);
+      setNombreDraft('');
+      await loadList();
+      setSelectedId(created.id);
+    } catch (e: any) {
+      Alert.alert('No se pudo crear el plano', e?.message || 'Intentalo nuevamente.');
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  if (loading) {
+    return (
+      <View style={styles.center}>
+        <ActivityIndicator color={colors.primary} />
+      </View>
+    );
+  }
+
+  // ======================= Vista de DETALLE de un plano =======================
+  if (selectedId) {
+    return (
+      <View style={{ flex: 1, backgroundColor: colors.bg }}>
+        <View style={[styles.headerWrap, { backgroundColor: headerColor, paddingTop: insets.top + spacing.xs }]}>
+          <View style={styles.headerTopRow}>
+            <Pressable onPress={() => setSelectedId(null)} hitSlop={10} style={styles.iconBtn}>
+              <Ionicons name="chevron-back" size={22} color={headerTextColor} />
+            </Pressable>
+            <Text style={[styles.titleBar, { color: headerTextColor }]} numberOfLines={1}>{detail?.nombre || 'Plano'}</Text>
+            <View style={{ width: 32 }} />
+          </View>
+        </View>
+
+        {detailLoading || !detail || !imgSize ? (
+          <View style={styles.center}><ActivityIndicator color={colors.primary} /></View>
+        ) : (
+          <ScrollView contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + spacing.xl, alignItems: 'center' }]}>
+            {canEditEstructura ? (
+              <View style={styles.toolRow}>
+                <Pressable
+                  onPress={() => { setAddMode(addMode === 'punto' ? 'none' : 'punto'); setSegmentDraft(null); }}
+                  style={[styles.toolBtn, addMode === 'punto' && styles.toolBtnActive]}
+                >
+                  <Ionicons name="ellipse-outline" size={16} color={addMode === 'punto' ? '#fff' : colors.primary} />
+                  <Text style={[styles.toolBtnTxt, addMode === 'punto' && { color: '#fff' }]}>Agregar punto</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => { setAddMode(addMode === 'segmento' ? 'none' : 'segmento'); setSegmentDraft(null); }}
+                  style={[styles.toolBtn, addMode === 'segmento' && styles.toolBtnActive]}
+                >
+                  <Ionicons name="remove-outline" size={16} color={addMode === 'segmento' ? '#fff' : colors.primary} />
+                  <Text style={[styles.toolBtnTxt, addMode === 'segmento' && { color: '#fff' }]}>Agregar segmento</Text>
+                </Pressable>
+              </View>
+            ) : null}
+            {addMode === 'segmento' ? (
+              <Text style={styles.hintTxt}>{segmentDraft ? 'Toca el segundo punto del segmento.' : 'Toca el primer punto del segmento.'}</Text>
+            ) : addMode === 'punto' ? (
+              <Text style={styles.hintTxt}>Toca sobre el plano para colocar el marcador.</Text>
+            ) : null}
+
+            <View style={[styles.planoFrame, { width: imgSize.width, height: imgSize.height }]}>
+              <PlanoMarkerOverlay
+                imageUri={detail.imagen || ''}
+                markers={detail.markers}
+                width={imgSize.width}
+                height={imgSize.height}
+                onTap={handleOverlayTap}
+                draftPoint={segmentDraft}
+              />
+            </View>
+
+            <View style={styles.legendRow}>
+              {(['sin_iniciar', 'en_proceso', 'terminado'] as PlanoMarkerEstatus[]).map((k) => (
+                <View key={k} style={styles.legendItem}>
+                  <View style={[styles.legendDot, { backgroundColor: PLANO_MARKER_ESTADO_COLOR[k] }]} />
+                  <Text style={styles.legendTxt}>{PLANO_MARKER_ESTADO_LABEL[k]}</Text>
+                </View>
+              ))}
+            </View>
+
+            {detail.markers.length === 0 ? (
+              <Text style={styles.emptyTxt}>
+                {canEditEstructura ? 'Sin marcadores todavía — usa "Agregar punto/segmento" arriba.' : 'Este plano aún no tiene marcadores.'}
+              </Text>
+            ) : null}
+          </ScrollView>
+        )}
+
+        {/* Modal: etiqueta del nuevo marcador */}
+        <Modal visible={!!labelPrompt} transparent animationType="slide" onRequestClose={() => setLabelPrompt(null)}>
+          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
+            <View style={styles.modalCard}>
+              <Text style={styles.modalTitle}>{labelPrompt?.x2 != null ? 'Nuevo segmento' : 'Nuevo punto'}</Text>
+              <Text style={styles.fieldLabel}>Etiqueta</Text>
+              <TextInput
+                value={labelDraft}
+                onChangeText={setLabelDraft}
+                placeholder="Ej. PL-120, D-1, Estación 3..."
+                placeholderTextColor={colors.textMuted}
+                style={styles.input}
+                autoFocus
+              />
+              <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
+                <Button label="Cancelar" variant="secondary" onPress={() => setLabelPrompt(null)} style={{ flex: 1 }} />
+                <Button label="Guardar" loading={savingMarker} onPress={onSaveNewMarker} style={{ flex: 1 }} />
+              </View>
+            </View>
+          </KeyboardAvoidingView>
+        </Modal>
+
+        {/* Modal: acciones sobre un marcador existente */}
+        <Modal visible={!!markerModal} transparent animationType="fade" onRequestClose={() => setMarkerModal(null)}>
+          <Pressable style={styles.modalBackdropCenter} onPress={() => setMarkerModal(null)}>
+            <Pressable style={styles.modalCard} onPress={() => {}}>
+              <Text style={styles.modalTitle}>{markerModal?.label}</Text>
+              <Text style={styles.fieldLabel}>Estado</Text>
+              <View style={{ gap: spacing.xs }}>
+                {(['sin_iniciar', 'en_proceso', 'terminado'] as PlanoMarkerEstatus[]).map((k) => (
+                  <Pressable
+                    key={k}
+                    onPress={() => onSetEstatus(k)}
+                    style={[
+                      styles.estatusOption,
+                      { borderColor: PLANO_MARKER_ESTADO_COLOR[k] },
+                      markerModal?.estatus === k && { backgroundColor: PLANO_MARKER_ESTADO_COLOR[k] + '22' },
+                    ]}
+                  >
+                    <View style={[styles.legendDot, { backgroundColor: PLANO_MARKER_ESTADO_COLOR[k] }]} />
+                    <Text style={styles.estatusOptionTxt}>{PLANO_MARKER_ESTADO_LABEL[k]}</Text>
+                    {markerModal?.estatus === k ? <Ionicons name="checkmark" size={16} color={colors.text} /> : null}
+                  </Pressable>
+                ))}
+              </View>
+              {canEditEstructura ? (
+                <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
+                  <Button
+                    label="Renombrar" variant="secondary" style={{ flex: 1 }}
+                    onPress={() => { setRenameDraft(markerModal?.label || ''); setRenamePrompt(true); }}
+                  />
+                  <Button label="Eliminar" variant="danger" style={{ flex: 1 }} onPress={onDeleteMarker} />
+                </View>
+              ) : null}
+            </Pressable>
+          </Pressable>
+        </Modal>
+
+        {/* Modal: renombrar marcador */}
+        <Modal visible={renamePrompt} transparent animationType="slide" onRequestClose={() => setRenamePrompt(false)}>
+          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
+            <View style={styles.modalCard}>
+              <Text style={styles.modalTitle}>Renombrar marcador</Text>
+              <TextInput value={renameDraft} onChangeText={setRenameDraft} style={styles.input} autoFocus />
+              <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
+                <Button label="Cancelar" variant="secondary" onPress={() => setRenamePrompt(false)} style={{ flex: 1 }} />
+                <Button label="Guardar" onPress={onRenameMarker} style={{ flex: 1 }} />
+              </View>
+            </View>
+          </KeyboardAvoidingView>
+        </Modal>
+      </View>
+    );
+  }
+
+  // ======================= Vista de LISTA de planos =======================
+  return (
+    <View style={{ flex: 1, backgroundColor: colors.bg }}>
+      <View style={[styles.headerWrap, { backgroundColor: headerColor, paddingTop: insets.top + spacing.xs }]}>
+        <View style={styles.headerTopRow}>
+          <Pressable onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
+            <Ionicons name="chevron-back" size={22} color={headerTextColor} />
+          </Pressable>
+          <Text style={[styles.titleBar, { color: headerTextColor }]} numberOfLines={1}>Plano de Avance</Text>
+          <View style={{ width: 32 }} />
+        </View>
+      </View>
+
+      <ScrollView contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + spacing.xl }]}>
+        <View style={styles.sectionHeaderRow}>
+          <Text style={styles.sectionTitle}>Planos</Text>
+          {canEditEstructura ? (
+            <Pressable onPress={() => setNewPlanoOpen(true)} style={styles.addBtn}>
+              <Ionicons name="add" size={16} color={colors.primary} />
+              <Text style={styles.addBtnTxt}>Nuevo plano</Text>
+            </Pressable>
+          ) : null}
+        </View>
+
+        <View style={styles.card}>
+          {planos.length === 0 ? (
+            <View style={styles.empty}>
+              <Ionicons name="map-outline" size={22} color={colors.textMuted} />
+              <Text style={styles.emptyTxt}>Aún no hay planos registrados.</Text>
+            </View>
+          ) : (
+            planos.map((p, idx) => (
+              <View key={p.id} style={[styles.planoRow, idx > 0 && styles.rowBorder]}>
+                <Pressable style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10 }} onPress={() => setSelectedId(p.id)}>
+                  <Ionicons name="map-outline" size={20} color={colors.primary} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.planoNombre} numberOfLines={1}>{p.nombre}</Text>
+                    <Text style={styles.planoSub}>{p.markers?.length || 0} marcador{(p.markers?.length || 0) === 1 ? '' : 'es'}</Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+                </Pressable>
+                {canEditEstructura ? (
+                  <Pressable hitSlop={8} onPress={() => onDeletePlano(p)} style={{ paddingLeft: spacing.sm }}>
+                    <Ionicons name="trash-outline" size={18} color={colors.error} />
+                  </Pressable>
+                ) : null}
+              </View>
+            ))
+          )}
+        </View>
+      </ScrollView>
+
+      {/* Modal: nuevo plano */}
+      <Modal visible={newPlanoOpen} transparent animationType="slide" onRequestClose={() => setNewPlanoOpen(false)}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>Nuevo plano</Text>
+            <Text style={styles.fieldLabel}>Nombre</Text>
+            <TextInput
+              value={nombreDraft}
+              onChangeText={setNombreDraft}
+              placeholder="Ej. Cimentación, Estructura..."
+              placeholderTextColor={colors.textMuted}
+              style={styles.input}
+            />
+            <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
+              <Button label="Cancelar" variant="secondary" onPress={() => setNewPlanoOpen(false)} style={{ flex: 1 }} />
+              <Button label="Elegir imagen" loading={uploading} onPress={pickAndCreatePlano} style={{ flex: 1 }} />
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg },
+  headerWrap: { paddingHorizontal: spacing.md, paddingBottom: spacing.sm },
+  headerTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  iconBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
+  titleBar: { fontWeight: '800', fontSize: 16, letterSpacing: 0.3 },
+  scroll: { padding: spacing.md },
+  sectionHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: spacing.xs },
+  sectionTitle: { fontSize: 13, fontWeight: '800', color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.5 },
+  addBtn: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  addBtnTxt: { fontSize: 12, fontWeight: '700', color: colors.primary },
+  card: { backgroundColor: colors.surface, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, ...shadow.card, marginBottom: spacing.md },
+  empty: { alignItems: 'center', gap: 8, padding: spacing.lg },
+  emptyTxt: { color: colors.textMuted, fontSize: 13, textAlign: 'center' },
+  rowBorder: { borderTopWidth: 1, borderTopColor: colors.border },
+  planoRow: { flexDirection: 'row', alignItems: 'center', padding: spacing.md },
+  planoNombre: { fontSize: 14, fontWeight: '700', color: colors.text },
+  planoSub: { fontSize: 12, color: colors.textMuted, marginTop: 2 },
+  toolRow: { flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.sm, alignSelf: 'stretch' },
+  toolBtn: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    paddingVertical: 10, borderRadius: radius.md, borderWidth: 1, borderColor: colors.primary, backgroundColor: colors.surface,
+  },
+  toolBtnActive: { backgroundColor: colors.primary },
+  toolBtnTxt: { fontSize: 12, fontWeight: '700', color: colors.primary },
+  hintTxt: { fontSize: 12, color: colors.textMuted, marginBottom: spacing.sm, textAlign: 'center' },
+  planoFrame: { backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, overflow: 'hidden' },
+  legendRow: { flexDirection: 'row', gap: spacing.md, marginTop: spacing.md, flexWrap: 'wrap', justifyContent: 'center' },
+  legendItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  legendDot: { width: 10, height: 10, borderRadius: 5 },
+  legendTxt: { fontSize: 12, color: colors.textBody, fontWeight: '600' },
+  modalBackdrop: { flex: 1, backgroundColor: 'rgba(15,23,42,0.45)', justifyContent: 'flex-end' },
+  modalBackdropCenter: { flex: 1, backgroundColor: 'rgba(15,23,42,0.45)', alignItems: 'center', justifyContent: 'center', padding: spacing.lg },
+  modalCard: { backgroundColor: colors.surface, borderTopLeftRadius: radius.lg, borderTopRightRadius: radius.lg, padding: spacing.lg, width: '100%' },
+  modalTitle: { fontSize: 16, fontWeight: '800', color: colors.text, marginBottom: spacing.md },
+  fieldLabel: { fontSize: 12, fontWeight: '700', color: colors.textMuted, marginBottom: 6, marginTop: spacing.sm },
+  input: {
+    borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, paddingHorizontal: 12, paddingVertical: 10,
+    fontSize: 14, color: colors.text, backgroundColor: colors.bg,
+  },
+  estatusOption: {
+    flexDirection: 'row', alignItems: 'center', gap: 8, borderWidth: 1.5, borderRadius: radius.md,
+    paddingHorizontal: 12, paddingVertical: 10,
+  },
+  estatusOptionTxt: { flex: 1, fontSize: 13, fontWeight: '700', color: colors.text },
+});

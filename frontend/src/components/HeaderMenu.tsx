@@ -134,6 +134,12 @@ export function HeaderMenu({ basePath, projectId }: HeaderMenuProps) {
                 "Catálogo de Conceptos". Ver src/components/DashboardEVM.tsx. */}
             <MenuItem icon="stats-chart-outline" label="Dashboard EVM" onPress={() => goTo('dashboard-evm')} />
 
+            {/* Plano de Avance y Presentación — siempre visibles (como
+                Dashboard EVM), no pasan por el toggle de módulos por
+                proyecto (ver PlanoAvanceScreen.tsx / PresentacionScreen.tsx). */}
+            <MenuItem icon="map-outline" label="Plano de Avance" onPress={() => goTo('plano-avance')} />
+            <MenuItem icon="easel-outline" label="Presentación" onPress={() => goTo('presentacion')} />
+
             {basePath === '/(subcoord)' ? (
               // Edita acceso_predio/situacion_social por Subtramo — el backend
               // (PATCH /nodes) solo permite escribir estos campos a Coordinador
@@ -159,6 +165,13 @@ export function HeaderMenu({ basePath, projectId }: HeaderMenuProps) {
             ))}
 
             <View style={styles.divider} />
+            {/* No pasa por goTo(): a diferencia del resto de items, no depende
+                de projectId ni necesita esperar a que el proyecto cargue. */}
+            <MenuItem
+              icon="key-outline"
+              label="Cambiar mi contraseña"
+              onPress={() => { setOpen(false); router.push(`${basePath}/cambiar-password` as any); }}
+            />
             <MenuItem icon="log-out-outline" label="Cerrar sesion" onPress={onLogout} destructive />
           </View>
         </Pressable>

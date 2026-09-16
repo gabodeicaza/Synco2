@@ -9,10 +9,11 @@ import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import { Button } from '@/src/components/Button';
-import { api, ApiError, Invitation, LocationNodeTree, Area } from '@/src/api';
+import { api, ApiError, Invitation, Area } from '@/src/api';
 import { colors, radius, spacing, shadow } from '@/src/theme';
 import { roleLabel, ROLE_SUB, ROLE_ESP, ROLE_JEFE } from '@/src/utils/roles';
 import { confirm, notify } from '@/src/utils/confirm';
+import { ImportarInvitacionesModal } from '@/src/components/ImportarInvitacionesModal';
 
 type WizardStep = 0 | 1 | 2 | 3;
 type WizardRole = 'sub_coordinador' | 'especialista' | 'jefe_proyecto';
@@ -35,8 +36,7 @@ export default function InvitationsScreen() {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [puesto, setPuesto] = useState('');
-  const [scopeNodeId, setScopeNodeId] = useState<string | null>(null);
-  const [scopeNodeIds, setScopeNodeIds] = useState<string[]>([]);
+  const [noControl, setNoControl] = useState('');
   const [areaId, setAreaId] = useState<string | null>(null);
   const [wizardErr, setWizardErr] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -49,9 +49,9 @@ export default function InvitationsScreen() {
     }
   }, [step, wizardOpen]);
 
-  const [tree, setTree] = useState<LocationNodeTree[]>([]);
   const [areas, setAreas] = useState<Area[]>([]);
   const [createdInvite, setCreatedInvite] = useState<Invitation | null>(null);
+  const [bulkImportOpen, setBulkImportOpen] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -71,12 +71,12 @@ export default function InvitationsScreen() {
 
   async function openWizard() {
     setStep(0); setRole('especialista');
-    setName(''); setEmail(''); setPuesto('');
-    setScopeNodeId(null); setScopeNodeIds([]); setAreaId(null);
+    setName(''); setEmail(''); setPuesto(''); setNoControl('');
+    setAreaId(null);
     setWizardErr(null); setWizardOpen(true);
     try {
-      const [t, a] = await Promise.all([api.getTree(pid), api.listAreas(pid)]);
-      setTree(t || []); setAreas(a || []);
+      const a = await api.listAreas(pid);
+      setAreas(a || []);
     } catch {}
   }
 
@@ -84,12 +84,11 @@ export default function InvitationsScreen() {
     if (step === 0) return true;
     if (step === 1) return name.trim().length > 0 && email.trim().length > 0;
     if (step === 2) {
-      if (role === ROLE_JEFE) return true;
-      if (role === ROLE_SUB) return !!scopeNodeId;
-      if (role === ROLE_ESP) return !!areaId && scopeNodeIds.length > 0;
+      if (role === ROLE_ESP) return !!areaId;
+      return true;
     }
     return true;
-  }, [step, role, name, email, scopeNodeId, scopeNodeIds, areaId]);
+  }, [step, role, name, email, areaId]);
 
   function next() {
     setWizardErr(null);
@@ -99,11 +98,7 @@ export default function InvitationsScreen() {
       if (!email.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) return setWizardErr('Correo no válido');
       role === ROLE_JEFE ? setStep(3) : setStep(2);
     } else if (step === 2) {
-      if (role === ROLE_SUB && !scopeNodeId) return setWizardErr('Selecciona el nodo');
-      if (role === ROLE_ESP) {
-        if (!areaId) return setWizardErr('Selecciona el área');
-        if (scopeNodeIds.length === 0) return setWizardErr('Selecciona al menos un nodo');
-      }
+      if (role === ROLE_ESP && !areaId) return setWizardErr('Selecciona el área');
       setStep(3);
     }
   }
@@ -124,9 +119,8 @@ export default function InvitationsScreen() {
         name: name.trim(),
         role,
         puesto: role === ROLE_ESP ? (puesto.trim() || null) : null,
+        no_control: noControl.trim() || null,
         area_id: areaId,
-        scope_node_id: role === ROLE_SUB ? scopeNodeId : null,
-        scope_node_ids: role === ROLE_ESP ? scopeNodeIds : [],
       };
       const inv: any = await api.createInvitation(pid, body);
       setWizardOpen(false);
@@ -173,14 +167,18 @@ export default function InvitationsScreen() {
   const [editName, setEditName] = useState('');
   const [editEmail, setEditEmail] = useState('');
   const [editPuesto, setEditPuesto] = useState('');
+  const [editNoControl, setEditNoControl] = useState('');
   const [editAreaId, setEditAreaId] = useState<string | null>(null);
   const [editSaving, setEditSaving] = useState(false);
+  const [resettingPassword, setResettingPassword] = useState(false);
+  const [tempPassword, setTempPassword] = useState<string | null>(null);
 
   function openEdit(inv: Invitation) {
     setEditTarget(inv);
     setEditName(inv.name);
     setEditEmail(inv.email);
     setEditPuesto(inv.puesto || '');
+    setEditNoControl(inv.no_control || '');
     setEditAreaId(inv.area_id || null);
   }
 
@@ -197,6 +195,7 @@ export default function InvitationsScreen() {
         name,
         email,
         puesto: editTarget.role === ROLE_ESP ? (editPuesto.trim() || undefined) : undefined,
+        no_control: editNoControl.trim() || undefined,
         area_id: editAreaId || '',
       });
       setEditTarget(null);
@@ -209,6 +208,24 @@ export default function InvitationsScreen() {
       }
     } finally {
       setEditSaving(false);
+    }
+  }
+
+  async function resetPassword() {
+    if (!editTarget?.accepted_user_id || resettingPassword) return;
+    const ok = await confirm(
+      'Restablecer contraseña',
+      `Se generará una contraseña temporal nueva para ${editTarget.name}. La contraseña anterior dejará de funcionar. ¿Continuar?`,
+    );
+    if (!ok) return;
+    try {
+      setResettingPassword(true);
+      const res = await api.resetTeamMemberPassword(pid, editTarget.accepted_user_id);
+      setTempPassword(res.temp_password);
+    } catch (e: any) {
+      Alert.alert('No se pudo restablecer', e?.message || 'Intentalo nuevamente.');
+    } finally {
+      setResettingPassword(false);
     }
   }
 
@@ -239,6 +256,10 @@ export default function InvitationsScreen() {
             <Text style={styles.title}>Invitaciones</Text>
             <Text style={styles.subtitle}>{invitations.length} en total</Text>
           </View>
+          <Pressable onPress={() => setBulkImportOpen(true)} hitSlop={8} style={styles.importHeaderBtn}>
+            <Ionicons name="document-attach-outline" size={16} color={colors.primary} />
+            <Text style={styles.importHeaderBtnTxt}>Importar Excel</Text>
+          </Pressable>
         </View>
 
         <ScrollView
@@ -285,11 +306,15 @@ export default function InvitationsScreen() {
                   keyboardShouldPersistTaps="handled"
                 >
                   {step === 0 ? <StepRole role={role} onChange={setRole} /> :
-                  step === 1 ? <StepIdentity name={name} setName={setName} email={email} setEmail={setEmail} role={role} puesto={puesto} setPuesto={setPuesto} /> :
-                  step === 2 ? (
-                    role === ROLE_SUB ? <StepScopeSingle tree={tree} selected={scopeNodeId} onSelect={setScopeNodeId} areas={areas} areaId={areaId} onArea={setAreaId} /> :
-                    <StepScopeMulti tree={tree} areas={areas} areaId={areaId} onArea={setAreaId} selected={scopeNodeIds} onToggle={(id) => setScopeNodeIds(arr => arr.includes(id) ? arr.filter(x => x !== id) : [...arr, id])} />
-                  ) : <StepReview role={role} name={name} email={email} areas={areas} areaId={areaId} scopeNodeId={scopeNodeId} scopeNodeIds={scopeNodeIds} tree={tree} />}
+                  step === 1 ? (
+                    <StepIdentity
+                      name={name} setName={setName} email={email} setEmail={setEmail}
+                      role={role} puesto={puesto} setPuesto={setPuesto}
+                      noControl={noControl} setNoControl={setNoControl}
+                    />
+                  ) :
+                  step === 2 ? <StepArea role={role} areas={areas} areaId={areaId} onArea={setAreaId} /> :
+                  <StepReview role={role} name={name} email={email} areas={areas} areaId={areaId} />}
 
                   {wizardErr && <Text style={styles.errorTextInline}>{wizardErr}</Text>}
                 </ScrollView>
@@ -368,6 +393,9 @@ export default function InvitationsScreen() {
                 </>
               )}
 
+              <Text style={styles.label}>No. de Control (opcional)</Text>
+              <TextInput value={editNoControl} onChangeText={setEditNoControl} style={styles.inputSimple} placeholder="No. de Control" />
+
               {(editTarget?.role === ROLE_ESP || editTarget?.role === ROLE_SUB) && (
                 <>
                   <Text style={styles.label}>Área {editTarget?.role === ROLE_SUB ? '(opcional)' : ''}</Text>
@@ -389,10 +417,52 @@ export default function InvitationsScreen() {
               <View style={{ marginTop: 20 }}>
                 <Button label="Guardar cambios" fullWidth onPress={saveEdit} loading={editSaving} />
               </View>
+
+              <Pressable onPress={resetPassword} style={styles.resetPasswordBtn} disabled={resettingPassword}>
+                {resettingPassword ? <ActivityIndicator color={colors.error} /> : (
+                  <>
+                    <Ionicons name="key-outline" size={16} color={colors.error} />
+                    <Text style={styles.resetPasswordBtnTxt}>Restablecer contraseña</Text>
+                  </>
+                )}
+              </Pressable>
             </View>
           </KeyboardAvoidingView>
         </View>
       </Modal>
+
+      <Modal visible={!!tempPassword} transparent animationType="fade">
+        <View style={styles.modalBackdrop}>
+          <View style={styles.successCard}>
+            <Ionicons name="key" size={48} color={colors.primary} />
+            <Text style={styles.successTitle}>Contraseña nueva</Text>
+            <Text style={{ color: colors.textMuted, fontSize: 12, textAlign: 'center', marginBottom: 10 }}>
+              Compártesela a {editTarget?.name}. Solo se muestra una vez.
+            </Text>
+            <View style={styles.tokenBox}>
+              <Text style={styles.tokenLabel}>CONTRASEÑA TEMPORAL</Text>
+              <Text selectable style={styles.tokenValueText}>{tempPassword}</Text>
+            </View>
+            <Pressable
+              style={styles.actionPill}
+              onPress={async () => { if (tempPassword) { await Clipboard.setStringAsync(tempPassword); notify('Copiado', 'Contraseña copiada'); } }}
+            >
+              <Ionicons name="copy-outline" size={16} color={colors.primary} />
+              <Text style={styles.actionPillText}>Copiar</Text>
+            </Pressable>
+            <View style={{ marginTop: 16, width: '100%' }}>
+              <Button label="Cerrar" fullWidth onPress={() => setTempPassword(null)} />
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <ImportarInvitacionesModal
+        visible={bulkImportOpen}
+        projectId={pid}
+        onClose={() => setBulkImportOpen(false)}
+        onImported={load}
+      />
     </View>
   );
 }
@@ -414,58 +484,37 @@ function StepRole({ role, onChange }: any) {
   );
 }
 
-function StepIdentity({ name, setName, email, setEmail, role, puesto, setPuesto }: any) {
+function StepIdentity({ name, setName, email, setEmail, role, puesto, setPuesto, noControl, setNoControl }: any) {
   return (
     <View style={{ gap: 12 }}>
       <Text style={styles.stepTitle}>Datos básicos</Text>
       <TextInput value={name} onChangeText={setName} style={styles.inputSimple} placeholder="Nombre completo" />
       <TextInput value={email} onChangeText={setEmail} style={styles.inputSimple} placeholder="Correo electrónico" keyboardType="email-address" autoCapitalize="none" />
       {role === ROLE_ESP && <TextInput value={puesto} onChangeText={setPuesto} style={styles.inputSimple} placeholder="Puesto" />}
+      <TextInput value={noControl} onChangeText={setNoControl} style={styles.inputSimple} placeholder="No. de Control (opcional)" />
     </View>
   );
 }
 
-function StepScopeSingle({ tree, selected, onSelect, areas, areaId, onArea }: any) {
+function StepArea({ role, areas, areaId, onArea }: any) {
   return (
     <View style={{ gap: 15 }}>
-      <Text style={styles.stepTitle}>Área y Alcance</Text>
-      <Text style={styles.label}>1. Selecciona la Disciplina (Área)</Text>
+      <Text style={styles.stepTitle}>Área / Disciplina</Text>
+      <Text style={styles.label}>{role === ROLE_ESP ? 'Selecciona el área' : 'Selecciona el área (opcional)'}</Text>
       <View style={styles.areaRow}>
-        <Pressable onPress={() => onArea(null)} style={[styles.areaPill, !areaId && styles.areaPillOn]}><Text>Obra Civil</Text></Pressable>
+        {role === ROLE_SUB && (
+          <Pressable onPress={() => onArea(null)} style={[styles.areaPill, !areaId && styles.areaPillOn]}><Text>Obra Civil</Text></Pressable>
+        )}
         {areas.map((a: any) => (
           <Pressable key={a.id} onPress={() => onArea(a.id)} style={[styles.areaPill, areaId === a.id && styles.areaPillOn]}><Text>{a.name}</Text></Pressable>
         ))}
       </View>
-      <Text style={styles.label}>2. Selecciona el Nodo de alcance</Text>
-      <View style={styles.treeBox}>
-        {tree.map((n: any) => <TreeRow key={n.id} node={n} selected={selected} onSelect={onSelect} mode="single" />)}
-      </View>
     </View>
   );
 }
 
-function StepScopeMulti({ tree, areas, areaId, onArea, selected, onToggle }: any) {
-  return (
-    <View style={{ gap: 15 }}>
-      <Text style={styles.stepTitle}>Área y Alcance</Text>
-      <Text style={styles.label}>1. Selecciona la Disciplina (Área)</Text>
-      <View style={styles.areaRow}>
-        {areas.map((a: any) => (
-          <Pressable key={a.id} onPress={() => onArea(a.id)} style={[styles.areaPill, areaId === a.id && styles.areaPillOn]}><Text>{a.name}</Text></Pressable>
-        ))}
-      </View>
-      <Text style={styles.label}>2. Selecciona los Nodos hoja ({selected.length})</Text>
-      <View style={styles.treeBox}>
-        {tree.map((n: any) => <TreeRow key={n.id} node={n} onlyLeavesSelectable selected={selected} onSelect={onToggle} mode="multi" />)}
-      </View>
-    </View>
-  );
-}
-
-function StepReview({ name, email, role, areas, areaId, scopeNodeId, scopeNodeIds, tree }: any) {
-  const allNodes = flattenTree(tree);
+function StepReview({ name, email, role, areas, areaId }: any) {
   const areaName = areas.find((a: any) => a.id === areaId)?.name || 'Obra Civil';
-  const scopeNodeName = scopeNodeId ? allNodes.find((n) => n.id === scopeNodeId)?.name : null;
 
   return (
     <View style={{ gap: 12 }}>
@@ -474,9 +523,7 @@ function StepReview({ name, email, role, areas, areaId, scopeNodeId, scopeNodeId
         <ReviewRow label="Nombre" value={name} />
         <ReviewRow label="Correo" value={email} />
         <ReviewRow label="Rol" value={roleLabel(role)} />
-        <ReviewRow label="Área" value={areaName} />
-        {scopeNodeName && <ReviewRow label="Alcance" value={scopeNodeName} />}
-        {scopeNodeIds.length > 0 && <ReviewRow label="Nodos" value={`${scopeNodeIds.length} seleccionados`} />}
+        {role !== ROLE_JEFE && <ReviewRow label="Área" value={areaName} />}
       </View>
     </View>
   );
@@ -491,55 +538,6 @@ function ReviewRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-function TreeRow({ node, selected, onSelect, mode, onlyLeavesSelectable, depth = 0 }: any) {
-  const isLeaf = !node.children || node.children.length === 0;
-  const isSelectable = (!onlyLeavesSelectable || isLeaf);
-  const isSelected = mode === 'multi' ? selected.includes(node.id) : selected === node.id;
-  const indent = Math.min(depth, 6) * 14;
-
-  return (
-    <View>
-      <Pressable
-        disabled={!isSelectable}
-        onPress={() => onSelect(node.id)}
-        style={[
-          styles.treeRow,
-          { paddingLeft: indent + 10 },
-          isSelected && styles.treeRowOn,
-          !isSelectable && { opacity: 0.4 }
-        ]}
-      >
-        <Ionicons
-          name={isSelected ? (mode === 'multi' ? "checkbox" : "radio-button-on") : (mode === 'multi' ? "square-outline" : "radio-button-off")}
-          size={18}
-          color={isSelected ? colors.primary : colors.textMuted}
-        />
-        <Ionicons
-          name={isLeaf ? 'flag' : 'folder-outline'}
-          size={14}
-          color={isLeaf ? colors.primary : colors.textBody}
-        />
-        <View style={{ flex: 1 }}>
-          <Text style={styles.treeName} numberOfLines={1}>
-            {node.name}
-          </Text>
-        </View>
-      </Pressable>
-      {node.children?.map((c: any) => (
-        <TreeRow
-          key={c.id}
-          node={c}
-          selected={selected}
-          onSelect={onSelect}
-          mode={mode}
-          onlyLeavesSelectable={onlyLeavesSelectable}
-          depth={depth + 1}
-        />
-      ))}
-    </View>
-  );
-}
-
 function InviteCard({ inv, onCopyToken, onCopyLink, onShare, onRevoke, onEdit, onRemove }: any) {
   const isPending = inv.status === 'pending';
   const isAccepted = inv.status === 'accepted' && !!inv.accepted_user_id;
@@ -550,6 +548,7 @@ function InviteCard({ inv, onCopyToken, onCopyLink, onShare, onRevoke, onEdit, o
         <Text style={{ color: colors.textMuted, fontSize: 12 }}>{inv.email} • {roleLabel(inv.role)}</Text>
         {isPending && <Text style={styles.tokenInline}>Token: {inv.token}</Text>}
         {isAccepted && !!inv.puesto && <Text style={styles.tokenInline}>Puesto: {inv.puesto}</Text>}
+        {!!inv.no_control && <Text style={styles.tokenInline}>No. Control: {inv.no_control}</Text>}
       </View>
       <View style={{ alignItems: 'flex-end', gap: 10 }}>
         <Text style={{ fontSize: 11, color: colors.primary, fontWeight: '800' }}>{inv.status.toUpperCase()}</Text>
@@ -571,12 +570,6 @@ function InviteCard({ inv, onCopyToken, onCopyLink, onShare, onRevoke, onEdit, o
   );
 }
 
-function flattenTree(tree: LocationNodeTree[]): LocationNodeTree[] {
-  const out: LocationNodeTree[] = [];
-  function walk(ns: LocationNodeTree[]) { for (const n of ns) { out.push(n); if (n.children) walk(n.children); } }
-  walk(tree); return out;
-}
-
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: 'white' },
   flex1: { flex: 1 },
@@ -584,6 +577,8 @@ const styles = StyleSheet.create({
   title: { fontSize: 18, fontWeight: '900' },
   subtitle: { fontSize: 12, color: colors.textMuted },
   iconBtn: { padding: 5, marginRight: 10 },
+  importHeaderBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, borderWidth: 1, borderColor: colors.primary, borderRadius: 20, paddingHorizontal: 10, paddingVertical: 6 },
+  importHeaderBtnTxt: { fontSize: 11, fontWeight: '800', color: colors.primary },
 
   modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' },
   modalCard: { backgroundColor: 'white', borderTopLeftRadius: 20, borderTopRightRadius: 20, overflow: 'hidden' },
@@ -604,10 +599,8 @@ const styles = StyleSheet.create({
   areaPill: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 20, borderWidth: 1, borderColor: colors.border, backgroundColor: '#eee' },
   areaPillOn: { borderColor: colors.primary, backgroundColor: colors.primaryLight, borderWidth: 2 },
 
-  treeBox: { borderWidth: 1, borderColor: colors.border, borderRadius: 10, marginTop: 10, overflow: 'hidden' },
-  treeRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 0.5, borderBottomColor: colors.border, gap: 10 },
-  treeRowOn: { backgroundColor: colors.primaryLight + '15' },
-  treeName: { fontSize: 14, fontWeight: '600' },
+  resetPasswordBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, marginTop: 12, paddingVertical: 8 },
+  resetPasswordBtnTxt: { fontSize: 13, fontWeight: '700', color: colors.error },
 
   wizardActions: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 20, borderTopWidth: 1, borderTopColor: colors.border, backgroundColor: 'white' },
   backBtn: { padding: 10 },
