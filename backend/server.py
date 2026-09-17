@@ -8931,12 +8931,12 @@ async def export_reports_pdf(
             SHEET_SUBTOTAL = HexColor("#DCEEFB")
             SHEET_MAROON = HexColor("#8B1E3F")
 
-            def _draw_bar(text: str, bg: HexColor, h: float = 0.9 * cm) -> None:
+            def _draw_bar(text: str, bg: HexColor, h: float = 0.9 * cm, text_color: HexColor = None) -> None:
                 nonlocal y
                 _ensure_space(h + 4)
                 c.setFillColor(bg)
                 c.rect(left_x, y - h, content_w, h, fill=1, stroke=0)
-                c.setFillColor(SHEET_TITLE)
+                c.setFillColor(text_color or SHEET_TITLE)
                 c.setFont("Helvetica-Bold", 10)
                 c.drawCentredString(PW / 2, y - h / 2 - 3, text.upper())
                 y -= h + 8
@@ -9092,6 +9092,45 @@ async def export_reports_pdf(
                     p.drawOn(c, left_x, y - ph)
                     y -= ph + 6
 
+            def _draw_estudios_avances_block(block: dict) -> None:
+                nonlocal y
+                _draw_bar("Avances", SHEET_MAROON, text_color=WHITE)
+                grupos = block.get("grupos") or []
+                disc_style = ParagraphStyle(
+                    "estDisc", fontName="Helvetica-Bold", fontSize=9.5, leading=13, textColor=TEXT,
+                )
+                data = []
+                span_cmds = []
+                row_i = 0
+                for g in grupos:
+                    items = g.get("items") or []
+                    if not items:
+                        continue
+                    start_row = row_i
+                    for idx, text in enumerate(items):
+                        data.append([
+                            Paragraph(_xml_escape(g["disciplina"]), disc_style) if idx == 0 else "",
+                            Paragraph(f"•  {_xml_escape(text)}", cell_style),
+                        ])
+                        row_i += 1
+                    if len(items) > 1:
+                        span_cmds.append(("SPAN", (0, start_row), (0, row_i - 1)))
+                if not data:
+                    _draw_empty("Sin avances registrados en este período.")
+                    return
+                style = [
+                    ("GRID", (0, 0), (-1, -1), 0.5, BORDER),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("TOPPADDING", (0, 0), (-1, -1), 5),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                ] + span_cmds
+                tbl = Table(data, colWidths=[content_w * 0.22, content_w * 0.78])
+                tbl.setStyle(TableStyle(style))
+                _ensure_space(2.0 * cm)
+                tw, th = tbl.wrapOn(c, content_w, y - bottom_y)
+                tbl.drawOn(c, left_x, y - th)
+                y -= th + 14
+
             _BLOCK_RENDERERS = {
                 "summary": _draw_summary_block,
                 "table": _draw_table_block,
@@ -9099,6 +9138,7 @@ async def export_reports_pdf(
                 "forestal_sheet": _draw_forestal_sheet_block,
                 "riesgos_mapa": _draw_riesgos_mapa_block,
                 "seguridad_indicadores": _draw_seguridad_indicadores_block,
+                "estudios_avances": _draw_estudios_avances_block,
             }
 
             for _mod_data in modulos_data.values():
@@ -11226,34 +11266,23 @@ async def _gather_modulos_export_data(
             }
 
     if activos.get("estudios_proyecto"):
-        actividades = await db.estudios_actividades.find(
-            {"project_id": pid, **mutable_date_q}
-        ).sort("orden", 1).to_list(length=500)
         bitacora = await db.estudios_bitacora.find(
             {"project_id": pid, **date_q}
         ).sort("created_at", 1).to_list(length=2000)
-        bitacora_items = [{
-            "title": f"{b.get('fecha', '—')} · {ESTUDIOS_DISCIPLINA_LABEL.get(b.get('disciplina'), b.get('disciplina') or '—')}",
-            "body": b.get("texto") or "",
-            "extra": None,
-            "meta": f"Registró: {b.get('captured_by_name') or '—'}",
-        } for b in bitacora]
-        if actividades or bitacora:
+        if bitacora:
+            por_disciplina: Dict[str, list] = {}
+            for b in bitacora:
+                key = b.get("disciplina") or "—"
+                por_disciplina.setdefault(key, []).append(b.get("texto") or "")
             out["estudios"] = {
                 "titulo": "ESTUDIOS Y PROYECTO EJECUTIVO",
-                "blocks": [
-                    {
-                        "type": "table", "heading": "Avance por actividad",
-                        "headers": ["Actividad", "% Avance"],
-                        "rows": [[a.get("nombre", "—"), f"{a.get('porcentaje_avance', 0)}%"] for a in actividades],
-                        "col_widths": [0.7, 0.3],
-                        "empty_text": "Sin actividades registradas en este período.",
-                    },
-                    {
-                        "type": "list", "heading": "Bitácora por disciplina", "heading_color": None,
-                        "items": bitacora_items, "empty_text": "Sin notas de bitácora en este período.",
-                    },
-                ],
+                "blocks": [{
+                    "type": "estudios_avances",
+                    "grupos": [
+                        {"disciplina": ESTUDIOS_DISCIPLINA_LABEL.get(k, k), "items": por_disciplina[k]}
+                        for k in ESTUDIOS_DISCIPLINAS if k in por_disciplina
+                    ],
+                }],
             }
 
     if activos.get("impacto_ambiental"):
@@ -11816,6 +11845,28 @@ async def export_reports_docx(
                 r.font.size = Pt(11)
                 r.font.color.rgb = TEXT_RGB
 
+        def _mod_estudios_avances_block(block: dict):
+            _mod_heading("Avances")
+            grupos = block.get("grupos") or []
+            any_item = False
+            for g in grupos:
+                items = g.get("items") or []
+                if not items:
+                    continue
+                any_item = True
+                dp = doc.add_paragraph()
+                dr = dp.add_run(g["disciplina"])
+                dr.bold = True
+                dr.font.size = Pt(11)
+                dr.font.color.rgb = BRAND_RGB
+                for text in items:
+                    p = doc.add_paragraph(style="List Bullet")
+                    r = p.add_run(text)
+                    r.font.size = Pt(10.5)
+                    r.font.color.rgb = TEXT_RGB
+            if not any_item:
+                _mod_empty("Sin avances registrados en este período.")
+
         _MOD_BLOCK_RENDERERS = {
             "summary": _mod_summary_block,
             "table": _mod_table_block,
@@ -11823,6 +11874,7 @@ async def export_reports_docx(
             "forestal_sheet": _mod_forestal_sheet_block,
             "riesgos_mapa": _mod_riesgos_mapa_block,
             "seguridad_indicadores": _mod_seguridad_indicadores_block,
+            "estudios_avances": _mod_estudios_avances_block,
         }
 
         for _mod_data in modulos_data.values():
@@ -12694,12 +12746,12 @@ async def export_reports_pptx(
             SHEET_SUBTOTAL_RGB = (0xDC, 0xEE, 0xFB)
             MAROON_RGB = (0x8B, 0x1E, 0x3F)
 
-            def _draw_bar(titulo_continua: str, text: str, bg_rgb) -> None:
+            def _draw_bar(titulo_continua: str, text: str, bg_rgb, text_rgb=None) -> None:
                 _ensure_space(titulo_continua, Cm(1.0))
                 bar_h = Cm(0.9)
                 _wf_rect(state["slide"], MARGIN_X, state["y"], content_w, bar_h, fill_rgb=bg_rgb)
                 add_text(state["slide"], MARGIN_X, state["y"], content_w, bar_h, text.upper(),
-                         size=11, bold=True, color=SHEET_TITLE_RGB, align=PP_ALIGN.CENTER)
+                         size=11, bold=True, color=text_rgb or SHEET_TITLE_RGB, align=PP_ALIGN.CENTER)
                 state["y"] += bar_h + Cm(0.15)
 
             def _draw_sheet_table(headers, rows, col_fracs, header_rgb, zebra_rgb=None, bold_last=False,
@@ -12838,6 +12890,37 @@ async def export_reports_pptx(
                              size=11, color=WF_TEXT_RGB)
                     state["y"] += Cm(1.1)
 
+            def _draw_estudios_avances_block(titulo_continua: str, block: dict) -> None:
+                grupos = block.get("grupos") or []
+                total_filas = sum(len(g.get("items") or []) for g in grupos)
+                if total_filas == 0:
+                    _draw_empty("Sin avances registrados en este período.")
+                    return
+                col_fracs = [0.22, 0.78]
+                widths = [int(content_w * f) for f in col_fracs]
+                _ensure_space(titulo_continua, Cm(0.9) * (total_filas + 2))
+                _draw_bar(titulo_continua, "Avances", MAROON_RGB, text_rgb=WF_WHITE_RGB)
+                x = MARGIN_X
+                cy = state["y"]
+                for g in grupos:
+                    items = g.get("items") or []
+                    if not items:
+                        continue
+                    group_top = cy
+                    for text in items:
+                        row_h = Cm(0.9)
+                        _wf_rect(state["slide"], x + widths[0], cy, widths[1], row_h, fill_rgb=WF_WHITE_RGB,
+                                 line_rgb=WF_BORDER_RGB, line_pt=0.5)
+                        add_text(state["slide"], x + widths[0], cy, widths[1], row_h, f"•  {text}",
+                                 size=8.5, color=WF_TEXT_RGB)
+                        cy += row_h
+                    group_h = cy - group_top
+                    _wf_rect(state["slide"], x, group_top, widths[0], group_h, fill_rgb=WF_WHITE_RGB,
+                             line_rgb=WF_BORDER_RGB, line_pt=0.5)
+                    add_text(state["slide"], x, group_top, widths[0], group_h, g["disciplina"],
+                             size=9.5, bold=True, color=WF_TEXT_RGB, align=PP_ALIGN.CENTER)
+                state["y"] = cy + Cm(0.3)
+
             _BLOCK_RENDERERS = {
                 "summary": _draw_summary_block,
                 "table": _draw_table_block,
@@ -12845,6 +12928,7 @@ async def export_reports_pptx(
                 "forestal_sheet": _draw_forestal_sheet_block,
                 "riesgos_mapa": _draw_riesgos_mapa_block,
                 "seguridad_indicadores": _draw_seguridad_indicadores_block,
+                "estudios_avances": _draw_estudios_avances_block,
             }
 
             for _mod_data in modulos_data.values():
