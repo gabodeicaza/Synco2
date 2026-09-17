@@ -1,10 +1,14 @@
 // Plano de Avance — lista de planos (blueprints) del proyecto + editor de
-// marcadores de estado (punto o segmento, rojo/ámbar/verde) sobre cada uno.
-// Mismo patrón "un componente hace todo, rutas delgadas por rol" que
-// EstudiosProyectoScreen.tsx. Definir/reposicionar marcadores es exclusivo
-// de Coordinador/Sub-Coordinador; actualizar SOLO el estado de un marcador
-// ya colocado lo puede hacer cualquier rol de escritura (Especialista
-// incluido) — el backend aplica el mismo criterio en PATCH .../markers/{id}.
+// marcadores de estado (punto=columna, dado=rectángulo de cimentación,
+// segmento=trabe; rojo/ámbar/verde) sobre cada uno. Mismo patrón "un
+// componente hace todo, rutas delgadas por rol" que EstudiosProyectoScreen.tsx.
+// Definir/reposicionar marcadores (incluido el modo "Mover", arrastrar) es
+// exclusivo de Coordinador/Sub-Coordinador; actualizar SOLO el estado de un
+// marcador ya colocado lo puede hacer cualquier rol de escritura
+// (Especialista incluido) — el backend aplica el mismo criterio en PATCH
+// .../markers/{id}. Al arrastrar un punto/dado en modo Mover, las trabes
+// cuyo extremo coincidía con su posición original se mueven junto con él
+// (ver onDragEndMarker/CONEXION_TOL) — antes había que rehacerlas a mano.
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, TextInput, Alert, Modal,
@@ -23,8 +27,12 @@ import { useAuth } from '@/src/auth-context';
 import { ROLE_COORD, ROLE_SUB } from '@/src/utils/roles';
 import { PlanoMarkerOverlay, PLANO_MARKER_ESTADO_COLOR, PLANO_MARKER_ESTADO_LABEL } from '@/src/components/PlanoMarkerOverlay';
 
-type AddMode = 'none' | 'punto' | 'segmento';
-type LabelPromptDraft = { x: number; y: number; x2?: number; y2?: number };
+type AddMode = 'none' | 'punto' | 'segmento' | 'dado';
+type LabelPromptDraft = { tipo: 'punto' | 'segmento' | 'dado'; x: number; y: number; x2?: number; y2?: number };
+// Tolerancia (fracción 0-1 del tamaño de la imagen) para considerar que una
+// trabe (segmento) estaba "conectada" a un punto/dado — coincide con el
+// mismo criterio con el que el usuario las dibujó (tocando el mismo lugar).
+const CONEXION_TOL = 0.015;
 
 export default function PlanoAvanceScreen({ projectId }: { projectId: string }) {
   const insets = useSafeAreaInsets();
@@ -42,10 +50,12 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
   const [imgSize, setImgSize] = useState<{ width: number; height: number } | null>(null);
 
   const [addMode, setAddMode] = useState<AddMode>('none');
+  const [moverActivo, setMoverActivo] = useState(false);
   const [segmentDraft, setSegmentDraft] = useState<{ x: number; y: number } | null>(null);
   const [labelPrompt, setLabelPrompt] = useState<LabelPromptDraft | null>(null);
   const [labelDraft, setLabelDraft] = useState('');
   const [savingMarker, setSavingMarker] = useState(false);
+  const [movingMarkerId, setMovingMarkerId] = useState<string | null>(null);
 
   const [markerModal, setMarkerModal] = useState<PlanoMarker | null>(null);
   const [renamePrompt, setRenamePrompt] = useState(false);
@@ -89,7 +99,7 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
 
   useEffect(() => {
     if (selectedId) loadDetail(selectedId);
-    else { setDetail(null); setImgSize(null); setAddMode('none'); setSegmentDraft(null); }
+    else { setDetail(null); setImgSize(null); setAddMode('none'); setSegmentDraft(null); setMoverActivo(false); }
   }, [selectedId, loadDetail]);
 
   // Recalcula el tamaño de despliegue a partir de las dimensiones reales de
@@ -111,8 +121,8 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
   }, [detail?.imagen]);
 
   function handleOverlayTap(hit: PlanoMarker | null, xFrac: number, yFrac: number) {
-    if (addMode === 'punto') {
-      setLabelPrompt({ x: xFrac, y: yFrac });
+    if (addMode === 'punto' || addMode === 'dado') {
+      setLabelPrompt({ tipo: addMode, x: xFrac, y: yFrac });
       setLabelDraft('');
       return;
     }
@@ -120,7 +130,7 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
       if (!segmentDraft) {
         setSegmentDraft({ x: xFrac, y: yFrac });
       } else {
-        setLabelPrompt({ x: segmentDraft.x, y: segmentDraft.y, x2: xFrac, y2: yFrac });
+        setLabelPrompt({ tipo: 'segmento', x: segmentDraft.x, y: segmentDraft.y, x2: xFrac, y2: yFrac });
         setLabelDraft('');
         setSegmentDraft(null);
       }
@@ -139,7 +149,7 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
     try {
       setSavingMarker(true);
       await api.createPlanoMarker(projectId, detail.id, {
-        tipo: labelPrompt.x2 != null ? 'segmento' : 'punto',
+        tipo: labelPrompt.tipo,
         label,
         x: labelPrompt.x, y: labelPrompt.y,
         x2: labelPrompt.x2, y2: labelPrompt.y2,
@@ -152,6 +162,45 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
       Alert.alert('No se pudo guardar', e?.message || 'Intentalo nuevamente.');
     } finally {
       setSavingMarker(false);
+    }
+  }
+
+  // Arrastrar un punto/dado en modo "Mover": además de reposicionar el
+  // marcador arrastrado, mueve por el mismo delta cualquier extremo de
+  // segmento (trabe) que estuviera coincidiendo con su posición ORIGINAL —
+  // así una trabe "conectada" (dibujada tocando el mismo lugar) sigue a la
+  // columna/dado en vez de quedar huérfana. Ver CONEXION_TOL arriba.
+  async function onDragEndMarker(marker: PlanoMarker, newX: number, newY: number) {
+    if (!detail || movingMarkerId) return;
+    const origX = marker.x;
+    const origY = marker.y;
+    const patches: Promise<PlanoMarker>[] = [
+      api.updatePlanoMarker(projectId, detail.id, marker.id, { x: newX, y: newY }),
+    ];
+    for (const seg of detail.markers) {
+      if (seg.tipo !== 'segmento' || seg.id === marker.id) continue;
+      const patch: Partial<{ x: number; y: number; x2: number; y2: number }> = {};
+      if (Math.hypot(seg.x - origX, seg.y - origY) <= CONEXION_TOL) {
+        patch.x = newX;
+        patch.y = newY;
+      }
+      if (seg.x2 != null && seg.y2 != null && Math.hypot(seg.x2 - origX, seg.y2 - origY) <= CONEXION_TOL) {
+        patch.x2 = newX;
+        patch.y2 = newY;
+      }
+      if (Object.keys(patch).length > 0) {
+        patches.push(api.updatePlanoMarker(projectId, detail.id, seg.id, patch));
+      }
+    }
+    setMovingMarkerId(marker.id);
+    try {
+      await Promise.all(patches);
+      await loadDetail(detail.id);
+    } catch (e: any) {
+      Alert.alert('No se pudo mover', e?.message || 'Intentalo nuevamente.');
+      await loadDetail(detail.id); // recarga por si algún PATCH sí aplicó antes de fallar
+    } finally {
+      setMovingMarkerId(null);
     }
   }
 
@@ -288,25 +337,43 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
             {canEditEstructura ? (
               <View style={styles.toolRow}>
                 <Pressable
-                  onPress={() => { setAddMode(addMode === 'punto' ? 'none' : 'punto'); setSegmentDraft(null); }}
+                  onPress={() => { setAddMode(addMode === 'punto' ? 'none' : 'punto'); setSegmentDraft(null); setMoverActivo(false); }}
                   style={[styles.toolBtn, addMode === 'punto' && styles.toolBtnActive]}
                 >
                   <Ionicons name="ellipse-outline" size={16} color={addMode === 'punto' ? '#fff' : colors.primary} />
-                  <Text style={[styles.toolBtnTxt, addMode === 'punto' && { color: '#fff' }]}>Agregar punto</Text>
+                  <Text style={[styles.toolBtnTxt, addMode === 'punto' && { color: '#fff' }]}>Punto</Text>
                 </Pressable>
                 <Pressable
-                  onPress={() => { setAddMode(addMode === 'segmento' ? 'none' : 'segmento'); setSegmentDraft(null); }}
+                  onPress={() => { setAddMode(addMode === 'dado' ? 'none' : 'dado'); setSegmentDraft(null); setMoverActivo(false); }}
+                  style={[styles.toolBtn, addMode === 'dado' && styles.toolBtnActive]}
+                >
+                  <Ionicons name="square-outline" size={16} color={addMode === 'dado' ? '#fff' : colors.primary} />
+                  <Text style={[styles.toolBtnTxt, addMode === 'dado' && { color: '#fff' }]}>Dado</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => { setAddMode(addMode === 'segmento' ? 'none' : 'segmento'); setSegmentDraft(null); setMoverActivo(false); }}
                   style={[styles.toolBtn, addMode === 'segmento' && styles.toolBtnActive]}
                 >
                   <Ionicons name="remove-outline" size={16} color={addMode === 'segmento' ? '#fff' : colors.primary} />
-                  <Text style={[styles.toolBtnTxt, addMode === 'segmento' && { color: '#fff' }]}>Agregar segmento</Text>
+                  <Text style={[styles.toolBtnTxt, addMode === 'segmento' && { color: '#fff' }]}>Trabe</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => { setMoverActivo((v) => !v); setAddMode('none'); setSegmentDraft(null); }}
+                  style={[styles.toolBtn, moverActivo && styles.toolBtnActive]}
+                >
+                  <Ionicons name="move-outline" size={16} color={moverActivo ? '#fff' : colors.primary} />
+                  <Text style={[styles.toolBtnTxt, moverActivo && { color: '#fff' }]}>Mover</Text>
                 </Pressable>
               </View>
             ) : null}
             {addMode === 'segmento' ? (
-              <Text style={styles.hintTxt}>{segmentDraft ? 'Toca el segundo punto del segmento.' : 'Toca el primer punto del segmento.'}</Text>
+              <Text style={styles.hintTxt}>{segmentDraft ? 'Toca el segundo punto de la trabe.' : 'Toca el primer punto de la trabe.'}</Text>
             ) : addMode === 'punto' ? (
-              <Text style={styles.hintTxt}>Toca sobre el plano para colocar el marcador.</Text>
+              <Text style={styles.hintTxt}>Toca sobre el plano para colocar el punto.</Text>
+            ) : addMode === 'dado' ? (
+              <Text style={styles.hintTxt}>Toca sobre el plano para colocar el dado.</Text>
+            ) : moverActivo ? (
+              <Text style={styles.hintTxt}>Arrastra un punto o dado para reubicarlo — las trabes conectadas lo siguen.</Text>
             ) : null}
 
             <View style={[styles.planoFrame, { width: imgSize.width, height: imgSize.height }]}>
@@ -317,7 +384,14 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
                 height={imgSize.height}
                 onTap={handleOverlayTap}
                 draftPoint={segmentDraft}
+                mode={moverActivo ? 'mover' : 'ver'}
+                onDragEnd={onDragEndMarker}
               />
+              {movingMarkerId ? (
+                <View style={styles.movingOverlay}>
+                  <ActivityIndicator color={colors.primary} />
+                </View>
+              ) : null}
             </View>
 
             <View style={styles.legendRow}>
@@ -331,7 +405,7 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
 
             {detail.markers.length === 0 ? (
               <Text style={styles.emptyTxt}>
-                {canEditEstructura ? 'Sin marcadores todavía — usa "Agregar punto/segmento" arriba.' : 'Este plano aún no tiene marcadores.'}
+                {canEditEstructura ? 'Sin marcadores todavía — usa "Punto/Dado/Trabe" arriba.' : 'Este plano aún no tiene marcadores.'}
               </Text>
             ) : null}
           </ScrollView>
@@ -341,7 +415,9 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
         <Modal visible={!!labelPrompt} transparent animationType="slide" onRequestClose={() => setLabelPrompt(null)}>
           <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
             <View style={styles.modalCard}>
-              <Text style={styles.modalTitle}>{labelPrompt?.x2 != null ? 'Nuevo segmento' : 'Nuevo punto'}</Text>
+              <Text style={styles.modalTitle}>
+                {labelPrompt?.tipo === 'segmento' ? 'Nueva trabe' : labelPrompt?.tipo === 'dado' ? 'Nuevo dado' : 'Nuevo punto'}
+              </Text>
               <Text style={styles.fieldLabel}>Etiqueta</Text>
               <TextInput
                 value={labelDraft}
@@ -506,15 +582,22 @@ const styles = StyleSheet.create({
   planoRow: { flexDirection: 'row', alignItems: 'center', padding: spacing.md },
   planoNombre: { fontSize: 14, fontWeight: '700', color: colors.text },
   planoSub: { fontSize: 12, color: colors.textMuted, marginTop: 2 },
-  toolRow: { flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.sm, alignSelf: 'stretch' },
+  // flexWrap + flexBasis (en vez de flex:1 puro): con 4 botones (Punto/Dado/
+  // Trabe/Mover) en pantallas angostas, pasan a 2 filas de 2 en vez de
+  // apretarse en una sola fila ilegible.
+  toolRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginBottom: spacing.sm, alignSelf: 'stretch' },
   toolBtn: {
-    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    flexGrow: 1, flexBasis: '45%', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
     paddingVertical: 10, borderRadius: radius.md, borderWidth: 1, borderColor: colors.primary, backgroundColor: colors.surface,
   },
   toolBtnActive: { backgroundColor: colors.primary },
   toolBtnTxt: { fontSize: 12, fontWeight: '700', color: colors.primary },
   hintTxt: { fontSize: 12, color: colors.textMuted, marginBottom: spacing.sm, textAlign: 'center' },
   planoFrame: { backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, overflow: 'hidden' },
+  movingOverlay: {
+    ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(255,255,255,0.5)',
+    alignItems: 'center', justifyContent: 'center',
+  },
   legendRow: { flexDirection: 'row', gap: spacing.md, marginTop: spacing.md, flexWrap: 'wrap', justifyContent: 'center' },
   legendItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   legendDot: { width: 10, height: 10, borderRadius: 5 },

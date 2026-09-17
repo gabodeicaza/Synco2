@@ -3087,7 +3087,10 @@ _PLANO_MARKER_CAMPOS_ESTRUCTURA = ("label", "x", "y", "x2", "y2")
 
 
 class PlanoMarkerIn(BaseModel):
-    tipo: Literal["punto", "segmento"]
+    # "dado": rectángulo de cimentación (dado/zapata) — se valida igual que
+    # "punto" (solo x/y, sin x2/y2), solo cambia cómo lo dibuja el overlay
+    # (ver PlanoMarkerOverlay.tsx / _bake_plano_snapshot).
+    tipo: Literal["punto", "segmento", "dado"]
     label: str
     x: float
     y: float
@@ -3292,9 +3295,12 @@ def _bake_plano_snapshot(plano: dict) -> bytes:
     devuelve PNG bytes — usado por el endpoint de snapshot y por la
     exportación PPTX de Presentación. La vista EN VIVO en la app usa un
     overlay SVG (ver PlanoMarkerOverlay.tsx); esto solo produce una imagen
-    plana embebible en el reporte."""
+    plana embebible en el reporte. Dibuja también la etiqueta de cada
+    marcador (antes no llevaba ninguna) — mismo criterio de fuente con
+    fallback que la marca de agua de fotos (ver más arriba en este archivo:
+    DejaVuSans-Bold si está instalada, si no la fuente default de PIL)."""
     import base64 as _b64
-    from PIL import Image as _PILImage, ImageDraw as _ImageDraw
+    from PIL import Image as _PILImage, ImageDraw as _ImageDraw, ImageFont as _ImageFont
 
     raw = _b64.b64decode(_strip_b64_prefix(plano["imagen"]))
     img = _PILImage.open(io.BytesIO(raw)).convert("RGB")
@@ -3302,18 +3308,48 @@ def _bake_plano_snapshot(plano: dict) -> bytes:
     draw = _ImageDraw.Draw(img)
     radius = max(8, int(min(w, h) * 0.014))
     line_width = max(4, int(min(w, h) * 0.01))
+    try:
+        font = _ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", max(12, int(radius * 1.3)))
+    except Exception:
+        font = _ImageFont.load_default()
+
+    def _draw_label(cx: float, cy: float, text: str) -> None:
+        if not text:
+            return
+        try:
+            bbox = draw.textbbox((0, 0), text, font=font)
+            tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        except Exception:
+            tw, th = len(text) * 6, 12
+        pad = 3
+        box = [cx - tw / 2 - pad, cy - th / 2 - pad, cx + tw / 2 + pad, cy + th / 2 + pad]
+        draw.rectangle(box, fill="#FFFFFF")  # img siempre es RGB (convert arriba) — sin canal alpha
+        draw.text((cx - tw / 2, cy - th / 2), text, fill="#1A1A1A", font=font)
+
     for m in (plano.get("markers") or []):
         color = _PLANO_MARKER_ESTADO_COLOR.get(m.get("estatus"), "#94A3B8")
-        if m.get("tipo") == "segmento" and m.get("x2") is not None and m.get("y2") is not None:
+        tipo = m.get("tipo")
+        label = (m.get("label") or "").strip()
+        if tipo == "segmento" and m.get("x2") is not None and m.get("y2") is not None:
             x1, y1 = m["x"] * w, m["y"] * h
             x2, y2 = m["x2"] * w, m["y2"] * h
             draw.line([(x1, y1), (x2, y2)], fill=color, width=line_width)
+            _draw_label((x1 + x2) / 2, (y1 + y2) / 2 - radius, label)
+        elif tipo == "dado":
+            cx, cy = m["x"] * w, m["y"] * h
+            side = radius * 2.2
+            draw.rectangle(
+                [cx - side / 2, cy - side / 2, cx + side / 2, cy + side / 2],
+                fill=color, outline="#FFFFFF", width=max(2, radius // 6),
+            )
+            _draw_label(cx, cy + side / 2 + radius * 0.9, label)
         else:
             cx, cy = m["x"] * w, m["y"] * h
             draw.ellipse(
                 [cx - radius, cy - radius, cx + radius, cy + radius],
                 fill=color, outline="#FFFFFF", width=max(2, radius // 6),
             )
+            _draw_label(cx, cy + radius + radius * 0.9, label)
     out = io.BytesIO()
     img.save(out, format="PNG")
     return out.getvalue()

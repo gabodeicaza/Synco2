@@ -404,7 +404,7 @@ export type PlanoMarkerEstatus = 'sin_iniciar' | 'en_proceso' | 'terminado';
 
 export interface PlanoMarker {
   id: string;
-  tipo: 'punto' | 'segmento';
+  tipo: 'punto' | 'segmento' | 'dado';
   label: string;
   x: number;
   y: number;
@@ -1636,7 +1636,7 @@ export const api = {
   deletePlanoAvance: (pid: string, planoId: string) =>
     request<{ ok: boolean }>('DELETE', `/projects/${pid}/planos-avance/${planoId}`),
   createPlanoMarker: (pid: string, planoId: string, body: {
-    tipo: 'punto' | 'segmento'; label: string; x: number; y: number; x2?: number; y2?: number; estatus?: PlanoMarkerEstatus;
+    tipo: 'punto' | 'segmento' | 'dado'; label: string; x: number; y: number; x2?: number; y2?: number; estatus?: PlanoMarkerEstatus;
   }) => request<PlanoMarker>('POST', `/projects/${pid}/planos-avance/${planoId}/markers`, body),
   updatePlanoMarker: (pid: string, planoId: string, markerId: string, body: Partial<{
     label: string; x: number; y: number; x2: number; y2: number; estatus: PlanoMarkerEstatus;

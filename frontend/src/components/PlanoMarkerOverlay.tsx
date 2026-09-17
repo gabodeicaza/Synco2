@@ -3,11 +3,11 @@
 // guardar), estos marcadores tienen identidad propia y un estado editable
 // en el tiempo: nunca se aplanan aquí, solo se leen/tocan y el cambio se
 // manda al backend vía PATCH. Reusa la técnica de hit-testing de
-// PhotoAnnotator.tsx (`distToSegment`) adaptada a marcadores punto/segmento
-// en coordenadas FRACCIÓN (0-1) del tamaño de la imagen base.
-import React from 'react';
-import { Image, StyleSheet, View } from 'react-native';
-import Svg, { Circle, Line } from 'react-native-svg';
+// PhotoAnnotator.tsx (`distToSegment`) adaptada a marcadores punto/segmento/
+// dado en coordenadas FRACCIÓN (0-1) del tamaño de la imagen base.
+import React, { useMemo, useRef, useState } from 'react';
+import { Image, PanResponder, StyleSheet, View } from 'react-native';
+import Svg, { Circle, Line, Rect, Text as SvgText } from 'react-native-svg';
 import { colors } from '@/src/theme';
 import type { PlanoMarker, PlanoMarkerEstatus } from '@/src/api';
 
@@ -26,6 +26,10 @@ export const PLANO_MARKER_ESTADO_LABEL: Record<PlanoMarkerEstatus, string> = {
 // Distancia mínima de tolerancia al tocar un marcador (dedo grueso vs.
 // marcador delgado) — mismo criterio (HIT_PAD) que PhotoAnnotator.tsx.
 const HIT_PAD = 16;
+// Por debajo de este desplazamiento total (px), un gesto en modo 'mover' se
+// trata como TAP normal (abre el modal de acciones) en vez de arrastre —
+// evita que un toque con la mano ligeramente temblorosa dispare un PATCH.
+const DRAG_TAP_THRESHOLD = 6;
 
 function distToSegment(px: number, py: number, x1: number, y1: number, x2: number, y2: number): number {
   const dx = x2 - x1;
@@ -38,19 +42,62 @@ function distToSegment(px: number, py: number, x1: number, y1: number, x2: numbe
   return Math.hypot(px - cx, py - cy);
 }
 
+function clamp01(v: number): number {
+  return Math.max(0, Math.min(1, v));
+}
+
 interface Props {
   imageUri: string;
   markers: PlanoMarker[];
   width: number;
   height: number;
   markerRadius?: number;
-  /** Marcador tocado (punto o segmento), o null si el toque no dio en ninguno. */
+  /** Marcador tocado (punto, segmento o dado), o null si el toque no dio en ninguno. */
   onTap?: (marker: PlanoMarker | null, xFrac: number, yFrac: number) => void;
   /** Punto pendiente de un segmento en construcción (ver PlanoAvanceScreen). */
   draftPoint?: { x: number; y: number } | null;
+  /** 'mover' habilita arrastrar marcadores tipo punto/dado (ver
+   * PlanoAvanceScreen) — 'ver' (default, o prop omitida) es el
+   * comportamiento de siempre: tap simple vía onTap, sin cambios. */
+  mode?: 'ver' | 'mover';
+  /** Se llama al soltar tras un ARRASTRE real (no un tap) en modo 'mover',
+   * con la nueva posición en fracción 0-1. Solo aplica a punto/dado — los
+   * segmentos no se arrastran directamente (ver nota de diseño en
+   * PlanoAvanceScreen.onDragEndMarker). */
+  onDragEnd?: (marker: PlanoMarker, newXFrac: number, newYFrac: number) => void;
 }
 
-export function PlanoMarkerOverlay({ imageUri, markers, width, height, markerRadius = 11, onTap, draftPoint }: Props) {
+export function PlanoMarkerOverlay({
+  imageUri, markers, width, height, markerRadius = 11, onTap, draftPoint, mode = 'ver', onDragEnd,
+}: Props) {
+  // Posición VISUAL temporal del marcador que se está arrastrando — no se
+  // persiste hasta soltar (onDragEnd). Mientras exista, el render de ESE
+  // marcador ignora su x/y real y usa este preview.
+  const [dragPreview, setDragPreview] = useState<{ id: string; xFrac: number; yFrac: number } | null>(null);
+
+  // El PanResponder (modo 'mover') se crea UNA sola vez (useMemo con deps
+  // vacías) — sus callbacks leen siempre el valor más reciente de
+  // markers/width/height/onTap/onDragEnd a través de este ref, en vez de
+  // cerrar sobre valores obsoletos de un render anterior (patrón estándar
+  // PanResponder + refs en React Native).
+  const liveRef = useRef({ markers, width, height, markerRadius, onTap, onDragEnd });
+  liveRef.current = { markers, width, height, markerRadius, onTap, onDragEnd };
+
+  const draggingRef = useRef<{ marker: PlanoMarker; startXFrac: number; startYFrac: number } | null>(null);
+
+  function hitTestPointOrDado(x: number, y: number): PlanoMarker | null {
+    const { markers: ms, width: w, height: h, markerRadius: r } = liveRef.current;
+    for (let i = ms.length - 1; i >= 0; i--) {
+      const m = ms[i];
+      if (m.tipo === 'segmento') continue; // ver nota: los segmentos no se arrastran directo.
+      const mx = m.x * w;
+      const my = m.y * h;
+      if (Math.hypot(x - mx, y - my) <= r + HIT_PAD) return m;
+    }
+    return null;
+  }
+
+  // --- Modo 'ver': tap simple, comportamiento sin cambios respecto al original ---
   function handleTouch(evt: any) {
     if (!onTap) return;
     const { locationX: x, locationY: y } = evt.nativeEvent;
@@ -71,33 +118,123 @@ export function PlanoMarkerOverlay({ imageUri, markers, width, height, markerRad
     onTap(hit, width > 0 ? x / width : 0, height > 0 ? y / height : 0);
   }
 
+  // --- Modo 'mover': arrastrar un punto/dado; toques cortos siguen abriendo
+  // el modal de acciones (mismo onTap que en modo 'ver') ---
+  const panResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onPanResponderGrant: (evt) => {
+          const { locationX: x, locationY: y } = evt.nativeEvent;
+          const hit = hitTestPointOrDado(x, y);
+          draggingRef.current = hit ? { marker: hit, startXFrac: hit.x, startYFrac: hit.y } : null;
+        },
+        onPanResponderMove: (_evt, gestureState) => {
+          const dragging = draggingRef.current;
+          if (!dragging) return;
+          const { width: w, height: h } = liveRef.current;
+          if (w <= 0 || h <= 0) return;
+          setDragPreview({
+            id: dragging.marker.id,
+            xFrac: clamp01(dragging.startXFrac + gestureState.dx / w),
+            yFrac: clamp01(dragging.startYFrac + gestureState.dy / h),
+          });
+        },
+        onPanResponderRelease: (_evt, gestureState) => {
+          const dragging = draggingRef.current;
+          draggingRef.current = null;
+          setDragPreview(null);
+          if (!dragging) return;
+          const total = Math.hypot(gestureState.dx, gestureState.dy);
+          const { width: w, height: h, onTap: liveOnTap, onDragEnd: liveOnDragEnd } = liveRef.current;
+          if (total < DRAG_TAP_THRESHOLD) {
+            liveOnTap?.(dragging.marker, dragging.startXFrac, dragging.startYFrac);
+            return;
+          }
+          if (w <= 0 || h <= 0) return;
+          liveOnDragEnd?.(
+            dragging.marker,
+            clamp01(dragging.startXFrac + gestureState.dx / w),
+            clamp01(dragging.startYFrac + gestureState.dy / h),
+          );
+        },
+        onPanResponderTerminate: () => {
+          draggingRef.current = null;
+          setDragPreview(null);
+        },
+      }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+
+  const responderProps = mode === 'mover'
+    ? panResponder.panHandlers
+    : { onStartShouldSetResponder: () => !!onTap, onResponderRelease: handleTouch };
+
   return (
-    <View
-      style={{ width, height }}
-      onStartShouldSetResponder={() => !!onTap}
-      onResponderRelease={handleTouch}
-    >
+    <View style={{ width, height }} {...responderProps}>
       <Image source={{ uri: imageUri }} style={{ width, height }} resizeMode="contain" />
       <Svg width={width} height={height} style={StyleSheet.absoluteFillObject} pointerEvents="none">
         {markers.map((m) => {
           const color = PLANO_MARKER_ESTADO_COLOR[m.estatus] || colors.textMuted;
+          const preview = dragPreview && dragPreview.id === m.id ? dragPreview : null;
+          const mx = (preview ? preview.xFrac : m.x) * width;
+          const my = (preview ? preview.yFrac : m.y) * height;
+          const label = (m.label || '').trim();
+
           if (m.tipo === 'segmento' && m.x2 != null && m.y2 != null) {
+            const x2 = m.x2 * width;
+            const y2 = m.y2 * height;
             return (
-              <Line
-                key={m.id}
-                x1={m.x * width} y1={m.y * height}
-                x2={m.x2 * width} y2={m.y2 * height}
-                stroke={color} strokeWidth={5} strokeLinecap="round"
-              />
+              <React.Fragment key={m.id}>
+                <Line x1={mx} y1={my} x2={x2} y2={y2} stroke={color} strokeWidth={5} strokeLinecap="round" />
+                {label ? (
+                  <SvgText
+                    x={(mx + x2) / 2} y={(my + y2) / 2 - 8}
+                    fontSize={10} fontWeight="bold" textAnchor="middle"
+                    fill="#1A1A1A" stroke="#FFFFFF" strokeWidth={3} paintOrder="stroke"
+                  >
+                    {label}
+                  </SvgText>
+                ) : null}
+              </React.Fragment>
             );
           }
+
+          if (m.tipo === 'dado') {
+            const side = markerRadius * 2.2;
+            return (
+              <React.Fragment key={m.id}>
+                <Rect
+                  x={mx - side / 2} y={my - side / 2} width={side} height={side}
+                  fill={color} stroke="#FFFFFF" strokeWidth={2}
+                />
+                {label ? (
+                  <SvgText
+                    x={mx} y={my + side / 2 + 12}
+                    fontSize={10} fontWeight="bold" textAnchor="middle"
+                    fill="#1A1A1A" stroke="#FFFFFF" strokeWidth={3} paintOrder="stroke"
+                  >
+                    {label}
+                  </SvgText>
+                ) : null}
+              </React.Fragment>
+            );
+          }
+
           return (
-            <Circle
-              key={m.id}
-              cx={m.x * width} cy={m.y * height}
-              r={markerRadius}
-              fill={color} stroke="#FFFFFF" strokeWidth={2}
-            />
+            <React.Fragment key={m.id}>
+              <Circle cx={mx} cy={my} r={markerRadius} fill={color} stroke="#FFFFFF" strokeWidth={2} />
+              {label ? (
+                <SvgText
+                  x={mx} y={my + markerRadius + 12}
+                  fontSize={10} fontWeight="bold" textAnchor="middle"
+                  fill="#1A1A1A" stroke="#FFFFFF" strokeWidth={3} paintOrder="stroke"
+                >
+                  {label}
+                </SvgText>
+              ) : null}
+            </React.Fragment>
           );
         })}
         {draftPoint ? (
