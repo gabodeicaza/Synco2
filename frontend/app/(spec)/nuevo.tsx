@@ -2,7 +2,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, ActivityIndicator, Pressable, Alert,
-  TextInput, KeyboardAvoidingView, Platform, Modal, Image, TouchableOpacity,
+  TextInput, KeyboardAvoidingView, Platform, Modal, Image, TouchableOpacity, FlatList,
 } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -14,11 +14,23 @@ import * as Sharing from 'expo-sharing';
 import * as FileSystem from 'expo-file-system/legacy';
 import { api, Project, LocationNode, LocationNodeTree, Report, ReportTemplate } from '@/src/api';
 import { colors, radius, shadow, spacing, areaTone } from '@/src/theme';
+import { storage } from '@/src/utils/storage';
 import { useAuth } from '@/src/auth-context';
 import { dayjs, CDMX_TZ } from '@/src/utils/tz';
 import { shareWithAutoRecover } from '@/src/utils/share';
 import { buildReportShareText } from '@/src/utils/reportText';
 import { PhotoAnnotator } from '@/src/components/PhotoAnnotator';
+
+// Persistence Keys
+const CATALOG_PERSONAL_KEY = 'syncsite_catalog_personal';
+const CATALOG_EQUIPO_KEY = 'syncsite_catalog_equipo';
+const MAX_CATALOG_SIZE = 50;
+
+interface DynItem {
+  id: string;
+  desc: any;
+  qty: number;
+}
 
 export default function NewReportScreen() {
   const insets = useSafeAreaInsets();
@@ -64,6 +76,8 @@ export default function NewReportScreen() {
   const [incidencias, setIncidencias] = useState('');
   const [avance, setAvance] = useState('');
   const [contratista, setContratista] = useState('');
+  const [personal, setPersonal] = useState<DynItem[]>([]);
+  const [equipo, setEquipo] = useState<DynItem[]>([]);
   const [images, setImages] = useState<string[]>([]);
   const [captions, setCaptions] = useState<string[]>(['', '']);
   const [annotatorIdx, setAnnotatorIdx] = useState<number | null>(null);
@@ -94,6 +108,10 @@ export default function NewReportScreen() {
     setDynamicData((prev) => ({ ...prev, [key]: value }));
   }, []);
 
+  // --- CATALOGS ---
+  const [catalogPersonal, setCatalogPersonal] = useState<string[]>([]);
+  const [catalogEquipo, setCatalogEquipo] = useState<any[]>([]);
+
   useEffect(() => {
     (async () => {
       try {
@@ -123,6 +141,11 @@ export default function NewReportScreen() {
             findAndSetLeaf(t || [], params.node_id);
           }
         }
+
+        const cp = await storage.getItem<string>(CATALOG_PERSONAL_KEY, '[]');
+        const ce = await storage.getItem<string>(CATALOG_EQUIPO_KEY, '[]');
+        try { setCatalogPersonal(JSON.parse(cp || '[]')); } catch { setCatalogPersonal([]); }
+        try { setCatalogEquipo(JSON.parse(ce || '[]')); } catch { setCatalogEquipo([]); }
 
         try {
           const tpls = await api.getReportTemplates();
@@ -181,6 +204,8 @@ export default function NewReportScreen() {
     setObservaciones('');
     setIncidencias('');
     setAvance('');
+    setPersonal([]);
+    setEquipo([]);
     setImages([]);
     setCaptions(['', '']);
     setPath([]);
@@ -188,6 +213,12 @@ export default function NewReportScreen() {
     setSuccessReport(null);
     setSelectedTemplateId('');
     setDynamicData({});
+  };
+
+  const addItem = (type: 'personal' | 'equipo') => {
+    const newItem: DynItem = { id: Math.random().toString(36).substring(7), desc: '', qty: 1 };
+    if (type === 'personal') setPersonal([...personal, newItem]);
+    else setEquipo([...equipo, newItem]);
   };
 
   const currentOptions = useMemo(() => {
@@ -202,6 +233,35 @@ export default function NewReportScreen() {
     const diff = Math.abs(u - p);
     return `${diff.toFixed(2)}${unidad}`;
   }, [primeraLectura, ultimaLectura, unidad]);
+
+  const effectiveCatalogPersonal = useMemo(() => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    const source = [...(project?.categorias_personal || []), ...catalogPersonal];
+    for (const s of source) {
+      if (!s) continue;
+      const k = s.toLowerCase().trim();
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push(s.trim());
+    }
+    return out;
+  }, [project, catalogPersonal]);
+
+  const effectiveCatalogEquipo = useMemo(() => {
+    const seen = new Set<string>();
+    const out: any[] = [];
+    const source = [...(project?.categorias_equipo || []), ...catalogEquipo];
+    for (const it of source) {
+      const item = typeof it === 'string' ? { nombre: it } : it;
+      if (!item || !item.nombre) continue;
+      const ukey = `${item.nombre}`.toLowerCase();
+      if (seen.has(ukey)) continue;
+      seen.add(ukey);
+      out.push(item);
+    }
+    return out;
+  }, [project, catalogEquipo]);
 
   async function onSave() {
     if (saving) return;
@@ -249,6 +309,8 @@ export default function NewReportScreen() {
         incidencias: incidencias.trim(),
         avance: registrarLecturas ? (avanceCalculado || '0').toString() : '0',
         contratista: project?.constructora || '',
+        personnel: personal.filter(p => p.desc).map(p => `${p.qty} ${typeof p.desc === 'string' ? p.desc : p.desc.nombre}`),
+        equipment: equipo.filter(e => e.desc).map(e => `${e.qty} ${typeof e.desc === 'string' ? e.desc : e.desc.nombre}`),
         images,
         photo_captions: captions,
         measurement_value: {},
@@ -263,6 +325,12 @@ export default function NewReportScreen() {
       // envio fue real; en modo encolado (offline) lo derivamos del `path`
       // local para que `buildReportShareText` funcione igual en los dos casos.
       setSuccessReport({ ...res, node_path_names: path.map((n) => n.name) });
+
+      // Save catalogs
+      const nextP = Array.from(new Set([...personal.map(p => p.desc).filter(Boolean), ...catalogPersonal])).slice(0, MAX_CATALOG_SIZE);
+      await storage.setItem(CATALOG_PERSONAL_KEY, JSON.stringify(nextP));
+      const nextE = [...equipo.map(e => e.desc).filter(it => it && (typeof it === 'string' ? it : it.nombre)), ...catalogEquipo].slice(0, MAX_CATALOG_SIZE);
+      await storage.setItem(CATALOG_EQUIPO_KEY, JSON.stringify(nextE));
     } catch (e: any) {
       Alert.alert('Error', e?.message || 'No se pudo guardar.');
     } finally {
@@ -535,6 +603,14 @@ export default function NewReportScreen() {
           </View>
         )}
 
+        {/* PERSONAL & EQUIPO (Imagen 1, 4, 6) */}
+        {selectedLeaf && (
+          <>
+            <DynSectionRestored title="PERSONAL" items={personal} onAdd={() => addItem('personal')} onRemove={(id: string) => setPersonal(personal.filter(x => x.id !== id))} onUpdate={(id: string, p: any) => setPersonal(prev => prev.map(it => it.id === id ? { ...it, ...p } : it))} catalog={effectiveCatalogPersonal} />
+            <DynSectionRestored title="EQUIPO" items={equipo} onAdd={() => addItem('equipo')} onRemove={(id: string) => setEquipo(equipo.filter(x => x.id !== id))} onUpdate={(id: string, p: any) => setEquipo(prev => prev.map(it => it.id === id ? { ...it, ...p } : it))} catalog={effectiveCatalogEquipo} isEquipo />
+          </>
+        )}
+
         {/* FOTOS (Imagen 6) */}
         {selectedLeaf && (
           <View style={styles.card}>
@@ -701,6 +777,97 @@ function DynamicTemplateField({ field, value, onChange }: any) {
         placeholder={field.label}
         style={styles.input}
       />
+    </View>
+  );
+}
+
+function DynSectionRestored({ title, items, onAdd, onRemove, onUpdate, catalog, isEquipo }: any) {
+  return (
+    <View style={styles.card}>
+      <View style={styles.sectionHeader}>
+        <View>
+          <Text style={styles.cardLabel}>{title} ({items.length})</Text>
+          <Text style={styles.cardHelp}>{isEquipo ? 'Cantidad + descripcion (ej. 1 Excavadora).' : 'Cantidad + descripcion (ej. 3 Albañiles).'}</Text>
+        </View>
+        <Pressable onPress={onAdd} style={styles.addSmallBtn}><Text style={styles.addSmallTxt}>+ Agregar</Text></Pressable>
+      </View>
+      {items.length === 0 ? (
+        <View style={styles.emptyItems}>
+          <Text style={styles.emptyItemsTxt}>Aun no agregaste items. Toca "Agregar" para iniciar.</Text>
+        </View>
+      ) : (
+        <FlatList
+          data={items}
+          keyExtractor={(it) => it.id}
+          initialNumToRender={10}
+          maxToRenderPerBatch={10}
+          windowSize={5}
+          scrollEnabled={false} // Mantener scroll del contenedor padre
+          renderItem={({ item }) => (
+            <DynRow item={item} onRemove={() => onRemove(item.id)} onUpdate={(p: any) => onUpdate(item.id, p)} catalog={catalog} isEquipo={isEquipo} />
+          )}
+        />
+      )}
+    </View>
+  );
+}
+
+function DynRow({ item, onRemove, onUpdate, catalog, isEquipo }: any) {
+  const [modalOpen, setModalOpen] = useState(false);
+  const [search, setSearch] = useState('');
+  const filtered = catalog.filter((c: any) => (typeof c === 'string' ? c : c.nombre).toLowerCase().includes(search.toLowerCase()));
+  const display = useMemo(() => {
+    if (!item.desc) return '';
+    if (typeof item.desc === 'string') return item.desc;
+    return item.desc.nombre;
+  }, [item.desc]);
+
+  return (
+    <View style={styles.dynRow}>
+      <View style={styles.dynQtyWrap}>
+        <Pressable
+          onPress={() => onUpdate({ qty: Math.max(1, (item.qty || 1) - 1) })}
+          style={styles.qtyBtn}
+          hitSlop={8}
+        >
+          <Ionicons name="remove" size={16} color={colors.primary} />
+        </Pressable>
+        <Text style={styles.qtyValue}>{item.qty}</Text>
+        <Pressable
+          onPress={() => onUpdate({ qty: (item.qty || 1) + 1 })}
+          style={styles.qtyBtn}
+          hitSlop={8}
+        >
+          <Ionicons name="add" size={16} color={colors.primary} />
+        </Pressable>
+      </View>
+      <Pressable onPress={() => setModalOpen(true)} style={styles.descInput}>
+        <Text numberOfLines={2} style={[styles.descTxt, !item.desc && { color: colors.textMuted }]}>
+          {display || (isEquipo ? 'Buscar equipo...' : 'Buscar personal...')}
+        </Text>
+      </Pressable>
+      <Pressable onPress={onRemove} hitSlop={12} style={styles.dynDelBtn}>
+        <Ionicons name="trash-outline" size={18} color={colors.error} />
+      </Pressable>
+      <Modal visible={modalOpen} animationType="slide" transparent>
+        <View style={styles.modalBackdrop}><View style={styles.modalContent}>
+          <View style={styles.modalHeader}><Text style={styles.modalTitle}>Buscar {isEquipo ? 'Equipo' : 'Personal'}</Text><Pressable onPress={() => setModalOpen(false)}><Ionicons name="close" size={24} /></Pressable></View>
+          <TextInput value={search} onChangeText={setSearch} placeholder="Escribir para filtrar..." style={styles.input} autoFocus />
+          <ScrollView style={{ marginTop: 10, maxHeight: 400 }}>
+            {filtered.map((opt: any, idx: number) => (
+              <Pressable key={idx} onPress={() => { onUpdate({ desc: opt }); setModalOpen(false); }} style={styles.optBtn}>
+                <Ionicons name={isEquipo ? "construct-outline" : "person-outline"} size={16} color={colors.textMuted} />
+                <Text style={styles.optTxt}>{typeof opt === 'string' ? opt : opt.nombre}</Text>
+              </Pressable>
+            ))}
+            {search.trim().length > 0 && (
+              <Pressable onPress={() => { onUpdate({ desc: isEquipo ? { nombre: search } : search }); setModalOpen(false); }} style={styles.customBtn}>
+                <Text style={styles.customTxt}>+ Usar "{search}"</Text>
+              </Pressable>
+            )}
+          </ScrollView>
+        </View></View>
+      </Modal>
     </View>
   );
 }

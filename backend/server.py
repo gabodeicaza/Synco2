@@ -5848,144 +5848,6 @@ async def patch_report_workforce_entry(
     return updated
 
 
-# === Fuerza de Trabajo — captura independiente (Corte de Recursos) =========
-# Reemplaza a `report.personnel`/`equipment` como fuente de las tablas
-# FUERZA DE TRABAJO/MAQUINARIA Y EQUIPO del resumen PDF/PPTX (ver
-# `_workforce_raw_rows_by_subtramo`/`_workforce_consolidated_by_subtramo`/
-# `_recuento_general_by_nodo`, llamadas con `resource_logs_by_node` en vez de
-# `reports_by_node_workforce` dentro de `export_reports_pdf`/`_pptx`) — así
-# el conteo de personal/maquinaria no depende de que alguien suba un reporte
-# narrativo ese día; siempre está disponible como su propia pantalla,
-# SIN pasar por el sistema opcional de `MODULOS_KEYS` (ese es para
-# plantillas que el Coordinador prende/apaga; Fuerza de Trabajo no se apaga).
-# Un doc por (project_id, node_id, fecha CDMX): volver a capturar el mismo
-# nodo el mismo día SOBRESCRIBE (upsert), nunca duplica. Mismo criterio de
-# nodo que los reportes narrativos (solo hojas, ver `create_report`) — los
-# datos históricos de `report.personnel`/`equipment` de reportes viejos NO
-# se tocan ni se migran, solo dejan de leerse para armar estas tablas.
-class ResourceLogIn(BaseModel):
-    node_id: str
-    personnel: List[str] = Field(default_factory=list)
-    equipment: List[str] = Field(default_factory=list)
-
-
-class ResourceLogOut(BaseModel):
-    id: str
-    project_id: str
-    node_id: str
-    node_name: str
-    node_path_names: List[str] = Field(default_factory=list)
-    fecha_cdmx: str
-    personnel: List[str] = Field(default_factory=list)
-    equipment: List[str] = Field(default_factory=list)
-    captured_by: str
-    captured_by_name: str
-    created_at: datetime
-    updated_at: datetime
-
-
-@api.put("/projects/{pid}/resource-logs", response_model=ResourceLogOut)
-async def upsert_resource_log(pid: str, body: ResourceLogIn, user: dict = Depends(current_user)):
-    """Upsert del corte de personal/maquinaria de HOY (fecha CDMX) para un
-    nodo hoja. Mismo guard de rol/scope que `create_report` — ver ahí."""
-    if user["role"] not in (ROLE_ESPECIALISTA, ROLE_COORD, ROLE_SUB, ROLE_JEFE):
-        raise HTTPException(403, "Tu rol no puede capturar Fuerza de Trabajo")
-    await ensure_project_access(user, pid)
-    node = await db.location_nodes.find_one({"id": body.node_id, "project_id": pid})
-    if not node:
-        raise HTTPException(404, "Nodo no existe en este proyecto")
-    if not node.get("is_leaf"):
-        raise HTTPException(400, "Solo se puede capturar en nodos hoja")
-    if user["role"] == ROLE_ESPECIALISTA and (user.get("scope_node_ids") or []):
-        if body.node_id not in user["scope_node_ids"]:
-            raise HTTPException(403, "Nodo no está en tu scope autorizado")
-
-    path_names = await node_path_names(body.node_id)
-    now = datetime.now(timezone.utc)
-    fecha_cdmx = now.astimezone(MX_TZ).date().isoformat()
-    personnel = [p.strip()[:120] for p in body.personnel if p and p.strip()]
-    equipment = [e.strip()[:120] for e in body.equipment if e and e.strip()]
-
-    existing = await db.resource_logs.find_one({"project_id": pid, "node_id": body.node_id, "fecha_cdmx": fecha_cdmx})
-    if existing:
-        upd = {
-            "personnel": personnel, "equipment": equipment,
-            "node_name": node.get("name") or "", "node_path_names": path_names,
-            "captured_by": user["id"], "captured_by_name": user["name"],
-            "updated_at": now,
-        }
-        await db.resource_logs.update_one({"id": existing["id"]}, {"$set": upd})
-        doc = {**existing, **upd}
-    else:
-        doc = {
-            "id": str(uuid.uuid4()), "project_id": pid, "node_id": body.node_id,
-            "node_name": node.get("name") or "", "node_path_names": path_names,
-            "fecha_cdmx": fecha_cdmx, "personnel": personnel, "equipment": equipment,
-            "captured_by": user["id"], "captured_by_name": user["name"],
-            "created_at": now, "updated_at": now,
-        }
-        await db.resource_logs.insert_one(doc)
-    doc.pop("_id", None)
-    return doc
-
-
-@api.get("/projects/{pid}/resource-logs/{node_id}", response_model=Optional[ResourceLogOut])
-async def get_resource_log(pid: str, node_id: str, date: Optional[str] = None, user: dict = Depends(current_user)):
-    """Corte de un nodo en una fecha CDMX dada (default: hoy). `null` si no
-    se ha capturado nada ese día — usado para precargar el formulario."""
-    await ensure_project_access(user, pid)
-    fecha_cdmx = date or datetime.now(timezone.utc).astimezone(MX_TZ).date().isoformat()
-    doc = await db.resource_logs.find_one(
-        {"project_id": pid, "node_id": node_id, "fecha_cdmx": fecha_cdmx}, {"_id": 0},
-    )
-    return doc
-
-
-@api.get("/projects/{pid}/resource-logs/feed")
-async def feed_resource_logs(pid: str, period: str = "month", limit: int = 200, user: dict = Depends(current_user)):
-    """Lista de cortes del período (mismo `period` que `GET /feed` de
-    reportes) para la vista de Fuerza de Trabajo en la app — el cliente
-    sigue agrupando/filtrando por día/semana/mes, igual que ya hacía con
-    reportes (ver `WorkforceTracker.tsx`)."""
-    await ensure_project_access(user, pid)
-    start_dt, end_dt, _ = _period_range(period)
-    q: dict = {"project_id": pid, "created_at": {"$gte": start_dt, "$lte": end_dt}}
-    if user["role"] == ROLE_ESPECIALISTA and (user.get("scope_node_ids") or []):
-        q["node_id"] = {"$in": user["scope_node_ids"]}
-    docs = await db.resource_logs.find(q, {"_id": 0}).sort("created_at", -1).to_list(length=limit)
-    return {"logs": docs}
-
-
-class ResourceLogEntryPatch(BaseModel):
-    field: Literal["personnel", "equipment"]
-    index: int
-    value: Optional[str] = None  # vacío/None => elimina la entrada
-
-
-@api.patch("/resource-logs/{log_id}/entry", response_model=ResourceLogOut)
-async def patch_resource_log_entry(log_id: str, body: ResourceLogEntryPatch, user: dict = Depends(current_user)):
-    """Edita (o elimina) una entrada individual de un corte — mismo patrón
-    que `patch_report_workforce_entry`, reservado a Coordinador/Sub-Coordinador."""
-    if user.get("role") not in (ROLE_COORD, ROLE_SUB):
-        raise HTTPException(403, "Solo Coordinador General o Sub-Coordinador pueden editar Fuerza de Trabajo")
-    r = await db.resource_logs.find_one({"id": log_id})
-    if not r:
-        raise HTTPException(404, "Registro no existe")
-    entries = list(r.get(body.field) or [])
-    if body.index < 0 or body.index >= len(entries):
-        raise HTTPException(400, "Índice fuera de rango")
-    value = (body.value or "").strip()
-    if value:
-        entries[body.index] = value[:120]
-    else:
-        entries.pop(body.index)
-    await db.resource_logs.update_one(
-        {"id": log_id}, {"$set": {body.field: entries, "updated_at": datetime.now(timezone.utc)}},
-    )
-    updated = await db.resource_logs.find_one({"id": log_id}, {"_id": 0})
-    return updated
-
-
 # === USERS (admin) ==========================================================
 @api.get("/projects/{pid}/users")
 async def list_project_users(pid: str, user: dict = Depends(current_user)):
@@ -8980,16 +8842,10 @@ async def export_reports_pdf(
     nodes_by_subtramo = data.get("nodes_by_subtramo") or {}
     root_ids = data.get("root_ids") or []
     workforce_reports_by_node = data.get("reports_by_node_workforce") or reports_by_node
-    # Cortes de Fuerza de Trabajo (resource_logs) — fuente de personal/
-    # maquinaria de aquí en adelante (ver módulo "Fuerza de Trabajo —
-    # captura independiente" en server.py). `workforce_reports_by_node`
-    # (reportes narrativos) sigue usándose abajo SOLO para actividades/
-    # clima/portadillas, que no cambiaron.
-    resource_logs_by_node = data.get("resource_logs_by_node") or {}
     # Página de resumen por Subtramo (nodo a profundidad 1): actividades,
     # clima y filas de Fuerza de Trabajo/Maquinaria SIN agrupar (cada
     # captura individual es su propia fila — ver `_workforce_raw_rows_by_subtramo`).
-    resource_raw_rows_by_subtramo = _workforce_raw_rows_by_subtramo(resource_logs_by_node, nodes_by_id)
+    resource_raw_rows_by_subtramo = _workforce_raw_rows_by_subtramo(workforce_reports_by_node, nodes_by_id)
     actividades_by_subtramo = _actividades_by_subtramo(workforce_reports_by_node, nodes_by_id)
     # Numeración "ESTACIÓN N." del título de la página-resumen por Subtramo
     # (formato de referencia del cliente) — orden del árbol del proyecto
@@ -9011,7 +8867,7 @@ async def export_reports_pdf(
         proj, recuento_nivel, recuento_node_ids, recuento_sin_datos,
     )
     recuento_general_rows = _recuento_general_by_nodo(
-        resource_logs_by_node, nodes_by_id, root_ids,
+        workforce_reports_by_node, nodes_by_id, root_ids,
         nivel=recuento_nivel_eff, node_ids=recuento_node_ids_eff,
         incluir_sin_datos=recuento_incluir_sin_datos,
     )
@@ -11867,29 +11723,6 @@ async def _gather_export_data(
     for r in reports_workforce:
         reports_by_node_workforce.setdefault(r.get("node_id"), []).append(r)
 
-    # --- Cortes de Fuerza de Trabajo (resource_logs), para las tablas de
-    # personal/maquinaria del resumen — ver módulo "Fuerza de Trabajo —
-    # captura independiente" más arriba. Reemplaza a
-    # `reports_by_node_workforce` como fuente de `_workforce_raw_rows_by_subtramo`/
-    # `_workforce_consolidated_by_subtramo`/`_recuento_general_by_nodo`;
-    # `reports_by_node_workforce` sigue viva para actividades/clima/portadillas
-    # (esas siguen ligadas a reportes narrativos, no a este corte). Se
-    # envuelve cada doc con la misma forma que un reporte (`personnel`,
-    # `equipment`, `captured_by_name`, `created_at`, `node_path_names`) para
-    # poder reusar esas funciones de agregación sin tocarlas.
-    resource_logs_raw = await db.resource_logs.find(
-        {"project_id": pid, "created_at": {"$gte": start_dt, "$lte": end_dt}},
-    ).to_list(length=20000)
-    resource_logs_by_node: dict = {}
-    for rl in resource_logs_raw:
-        resource_logs_by_node.setdefault(rl.get("node_id"), []).append({
-            "personnel": rl.get("personnel") or [],
-            "equipment": rl.get("equipment") or [],
-            "captured_by_name": rl.get("captured_by_name") or "—",
-            "created_at": rl.get("created_at"),
-            "node_path_names": rl.get("node_path_names") or [],
-        })
-
     path_cache: dict = {}
     for nid in list(reports_by_node.keys()):
         names = await node_path_names(nid)
@@ -11950,7 +11783,6 @@ async def _gather_export_data(
         "nodes_by_subtramo": nodes_by_subtramo,
         "reports_by_node": reports_by_node,
         "reports_by_node_workforce": reports_by_node_workforce,
-        "resource_logs_by_node": resource_logs_by_node,
         "announcements_by_node": announcements_by_node,
         "path_cache": path_cache,
         "period_label": period_label,
@@ -12918,14 +12750,10 @@ async def export_reports_pptx(
     nodes_by_subtramo = data.get("nodes_by_subtramo") or {}
     root_ids = data.get("root_ids") or []
     workforce_reports_by_node = data.get("reports_by_node_workforce") or reports_by_node
-    # Cortes de Fuerza de Trabajo (resource_logs) — ver la misma nota en
-    # export_reports_pdf. `workforce_reports_by_node` sigue viva solo para
-    # actividades/clima/portadillas.
-    resource_logs_by_node = data.get("resource_logs_by_node") or {}
     # Página de resumen por Subtramo: mismo resumen consolidado (sin
     # desglose por día ni autor), actividades y clima usados en el PDF
     # ejecutivo — reemplaza el panel dual agrupado por Tramo (nodo raíz).
-    resource_consolidated_by_subtramo = _workforce_consolidated_by_subtramo(resource_logs_by_node, nodes_by_id)
+    resource_consolidated_by_subtramo = _workforce_consolidated_by_subtramo(workforce_reports_by_node, nodes_by_id)
     actividades_by_subtramo = _actividades_by_subtramo(workforce_reports_by_node, nodes_by_id)
     # Numeración "ESTACIÓN N." del título de la slide-resumen por Subtramo —
     # ver la misma nota en export_reports_pdf.
@@ -12943,7 +12771,7 @@ async def export_reports_pptx(
         proj, recuento_nivel, recuento_node_ids, recuento_sin_datos,
     )
     recuento_general_rows = _recuento_general_by_nodo(
-        resource_logs_by_node, nodes_by_id, root_ids,
+        workforce_reports_by_node, nodes_by_id, root_ids,
         nivel=recuento_nivel_eff, node_ids=recuento_node_ids_eff,
         incluir_sin_datos=recuento_incluir_sin_datos,
     )

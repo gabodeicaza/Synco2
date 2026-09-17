@@ -1,6 +1,5 @@
-// Fuerza de Trabajo — captura independiente de personal/maquinaria
-// (resource_logs), accesible para Especialista desde el menu de Inicio.
-// Ver WorkforceTracker.tsx.
+// Fuerza de Trabajo — vista de solo lectura (derivada de los reportes de
+// campo), accesible para Especialista desde el menu de Inicio.
 import React from 'react';
 import { ScrollView, StyleSheet, Text, View, Pressable } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';

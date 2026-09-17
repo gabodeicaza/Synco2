@@ -1,6 +1,7 @@
-// Fuerza de Trabajo — captura independiente de personal/maquinaria
-// (resource_logs, un corte por nodo hoja + día), separada de los reportes
-// de actividad — ver WorkforceTracker.tsx.
+// Fuerza de Trabajo — vista de solo lectura (derivada de los reportes de
+// campo). Reemplaza la captura manual anterior (steppers de Personal/
+// Maquinaria por Tramo): ya no hay nada que capturar aqui, todo sale de lo
+// que los Especialistas ya reportaron.
 import React from 'react';
 import { ScrollView, StyleSheet, Text, View, Pressable } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
