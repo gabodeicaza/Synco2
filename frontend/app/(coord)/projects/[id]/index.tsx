@@ -16,7 +16,6 @@ import { Button } from '@/src/components/Button';
 import { confirm } from '@/src/utils/confirm';
 import { ReportPeriod, periodToInformeType } from '@/src/components/PeriodSheet';
 import { downloadBlob } from '@/src/utils/downloadBlob';
-import { WorkforceTracker } from '@/src/components/WorkforceTracker';
 import { DailyGoalsPanel } from '@/src/components/DailyGoalsPanel';
 import { WeatherWidget } from '@/src/components/WeatherWidget';
 import { HistoryCalendarModal } from '@/src/components/HistoryCalendarModal';
@@ -1459,13 +1458,20 @@ export default function ProjectDetailScreen() {
                     onPress={() => router.push({ pathname: '/(coord)/projects/[id]/tabla-resumen' as any, params: { id: pid } })}
                   />
                 ) : null}
+                {/* Fuerza de Trabajo no es un módulo apagable (MODULOS_KEYS) —
+                    siempre disponible, con la misma presentación de tile que
+                    los módulos de arriba en vez de quedar siempre expandida
+                    en esta pantalla (ver fuerza-de-trabajo.tsx). */}
+                <ActionTile
+                  icon="people-outline"
+                  title="Fuerza de Trabajo"
+                  subtitle="Personal y maquinaria derivados de los reportes"
+                  onPress={() => router.push({ pathname: '/(coord)/projects/[id]/fuerza-de-trabajo' as any, params: { id: pid } })}
+                />
               </View>
 
               {/* Clima de la zona del proyecto */}
               <WeatherWidget projectId={pid} nodes={flatNodes} />
-
-              {/* Fuerza de Trabajo . Personal y Maquinaria derivados de los reportes */}
-              <WorkforceTracker projectId={pid} />
 
               {/* Metas Diarias */}
               <DailyGoalsPanel projectId={pid} />
