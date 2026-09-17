@@ -154,7 +154,7 @@ MEASUREMENT_TYPES = {"coord_latlon", "cadenamiento", "eje", "nivel"}
 MODULOS_KEYS = {
     "seguridad_higiene", "forestal_arbolado",
     "gestion_riesgos", "estudios_proyecto", "impacto_ambiental",
-    "tabla_resumen",
+    "tabla_resumen", "estado_tiempo",
 }
 MODULOS_DIARIOS = MODULOS_KEYS
 MODULOS_SEMANALES = MODULOS_KEYS
@@ -1025,6 +1025,8 @@ async def startup_event():
     await db.tabla_resumen_celdas.create_index(
         [("project_id", 1), ("actividad_id", 1), ("columna_id", 1)], unique=True,
     )
+    await db.weather_logs.create_index("id", unique=True)
+    await db.weather_logs.create_index([("project_id", 1), ("node_id", 1), ("fecha_cdmx", 1)], unique=True)
     await db.seguridad_reportes.create_index("id", unique=True)
     await db.seguridad_reportes.create_index([("project_id", 1), ("created_at", -1)])
     await db.seguridad_checklist.create_index("id", unique=True)
@@ -2195,6 +2197,86 @@ async def upsert_tabla_resumen_celda(pid: str, body: TablaResumenCeldaIn, user: 
     else:
         upd["id"] = str(uuid.uuid4())
         await db.tabla_resumen_celdas.insert_one(upd)
+    upd.pop("_id", None)
+    return upd
+
+
+# --- Módulo "Estado del Tiempo" ---------------------------------------------
+# Captura MANUAL de Temperatura/Viento/Precipitación/Calidad del aire por
+# nodo Estación + día (fecha CDMX) — hasta ahora esa sección del resumen
+# impreso (ver "ESTADO DEL TIEMPO" en `draw_subtramo_summary_page`/`_slide`)
+# se llenaba 100% automático vía Open-Meteo (`_fetch_weather_for_export`).
+# Esta captura tiene PRIORIDAD sobre esa consulta automática cuando existe
+# (ver el prefetch en `export_reports_pdf`/`export_reports_pptx`, más abajo);
+# si no hay captura de hoy para un nodo, se sigue usando el fetch automático
+# sin cambios — es la red de seguridad para estaciones que no usan este
+# módulo. Nombres de campo IDÉNTICOS a los que ya devuelve
+# `_fetch_weather_for_export` (`temperature_c`/`wind_kmh`/`precipitation_mm`/
+# `us_aqi`) para que el renderer no necesite saber de dónde salió el dato.
+# Solo aplica a nodos tipo "Estación" (ver `tipo_nodo` en LocationNode) que
+# ya estén habilitados en Acceso al Predio (`_acceso_predio_efectivo`) — un
+# Intertramo no tiene sección de clima en su formato impreso.
+class WeatherLogIn(BaseModel):
+    node_id: str
+    temperature_c: Optional[float] = None
+    wind_kmh: Optional[float] = None
+    precipitation_mm: Optional[float] = None
+    us_aqi: Optional[float] = None
+
+
+def _node_es_estacion_habilitada(node: dict) -> bool:
+    return bool(node) and _acceso_predio_efectivo(node) and (node.get("tipo_nodo") or "estacion") == "estacion"
+
+
+@api.get("/projects/{pid}/weather-logs")
+async def list_weather_logs(pid: str, date: Optional[str] = None, user: dict = Depends(current_user)):
+    """Capturas de una fecha CDMX dada (default: hoy) — una sola llamada
+    para que la pantalla de captura indexe por `node_id` en vez de pedir
+    nodo por nodo."""
+    await ensure_project_access(user, pid)
+    fecha_cdmx = date or datetime.now(timezone.utc).astimezone(MX_TZ).date().isoformat()
+    docs = await db.weather_logs.find({"project_id": pid, "fecha_cdmx": fecha_cdmx}, {"_id": 0}).to_list(length=500)
+    return {"logs": docs}
+
+
+@api.put("/projects/{pid}/weather-logs")
+async def upsert_weather_log(pid: str, body: WeatherLogIn, user: dict = Depends(current_user)):
+    """Captura ABIERTA a cualquier rol con acceso al proyecto (incluido
+    Especialista, presente en sitio) — mismo criterio que
+    `upsert_tabla_resumen_celda`. Un doc por (nodo, día CDMX): capturar de
+    nuevo el mismo día sobrescribe, nunca duplica."""
+    _assert_write_allowed(user)
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "estado_tiempo")
+    node = await db.location_nodes.find_one({"id": body.node_id, "project_id": pid})
+    if not node:
+        raise HTTPException(404, "Nodo no existe en este proyecto")
+    if not _node_es_estacion_habilitada(node):
+        raise HTTPException(400, "Este nodo no es una Estación habilitada en Acceso al Predio")
+
+    now = datetime.now(timezone.utc)
+    fecha_cdmx = now.astimezone(MX_TZ).date().isoformat()
+    key = {"project_id": pid, "node_id": body.node_id, "fecha_cdmx": fecha_cdmx}
+    upd = {
+        **key,
+        "node_name": node.get("name") or "",
+        "temperature_c": body.temperature_c,
+        "wind_kmh": body.wind_kmh,
+        "precipitation_mm": body.precipitation_mm,
+        "us_aqi": body.us_aqi,
+        "captured_by": user["id"],
+        "captured_by_name": user["name"],
+        "updated_at": now,
+    }
+    existing = await db.weather_logs.find_one(key)
+    if existing:
+        await db.weather_logs.update_one({"id": existing["id"]}, {"$set": upd})
+        upd["id"] = existing["id"]
+        upd["created_at"] = existing.get("created_at", now)
+    else:
+        upd["id"] = str(uuid.uuid4())
+        upd["created_at"] = now
+        await db.weather_logs.insert_one(dict(upd))
     upd.pop("_id", None)
     return upd
 
@@ -8894,12 +8976,28 @@ async def export_reports_pdf(
     # Generales, ver `_draw_actividades_por_area_section` más abajo) —
     # mismo prefetch, distinta forma (conserva ubicación por fila).
     actividades_tabla_por_area = await _actividades_tabla_por_area(pid, start_dt, end_dt, user)
-    # Clima: una consulta por cada combinación de coordenadas distinta que
-    # aparezca entre los subtramos con datos (cacheada para no repetir
-    # llamadas idénticas cuando varios subtramos comparten coords de raíz).
+    # Clima: la captura MANUAL de hoy (módulo "Estado del Tiempo", ver
+    # `upsert_weather_log`) tiene prioridad sobre la consulta automática a
+    # Open-Meteo — una sola query, no una por subtramo. Si un subtramo no
+    # tiene captura manual de hoy, cae al fetch automático de siempre (una
+    # consulta por cada combinación de coordenadas distinta, cacheada).
+    _fecha_cdmx_hoy = datetime.now(timezone.utc).astimezone(MX_TZ).date().isoformat()
+    _weather_logs_hoy = await db.weather_logs.find(
+        {"project_id": pid, "fecha_cdmx": _fecha_cdmx_hoy},
+    ).to_list(length=500)
+    _weather_logs_by_node = {wl["node_id"]: wl for wl in _weather_logs_hoy}
+
     weather_by_subtramo: dict = {}
     _weather_cache: dict = {}
     for _subtramo_id in resource_raw_rows_by_subtramo.keys():
+        _manual = _weather_logs_by_node.get(_subtramo_id)
+        _manual_fields = (
+            {k: _manual.get(k) for k in ("temperature_c", "wind_kmh", "precipitation_mm", "us_aqi")}
+            if _manual else None
+        )
+        if _manual_fields and any(v is not None for v in _manual_fields.values()):
+            weather_by_subtramo[_subtramo_id] = _manual_fields
+            continue
         _lat, _lon = _weather_coords_for_subtramo(_subtramo_id, nodes_by_id, workforce_reports_by_node)
         _cache_key = (_lat, _lon)
         if _cache_key not in _weather_cache:
@@ -12791,9 +12889,25 @@ async def export_reports_pptx(
     # Tabla consolidada "Actividades por Área" (ver la misma nota en
     # export_reports_pdf / `_draw_actividades_por_area_section`).
     actividades_tabla_por_area = await _actividades_tabla_por_area(pid, start_dt, end_dt, user)
+    # Clima: misma prioridad manual > automático que `export_reports_pdf` —
+    # ver módulo "Estado del Tiempo" más arriba.
+    _fecha_cdmx_hoy = datetime.now(timezone.utc).astimezone(MX_TZ).date().isoformat()
+    _weather_logs_hoy = await db.weather_logs.find(
+        {"project_id": pid, "fecha_cdmx": _fecha_cdmx_hoy},
+    ).to_list(length=500)
+    _weather_logs_by_node = {wl["node_id"]: wl for wl in _weather_logs_hoy}
+
     weather_by_subtramo: dict = {}
     _weather_cache: dict = {}
     for _subtramo_id in resource_consolidated_by_subtramo.keys():
+        _manual = _weather_logs_by_node.get(_subtramo_id)
+        _manual_fields = (
+            {k: _manual.get(k) for k in ("temperature_c", "wind_kmh", "precipitation_mm", "us_aqi")}
+            if _manual else None
+        )
+        if _manual_fields and any(v is not None for v in _manual_fields.values()):
+            weather_by_subtramo[_subtramo_id] = _manual_fields
+            continue
         _lat, _lon = _weather_coords_for_subtramo(_subtramo_id, nodes_by_id, workforce_reports_by_node)
         _cache_key = (_lat, _lon)
         if _cache_key not in _weather_cache:

@@ -24,6 +24,7 @@ export default function ProjectLayout() {
       <Stack.Screen name="estudios-proyecto" />
       <Stack.Screen name="impacto-ambiental" />
       <Stack.Screen name="tabla-resumen" />
+      <Stack.Screen name="estado-tiempo" />
       <Stack.Screen name="plano-avance" />
       <Stack.Screen name="presentacion" />
       <Stack.Screen name="presentacion-preview" />

@@ -81,6 +81,14 @@ export const MODULOS: ModuloDef[] = [
     screen: 'tabla-resumen',
     area: 'Ingeniería',
   },
+  {
+    key: 'estado_tiempo',
+    label: 'Estado del Tiempo',
+    subtitle: 'Temperatura, viento, precipitación y calidad del aire por estación',
+    icon: 'partly-sunny-outline',
+    screen: 'estado-tiempo',
+    area: 'Ingeniería',
+  },
 ];
 
 export const CATEGORIA_LABEL: Record<ModuloCategoria, string> = {

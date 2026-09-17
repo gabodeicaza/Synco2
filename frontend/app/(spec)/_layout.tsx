@@ -106,6 +106,7 @@ export default function SpecLayout() {
         <Tabs.Screen name="estudios-proyecto" options={{ href: null }} />
         <Tabs.Screen name="impacto-ambiental" options={{ href: null }} />
         <Tabs.Screen name="tabla-resumen" options={{ href: null }} />
+        <Tabs.Screen name="estado-tiempo" options={{ href: null }} />
         {/* Plano de Avance y Presentación — siempre visibles (como
             Dashboard EVM), no pasan por el toggle de módulos por proyecto. */}
         <Tabs.Screen name="plano-avance" options={{ href: null }} />

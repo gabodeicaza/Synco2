@@ -1458,6 +1458,14 @@ export default function ProjectDetailScreen() {
                     onPress={() => router.push({ pathname: '/(coord)/projects/[id]/tabla-resumen' as any, params: { id: pid } })}
                   />
                 ) : null}
+                {moduloActivo(project?.modulos, 'estado_tiempo') ? (
+                  <ActionTile
+                    icon="partly-sunny-outline"
+                    title="Estado del Tiempo"
+                    subtitle="Temperatura, viento, precipitación y calidad del aire por estación"
+                    onPress={() => router.push({ pathname: '/(coord)/projects/[id]/estado-tiempo' as any, params: { id: pid } })}
+                  />
+                ) : null}
                 {/* Fuerza de Trabajo no es un módulo apagable (MODULOS_KEYS) —
                     siempre disponible, con la misma presentación de tile que
                     los módulos de arriba en vez de quedar siempre expandida

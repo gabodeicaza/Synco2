@@ -298,6 +298,27 @@ export interface TablaResumenData {
   celdas: TablaResumenCelda[];
 }
 
+// Captura manual de la sección "ESTADO DEL TIEMPO" del resumen impreso por
+// Subtramo (ver draw_subtramo_summary_page/`_slide` en server.py) — un doc
+// por (nodo Estación, día CDMX). Nombres de campo idénticos a los que ya
+// devuelve la consulta automática a Open-Meteo, para que el renderer no
+// distinga de dónde salió el dato.
+export interface WeatherLog {
+  id: string;
+  project_id: string;
+  node_id: string;
+  node_name: string;
+  fecha_cdmx: string;
+  temperature_c: number | null;
+  wind_kmh: number | null;
+  precipitation_mm: number | null;
+  us_aqi: number | null;
+  captured_by: string;
+  captured_by_name: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface SeguridadReporte {
   id: string;
   project_id: string;
@@ -1905,6 +1926,17 @@ export const api = {
   upsertTablaResumenCelda: (pid: string, body: {
     actividad_id: string; columna_id: string; valor: number | null; no_aplica: boolean;
   }) => request<TablaResumenCelda>('PUT', `/projects/${pid}/tabla-resumen/celdas`, body),
+
+  // === Módulo piloto: Estado del Tiempo ===
+  listWeatherLogs: (pid: string, date?: string) =>
+    request<{ logs: WeatherLog[] }>('GET', `/projects/${pid}/weather-logs${date ? `?date=${date}` : ''}`),
+  upsertWeatherLog: (pid: string, body: {
+    node_id: string;
+    temperature_c: number | null;
+    wind_kmh: number | null;
+    precipitation_mm: number | null;
+    us_aqi: number | null;
+  }) => request<WeatherLog>('PUT', `/projects/${pid}/weather-logs`, body),
 
   // === Módulo piloto: Seguridad e Higiene ===
   listSeguridadReportes: (pid: string) => request<SeguridadReporte[]>('GET', `/projects/${pid}/seguridad-reportes`),
