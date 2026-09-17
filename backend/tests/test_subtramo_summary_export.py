@@ -8,10 +8,16 @@ el iterador cambia de subtramo.
 Construye:
   Tramo 1 (raíz, profundidad 0)
     └── Subtramo A (profundidad 1) — acceso_predio="Permitido"
-          ├── Poste A1 (hoja) → reporte: 2 Topografo, 1 Camion
-          └── Poste A2 (hoja) → reporte: 1 Cadenero, 1 Camioneta
+          ├── Poste A1 (hoja) → resource_log: 2 Topografo, 1 Camion
+          └── Poste A2 (hoja) → resource_log: 1 Cadenero, 1 Camioneta
     └── Subtramo B (profundidad 1) — acceso_predio="Bloqueado"
-          └── Poste B1 (hoja) → reporte: 3 Topografo, 2 Retroexcavadora
+          └── Poste B1 (hoja) → resource_log: 3 Topografo, 2 Retroexcavadora
+
+El personal/maquinaria se captura vía PUT /resource-logs (Fuerza de Trabajo
+como módulo independiente) — el reporte narrativo por poste ya NO lleva
+`personnel`/`equipment` (ver `patch_resource_log_entry`/`upsert_resource_log`
+en server.py); solo aporta `actividades` con severidad "importante" para
+pasar el gate de reportes del export.
 
 Totales esperados POR SUBTRAMO (no por Tramo):
   Subtramo A: personal = 3 (2 Topografo + 1 Cadenero), maquinaria = 2
@@ -115,8 +121,8 @@ def main() -> int:
         assert r.status_code == 200, r.text
         _log("Acceso al Predio / Situación Social persistidos en ambos subtramos")
 
-        # -------------------- 5. REPORTES (Fuerza de Trabajo / Maquinaria) --------------------
-        def _create_report(node_id, personnel, equipment, actividades):
+        # -------------------- 5. REPORTES (actividades narrativas, sin personal/equipo) --------------------
+        def _create_report(node_id, actividades):
             payload = {
                 "project_id": pid,
                 "node_id": node_id,
@@ -128,17 +134,31 @@ def main() -> int:
                 # "importante" para que el PDF no corte temprano con "No hay
                 # reportes para el período seleccionado".
                 "severidad": "importante",
-                "personnel": personnel,
-                "equipment": equipment,
             }
             rr = requests.post(f"{BASE}/reports", headers=headers, json=payload, timeout=15)
             assert rr.status_code == 200, f"Report create failed: {rr.status_code} {rr.text}"
             return rr.json()["id"]
 
-        _create_report(poste_a1_id, ["2 Topografo"], ["1 Camion"], "Trazo y nivelacion")
-        _create_report(poste_a2_id, ["1 Cadenero"], ["1 Camioneta"], "Limpieza de derecho de via")
-        _create_report(poste_b1_id, ["3 Topografo"], ["2 Retroexcavadora"], "Excavacion de zanja")
-        _log("3 reportes creados (2 en Subtramo A, 1 en Subtramo B)")
+        _create_report(poste_a1_id, "Trazo y nivelacion")
+        _create_report(poste_a2_id, "Limpieza de derecho de via")
+        _create_report(poste_b1_id, "Excavacion de zanja")
+        _log("3 reportes narrativos creados (2 en Subtramo A, 1 en Subtramo B)")
+
+        # -------------------- 5b. FUERZA DE TRABAJO (resource-logs, independiente de reportes) ------
+        def _set_resource_log(node_id, personnel, equipment):
+            rr = requests.put(
+                f"{BASE}/projects/{pid}/resource-logs",
+                headers=headers,
+                json={"node_id": node_id, "personnel": personnel, "equipment": equipment},
+                timeout=15,
+            )
+            assert rr.status_code == 200, f"resource-log upsert failed: {rr.status_code} {rr.text}"
+            return rr.json()["id"]
+
+        _set_resource_log(poste_a1_id, ["2 Topografo"], ["1 Camion"])
+        _set_resource_log(poste_a2_id, ["1 Cadenero"], ["1 Camioneta"])
+        _set_resource_log(poste_b1_id, ["3 Topografo"], ["2 Retroexcavadora"])
+        _log("3 cortes de Fuerza de Trabajo creados (2 en Subtramo A, 1 en Subtramo B)")
 
         # -------------------- 6. EXPORTAR PDF --------------------
         _log("Exportando PDF (period=today)…")

@@ -15,10 +15,14 @@ Construye:
           situacion_social="Sin problemática social."
           ├── Poste C1 (hoja, ubicacion="Yobain")
           │     estatus_pilas="en_proceso", estatus_cabezal="concluido"
-          │     → reporte: 2 Topografo, 1 Camion
+          │     → resource_log: 2 Topografo, 1 Camion
           └── Poste C2 (hoja, ubicacion="Peto")
                 estatus_fuste="sin_iniciar", estatus_poste="concluido"
-                → reporte: 1 Cadenero, 1 Camioneta
+                → resource_log: 1 Cadenero, 1 Camioneta
+
+El personal/maquinaria se captura vía PUT /resource-logs (Fuerza de Trabajo
+como módulo independiente) — el reporte narrativo por poste ya NO lleva
+`personnel`/`equipment`.
 
 USO:
   python -m pytest backend/tests/test_intertramo_summary_export.py -s -v
@@ -115,24 +119,37 @@ def main() -> int:
         assert r.status_code == 200, r.text
         _log("tipo_nodo / situación social / ubicación / estatus persistidos")
 
-        # -------------------- Reportes (Fuerza de Trabajo / Maquinaria) --------------------
-        def _create_report(node_id, personnel, equipment, actividades):
+        # -------------------- Reportes narrativos (actividades, sin personal/equipo) --------------------
+        def _create_report(node_id, actividades):
             payload = {
                 "project_id": pid,
                 "node_id": node_id,
                 "measurement_value": {"cadenamiento": "0+000"},
                 "actividades": actividades,
                 "severidad": "importante",
-                "personnel": personnel,
-                "equipment": equipment,
             }
             rr = requests.post(f"{BASE}/reports", headers=headers, json=payload, timeout=15)
             assert rr.status_code == 200, f"Report create failed: {rr.status_code} {rr.text}"
             return rr.json()["id"]
 
-        _create_report(poste_c1_id, ["2 Topografo"], ["1 Camion"], "Armado de acero estructural")
-        _create_report(poste_c2_id, ["1 Cadenero"], ["1 Camioneta"], "Descabece de pilas")
-        _log("2 reportes creados (uno por Poste)")
+        _create_report(poste_c1_id, "Armado de acero estructural")
+        _create_report(poste_c2_id, "Descabece de pilas")
+        _log("2 reportes narrativos creados (uno por Poste)")
+
+        # -------------------- Fuerza de Trabajo (resource-logs) --------------------
+        def _set_resource_log(node_id, personnel, equipment):
+            rr = requests.put(
+                f"{BASE}/projects/{pid}/resource-logs",
+                headers=headers,
+                json={"node_id": node_id, "personnel": personnel, "equipment": equipment},
+                timeout=15,
+            )
+            assert rr.status_code == 200, f"resource-log upsert failed: {rr.status_code} {rr.text}"
+            return rr.json()["id"]
+
+        _set_resource_log(poste_c1_id, ["2 Topografo"], ["1 Camion"])
+        _set_resource_log(poste_c2_id, ["1 Cadenero"], ["1 Camioneta"])
+        _log("2 cortes de Fuerza de Trabajo creados (uno por Poste)")
 
         # -------------------- Exportar PDF --------------------
         _log("Exportando PDF (period=today)…")

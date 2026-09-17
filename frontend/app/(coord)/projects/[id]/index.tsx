@@ -1464,7 +1464,7 @@ export default function ProjectDetailScreen() {
               {/* Clima de la zona del proyecto */}
               <WeatherWidget projectId={pid} nodes={flatNodes} />
 
-              {/* Fuerza de Trabajo . Personal y Maquinaria derivados de los reportes */}
+              {/* Fuerza de Trabajo . captura independiente de personal/maquinaria (resource_logs) */}
               <WorkforceTracker projectId={pid} />
 
               {/* Metas Diarias */}

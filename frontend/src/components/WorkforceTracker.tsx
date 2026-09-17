@@ -1,22 +1,27 @@
-// Fuerza de Trabajo — tabla derivada 100% de los reportes de campo
-// (personnel/equipment ya capturados en cada reporte). Sin captura manual:
-// 3 columnas (Autor | Ubicacion | Personal o Maquinaria).
+// Fuerza de Trabajo — captura independiente de los reportes de actividad
+// (ver "Fuerza de Trabajo — captura independiente" en server.py). Antes esta
+// pantalla era SOLO LECTURA, derivada de `report.personnel`/`equipment`; si
+// nadie subía un reporte narrativo ese día, la tabla quedaba vacía. Ahora
+// tiene su propio flujo de captura (nodo hoja + personal/maquinaria) vía
+// `resource_logs`, y la tabla se llena con eso, exista o no un reporte de
+// actividad — el export PDF/PPTX usa la misma fuente (ver
+// `_gather_export_data`/`resource_logs_by_node` en server.py).
 //
-// Cascada de agregacion (regla de negocio):
-//   Diario  -> base absoluta (reportes crudos de ese dia).
-//   Semanal -> resume EXCLUSIVAMENTE los reportes diarios de esa semana
+// Cascada de agregacion (regla de negocio), igual que antes:
+//   Diario  -> base absoluta (cortes crudos de ese dia).
+//   Semanal -> resume EXCLUSIVAMENTE los cortes diarios de esa semana
 //              (un grupo por dia, con subtotal por dia).
-//   Mensual -> resume EXCLUSIVAMENTE los reportes semanales de ese mes
+//   Mensual -> resume EXCLUSIVAMENTE los cortes semanales de ese mes
 //              (un grupo por semana natural, con subtotal por semana).
 //
 // Coordinador General y Sub-Coordinador pueden editar/eliminar cada entrada
-// (fila) directamente sobre el reporte original.
+// (fila) directamente sobre el corte original.
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator, Alert, Modal, Pressable, StyleSheet, Text, TextInput, View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { api, FeedItem } from '@/src/api';
+import { api, LocationNodeTree, Project, ResourceLog } from '@/src/api';
 import { colors, radius, spacing } from '@/src/theme';
 import { useAuth } from '@/src/auth-context';
 import { ROLE_COORD, ROLE_SUB } from '@/src/utils/roles';
@@ -24,6 +29,9 @@ import {
   dayjs, CDMX_TZ,
   getStartOfTodayCDMX, getStartOfNaturalWeekCDMX, getStartOfNaturalMonthCDMX,
 } from '@/src/utils/tz';
+import {
+  PersonalEquipoItem, PersonalEquipoSection, itemsToEntries, mergeCatalog, mergeCatalogEquipo,
+} from '@/src/components/PersonalEquipoEditor';
 
 type Period = 'day' | 'week' | 'month';
 type Field = 'personnel' | 'equipment';
@@ -40,13 +48,23 @@ function parseQtyDesc(s: string): { qty: number; desc: string } {
   return m ? { qty: parseInt(m[1], 10), desc: m[2].trim() } : { qty: 1, desc: (s || '').trim() };
 }
 
+// Inverso de `itemsToEntries` — reconstruye items editables a partir de las
+// entradas "qty desc" ya guardadas (para precargar el formulario cuando el
+// nodo elegido ya tiene un corte capturado hoy).
+function entriesToItems(entries: string[]): PersonalEquipoItem[] {
+  return (entries || []).map((s, i) => {
+    const { qty, desc } = parseQtyDesc(s);
+    return { id: `${i}-${Math.random().toString(36).slice(2, 7)}`, desc, qty };
+  });
+}
+
 function capitalize(s: string): string {
   return s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
 }
 
 interface EntryRow {
   id: string;
-  reportId: string;
+  logId: string;
   field: Field;
   index: number;
   autor: string;
@@ -79,21 +97,20 @@ function groupKeyLabel(created: dayjs.Dayjs, groupBy: GroupBy): { key: string; l
   return { key: created.format('YYYY-MM-DD'), label: capitalize(created.format('dddd DD MMM')) };
 }
 
-function buildTableData(reports: FeedItem[], field: Field, groupBy: GroupBy): TableData {
+function buildTableData(logs: ResourceLog[], field: Field, groupBy: GroupBy): TableData {
   const byGroup = new Map<string, { label: string; rows: EntryRow[]; subtotal: Map<string, number> }>();
-  for (const r of reports) {
-    const entries = ((r as any)[field] || []) as string[];
+  for (const r of logs) {
+    const entries = (r[field] || []) as string[];
     if (!entries.length) continue;
     const created = dayjs.utc(r.created_at).tz(CDMX_TZ);
     const { key, label } = groupKeyLabel(created, groupBy);
     if (!byGroup.has(key)) byGroup.set(key, { label, rows: [], subtotal: new Map() });
     const bucket = byGroup.get(key)!;
-    // Último nodo de la ruta = el nodo hijo (hoja) elegido al capturar, no el Tramo raíz.
     const path = r.node_path_names || [];
-    const ubicacion = path.length ? path[path.length - 1] : '—';
+    const ubicacion = path.length ? path[path.length - 1] : (r.node_name || '—');
     const autor = r.captured_by_name || 'Especialista';
     entries.forEach((texto, i) => {
-      bucket.rows.push({ id: `${r.id}-${field}-${i}`, reportId: r.id, field, index: i, autor, ubicacion, texto });
+      bucket.rows.push({ id: `${r.id}-${field}-${i}`, logId: r.id, field, index: i, autor, ubicacion, texto });
       const { qty, desc } = parseQtyDesc(texto);
       if (!desc) return;
       bucket.subtotal.set(desc, (bucket.subtotal.get(desc) || 0) + qty);
@@ -127,7 +144,7 @@ function WorkforceTable({
   deletingId: string | null;
 }) {
   if (data.groups.length === 0) {
-    return <Text style={styles.emptyTxt}>Ningún reporte capturado en este periodo.</Text>;
+    return <Text style={styles.emptyTxt}>Nada capturado en este periodo todavía.</Text>;
   }
   return (
     <View style={styles.table}>
@@ -236,24 +253,187 @@ function EditEntryModal({
   );
 }
 
+// === Modal de captura: elegir nodo hoja + personal/maquinaria de HOY =====
+function CaptureModal({
+  visible, tree, project, onClose, onSaved,
+}: {
+  visible: boolean;
+  tree: LocationNodeTree[];
+  project: Project | null;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [path, setPath] = useState<LocationNodeTree[]>([]);
+  const [node, setNode] = useState<LocationNodeTree | null>(null);
+  const [loadingExisting, setLoadingExisting] = useState(false);
+  const [personal, setPersonal] = useState<PersonalEquipoItem[]>([]);
+  const [equipo, setEquipo] = useState<PersonalEquipoItem[]>([]);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!visible) {
+      setPath([]);
+      setNode(null);
+      setPersonal([]);
+      setEquipo([]);
+    }
+  }, [visible]);
+
+  const currentOptions = useMemo(() => {
+    const list = path.length === 0 ? tree : (path[path.length - 1].children || []);
+    return [...list].sort((a, b) => (a.order || 0) - (b.order || 0));
+  }, [tree, path]);
+
+  const catalogPersonal = useMemo(() => mergeCatalog(project?.categorias_personal, []), [project]);
+  const catalogEquipo = useMemo(() => mergeCatalogEquipo(project?.categorias_equipo, []), [project]);
+
+  async function onSelect(n: LocationNodeTree) {
+    if (!n.is_leaf) {
+      setPath([...path, n]);
+      return;
+    }
+    setNode(n);
+    setLoadingExisting(true);
+    try {
+      const existing = project ? await api.getResourceLog(project.id, n.id) : null;
+      setPersonal(entriesToItems(existing?.personnel || []));
+      setEquipo(entriesToItems(existing?.equipment || []));
+    } catch (e: any) {
+      Alert.alert('Error', e?.message || 'No se pudo cargar el corte de hoy para este nodo');
+    } finally {
+      setLoadingExisting(false);
+    }
+  }
+
+  async function onSave() {
+    if (!node || !project || saving) return;
+    setSaving(true);
+    try {
+      await api.upsertResourceLog(project.id, {
+        node_id: node.id,
+        personnel: itemsToEntries(personal),
+        equipment: itemsToEntries(equipo),
+      });
+      onSaved();
+      onClose();
+    } catch (e: any) {
+      Alert.alert('No se pudo guardar', e?.message || 'Intentalo nuevamente.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
+      <View style={styles.captureFlex}>
+        <View style={styles.captureHeader}>
+          <Pressable onPress={onClose} hitSlop={10}><Ionicons name="close" size={22} color={colors.text} /></Pressable>
+          <Text style={styles.captureTitle}>Capturar Fuerza de Trabajo</Text>
+          <View style={{ width: 22 }} />
+        </View>
+
+        {!node ? (
+          <View style={{ flex: 1 }}>
+            {path.length > 0 && (
+              <View style={styles.breadcrumbRow}>
+                <Pressable onPress={() => setPath([])} hitSlop={6}>
+                  <Text style={styles.breadcrumbTxt}>Raíz</Text>
+                </Pressable>
+                {path.map((p, i) => (
+                  <React.Fragment key={p.id}>
+                    <Text style={styles.breadcrumbSep}>›</Text>
+                    <Pressable onPress={() => setPath(path.slice(0, i + 1))} hitSlop={6}>
+                      <Text style={styles.breadcrumbTxt}>{p.name}</Text>
+                    </Pressable>
+                  </React.Fragment>
+                ))}
+              </View>
+            )}
+            <View style={{ padding: spacing.md, gap: 4, flex: 1 }}>
+              {currentOptions.length === 0 ? (
+                <Text style={styles.empty}>Este nodo no tiene hijos.</Text>
+              ) : currentOptions.map((n) => (
+                <Pressable key={n.id} onPress={() => onSelect(n)} style={styles.nodeRow}>
+                  <Ionicons name={n.is_leaf ? 'location-outline' : 'git-network-outline'} size={16} color={colors.textMuted} />
+                  <Text style={styles.nodeRowTxt}>{n.name}</Text>
+                  <Ionicons name="chevron-forward" size={16} color={colors.textMuted} />
+                </Pressable>
+              ))}
+            </View>
+          </View>
+        ) : (
+          <View style={{ flex: 1 }}>
+            <View style={styles.selectedNodeBar}>
+              <Text style={styles.selectedNodeTxt} numberOfLines={1}>{node.name}</Text>
+              <Pressable onPress={() => setNode(null)} hitSlop={8}>
+                <Text style={styles.changeNodeTxt}>Cambiar</Text>
+              </Pressable>
+            </View>
+            {loadingExisting ? (
+              <ActivityIndicator color={colors.primary} style={{ marginTop: 40 }} />
+            ) : (
+              <View style={{ flex: 1, padding: spacing.md }}>
+                <PersonalEquipoSection
+                  title="PERSONAL"
+                  items={personal}
+                  onAdd={() => setPersonal([...personal, { id: Math.random().toString(36).slice(2, 9), desc: '', qty: 1 }])}
+                  onRemove={(id) => setPersonal(personal.filter((x) => x.id !== id))}
+                  onUpdate={(id, p) => setPersonal((prev) => prev.map((it) => (it.id === id ? { ...it, ...p } : it)))}
+                  catalog={catalogPersonal}
+                />
+                <PersonalEquipoSection
+                  title="EQUIPO"
+                  items={equipo}
+                  onAdd={() => setEquipo([...equipo, { id: Math.random().toString(36).slice(2, 9), desc: '', qty: 1 }])}
+                  onRemove={(id) => setEquipo(equipo.filter((x) => x.id !== id))}
+                  onUpdate={(id, p) => setEquipo((prev) => prev.map((it) => (it.id === id ? { ...it, ...p } : it)))}
+                  catalog={catalogEquipo}
+                  isEquipo
+                />
+                <Pressable onPress={onSave} disabled={saving} style={[styles.saveBigBtn, saving && { opacity: 0.7 }]}>
+                  {saving ? <ActivityIndicator color="#fff" /> : (
+                    <>
+                      <Ionicons name="save-outline" size={18} color="#fff" />
+                      <Text style={styles.saveBigBtnTxt}>Guardar corte de hoy</Text>
+                    </>
+                  )}
+                </Pressable>
+              </View>
+            )}
+          </View>
+        )}
+      </View>
+    </Modal>
+  );
+}
+
 export function WorkforceTracker({ projectId }: { projectId: string }) {
   const { user } = useAuth();
   const canEdit = user?.role === ROLE_COORD || user?.role === ROLE_SUB;
 
   const [period, setPeriod] = useState<Period>('day');
-  const [reports, setReports] = useState<FeedItem[]>([]);
+  const [logs, setLogs] = useState<ResourceLog[]>([]);
+  const [project, setProject] = useState<Project | null>(null);
+  const [tree, setTree] = useState<LocationNodeTree[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [editRow, setEditRow] = useState<EntryRow | null>(null);
   const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [captureOpen, setCaptureOpen] = useState(false);
 
   const load = useCallback(async () => {
     if (!projectId) { setLoading(false); return; }
     try {
       setError(null);
-      const res = await api.feed(projectId, 'month', 200);
-      setReports(res?.reports || []);
+      const [res, proj, t] = await Promise.all([
+        api.feedResourceLogs(projectId, 'month', 200),
+        api.getProject(projectId),
+        api.getTree(projectId),
+      ]);
+      setLogs(res?.logs || []);
+      setProject(proj);
+      setTree(t || []);
     } catch (e: any) {
       setError(e?.message || 'No se pudo cargar la fuerza de trabajo');
     } finally {
@@ -265,25 +445,25 @@ export function WorkforceTracker({ projectId }: { projectId: string }) {
 
   const groupBy: GroupBy = period === 'month' ? 'week' : 'day';
 
-  const filteredReports = useMemo(() => {
+  const filteredLogs = useMemo(() => {
     const start = period === 'day'
       ? getStartOfTodayCDMX()
       : period === 'week'
       ? getStartOfNaturalWeekCDMX()
       : getStartOfNaturalMonthCDMX();
-    return reports
+    return logs
       .filter((r) => r.created_at && dayjs.utc(r.created_at).tz(CDMX_TZ).isSameOrAfter(start))
       .sort((a, b) => (a.created_at < b.created_at ? -1 : 1));
-  }, [reports, period]);
+  }, [logs, period]);
 
-  const personalData = useMemo(() => buildTableData(filteredReports, 'personnel', groupBy), [filteredReports, groupBy]);
-  const maquinariaData = useMemo(() => buildTableData(filteredReports, 'equipment', groupBy), [filteredReports, groupBy]);
+  const personalData = useMemo(() => buildTableData(filteredLogs, 'personnel', groupBy), [filteredLogs, groupBy]);
+  const maquinariaData = useMemo(() => buildTableData(filteredLogs, 'equipment', groupBy), [filteredLogs, groupBy]);
 
   async function saveEdit(value: string) {
     if (!editRow) return;
     try {
       setSaving(true);
-      await api.updateWorkforceEntry(editRow.reportId, editRow.field, editRow.index, value.trim());
+      await api.updateResourceLogEntry(editRow.logId, editRow.field, editRow.index, value.trim());
       setEditRow(null);
       await load();
     } catch (e: any) {
@@ -297,7 +477,7 @@ export function WorkforceTracker({ projectId }: { projectId: string }) {
     if (!editRow) return;
     try {
       setSaving(true);
-      await api.updateWorkforceEntry(editRow.reportId, editRow.field, editRow.index, null);
+      await api.updateResourceLogEntry(editRow.logId, editRow.field, editRow.index, null);
       setEditRow(null);
       await load();
     } catch (e: any) {
@@ -312,7 +492,7 @@ export function WorkforceTracker({ projectId }: { projectId: string }) {
   async function deleteRow(row: EntryRow) {
     try {
       setDeletingId(row.id);
-      await api.updateWorkforceEntry(row.reportId, row.field, row.index, null);
+      await api.updateResourceLogEntry(row.logId, row.field, row.index, null);
       await load();
     } catch (e: any) {
       Alert.alert('No se pudo eliminar', e?.message || 'Intentalo nuevamente.');
@@ -340,8 +520,12 @@ export function WorkforceTracker({ projectId }: { projectId: string }) {
         </View>
         <View style={{ flex: 1 }}>
           <Text style={styles.title}>Fuerza de Trabajo</Text>
-          <Text style={styles.subtitle}>Personal y maquinaria reportados en campo</Text>
+          <Text style={styles.subtitle}>Personal y maquinaria del día — captura independiente de los reportes</Text>
         </View>
+        <Pressable onPress={() => setCaptureOpen(true)} style={styles.captureBtn}>
+          <Ionicons name="add" size={16} color="#fff" />
+          <Text style={styles.captureBtnTxt}>Capturar</Text>
+        </Pressable>
       </View>
 
       <View style={styles.chipRow}>
@@ -412,6 +596,14 @@ export function WorkforceTracker({ projectId }: { projectId: string }) {
           onClose={() => setEditRow(null)}
         />
       )}
+
+      <CaptureModal
+        visible={captureOpen}
+        tree={tree}
+        project={project}
+        onClose={() => setCaptureOpen(false)}
+        onSaved={load}
+      />
     </View>
   );
 }
@@ -426,6 +618,11 @@ const styles = StyleSheet.create({
   },
   title: { fontSize: 15, fontWeight: '800', color: colors.text },
   subtitle: { fontSize: 11, color: colors.textMuted, marginTop: 2, fontWeight: '600' },
+  captureBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: colors.primary,
+    paddingHorizontal: 12, paddingVertical: 8, borderRadius: radius.md,
+  },
+  captureBtnTxt: { color: '#fff', fontWeight: '800', fontSize: 12 },
 
   chipRow: { flexDirection: 'row', gap: 8 },
   chip: {
@@ -515,4 +712,37 @@ const styles = StyleSheet.create({
   modalBtnGhostTxt: { color: colors.text, fontWeight: '800', fontSize: 12 },
   modalBtnPrimary: { backgroundColor: colors.primary },
   modalBtnPrimaryTxt: { color: '#fff', fontWeight: '800', fontSize: 12 },
+
+  // --- Modal de captura ---
+  captureFlex: { flex: 1, backgroundColor: colors.bg },
+  captureHeader: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: spacing.md, paddingVertical: spacing.md,
+    borderBottomWidth: 1, borderBottomColor: colors.border, backgroundColor: colors.surface,
+  },
+  captureTitle: { fontSize: 16, fontWeight: '800', color: colors.text },
+  breadcrumbRow: {
+    flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 4,
+    paddingHorizontal: spacing.md, paddingTop: spacing.sm,
+  },
+  breadcrumbTxt: { fontSize: 12, fontWeight: '700', color: colors.primary },
+  breadcrumbSep: { fontSize: 12, color: colors.textMuted },
+  empty: { textAlign: 'center', color: colors.textMuted, marginTop: 40, fontStyle: 'italic' },
+  nodeRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 12,
+    paddingHorizontal: 8, borderBottomWidth: 1, borderBottomColor: colors.border,
+  },
+  nodeRowTxt: { flex: 1, fontSize: 14, fontWeight: '600', color: colors.text },
+  selectedNodeBar: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
+    backgroundColor: colors.primaryLight,
+  },
+  selectedNodeTxt: { flex: 1, fontSize: 14, fontWeight: '800', color: colors.primary },
+  changeNodeTxt: { fontSize: 12, fontWeight: '700', color: colors.primary, textDecorationLine: 'underline' },
+  saveBigBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    backgroundColor: colors.primary, borderRadius: radius.md, paddingVertical: 14, marginTop: spacing.sm,
+  },
+  saveBigBtnTxt: { color: '#fff', fontWeight: '800', fontSize: 14 },
 });

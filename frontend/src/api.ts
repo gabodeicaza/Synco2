@@ -730,6 +730,26 @@ export interface FeedItem {
   comment?: string | null;
 }
 
+// Fuerza de Trabajo como captura independiente (Corte de Recursos) — ver
+// `upsert_resource_log`/`get_resource_log`/`feed_resource_logs`/
+// `patch_resource_log_entry` en server.py. Reemplaza a `report.personnel`/
+// `equipment` como fuente de las tablas del resumen exportado; un doc por
+// (proyecto, nodo, fecha CDMX) — capturar de nuevo el mismo día sobrescribe.
+export interface ResourceLog {
+  id: string;
+  project_id: string;
+  node_id: string;
+  node_name: string;
+  node_path_names: string[];
+  fecha_cdmx: string;
+  personnel: string[];
+  equipment: string[];
+  captured_by: string;
+  captured_by_name: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface FeedResponse {
   range: string;
   skip: number;
@@ -2072,6 +2092,16 @@ export const api = {
     request<Report>('PATCH', `/reports/${rid}/severity`, { severidad }),
   updateWorkforceEntry: (rid: string, field: 'personnel' | 'equipment', index: number, value: string | null) =>
     request<Report>('PATCH', `/reports/${rid}/workforce-entry`, { field, index, value }),
+
+  // Fuerza de Trabajo — captura independiente (ver interface ResourceLog).
+  upsertResourceLog: (pid: string, body: { node_id: string; personnel: string[]; equipment: string[] }) =>
+    request<ResourceLog>('PUT', `/projects/${pid}/resource-logs`, body),
+  getResourceLog: (pid: string, nodeId: string, date?: string) =>
+    request<ResourceLog | null>('GET', `/projects/${pid}/resource-logs/${nodeId}${date ? `?date=${date}` : ''}`),
+  feedResourceLogs: (pid: string, period: 'day' | 'week' | 'month' = 'month', limit = 200) =>
+    request<{ logs: ResourceLog[] }>('GET', `/projects/${pid}/resource-logs/feed?period=${period}&limit=${limit}`),
+  updateResourceLogEntry: (logId: string, field: 'personnel' | 'equipment', index: number, value: string | null) =>
+    request<ResourceLog>('PATCH', `/resource-logs/${logId}/entry`, { field, index, value }),
   nodeHistory: (pid: string, nid: string) =>
     request<{
       node_id: string;
