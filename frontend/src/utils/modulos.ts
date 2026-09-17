@@ -90,6 +90,14 @@ export const MODULOS: ModuloDef[] = [
     screen: 'estado-tiempo',
     area: 'Ingeniería',
   },
+  {
+    key: 'control_obra',
+    label: 'Control de Obra',
+    subtitle: 'Avance de postes, cimentación y perforadoras',
+    icon: 'construct-outline',
+    screen: 'control-obra',
+    area: 'Ingeniería',
+  },
 ];
 
 export const CATEGORIA_LABEL: Record<ModuloCategoria, string> = {

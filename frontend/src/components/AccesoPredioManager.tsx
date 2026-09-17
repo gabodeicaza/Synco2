@@ -19,30 +19,36 @@ import { colors, radius, shadow, spacing } from '@/src/theme';
 
 type AccesoValue = 'Con acceso' | 'Sin acceso' | null;
 type TipoNodo = 'estacion' | 'intertramo';
-type PosteCampo = 'pilas' | 'cabezal' | 'fuste' | 'poste';
+export type PosteCampo = 'pilas' | 'cabezal' | 'fuste' | 'poste';
 
 // Columnas de la tabla "Actividad en Postes" del resumen impreso Intertramo
 // (ver draw_intertramo_summary_page/`_slide` en server.py) — cada hijo
 // DIRECTO de un nodo tipo "intertramo" es un "Poste" con 4 estatus propios.
-const POSTE_CAMPOS: { campo: PosteCampo; label: string }[] = [
+// Exportado para que ControlObraScreen.tsx (tablero "Postes por Intertramo")
+// no duplique esta lista.
+export const POSTE_CAMPOS: { campo: PosteCampo; label: string }[] = [
   { campo: 'pilas', label: 'Pilas' },
   { campo: 'cabezal', label: 'Cabezal' },
   { campo: 'fuste', label: 'Fuste' },
   { campo: 'poste', label: 'Poste' },
 ];
 
-const ESTATUS_OPTIONS: { value: PosteEstatus; label: string }[] = [
+// "cambio_trayectoria": 4to estado de excepción (módulo Control de Obra) —
+// el poste cambió de posición planeada y necesita revisión. Exportados
+// (antes locales) para que ControlObraScreen.tsx no duplique la paleta.
+export const ESTATUS_OPTIONS: { value: PosteEstatus; label: string }[] = [
   { value: 'sin_iniciar', label: 'Sin iniciar' },
   { value: 'en_proceso', label: 'En proceso' },
   { value: 'concluido', label: 'Concluido' },
+  { value: 'cambio_trayectoria', label: 'Cambio de trayectoria' },
 ];
 
-const ESTATUS_LABEL: Record<PosteEstatus, string> = {
-  sin_iniciar: 'Sin iniciar', en_proceso: 'En proceso', concluido: 'Concluido',
+export const ESTATUS_LABEL: Record<PosteEstatus, string> = {
+  sin_iniciar: 'Sin iniciar', en_proceso: 'En proceso', concluido: 'Concluido', cambio_trayectoria: 'Cambio de trayectoria',
 };
 
-const ESTATUS_COLOR: Record<PosteEstatus, string> = {
-  sin_iniciar: '#DC2626', en_proceso: '#D97706', concluido: '#16A34A',
+export const ESTATUS_COLOR: Record<PosteEstatus, string> = {
+  sin_iniciar: '#DC2626', en_proceso: '#D97706', concluido: '#16A34A', cambio_trayectoria: '#8F4889',
 };
 
 function nodePathNames(nodeId: string, byId: Record<string, LocationNode>): string[] {

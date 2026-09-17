@@ -319,6 +319,38 @@ export interface WeatherLog {
   updated_at: string;
 }
 
+// Módulo "Control de Obra" — tablero "Cimentación por Estación": elementos
+// (nombre libre, ej. "Zapata"/"Dado") capturados bajo una Estación existente
+// (node_id), con conteos Total/Acumulado/En proceso — el % colado
+// (acumulado_total/total) se calcula en el cliente, nunca se guarda.
+export interface CimentacionElemento {
+  id: string;
+  project_id: string;
+  node_id: string;
+  node_name: string;
+  elemento: string;
+  total: number;
+  acumulado_total: number;
+  en_proceso: number;
+  created_by: string;
+  created_by_name: string;
+  created_at: string;
+}
+
+// Módulo "Control de Obra" — tablero "Perforadoras": texto libre, sin
+// referencia a nodo (la ubicación es descriptiva, ej. "Cerca del poste C1").
+export interface Perforadora {
+  id: string;
+  project_id: string;
+  nombre: string;
+  serie: string;
+  ubicacion: string;
+  estatus: string;
+  created_by: string;
+  created_by_name: string;
+  created_at: string;
+}
+
 export interface SeguridadReporte {
   id: string;
   project_id: string;
@@ -592,7 +624,10 @@ export interface LocationNode {
   estatus_poste?: PosteEstatus | null;
 }
 
-export type PosteEstatus = 'sin_iniciar' | 'en_proceso' | 'concluido';
+// "cambio_trayectoria": 4to estado de excepción (módulo Control de Obra) —
+// el poste cambió de posición planeada y necesita revisión; cuenta como
+// "sin avance" en el % pero se resalta aparte como alerta.
+export type PosteEstatus = 'sin_iniciar' | 'en_proceso' | 'concluido' | 'cambio_trayectoria';
 
 export interface LocationNodeTree extends LocationNode {
   children: LocationNodeTree[];
@@ -1937,6 +1972,29 @@ export const api = {
     precipitation_mm: number | null;
     us_aqi: number | null;
   }) => request<WeatherLog>('PUT', `/projects/${pid}/weather-logs`, body),
+
+  // === Módulo piloto: Control de Obra ===
+  // "Postes por Intertramo" no tiene endpoints propios — reusa updateNode/
+  // los nodos ya existentes, salvo el ciclo de estatus (rol más abierto):
+  updatePosteEstatus: (nodeId: string, body: Partial<{
+    estatus_pilas: PosteEstatus; estatus_cabezal: PosteEstatus; estatus_fuste: PosteEstatus; estatus_poste: PosteEstatus;
+  }>) => request<LocationNode>('PATCH', `/nodes/${nodeId}/poste-estatus`, body),
+  listCimentacionElementos: (pid: string) =>
+    request<{ elementos: CimentacionElemento[] }>('GET', `/projects/${pid}/control-obra/cimentacion`),
+  createCimentacionElemento: (pid: string, body: { node_id: string; elemento: string; total?: number; acumulado_total?: number; en_proceso?: number }) =>
+    request<CimentacionElemento>('POST', `/projects/${pid}/control-obra/cimentacion`, body),
+  updateCimentacionElemento: (pid: string, id: string, body: Partial<{ elemento: string; total: number; acumulado_total: number; en_proceso: number }>) =>
+    request<CimentacionElemento>('PATCH', `/projects/${pid}/control-obra/cimentacion/${id}`, body),
+  deleteCimentacionElemento: (pid: string, id: string) =>
+    request<{ ok: boolean }>('DELETE', `/projects/${pid}/control-obra/cimentacion/${id}`),
+  listPerforadoras: (pid: string) =>
+    request<{ perforadoras: Perforadora[] }>('GET', `/projects/${pid}/control-obra/perforadoras`),
+  createPerforadora: (pid: string, body: { nombre: string; serie?: string; ubicacion?: string; estatus?: string }) =>
+    request<Perforadora>('POST', `/projects/${pid}/control-obra/perforadoras`, body),
+  updatePerforadora: (pid: string, id: string, body: Partial<{ nombre: string; serie: string; ubicacion: string; estatus: string }>) =>
+    request<Perforadora>('PATCH', `/projects/${pid}/control-obra/perforadoras/${id}`, body),
+  deletePerforadora: (pid: string, id: string) =>
+    request<{ ok: boolean }>('DELETE', `/projects/${pid}/control-obra/perforadoras/${id}`),
 
   // === Módulo piloto: Seguridad e Higiene ===
   listSeguridadReportes: (pid: string) => request<SeguridadReporte[]>('GET', `/projects/${pid}/seguridad-reportes`),

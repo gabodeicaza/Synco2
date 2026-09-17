@@ -1466,6 +1466,14 @@ export default function ProjectDetailScreen() {
                     onPress={() => router.push({ pathname: '/(coord)/projects/[id]/estado-tiempo' as any, params: { id: pid } })}
                   />
                 ) : null}
+                {moduloActivo(project?.modulos, 'control_obra') ? (
+                  <ActionTile
+                    icon="construct-outline"
+                    title="Control de Obra"
+                    subtitle="Avance de postes, cimentación y perforadoras"
+                    onPress={() => router.push({ pathname: '/(coord)/projects/[id]/control-obra' as any, params: { id: pid } })}
+                  />
+                ) : null}
                 {/* Fuerza de Trabajo no es un módulo apagable (MODULOS_KEYS) —
                     siempre disponible, con la misma presentación de tile que
                     los módulos de arriba en vez de quedar siempre expandida

@@ -154,7 +154,7 @@ MEASUREMENT_TYPES = {"coord_latlon", "cadenamiento", "eje", "nivel"}
 MODULOS_KEYS = {
     "seguridad_higiene", "forestal_arbolado",
     "gestion_riesgos", "estudios_proyecto", "impacto_ambiental",
-    "tabla_resumen", "estado_tiempo",
+    "tabla_resumen", "estado_tiempo", "control_obra",
 }
 MODULOS_DIARIOS = MODULOS_KEYS
 MODULOS_SEMANALES = MODULOS_KEYS
@@ -436,10 +436,13 @@ class LocationNodeIn(BaseModel):
     ubicacion: Optional[str] = None
     # Estatus por actividad de este Poste, columnas de la tabla Actividad en
     # Postes del Intertramo padre. None = celda en blanco (sin capturar).
-    estatus_pilas: Optional[Literal["sin_iniciar", "en_proceso", "concluido"]] = None
-    estatus_cabezal: Optional[Literal["sin_iniciar", "en_proceso", "concluido"]] = None
-    estatus_fuste: Optional[Literal["sin_iniciar", "en_proceso", "concluido"]] = None
-    estatus_poste: Optional[Literal["sin_iniciar", "en_proceso", "concluido"]] = None
+    # "cambio_trayectoria": 4to estado de EXCEPCIÓN (módulo "Control de
+    # Obra") — el poste cambió de posición planeada y necesita revisión;
+    # cuenta como "sin avance" en el % pero se resalta aparte como alerta.
+    estatus_pilas: Optional[Literal["sin_iniciar", "en_proceso", "concluido", "cambio_trayectoria"]] = None
+    estatus_cabezal: Optional[Literal["sin_iniciar", "en_proceso", "concluido", "cambio_trayectoria"]] = None
+    estatus_fuste: Optional[Literal["sin_iniciar", "en_proceso", "concluido", "cambio_trayectoria"]] = None
+    estatus_poste: Optional[Literal["sin_iniciar", "en_proceso", "concluido", "cambio_trayectoria"]] = None
 
 
 class LocationNodeOut(BaseModel):
@@ -1027,6 +1030,10 @@ async def startup_event():
     )
     await db.weather_logs.create_index("id", unique=True)
     await db.weather_logs.create_index([("project_id", 1), ("node_id", 1), ("fecha_cdmx", 1)], unique=True)
+    await db.cimentacion_elementos.create_index("id", unique=True)
+    await db.cimentacion_elementos.create_index([("project_id", 1), ("node_id", 1)])
+    await db.perforadoras.create_index("id", unique=True)
+    await db.perforadoras.create_index([("project_id", 1)])
     await db.seguridad_reportes.create_index("id", unique=True)
     await db.seguridad_reportes.create_index([("project_id", 1), ("created_at", -1)])
     await db.seguridad_checklist.create_index("id", unique=True)
@@ -2281,6 +2288,172 @@ async def upsert_weather_log(pid: str, body: WeatherLogIn, user: dict = Depends(
     return upd
 
 
+# === Módulo "Control de Obra" ===============================================
+# Réplica (mismo look & feel, mismos 3 tableros) de una herramienta externa
+# que el usuario ya usaba (panel HTML de Postes/Cimentación/Perforadoras).
+# El tablero "Postes por Intertramo" NO tiene colección propia — reusa los
+# nodos tipo "intertramo" ya existentes y sus 4 campos estatus_pilas/
+# cabezal/fuste/poste (ver `update_poste_estatus` arriba) — el usuario pidió
+# explícitamente conectarlo al árbol existente en vez de duplicar datos.
+# "Cimentación por Estación" y "Perforadoras" sí son conceptos nuevos, sin
+# equivalente hoy, por eso tienen colección propia.
+class CimentacionElementoIn(BaseModel):
+    node_id: str  # una Estación habilitada (_node_es_estacion_habilitada)
+    elemento: str  # nombre libre, ej. "Zapata", "Dado" — sin catálogo fijo
+    total: int = 0
+    acumulado_total: int = 0
+    en_proceso: int = 0
+
+
+class CimentacionElementoPatch(BaseModel):
+    elemento: Optional[str] = None
+    total: Optional[int] = None
+    acumulado_total: Optional[int] = None
+    en_proceso: Optional[int] = None
+
+
+@api.get("/projects/{pid}/control-obra/cimentacion")
+async def list_cimentacion_elementos(pid: str, user: dict = Depends(current_user)):
+    """Todos los elementos de cimentación del proyecto — el cliente agrupa
+    por node_id (una tarjeta por Estación)."""
+    await ensure_project_access(user, pid)
+    docs = await db.cimentacion_elementos.find({"project_id": pid}, {"_id": 0}).to_list(length=2000)
+    return {"elementos": docs}
+
+
+@api.post("/projects/{pid}/control-obra/cimentacion")
+async def create_cimentacion_elemento(pid: str, body: CimentacionElementoIn, user: dict = Depends(current_user)):
+    _assert_write_allowed(user)
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "control_obra")
+    node = await db.location_nodes.find_one({"id": body.node_id, "project_id": pid})
+    if not node:
+        raise HTTPException(404, "Nodo no existe en este proyecto")
+    if not _node_es_estacion_habilitada(node):
+        raise HTTPException(400, "Este nodo no es una Estación habilitada en Acceso al Predio")
+    elemento = body.elemento.strip()
+    if not elemento:
+        raise HTTPException(400, "Nombre del elemento requerido")
+    now = datetime.now(timezone.utc)
+    doc = {
+        "id": str(uuid.uuid4()), "project_id": pid, "node_id": body.node_id,
+        "node_name": node.get("name") or "", "elemento": elemento,
+        "total": body.total, "acumulado_total": body.acumulado_total, "en_proceso": body.en_proceso,
+        "created_by": user["id"], "created_by_name": user["name"], "created_at": now,
+    }
+    await db.cimentacion_elementos.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api.patch("/projects/{pid}/control-obra/cimentacion/{elemento_id}")
+async def update_cimentacion_elemento(
+    pid: str, elemento_id: str, body: CimentacionElementoPatch, user: dict = Depends(current_user),
+):
+    _assert_write_allowed(user)
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "control_obra")
+    doc = await db.cimentacion_elementos.find_one({"id": elemento_id, "project_id": pid})
+    if not doc:
+        raise HTTPException(404, "Elemento no existe")
+    upd: dict = {}
+    if body.elemento is not None:
+        v = body.elemento.strip()
+        if not v:
+            raise HTTPException(400, "Nombre del elemento requerido")
+        upd["elemento"] = v
+    for campo in ("total", "acumulado_total", "en_proceso"):
+        val = getattr(body, campo)
+        if val is not None:
+            upd[campo] = val
+    if upd:
+        await db.cimentacion_elementos.update_one({"id": elemento_id}, {"$set": upd})
+    out = await db.cimentacion_elementos.find_one({"id": elemento_id}, {"_id": 0})
+    return out
+
+
+@api.delete("/projects/{pid}/control-obra/cimentacion/{elemento_id}")
+async def delete_cimentacion_elemento(pid: str, elemento_id: str, user: dict = Depends(current_user)):
+    _assert_write_allowed(user)
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "control_obra")
+    await db.cimentacion_elementos.delete_one({"id": elemento_id, "project_id": pid})
+    return {"ok": True}
+
+
+class PerforadoraIn(BaseModel):
+    nombre: str
+    serie: str = ""
+    ubicacion: str = ""  # texto libre, ej. "Cerca del poste S64" — no es una referencia a nodo
+    estatus: str = ""  # texto libre, ej. "Activa", "Mantenimiento"
+
+
+class PerforadoraPatch(BaseModel):
+    nombre: Optional[str] = None
+    serie: Optional[str] = None
+    ubicacion: Optional[str] = None
+    estatus: Optional[str] = None
+
+
+@api.get("/projects/{pid}/control-obra/perforadoras")
+async def list_perforadoras(pid: str, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    docs = await db.perforadoras.find({"project_id": pid}, {"_id": 0}).to_list(length=500)
+    return {"perforadoras": docs}
+
+
+@api.post("/projects/{pid}/control-obra/perforadoras")
+async def create_perforadora(pid: str, body: PerforadoraIn, user: dict = Depends(current_user)):
+    _assert_write_allowed(user)
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "control_obra")
+    nombre = body.nombre.strip()
+    if not nombre:
+        raise HTTPException(400, "Nombre de la perforadora requerido")
+    now = datetime.now(timezone.utc)
+    doc = {
+        "id": str(uuid.uuid4()), "project_id": pid, "nombre": nombre,
+        "serie": body.serie.strip(), "ubicacion": body.ubicacion.strip(), "estatus": body.estatus.strip(),
+        "created_by": user["id"], "created_by_name": user["name"], "created_at": now,
+    }
+    await db.perforadoras.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api.patch("/projects/{pid}/control-obra/perforadoras/{perforadora_id}")
+async def update_perforadora(pid: str, perforadora_id: str, body: PerforadoraPatch, user: dict = Depends(current_user)):
+    _assert_write_allowed(user)
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "control_obra")
+    doc = await db.perforadoras.find_one({"id": perforadora_id, "project_id": pid})
+    if not doc:
+        raise HTTPException(404, "Perforadora no existe")
+    upd: dict = {}
+    if body.nombre is not None:
+        v = body.nombre.strip()
+        if not v:
+            raise HTTPException(400, "Nombre de la perforadora requerido")
+        upd["nombre"] = v
+    for campo in ("serie", "ubicacion", "estatus"):
+        val = getattr(body, campo)
+        if val is not None:
+            upd[campo] = val.strip()
+    if upd:
+        await db.perforadoras.update_one({"id": perforadora_id}, {"$set": upd})
+    out = await db.perforadoras.find_one({"id": perforadora_id}, {"_id": 0})
+    return out
+
+
+@api.delete("/projects/{pid}/control-obra/perforadoras/{perforadora_id}")
+async def delete_perforadora(pid: str, perforadora_id: str, user: dict = Depends(current_user)):
+    _assert_write_allowed(user)
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "control_obra")
+    await db.perforadoras.delete_one({"id": perforadora_id, "project_id": pid})
+    return {"ok": True}
+
+
 class SeguridadReporteIn(BaseModel):
     node_id: Optional[str] = None
     fecha: Optional[str] = None  # ISO date; default = hoy
@@ -2925,10 +3098,10 @@ class NodePatch(BaseModel):
     # (Estación vs Intertramo) y datos de la tabla Actividad en Postes.
     tipo_nodo: Optional[Literal["estacion", "intertramo"]] = None
     ubicacion: Optional[str] = None
-    estatus_pilas: Optional[Literal["sin_iniciar", "en_proceso", "concluido"]] = None
-    estatus_cabezal: Optional[Literal["sin_iniciar", "en_proceso", "concluido"]] = None
-    estatus_fuste: Optional[Literal["sin_iniciar", "en_proceso", "concluido"]] = None
-    estatus_poste: Optional[Literal["sin_iniciar", "en_proceso", "concluido"]] = None
+    estatus_pilas: Optional[Literal["sin_iniciar", "en_proceso", "concluido", "cambio_trayectoria"]] = None
+    estatus_cabezal: Optional[Literal["sin_iniciar", "en_proceso", "concluido", "cambio_trayectoria"]] = None
+    estatus_fuste: Optional[Literal["sin_iniciar", "en_proceso", "concluido", "cambio_trayectoria"]] = None
+    estatus_poste: Optional[Literal["sin_iniciar", "en_proceso", "concluido", "cambio_trayectoria"]] = None
 
 
 @api.patch("/nodes/{nid}")
@@ -2993,6 +3166,40 @@ async def update_node(nid: str, body: NodePatch, user: dict = Depends(require_ro
         upd["estatus_fuste"] = body.estatus_fuste
     if body.estatus_poste is not None:
         upd["estatus_poste"] = body.estatus_poste
+    if upd:
+        await db.location_nodes.update_one({"id": nid}, {"$set": upd})
+    out = await db.location_nodes.find_one({"id": nid})
+    out.pop("_id", None)
+    return out
+
+
+# --- Estatus de Poste (Pilas/Cabezal/Fuste/Poste) — captura de campo ------
+# `PATCH /nodes/{nid}` (arriba) exige Coordinador/Sub-Coordinador porque
+# toca TODO el nodo (nombre, tipo, estructura). El módulo "Control de Obra"
+# necesita que Especialista (presente en campo) también pueda ciclar el
+# estatus de un poste sin poder tocar nada más del nodo — por eso este
+# endpoint aparte, acotado a SOLO estos 4 campos, gateado por el módulo
+# (mismo criterio que `upsert_weather_log`/`upsert_resource_log`).
+class PosteEstatusPatch(BaseModel):
+    estatus_pilas: Optional[Literal["sin_iniciar", "en_proceso", "concluido", "cambio_trayectoria"]] = None
+    estatus_cabezal: Optional[Literal["sin_iniciar", "en_proceso", "concluido", "cambio_trayectoria"]] = None
+    estatus_fuste: Optional[Literal["sin_iniciar", "en_proceso", "concluido", "cambio_trayectoria"]] = None
+    estatus_poste: Optional[Literal["sin_iniciar", "en_proceso", "concluido", "cambio_trayectoria"]] = None
+
+
+@api.patch("/nodes/{nid}/poste-estatus")
+async def update_poste_estatus(nid: str, body: PosteEstatusPatch, user: dict = Depends(current_user)):
+    _assert_write_allowed(user)
+    node = await db.location_nodes.find_one({"id": nid})
+    if not node:
+        raise HTTPException(404, "Nodo no existe")
+    project = await ensure_project_access(user, node["project_id"])
+    _ensure_modulo_activo(project, "control_obra")
+    upd: dict = {}
+    for campo in ("estatus_pilas", "estatus_cabezal", "estatus_fuste", "estatus_poste"):
+        val = getattr(body, campo)
+        if val is not None:
+            upd[campo] = val
     if upd:
         await db.location_nodes.update_one({"id": nid}, {"$set": upd})
     out = await db.location_nodes.find_one({"id": nid})
@@ -10466,7 +10673,10 @@ async def export_reports_pdf(
             _draw_resource_table(right_x, "PERSONAL", personal_shown, personal_overflow, personal_total)
             _draw_resource_table(right_x + tbl_w + tbl_gutter, "MAQUINARIA Y EQUIPO", maquinaria_shown, maquinaria_overflow, maquinaria_total)
 
-        _POSTE_ESTATUS_LABEL = {"sin_iniciar": "Sin iniciar", "en_proceso": "En proceso", "concluido": "Concluido"}
+        _POSTE_ESTATUS_LABEL = {
+            "sin_iniciar": "Sin iniciar", "en_proceso": "En proceso", "concluido": "Concluido",
+            "cambio_trayectoria": "Cambio de trayectoria",
+        }
 
         def draw_intertramo_summary_page(intertramo_node: dict, personal_rows: list, maquinaria_rows: list,
                                           actividades: list, situacion_social: Optional[str],
@@ -13437,7 +13647,10 @@ async def export_reports_pptx(
             _draw_mini_table(right_x + tbl_w + tbl_gutter, y, tbl_w, "Maquinaria y Equipo", maquinaria_rows, "gear",
                               col1_header="MAQUINARIA Y EQUIPO")
 
-        _POSTE_ESTATUS_LABEL_PPTX = {"sin_iniciar": "Sin iniciar", "en_proceso": "En proceso", "concluido": "Concluido"}
+        _POSTE_ESTATUS_LABEL_PPTX = {
+            "sin_iniciar": "Sin iniciar", "en_proceso": "En proceso", "concluido": "Concluido",
+            "cambio_trayectoria": "Cambio de trayectoria",
+        }
 
         def draw_intertramo_summary_slide(intertramo_node: dict, personal_rows: list, maquinaria_rows: list,
                                            actividades: list, situacion_social: Optional[str],
