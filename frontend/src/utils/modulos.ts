@@ -10,12 +10,13 @@
 // por informe, si quiere ver ahí el recuento de actividades (pantalla de
 // configuración, ver app/(coord)/projects/[id]/modulos.tsx).
 //
-// `area` (disciplina: Ambiental, Seguridad...) es un eje independiente que
-// organiza el MENÚ hamburguesa (ver HeaderMenu.tsx). Es un tag fijo del
-// catálogo, NO la lista de Áreas/Disciplinas configurable por proyecto
+// `area` (disciplina: Ambiental, Seguridad...) es un tag fijo del catálogo,
+// NO la lista de Áreas/Disciplinas configurable por proyecto
 // (`/projects/{pid}/areas`, ej. "Topografía, Geotecnia..."): esa lista
 // varía libremente por proyecto y no garantiza tener "Ambiental" o
-// "Seguridad", así que amarrar el menú a ella sería frágil.
+// "Seguridad". Ya no se usa para agrupar el menú hamburguesa (ver
+// `modulosActivos` — una sola sección plana, sin encabezados por área);
+// se conserva por si alguna pantalla lo necesita para otra cosa.
 import type { Ionicons } from '@expo/vector-icons';
 import type { ModuloCategoria, ModulosConfig } from '@/src/api';
 
@@ -27,8 +28,8 @@ export type ModuloDef = {
   // Nombre de ruta bajo cada grupo de rol — igual en (coord)/projects/[id]/,
   // (subcoord)/ y (spec)/ (ver app/(subcoord)/<screen>.tsx).
   screen: string;
-  // Área temática fija de la plantilla (ver nota arriba). Determina el
-  // encabezado bajo el que aparece en el menú hamburguesa.
+  // Área temática fija de la plantilla (ver nota arriba) — informativa,
+  // ya no determina agrupación en ninguna pantalla.
   area: string;
 };
 
