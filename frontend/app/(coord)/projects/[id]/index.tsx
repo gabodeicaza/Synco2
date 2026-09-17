@@ -1451,6 +1451,14 @@ export default function ProjectDetailScreen() {
                     onPress={() => router.push({ pathname: '/(coord)/projects/[id]/impacto-ambiental' as any, params: { id: pid } })}
                   />
                 ) : null}
+                {moduloActivo(project?.modulos, 'tabla_resumen') ? (
+                  <ActionTile
+                    icon="grid-outline"
+                    title="Tabla Resumen"
+                    subtitle="Avance acumulado por estación e inter-tramos (%), armable desde cero"
+                    onPress={() => router.push({ pathname: '/(coord)/projects/[id]/tabla-resumen' as any, params: { id: pid } })}
+                  />
+                ) : null}
               </View>
 
               {/* Clima de la zona del proyecto */}

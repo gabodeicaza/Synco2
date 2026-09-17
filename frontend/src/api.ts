@@ -263,6 +263,41 @@ export interface ForestalSemanal {
   subtotal: { poda: number; trasplante: number; derribo: number; total: number };
 }
 
+export interface TablaResumenActividad {
+  id: string;
+  project_id: string;
+  nombre: string;
+  orden: number;
+  created_at: string;
+}
+
+export interface TablaResumenColumna {
+  id: string;
+  project_id: string;
+  tipo: 'estacion' | 'intertramo';
+  label: string;
+  orden: number;
+  created_at: string;
+}
+
+export interface TablaResumenCelda {
+  id: string;
+  project_id: string;
+  actividad_id: string;
+  columna_id: string;
+  valor: number | null;
+  no_aplica: boolean;
+  updated_by: string;
+  updated_by_name: string;
+  updated_at: string;
+}
+
+export interface TablaResumenData {
+  actividades: TablaResumenActividad[];
+  columnas: TablaResumenColumna[];
+  celdas: TablaResumenCelda[];
+}
+
 export interface SeguridadReporte {
   id: string;
   project_id: string;
@@ -1836,6 +1871,24 @@ export const api = {
   }>) => request<ForestalAutorizadoRow>('PATCH', `/projects/${pid}/forestal-autorizado/${rowId}`, body),
   deleteForestalAutorizado: (pid: string, rowId: string) =>
     request<{ ok: boolean }>('DELETE', `/projects/${pid}/forestal-autorizado/${rowId}`),
+
+  // === Módulo: Tabla Resumen (matriz de avance 100% configurable) ===
+  getTablaResumen: (pid: string) => request<TablaResumenData>('GET', `/projects/${pid}/tabla-resumen`),
+  createTablaResumenActividad: (pid: string, body: { nombre: string; orden?: number }) =>
+    request<TablaResumenActividad>('POST', `/projects/${pid}/tabla-resumen/actividades`, body),
+  updateTablaResumenActividad: (pid: string, aid: string, body: Partial<{ nombre: string; orden: number }>) =>
+    request<TablaResumenActividad>('PATCH', `/projects/${pid}/tabla-resumen/actividades/${aid}`, body),
+  deleteTablaResumenActividad: (pid: string, aid: string) =>
+    request<{ ok: boolean }>('DELETE', `/projects/${pid}/tabla-resumen/actividades/${aid}`),
+  createTablaResumenColumna: (pid: string, body: { tipo: 'estacion' | 'intertramo'; label: string; orden?: number }) =>
+    request<TablaResumenColumna>('POST', `/projects/${pid}/tabla-resumen/columnas`, body),
+  updateTablaResumenColumna: (pid: string, cid: string, body: Partial<{ tipo: 'estacion' | 'intertramo'; label: string; orden: number }>) =>
+    request<TablaResumenColumna>('PATCH', `/projects/${pid}/tabla-resumen/columnas/${cid}`, body),
+  deleteTablaResumenColumna: (pid: string, cid: string) =>
+    request<{ ok: boolean }>('DELETE', `/projects/${pid}/tabla-resumen/columnas/${cid}`),
+  upsertTablaResumenCelda: (pid: string, body: {
+    actividad_id: string; columna_id: string; valor: number | null; no_aplica: boolean;
+  }) => request<TablaResumenCelda>('PUT', `/projects/${pid}/tabla-resumen/celdas`, body),
 
   // === Módulo piloto: Seguridad e Higiene ===
   listSeguridadReportes: (pid: string) => request<SeguridadReporte[]>('GET', `/projects/${pid}/seguridad-reportes`),

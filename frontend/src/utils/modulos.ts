@@ -73,6 +73,14 @@ export const MODULOS: ModuloDef[] = [
     screen: 'impacto-ambiental',
     area: 'Ambiental',
   },
+  {
+    key: 'tabla_resumen',
+    label: 'Tabla Resumen',
+    subtitle: 'Avance acumulado por estación e inter-tramos (%), armable desde cero',
+    icon: 'grid-outline',
+    screen: 'tabla-resumen',
+    area: 'Ingeniería',
+  },
 ];
 
 export const CATEGORIA_LABEL: Record<ModuloCategoria, string> = {

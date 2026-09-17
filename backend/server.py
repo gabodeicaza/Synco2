@@ -154,6 +154,7 @@ MEASUREMENT_TYPES = {"coord_latlon", "cadenamiento", "eje", "nivel"}
 MODULOS_KEYS = {
     "seguridad_higiene", "forestal_arbolado",
     "gestion_riesgos", "estudios_proyecto", "impacto_ambiental",
+    "tabla_resumen",
 }
 MODULOS_DIARIOS = MODULOS_KEYS
 MODULOS_SEMANALES = MODULOS_KEYS
@@ -995,6 +996,14 @@ async def startup_event():
     await db.forestal_registros.create_index([("project_id", 1), ("created_at", -1)])
     await db.forestal_autorizado.create_index("id", unique=True)
     await db.forestal_autorizado.create_index([("project_id", 1), ("orden", 1)])
+    await db.tabla_resumen_actividades.create_index("id", unique=True)
+    await db.tabla_resumen_actividades.create_index([("project_id", 1), ("orden", 1)])
+    await db.tabla_resumen_columnas.create_index("id", unique=True)
+    await db.tabla_resumen_columnas.create_index([("project_id", 1), ("orden", 1)])
+    await db.tabla_resumen_celdas.create_index("id", unique=True)
+    await db.tabla_resumen_celdas.create_index(
+        [("project_id", 1), ("actividad_id", 1), ("columna_id", 1)], unique=True,
+    )
     await db.seguridad_reportes.create_index("id", unique=True)
     await db.seguridad_reportes.create_index([("project_id", 1), ("created_at", -1)])
     await db.seguridad_checklist.create_index("id", unique=True)
@@ -1985,6 +1994,188 @@ async def delete_forestal_autorizado(
     await ensure_project_access(user, pid)
     await db.forestal_autorizado.delete_one({"id": row_id, "project_id": pid})
     return {"ok": True}
+
+
+# --- Módulo "Tabla Resumen" ------------------------------------------------
+# Matriz de avance (%) completamente configurable por proyecto — filas
+# ("actividades") y columnas ("Estación" / "Inter-tramo") las arma el
+# Coordinador/Sub-Coord desde cero, sin ningún catálogo fijo (a diferencia
+# de Estudios, que sí tiene una lista fija de disciplinas). Cada celda
+# (actividad × columna) guarda un % (0-100) o se marca "No aplica"; en
+# blanco significa que esa combinación aún no se capturó. El "Total" por
+# fila (promedio de las celdas con valor) se calcula al vuelo en cliente/
+# export, nunca se guarda — evita que quede desactualizado.
+class TablaResumenActividadIn(BaseModel):
+    nombre: str
+    orden: int = 0
+
+
+class TablaResumenActividadPatch(BaseModel):
+    nombre: Optional[str] = None
+    orden: Optional[int] = None
+
+
+class TablaResumenColumnaIn(BaseModel):
+    tipo: Literal["estacion", "intertramo"]
+    label: str
+    orden: int = 0
+
+
+class TablaResumenColumnaPatch(BaseModel):
+    tipo: Optional[Literal["estacion", "intertramo"]] = None
+    label: Optional[str] = None
+    orden: Optional[int] = None
+
+
+class TablaResumenCeldaIn(BaseModel):
+    actividad_id: str
+    columna_id: str
+    valor: Optional[float] = None  # 0-100; None = sin capturar (celda en blanco)
+    no_aplica: bool = False
+
+
+@api.get("/projects/{pid}/tabla-resumen")
+async def get_tabla_resumen(pid: str, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    actividades = await db.tabla_resumen_actividades.find({"project_id": pid}).sort("orden", 1).to_list(length=500)
+    columnas = await db.tabla_resumen_columnas.find({"project_id": pid}).sort("orden", 1).to_list(length=200)
+    celdas = await db.tabla_resumen_celdas.find({"project_id": pid}).to_list(length=20000)
+    for coll in (actividades, columnas, celdas):
+        for it in coll:
+            it.pop("_id", None)
+    return {"actividades": actividades, "columnas": columnas, "celdas": celdas}
+
+
+@api.post("/projects/{pid}/tabla-resumen/actividades")
+async def create_tabla_resumen_actividad(
+    pid: str, body: TablaResumenActividadIn, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB)),
+):
+    await ensure_project_access(user, pid)
+    nombre = body.nombre.strip()
+    if not nombre:
+        raise HTTPException(400, "nombre es requerido")
+    doc = {
+        "id": str(uuid.uuid4()), "project_id": pid, "nombre": nombre, "orden": body.orden,
+        "created_at": datetime.now(timezone.utc),
+    }
+    await db.tabla_resumen_actividades.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api.patch("/projects/{pid}/tabla-resumen/actividades/{aid}")
+async def update_tabla_resumen_actividad(
+    pid: str, aid: str, body: TablaResumenActividadPatch, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB)),
+):
+    await ensure_project_access(user, pid)
+    row = await db.tabla_resumen_actividades.find_one({"id": aid, "project_id": pid})
+    if not row:
+        raise HTTPException(404, "Actividad no existe")
+    upd = {k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None}
+    if "nombre" in upd:
+        upd["nombre"] = upd["nombre"].strip()
+        if not upd["nombre"]:
+            raise HTTPException(400, "nombre no puede quedar vacío")
+    await db.tabla_resumen_actividades.update_one({"id": aid}, {"$set": upd})
+    row.update(upd)
+    row.pop("_id", None)
+    return row
+
+
+@api.delete("/projects/{pid}/tabla-resumen/actividades/{aid}")
+async def delete_tabla_resumen_actividad(
+    pid: str, aid: str, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB)),
+):
+    await ensure_project_access(user, pid)
+    await db.tabla_resumen_actividades.delete_one({"id": aid, "project_id": pid})
+    await db.tabla_resumen_celdas.delete_many({"project_id": pid, "actividad_id": aid})
+    return {"ok": True}
+
+
+@api.post("/projects/{pid}/tabla-resumen/columnas")
+async def create_tabla_resumen_columna(
+    pid: str, body: TablaResumenColumnaIn, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB)),
+):
+    await ensure_project_access(user, pid)
+    label = body.label.strip()
+    if not label:
+        raise HTTPException(400, "label es requerido")
+    doc = {
+        "id": str(uuid.uuid4()), "project_id": pid, "tipo": body.tipo, "label": label, "orden": body.orden,
+        "created_at": datetime.now(timezone.utc),
+    }
+    await db.tabla_resumen_columnas.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api.patch("/projects/{pid}/tabla-resumen/columnas/{cid}")
+async def update_tabla_resumen_columna(
+    pid: str, cid: str, body: TablaResumenColumnaPatch, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB)),
+):
+    await ensure_project_access(user, pid)
+    row = await db.tabla_resumen_columnas.find_one({"id": cid, "project_id": pid})
+    if not row:
+        raise HTTPException(404, "Columna no existe")
+    upd = {k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None}
+    if "label" in upd:
+        upd["label"] = upd["label"].strip()
+        if not upd["label"]:
+            raise HTTPException(400, "label no puede quedar vacío")
+    await db.tabla_resumen_columnas.update_one({"id": cid}, {"$set": upd})
+    row.update(upd)
+    row.pop("_id", None)
+    return row
+
+
+@api.delete("/projects/{pid}/tabla-resumen/columnas/{cid}")
+async def delete_tabla_resumen_columna(
+    pid: str, cid: str, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB)),
+):
+    await ensure_project_access(user, pid)
+    await db.tabla_resumen_columnas.delete_one({"id": cid, "project_id": pid})
+    await db.tabla_resumen_celdas.delete_many({"project_id": pid, "columna_id": cid})
+    return {"ok": True}
+
+
+@api.put("/projects/{pid}/tabla-resumen/celdas")
+async def upsert_tabla_resumen_celda(pid: str, body: TablaResumenCeldaIn, user: dict = Depends(current_user)):
+    """Captura ABIERTA a cualquier rol con acceso al proyecto (incluido
+    Especialista) — a diferencia de actividades/columnas (estructura de la
+    tabla, solo Coordinador/Sub-Coord), el VALOR de cada celda es dato de
+    avance como cualquier otro módulo de campo. Un doc por (actividad,
+    columna) — cada llamada actualiza ese valor en su lugar, mismo criterio
+    que `estudio_disciplina_avance`."""
+    _assert_write_allowed(user)
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "tabla_resumen")
+    if body.valor is not None and not (0 <= body.valor <= 100):
+        raise HTTPException(400, "valor debe estar entre 0 y 100")
+    actividad = await db.tabla_resumen_actividades.find_one({"id": body.actividad_id, "project_id": pid})
+    if not actividad:
+        raise HTTPException(404, "Actividad no existe en este proyecto")
+    columna = await db.tabla_resumen_columnas.find_one({"id": body.columna_id, "project_id": pid})
+    if not columna:
+        raise HTTPException(404, "Columna no existe en este proyecto")
+    key = {"project_id": pid, "actividad_id": body.actividad_id, "columna_id": body.columna_id}
+    now = datetime.now(timezone.utc)
+    existing = await db.tabla_resumen_celdas.find_one(key)
+    upd = {
+        **key,
+        "valor": body.valor,
+        "no_aplica": body.no_aplica,
+        "updated_by": user["id"],
+        "updated_by_name": user["name"],
+        "updated_at": now,
+    }
+    if existing:
+        await db.tabla_resumen_celdas.update_one({"id": existing["id"]}, {"$set": upd})
+        upd["id"] = existing["id"]
+    else:
+        upd["id"] = str(uuid.uuid4())
+        await db.tabla_resumen_celdas.insert_one(upd)
+    upd.pop("_id", None)
+    return upd
 
 
 class SeguridadReporteIn(BaseModel):
@@ -9131,12 +9322,108 @@ async def export_reports_pdf(
                 tbl.drawOn(c, left_x, y - th)
                 y -= th + 14
 
+            def _tr_cell_bg(v: dict) -> HexColor:
+                if v["no_aplica"]:
+                    return HexColor("#F1F5F9")
+                if v["valor"] is None:
+                    return WHITE
+                val = v["valor"]
+                if val <= 0:
+                    return SHEET_MAROON
+                if val >= 100:
+                    return HexColor("#A9D18E")
+                return HexColor("#BDD7EE")
+
+            def _tr_cell_label(v: dict) -> str:
+                if v["no_aplica"]:
+                    return "N/A"
+                if v["valor"] is None:
+                    return ""
+                val = v["valor"]
+                return f"{val:.0f}%" if float(val).is_integer() else f"{val:.2f}%"
+
+            def _draw_tabla_resumen_matriz_block(block: dict) -> None:
+                nonlocal y
+                columnas = block.get("columnas") or []
+                filas = block.get("filas") or []
+                if not columnas or not filas:
+                    _draw_empty("Sin datos capturados en la Tabla Resumen.")
+                    return
+                act_w = 4.2 * cm
+                total_w = 1.6 * cm
+                min_col_w = 1.35 * cm
+                avail = content_w - act_w - total_w
+                max_cols = max(1, int(avail / min_col_w))
+                chunks = [columnas[i:i + max_cols] for i in range(0, len(columnas), max_cols)]
+                head_style = ParagraphStyle(
+                    "trHead", fontName="Helvetica-Bold", fontSize=7.5, leading=9.5, textColor=TEXT, alignment=1,
+                )
+                act_style = ParagraphStyle("trAct", fontName="Helvetica-Bold", fontSize=8.5, leading=11, textColor=TEXT)
+                val_style = ParagraphStyle("trVal", fontName="Helvetica", fontSize=8, leading=10, textColor=TEXT, alignment=1)
+                val_style_white = ParagraphStyle(
+                    "trValW", fontName="Helvetica-Bold", fontSize=8, leading=10, textColor=WHITE, alignment=1,
+                )
+                col_offset = 0
+                for chunk_idx, chunk in enumerate(chunks):
+                    is_last = chunk_idx == len(chunks) - 1
+                    col_w = avail / len(chunk)
+                    headers = [Paragraph("Actividad", head_style)] + [
+                        Paragraph(_xml_escape(col["label"]), head_style) for col in chunk
+                    ]
+                    widths = [act_w] + [col_w] * len(chunk)
+                    if is_last:
+                        headers.append(Paragraph("Total", head_style))
+                        widths.append(total_w)
+                    data = [headers]
+                    bg_cmds = []
+                    for ridx, f in enumerate(filas):
+                        row_vals = f["valores"][col_offset:col_offset + len(chunk)]
+                        row = [Paragraph(_xml_escape(f["actividad"]), act_style)]
+                        for cidx, v in enumerate(row_vals):
+                            bg = _tr_cell_bg(v)
+                            style = val_style_white if bg == SHEET_MAROON else val_style
+                            row.append(Paragraph(_tr_cell_label(v), style))
+                            bg_cmds.append(("BACKGROUND", (cidx + 1, ridx + 1), (cidx + 1, ridx + 1), bg))
+                        if is_last:
+                            t = f.get("total")
+                            row.append(Paragraph(f"{t:.2f}%" if t is not None else "—", val_style))
+                        data.append(row)
+                    style = [
+                        ("BACKGROUND", (0, 0), (-1, 0), HexColor("#F1F5F9")),
+                        ("GRID", (0, 0), (-1, -1), 0.4, BORDER),
+                        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                        ("TOPPADDING", (0, 0), (-1, -1), 3),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                    ] + bg_cmds
+                    tbl = Table(data, colWidths=widths)
+                    tbl.setStyle(TableStyle(style))
+                    _ensure_space(2.2 * cm)
+                    tw, th = tbl.wrapOn(c, content_w, y - bottom_y)
+                    tbl.drawOn(c, left_x, y - th)
+                    y -= th + 8
+                    col_offset += len(chunk)
+
+                _ensure_space(1.0 * cm)
+                legend = [
+                    ("Concluido", HexColor("#A9D18E")), ("En proceso", HexColor("#BDD7EE")), ("Sin iniciar", SHEET_MAROON),
+                ]
+                lx = left_x
+                for label, colr in legend:
+                    c.setFillColor(colr)
+                    c.circle(lx + 4, y - 3.5, 4, fill=1, stroke=0)
+                    c.setFillColor(TEXT)
+                    c.setFont("Helvetica", 9)
+                    c.drawString(lx + 12, y - 7, label)
+                    lx += 12 + c.stringWidth(label, "Helvetica", 9) + 20
+                y -= 20
+
             _BLOCK_RENDERERS = {
                 "summary": _draw_summary_block,
                 "table": _draw_table_block,
                 "list": _draw_list_block,
                 "forestal_sheet": _draw_forestal_sheet_block,
                 "riesgos_mapa": _draw_riesgos_mapa_block,
+                "tabla_resumen_matriz": _draw_tabla_resumen_matriz_block,
                 "seguridad_indicadores": _draw_seguridad_indicadores_block,
                 "estudios_avances": _draw_estudios_avances_block,
             }
@@ -11155,7 +11442,10 @@ async def _gather_modulos_export_data(
     ya viene consistente en UTC aware desde cada endpoint de creación."""
     modulos = _sanitize_modulos(proj.get("modulos"))
     activos = modulos.get(categoria, {})
-    out: dict = {"forestal": None, "seguridad": None, "riesgos": None, "estudios": None, "ambiental": None}
+    out: dict = {
+        "forestal": None, "seguridad": None, "riesgos": None, "estudios": None, "ambiental": None,
+        "tabla_resumen": None,
+    }
     date_q = {"created_at": {"$gte": start_dt, "$lte": end_dt}}
     # Riesgos y Estudios son matrices mutables (el % de avance se actualiza
     # in situ, no se recrea la fila) — una fila cuenta para el período si se
@@ -11313,6 +11603,38 @@ async def _gather_modulos_export_data(
                         "empty_text": "Sin incumplimientos registrados en este período.",
                     },
                 ],
+            }
+
+    if activos.get("tabla_resumen"):
+        # Tabla 100% configurable por proyecto — a diferencia del resto de
+        # los módulos NO se filtra por período: es un estado vigente (como
+        # una hoja de cálculo), no un log de eventos capturados en el rango
+        # de fechas del reporte.
+        actividades = await db.tabla_resumen_actividades.find({"project_id": pid}).sort("orden", 1).to_list(length=500)
+        columnas = await db.tabla_resumen_columnas.find({"project_id": pid}).sort("orden", 1).to_list(length=200)
+        celdas = await db.tabla_resumen_celdas.find({"project_id": pid}).to_list(length=20000)
+        celda_map = {(c["actividad_id"], c["columna_id"]): c for c in celdas}
+        filas = []
+        for act in actividades:
+            valores = []
+            for col in columnas:
+                c = celda_map.get((act["id"], col["id"]))
+                valores.append({
+                    "valor": c["valor"] if c else None,
+                    "no_aplica": bool(c and c.get("no_aplica")),
+                })
+            nums = [v["valor"] for v in valores if v["valor"] is not None and not v["no_aplica"]]
+            total = round(sum(nums) / len(nums), 2) if nums else None
+            filas.append({"actividad": act["nombre"], "valores": valores, "total": total})
+        has_data = any(v["valor"] is not None or v["no_aplica"] for f in filas for v in f["valores"])
+        if columnas and filas and has_data:
+            out["tabla_resumen"] = {
+                "titulo": "TABLA RESUMEN",
+                "blocks": [{
+                    "type": "tabla_resumen_matriz",
+                    "columnas": [{"tipo": col["tipo"], "label": col["label"]} for col in columnas],
+                    "filas": filas,
+                }],
             }
 
     return out
@@ -11867,6 +12189,31 @@ async def export_reports_docx(
             if not any_item:
                 _mod_empty("Sin avances registrados en este período.")
 
+        def _mod_tabla_resumen_matriz_block(block: dict):
+            # Word no reproduce el formato exacto (colores/leyenda, fuera de
+            # alcance) — una sola tabla plana con todas las columnas.
+            columnas = block.get("columnas") or []
+            filas = block.get("filas") or []
+            if not columnas or not filas:
+                _mod_empty("Sin datos capturados en la Tabla Resumen.")
+                return
+            headers = ["Actividad"] + [col["label"] for col in columnas] + ["Total"]
+            rows = []
+            for f in filas:
+                row = [f["actividad"]]
+                for v in f["valores"]:
+                    if v["no_aplica"]:
+                        row.append("N/A")
+                    elif v["valor"] is None:
+                        row.append("")
+                    else:
+                        val = v["valor"]
+                        row.append(f"{val:.0f}%" if float(val).is_integer() else f"{val:.2f}%")
+                t = f.get("total")
+                row.append(f"{t:.2f}%" if t is not None else "—")
+                rows.append(row)
+            _mod_table(headers, rows)
+
         _MOD_BLOCK_RENDERERS = {
             "summary": _mod_summary_block,
             "table": _mod_table_block,
@@ -11875,6 +12222,7 @@ async def export_reports_docx(
             "riesgos_mapa": _mod_riesgos_mapa_block,
             "seguridad_indicadores": _mod_seguridad_indicadores_block,
             "estudios_avances": _mod_estudios_avances_block,
+            "tabla_resumen_matriz": _mod_tabla_resumen_matriz_block,
         }
 
         for _mod_data in modulos_data.values():
@@ -12921,6 +13269,88 @@ async def export_reports_pptx(
                              size=9.5, bold=True, color=WF_TEXT_RGB, align=PP_ALIGN.CENTER)
                 state["y"] = cy + Cm(0.3)
 
+            def _tr_cell_visual(v: dict):
+                if v["no_aplica"]:
+                    return (0xF1, 0xF5, 0xF9), "N/A", WF_MUTED_RGB
+                if v["valor"] is None:
+                    return WF_WHITE_RGB, "", WF_TEXT_RGB
+                val = v["valor"]
+                label = f"{val:.0f}%" if float(val).is_integer() else f"{val:.2f}%"
+                if val <= 0:
+                    return MAROON_RGB, label, WF_WHITE_RGB
+                if val >= 100:
+                    return (0xA9, 0xD1, 0x8E), label, WF_TEXT_RGB
+                return (0xBD, 0xD7, 0xEE), label, WF_TEXT_RGB
+
+            def _draw_tabla_resumen_matriz_block(titulo_continua: str, block: dict) -> None:
+                columnas = block.get("columnas") or []
+                filas = block.get("filas") or []
+                if not columnas or not filas:
+                    _draw_empty("Sin datos capturados en la Tabla Resumen.")
+                    return
+                act_w = Cm(4.2)
+                total_w = Cm(1.6)
+                min_col_w = Cm(1.35)
+                avail = content_w - act_w - total_w
+                max_cols = max(1, int(avail / min_col_w))
+                chunks = [columnas[i:i + max_cols] for i in range(0, len(columnas), max_cols)]
+                header_h = Cm(0.85)
+                row_h = Cm(0.75)
+                col_offset = 0
+                for chunk_idx, chunk in enumerate(chunks):
+                    is_last = chunk_idx == len(chunks) - 1
+                    col_w = int(avail / len(chunk))
+                    _ensure_space(titulo_continua, header_h + row_h * (len(filas) + 1))
+                    x = MARGIN_X
+                    y0 = state["y"]
+                    _wf_rect(state["slide"], x, y0, act_w, header_h, fill_rgb=(0xF1, 0xF5, 0xF9))
+                    add_text(state["slide"], x, y0, act_w, header_h, "Actividad",
+                             size=8, bold=True, color=WF_TEXT_RGB, align=PP_ALIGN.CENTER)
+                    cx = x + act_w
+                    for col in chunk:
+                        _wf_rect(state["slide"], cx, y0, col_w, header_h, fill_rgb=(0xF1, 0xF5, 0xF9))
+                        add_text(state["slide"], cx, y0, col_w, header_h, col["label"],
+                                 size=7.5, bold=True, color=WF_TEXT_RGB, align=PP_ALIGN.CENTER)
+                        cx += col_w
+                    if is_last:
+                        _wf_rect(state["slide"], cx, y0, total_w, header_h, fill_rgb=(0xF1, 0xF5, 0xF9))
+                        add_text(state["slide"], cx, y0, total_w, header_h, "Total",
+                                 size=8, bold=True, color=WF_TEXT_RGB, align=PP_ALIGN.CENTER)
+                    cy = y0 + header_h
+                    for f in filas:
+                        _wf_rect(state["slide"], x, cy, act_w, row_h, fill_rgb=WF_WHITE_RGB,
+                                 line_rgb=WF_BORDER_RGB, line_pt=0.4)
+                        add_text(state["slide"], x, cy, act_w, row_h, f["actividad"], size=7.5, bold=True, color=WF_TEXT_RGB)
+                        cx = x + act_w
+                        row_vals = f["valores"][col_offset:col_offset + len(chunk)]
+                        for v in row_vals:
+                            bg, label, txt_rgb = _tr_cell_visual(v)
+                            _wf_rect(state["slide"], cx, cy, col_w, row_h, fill_rgb=bg,
+                                     line_rgb=WF_BORDER_RGB, line_pt=0.4)
+                            add_text(state["slide"], cx, cy, col_w, row_h, label,
+                                     size=7.5, bold=True, color=txt_rgb, align=PP_ALIGN.CENTER)
+                            cx += col_w
+                        if is_last:
+                            t = f.get("total")
+                            _wf_rect(state["slide"], cx, cy, total_w, row_h, fill_rgb=WF_WHITE_RGB,
+                                     line_rgb=WF_BORDER_RGB, line_pt=0.4)
+                            add_text(state["slide"], cx, cy, total_w, row_h, f"{t:.2f}%" if t is not None else "—",
+                                     size=7.5, color=WF_TEXT_RGB, align=PP_ALIGN.CENTER)
+                        cy += row_h
+                    state["y"] = cy + Cm(0.3)
+                    col_offset += len(chunk)
+
+                _ensure_space(titulo_continua, Cm(1.0))
+                legend = [
+                    ("Concluido", (0xA9, 0xD1, 0x8E)), ("En proceso", (0xBD, 0xD7, 0xEE)), ("Sin iniciar", MAROON_RGB),
+                ]
+                lx = MARGIN_X
+                for label, rgb in legend:
+                    _wf_oval(state["slide"], lx, state["y"] + Cm(0.05), Cm(0.35), Cm(0.35), rgb)
+                    add_text(state["slide"], lx + Cm(0.5), state["y"], Cm(2.2), Cm(0.5), label, size=10, color=WF_TEXT_RGB)
+                    lx += Cm(2.9)
+                state["y"] += Cm(0.7)
+
             _BLOCK_RENDERERS = {
                 "summary": _draw_summary_block,
                 "table": _draw_table_block,
@@ -12929,6 +13359,7 @@ async def export_reports_pptx(
                 "riesgos_mapa": _draw_riesgos_mapa_block,
                 "seguridad_indicadores": _draw_seguridad_indicadores_block,
                 "estudios_avances": _draw_estudios_avances_block,
+                "tabla_resumen_matriz": _draw_tabla_resumen_matriz_block,
             }
 
             for _mod_data in modulos_data.values():
