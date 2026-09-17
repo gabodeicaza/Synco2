@@ -555,7 +555,23 @@ export interface LocationNode {
   // acceso_predio_habilitado contra el default histórico. Ver
   // _acceso_predio_efectivo en server.py.
   acceso_predio_efectivo?: boolean;
+  // Formato del resumen impreso por Subtramo (ver draw_subtramo_summary_page
+  // / draw_intertramo_summary_page en server.py). null/undefined = "estacion"
+  // (default histórico, compatibilidad con nodos viejos).
+  tipo_nodo?: 'estacion' | 'intertramo' | null;
+  // Solo aplica a hijos DIRECTOS de un nodo tipo "intertramo" (un "Poste"):
+  // nombre de lugar mostrado en la columna UBICACIÓN de la tabla Actividad
+  // en Postes.
+  ubicacion?: string | null;
+  // Estatus por actividad de este Poste (columnas de la tabla Actividad en
+  // Postes del Intertramo padre). null = celda en blanco (sin capturar).
+  estatus_pilas?: PosteEstatus | null;
+  estatus_cabezal?: PosteEstatus | null;
+  estatus_fuste?: PosteEstatus | null;
+  estatus_poste?: PosteEstatus | null;
 }
+
+export type PosteEstatus = 'sin_iniciar' | 'en_proceso' | 'concluido';
 
 export interface LocationNodeTree extends LocationNode {
   children: LocationNodeTree[];

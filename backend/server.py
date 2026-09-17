@@ -425,6 +425,21 @@ class LocationNodeIn(BaseModel):
     # Usados en la página de resumen por subtramo del export PDF/PPTX.
     acceso_predio: Optional[str] = None
     situacion_social: Optional[str] = None
+    # Tipo de formato del resumen impreso por Subtramo (ver
+    # `draw_subtramo_summary_page`/`_slide`): "estacion" (default histórico,
+    # Acceso al Predio + Situación Social singular) o "intertramo" (Situación
+    # Social plural + tabla "Actividad en Postes" con los hijos directos del
+    # nodo). None = tratar como "estacion" (compatibilidad con nodos viejos).
+    tipo_nodo: Optional[Literal["estacion", "intertramo"]] = None
+    # Solo para hijos de un nodo tipo "intertramo" (un "Poste"): nombre de
+    # lugar mostrado en la columna UBICACIÓN de la tabla Actividad en Postes.
+    ubicacion: Optional[str] = None
+    # Estatus por actividad de este Poste, columnas de la tabla Actividad en
+    # Postes del Intertramo padre. None = celda en blanco (sin capturar).
+    estatus_pilas: Optional[Literal["sin_iniciar", "en_proceso", "concluido"]] = None
+    estatus_cabezal: Optional[Literal["sin_iniciar", "en_proceso", "concluido"]] = None
+    estatus_fuste: Optional[Literal["sin_iniciar", "en_proceso", "concluido"]] = None
+    estatus_poste: Optional[Literal["sin_iniciar", "en_proceso", "concluido"]] = None
 
 
 class LocationNodeOut(BaseModel):
@@ -442,6 +457,12 @@ class LocationNodeOut(BaseModel):
     meta: Optional[float] = None
     acceso_predio: Optional[str] = None
     situacion_social: Optional[str] = None
+    tipo_nodo: Optional[str] = None
+    ubicacion: Optional[str] = None
+    estatus_pilas: Optional[str] = None
+    estatus_cabezal: Optional[str] = None
+    estatus_fuste: Optional[str] = None
+    estatus_poste: Optional[str] = None
     avance_actual: float = 0.0
     # Portada institucional del nodo (foto de render/arquitectura). Se usa como
     # fondo de la "Portadilla de Nodo" dinámica en el PDF exportado.
@@ -2791,6 +2812,12 @@ async def create_node(pid: str, body: LocationNodeIn, user: dict = Depends(requi
         "target_elev": body.target_elev if is_coord_leaf else None,
         "acceso_predio": body.acceso_predio,
         "situacion_social": body.situacion_social,
+        "tipo_nodo": body.tipo_nodo,
+        "ubicacion": body.ubicacion,
+        "estatus_pilas": body.estatus_pilas,
+        "estatus_cabezal": body.estatus_cabezal,
+        "estatus_fuste": body.estatus_fuste,
+        "estatus_poste": body.estatus_poste,
         "created_at": datetime.now(timezone.utc),
     }
     await db.location_nodes.insert_one(doc)
@@ -2812,6 +2839,14 @@ class NodePatch(BaseModel):
     # depth==1"); True/False = decisión explícita de si ESTE nodo (a
     # cualquier profundidad) participa en Acceso al Predio.
     acceso_predio_habilitado: Optional[bool] = None
+    # Ver mismos campos en LocationNodeIn — formato del resumen impreso
+    # (Estación vs Intertramo) y datos de la tabla Actividad en Postes.
+    tipo_nodo: Optional[Literal["estacion", "intertramo"]] = None
+    ubicacion: Optional[str] = None
+    estatus_pilas: Optional[Literal["sin_iniciar", "en_proceso", "concluido"]] = None
+    estatus_cabezal: Optional[Literal["sin_iniciar", "en_proceso", "concluido"]] = None
+    estatus_fuste: Optional[Literal["sin_iniciar", "en_proceso", "concluido"]] = None
+    estatus_poste: Optional[Literal["sin_iniciar", "en_proceso", "concluido"]] = None
 
 
 @api.patch("/nodes/{nid}")
@@ -2864,6 +2899,18 @@ async def update_node(nid: str, body: NodePatch, user: dict = Depends(require_ro
         upd["situacion_social"] = body.situacion_social.strip()
     if body.acceso_predio_habilitado is not None:
         upd["acceso_predio_habilitado"] = body.acceso_predio_habilitado
+    if body.tipo_nodo is not None:
+        upd["tipo_nodo"] = body.tipo_nodo
+    if body.ubicacion is not None:
+        upd["ubicacion"] = body.ubicacion.strip()
+    if body.estatus_pilas is not None:
+        upd["estatus_pilas"] = body.estatus_pilas
+    if body.estatus_cabezal is not None:
+        upd["estatus_cabezal"] = body.estatus_cabezal
+    if body.estatus_fuste is not None:
+        upd["estatus_fuste"] = body.estatus_fuste
+    if body.estatus_poste is not None:
+        upd["estatus_poste"] = body.estatus_poste
     if upd:
         await db.location_nodes.update_one({"id": nid}, {"$set": upd})
     out = await db.location_nodes.find_one({"id": nid})
@@ -10285,6 +10332,385 @@ async def export_reports_pdf(
             _draw_resource_table(right_x, "PERSONAL", personal_shown, personal_overflow, personal_total)
             _draw_resource_table(right_x + tbl_w + tbl_gutter, "MAQUINARIA Y EQUIPO", maquinaria_shown, maquinaria_overflow, maquinaria_total)
 
+        _POSTE_ESTATUS_LABEL = {"sin_iniciar": "Sin iniciar", "en_proceso": "En proceso", "concluido": "Concluido"}
+
+        def draw_intertramo_summary_page(intertramo_node: dict, personal_rows: list, maquinaria_rows: list,
+                                          actividades: list, situacion_social: Optional[str],
+                                          postes: list, mostrar_situacion: bool = True) -> None:
+            """Página de resumen por Subtramo tipo INTERTRAMO — layout distinto
+            al de Estación (`draw_subtramo_summary_page`): de arriba a abajo,
+            a todo el ancho: título + "SITUACIÓN SOCIAL-LIBERACIÓN FÍSICA DE
+            PREDIOS" (plural, sin badge de Acceso al Predio — un Intertramo
+            no tiene un único predio) y la tabla "ACTIVIDAD EN POSTES" (un
+            renglón por hijo directo del nodo, columnas Ubicación/Pilas/
+            Cabezal/Fuste/Poste). Debajo, 2 columnas separadas por línea
+            vertical: IZQUIERDA "Se supervisa las siguientes actividades",
+            DERECHA mini-tablas FUERZA DE TRABAJO / MAQUINARIA Y EQUIPO (sin
+            Estado del Tiempo — no aparece en el formato de referencia del
+            cliente para Intertramos). Página FIJA, mismo criterio de
+            truncado con "+N más" que `draw_subtramo_summary_page`."""
+            nonlocal page_num
+
+            MARGIN_X = 1.5 * cm
+            GUTTER = 0.9 * cm
+            content_w = PW - 2 * MARGIN_X
+            col_w = (content_w - GUTTER) / 2.0
+            left_x = MARGIN_X
+            right_x = MARGIN_X + col_w + GUTTER
+            divider_x = MARGIN_X + col_w + GUTTER / 2.0
+            top_y = PH - TOP_MARGIN_PDF
+            bottom_y = BOTTOM_MARGIN_PDF
+
+            BRAND = HexColor(_readable_dark_hex(project_color))
+            BADGE_R = 0.42 * cm
+            intertramo_name = (intertramo_node or {}).get("name") or "Intertramo"
+
+            BULLET_STYLE = ParagraphStyle(
+                "IntertramoBullet", fontName="Helvetica", fontSize=8.3, leading=10.5,
+                textColor=TEXT, leftIndent=0.32 * cm, bulletIndent=0, spaceAfter=1,
+            )
+            BULLET_EMPTY_STYLE = ParagraphStyle(
+                "IntertramoBulletEmpty", fontName="Helvetica-Oblique", fontSize=8.3, leading=10.5, textColor=MUTED,
+            )
+            BULLET_MORE_STYLE = ParagraphStyle(
+                "IntertramoBulletMore", fontName="Helvetica-Oblique", fontSize=7.5, leading=9.5, textColor=MUTED,
+                leftIndent=0.32 * cm,
+            )
+
+            def _draw_person_icon(cx: float, cy: float, r: float) -> None:
+                c.setFillColor(WHITE)
+                c.circle(cx, cy + r * 0.30, r * 0.30, stroke=0, fill=1)
+                c.ellipse(cx - r * 0.54, cy - r * 0.62, cx + r * 0.54, cy + r * 0.02, stroke=0, fill=1)
+
+            def _draw_gear_icon(cx: float, cy: float, r: float) -> None:
+                c.setFillColor(WHITE)
+                c.circle(cx, cy, r * 0.52, stroke=0, fill=1)
+                tooth_w, tooth_h, n_teeth = r * 0.24, r * 0.30, 8
+                for i in range(n_teeth):
+                    angle = (2 * math.pi / n_teeth) * i
+                    c.saveState()
+                    c.translate(cx + math.cos(angle) * r * 0.58, cy + math.sin(angle) * r * 0.58)
+                    c.rotate(math.degrees(angle))
+                    c.rect(-tooth_w / 2, -tooth_h / 2, tooth_w, tooth_h, stroke=0, fill=1)
+                    c.restoreState()
+                c.setFillColor(BRAND)
+                c.circle(cx, cy, r * 0.20, stroke=0, fill=1)
+
+            def _draw_structure_icon(cx: float, cy: float, r: float) -> None:
+                top, bl, br = (cx, cy + r * 0.40), (cx - r * 0.42, cy - r * 0.35), (cx + r * 0.42, cy - r * 0.35)
+                c.setStrokeColor(WHITE)
+                c.setLineWidth(1.0)
+                c.line(top[0], top[1], bl[0], bl[1])
+                c.line(top[0], top[1], br[0], br[1])
+                c.setFillColor(WHITE)
+                for (nx, ny) in (top, bl, br):
+                    c.circle(nx, ny, r * 0.16, stroke=0, fill=1)
+
+            _ICON_FNS = {"person": _draw_person_icon, "gear": _draw_gear_icon, "structure": _draw_structure_icon}
+
+            def _draw_badge_icon(cx: float, cy: float, r: float, kind: str) -> None:
+                c.setFillColor(BRAND)
+                c.circle(cx, cy, r, stroke=0, fill=1)
+                _ICON_FNS[kind](cx, cy, r)
+
+            def _section_title(x: float, y: float, w: float, text: str) -> float:
+                c.setFillColor(BRAND)
+                c.setFont("Helvetica-Bold", 10.5)
+                c.drawString(x, y - 0.36 * cm, text.upper())
+                return y - 0.58 * cm
+
+            def _draw_bullets(x: float, y_top: float, w: float, items: list, avail_h: float, max_items: int) -> float:
+                if not items:
+                    p = Paragraph("Sin información registrada", BULLET_EMPTY_STYLE)
+                    _, h = p.wrapOn(c, w, avail_h)
+                    p.drawOn(c, x, y_top - h)
+                    return y_top - h
+                y = y_top
+                shown_h = 0.0
+                n_shown = 0
+                for text in items[:max_items]:
+                    p = Paragraph(f"•  {_xml_escape((text or '').strip())}", BULLET_STYLE)
+                    _, h = p.wrapOn(c, w, avail_h - shown_h)
+                    if shown_h + h > avail_h and n_shown > 0:
+                        break
+                    p.drawOn(c, x, y - h)
+                    y -= h
+                    shown_h += h
+                    n_shown += 1
+                overflow = len(items) - n_shown
+                if overflow > 0 and (avail_h - shown_h) > 0:
+                    p = Paragraph(f"+ {overflow} más…", BULLET_MORE_STYLE)
+                    _, h = p.wrapOn(c, w, avail_h - shown_h)
+                    p.drawOn(c, x, y - h)
+                    y -= h
+                return y
+
+            # =================================================================
+            # TÍTULO (a todo lo ancho, mismo estilo de placa que Estación pero
+            # sin ordinal numérico — los Intertramos no se numeran)
+            # =================================================================
+            y = top_y
+            _draw_badge_icon(left_x + BADGE_R, y - BADGE_R - 0.05 * cm, BADGE_R, "structure")
+            c.setFillColor(BRAND)
+            c.setFont("Helvetica-Bold", 10.5)
+            c.drawString(left_x + 2 * BADGE_R + 0.3 * cm, y - BADGE_R - 0.05 * cm - 10.5 * 0.32 + 0.16 * cm, "INTERTRAMO")
+            c.setFont("Helvetica-Bold", 15)
+            title_txt = intertramo_name.upper()
+            while c.stringWidth(title_txt, "Helvetica-Bold", 15) > content_w - (2 * BADGE_R + 0.3 * cm) and len(title_txt) > 8:
+                title_txt = title_txt[:-2] + "…"
+            c.drawString(left_x + 2 * BADGE_R + 0.3 * cm, y - BADGE_R - 0.05 * cm - 15 * 0.32 - 0.42 * cm, title_txt)
+            y -= 1.75 * cm
+            c.setStrokeColor(BRAND)
+            c.setLineWidth(1.4)
+            c.line(left_x, y, left_x + content_w, y)
+            y -= 0.35 * cm
+
+            # --- SITUACIÓN SOCIAL (plural — de varios predios) -----------------
+            if mostrar_situacion:
+                y = _section_title(left_x, y, col_w, "Situación Social-Liberación Física de Predios")
+                situ_items = [ln.strip() for ln in (situacion_social or "").splitlines() if ln.strip()]
+                situ_h = min(2.0 * cm, max(1.0 * cm, y - bottom_y))
+                y = _draw_bullets(left_x, y, col_w, situ_items, situ_h, max_items=4)
+                y -= 0.28 * cm
+
+            # --- ACTIVIDAD EN POSTES --------------------------------------------
+            y = _section_title(left_x, y, content_w, "Actividad en Postes")
+
+            POSTE_COLS = ["POSTE", "UBICACIÓN", "PILAS", "CABEZAL", "FUSTE", "POSTE"]
+            POSTE_FRACS = [0.09, 0.19, 0.18, 0.18, 0.18, 0.18]
+            poste_col_w = [content_w * f for f in POSTE_FRACS]
+            POSTE_HEADER_H = 18
+            POSTE_ROW_H = 15
+            POSTE_FONT_SIZE = 8
+            # Reserva mínima para la sección inferior (actividades + tablas de
+            # recursos) — la tabla de postes crece hasta este límite y se
+            # trunca con "+N más" si el proyecto tiene demasiados postes,
+            # igual criterio que las tablas gemelas de recursos.
+            MIN_BOTTOM_RESERVE = 6.3 * cm
+            postes_avail_h = max(POSTE_HEADER_H + POSTE_ROW_H, (y - bottom_y) - MIN_BOTTOM_RESERVE)
+            max_rows = max(1, int((postes_avail_h - POSTE_HEADER_H) / POSTE_ROW_H))
+            postes_shown = postes[:max_rows]
+            postes_overflow = 0
+            if len(postes) > max_rows:
+                postes_shown = postes[:max(1, max_rows - 1)]
+                postes_overflow = len(postes) - len(postes_shown)
+
+            _raw_brand_hex = _sanitize_color_hex(project_color) or "#003366"
+            POSTE_HEADER_BG = HexColor(_raw_brand_hex)
+            POSTE_HEADER_FG = WHITE if _hex_luminance(_raw_brand_hex) <= 0.6 else HexColor("#1A1A1A")
+            LINE_GRAY = HexColor("#D0D0D0")
+
+            POSTE_HEADER_STYLE = ParagraphStyle(
+                "PosteHeader", fontName="Helvetica-Bold", fontSize=POSTE_FONT_SIZE,
+                leading=POSTE_FONT_SIZE * 1.2, textColor=POSTE_HEADER_FG, alignment=TA_CENTER,
+            )
+            POSTE_CELL_STYLE = ParagraphStyle(
+                "PosteCell", fontName="Helvetica", fontSize=POSTE_FONT_SIZE,
+                leading=POSTE_FONT_SIZE * 1.2, textColor=HexColor("#333333"), alignment=TA_CENTER,
+            )
+            POSTE_OVERFLOW_STYLE = ParagraphStyle(
+                "PosteOverflow", fontName="Helvetica-Oblique", fontSize=POSTE_FONT_SIZE,
+                leading=POSTE_FONT_SIZE * 1.2, textColor=MUTED,
+            )
+
+            poste_data = [[Paragraph(h, POSTE_HEADER_STYLE) for h in POSTE_COLS]]
+            for p in postes_shown:
+                estatus = [
+                    _POSTE_ESTATUS_LABEL.get(p.get("estatus_pilas"), "Sin iniciar"),
+                    _POSTE_ESTATUS_LABEL.get(p.get("estatus_cabezal"), "Sin iniciar"),
+                    _POSTE_ESTATUS_LABEL.get(p.get("estatus_fuste"), "Sin iniciar"),
+                    _POSTE_ESTATUS_LABEL.get(p.get("estatus_poste"), "Sin iniciar"),
+                ]
+                poste_data.append([
+                    Paragraph(_xml_escape(p.get("name") or "—"), POSTE_CELL_STYLE),
+                    Paragraph(_xml_escape(p.get("ubicacion") or "—"), POSTE_CELL_STYLE),
+                    *[Paragraph(e, POSTE_CELL_STYLE) for e in estatus],
+                ])
+            if postes_overflow > 0:
+                poste_data.append([Paragraph(f"+ {postes_overflow} más…", POSTE_OVERFLOW_STYLE)] + [""] * 5)
+            if len(poste_data) == 1:
+                poste_data.append([Paragraph("Sin postes registrados", POSTE_OVERFLOW_STYLE)] + [""] * 5)
+
+            n_data_rows = len(poste_data) - 1
+            poste_tbl = Table(
+                poste_data, colWidths=poste_col_w,
+                rowHeights=[POSTE_HEADER_H] + [POSTE_ROW_H] * n_data_rows,
+            )
+            poste_tbl.setStyle(TableStyle([
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                ("TOPPADDING", (0, 0), (-1, -1), 2),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+                ("LEFTPADDING", (0, 0), (-1, -1), 3),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+                ("BACKGROUND", (0, 0), (-1, 0), POSTE_HEADER_BG),
+                ("BOX", (0, 0), (-1, -1), 0.5, LINE_GRAY),
+                ("INNERGRID", (0, 0), (-1, -1), 0.5, LINE_GRAY),
+            ]))
+            _, poste_tbl_h = poste_tbl.wrapOn(c, content_w, postes_avail_h)
+            poste_tbl.drawOn(c, left_x, y - poste_tbl_h)
+            table_bottom_y = y - poste_tbl_h - 0.3 * cm
+
+            # =================================================================
+            # SECCIÓN INFERIOR: izquierda Actividades, derecha Fuerza de
+            # Trabajo / Maquinaria y Equipo — separadas por la línea vertical.
+            # =================================================================
+            c.setStrokeColor(BRAND)
+            c.setLineWidth(1.1)
+            c.line(divider_x, table_bottom_y, divider_x, bottom_y)
+
+            y2 = _section_title(left_x, table_bottom_y, col_w, "Se supervisa las siguientes actividades")
+            act_h = max(1.0 * cm, y2 - bottom_y)
+            _draw_bullets(left_x, y2, col_w, actividades or [], act_h, max_items=6)
+
+            y3 = table_bottom_y
+            tbl_gutter = 12  # pt
+            tbl_w = (col_w - tbl_gutter) / 2.0
+            WF_BRAND = HexColor(_raw_brand_hex)
+            WF_HEADER_TEXT = POSTE_HEADER_FG
+            CONTENT_GRAY = HexColor("#333333")
+            MIN_ROWS = 8
+            TABLE_HEADER_H = 22
+            BASE_ROW_H = 18
+            TOTAL_ROW_H = 22
+            ROW_FONT_SIZE = 9
+            NAME_PAD_L, NAME_PAD_R = 6, 4
+            NAME_COL_FRAC, QTY_COL_FRAC = 0.70, 0.30
+
+            NAME_STYLE = ParagraphStyle(
+                "IntWFRowName", fontName="Helvetica", fontSize=ROW_FONT_SIZE,
+                leading=ROW_FONT_SIZE * 1.3, textColor=CONTENT_GRAY,
+            )
+            QTY_STYLE = ParagraphStyle(
+                "IntWFRowQty", fontName="Helvetica", fontSize=ROW_FONT_SIZE,
+                leading=ROW_FONT_SIZE * 1.3, textColor=CONTENT_GRAY, alignment=TA_CENTER,
+            )
+            HEADER_STYLE = ParagraphStyle(
+                "IntWFHeader", fontName="Helvetica-Bold", fontSize=ROW_FONT_SIZE,
+                leading=11, textColor=WF_HEADER_TEXT, alignment=TA_CENTER,
+            )
+            TOTAL_LABEL_STYLE = ParagraphStyle(
+                "IntWFTotalLabel", fontName="Helvetica-Bold", fontSize=ROW_FONT_SIZE,
+                leading=ROW_FONT_SIZE * 1.3, textColor=CONTENT_GRAY, alignment=TA_CENTER,
+            )
+            OVERFLOW_STYLE = ParagraphStyle(
+                "IntWFOverflow", fontName="Helvetica-Oblique", fontSize=ROW_FONT_SIZE,
+                leading=ROW_FONT_SIZE * 1.3, textColor=CONTENT_GRAY,
+            )
+
+            def _draw_section_title2(x: float, y_top: float, title: str, icon_kind: str) -> float:
+                r = 0.32 * cm
+                cx, cy = x + r, y_top - r - 0.04 * cm
+                c.setFillColor(WF_BRAND)
+                c.circle(cx, cy, r, stroke=0, fill=1)
+                _ICON_FNS[icon_kind](cx, cy, r)
+                if icon_kind == "gear":
+                    c.setFillColor(WF_BRAND)
+                    c.circle(cx, cy, r * 0.20, stroke=0, fill=1)
+                c.setFillColor(BRAND)
+                c.setFont("Helvetica-Bold", 11)
+                c.drawString(x + 2 * r + 0.2 * cm, cy - 11 * 0.32, title.upper())
+                return y_top - 2 * r - 0.04 * cm - 8
+
+            def _measure_rows2(rows: list, name_w: float, qty_w: float) -> list:
+                items = []
+                for r in rows:
+                    qty = r.get("qty")
+                    qty = qty if isinstance(qty, (int, float)) else 1
+                    main_desc, _ = _format_workforce_desc(str(r.get("desc") or "—"))
+                    name_p = Paragraph(_xml_escape(main_desc or "—"), NAME_STYLE)
+                    qty_p = Paragraph(str(qty), QTY_STYLE)
+                    _, name_h = name_p.wrap(name_w, 10000)
+                    _, qty_h = qty_p.wrap(qty_w, 10000)
+                    h = max(name_h, qty_h, ROW_FONT_SIZE * 1.3) + 6
+                    items.append({"name_p": name_p, "qty_p": qty_p, "qty": qty, "h": max(h, BASE_ROW_H)})
+                return items
+
+            name_w = tbl_w * NAME_COL_FRAC - NAME_PAD_L - NAME_PAD_R
+            qty_w = tbl_w * QTY_COL_FRAC - 8
+            personal_items = _measure_rows2(personal_rows, name_w, qty_w)
+            maquinaria_items = _measure_rows2(maquinaria_rows, name_w, qty_w)
+            personal_total = sum(it["qty"] for it in personal_items)
+            maquinaria_total = sum(it["qty"] for it in maquinaria_items)
+
+            title_y_left = _draw_section_title2(right_x, y3, "Fuerza de Trabajo", "person")
+            title_y_right = _draw_section_title2(right_x + tbl_w + tbl_gutter, y3, "Maquinaria y Equipo", "gear")
+            table_top = min(title_y_left, title_y_right)
+            tbl_avail_h = table_top - bottom_y
+
+            n_rows = max(MIN_ROWS, len(personal_items), len(maquinaria_items))
+            min_rows_needed = max(len(personal_items), len(maquinaria_items))
+
+            def _shared_row_heights2(n: int) -> list:
+                heights = []
+                for i in range(n):
+                    ph = personal_items[i]["h"] if i < len(personal_items) else BASE_ROW_H
+                    mh = maquinaria_items[i]["h"] if i < len(maquinaria_items) else BASE_ROW_H
+                    heights.append(max(ph, mh))
+                return heights
+
+            def _total_h2(n: int) -> float:
+                return TABLE_HEADER_H + sum(_shared_row_heights2(n)) + TOTAL_ROW_H
+
+            while n_rows > min_rows_needed and _total_h2(n_rows) > tbl_avail_h:
+                n_rows -= 1
+            while n_rows > 1 and _total_h2(n_rows) > tbl_avail_h:
+                n_rows -= 1
+
+            personal_shown, personal_overflow = personal_items, 0
+            maquinaria_shown, maquinaria_overflow = maquinaria_items, 0
+            if n_rows < len(personal_items):
+                personal_overflow = len(personal_items) - (n_rows - 1)
+                personal_shown = personal_items[:n_rows - 1]
+            if n_rows < len(maquinaria_items):
+                maquinaria_overflow = len(maquinaria_items) - (n_rows - 1)
+                maquinaria_shown = maquinaria_items[:n_rows - 1]
+
+            row_heights = _shared_row_heights2(n_rows)
+
+            def _draw_resource_table2(x: float, col1_header: str, items: list,
+                                       overflow: int, total_qty) -> None:
+                data = [[Paragraph(col1_header, HEADER_STYLE), Paragraph("CANTIDAD", HEADER_STYLE)]]
+                for i in range(n_rows):
+                    if i < len(items):
+                        data.append([items[i]["name_p"], items[i]["qty_p"]])
+                    elif overflow > 0 and i == n_rows - 1:
+                        data.append([Paragraph(f"+ {overflow} más…", OVERFLOW_STYLE), ""])
+                    else:
+                        data.append(["", ""])
+                data.append([
+                    Paragraph("TOTAL", TOTAL_LABEL_STYLE),
+                    Paragraph(str(total_qty), TOTAL_LABEL_STYLE),
+                ])
+                total_row_idx = n_rows + 1
+
+                tbl = Table(
+                    data, colWidths=[tbl_w * NAME_COL_FRAC, tbl_w * QTY_COL_FRAC],
+                    rowHeights=[TABLE_HEADER_H] + row_heights + [TOTAL_ROW_H],
+                )
+                style = [
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("ALIGN", (0, 0), (-1, 0), "CENTER"),
+                    ("ALIGN", (1, 1), (1, -1), "CENTER"),
+                    ("LEFTPADDING", (0, 1), (0, total_row_idx - 1), NAME_PAD_L),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), NAME_PAD_R),
+                    ("TOPPADDING", (0, 0), (-1, -1), 3),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                    ("BACKGROUND", (0, 0), (-1, 0), WF_BRAND),
+                    ("LEFTPADDING", (0, 0), (-1, 0), 2),
+                    ("RIGHTPADDING", (0, 0), (-1, 0), 2),
+                    ("BOX", (0, 0), (-1, -1), 0.5, LINE_GRAY),
+                    ("LINEAFTER", (0, 1), (0, total_row_idx), 0.5, LINE_GRAY),
+                    ("LINEBELOW", (0, 1), (-1, total_row_idx - 2), 0.5, LINE_GRAY),
+                    ("LINEABOVE", (0, total_row_idx), (-1, total_row_idx), 0.75, LINE_GRAY),
+                ]
+                tbl.setStyle(TableStyle(style))
+                tw, th = tbl.wrapOn(c, tbl_w, tbl_avail_h)
+                tbl.drawOn(c, x, table_top - th)
+
+            _draw_resource_table2(right_x, "PERSONAL", personal_shown, personal_overflow, personal_total)
+            _draw_resource_table2(right_x + tbl_w + tbl_gutter, "MAQUINARIA Y EQUIPO", maquinaria_shown, maquinaria_overflow, maquinaria_total)
+
         def _emit_recuento_general() -> None:
             """Página(s) de cierre "RECUENTO GENERAL": una por Tramo (y tantas
             adicionales como haga falta si las filas no caben en una sola —
@@ -10797,6 +11223,14 @@ async def export_reports_pdf(
             # habilitó nada para esta ubicación (antes se imprimía "Sin
             # especificar" en TODOS los subtramos sin importar el hub).
             acceso_node = _resolve_acceso_predio_node(subtramo_id, subtramo_node, nodes_by_subtramo)
+            es_intertramo = subtramo_node.get("tipo_nodo") == "intertramo"
+            # Postes = hijos DIRECTOS del nodo Intertramo (no todo el
+            # subárbol), ordenados igual que el resto del árbol — filas de
+            # la tabla "Actividad en Postes" (ver `draw_intertramo_summary_page`).
+            postes = sorted(
+                (n for n in nodes_by_id.values() if n.get("parent_id") == subtramo_id),
+                key=lambda n: (n.get("order", 0), n.get("name", "")),
+            ) if es_intertramo else []
             # FIX: antes, si ningún leaf de este subtramo tenía reportes en
             # el período, `totals` venía ausente y la página completa se
             # omitía — incluyendo "Acceso al Predio", que es un estado
@@ -10806,25 +11240,36 @@ async def export_reports_pdf(
             # configurado dejaba de imprimirlo por completo (conexión
             # panel↔impresión rota). Ahora la página se emite si HAY datos
             # de recursos O si hay algo persistente que mostrar (acceso al
-            # predio, situación social, actividades del subtramo).
+            # predio/situación social, actividades del subtramo, o postes
+            # de un Intertramo).
             has_persistent_content = bool(
                 (acceso_node and (acceso_node.get("acceso_predio") or "").strip())
                 or (acceso_node and (acceso_node.get("situacion_social") or "").strip())
                 or (actividades_by_subtramo.get(subtramo_id) or [])
+                or postes
             )
             if not totals and not has_persistent_content:
                 return
             personal_rows = (totals or {}).get("personal") or []
             maquinaria_rows = (totals or {}).get("maquinaria") or []
-            draw_subtramo_summary_page(
-                subtramo_node, personal_rows, maquinaria_rows,
-                actividades_by_subtramo.get(subtramo_id) or [],
-                acceso_node.get("situacion_social") if acceso_node else None,
-                acceso_node.get("acceso_predio") if acceso_node else None,
-                weather_by_subtramo.get(subtramo_id),
-                mostrar_acceso_predio=acceso_node is not None,
-                acceso_node_label=(acceso_node.get("name") if acceso_node else None),
-            )
+            if es_intertramo:
+                draw_intertramo_summary_page(
+                    subtramo_node, personal_rows, maquinaria_rows,
+                    actividades_by_subtramo.get(subtramo_id) or [],
+                    acceso_node.get("situacion_social") if acceso_node else None,
+                    postes,
+                    mostrar_situacion=acceso_node is not None,
+                )
+            else:
+                draw_subtramo_summary_page(
+                    subtramo_node, personal_rows, maquinaria_rows,
+                    actividades_by_subtramo.get(subtramo_id) or [],
+                    acceso_node.get("situacion_social") if acceso_node else None,
+                    acceso_node.get("acceso_predio") if acceso_node else None,
+                    weather_by_subtramo.get(subtramo_id),
+                    mostrar_acceso_predio=acceso_node is not None,
+                    acceso_node_label=(acceso_node.get("name") if acceso_node else None),
+                )
             c.showPage()
             page_num += 1
 
@@ -12842,6 +13287,180 @@ async def export_reports_pptx(
             _draw_mini_table(right_x + tbl_w + tbl_gutter, y, tbl_w, "Maquinaria y Equipo", maquinaria_rows, "gear",
                               col1_header="MAQUINARIA Y EQUIPO")
 
+        _POSTE_ESTATUS_LABEL_PPTX = {"sin_iniciar": "Sin iniciar", "en_proceso": "En proceso", "concluido": "Concluido"}
+
+        def draw_intertramo_summary_slide(intertramo_node: dict, personal_rows: list, maquinaria_rows: list,
+                                           actividades: list, situacion_social: Optional[str],
+                                           postes: list, mostrar_situacion: bool = True) -> None:
+            """Slide de resumen por Subtramo tipo INTERTRAMO — misma lógica de
+            layout que `draw_intertramo_summary_page` (motor PDF) con
+            primitivas python-pptx: título a todo lo ancho (sin badge de
+            Acceso al Predio ni ordinal numérico), Situación Social plural,
+            tabla ACTIVIDAD EN POSTES a todo lo ancho, y debajo 2 columnas
+            (Actividades | Fuerza de Trabajo/Maquinaria y Equipo, sin Estado
+            del Tiempo) separadas por línea vertical."""
+            slide = _clone_membrete()
+
+            MARGIN_X = Cm(1.5)
+            GUTTER = Cm(0.9)
+            content_w = SW - 2 * MARGIN_X
+            col_w = int((content_w - GUTTER) / 2)
+            left_x = MARGIN_X
+            right_x = MARGIN_X + col_w + GUTTER
+            divider_x = MARGIN_X + col_w + int(GUTTER / 2)
+            top_y = TOP_MARGIN
+            bottom_y = SH - BOTTOM_MARGIN
+
+            BADGE_R = int(Cm(0.5))
+            intertramo_name = (intertramo_node or {}).get("name") or "Intertramo"
+
+            def _section_title(x: int, y: int, w: int, text: str) -> int:
+                add_text(slide, x, y, w, Cm(0.55), text.upper(), size=12, bold=True, color=READABLE_BRAND_RGB)
+                return y + Cm(0.6)
+
+            # ---- TÍTULO (a todo lo ancho, sin ordinal — los Intertramos no
+            # se numeran, ver `draw_intertramo_summary_page`) ----------------
+            y = top_y
+            cx, cy = left_x + BADGE_R, y + BADGE_R
+            _wf_structure_icon(slide, cx, cy, BADGE_R)
+            add_text(slide, left_x + 2 * BADGE_R + Cm(0.3), y + int(BADGE_R * 0.1),
+                     content_w - 2 * BADGE_R - Cm(0.3), Cm(0.5),
+                     "INTERTRAMO", size=12, bold=True, color=READABLE_BRAND_RGB)
+            add_text(slide, left_x + 2 * BADGE_R + Cm(0.3), y + int(BADGE_R * 0.35) + Cm(0.42),
+                     content_w - 2 * BADGE_R - Cm(0.3), Cm(0.8),
+                     intertramo_name.upper(), size=17, bold=True, color=READABLE_BRAND_RGB)
+            y += Cm(1.8)
+            _wf_rect(slide, left_x, y, content_w, Pt(1.6), fill_rgb=BRAND_RGB)
+            y += Cm(0.35)
+
+            # --- Situación Social (plural) ---------------------------------------
+            if mostrar_situacion:
+                y = _section_title(left_x, y, col_w, "Situación Social-Liberación Física de Predios")
+                situ_items = [ln.strip() for ln in (situacion_social or "").splitlines() if ln.strip()]
+                situ_h = Cm(1.8)
+                _wf_bullets(slide, left_x, y, col_w, situ_h, situ_items, max_items=3, font_size=10)
+                y += situ_h + Cm(0.2)
+
+            # --- Actividad en Postes (tabla a todo lo ancho) ---------------------
+            y = _section_title(left_x, y, content_w, "Actividad en Postes")
+
+            POSTE_COLS = ["POSTE", "UBICACIÓN", "PILAS", "CABEZAL", "FUSTE", "POSTE"]
+            POSTE_FRACS = [0.09, 0.19, 0.18, 0.18, 0.18, 0.18]
+            poste_col_w = [int(content_w * f) for f in POSTE_FRACS]
+            POSTE_HEADER_H = Cm(0.55)
+            POSTE_ROW_H = Cm(0.48)
+            MIN_BOTTOM_RESERVE = Cm(6.3)
+            postes_avail_h = max(POSTE_HEADER_H + POSTE_ROW_H, (bottom_y - y) - MIN_BOTTOM_RESERVE)
+            max_rows = max(1, int((postes_avail_h - POSTE_HEADER_H) / POSTE_ROW_H))
+            postes_shown = postes[:max_rows]
+            postes_overflow = 0
+            if len(postes) > max_rows:
+                postes_shown = postes[:max(1, max_rows - 1)]
+                postes_overflow = len(postes) - len(postes_shown)
+
+            table_top = y
+            xx = left_x
+            for i, h in enumerate(POSTE_COLS):
+                _wf_rect(slide, xx, table_top, poste_col_w[i], POSTE_HEADER_H, fill_rgb=BRAND_RGB,
+                         line_rgb=WF_BORDER_RGB, line_pt=0.5)
+                add_text(slide, xx, table_top, poste_col_w[i], POSTE_HEADER_H, h,
+                         size=8, bold=True, color=HEADER_TEXT_RGB, align=PP_ALIGN.CENTER)
+                xx += poste_col_w[i]
+            yy = table_top + POSTE_HEADER_H
+
+            def _poste_row_vals(p: dict) -> list:
+                return [
+                    p.get("name") or "—", p.get("ubicacion") or "—",
+                    _POSTE_ESTATUS_LABEL_PPTX.get(p.get("estatus_pilas"), "Sin iniciar"),
+                    _POSTE_ESTATUS_LABEL_PPTX.get(p.get("estatus_cabezal"), "Sin iniciar"),
+                    _POSTE_ESTATUS_LABEL_PPTX.get(p.get("estatus_fuste"), "Sin iniciar"),
+                    _POSTE_ESTATUS_LABEL_PPTX.get(p.get("estatus_poste"), "Sin iniciar"),
+                ]
+
+            rows_to_draw = [_poste_row_vals(p) for p in postes_shown]
+            if not rows_to_draw:
+                rows_to_draw = [["Sin postes registrados", "", "", "", "", ""]]
+            for ridx, vals in enumerate(rows_to_draw):
+                if ridx % 2 == 1:
+                    _wf_rect(slide, left_x, yy, content_w, POSTE_ROW_H, fill_rgb=WF_ZEBRA_TINT_RGB)
+                xx = left_x
+                for i, val in enumerate(vals):
+                    _wf_rect(slide, xx, yy, poste_col_w[i], POSTE_ROW_H, line_rgb=WF_BORDER_RGB, line_pt=0.5)
+                    add_text(slide, xx, yy, poste_col_w[i], POSTE_ROW_H, val, size=8, color=WF_TEXT_RGB,
+                             align=PP_ALIGN.CENTER)
+                    xx += poste_col_w[i]
+                yy += POSTE_ROW_H
+            if postes_overflow > 0:
+                add_text(slide, left_x, yy, content_w, POSTE_ROW_H, f"+ {postes_overflow} más…",
+                         size=8, italic=True, color=WF_MUTED_RGB)
+                yy += POSTE_ROW_H
+            table_bottom_y = yy + Cm(0.2)
+
+            # ---- SECCIÓN INFERIOR: izquierda Actividades, derecha mini-tablas --
+            _wf_rect(slide, divider_x, table_bottom_y, Pt(1.3), bottom_y - table_bottom_y, fill_rgb=BRAND_RGB)
+
+            y2 = _section_title(left_x, table_bottom_y, col_w, "Se supervisa las siguientes actividades")
+            act_h = max(Cm(1.5), bottom_y - y2)
+            _wf_bullets(slide, left_x, y2, col_w, act_h, actividades or [], max_items=6, font_size=10.5)
+
+            y3 = table_bottom_y
+            tbl_gutter = Cm(0.5)
+            tbl_w = (col_w - tbl_gutter) // 2
+            tbl_avail_h = bottom_y - y3
+
+            def _draw_mini_table2(x: int, y_top: int, w: int, title: str, rows: list, icon_kind: str,
+                                   col1_header: str = "RECURSO") -> None:
+                mini_r = int(Cm(0.4))
+                HEADER_H = Cm(0.75)
+                ROW_H = Cm(0.5)
+                TOTAL_H = Cm(0.65)
+                cx3, cy3 = x + mini_r, y_top + mini_r
+                if icon_kind == "person":
+                    _wf_person_icon(slide, cx3, cy3, mini_r)
+                else:
+                    _wf_gear_icon(slide, cx3, cy3, mini_r)
+                add_text(slide, x + 2 * mini_r + Cm(0.2), y_top + int(mini_r * 0.35),
+                         w - 2 * mini_r - Cm(0.2), Cm(0.6), title.upper(), size=10.5, bold=True, color=READABLE_BRAND_RGB)
+                yy2 = y_top + 2 * mini_r + Cm(0.15)
+                _wf_rect(slide, x, yy2, w, HEADER_H, fill_rgb=BRAND_RGB)
+                add_text(slide, x + Cm(0.15), yy2 + Cm(0.08), int(w * 0.6), HEADER_H - Cm(0.1), col1_header,
+                         size=9, bold=True, color=HEADER_TEXT_RGB)
+                add_text(slide, x + int(w * 0.55), yy2 + Cm(0.08), int(w * 0.4), HEADER_H - Cm(0.1), "CANTIDAD",
+                         size=9, bold=True, color=HEADER_TEXT_RGB, align=PP_ALIGN.RIGHT)
+                yy2 += HEADER_H
+                total_qty = sum(r["qty"] for r in rows)
+                max_rows2 = max(1, int((tbl_avail_h - 2 * mini_r - Cm(0.15) - HEADER_H - TOTAL_H) / ROW_H))
+                shown = rows[:max_rows2]
+                overflow = len(rows) - len(shown)
+                for idx, r in enumerate(shown):
+                    if idx % 2 == 1:
+                        _wf_rect(slide, x, yy2, w, ROW_H, fill_rgb=WF_ZEBRA_TINT_RGB)
+                    main, _ = _format_workforce_desc(r["desc"])
+                    add_text(slide, x + Cm(0.15), yy2 + Cm(0.05), int(w * 0.6), ROW_H - Cm(0.1),
+                             main or "—", size=9, color=WF_TEXT_RGB)
+                    add_text(slide, x + int(w * 0.55), yy2 + Cm(0.05), int(w * 0.4), ROW_H - Cm(0.1),
+                             str(r["qty"]), size=9, bold=True, color=READABLE_BRAND_RGB, align=PP_ALIGN.RIGHT)
+                    _wf_rect(slide, x, yy2 + ROW_H - Pt(0.75), w, Pt(0.75), fill_rgb=WF_BORDER_RGB)
+                    yy2 += ROW_H
+                if overflow > 0:
+                    add_text(slide, x + Cm(0.15), yy2 + Cm(0.05), w - Cm(0.3), ROW_H - Cm(0.1),
+                             f"+ {overflow} más…", size=8, italic=True, color=WF_MUTED_RGB)
+                    yy2 += ROW_H
+                if not rows:
+                    add_text(slide, x + Cm(0.15), yy2 + Cm(0.05), w - Cm(0.3), ROW_H - Cm(0.1),
+                             "Sin registros", size=9, italic=True, color=WF_MUTED_RGB)
+                    yy2 += ROW_H
+                _wf_rect(slide, x, yy2, w, TOTAL_H, fill_rgb=WF_TOTAL_TINT_RGB)
+                _wf_rect(slide, x, yy2, w, Pt(1.6), fill_rgb=BRAND_RGB)
+                add_text(slide, x + Cm(0.15), yy2 + Cm(0.1), int(w * 0.5), TOTAL_H - Cm(0.15),
+                         "TOTAL", size=10, bold=True, color=READABLE_BRAND_RGB)
+                add_text(slide, x + int(w * 0.4), yy2 + Cm(0.1), int(w * 0.55), TOTAL_H - Cm(0.15),
+                         str(total_qty), size=10, bold=True, color=READABLE_BRAND_RGB, align=PP_ALIGN.RIGHT)
+
+            _draw_mini_table2(right_x, y3, tbl_w, "Fuerza de Trabajo", personal_rows, "person", col1_header="PERSONAL")
+            _draw_mini_table2(right_x + tbl_w + tbl_gutter, y3, tbl_w, "Maquinaria y Equipo", maquinaria_rows, "gear",
+                               col1_header="MAQUINARIA Y EQUIPO")
+
         _emitted_recuento_general_title = False
 
         def _emit_recuento_general_slides() -> None:
@@ -13387,27 +14006,43 @@ async def export_reports_pptx(
             acceso_node = _resolve_acceso_predio_node(subtramo_id, subtramo_node, nodes_by_subtramo)
             personal_rows = (totals or {}).get("personal") or []
             maquinaria_rows = (totals or {}).get("maquinaria") or []
+            es_intertramo = subtramo_node.get("tipo_nodo") == "intertramo"
+            postes = sorted(
+                (n for n in nodes_by_id.values() if n.get("parent_id") == subtramo_id),
+                key=lambda n: (n.get("order", 0), n.get("name", "")),
+            ) if es_intertramo else []
             # FIX: mismo caso que en el motor PDF (`_emit_subtramo_summary`)
             # — "Acceso al Predio" es estado persistente del nodo, no
             # derivado de reportes del período; un Subtramo sin
             # personal/maquinaria capturados en el período no debe perder
-            # su slide de Acceso al Predio si el panel lo tiene configurado.
+            # su slide de Acceso al Predio si el panel lo tiene configurado
+            # (o, para Intertramo, sus postes definidos en el árbol).
             has_persistent_content = bool(
                 (acceso_node and (acceso_node.get("acceso_predio") or "").strip())
                 or (acceso_node and (acceso_node.get("situacion_social") or "").strip())
                 or (actividades_by_subtramo.get(subtramo_id) or [])
+                or postes
             )
             if not personal_rows and not maquinaria_rows and not has_persistent_content:
                 return
-            draw_subtramo_summary_slide(
-                subtramo_node, personal_rows, maquinaria_rows,
-                actividades_by_subtramo.get(subtramo_id) or [],
-                acceso_node.get("situacion_social") if acceso_node else None,
-                acceso_node.get("acceso_predio") if acceso_node else None,
-                weather_by_subtramo.get(subtramo_id),
-                mostrar_acceso_predio=acceso_node is not None,
-                acceso_node_label=(acceso_node.get("name") if acceso_node else None),
-            )
+            if es_intertramo:
+                draw_intertramo_summary_slide(
+                    subtramo_node, personal_rows, maquinaria_rows,
+                    actividades_by_subtramo.get(subtramo_id) or [],
+                    acceso_node.get("situacion_social") if acceso_node else None,
+                    postes,
+                    mostrar_situacion=acceso_node is not None,
+                )
+            else:
+                draw_subtramo_summary_slide(
+                    subtramo_node, personal_rows, maquinaria_rows,
+                    actividades_by_subtramo.get(subtramo_id) or [],
+                    acceso_node.get("situacion_social") if acceso_node else None,
+                    acceso_node.get("acceso_predio") if acceso_node else None,
+                    weather_by_subtramo.get(subtramo_id),
+                    mostrar_acceso_predio=acceso_node is not None,
+                    acceso_node_label=(acceso_node.get("name") if acceso_node else None),
+                )
 
         def _emit_actividades_area_slides(area_name: str, node_path: str, items: List[str]) -> None:
             """Slide(s) "RESUMEN DE ACTIVIDADES" insertadas justo después de
