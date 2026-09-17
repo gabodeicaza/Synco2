@@ -116,6 +116,8 @@ export default function SubCoordLayout() {
         <Tabs.Screen name="impacto-ambiental" options={{ href: null }} />
         <Tabs.Screen name="tabla-resumen" options={{ href: null }} />
         <Tabs.Screen name="estado-tiempo" options={{ href: null }} />
+        {/* Hub de módulos activos — alcanzable via router.push (menu hamburgues), sin tab visible. */}
+        <Tabs.Screen name="modulos" options={{ href: null }} />
         {/* Plano de Avance y Presentación — siempre visibles (como
             Dashboard EVM), no pasan por el toggle de módulos por proyecto. */}
         <Tabs.Screen name="plano-avance" options={{ href: null }} />

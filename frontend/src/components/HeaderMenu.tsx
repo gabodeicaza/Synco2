@@ -27,7 +27,6 @@ export function HeaderMenu({ basePath, projectId }: HeaderMenuProps) {
   // Acordeon del grupo "Catalogo de Conceptos" (3 sub-opciones) dentro del
   // mismo Modal — evita un segundo Modal anidado solo para agrupar items.
   const [catalogoOpen, setCatalogoOpen] = useState(false);
-  const [actividadesOpen, setActividadesOpen] = useState(false);
 
   // Sistema Multi-Proyecto Modular: qué plantillas están encendidas para el
   // proyecto actual (ver src/utils/modulos.ts para el catálogo del lado del
@@ -52,7 +51,6 @@ export function HeaderMenu({ basePath, projectId }: HeaderMenuProps) {
   ) {
     setOpen(false);
     setCatalogoOpen(false);
-    setActividadesOpen(false);
     // Estas pantallas necesitan project_id para cargar (algunas, como
     // Acceso al Predio, se quedan en blanco sin él) — si el dashboard
     // todavía no terminó de cargar los proyectos, `projectId` llega null
@@ -112,22 +110,14 @@ export function HeaderMenu({ basePath, projectId }: HeaderMenuProps) {
               </View>
             ) : null}
 
-            {/* Grupo "Actividades Generales": vista curada de las actividades
-                ya capturadas en reportes — Generales, o por Ubicación
-                (fusiona los antiguos "Por Estación"/"Por Poste", ver
-                ActividadesGeneralesScreen.tsx). */}
-            <MenuItem
-              icon="reader-outline"
-              label="Actividades Generales"
-              onPress={() => setActividadesOpen((v) => !v)}
-              trailingIcon={actividadesOpen ? 'chevron-up' : 'chevron-down'}
-            />
-            {actividadesOpen ? (
-              <View style={styles.submenu}>
-                <MenuItem icon="globe-outline" label="Generales" onPress={() => goTo('actividades-generales', { nivel: 'GENERAL' })} indented />
-                <MenuItem icon="location-outline" label="Por Ubicación" onPress={() => goTo('actividades-generales', { nivel: 'NODO' })} indented />
-              </View>
-            ) : null}
+            {/* Actividades Generales: vista curada de las actividades ya
+                capturadas en reportes — Generales, o por Ubicación (fusiona
+                los antiguos "Por Estación"/"Por Poste"). Antes un acordeón
+                con 2 sub-opciones aquí mismo; la pantalla destino ya tiene
+                sus propios tabs para cambiar entre ambas
+                (ActividadesGeneralesScreen.tsx), así que un solo botón
+                basta — entra directo a "Generales". */}
+            <MenuItem icon="reader-outline" label="Actividades Generales" onPress={() => goTo('actividades-generales', { nivel: 'GENERAL' })} />
 
             {/* Vista ejecutiva de costo/tiempo (Valor Ganado) — no es una
                 captura de campo, por eso vive suelto y no dentro del grupo
@@ -147,21 +137,16 @@ export function HeaderMenu({ basePath, projectId }: HeaderMenuProps) {
               <MenuItem icon="shield-checkmark-outline" label="Acceso al Predio" onPress={() => goTo('acceso-predio')} />
             ) : null}
 
-            {/* Sistema Multi-Proyecto Modular: solo aparecen los módulos que
-                el Coordinador encendió para ESTE proyecto (ver `modulos` en
-                GET /projects/{pid} y src/utils/modulos.ts), en UNA SOLA
-                sección "Módulos" — misma presentación (lista plana, sin
-                agrupar por área) que la pestaña Operación de Coordinador
-                General (index.tsx). Si `modulos` aún no cargó o el proyecto
-                no tiene nada activo, esta sección no pinta nada — nunca se
-                asume "encendido" por default. */}
+            {/* Sistema Multi-Proyecto Modular: con varios módulos encendidos
+                a la vez, listarlos aquí mismo (aunque fuera en una sola
+                sección plana) rompía el layout del dropdown — ver
+                ModulosHubScreen.tsx. Ahora un solo botón lleva a una
+                pantalla propia con la lista completa. Solo aparece si el
+                Coordinador encendió AL MENOS un módulo para este proyecto
+                (ver `modulos` en GET /projects/{pid} y src/utils/modulos.ts)
+                — nunca se asume "encendido" por default. */}
             {modulosActivos(modulos).length > 0 ? (
-              <View>
-                <Text style={styles.groupLabel}>Módulos</Text>
-                {modulosActivos(modulos).map((m) => (
-                  <MenuItem key={m.key} icon={m.icon} label={m.label} onPress={() => goTo(m.screen)} />
-                ))}
-              </View>
+              <MenuItem icon="apps-outline" label="Módulos" onPress={() => goTo('modulos')} />
             ) : null}
 
             <View style={styles.divider} />
@@ -260,15 +245,5 @@ const styles = StyleSheet.create({
     height: 1,
     backgroundColor: colors.border,
     marginVertical: spacing.xs,
-  },
-  groupLabel: {
-    fontSize: 11,
-    fontWeight: '800',
-    color: colors.textMuted,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-    paddingHorizontal: spacing.md,
-    paddingTop: spacing.xs,
-    paddingBottom: 2,
   },
 });
