@@ -234,6 +234,35 @@ export interface ForestalResumen {
   contadores: { poda: number; trasplante: number; derribo: number };
 }
 
+export interface ForestalAutorizadoRow {
+  id: string;
+  project_id: string;
+  estacion: string;
+  orden: number;
+  poda: number;
+  trasplante: number;
+  derribo: number;
+  total_dictaminados: number;
+  updated_by: string;
+  updated_by_name: string;
+  updated_at: string;
+}
+
+export interface ForestalSemanalDia {
+  fecha: string;
+  poda: number;
+  trasplante: number;
+  derribo: number;
+  total: number;
+}
+
+export interface ForestalSemanal {
+  desde: string;
+  hasta: string;
+  dias: ForestalSemanalDia[];
+  subtotal: { poda: number; trasplante: number; derribo: number; total: number };
+}
+
 export interface SeguridadReporte {
   id: string;
   project_id: string;
@@ -1796,6 +1825,17 @@ export const api = {
     cantidad: number; fecha?: string; notas?: string | null; images?: string[];
   }) => request<ForestalRegistro>('POST', `/projects/${pid}/forestal-registros`, body),
   forestalResumen: (pid: string) => request<ForestalResumen>('GET', `/projects/${pid}/forestal-registros/resumen`),
+  forestalSemanal: (pid: string, desde: string) =>
+    request<ForestalSemanal>('GET', `/projects/${pid}/forestal-registros/semanal?desde=${desde}`),
+  listForestalAutorizado: (pid: string) => request<ForestalAutorizadoRow[]>('GET', `/projects/${pid}/forestal-autorizado`),
+  createForestalAutorizado: (pid: string, body: {
+    estacion: string; orden?: number; poda?: number; trasplante?: number; derribo?: number; total_dictaminados?: number;
+  }) => request<ForestalAutorizadoRow>('POST', `/projects/${pid}/forestal-autorizado`, body),
+  updateForestalAutorizado: (pid: string, rowId: string, body: Partial<{
+    estacion: string; orden: number; poda: number; trasplante: number; derribo: number; total_dictaminados: number;
+  }>) => request<ForestalAutorizadoRow>('PATCH', `/projects/${pid}/forestal-autorizado/${rowId}`, body),
+  deleteForestalAutorizado: (pid: string, rowId: string) =>
+    request<{ ok: boolean }>('DELETE', `/projects/${pid}/forestal-autorizado/${rowId}`),
 
   // === Módulo piloto: Seguridad e Higiene ===
   listSeguridadReportes: (pid: string) => request<SeguridadReporte[]>('GET', `/projects/${pid}/seguridad-reportes`),
