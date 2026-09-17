@@ -7693,6 +7693,33 @@ def _fmt_fecha_es(dt: datetime) -> str:
         return dt.strftime("%Y-%m-%d") if isinstance(dt, datetime) else "—"
 
 
+def _fmt_dia_corto_es(fecha_iso: str) -> str:
+    """Formato ej. '16 de junio de 2026' a partir de una fecha ISO (string,
+    YYYY-MM-DD) — para renglones de tabla día-por-día (hoja de Forestal)."""
+    try:
+        d = date.fromisoformat(fecha_iso)
+        return f"{d.day} de {_MESES_ES[d.month - 1].lower()} de {d.year}"
+    except Exception:
+        return fecha_iso
+
+
+def _fmt_rango_dias_es(desde_iso: str, hasta_iso: str) -> str:
+    """Formato ej. 'DEL 15 AL 20 DE JUNIO DE 2026' a partir de un rango de
+    fechas ISO — encabezado de la tabla de actividades ejecutadas del
+    período (hoja de Forestal y Arbolado)."""
+    try:
+        d1 = date.fromisoformat(desde_iso)
+        d2 = date.fromisoformat(hasta_iso)
+    except Exception:
+        return f"DEL {desde_iso} AL {hasta_iso}"
+    if d1.month == d2.month and d1.year == d2.year:
+        return f"DEL {d1.day} AL {d2.day} DE {_MESES_ES[d2.month - 1].upper()} DE {d2.year}"
+    return (
+        f"DEL {d1.day} DE {_MESES_ES[d1.month - 1].upper()} "
+        f"AL {d2.day} DE {_MESES_ES[d2.month - 1].upper()} DE {d2.year}"
+    )
+
+
 def _fmt_fecha_dd_mm_yyyy(dt) -> str:
     """Formato corto DD-MM-YYYY en zona horaria America/Mexico_City.
 
@@ -8809,10 +8836,166 @@ async def export_reports_pdf(
                     else:
                         y -= 4
 
+            # --- Bloques bespoke calcados de las hojas Excel de referencia
+            # (Forestal y Arbolado / Mapa de Riesgos) — a diferencia de
+            # summary/table/list (genéricos, cualquier módulo), estos dos
+            # solo los usan esos módulos porque necesitan colores fijos,
+            # una segunda tabla y/o celdas combinadas que el esquema
+            # genérico no contempla.
+            SHEET_TITLE = HexColor("#7A1030")
+            SHEET_GREEN = HexColor("#2E7D32")
+            SHEET_GREEN_BG = HexColor("#EAF4EA")
+            SHEET_GREEN_TOTAL = HexColor("#DDEBDD")
+            SHEET_SALMON = HexColor("#F4B183")
+            SHEET_PINK = HexColor("#F6D9E6")
+            SHEET_SUBTOTAL = HexColor("#DCEEFB")
+
+            def _draw_bar(text: str, bg: HexColor, h: float = 0.9 * cm) -> None:
+                nonlocal y
+                _ensure_space(h + 4)
+                c.setFillColor(bg)
+                c.rect(left_x, y - h, content_w, h, fill=1, stroke=0)
+                c.setFillColor(SHEET_TITLE)
+                c.setFont("Helvetica-Bold", 10)
+                c.drawCentredString(PW / 2, y - h / 2 - 3, text.upper())
+                y -= h + 8
+
+            def _draw_forestal_sheet_block(block: dict) -> None:
+                nonlocal y
+                autorizado_rows = block.get("autorizado_rows") or []
+                total = block.get("autorizado_total") or {"poda": 0, "trasplante": 0, "derribo": 0, "total_dictaminados": 0}
+                contadores = block.get("contadores") or {"poda": 0, "trasplante": 0, "derribo": 0}
+
+                _draw_bar("Resumen Arbolado autorizado mediante Resolución Admva.", SHEET_SALMON)
+
+                headers = ["Estación", "Poda", "Trasplante", "Derribo", "Total árboles"]
+                widths = [0.34, 0.16, 0.17, 0.16, 0.17]
+                data = [headers]
+                for r in autorizado_rows:
+                    data.append([r["estacion"], str(r["poda"]), str(r["trasplante"]), str(r["derribo"]), str(r["total_dictaminados"])])
+                data.append(["TOTAL", str(total["poda"]), str(total["trasplante"]), str(total["derribo"]), str(total["total_dictaminados"])])
+                style = [
+                    ("BACKGROUND", (0, 0), (-1, 0), SHEET_GREEN),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), WHITE),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
+                    ("BACKGROUND", (0, -1), (-1, -1), SHEET_GREEN_TOTAL),
+                    ("LINEABOVE", (0, -1), (-1, -1), 1.2, SHEET_GREEN),
+                    ("FONTSIZE", (0, 0), (-1, -1), 9),
+                    ("GRID", (0, 0), (-1, -1), 0.5, BORDER),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("ALIGN", (1, 0), (-1, -1), "CENTER"),
+                    ("TOPPADDING", (0, 0), (-1, -1), 5),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                ]
+                if len(data) > 2:
+                    style.append(("ROWBACKGROUNDS", (0, 1), (-1, -2), [WHITE, SHEET_GREEN_BG]))
+                tbl = Table(data, colWidths=[content_w * w for w in widths])
+                tbl.setStyle(TableStyle(style))
+                _ensure_space(2.0 * cm)
+                tw, th = tbl.wrapOn(c, content_w, y - bottom_y)
+                tbl.drawOn(c, left_x, y - th)
+                y -= th + 14
+
+                _ensure_space(1.2 * cm)
+                c.setFillColor(TEXT)
+                c.setFont("Helvetica-Bold", 12)
+                c.drawCentredString(
+                    PW / 2, y,
+                    f"Podas: {contadores['poda']}/{total['poda']}    "
+                    f"Trasplantes: {contadores['trasplante']}/{total['trasplante']}    "
+                    f"Derribos: {contadores['derribo']}/{total['derribo']}",
+                )
+                y -= 12 * 2.4
+
+                desde, hasta = block.get("desde"), block.get("hasta")
+                if desde and hasta:
+                    _draw_bar(f"Actividades ejecutadas {_fmt_rango_dias_es(desde, hasta)}", SHEET_PINK)
+                    dias = block.get("dias") or []
+                    d_headers = ["Fecha", "Podas", "Trasplantes", "Derribos", "Total"]
+                    d_widths = [0.36, 0.16, 0.18, 0.16, 0.14]
+                    d_data = [d_headers]
+                    sub = {"poda": 0, "trasplante": 0, "derribo": 0, "total": 0}
+                    for dia in dias:
+                        d_data.append([
+                            _fmt_dia_corto_es(dia["fecha"]), str(dia["poda"]), str(dia["trasplante"]),
+                            str(dia["derribo"]), str(dia["total"]),
+                        ])
+                        for k in sub:
+                            sub[k] += dia[k]
+                    d_data.append(["SUBTOTAL", str(sub["poda"]), str(sub["trasplante"]), str(sub["derribo"]), str(sub["total"])])
+                    d_style = [
+                        ("BACKGROUND", (0, 0), (-1, 0), HexColor("#F1F5F9")),
+                        ("TEXTCOLOR", (0, 0), (-1, 0), MUTED),
+                        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                        ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
+                        ("BACKGROUND", (0, -1), (-1, -1), SHEET_SUBTOTAL),
+                        ("FONTSIZE", (0, 0), (-1, -1), 9),
+                        ("GRID", (0, 0), (-1, -1), 0.5, BORDER),
+                        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                        ("ALIGN", (1, 0), (-1, -1), "CENTER"),
+                        ("TOPPADDING", (0, 0), (-1, -1), 5),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                    ]
+                    d_tbl = Table(d_data, colWidths=[content_w * w for w in d_widths])
+                    d_tbl.setStyle(TableStyle(d_style))
+                    _ensure_space(2.0 * cm)
+                    dtw, dth = d_tbl.wrapOn(c, content_w, y - bottom_y)
+                    d_tbl.drawOn(c, left_x, y - dth)
+                    y -= dth + 14
+
+            def _draw_riesgos_mapa_block(block: dict) -> None:
+                nonlocal y
+                grupos = block.get("grupos") or []
+                if not grupos:
+                    _draw_empty("Sin riesgos registrados en este período.")
+                    return
+                MAROON = HexColor("#8B1E3F")
+                headers = ["Estaciones/Postes", "Riesgos", "Propuesta de control", "Avance"]
+                widths = [0.14, 0.32, 0.42, 0.12]
+                data = [headers]
+                span_cmds = []
+                row_i = 1
+                for g in grupos:
+                    filas = g.get("filas") or []
+                    if not filas:
+                        continue
+                    start_row = row_i
+                    for idx, f in enumerate(filas):
+                        riesgo_txt = f"{idx + 1}) {f['descripcion']}"
+                        data.append([
+                            Paragraph(_xml_escape(g["estacion"]), cell_style) if idx == 0 else "",
+                            Paragraph(_xml_escape(riesgo_txt), cell_style),
+                            Paragraph(_xml_escape(f["control"]).replace("\n", "<br/>"), cell_style),
+                            f"{f['avance']}%",
+                        ])
+                        row_i += 1
+                    if len(filas) > 1:
+                        span_cmds.append(("SPAN", (0, start_row), (0, row_i - 1)))
+                style = [
+                    ("BACKGROUND", (0, 0), (-1, 0), MAROON),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), WHITE),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("FONTSIZE", (0, 0), (-1, -1), 9),
+                    ("GRID", (0, 0), (-1, -1), 0.5, BORDER),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("ALIGN", (-1, 0), (-1, -1), "CENTER"),
+                    ("TOPPADDING", (0, 0), (-1, -1), 5),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                ] + span_cmds
+                tbl = Table(data, colWidths=[content_w * w for w in widths])
+                tbl.setStyle(TableStyle(style))
+                _ensure_space(2.0 * cm)
+                tw, th = tbl.wrapOn(c, content_w, y - bottom_y)
+                tbl.drawOn(c, left_x, y - th)
+                y -= th + 14
+
             _BLOCK_RENDERERS = {
                 "summary": _draw_summary_block,
                 "table": _draw_table_block,
                 "list": _draw_list_block,
+                "forestal_sheet": _draw_forestal_sheet_block,
+                "riesgos_mapa": _draw_riesgos_mapa_block,
             }
 
             for _mod_data in modulos_data.values():
@@ -10816,10 +10999,13 @@ async def _gather_modulos_export_data(
 
     Regla explícita del Coordinador: un módulo apagado para esta categoría
     NUNCA aparece en la impresión, sin importar si tiene datos capturados
-    (`out[clave]` queda None). Uno encendido SIEMPRE aparece, aunque no haya
-    nada capturado en el período — cada bloque trae su propio `empty_text`,
-    nunca se omite la sección en silencio, para que quede claro que el
-    módulo está activo pero no tuvo actividad ese período.
+    (`out[clave]` queda None). Uno encendido pero SIN NINGÚN dato capturado
+    en el período TAMPOCO aparece (se omite la hoja/sección completa,
+    silenciosamente) — antes se imprimía igual con un texto "sin registros"
+    para dejar constancia de que el módulo estaba activo; el Coordinador
+    pidió lo contrario: una hoja en blanco en el reporte impreso confunde
+    más de lo que aclara, así que si no hubo actividad simplemente no se
+    imprime nada de ese módulo ese período.
 
     Se filtra por `created_at` (mismo criterio que `reports`), NO por el
     campo `fecha` (string) — created_at es el datetime real de captura y
@@ -10837,42 +11023,54 @@ async def _gather_modulos_export_data(
     ]}
 
     if activos.get("forestal_arbolado"):
-        cursor = db.forestal_registros.aggregate([
-            {"$match": {"project_id": pid, **date_q}},
-            {"$group": {
-                "_id": {"estacion": {"$ifNull": ["$estacion_nombre", "Sin estación"]}, "tipo": "$tipo"},
-                "total": {"$sum": "$cantidad"},
-            }},
-        ])
-        rows = await cursor.to_list(length=5000)
-        por_estacion: Dict[str, Dict[str, int]] = {}
-        contadores = {"poda": 0, "trasplante": 0, "derribo": 0}
-        for r in rows:
-            estacion = r["_id"]["estacion"]
-            tipo = r["_id"]["tipo"]
-            total = r["total"]
-            por_estacion.setdefault(estacion, {"poda": 0, "trasplante": 0, "derribo": 0})
-            por_estacion[estacion][tipo] = total
-            if tipo in contadores:
-                contadores[tipo] += total
-        tabla = [{"estacion": estacion, **conteos} for estacion, conteos in sorted(por_estacion.items())]
-        out["forestal"] = {
-            "titulo": "FORESTAL Y ARBOLADO",
-            "blocks": [
-                {
-                    "type": "summary",
-                    "text": f"Podas: {contadores['poda']}    Trasplantes: {contadores['trasplante']}    Derribos: {contadores['derribo']}",
-                },
-                {
-                    "type": "table",
-                    "heading": None,
-                    "headers": ["Estación", "Podas", "Trasplantes", "Derribos"],
-                    "rows": [[t["estacion"], str(t["poda"]), str(t["trasplante"]), str(t["derribo"])] for t in tabla],
-                    "col_widths": [0.4, 0.2, 0.2, 0.2],
-                    "empty_text": "Sin registros forestales en este período.",
-                },
-            ],
-        }
+        registros_periodo = await db.forestal_registros.find({"project_id": pid, **date_q}).to_list(length=5000)
+        if registros_periodo:
+            cursor = db.forestal_registros.aggregate([
+                {"$match": {"project_id": pid, **date_q}},
+                {"$group": {"_id": {"fecha": "$fecha", "tipo": "$tipo"}, "total": {"$sum": "$cantidad"}}},
+            ])
+            rows = await cursor.to_list(length=5000)
+            d0 = start_dt.astimezone(MX_TZ).date()
+            d1 = end_dt.astimezone(MX_TZ).date()
+            fechas: List[str] = []
+            d = d0
+            while d <= d1 and len(fechas) < 31:
+                fechas.append(d.isoformat())
+                d += timedelta(days=1)
+            por_fecha: Dict[str, Dict[str, int]] = {f: {"poda": 0, "trasplante": 0, "derribo": 0} for f in fechas}
+            for r in rows:
+                f = r["_id"]["fecha"]
+                tipo = r["_id"]["tipo"]
+                if f in por_fecha and tipo in por_fecha[f]:
+                    por_fecha[f][tipo] = r["total"]
+            dias = []
+            contadores = {"poda": 0, "trasplante": 0, "derribo": 0}
+            for f in fechas:
+                conteos = por_fecha[f]
+                for k in contadores:
+                    contadores[k] += conteos[k]
+                dias.append({"fecha": f, **conteos, "total": sum(conteos.values())})
+            autorizado_rows = await db.forestal_autorizado.find({"project_id": pid}).sort("orden", 1).to_list(length=200)
+            for it in autorizado_rows:
+                it.pop("_id", None)
+            total_autorizado = {"poda": 0, "trasplante": 0, "derribo": 0, "total_dictaminados": 0}
+            for r in autorizado_rows:
+                total_autorizado["poda"] += r.get("poda", 0)
+                total_autorizado["trasplante"] += r.get("trasplante", 0)
+                total_autorizado["derribo"] += r.get("derribo", 0)
+                total_autorizado["total_dictaminados"] += r.get("total_dictaminados", 0)
+            out["forestal"] = {
+                "titulo": "TRATAMIENTO DE ARBOLADO",
+                "blocks": [{
+                    "type": "forestal_sheet",
+                    "autorizado_rows": autorizado_rows,
+                    "autorizado_total": total_autorizado,
+                    "contadores": contadores,
+                    "dias": dias,
+                    "desde": fechas[0] if fechas else None,
+                    "hasta": fechas[-1] if fechas else None,
+                }],
+            }
 
     if activos.get("seguridad_higiene"):
         reportes = await db.seguridad_reportes.find(
@@ -10893,40 +11091,45 @@ async def _gather_modulos_export_data(
             "extra": None,
             "meta": chk.get("captured_by_name") or "—",
         } for chk in checklists for it in (chk.get("items") or [])]
-        out["seguridad"] = {
-            "titulo": "SEGURIDAD E HIGIENE",
-            "blocks": [
-                {
-                    "type": "list", "heading": "Reportes de accidentes", "heading_color": None,
-                    "items": reporte_items, "empty_text": "Sin reportes de accidentes en este período.",
-                },
-                {
-                    "type": "list", "heading": "Checklist preventivo / correctivo", "heading_color": None,
-                    "items": checklist_items, "empty_text": "Sin checklist capturado en este período.",
-                },
-            ],
-        }
+        if reportes or checklists:
+            out["seguridad"] = {
+                "titulo": "SEGURIDAD E HIGIENE",
+                "blocks": [
+                    {
+                        "type": "list", "heading": "Reportes de accidentes", "heading_color": None,
+                        "items": reporte_items, "empty_text": "Sin reportes de accidentes en este período.",
+                    },
+                    {
+                        "type": "list", "heading": "Checklist preventivo / correctivo", "heading_color": None,
+                        "items": checklist_items, "empty_text": "Sin checklist capturado en este período.",
+                    },
+                ],
+            }
 
     if activos.get("gestion_riesgos"):
         registros = await db.riesgos_registros.find(
             {"project_id": pid, **mutable_date_q}
         ).sort("estacion_nombre", 1).to_list(length=2000)
-        out["riesgos"] = {
-            "titulo": "GESTIÓN DE RIESGOS",
-            "blocks": [{
-                "type": "table",
-                "heading": None,
-                "headers": ["Estación/Poste", "Descripción del riesgo", "Propuesta de control", "% Avance"],
-                "rows": [[
-                    r.get("estacion_nombre") or "—",
-                    r.get("descripcion_riesgo") or "",
-                    r.get("propuesta_control") or "",
-                    f"{r.get('porcentaje_avance', 0)}%",
-                ] for r in registros],
-                "col_widths": [0.18, 0.34, 0.34, 0.14],
-                "empty_text": "Sin riesgos registrados en este período.",
-            }],
-        }
+        if registros:
+            grupos_orden: List[str] = []
+            grupos: Dict[str, list] = {}
+            for r in registros:
+                estacion = r.get("estacion_nombre") or "—"
+                if estacion not in grupos:
+                    grupos_orden.append(estacion)
+                    grupos[estacion] = []
+                grupos[estacion].append({
+                    "descripcion": r.get("descripcion_riesgo") or "",
+                    "control": r.get("propuesta_control") or "",
+                    "avance": r.get("porcentaje_avance", 0),
+                })
+            out["riesgos"] = {
+                "titulo": "MAPA DE RIESGOS",
+                "blocks": [{
+                    "type": "riesgos_mapa",
+                    "grupos": [{"estacion": e, "filas": grupos[e]} for e in grupos_orden],
+                }],
+            }
 
     if activos.get("estudios_proyecto"):
         actividades = await db.estudios_actividades.find(
@@ -10941,22 +11144,23 @@ async def _gather_modulos_export_data(
             "extra": None,
             "meta": f"Registró: {b.get('captured_by_name') or '—'}",
         } for b in bitacora]
-        out["estudios"] = {
-            "titulo": "ESTUDIOS Y PROYECTO EJECUTIVO",
-            "blocks": [
-                {
-                    "type": "table", "heading": "Avance por actividad",
-                    "headers": ["Actividad", "% Avance"],
-                    "rows": [[a.get("nombre", "—"), f"{a.get('porcentaje_avance', 0)}%"] for a in actividades],
-                    "col_widths": [0.7, 0.3],
-                    "empty_text": "Sin actividades registradas en este período.",
-                },
-                {
-                    "type": "list", "heading": "Bitácora por disciplina", "heading_color": None,
-                    "items": bitacora_items, "empty_text": "Sin notas de bitácora en este período.",
-                },
-            ],
-        }
+        if actividades or bitacora:
+            out["estudios"] = {
+                "titulo": "ESTUDIOS Y PROYECTO EJECUTIVO",
+                "blocks": [
+                    {
+                        "type": "table", "heading": "Avance por actividad",
+                        "headers": ["Actividad", "% Avance"],
+                        "rows": [[a.get("nombre", "—"), f"{a.get('porcentaje_avance', 0)}%"] for a in actividades],
+                        "col_widths": [0.7, 0.3],
+                        "empty_text": "Sin actividades registradas en este período.",
+                    },
+                    {
+                        "type": "list", "heading": "Bitácora por disciplina", "heading_color": None,
+                        "items": bitacora_items, "empty_text": "Sin notas de bitácora en este período.",
+                    },
+                ],
+            }
 
     if activos.get("impacto_ambiental"):
         auditoria = await db.ambiental_auditoria.find(
@@ -10971,21 +11175,22 @@ async def _gather_modulos_export_data(
                 "meta": f"{a.get('fecha', '—')} · {a.get('captured_by_name') or '—'}",
             } for a in auditoria if a.get("tipo") == tipo]
 
-        out["ambiental"] = {
-            "titulo": "IMPACTO AMBIENTAL",
-            "blocks": [
-                {
-                    "type": "list", "heading": "Cumplimientos", "heading_color": "good",
-                    "items": _audit_items("cumplimiento"),
-                    "empty_text": "Sin cumplimientos registrados en este período.",
-                },
-                {
-                    "type": "list", "heading": "Incumplimientos / Observaciones", "heading_color": "bad",
-                    "items": _audit_items("incumplimiento"),
-                    "empty_text": "Sin incumplimientos registrados en este período.",
-                },
-            ],
-        }
+        if auditoria:
+            out["ambiental"] = {
+                "titulo": "IMPACTO AMBIENTAL",
+                "blocks": [
+                    {
+                        "type": "list", "heading": "Cumplimientos", "heading_color": "good",
+                        "items": _audit_items("cumplimiento"),
+                        "empty_text": "Sin cumplimientos registrados en este período.",
+                    },
+                    {
+                        "type": "list", "heading": "Incumplimientos / Observaciones", "heading_color": "bad",
+                        "items": _audit_items("incumplimiento"),
+                        "empty_text": "Sin incumplimientos registrados en este período.",
+                    },
+                ],
+            }
 
     return out
 
@@ -11471,10 +11676,46 @@ async def export_reports_docx(
                     mr.font.color.rgb = SUBTLE_RGB
                 doc.add_paragraph()
 
+        def _mod_forestal_sheet_block(block: dict):
+            # Word no reproduce el formato exacto de la hoja (fuera de
+            # alcance) — sirve una versión funcional simple: contadores +
+            # tabla de renglones autorizados + tabla de días ejecutados.
+            contadores = block.get("contadores") or {}
+            _mod_summary_block({
+                "text": f"Podas: {contadores.get('poda', 0)}    "
+                        f"Trasplantes: {contadores.get('trasplante', 0)}    "
+                        f"Derribos: {contadores.get('derribo', 0)}",
+            })
+            autorizado_rows = block.get("autorizado_rows") or []
+            if autorizado_rows:
+                _mod_heading("Resumen autorizado mediante resolución administrativa")
+                _mod_table(
+                    ["Estación", "Poda", "Trasplante", "Derribo", "Total árboles"],
+                    [[r["estacion"], r["poda"], r["trasplante"], r["derribo"], r["total_dictaminados"]] for r in autorizado_rows],
+                )
+            dias = block.get("dias") or []
+            if dias:
+                _mod_heading("Actividades ejecutadas en el período")
+                _mod_table(
+                    ["Fecha", "Podas", "Trasplantes", "Derribos", "Total"],
+                    [[d["fecha"], d["poda"], d["trasplante"], d["derribo"], d["total"]] for d in dias],
+                )
+
+        def _mod_riesgos_mapa_block(block: dict):
+            # Idem: versión simple para Word, sin celdas combinadas.
+            rows = []
+            for g in block.get("grupos") or []:
+                for f in g.get("filas") or []:
+                    rows.append([g["estacion"], f["descripcion"], f["control"], f"{f['avance']}%"])
+            if rows:
+                _mod_table(["Estación/Poste", "Riesgo", "Propuesta de control", "Avance"], rows)
+
         _MOD_BLOCK_RENDERERS = {
             "summary": _mod_summary_block,
             "table": _mod_table_block,
             "list": _mod_list_block,
+            "forestal_sheet": _mod_forestal_sheet_block,
+            "riesgos_mapa": _mod_riesgos_mapa_block,
         }
 
         for _mod_data in modulos_data.values():
@@ -12333,10 +12574,154 @@ async def export_reports_pptx(
                                  size=9, italic=True, color=WF_MUTED_RGB)
                         state["y"] += Cm(0.7)
 
+            # --- Bloques bespoke (mismo criterio que el motor PDF): sin
+            # tablas nativas de pptx, se dibujan a mano con `_wf_rect` +
+            # `add_text` — eso permite una "celda combinada" en Riesgos con
+            # solo un rectángulo más alto, sin API de merge de python-pptx.
+            SHEET_TITLE_RGB = (0x7A, 0x10, 0x30)
+            SHEET_GREEN_RGB = (0x2E, 0x7D, 0x32)
+            SHEET_GREEN_BG_RGB = (0xEA, 0xF4, 0xEA)
+            SHEET_GREEN_TOTAL_RGB = (0xDD, 0xEB, 0xDD)
+            SHEET_SALMON_RGB = (0xF4, 0xB1, 0x83)
+            SHEET_PINK_RGB = (0xF6, 0xD9, 0xE6)
+            SHEET_SUBTOTAL_RGB = (0xDC, 0xEE, 0xFB)
+            MAROON_RGB = (0x8B, 0x1E, 0x3F)
+
+            def _draw_bar(titulo_continua: str, text: str, bg_rgb) -> None:
+                _ensure_space(titulo_continua, Cm(1.0))
+                bar_h = Cm(0.9)
+                _wf_rect(state["slide"], MARGIN_X, state["y"], content_w, bar_h, fill_rgb=bg_rgb)
+                add_text(state["slide"], MARGIN_X, state["y"], content_w, bar_h, text.upper(),
+                         size=11, bold=True, color=SHEET_TITLE_RGB, align=PP_ALIGN.CENTER)
+                state["y"] += bar_h + Cm(0.15)
+
+            def _draw_sheet_table(headers, rows, col_fracs, header_rgb, zebra_rgb=None, bold_last=False,
+                                   header_text_rgb=WF_WHITE_RGB, row_h=Cm(0.75)) -> None:
+                widths = [int(content_w * f) for f in col_fracs]
+                header_h = Cm(0.85)
+                x = MARGIN_X
+                y = state["y"]
+                _wf_rect(state["slide"], x, y, content_w, header_h, fill_rgb=header_rgb)
+                cx = x
+                for i, h in enumerate(headers):
+                    add_text(state["slide"], cx, y, widths[i], header_h, h,
+                             size=9.5, bold=True, color=header_text_rgb, align=PP_ALIGN.CENTER)
+                    cx += widths[i]
+                cy = y + header_h
+                n = len(rows)
+                for ridx, row in enumerate(rows):
+                    is_total = bold_last and ridx == n - 1
+                    if is_total:
+                        bg = SHEET_GREEN_TOTAL_RGB if header_rgb == SHEET_GREEN_RGB else SHEET_SUBTOTAL_RGB
+                    elif zebra_rgb and ridx % 2 == 1:
+                        bg = zebra_rgb
+                    else:
+                        bg = WF_WHITE_RGB
+                    _wf_rect(state["slide"], x, cy, content_w, row_h, fill_rgb=bg, line_rgb=WF_BORDER_RGB, line_pt=0.5)
+                    cx = x
+                    for i, val in enumerate(row):
+                        add_text(state["slide"], cx, cy, widths[i], row_h, str(val),
+                                 size=9, bold=is_total, color=WF_TEXT_RGB,
+                                 align=PP_ALIGN.LEFT if i == 0 else PP_ALIGN.CENTER)
+                        cx += widths[i]
+                    cy += row_h
+                state["y"] = cy + Cm(0.3)
+
+            def _draw_forestal_sheet_block(titulo_continua: str, block: dict) -> None:
+                autorizado_rows = block.get("autorizado_rows") or []
+                total = block.get("autorizado_total") or {"poda": 0, "trasplante": 0, "derribo": 0, "total_dictaminados": 0}
+                contadores = block.get("contadores") or {"poda": 0, "trasplante": 0, "derribo": 0}
+
+                _draw_bar(titulo_continua, "Resumen Arbolado autorizado mediante Resolución Admva.", SHEET_SALMON_RGB)
+                _ensure_space(titulo_continua, Cm(0.85) * (len(autorizado_rows) + 2))
+                rows = [[r["estacion"], r["poda"], r["trasplante"], r["derribo"], r["total_dictaminados"]] for r in autorizado_rows]
+                rows.append(["TOTAL", total["poda"], total["trasplante"], total["derribo"], total["total_dictaminados"]])
+                _draw_sheet_table(
+                    ["Estación", "Poda", "Trasplante", "Derribo", "Total árboles"], rows,
+                    [0.34, 0.16, 0.17, 0.16, 0.17], SHEET_GREEN_RGB, zebra_rgb=SHEET_GREEN_BG_RGB, bold_last=True,
+                )
+
+                _ensure_space(titulo_continua, Cm(1.0))
+                add_text(
+                    state["slide"], MARGIN_X, state["y"], content_w, Cm(0.9),
+                    f"Podas: {contadores['poda']}/{total['poda']}    "
+                    f"Trasplantes: {contadores['trasplante']}/{total['trasplante']}    "
+                    f"Derribos: {contadores['derribo']}/{total['derribo']}",
+                    size=13, bold=True, color=WF_TEXT_RGB, align=PP_ALIGN.CENTER,
+                )
+                state["y"] += Cm(1.1)
+
+                desde, hasta = block.get("desde"), block.get("hasta")
+                if desde and hasta:
+                    dias = block.get("dias") or []
+                    _draw_bar(titulo_continua, f"Actividades ejecutadas {_fmt_rango_dias_es(desde, hasta)}", SHEET_PINK_RGB)
+                    _ensure_space(titulo_continua, Cm(0.75) * (len(dias) + 2))
+                    d_rows = []
+                    sub = {"poda": 0, "trasplante": 0, "derribo": 0, "total": 0}
+                    for dia in dias:
+                        d_rows.append([_fmt_dia_corto_es(dia["fecha"]), dia["poda"], dia["trasplante"], dia["derribo"], dia["total"]])
+                        for k in sub:
+                            sub[k] += dia[k]
+                    d_rows.append(["SUBTOTAL", sub["poda"], sub["trasplante"], sub["derribo"], sub["total"]])
+                    _draw_sheet_table(
+                        ["Fecha", "Podas", "Trasplantes", "Derribos", "Total"], d_rows,
+                        [0.36, 0.16, 0.18, 0.16, 0.14], (0xF1, 0xF5, 0xF9), bold_last=True,
+                        header_text_rgb=WF_MUTED_RGB,
+                    )
+
+            def _draw_riesgos_mapa_block(titulo_continua: str, block: dict) -> None:
+                grupos = block.get("grupos") or []
+                if not grupos:
+                    _draw_empty("Sin riesgos registrados en este período.")
+                    return
+                col_fracs = [0.14, 0.32, 0.42, 0.12]
+                widths = [int(content_w * f) for f in col_fracs]
+                headers = ["Estaciones/Postes", "Riesgos", "Propuesta de control", "Avance"]
+                total_filas = sum(len(g.get("filas") or []) for g in grupos)
+                _ensure_space(titulo_continua, Cm(0.9) * (total_filas + 2))
+                x = MARGIN_X
+                y = state["y"]
+                header_h = Cm(0.85)
+                _wf_rect(state["slide"], x, y, content_w, header_h, fill_rgb=MAROON_RGB)
+                cx = x
+                for i, h in enumerate(headers):
+                    add_text(state["slide"], cx, y, widths[i], header_h, h,
+                             size=9.5, bold=True, color=WF_WHITE_RGB, align=PP_ALIGN.CENTER)
+                    cx += widths[i]
+                cy = y + header_h
+                for g in grupos:
+                    filas = g.get("filas") or []
+                    if not filas:
+                        continue
+                    group_top = cy
+                    for idx, f in enumerate(filas):
+                        row_h = Cm(0.9)
+                        _wf_rect(state["slide"], x + widths[0], cy, widths[1], row_h, fill_rgb=WF_WHITE_RGB,
+                                 line_rgb=WF_BORDER_RGB, line_pt=0.5)
+                        add_text(state["slide"], x + widths[0], cy, widths[1], row_h, f"{idx + 1}) {f['descripcion']}",
+                                 size=8.5, color=WF_TEXT_RGB)
+                        _wf_rect(state["slide"], x + widths[0] + widths[1], cy, widths[2], row_h, fill_rgb=WF_WHITE_RGB,
+                                 line_rgb=WF_BORDER_RGB, line_pt=0.5)
+                        add_text(state["slide"], x + widths[0] + widths[1], cy, widths[2], row_h, f["control"],
+                                 size=8.5, color=WF_TEXT_RGB)
+                        _wf_rect(state["slide"], x + widths[0] + widths[1] + widths[2], cy, widths[3], row_h,
+                                 fill_rgb=WF_WHITE_RGB, line_rgb=WF_BORDER_RGB, line_pt=0.5)
+                        add_text(state["slide"], x + widths[0] + widths[1] + widths[2], cy, widths[3], row_h,
+                                 f"{f['avance']}%", size=9, color=WF_TEXT_RGB, align=PP_ALIGN.CENTER)
+                        cy += row_h
+                    group_h = cy - group_top
+                    _wf_rect(state["slide"], x, group_top, widths[0], group_h, fill_rgb=WF_WHITE_RGB,
+                             line_rgb=WF_BORDER_RGB, line_pt=0.5)
+                    add_text(state["slide"], x, group_top, widths[0], group_h, g["estacion"],
+                             size=9.5, bold=True, color=WF_TEXT_RGB, align=PP_ALIGN.CENTER)
+                state["y"] = cy + Cm(0.3)
+
             _BLOCK_RENDERERS = {
                 "summary": _draw_summary_block,
                 "table": _draw_table_block,
                 "list": _draw_list_block,
+                "forestal_sheet": _draw_forestal_sheet_block,
+                "riesgos_mapa": _draw_riesgos_mapa_block,
             }
 
             for _mod_data in modulos_data.values():
