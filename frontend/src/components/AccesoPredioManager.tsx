@@ -264,27 +264,33 @@ export function AccesoPredioManager({ projectId }: { projectId: string }) {
                   {tipoBusy[s.id] ? <ActivityIndicator size="small" color={colors.primary} /> : null}
                 </View>
 
-                <View style={styles.toggleRow}>
-                  <Pressable
-                    onPress={() => setAcceso(s.id, acceso === 'Con acceso' ? null : 'Con acceso')}
-                    disabled={!!accesoBusy[s.id]}
-                    style={[styles.toggleBtn, acceso === 'Con acceso' && styles.toggleBtnOnGreen]}
-                  >
-                    <Ionicons name="checkmark-circle-outline" size={18} color={acceso === 'Con acceso' ? '#fff' : colors.textBody} />
-                    <Text style={[styles.toggleTxt, acceso === 'Con acceso' && styles.toggleTxtOn]}>Con acceso</Text>
-                  </Pressable>
-                  <Pressable
-                    onPress={() => setAcceso(s.id, acceso === 'Sin acceso' ? null : 'Sin acceso')}
-                    disabled={!!accesoBusy[s.id]}
-                    style={[styles.toggleBtn, acceso === 'Sin acceso' && styles.toggleBtnOnRed]}
-                  >
-                    <Ionicons name="close-circle-outline" size={18} color={acceso === 'Sin acceso' ? '#fff' : colors.textBody} />
-                    <Text style={[styles.toggleTxt, acceso === 'Sin acceso' && styles.toggleTxtOn]}>Sin acceso</Text>
-                  </Pressable>
-                  {accesoBusy[s.id] ? <ActivityIndicator size="small" color={colors.primary} /> : null}
-                </View>
+                {(s.tipo_nodo || 'estacion') === 'estacion' ? (
+                  <View style={styles.toggleRow}>
+                    <Pressable
+                      onPress={() => setAcceso(s.id, acceso === 'Con acceso' ? null : 'Con acceso')}
+                      disabled={!!accesoBusy[s.id]}
+                      style={[styles.toggleBtn, acceso === 'Con acceso' && styles.toggleBtnOnGreen]}
+                    >
+                      <Ionicons name="checkmark-circle-outline" size={18} color={acceso === 'Con acceso' ? '#fff' : colors.textBody} />
+                      <Text style={[styles.toggleTxt, acceso === 'Con acceso' && styles.toggleTxtOn]}>Con acceso</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => setAcceso(s.id, acceso === 'Sin acceso' ? null : 'Sin acceso')}
+                      disabled={!!accesoBusy[s.id]}
+                      style={[styles.toggleBtn, acceso === 'Sin acceso' && styles.toggleBtnOnRed]}
+                    >
+                      <Ionicons name="close-circle-outline" size={18} color={acceso === 'Sin acceso' ? '#fff' : colors.textBody} />
+                      <Text style={[styles.toggleTxt, acceso === 'Sin acceso' && styles.toggleTxtOn]}>Sin acceso</Text>
+                    </Pressable>
+                    {accesoBusy[s.id] ? <ActivityIndicator size="small" color={colors.primary} /> : null}
+                  </View>
+                ) : null}
 
-                <Text style={styles.fieldLabel}>Situacion Social - Liberacion Fisica del Predio</Text>
+                <Text style={styles.fieldLabel}>
+                  {(s.tipo_nodo || 'estacion') === 'intertramo'
+                    ? 'Situacion Social - Liberacion Fisica de Predios'
+                    : 'Situacion Social - Liberacion Fisica del Predio'}
+                </Text>
                 <TextInput
                   value={situDrafts[s.id] || ''}
                   onChangeText={(t) => setSituDrafts((d) => ({ ...d, [s.id]: t }))}
