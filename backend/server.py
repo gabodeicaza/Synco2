@@ -8929,6 +8929,7 @@ async def export_reports_pdf(
             SHEET_SALMON = HexColor("#F4B183")
             SHEET_PINK = HexColor("#F6D9E6")
             SHEET_SUBTOTAL = HexColor("#DCEEFB")
+            SHEET_MAROON = HexColor("#8B1E3F")
 
             def _draw_bar(text: str, bg: HexColor, h: float = 0.9 * cm) -> None:
                 nonlocal y
@@ -9030,7 +9031,6 @@ async def export_reports_pdf(
                 if not grupos:
                     _draw_empty("Sin riesgos registrados en este período.")
                     return
-                MAROON = HexColor("#8B1E3F")
                 headers = ["Estaciones/Postes", "Riesgos", "Propuesta de control", "Avance"]
                 widths = [0.14, 0.32, 0.42, 0.12]
                 data = [headers]
@@ -9053,7 +9053,7 @@ async def export_reports_pdf(
                     if len(filas) > 1:
                         span_cmds.append(("SPAN", (0, start_row), (0, row_i - 1)))
                 style = [
-                    ("BACKGROUND", (0, 0), (-1, 0), MAROON),
+                    ("BACKGROUND", (0, 0), (-1, 0), SHEET_MAROON),
                     ("TEXTCOLOR", (0, 0), (-1, 0), WHITE),
                     ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
                     ("FONTSIZE", (0, 0), (-1, -1), 9),
@@ -9070,12 +9070,35 @@ async def export_reports_pdf(
                 tbl.drawOn(c, left_x, y - th)
                 y -= th + 14
 
+            def _draw_seguridad_indicadores_block(block: dict) -> None:
+                nonlocal y
+                _ensure_space(1.2 * cm)
+                c.setFillColor(SHEET_MAROON)
+                c.setFont("Helvetica-Bold", 13)
+                c.drawString(left_x, y, (block.get("subtitulo") or "").upper())
+                y -= 13 * 1.8
+                items = block.get("items") or []
+                if not items:
+                    _draw_empty("Sin acciones correctivas pendientes.")
+                    return
+                bullet_style = ParagraphStyle(
+                    "segBullet", fontName="Helvetica", fontSize=10.5, leading=14.5, textColor=TEXT,
+                    leftIndent=14, bulletIndent=0,
+                )
+                for text in items:
+                    _ensure_space(1.0 * cm)
+                    p = Paragraph(f"•  {_xml_escape(text)}", bullet_style)
+                    pw, ph = p.wrapOn(c, content_w, y - bottom_y)
+                    p.drawOn(c, left_x, y - ph)
+                    y -= ph + 6
+
             _BLOCK_RENDERERS = {
                 "summary": _draw_summary_block,
                 "table": _draw_table_block,
                 "list": _draw_list_block,
                 "forestal_sheet": _draw_forestal_sheet_block,
                 "riesgos_mapa": _draw_riesgos_mapa_block,
+                "seguridad_indicadores": _draw_seguridad_indicadores_block,
             }
 
             for _mod_data in modulos_data.values():
@@ -11153,37 +11176,28 @@ async def _gather_modulos_export_data(
             }
 
     if activos.get("seguridad_higiene"):
-        reportes = await db.seguridad_reportes.find(
-            {"project_id": pid, **date_q}
-        ).sort("created_at", 1).to_list(length=2000)
-        checklists = await db.seguridad_checklist.find(
-            {"project_id": pid, **date_q}
-        ).sort("created_at", 1).to_list(length=500)
-        reporte_items = [{
-            "title": f"{r.get('fecha', '—')} · {(r.get('severidad') or '').upper()}",
-            "body": r.get("descripcion") or "(sin descripción)",
-            "extra": f"Acciones tomadas: {r['acciones_tomadas']}" if r.get("acciones_tomadas") else None,
-            "meta": f"Reportó: {r.get('captured_by_name') or '—'}",
-        } for r in reportes]
-        checklist_items = [{
-            "title": f"{chk.get('fecha', '—')} · {it.get('tipo', '')}",
-            "body": f"{'[X]' if it.get('cumplido') else '[ ]'} {it.get('item', '')}",
-            "extra": None,
-            "meta": chk.get("captured_by_name") or "—",
-        } for chk in checklists for it in (chk.get("items") or [])]
-        if reportes or checklists:
+        # "Indicadores de Seguridad e Higiene: Acciones Correctivas
+        # Pendientes" — a diferencia del resto de los módulos, esto NO es
+        # un log de actividad del período: es una foto del estado ACTUAL
+        # (qué sigue pendiente hoy), tomada del checklist más reciente
+        # capturado para el proyecto — cada captura reemplaza a la
+        # anterior como "estado vigente" (ver SeguridadHigieneScreen, un
+        # checklist nuevo por captura, no ediciones in situ de uno viejo).
+        ultimo_checklist = await db.seguridad_checklist.find(
+            {"project_id": pid}
+        ).sort("created_at", -1).limit(1).to_list(length=1)
+        pendientes = [
+            it.get("item") for it in (ultimo_checklist[0].get("items") or [])
+            if it.get("tipo") == "correctiva" and not it.get("cumplido")
+        ] if ultimo_checklist else []
+        if pendientes:
             out["seguridad"] = {
-                "titulo": "SEGURIDAD E HIGIENE",
-                "blocks": [
-                    {
-                        "type": "list", "heading": "Reportes de accidentes", "heading_color": None,
-                        "items": reporte_items, "empty_text": "Sin reportes de accidentes en este período.",
-                    },
-                    {
-                        "type": "list", "heading": "Checklist preventivo / correctivo", "heading_color": None,
-                        "items": checklist_items, "empty_text": "Sin checklist capturado en este período.",
-                    },
-                ],
+                "titulo": "INDICADORES DE SEGURIDAD E HIGIENE",
+                "blocks": [{
+                    "type": "seguridad_indicadores",
+                    "subtitulo": "Acciones Correctivas Pendientes",
+                    "items": pendientes,
+                }],
             }
 
     if activos.get("gestion_riesgos"):
@@ -11790,12 +11804,25 @@ async def export_reports_docx(
             if rows:
                 _mod_table(["Estación/Poste", "Riesgo", "Propuesta de control", "Avance"], rows)
 
+        def _mod_seguridad_indicadores_block(block: dict):
+            _mod_heading(block.get("subtitulo") or "")
+            items = block.get("items") or []
+            if not items:
+                _mod_empty("Sin acciones correctivas pendientes.")
+                return
+            for text in items:
+                p = doc.add_paragraph(style="List Bullet")
+                r = p.add_run(text)
+                r.font.size = Pt(11)
+                r.font.color.rgb = TEXT_RGB
+
         _MOD_BLOCK_RENDERERS = {
             "summary": _mod_summary_block,
             "table": _mod_table_block,
             "list": _mod_list_block,
             "forestal_sheet": _mod_forestal_sheet_block,
             "riesgos_mapa": _mod_riesgos_mapa_block,
+            "seguridad_indicadores": _mod_seguridad_indicadores_block,
         }
 
         for _mod_data in modulos_data.values():
@@ -12796,12 +12823,28 @@ async def export_reports_pptx(
                              size=9.5, bold=True, color=WF_TEXT_RGB, align=PP_ALIGN.CENTER)
                 state["y"] = cy + Cm(0.3)
 
+            def _draw_seguridad_indicadores_block(titulo_continua: str, block: dict) -> None:
+                _ensure_space(titulo_continua, Cm(1.0))
+                add_text(state["slide"], MARGIN_X, state["y"], content_w, Cm(0.8), (block.get("subtitulo") or "").upper(),
+                         size=14, bold=True, color=MAROON_RGB)
+                state["y"] += Cm(1.0)
+                items = block.get("items") or []
+                if not items:
+                    _draw_empty("Sin acciones correctivas pendientes.")
+                    return
+                for text in items:
+                    _ensure_space(titulo_continua, Cm(1.1))
+                    add_text(state["slide"], MARGIN_X, state["y"], content_w, Cm(1.1), f"•  {text}",
+                             size=11, color=WF_TEXT_RGB)
+                    state["y"] += Cm(1.1)
+
             _BLOCK_RENDERERS = {
                 "summary": _draw_summary_block,
                 "table": _draw_table_block,
                 "list": _draw_list_block,
                 "forestal_sheet": _draw_forestal_sheet_block,
                 "riesgos_mapa": _draw_riesgos_mapa_block,
+                "seguridad_indicadores": _draw_seguridad_indicadores_block,
             }
 
             for _mod_data in modulos_data.values():
