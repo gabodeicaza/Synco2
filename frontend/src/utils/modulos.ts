@@ -91,11 +91,6 @@ export const CATEGORIA_LABEL: Record<ModuloCategoria, string> = {
 
 export const CATEGORIA_ORDEN: ModuloCategoria[] = ['reportes_diarios', 'reportes_semanales', 'reportes_mensuales'];
 
-// Orden fijo de áreas conocidas — evita que el menú reordene encabezados
-// entre sesiones a medida que se activan/desactivan módulos. Un área nueva
-// que no esté aquí se agrega al final, en orden alfabético.
-export const AREAS_ORDEN: string[] = ['Ambiental', 'Seguridad', 'Riesgos', 'Ingeniería'];
-
 /** ¿Está encendido este módulo en AL MENOS UNA de las 3 categorías de
  * informe? Es el criterio de "el módulo está activo para este proyecto" —
  * controla acceso de captura y visibilidad en el menú hamburguesa. Cuál
@@ -106,25 +101,12 @@ export function moduloActivo(modulos: ModulosConfig | null | undefined, key: str
   return CATEGORIA_ORDEN.some((categoria) => !!modulos?.[categoria]?.[key]);
 }
 
-/** Agrupa las plantillas ENCENDIDAS (en cualquier categoría) para un
- * proyecto por área temática, en el orden de AREAS_ORDEN (áreas no
- * listadas ahí van al final, alfabéticamente). Usado por el menú
- * hamburguesa — ver HeaderMenu.tsx. */
-export function modulosActivosPorArea(modulos: ModulosConfig | null | undefined): { area: string; modulos: ModuloDef[] }[] {
-  const activos = MODULOS.filter((m) => moduloActivo(modulos, m.key));
-  const porArea = new Map<string, ModuloDef[]>();
-  for (const m of activos) {
-    if (!porArea.has(m.area)) porArea.set(m.area, []);
-    porArea.get(m.area)!.push(m);
-  }
-  const areasPresentes = Array.from(porArea.keys());
-  areasPresentes.sort((a, b) => {
-    const ia = AREAS_ORDEN.indexOf(a);
-    const ib = AREAS_ORDEN.indexOf(b);
-    if (ia !== -1 && ib !== -1) return ia - ib;
-    if (ia !== -1) return -1;
-    if (ib !== -1) return 1;
-    return a.localeCompare(b);
-  });
-  return areasPresentes.map((area) => ({ area, modulos: porArea.get(area)! }));
+/** Plantillas ENCENDIDAS (en cualquier categoría) para un proyecto, en una
+ * sola lista plana (orden del catálogo `MODULOS`) — sin agrupar por área.
+ * Usado por el menú hamburguesa (ver HeaderMenu.tsx) para que Especialista/
+ * Sub-Coordinador vean los módulos en una única sección "Módulos", igual
+ * presentación que la pestaña Operación de Coordinador General
+ * (index.tsx), que tampoco los separa por área. */
+export function modulosActivos(modulos: ModulosConfig | null | undefined): ModuloDef[] {
+  return MODULOS.filter((m) => moduloActivo(modulos, m.key));
 }

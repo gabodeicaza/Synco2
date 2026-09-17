@@ -11,7 +11,7 @@ import { useAuth } from '@/src/auth-context';
 import { api, ModulosConfig } from '@/src/api';
 import { colors, radius, shadow, spacing } from '@/src/theme';
 import { confirm } from '@/src/utils/confirm';
-import { modulosActivosPorArea } from '@/src/utils/modulos';
+import { modulosActivos } from '@/src/utils/modulos';
 
 type HeaderMenuProps = {
   // Grupo de rutas desde el que se abre el menu, para navegar a la pantalla
@@ -149,20 +149,20 @@ export function HeaderMenu({ basePath, projectId }: HeaderMenuProps) {
 
             {/* Sistema Multi-Proyecto Modular: solo aparecen los módulos que
                 el Coordinador encendió para ESTE proyecto (ver `modulos` en
-                GET /projects/{pid} y src/utils/modulos.ts), agrupados por
-                área temática (Ambiental, Seguridad...) — NO por cadencia de
-                captura, esa clasificación es solo interna/de la pantalla de
-                configuración del Coordinador. Si `modulos` aún no cargó o el
-                proyecto no tiene nada activo, esta sección no pinta nada —
-                nunca se asume "encendido" por default. */}
-            {modulosActivosPorArea(modulos).map(({ area, modulos: activos }) => (
-              <View key={area}>
-                <Text style={styles.groupLabel}>{area}</Text>
-                {activos.map((m) => (
+                GET /projects/{pid} y src/utils/modulos.ts), en UNA SOLA
+                sección "Módulos" — misma presentación (lista plana, sin
+                agrupar por área) que la pestaña Operación de Coordinador
+                General (index.tsx). Si `modulos` aún no cargó o el proyecto
+                no tiene nada activo, esta sección no pinta nada — nunca se
+                asume "encendido" por default. */}
+            {modulosActivos(modulos).length > 0 ? (
+              <View>
+                <Text style={styles.groupLabel}>Módulos</Text>
+                {modulosActivos(modulos).map((m) => (
                   <MenuItem key={m.key} icon={m.icon} label={m.label} onPress={() => goTo(m.screen)} />
                 ))}
               </View>
-            ))}
+            ) : null}
 
             <View style={styles.divider} />
             {/* No pasa por goTo(): a diferencia del resto de items, no depende
