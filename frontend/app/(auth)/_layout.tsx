@@ -7,6 +7,7 @@ export default function AuthLayout() {
       <Stack.Screen name="login" />
       <Stack.Screen name="redeem" />
       <Stack.Screen name="invite/[token]" />
+      <Stack.Screen name="forgot-password" />
     </Stack>
   );
 }

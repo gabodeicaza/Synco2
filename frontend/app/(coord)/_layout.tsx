@@ -84,6 +84,8 @@ export default function CoordLayout() {
       <Tabs.Screen name="report-templates" options={{ href: null }} />
       {/* Cambiar mi contraseña — alcanzable desde Mi perfil, sin tab visible. */}
       <Tabs.Screen name="cambiar-password" options={{ href: null }} />
+      {/* Solicitudes de "Olvidé mi contraseña" — alcanzable desde Mi perfil, sin tab visible. */}
+      <Tabs.Screen name="password-resets" options={{ href: null }} />
     </Tabs>
   );
 }

@@ -88,6 +88,10 @@ export default function LoginScreen() {
             </Pressable>
           </View>
 
+          <Pressable onPress={() => router.push('/(auth)/forgot-password')} hitSlop={8} style={styles.forgotRow} disabled={busy}>
+            <Text style={styles.forgotText}>¿Olvidaste tu contraseña?</Text>
+          </Pressable>
+
           {error ? (
             <View style={styles.errorBox}>
               <Ionicons name="alert-circle" size={16} color={colors.error} />
@@ -150,6 +154,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12, backgroundColor: colors.surface,
   },
   input: { flex: 1, paddingVertical: 12, fontSize: 15, color: colors.text },
+  forgotRow: { alignSelf: 'flex-end', paddingVertical: 8, marginTop: 4 },
+  forgotText: { color: colors.primary, fontWeight: '700', fontSize: 12 },
   errorBox: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: colors.errorBg, padding: 10, borderRadius: radius.md, marginTop: spacing.md },
   errorText: { color: colors.error, fontSize: 13, flex: 1, fontWeight: '600' },
   divider: { flexDirection: 'row', alignItems: 'center', gap: 12, marginVertical: spacing.md },

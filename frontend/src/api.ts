@@ -1385,6 +1385,17 @@ export interface ProgramaVersion {
   filename: string | null;
 }
 
+export interface PasswordResetRequest {
+  id: string;
+  user_id: string;
+  email: string;
+  name: string;
+  role: string;
+  project_ids: string[];
+  status: string;
+  created_at: string;
+}
+
 // ---- API client -----------------------------------------------------------
 export const api = {
   login: (email: string, password: string) =>
@@ -1392,6 +1403,16 @@ export const api = {
   me: () => request<User>('GET', '/auth/me'),
   changePassword: (current_password: string, new_password: string) =>
     request<{ ok: boolean }>('POST', '/auth/change_password', { current_password, new_password }),
+  forgotPassword: (email: string) =>
+    request<{ ok: boolean; message: string }>('POST', '/auth/forgot_password', { email }),
+
+  listPasswordResetRequests: () => request<PasswordResetRequest[]>('GET', '/admin/password_reset_requests'),
+  resolvePasswordResetRequest: (rid: string) =>
+    request<{ ok: boolean; temp_password: string; user_name: string; user_email: string }>(
+      'POST', `/admin/password_reset_requests/${rid}/resolve`, {},
+    ),
+  dismissPasswordResetRequest: (rid: string) =>
+    request<{ ok: boolean }>('DELETE', `/admin/password_reset_requests/${rid}`),
 
   listCoordinators: () => request<User[]>('GET', '/admin/coordinators'),
   createCoordinator: (body: { name: string; email: string; password: string }) =>

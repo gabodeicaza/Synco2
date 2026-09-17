@@ -68,6 +68,22 @@ export default function CoordProfile() {
 
         {user?.role === 'coordinador_general' && (
           <Pressable
+            onPress={() => router.push('/(coord)/password-resets')}
+            style={({ pressed }) => [styles.actionTile, pressed && { opacity: 0.85 }]}
+          >
+            <View style={styles.actionIcon}>
+              <Ionicons name="mail-unread" size={20} color={colors.primary} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.actionTitle}>Solicitudes de contraseña</Text>
+              <Text style={styles.actionSub}>Usuarios que olvidaron su contraseña y piden una nueva</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
+          </Pressable>
+        )}
+
+        {user?.role === 'coordinador_general' && (
+          <Pressable
             onPress={() => router.push('/(coord)/report-templates')}
             style={({ pressed }) => [styles.actionTile, pressed && { opacity: 0.85 }]}
           >
