@@ -1781,7 +1781,12 @@ export default function ProjectDetailScreen() {
       >
         <Pressable style={styles.exportBackdrop} onPress={closeExportFlow} />
         <View style={styles.exportSheet} pointerEvents="box-none">
-          <View style={styles.exportSheetInner}>
+          {/* maxHeight + ScrollView interno en cada paso (ver mas abajo) —
+              mismo patron que los demas modales de esta pantalla (ver
+              sheetSurface con maxHeight '85%'/'88%'/'90%'). Sin esto, con
+              muchas areas configuradas la lista del Paso 2 se salia del
+              cuadro y las ultimas quedaban imposibles de tocar. */}
+          <View style={[styles.exportSheetInner, { maxHeight: '80%' }]}>
             <View style={styles.exportHandle} />
 
             <View style={styles.exportHeader}>
@@ -1871,7 +1876,7 @@ export default function ProjectDetailScreen() {
                 })}
               </View>
             ) : exportStep === 'area' ? (
-              <View style={{ paddingHorizontal: spacing.md, paddingBottom: spacing.md }}>
+              <ScrollView contentContainerStyle={{ paddingHorizontal: spacing.md, paddingBottom: spacing.md }}>
                 <Pressable
                   onPress={() => onPickArea(null)}
                   style={({ pressed }) => [
@@ -1920,7 +1925,7 @@ export default function ProjectDetailScreen() {
                     </Pressable>
                   ))
                 )}
-              </View>
+              </ScrollView>
             ) : (
               <View style={{ paddingHorizontal: spacing.md, paddingBottom: spacing.md }}>
                 {FORMAT_OPTIONS.map((opt) => (
