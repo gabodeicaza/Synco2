@@ -231,6 +231,10 @@ class ChangePasswordIn(BaseModel):
     new_password: str
 
 
+class ForgotPasswordIn(BaseModel):
+    email: EmailStr
+
+
 class BootstrapIn(BaseModel):
     secret: str
     email: EmailStr
@@ -1012,6 +1016,9 @@ async def startup_event():
     await db.planos_avance.create_index([("project_id", 1), ("created_at", -1)])
     await db.presentaciones.create_index("id", unique=True)
     await db.presentaciones.create_index([("project_id", 1), ("fecha", -1)])
+    await db.password_reset_requests.create_index("id", unique=True)
+    await db.password_reset_requests.create_index([("status", 1), ("created_at", 1)])
+    await db.password_reset_requests.create_index("user_id")
 
     # --- Seed de plantillas de reporte estructurado (idempotente por `code`) ---
     try:
@@ -5618,6 +5625,79 @@ async def reset_team_member_password(pid: str, uid: str, user: dict = Depends(re
     temp_password = _generate_temp_password()
     await db.users.update_one({"id": uid}, {"$set": {"password": hash_pw(temp_password)}})
     return {"ok": True, "temp_password": temp_password}
+
+
+# --- "Olvidé mi contraseña": el usuario no sabe su contraseña actual, así
+# que no puede usar /auth/change_password (pide la actual). En vez de eso
+# deja una SOLICITUD pendiente que cualquier Coordinador General resuelve
+# (genera una temporal, igual que el botón de Equipo/Invitaciones) sin
+# necesitar que el usuario esté asignado a un proyecto específico del
+# Coordinador que la atiende — Coordinador General ya tiene god-mode.
+@api.post("/auth/forgot_password")
+async def forgot_password(body: ForgotPasswordIn):
+    """Sin autenticación (pantalla de login). Responde siempre el mismo
+    mensaje genérico exista o no el correo, para no filtrar qué cuentas
+    están registradas."""
+    email = body.email.lower()
+    u = await db.users.find_one({"email": email})
+    if u:
+        existing = await db.password_reset_requests.find_one({"user_id": u["id"], "status": "pending"})
+        if not existing:
+            await db.password_reset_requests.insert_one({
+                "id": str(uuid.uuid4()),
+                "user_id": u["id"],
+                "email": u["email"],
+                "name": u["name"],
+                "role": u["role"],
+                "project_ids": u.get("project_ids") or [],
+                "status": "pending",
+                "created_at": datetime.now(timezone.utc),
+            })
+    return {"ok": True, "message": "Si el correo está registrado, tu Coordinador General verá la solicitud y te compartirá una contraseña nueva."}
+
+
+@api.get("/admin/password_reset_requests")
+async def list_password_reset_requests(user: dict = Depends(require_role(ROLE_COORD))):
+    items = await db.password_reset_requests.find({"status": "pending"}).sort("created_at", 1).to_list(length=500)
+    for it in items:
+        it.pop("_id", None)
+    return items
+
+
+@api.post("/admin/password_reset_requests/{rid}/resolve")
+async def resolve_password_reset_request(rid: str, user: dict = Depends(require_role(ROLE_COORD))):
+    """Genera la temporal (mismo mecanismo que .../team/{uid}/reset_password)
+    y marca la solicitud como resuelta. La contraseña en texto plano solo se
+    devuelve UNA VEZ aquí, para que el Coordinador se la comparta al usuario."""
+    req = await db.password_reset_requests.find_one({"id": rid})
+    if not req:
+        raise HTTPException(404, "Solicitud no existe")
+    if req["status"] != "pending":
+        raise HTTPException(410, "Solicitud ya resuelta")
+    target = await db.users.find_one({"id": req["user_id"]})
+    if not target:
+        raise HTTPException(404, "El usuario de esta solicitud ya no existe")
+    if target.get("role") not in TEAM_EDITABLE_ROLES:
+        raise HTTPException(400, "Solo se puede restablecer la contraseña de Sub-coordinadores y Especialistas")
+    temp_password = _generate_temp_password()
+    await db.users.update_one({"id": target["id"]}, {"$set": {"password": hash_pw(temp_password)}})
+    await db.password_reset_requests.update_one(
+        {"id": rid}, {"$set": {"status": "resolved", "resolved_at": datetime.now(timezone.utc), "resolved_by": user["id"]}},
+    )
+    return {"ok": True, "temp_password": temp_password, "user_name": target["name"], "user_email": target["email"]}
+
+
+@api.delete("/admin/password_reset_requests/{rid}")
+async def dismiss_password_reset_request(rid: str, user: dict = Depends(require_role(ROLE_COORD))):
+    """Descarta una solicitud sin generar contraseña (p.ej. duplicada, o el
+    usuario ya recuperó acceso por otro medio)."""
+    res = await db.password_reset_requests.update_one(
+        {"id": rid, "status": "pending"},
+        {"$set": {"status": "dismissed", "resolved_at": datetime.now(timezone.utc), "resolved_by": user["id"]}},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(404, "Solicitud no existe o ya fue resuelta")
+    return {"ok": True}
 
 
 @api.delete("/projects/{pid}/team/{uid}")
