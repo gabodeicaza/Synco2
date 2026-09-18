@@ -10818,18 +10818,20 @@ async def export_reports_pdf(
         def draw_intertramo_summary_page(intertramo_node: dict, personal_rows: list, maquinaria_rows: list,
                                           actividades: list, situacion_social: Optional[str],
                                           postes: list, mostrar_situacion: bool = True) -> None:
-            """Página de resumen por Subtramo tipo INTERTRAMO — layout distinto
-            al de Estación (`draw_subtramo_summary_page`): de arriba a abajo,
-            a todo el ancho: título + "SITUACIÓN SOCIAL-LIBERACIÓN FÍSICA DE
-            PREDIOS" (plural, sin badge de Acceso al Predio — un Intertramo
-            no tiene un único predio) y la tabla "ACTIVIDAD EN POSTES" (un
-            renglón por hijo directo del nodo, columnas Ubicación/Pilas/
-            Cabezal/Fuste/Poste). Debajo, 2 columnas separadas por línea
-            vertical: IZQUIERDA "Se supervisa las siguientes actividades",
-            DERECHA mini-tablas FUERZA DE TRABAJO / MAQUINARIA Y EQUIPO (sin
-            Estado del Tiempo — no aparece en el formato de referencia del
-            cliente para Intertramos). Página FIJA, mismo criterio de
-            truncado con "+N más" que `draw_subtramo_summary_page`."""
+            """Página de resumen por Subtramo tipo INTERTRAMO — MISMO layout de
+            2 columnas que `draw_subtramo_summary_page` (formato de
+            referencia del cliente): IZQUIERDA título + "SITUACIÓN SOCIAL-
+            LIBERACIÓN FÍSICA DE PREDIOS" (plural, sin badge de Acceso al
+            Predio — un Intertramo no tiene un único predio) + tabla
+            "ACTIVIDAD EN POSTES" (un renglón por hijo directo del nodo,
+            Ubicación/Pilas/Cabezal/Fuste/Poste, TODOS los postes — sin
+            truncar salvo que de plano no quepan) + "Se supervisa las
+            siguientes actividades". DERECHA: mini-tablas FUERZA DE TRABAJO /
+            MAQUINARIA Y EQUIPO a TODO lo alto de la página (sin Estado del
+            Tiempo — no aparece en el formato de referencia del cliente para
+            Intertramos, lo que le deja más espacio vertical que a
+            Estación). Página FIJA: el contenido que de plano no cabe se
+            trunca con "+N más" (mismo criterio que `draw_subtramo_summary_page`)."""
             nonlocal page_num
 
             MARGIN_X = 1.5 * cm
@@ -10927,8 +10929,8 @@ async def export_reports_pdf(
                 return y
 
             # =================================================================
-            # TÍTULO (a todo lo ancho, mismo estilo de placa que Estación pero
-            # sin ordinal numérico — los Intertramos no se numeran)
+            # COLUMNA IZQUIERDA — título (sin ordinal, los Intertramos no se
+            # numeran), Situación Social, Actividad en Postes, Actividades.
             # =================================================================
             y = top_y
             _draw_badge_icon(left_x + BADGE_R, y - BADGE_R - 0.05 * cm, BADGE_R, "structure")
@@ -10937,13 +10939,13 @@ async def export_reports_pdf(
             c.drawString(left_x + 2 * BADGE_R + 0.3 * cm, y - BADGE_R - 0.05 * cm - 10.5 * 0.32 + 0.16 * cm, "INTERTRAMO")
             c.setFont("Helvetica-Bold", 15)
             title_txt = intertramo_name.upper()
-            while c.stringWidth(title_txt, "Helvetica-Bold", 15) > content_w - (2 * BADGE_R + 0.3 * cm) and len(title_txt) > 8:
+            while c.stringWidth(title_txt, "Helvetica-Bold", 15) > col_w - (2 * BADGE_R + 0.3 * cm) and len(title_txt) > 8:
                 title_txt = title_txt[:-2] + "…"
             c.drawString(left_x + 2 * BADGE_R + 0.3 * cm, y - BADGE_R - 0.05 * cm - 15 * 0.32 - 0.42 * cm, title_txt)
             y -= 1.75 * cm
             c.setStrokeColor(BRAND)
             c.setLineWidth(1.4)
-            c.line(left_x, y, left_x + content_w, y)
+            c.line(left_x, y, left_x + col_w, y)
             y -= 0.35 * cm
 
             # --- SITUACIÓN SOCIAL (plural — de varios predios) -----------------
@@ -10951,23 +10953,25 @@ async def export_reports_pdf(
                 y = _section_title(left_x, y, col_w, "Situación Social-Liberación Física de Predios")
                 situ_items = [ln.strip() for ln in (situacion_social or "").splitlines() if ln.strip()]
                 situ_h = min(2.0 * cm, max(1.0 * cm, y - bottom_y))
-                y = _draw_bullets(left_x, y, col_w, situ_items, situ_h, max_items=4)
+                y = _draw_bullets(left_x, y, col_w, situ_items, situ_h, max_items=3)
                 y -= 0.28 * cm
 
-            # --- ACTIVIDAD EN POSTES --------------------------------------------
-            y = _section_title(left_x, y, content_w, "Actividad en Postes")
+            # --- ACTIVIDAD EN POSTES (a lo ancho de la columna izquierda,
+            # TODOS los hijos directos del Intertramo — ver nota de la
+            # función) ------------------------------------------------------
+            y = _section_title(left_x, y, col_w, "Actividad en Postes")
 
             POSTE_COLS = ["POSTE", "UBICACIÓN", "PILAS", "CABEZAL", "FUSTE", "POSTE"]
             POSTE_FRACS = [0.09, 0.19, 0.18, 0.18, 0.18, 0.18]
-            poste_col_w = [content_w * f for f in POSTE_FRACS]
-            POSTE_HEADER_H = 18
-            POSTE_ROW_H = 15
-            POSTE_FONT_SIZE = 8
-            # Reserva mínima para la sección inferior (actividades + tablas de
-            # recursos) — la tabla de postes crece hasta este límite y se
-            # trunca con "+N más" si el proyecto tiene demasiados postes,
-            # igual criterio que las tablas gemelas de recursos.
-            MIN_BOTTOM_RESERVE = 6.3 * cm
+            poste_col_w = [col_w * f for f in POSTE_FRACS]
+            POSTE_HEADER_H = 16
+            POSTE_ROW_H = 13
+            POSTE_FONT_SIZE = 7.3
+            # Reserva mínima para "Se supervisa las siguientes actividades",
+            # que sigue debajo de esta tabla EN LA MISMA COLUMNA IZQUIERDA —
+            # la tabla de postes usa el resto y solo se trunca con "+N más"
+            # si de plano el Intertramo tiene más postes de los que caben.
+            MIN_BOTTOM_RESERVE = 2.6 * cm
             postes_avail_h = max(POSTE_HEADER_H + POSTE_ROW_H, (y - bottom_y) - MIN_BOTTOM_RESERVE)
             max_rows = max(1, int((postes_avail_h - POSTE_HEADER_H) / POSTE_ROW_H))
             postes_shown = postes[:max_rows]
@@ -11028,29 +11032,36 @@ async def export_reports_pdf(
                 ("BOX", (0, 0), (-1, -1), 0.5, LINE_GRAY),
                 ("INNERGRID", (0, 0), (-1, -1), 0.5, LINE_GRAY),
             ]))
-            _, poste_tbl_h = poste_tbl.wrapOn(c, content_w, postes_avail_h)
+            _, poste_tbl_h = poste_tbl.wrapOn(c, col_w, postes_avail_h)
             poste_tbl.drawOn(c, left_x, y - poste_tbl_h)
             table_bottom_y = y - poste_tbl_h - 0.3 * cm
 
-            # =================================================================
-            # SECCIÓN INFERIOR: izquierda Actividades, derecha Fuerza de
-            # Trabajo / Maquinaria y Equipo — separadas por la línea vertical.
-            # =================================================================
-            c.setStrokeColor(BRAND)
-            c.setLineWidth(1.1)
-            c.line(divider_x, table_bottom_y, divider_x, bottom_y)
-
+            # --- Se supervisa las siguientes actividades (sigue debajo de la
+            # tabla, en la misma columna izquierda) -----------------------
             y2 = _section_title(left_x, table_bottom_y, col_w, "Se supervisa las siguientes actividades")
             act_h = max(1.0 * cm, y2 - bottom_y)
             _draw_bullets(left_x, y2, col_w, actividades or [], act_h, max_items=6)
 
-            y3 = table_bottom_y
+            # =================================================================
+            # LÍNEA DIVISORIA VERTICAL — a TODO lo alto de la página, igual
+            # que en `draw_subtramo_summary_page` (no solo bajo la tabla).
+            # =================================================================
+            c.setStrokeColor(BRAND)
+            c.setLineWidth(1.1)
+            c.line(divider_x, top_y, divider_x, bottom_y)
+
+            # =================================================================
+            # COLUMNA DERECHA — Fuerza de Trabajo / Maquinaria y Equipo a TODO
+            # lo alto (sin Estado del Tiempo: un Intertramo no tiene una sola
+            # ubicación puntual para consultar clima, ver nota de la función).
+            # =================================================================
+            y3 = top_y
             tbl_gutter = 12  # pt
             tbl_w = (col_w - tbl_gutter) / 2.0
             WF_BRAND = HexColor(_raw_brand_hex)
             WF_HEADER_TEXT = POSTE_HEADER_FG
             CONTENT_GRAY = HexColor("#333333")
-            MIN_ROWS = 8
+            MIN_ROWS = 14
             TABLE_HEADER_H = 22
             BASE_ROW_H = 18
             TOTAL_ROW_H = 22
@@ -11776,9 +11787,16 @@ async def export_reports_pdf(
             node_reps_all = workforce_reports_by_node.get(n["id"]) or []
             if not node_reps_all:
                 continue
-            cover_meta = cover_ancestor_by_node.get(n["id"])
-            if not cover_meta:
-                continue
+            # FIX (2026-09): `cover_meta` es None cuando NINGÚN ancestro del
+            # nodo tiene `cover_image` configurado — algo muy común (el
+            # Coordinador rara vez asigna portadilla a cada rama). Antes esto
+            # saltaba el nodo POR COMPLETO (`continue`), tirando en silencio
+            # fotos y actividades de reportes con severidad correcta para el
+            # informe (p.ej. "Importante" → Semanal) solo porque su rama no
+            # tenía portadilla. `draw_dynamic_cover_page` ya tolera
+            # `cover_image=None` (cae a título centrado sin imagen), así que
+            # basta con no pasar imagen — nunca se debe omitir el nodo.
+            cover_meta = cover_ancestor_by_node.get(n["id"]) or {}
             node_path = path_cache.get(n["id"]) or n.get("name", "")
 
             # === Portadilla de Nodo (1 por nodo hoja) ========================
@@ -13792,13 +13810,16 @@ async def export_reports_pptx(
         def draw_intertramo_summary_slide(intertramo_node: dict, personal_rows: list, maquinaria_rows: list,
                                            actividades: list, situacion_social: Optional[str],
                                            postes: list, mostrar_situacion: bool = True) -> None:
-            """Slide de resumen por Subtramo tipo INTERTRAMO — misma lógica de
-            layout que `draw_intertramo_summary_page` (motor PDF) con
-            primitivas python-pptx: título a todo lo ancho (sin badge de
-            Acceso al Predio ni ordinal numérico), Situación Social plural,
-            tabla ACTIVIDAD EN POSTES a todo lo ancho, y debajo 2 columnas
-            (Actividades | Fuerza de Trabajo/Maquinaria y Equipo, sin Estado
-            del Tiempo) separadas por línea vertical."""
+            """Slide de resumen por Subtramo tipo INTERTRAMO — MISMO layout de
+            2 columnas que `draw_subtramo_summary_slide` (formato de
+            referencia del cliente, ver `draw_intertramo_summary_page` en el
+            motor PDF): IZQUIERDA título (sin badge de Acceso al Predio ni
+            ordinal — los Intertramos no se numeran) + Situación Social
+            plural + tabla ACTIVIDAD EN POSTES (TODOS los postes, sin
+            truncar salvo que de plano no quepan) + "Se supervisa las
+            siguientes actividades". DERECHA: mini-tablas Fuerza de
+            Trabajo/Maquinaria y Equipo a TODO lo alto (sin Estado del
+            Tiempo). Separadas por línea vertical a todo lo alto."""
             slide = _clone_membrete()
 
             MARGIN_X = Cm(1.5)
@@ -13818,19 +13839,19 @@ async def export_reports_pptx(
                 add_text(slide, x, y, w, Cm(0.55), text.upper(), size=12, bold=True, color=READABLE_BRAND_RGB)
                 return y + Cm(0.6)
 
-            # ---- TÍTULO (a todo lo ancho, sin ordinal — los Intertramos no
+            # ---- COLUMNA IZQUIERDA: título (sin ordinal — los Intertramos no
             # se numeran, ver `draw_intertramo_summary_page`) ----------------
             y = top_y
             cx, cy = left_x + BADGE_R, y + BADGE_R
             _wf_structure_icon(slide, cx, cy, BADGE_R)
             add_text(slide, left_x + 2 * BADGE_R + Cm(0.3), y + int(BADGE_R * 0.1),
-                     content_w - 2 * BADGE_R - Cm(0.3), Cm(0.5),
+                     col_w - 2 * BADGE_R - Cm(0.3), Cm(0.5),
                      "INTERTRAMO", size=12, bold=True, color=READABLE_BRAND_RGB)
             add_text(slide, left_x + 2 * BADGE_R + Cm(0.3), y + int(BADGE_R * 0.35) + Cm(0.42),
-                     content_w - 2 * BADGE_R - Cm(0.3), Cm(0.8),
+                     col_w - 2 * BADGE_R - Cm(0.3), Cm(0.8),
                      intertramo_name.upper(), size=17, bold=True, color=READABLE_BRAND_RGB)
             y += Cm(1.8)
-            _wf_rect(slide, left_x, y, content_w, Pt(1.6), fill_rgb=BRAND_RGB)
+            _wf_rect(slide, left_x, y, col_w, Pt(1.6), fill_rgb=BRAND_RGB)
             y += Cm(0.35)
 
             # --- Situación Social (plural) ---------------------------------------
@@ -13841,15 +13862,19 @@ async def export_reports_pptx(
                 _wf_bullets(slide, left_x, y, col_w, situ_h, situ_items, max_items=3, font_size=10)
                 y += situ_h + Cm(0.2)
 
-            # --- Actividad en Postes (tabla a todo lo ancho) ---------------------
-            y = _section_title(left_x, y, content_w, "Actividad en Postes")
+            # --- Actividad en Postes (tabla dentro de la columna izquierda,
+            # TODOS los hijos directos del Intertramo) ----------------------
+            y = _section_title(left_x, y, col_w, "Actividad en Postes")
 
             POSTE_COLS = ["POSTE", "UBICACIÓN", "PILAS", "CABEZAL", "FUSTE", "POSTE"]
             POSTE_FRACS = [0.09, 0.19, 0.18, 0.18, 0.18, 0.18]
-            poste_col_w = [int(content_w * f) for f in POSTE_FRACS]
-            POSTE_HEADER_H = Cm(0.55)
-            POSTE_ROW_H = Cm(0.48)
-            MIN_BOTTOM_RESERVE = Cm(6.3)
+            poste_col_w = [int(col_w * f) for f in POSTE_FRACS]
+            POSTE_HEADER_H = Cm(0.5)
+            POSTE_ROW_H = Cm(0.42)
+            POSTE_FONT_SIZE = 7.5
+            # Reserva mínima para "Se supervisa las siguientes actividades",
+            # que sigue debajo de esta tabla EN LA MISMA COLUMNA IZQUIERDA.
+            MIN_BOTTOM_RESERVE = Cm(2.6)
             postes_avail_h = max(POSTE_HEADER_H + POSTE_ROW_H, (bottom_y - y) - MIN_BOTTOM_RESERVE)
             max_rows = max(1, int((postes_avail_h - POSTE_HEADER_H) / POSTE_ROW_H))
             postes_shown = postes[:max_rows]
@@ -13864,7 +13889,7 @@ async def export_reports_pptx(
                 _wf_rect(slide, xx, table_top, poste_col_w[i], POSTE_HEADER_H, fill_rgb=BRAND_RGB,
                          line_rgb=WF_BORDER_RGB, line_pt=0.5)
                 add_text(slide, xx, table_top, poste_col_w[i], POSTE_HEADER_H, h,
-                         size=8, bold=True, color=HEADER_TEXT_RGB, align=PP_ALIGN.CENTER)
+                         size=POSTE_FONT_SIZE, bold=True, color=HEADER_TEXT_RGB, align=PP_ALIGN.CENTER)
                 xx += poste_col_w[i]
             yy = table_top + POSTE_HEADER_H
 
@@ -13882,28 +13907,33 @@ async def export_reports_pptx(
                 rows_to_draw = [["Sin postes registrados", "", "", "", "", ""]]
             for ridx, vals in enumerate(rows_to_draw):
                 if ridx % 2 == 1:
-                    _wf_rect(slide, left_x, yy, content_w, POSTE_ROW_H, fill_rgb=WF_ZEBRA_TINT_RGB)
+                    _wf_rect(slide, left_x, yy, col_w, POSTE_ROW_H, fill_rgb=WF_ZEBRA_TINT_RGB)
                 xx = left_x
                 for i, val in enumerate(vals):
                     _wf_rect(slide, xx, yy, poste_col_w[i], POSTE_ROW_H, line_rgb=WF_BORDER_RGB, line_pt=0.5)
-                    add_text(slide, xx, yy, poste_col_w[i], POSTE_ROW_H, val, size=8, color=WF_TEXT_RGB,
+                    add_text(slide, xx, yy, poste_col_w[i], POSTE_ROW_H, val, size=POSTE_FONT_SIZE, color=WF_TEXT_RGB,
                              align=PP_ALIGN.CENTER)
                     xx += poste_col_w[i]
                 yy += POSTE_ROW_H
             if postes_overflow > 0:
-                add_text(slide, left_x, yy, content_w, POSTE_ROW_H, f"+ {postes_overflow} más…",
-                         size=8, italic=True, color=WF_MUTED_RGB)
+                add_text(slide, left_x, yy, col_w, POSTE_ROW_H, f"+ {postes_overflow} más…",
+                         size=POSTE_FONT_SIZE, italic=True, color=WF_MUTED_RGB)
                 yy += POSTE_ROW_H
             table_bottom_y = yy + Cm(0.2)
 
-            # ---- SECCIÓN INFERIOR: izquierda Actividades, derecha mini-tablas --
-            _wf_rect(slide, divider_x, table_bottom_y, Pt(1.3), bottom_y - table_bottom_y, fill_rgb=BRAND_RGB)
-
+            # --- Se supervisa las siguientes actividades (sigue debajo de la
+            # tabla, en la misma columna izquierda) -----------------------
             y2 = _section_title(left_x, table_bottom_y, col_w, "Se supervisa las siguientes actividades")
-            act_h = max(Cm(1.5), bottom_y - y2)
+            act_h = max(Cm(1.0), bottom_y - y2)
             _wf_bullets(slide, left_x, y2, col_w, act_h, actividades or [], max_items=6, font_size=10.5)
 
-            y3 = table_bottom_y
+            # ---- LÍNEA DIVISORIA VERTICAL — a TODO lo alto de la slide, igual
+            # que en `draw_subtramo_summary_slide` (no solo bajo la tabla) ----
+            _wf_rect(slide, divider_x, top_y, Pt(1.3), bottom_y - top_y, fill_rgb=BRAND_RGB)
+
+            # ---- COLUMNA DERECHA: Fuerza de Trabajo / Maquinaria y Equipo a
+            # TODO lo alto (sin Estado del Tiempo) --------------------------
+            y3 = top_y
             tbl_gutter = Cm(0.5)
             tbl_w = (col_w - tbl_gutter) // 2
             tbl_avail_h = bottom_y - y3
@@ -14889,9 +14919,13 @@ async def export_reports_pptx(
             node_reps_all = workforce_reports_by_node.get(n["id"]) or []
             if not node_reps_all:
                 continue
-            cover_meta_pptx = cover_ancestor_by_node.get(n["id"])
-            if not cover_meta_pptx:
-                continue
+            # FIX (2026-09): ver la misma nota en export_reports_pdf —
+            # `cover_meta_pptx` es None cuando ningún ancestro tiene
+            # `cover_image`, lo cual NO debe borrar el nodo entero (fotos y
+            # actividades con la severidad correcta para el informe). El
+            # bloque de abajo ya tolera `cover_image` vacío (título sin
+            # imagen), así que solo se omite la imagen, nunca el nodo.
+            cover_meta_pptx = cover_ancestor_by_node.get(n["id"]) or {}
             any_data = True
             node_path = path_cache.get(n["id"]) or n.get("name", "")
 

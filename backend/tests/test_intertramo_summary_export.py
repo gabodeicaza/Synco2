@@ -153,8 +153,18 @@ def main() -> int:
         def _pages_containing(needle: str):
             return [i for i, t in enumerate(page_texts) if needle in t]
 
-        pages_intertramo = _pages_containing("INTERTRAMO E1-E2")
-        assert pages_intertramo, "El título 'INTERTRAMO E1-E2' no aparece en ninguna página del PDF"
+        def _pages_containing_all(*needles: str):
+            return [i for i, t in enumerate(page_texts) if all(n in t for n in needles)]
+
+        # FIX: desde que se corrigió el bug de "cover_meta" que borraba en
+        # silencio el nodo entero sin `cover_image` (ver server.py), cada
+        # Poste también imprime su propia portadilla — que también contiene
+        # el nombre del Intertramo como parte de la ruta institucional
+        # ("Tramo 1 › Intertramo E1-E2 › C1"). Hay que pedir además
+        # "ACTIVIDAD EN POSTES" (exclusivo de la página de RESUMEN del
+        # Intertramo) para no agarrar la portadilla por error.
+        pages_intertramo = _pages_containing_all("INTERTRAMO E1-E2", "ACTIVIDAD EN POSTES")
+        assert pages_intertramo, "La página de resumen del Intertramo (título + 'ACTIVIDAD EN POSTES') no aparece en el PDF"
         page_idx = pages_intertramo[0]
         text = page_texts[page_idx]
         _log(f"Página de resumen del Intertramo: índice {page_idx}")
