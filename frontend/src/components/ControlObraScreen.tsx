@@ -4,7 +4,7 @@
 // Postes/Cimentación/Perforadoras. DECISIÓN DE DISEÑO: en vez de hardcodear
 // la paleta institucional de esa herramienta (ámbar/vino fijos), se usa el
 // sistema de temas YA EXISTENTE en SynCo (`colors`/`radius`/`spacing`/
-// `shadow` de `@/src/theme`, y `project.color_tema` como acento) — así esta
+// `shadow` de `@/src/theme`, y `project.color_institucional` como acento) — así esta
 // pantalla se ve como el resto de la app (cada proyecto con su color), pero
 // conserva la MISMA estructura visual (tarjetas de intertramo/estación con
 // %, tabla con encabezados agrupados, celdas de color cicladas al tocar).
@@ -96,7 +96,7 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
   const [perfSaving, setPerfSaving] = useState(false);
   const [exporting, setExporting] = useState(false);
 
-  const headerColor = project?.color_tema || colors.primary;
+  const headerColor = project?.color_institucional || project?.color_tema || colors.primary;
   const headerTextColor = contrastText(headerColor);
 
   // Puente app → panel externo: descarga el mismo Excel de 3 hojas (POSTES/

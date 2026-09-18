@@ -66,7 +66,7 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
 
   useEffect(() => { load(); }, [load]);
 
-  const headerColor = project?.color_tema || colors.primary;
+  const headerColor = project?.color_institucional || project?.color_tema || colors.primary;
   const headerTextColor = contrastText(headerColor);
 
   function openForm() {

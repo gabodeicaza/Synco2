@@ -42,7 +42,7 @@ export default function ModulosHubScreen({
   useEffect(() => { load(); }, [load]);
 
   const activos = modulosActivos(project?.modulos || null);
-  const headerColor = project?.color_tema || colors.primary;
+  const headerColor = project?.color_institucional || project?.color_tema || colors.primary;
   const headerTextColor = contrastText(headerColor);
 
   return (

@@ -535,7 +535,12 @@ export interface Project {
   contract_number: string;
   objeto_contrato?: string | null;
   cliente_principal?: string | null;
+  // color_tema: ACOTADO a pintar SOLO el título de portada del Informe
+  // PDF/PPTX exportado. Para color de marca en pantallas/tablas/acentos,
+  // usa color_institucional (con fallback a color_tema si no está
+  // configurado, ver cada headerColor de los componentes de pantalla).
   color_tema?: string | null;
+  color_institucional?: string | null;
   report_text_color?: string | null;
   start_date?: string | null;
   end_date?: string | null;

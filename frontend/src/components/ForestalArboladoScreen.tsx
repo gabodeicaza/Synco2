@@ -154,7 +154,7 @@ export default function ForestalArboladoScreen({ projectId }: { projectId: strin
 
   useEffect(() => { loadSemanal(); }, [loadSemanal]);
 
-  const headerColor = project?.color_tema || colors.primary;
+  const headerColor = project?.color_institucional || project?.color_tema || colors.primary;
   const headerTextColor = contrastText(headerColor);
 
   const contadores = resumen?.contadores || { poda: 0, trasplante: 0, derribo: 0 };

@@ -61,7 +61,7 @@ export default function GestionRiesgosScreen({ projectId }: { projectId: string 
 
   useEffect(() => { load(); }, [load]);
 
-  const headerColor = project?.color_tema || colors.primary;
+  const headerColor = project?.color_institucional || project?.color_tema || colors.primary;
   const headerTextColor = contrastText(headerColor);
 
   function openForm() {

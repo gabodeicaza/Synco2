@@ -252,7 +252,11 @@ export default function ProjectDetailScreen() {
   const [objetoSaving, setObjetoSaving] = useState(false);
   const [objetoDraft, setObjetoDraft] = useState('');
   const [clienteDraft, setClienteDraft] = useState('');
+  // color_tema: ACOTADO al título de portada del Informe PDF/PPTX exportado.
   const [colorDraft, setColorDraft] = useState('#003366');
+  // color_institucional: color de marca real -- banners, tablas, botones y
+  // acentos de toda la app y el resto de documentos exportados.
+  const [colorInstitucionalDraft, setColorInstitucionalDraft] = useState('#003366');
   // Color del texto de observaciones (pie de foto) en reportes ejecutivos.
   const [reportTextColorDraft, setReportTextColorDraft] = useState('#0F172A');
 
@@ -574,6 +578,7 @@ export default function ProjectDetailScreen() {
     setObjetoDraft((project as any).objeto_contrato || '');
     setClienteDraft((project as any).cliente_principal || '');
     setColorDraft((project as any).color_tema || '#003366');
+    setColorInstitucionalDraft((project as any).color_institucional || '#003366');
     setReportTextColorDraft((project as any).report_text_color || '#0F172A');
     setObjetoModalOpen(true);
   }
@@ -586,6 +591,7 @@ export default function ProjectDetailScreen() {
         objeto_contrato: objetoDraft.trim() || null,
         cliente_principal: clienteDraft.trim() || null,
         color_tema: colorDraft.trim() || null,
+        color_institucional: colorInstitucionalDraft.trim() || null,
         report_text_color: reportTextColorDraft.trim() || null,
       } as any);
       setProject((p) => ({ ...(p || ({} as any)), ...upd }));
@@ -2428,7 +2434,37 @@ export default function ProjectDetailScreen() {
               <View>
                 <Text style={styles.catLabel}>Color institucional (#RRGGBB)</Text>
                 <Text style={styles.catHelper}>
-                  Color principal usado en banners, portadas y subtitulos de los reportes.
+                  Color principal usado en banners, tablas, botones y acentos de toda la app y los reportes exportados.
+                </Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                  <TextInput
+                    value={colorInstitucionalDraft}
+                    onChangeText={setColorInstitucionalDraft}
+                    placeholder="#003366"
+                    placeholderTextColor={colors.textMuted}
+                    autoCapitalize="characters"
+                    style={[styles.catInput, { flex: 1 }]}
+                  />
+                  <View
+                    style={{
+                      width: 44,
+                      height: 44,
+                      borderRadius: radius.sm,
+                      borderWidth: 1,
+                      borderColor: colors.borderStrong,
+                      backgroundColor: /^#([0-9a-fA-F]{3}){1,2}$/.test((colorInstitucionalDraft || '').trim())
+                        ? colorInstitucionalDraft.trim()
+                        : '#003366',
+                    }}
+                  />
+                </View>
+              </View>
+
+              <View>
+                <Text style={styles.catLabel}>Color del título de portada (#RRGGBB)</Text>
+                <Text style={styles.catHelper}>
+                  Color del título grande en la portada del Informe exportado (PDF/PPTX Diario/Semanal/Mensual).
+                  Ya no afecta banners ni tablas -- usa "Color institucional" para eso.
                 </Text>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
                   <TextInput

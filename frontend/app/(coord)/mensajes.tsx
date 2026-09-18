@@ -126,7 +126,7 @@ export default function CoordMensajesScreen() {
                 onPress={() => openProject(p.id)}
                 style={({ pressed }) => [styles.projCard, pressed && { opacity: 0.85 }]}
               >
-                <View style={[styles.projIcon, { backgroundColor: p.color_tema || colors.primary }]}>
+                <View style={[styles.projIcon, { backgroundColor: p.color_institucional || p.color_tema || colors.primary }]}>
                   <Ionicons name="business" size={20} color="#fff" />
                 </View>
                 <View style={{ flex: 1 }}>

@@ -110,7 +110,7 @@ export function ActividadesGeneralesScreen({ projectId, projectColor: projectCol
     api.listAreas(projectId).then(setAreas).catch(() => setAreas([]));
     api.listNodes(projectId).then(setNodes).catch(() => setNodes([]));
     if (!projectColorProp) {
-      api.getProject(projectId).then((p) => setProjectColor(p?.color_tema || null)).catch(() => {});
+      api.getProject(projectId).then((p) => setProjectColor(p?.color_institucional || p?.color_tema || null)).catch(() => {});
     }
   }, [projectId, projectColorProp]);
 

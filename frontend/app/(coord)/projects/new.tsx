@@ -17,6 +17,7 @@ export default function NewProjectScreen() {
   const [objetoContrato, setObjetoContrato] = useState('');
   const [clientePrincipal, setClientePrincipal] = useState('');
   const [colorTema, setColorTema] = useState('#003366');
+  const [colorInstitucional, setColorInstitucional] = useState('#003366');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [description, setDescription] = useState('');
@@ -38,6 +39,7 @@ export default function NewProjectScreen() {
         objeto_contrato: objetoContrato.trim() || null,
         cliente_principal: clientePrincipal.trim() || null,
         color_tema: colorTema.trim() || null,
+        color_institucional: colorInstitucional.trim() || null,
         start_date: startDate.trim() || null,
         end_date: endDate.trim() || null,
         description: description.trim() || null,
@@ -84,8 +86,8 @@ export default function NewProjectScreen() {
         />
         <Field
           label="Color institucional (#RRGGBB)"
-          value={colorTema}
-          onChangeText={setColorTema}
+          value={colorInstitucional}
+          onChangeText={setColorInstitucional}
           placeholder="#003366"
           icon="color-palette-outline"
           autoCapitalize="characters"
@@ -96,10 +98,28 @@ export default function NewProjectScreen() {
           <View
             style={[
               styles.colorSwatch,
+              { backgroundColor: /^#([0-9a-fA-F]{3}){1,2}$/.test(colorInstitucional.trim()) ? colorInstitucional.trim() : '#003366' },
+            ]}
+          />
+          <Text style={styles.colorPreviewHint}>(Usado en banners, tablas y acentos de toda la app y las exportaciones)</Text>
+        </View>
+        <Field
+          label="Color del título de portada (#RRGGBB)"
+          value={colorTema}
+          onChangeText={setColorTema}
+          placeholder="#003366"
+          icon="color-palette-outline"
+          autoCapitalize="characters"
+        />
+        <View style={styles.colorPreviewRow}>
+          <Text style={styles.colorPreviewLabel}>Vista previa:</Text>
+          <View
+            style={[
+              styles.colorSwatch,
               { backgroundColor: /^#([0-9a-fA-F]{3}){1,2}$/.test(colorTema.trim()) ? colorTema.trim() : '#003366' },
             ]}
           />
-          <Text style={styles.colorPreviewHint}>(Usado en portadas y encabezados de exportaciones)</Text>
+          <Text style={styles.colorPreviewHint}>(Solo el título de la portada del Informe PDF/PPTX exportado)</Text>
         </View>
         <Field label="Fecha de inicio (YYYY-MM-DD)" value={startDate} onChangeText={setStartDate} placeholder="2026-01-15" icon="calendar-outline" />
         <Field label="Fecha de termino (YYYY-MM-DD)" value={endDate} onChangeText={setEndDate} placeholder="2027-06-30" icon="calendar-outline" />

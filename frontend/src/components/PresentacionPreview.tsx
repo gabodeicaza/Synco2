@@ -46,7 +46,7 @@ export default function PresentacionPreview({ projectId, presentacionId }: { pro
   const [generalImages, setGeneralImages] = useState<string[]>([]);
   const [exporting, setExporting] = useState(false);
 
-  const headerColor = project?.color_tema || colors.primary;
+  const headerColor = project?.color_institucional || project?.color_tema || colors.primary;
   const headerTextColor = contrastText(headerColor);
 
   const load = useCallback(async () => {

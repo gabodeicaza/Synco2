@@ -271,7 +271,20 @@ class ProjectIn(BaseModel):
     contract_number: str
     objeto_contrato: Optional[str] = None  # Descripción institucional del objeto del contrato
     cliente_principal: Optional[str] = None  # Cliente / dependencia que contrata (aparece en portada)
-    color_tema: Optional[str] = None  # Color institucional del proyecto (#RRGGBB). Default #003366
+    # color_tema: ACOTADO a pintar SOLO el título grande de la portada del
+    # Informe PDF/PPTX exportado (Diario/Semanal/Mensual) — antes también
+    # coloreaba banners/tablas/acentos en toda la app y el resto de
+    # documentos exportados; eso ahora lo hace color_institucional (ver
+    # abajo). Se conserva el nombre del campo (no se migra Mongo) para no
+    # perder lo que cada proyecto ya tenía configurado.
+    color_tema: Optional[str] = None  # Color del título de portada (#RRGGBB). Default #003366
+    # color_institucional: color de marca real — usado en TODO lo demás que
+    # antes leía color_tema (barras de encabezado de las pantallas nativas,
+    # tablas/íconos/badges de los documentos exportados). Si no está
+    # configurado, cada sitio cae a color_tema (compatibilidad con
+    # proyectos existentes) y luego a su default duro — cero regresión
+    # visual hasta que el Coordinador lo configure explícitamente.
+    color_institucional: Optional[str] = None  # Color institucional (#RRGGBB). Default #003366
     report_text_color: Optional[str] = None  # Color del pie de foto en reportes ejecutivos (#RRGGBB). Default #0F172A
     start_date: Optional[str] = None  # ISO date "2026-01-15"
     end_date: Optional[str] = None
@@ -339,6 +352,7 @@ class ProjectPatch(BaseModel):
     objeto_contrato: Optional[str] = None
     cliente_principal: Optional[str] = None
     color_tema: Optional[str] = None
+    color_institucional: Optional[str] = None
     report_text_color: Optional[str] = None
     start_date: Optional[str] = None
     end_date: Optional[str] = None
@@ -374,6 +388,7 @@ class ProjectOut(BaseModel):
     objeto_contrato: Optional[str] = None
     cliente_principal: Optional[str] = None
     color_tema: Optional[str] = None
+    color_institucional: Optional[str] = None
     report_text_color: Optional[str] = None
     start_date: Optional[str] = None
     end_date: Optional[str] = None
@@ -1511,6 +1526,7 @@ async def create_project(body: ProjectIn, user: dict = Depends(require_role(ROLE
         "objeto_contrato": (body.objeto_contrato or "").strip() or None,
         "cliente_principal": (body.cliente_principal or "").strip() or None,
         "color_tema": _sanitize_color_hex(body.color_tema) or "#003366",
+        "color_institucional": _sanitize_color_hex(body.color_institucional) or "#003366",
         "report_text_color": _sanitize_color_hex(body.report_text_color) or "#0F172A",
         "start_date": body.start_date,
         "end_date": body.end_date,
@@ -1550,6 +1566,7 @@ async def get_project(pid: str, user: dict = Depends(current_user)):
     p.setdefault("objeto_contrato", None)
     p.setdefault("cliente_principal", None)
     p.setdefault("color_tema", "#003366")
+    p.setdefault("color_institucional", "#003366")
     p.setdefault("report_text_color", "#0F172A")
     # `general_data_images` NO se incluye aquí a propósito (ver
     # ensure_project_access): puede pesar hasta 30 imágenes de 5MB. Solo se
@@ -1601,6 +1618,8 @@ async def update_project(pid: str, body: ProjectPatch, user: dict = Depends(requ
         upd["cliente_principal"] = body.cliente_principal.strip() or None
     if body.color_tema is not None:
         upd["color_tema"] = _sanitize_color_hex(body.color_tema) or "#003366"
+    if body.color_institucional is not None:
+        upd["color_institucional"] = _sanitize_color_hex(body.color_institucional) or "#003366"
     if body.report_text_color is not None:
         upd["report_text_color"] = _sanitize_color_hex(body.report_text_color) or "#0F172A"
     if body.start_date is not None:
@@ -1685,6 +1704,7 @@ def _project_public(p: dict) -> dict:
     p.setdefault("objeto_contrato", None)
     p.setdefault("cliente_principal", None)
     p.setdefault("color_tema", "#003366")
+    p.setdefault("color_institucional", "#003366")
     p.setdefault("report_text_color", "#0F172A")
     p.setdefault("general_data_images", [])
     p.setdefault("template_pdf", None)
@@ -4034,7 +4054,7 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
         gproj = await db.projects.find_one({"id": pid}, {"general_data_images": 1})
         general_images = (gproj or {}).get("general_data_images") or []
 
-    project_color = proj.get("color_tema") or "#1E40AF"
+    project_color = proj.get("color_institucional") or proj.get("color_tema") or "#1E40AF"
 
     def _build_presentacion_pptx_blocking() -> bytes:
         import base64 as _b64
@@ -9354,7 +9374,7 @@ async def export_reports_pdf(
     project_constructora = proj.get("constructora") or "—"
     project_objeto = proj.get("objeto_contrato") or None
     project_cliente = (proj.get("cliente_principal") or "").strip() or None
-    project_color = _sanitize_color_hex(proj.get("color_tema")) or "#003366"
+    project_color = _sanitize_color_hex(proj.get("color_institucional") or proj.get("color_tema")) or "#003366"
     # Color configurable del pie de foto (texto de observaciones bajo la imagen).
     # Fallback: negro. Usuario puede setear cualquier hex (#RRGGBB).
     report_text_color = _sanitize_color_hex(proj.get("report_text_color")) or "#0F172A"
@@ -9957,19 +9977,37 @@ async def export_reports_pdf(
         # Bloque de textos centrado verticalmente en el TERCIO INFERIOR
         # de la portada (no invade el logo/encabezado del template).
         _cover_block_top_y = PH * 0.55  # baseline superior del bloque
-        # Título "REPORTE" (grande, blanco, izquierda).
+
+        # Color del título de portada: SOLO `color_tema` (nunca
+        # `project_color`/`color_institucional`, que aquí ya no aplica — ver
+        # separación de campos). El fondo de esta página es la plantilla
+        # magenta fija del cliente, no controlada por nosotros, así que un
+        # `color_tema` oscuro o parecido al magenta podría volverse
+        # ilegible — se dibuja con un contorno blanco fino ("falso stroke":
+        # el mismo texto varias veces con offsets antes del trazo final)
+        # para garantizar contraste sin necesitar conocer el hex exacto de
+        # la plantilla. Mismo criterio visual que las etiquetas de
+        # PlanoMarkerOverlay.tsx (stroke blanco sobre cualquier fondo).
+        _cover_title_hex = _sanitize_color_hex(proj.get("color_tema")) or "#003366"
+
+        def _draw_cover_outlined_text(x: float, y: float, text: str, font_size: float, ow: float = 0.9) -> None:
+            c.setFont("Helvetica-Bold", font_size)
+            c.setFillColor(WHITE)
+            for dx, dy in ((-ow, 0), (ow, 0), (0, -ow), (0, ow), (-ow, -ow), (ow, ow), (-ow, ow), (ow, -ow)):
+                c.drawString(x + dx, y + dy, text)
+            c.setFillColor(HexColor(_cover_title_hex))
+            c.drawString(x, y, text)
+
+        # Título "REPORTE" (grande, color_tema con contorno, izquierda).
         _title_size = 44
         while c.stringWidth(_report_title, "Helvetica-Bold", _title_size) > _cover_w_full and _title_size > 20:
             _title_size -= 2
-        c.setFillColor(WHITE)
-        c.setFont("Helvetica-Bold", _title_size)
-        c.drawString(_cover_x_left, _cover_block_top_y, _report_title)
-        # Rango de fechas (medio, blanco).
+        _draw_cover_outlined_text(_cover_x_left, _cover_block_top_y, _report_title, _title_size)
+        # Rango de fechas (medio, color_tema con contorno).
         _dates_y = _cover_block_top_y - 1.6 * cm
         if _date_range_txt:
-            c.setFont("Helvetica-Bold", 20)
-            c.drawString(_cover_x_left, _dates_y, _date_range_txt)
-        # Nombre del proyecto (grande, blanco, hasta 2 líneas si es muy largo).
+            _draw_cover_outlined_text(_cover_x_left, _dates_y, _date_range_txt, 20)
+        # Nombre del proyecto (grande, color_tema con contorno, hasta 2 líneas si es muy largo).
         _proj_y = _dates_y - 1.8 * cm
         if _proj_upper:
             _proj_size = 26
@@ -9996,10 +10034,10 @@ async def export_reports_pdf(
                 _lh = _proj_size * 1.15
                 _ly = _proj_y
                 for _ln in _cover_lines[:2]:
-                    c.drawString(_cover_x_left, _ly, _ln)
+                    _draw_cover_outlined_text(_cover_x_left, _ly, _ln, _proj_size)
                     _ly -= _lh
             else:
-                c.drawString(_cover_x_left, _proj_y, _proj_upper)
+                _draw_cover_outlined_text(_cover_x_left, _proj_y, _proj_upper, _proj_size)
         c.showPage()
         page_num += 1
 
@@ -12578,7 +12616,7 @@ async def export_reports_docx(
     project_constructora = proj.get("constructora") or "—"
     project_objeto = proj.get("objeto_contrato") or None
     project_cliente = (proj.get("cliente_principal") or "").strip() or None
-    project_color = _sanitize_color_hex(proj.get("color_tema")) or "#003366"
+    project_color = _sanitize_color_hex(proj.get("color_institucional") or proj.get("color_tema")) or "#003366"
     constructora_logo_b64 = (proj.get("constructora_logo") or "").strip() or None
     fechas_label = f"{_fmt_fecha_dd_mm_yyyy(start_dt)} a {_fmt_fecha_dd_mm_yyyy(end_dt)}"
 
@@ -13262,7 +13300,7 @@ async def export_reports_pptx(
     project_name = proj.get("name", "Proyecto")
     project_contract = proj.get("contract_number") or "—"  # noqa: F841
     project_constructora = proj.get("constructora") or "—"  # noqa: F841
-    project_color = _sanitize_color_hex(proj.get("color_tema")) or "#003366"
+    project_color = _sanitize_color_hex(proj.get("color_institucional") or proj.get("color_tema")) or "#003366"
     _ch = project_color.lstrip("#")
     BRAND_RGB = (int(_ch[0:2], 16), int(_ch[2:4], 16), int(_ch[4:6], 16))
     fechas_label = f"{_fmt_fecha_dd_mm_yyyy(start_dt)} a {_fmt_fecha_dd_mm_yyyy(end_dt)}"
@@ -14610,7 +14648,14 @@ async def export_reports_pptx(
         # COLORES PARAMETRIZABLES (documentados para futura configuración
         # por proyecto vía DB). Todos son tuples RGB (0..255).
         # ==============================================================
-        COVER_TEXT_COLOR = (0xFF, 0xFF, 0xFF)     # Portada principal: blanco
+        # Portada principal: SOLO color_tema (nunca project_color/
+        # color_institucional, que aquí ya no aplica — ver separación de
+        # campos en ProjectIn). Antes blanco fijo; no se replica aquí la
+        # técnica de contorno del motor PDF (python-pptx/add_text no la
+        # soportan sin más obra) — limitación aceptada, ver commit.
+        _cover_title_hex = _sanitize_color_hex(proj.get("color_tema")) or "#003366"
+        _cover_title_ch = _cover_title_hex.lstrip("#")
+        COVER_TEXT_COLOR = (int(_cover_title_ch[0:2], 16), int(_cover_title_ch[2:4], 16), int(_cover_title_ch[4:6], 16))
         AREA_TEXT_COLOR = (0xFF, 0xFF, 0xFF)      # Portadillas de Área: blanco
         NODE_TITLE_COLOR = (0x0F, 0x17, 0x2A)     # Título de nodo: azul oscuro
         PHOTO_CAPTION_COLOR = _sanitize_color_hex(proj.get("report_text_color")) or "#0F172A"
@@ -20680,7 +20725,7 @@ async def export_catalogo_pdf(pid: str, user: dict = Depends(current_user)):
         conceptos_por_partida[d["id"]] = [await _concepto_out(c) for c in conceptos]
 
     project_name = proj.get("name", "Proyecto")
-    project_color = _sanitize_color_hex(proj.get("color_tema")) or "#003366"
+    project_color = _sanitize_color_hex(proj.get("color_institucional") or proj.get("color_tema")) or "#003366"
     total_catalogo = sum_decimales([p.importe_contratado_partida for p in partidas_out])
     titulo_modulo_raw = (proj.get("titulo_modulo_catalogo") or "").strip()
     titulo_modulo = titulo_modulo_raw or "Catálogo de Conceptos"
@@ -20825,7 +20870,7 @@ async def export_avance_periodo_pdf(
     fechas = sorted(fechas_set)
 
     project_name = proj.get("name", "Proyecto")
-    project_color = _sanitize_color_hex(proj.get("color_tema")) or "#003366"
+    project_color = _sanitize_color_hex(proj.get("color_institucional") or proj.get("color_tema")) or "#003366"
 
     if desde and hasta:
         periodo_label = f"DEL {desde} AL {hasta}"

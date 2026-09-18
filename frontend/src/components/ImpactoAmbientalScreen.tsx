@@ -46,7 +46,7 @@ export default function ImpactoAmbientalScreen({ projectId }: { projectId: strin
 
   useEffect(() => { load(); }, [load]);
 
-  const headerColor = project?.color_tema || colors.primary;
+  const headerColor = project?.color_institucional || project?.color_tema || colors.primary;
   const headerTextColor = contrastText(headerColor);
 
   const cumplimientos = useMemo(() => items.filter((i) => i.tipo === 'cumplimiento'), [items]);

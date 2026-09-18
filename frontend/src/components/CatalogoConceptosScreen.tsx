@@ -87,7 +87,7 @@ export default function CatalogoConceptosScreen({ projectId }: { projectId: stri
   // obra" por separado, los datos se importan una sola vez.
   const esPrecioAlzado = project?.tipo_contrato === 'PRECIO_ALZADO';
 
-  const headerColor = project?.color_tema || colors.primary;
+  const headerColor = project?.color_institucional || project?.color_tema || colors.primary;
   const headerTextColor = contrastText(headerColor);
 
   const loadPartidas = useCallback(async () => {
