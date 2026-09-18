@@ -9351,7 +9351,16 @@ async def export_reports_pdf(
 
     weather_by_subtramo: dict = {}
     _weather_cache: dict = {}
-    for _subtramo_id in resource_raw_rows_by_subtramo.keys():
+    # FIX (2026-09): antes solo se resolvía clima para subtramos presentes en
+    # `resource_raw_rows_by_subtramo` (o sea, con AL MENOS un reporte de
+    # campo) — un Subtramo sin reportes pero con clima capturado a mano hoy
+    # (módulo "Estado del Tiempo", independiente de reportes) se quedaba
+    # sin resolver y el PDF mostraba "—" pese a existir la captura. Se une
+    # con los nodos que sí tienen weather_log de hoy para no perderlos, sin
+    # ampliar el fetch automático a Open-Meteo a subtramos sin ninguna
+    # actividad (mismo comportamiento de siempre para esos).
+    _subtramo_ids_for_weather = set(resource_raw_rows_by_subtramo.keys()) | set(_weather_logs_by_node.keys())
+    for _subtramo_id in _subtramo_ids_for_weather:
         _manual = _weather_logs_by_node.get(_subtramo_id)
         _manual_fields = (
             {k: _manual.get(k) for k in ("temperature_c", "wind_kmh", "precipitation_mm", "us_aqi")}
@@ -10222,17 +10231,23 @@ async def export_reports_pdf(
         _draw_actividades_por_area_section()
 
         if total_reportes == 0:
+            # FIX (2026-09): esto antes CORTABA el documento aquí mismo (return
+            # inmediato) — el loop por nodo, los resúmenes por Subtramo/
+            # Estación/Intertramo (Acceso al Predio, Situación Social, Estado
+            # del Tiempo) y Recuento General nunca se imprimían si el proyecto
+            # no tenía reportes DE CAMPO en el período. Pero esas secciones son
+            # estado PERSISTENTE del nodo, no derivado de reportes (ver notas
+            # en `_emit_subtramo_summary`/`_resolve_acceso_predio_node`): un
+            # proyecto sin reportes narrativos puede igual tener clima
+            # capturado a mano o Acceso al Predio configurado, y ambos
+            # desaparecían en silencio del PDF. Ahora solo se AGREGA esta nota
+            # informativa y el flujo normal continúa — cada sección decide por
+            # su cuenta si tiene algo que imprimir.
             c.setFillColor(MUTED)
             c.setFont("Helvetica-Oblique", 14)
             c.drawCentredString(PW / 2, PH / 2, "No hay reportes para el período seleccionado.")
             c.showPage()
             page_num += 1
-            # Un proyecto sin reportes de campo puede seguir teniendo
-            # actividad forestal/seguridad ese período — la sección de
-            # cierre se pinta igual, nunca depende de total_reportes.
-            _draw_modulos_closing_pages()
-            c.save()
-            return buf.getvalue(), section_page_indices, [], _gd_page_count
 
         # =====================================================================
         # LAYOUT EJECUTIVO (P0 REFACTOR 2026-07):
@@ -13300,7 +13315,11 @@ async def export_reports_pptx(
 
     weather_by_subtramo: dict = {}
     _weather_cache: dict = {}
-    for _subtramo_id in resource_consolidated_by_subtramo.keys():
+    # FIX (2026-09): ver la misma nota en export_reports_pdf — un Subtramo
+    # sin reportes pero con clima capturado a mano hoy no debe quedar sin
+    # resolver solo porque no aparece en `resource_consolidated_by_subtramo`.
+    _subtramo_ids_for_weather = set(resource_consolidated_by_subtramo.keys()) | set(_weather_logs_by_node.keys())
+    for _subtramo_id in _subtramo_ids_for_weather:
         _manual = _weather_logs_by_node.get(_subtramo_id)
         _manual_fields = (
             {k: _manual.get(k) for k in ("temperature_c", "wind_kmh", "precipitation_mm", "us_aqi")}
