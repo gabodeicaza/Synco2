@@ -91,7 +91,7 @@ def _leer_credenciales() -> tuple[str, str, str]:
     return login_url, email, password  # type: ignore[return-value]
 
 
-def iniciar_sesion(headed: bool, datos_clima: dict) -> None:
+def iniciar_sesion(headed: bool, lectura) -> None:
     """Login real con Playwright + comentarios de dónde iría cada paso
     siguiente para pegar el clima, marcados como AJUSTAR AQUÍ donde hace
     falta un selector real que no puedo adivinar desde el código fuente."""
@@ -136,11 +136,11 @@ def iniciar_sesion(headed: bool, datos_clima: dict) -> None:
             log.info("PASO SIGUIENTE (AJUSTAR): entrar al nodo tipo 'Estación' donde se captura clima.")
             log.info("  -> Ver árbol de nodos; el nodo debe tener tipo_nodo == 'estacion' y Acceso al Predio habilitado.")
             log.info("PASO SIGUIENTE (AJUSTAR): abrir el formulario del módulo 'Estado del Tiempo'.")
-            log.info("PASO SIGUIENTE (AJUSTAR): llenar los campos con los datos de Open-Meteo:")
-            log.info("    Temperatura (°C)      -> %.1f", datos_clima.get("temperature_2m", float("nan")))
-            log.info("    Viento (km/h)         -> %.1f", datos_clima.get("wind_speed_10m", float("nan")))
-            log.info("    Precipitación (mm)    -> %.1f", datos_clima.get("precipitation", float("nan")))
-            log.info("    Calidad del aire (AQI)-> %s", datos_clima.get("us_aqi"))
+            log.info("PASO SIGUIENTE (AJUSTAR): llenar los campos con la lectura horaria más cercana a ahora (%s):", lectura.hora_local)
+            log.info("    Temperatura (°C)      -> %.1f", lectura.temperature_c or 0)
+            log.info("    Viento (km/h, a 10 m) -> %.1f", lectura.wind_kmh or 0)
+            log.info("    Precipitación (mm)    -> %.1f", lectura.precipitation_mm or 0)
+            log.info("    Calidad del aire (AQI)-> %s", lectura.us_aqi)
             log.info("PASO SIGUIENTE (AJUSTAR): confirmar/guardar el formulario y verificar el toast/mensaje de éxito.")
             log.info(
                 "NOTA: cada uno de estos pasos corresponde exactamente a lo que ya hace "
@@ -162,16 +162,20 @@ def main() -> int:
     parser.add_argument("--headed", action="store_true", help="Corre con navegador visible (para depurar selectores)")
     args = parser.parse_args()
 
-    from weather_openmeteo_export import obtener_clima  # reutiliza la misma consulta a Open-Meteo
+    # Reutiliza la misma consulta a Open-Meteo que weather_openmeteo_export.py
+    # (hourly, viento a 10 m) y toma la lectura más cercana a ahora, igual
+    # que hace `--push` en ese script.
+    from weather_openmeteo_export import _lectura_mas_cercana_a_ahora, obtener_clima_horario
 
     try:
-        datos_clima = obtener_clima(19.4284, -99.1276)  # AJUSTAR AQUÍ: lat/lon de la estación real
+        lecturas = obtener_clima_horario(19.4284, -99.1276)  # AJUSTAR AQUÍ: lat/lon de la estación real
+        lectura = _lectura_mas_cercana_a_ahora(lecturas)
     except Exception as exc:  # noqa: BLE001 -- se reporta y se aborta, no tiene sentido seguir sin datos
         log.error("No se pudo obtener clima de Open-Meteo: %s", exc)
         return 1
 
     try:
-        iniciar_sesion(headed=args.headed, datos_clima=datos_clima)
+        iniciar_sesion(headed=args.headed, lectura=lectura)
     except ConfiguracionFaltanteError as exc:
         log.error(str(exc))
         return 1

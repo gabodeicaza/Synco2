@@ -11,17 +11,26 @@ scraping ni un webhook hipotético -- ya existe una API HTTP documentada
 (JWT via `POST /api/auth/login`) para subir estos datos.
 
 Este script:
-    1. Consulta Open-Meteo (clima + calidad del aire) para una o varias
-       estaciones (lat/lon).
-    2. Arma un registro con la estructura estándar de "Reporte de Obra
-       Diario" que usa SynCo internamente (mismos nombres de campo que
-       `_fetch_weather_for_export` en server.py: temperature_c, wind_kmh,
-       precipitation_mm, us_aqi) + metadata de trazabilidad.
-    3. Exporta ese registro a CSV y JSON (para revisión manual, import
-       batch, o como payload de referencia).
-    4. Opcionalmente (--push) lo sube de una vez al endpoint real de
-       SynCo autenticándose con email/password o token de invitación
-       canjeado.
+    1. Consulta Open-Meteo (clima + calidad del aire) en resolución HORARIA
+       (`hourly=...`) para el día de hoy (huso horario CDMX), para una o
+       varias estaciones (lat/lon). Viento a 10 m de altura
+       (`wind_speed_10m`), la altura estándar de superficie -- no a 180 m,
+       que solo aplicaría a viento en grúas/torres muy altas.
+    2. Arma, por estación, un `ReporteClimaDiario` con una lista de
+       `LecturaHoraria` (una por hora del día) usando los mismos nombres de
+       campo que ya usa SynCo internamente (`_fetch_weather_for_export`:
+       temperature_c, wind_kmh, precipitation_mm, us_aqi) + metadata de
+       trazabilidad.
+    3. Exporta a CSV (una fila por hora por estación -- formato largo, el
+       más fácil de importar/filtrar) y a JSON (anidado, una entrada por
+       estación con su lista de lecturas horarias completa).
+    4. Opcionalmente (--push) sube al endpoint real de SynCo la lectura
+       horaria más cercana a la hora actual -- el endpoint de SynCo guarda
+       UN valor por nodo/día (upsert), no una serie horaria, así que no
+       tiene un lugar natural donde meter las 24 lecturas; ver la función
+       `_lectura_mas_cercana_a_ahora` si en vez de eso prefieres subir un
+       agregado del día (máximo de precipitación, promedio de temperatura,
+       etc.) -- es un cambio de una línea en `subir_reporte_clima`.
 
 USO
 ---
@@ -77,7 +86,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 from zoneinfo import ZoneInfo
 
 import requests
@@ -106,20 +115,15 @@ class SyncoApiError(RuntimeError):
 
 
 @dataclass
-class ReporteClimaDiario:
-    """Estructura estándar de "Reporte de Obra Diario" (bloque clima).
+class LecturaHoraria:
+    """Una lectura de una hora específica del día (huso CDMX).
 
     Nombres de campo idénticos a los que ya usa SynCo internamente
-    (`_fetch_weather_for_export` / `WeatherLogIn` en server.py) para que,
-    si más adelante se importa por lote o vía --push, no haga falta
-    traducir nombres de columna.
+    (`_fetch_weather_for_export` / `WeatherLogIn` en server.py) para no
+    tener que traducir nombres de columna al importar.
     """
 
-    estacion_nombre: str
-    lat: float
-    lon: float
-    fecha_cdmx: str  # YYYY-MM-DD, día de obra en huso horario CDMX
-    hora_consulta_utc: str  # ISO-8601
+    hora_local: str  # "YYYY-MM-DDTHH:MM", hora local CDMX que reporta Open-Meteo
     temperature_c: Optional[float] = None
     wind_kmh: Optional[float] = None
     precipitation_mm: Optional[float] = None
@@ -127,9 +131,22 @@ class ReporteClimaDiario:
     european_aqi: Optional[float] = None
     pm10: Optional[float] = None
     pm2_5: Optional[float] = None
+
+
+@dataclass
+class ReporteClimaDiario:
+    """Reporte de Obra Diario (bloque clima) de una estación: metadata +
+    la serie de lecturas horarias del día."""
+
+    estacion_nombre: str
+    lat: float
+    lon: float
+    fecha_cdmx: str  # YYYY-MM-DD, día de obra en huso horario CDMX
+    hora_consulta_utc: str  # ISO-8601, cuándo se corrió el script
     project_id: Optional[str] = None
     node_id: Optional[str] = None
     fuente: str = "open-meteo"
+    lecturas: list[LecturaHoraria] = field(default_factory=list)
 
 
 def _get_con_reintentos(url: str, params: dict) -> dict:
@@ -150,33 +167,73 @@ def _get_con_reintentos(url: str, params: dict) -> dict:
     raise WeatherFetchError(f"No se pudo consultar {url} tras {HTTP_MAX_RETRIES} intentos") from ultimo_error
 
 
-def obtener_clima(lat: float, lon: float) -> dict:
-    """Consulta clima + calidad del aire actuales para (lat, lon).
+def obtener_clima_horario(lat: float, lon: float) -> list[LecturaHoraria]:
+    """Consulta clima + calidad del aire por hora, para el día de hoy en
+    huso horario CDMX (`forecast_days=1`, sin `past_days`, con
+    `timezone=America/Mexico_City` para que las horas devueltas ya vengan
+    alineadas al día local en vez de UTC).
 
-    Basado en el script original del usuario, pero con: reintentos,
-    validación de respuesta y variables de calidad del aire adicionales
-    (pm10, pm2_5) además del AQI europeo.
+    Viento a 10 m de altura (`wind_speed_10m`), la altura estándar de
+    superficie para condiciones de obra a nivel de piso.
     """
     params_clima = {
         "latitude": lat,
         "longitude": lon,
-        "current": "temperature_2m,precipitation,wind_speed_10m",
+        "hourly": "temperature_2m,precipitation,wind_speed_10m",
         "timezone": "America/Mexico_City",
+        "forecast_days": 1,
     }
     params_calidad = {
         "latitude": lat,
         "longitude": lon,
-        "current": "european_aqi,us_aqi,pm10,pm2_5",
+        "hourly": "european_aqi,us_aqi,pm10,pm2_5",
         "timezone": "America/Mexico_City",
+        "forecast_days": 1,
     }
 
-    datos_clima = _get_con_reintentos(OPEN_METEO_FORECAST_URL, params_clima).get("current", {})
-    datos_calidad = _get_con_reintentos(OPEN_METEO_AIR_QUALITY_URL, params_calidad).get("current", {})
+    clima = _get_con_reintentos(OPEN_METEO_FORECAST_URL, params_clima).get("hourly", {})
+    calidad = _get_con_reintentos(OPEN_METEO_AIR_QUALITY_URL, params_calidad).get("hourly", {})
 
-    if not datos_clima and not datos_calidad:
-        raise WeatherFetchError(f"Open-Meteo no devolvió datos 'current' para lat={lat}, lon={lon}")
+    horas = clima.get("time") or calidad.get("time")
+    if not horas:
+        raise WeatherFetchError(f"Open-Meteo no devolvió datos 'hourly' para lat={lat}, lon={lon}")
 
-    return {**datos_clima, **datos_calidad}
+    # Los dos endpoints comparten la misma malla horaria cuando se pide el
+    # mismo timezone/forecast_days, así que alinean por índice sin necesidad
+    # de cruzarlas por el valor de "time" -- si algún día dejan de coincidir
+    # en longitud, es más seguro fallar aquí que reportar horas cruzadas.
+    n = len(horas)
+    for nombre_serie, serie in (("clima", clima.get("time")), ("calidad", calidad.get("time"))):
+        if serie is not None and len(serie) != n:
+            raise WeatherFetchError(
+                f"Series horarias desalineadas entre clima y calidad del aire "
+                f"({nombre_serie} trae {len(serie)} horas, se esperaban {n})"
+            )
+
+    def _en(serie: Optional[list], i: int) -> Optional[float]:
+        return serie[i] if serie is not None else None
+
+    return [
+        LecturaHoraria(
+            hora_local=horas[i],
+            temperature_c=_en(clima.get("temperature_2m"), i),
+            wind_kmh=_en(clima.get("wind_speed_10m"), i),
+            precipitation_mm=_en(clima.get("precipitation"), i),
+            us_aqi=_en(calidad.get("us_aqi"), i),
+            european_aqi=_en(calidad.get("european_aqi"), i),
+            pm10=_en(calidad.get("pm10"), i),
+            pm2_5=_en(calidad.get("pm2_5"), i),
+        )
+        for i in range(n)
+    ]
+
+
+def _lectura_mas_cercana_a_ahora(lecturas: list[LecturaHoraria]) -> LecturaHoraria:
+    """Para --push: el endpoint de SynCo guarda un solo valor por nodo/día,
+    así que se sube la lectura horaria más cercana al momento actual (en
+    vez de las 24 horas completas, que sólo van al CSV/JSON)."""
+    ahora = datetime.now(CDMX_TZ).replace(tzinfo=None)
+    return min(lecturas, key=lambda l: abs(datetime.fromisoformat(l.hora_local) - ahora))
 
 
 def construir_reporte(
@@ -185,7 +242,7 @@ def construir_reporte(
 ) -> ReporteClimaDiario:
     """Arma el registro con la estructura de Reporte de Obra Diario a
     partir de la respuesta cruda de Open-Meteo."""
-    crudo = obtener_clima(lat, lon)
+    lecturas = obtener_clima_horario(lat, lon)
     ahora_utc = datetime.now(timezone.utc)
 
     return ReporteClimaDiario(
@@ -194,36 +251,49 @@ def construir_reporte(
         lon=lon,
         fecha_cdmx=ahora_utc.astimezone(CDMX_TZ).date().isoformat(),
         hora_consulta_utc=ahora_utc.isoformat(),
-        temperature_c=crudo.get("temperature_2m"),
-        wind_kmh=crudo.get("wind_speed_10m"),
-        precipitation_mm=crudo.get("precipitation"),
-        us_aqi=crudo.get("us_aqi"),
-        european_aqi=crudo.get("european_aqi"),
-        pm10=crudo.get("pm10"),
-        pm2_5=crudo.get("pm2_5"),
         project_id=project_id,
         node_id=node_id,
+        lecturas=lecturas,
     )
 
 
 def exportar_csv(reportes: list[ReporteClimaDiario], ruta: Path) -> None:
+    """Una fila por hora por estación (formato largo) -- el más simple de
+    abrir en Excel/importar a otra herramienta sin aplanar arreglos."""
     if not reportes:
         log.warning("No hay reportes que exportar a CSV (%s)", ruta)
         return
-    campos = list(asdict(reportes[0]).keys())
+
+    campos = [
+        "estacion_nombre", "lat", "lon", "project_id", "node_id", "fuente",
+        "fecha_cdmx", "hora_consulta_utc", "hora_local",
+        "temperature_c", "wind_kmh", "precipitation_mm",
+        "us_aqi", "european_aqi", "pm10", "pm2_5",
+    ]
     ruta.parent.mkdir(parents=True, exist_ok=True)
+    total_filas = 0
     with ruta.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=campos)
         writer.writeheader()
         for r in reportes:
-            writer.writerow(asdict(r))
-    log.info("CSV exportado: %s (%d filas)", ruta, len(reportes))
+            base = {
+                "estacion_nombre": r.estacion_nombre, "lat": r.lat, "lon": r.lon,
+                "project_id": r.project_id, "node_id": r.node_id, "fuente": r.fuente,
+                "fecha_cdmx": r.fecha_cdmx, "hora_consulta_utc": r.hora_consulta_utc,
+            }
+            for lectura in r.lecturas:
+                writer.writerow({**base, "hora_local": lectura.hora_local, **{
+                    k: v for k, v in asdict(lectura).items() if k != "hora_local"
+                }})
+                total_filas += 1
+    log.info("CSV exportado: %s (%d filas, %d estaciones)", ruta, total_filas, len(reportes))
 
 
 def exportar_json(reportes: list[ReporteClimaDiario], ruta: Path) -> None:
     ruta.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "tipo": "reporte_obra_diario_clima",
+        "resolucion": "hourly",
         "generado_en_utc": datetime.now(timezone.utc).isoformat(),
         "registros": [asdict(r) for r in reportes],
     }
@@ -292,20 +362,27 @@ class ClienteSynco:
         definidos (vienen del config de estaciones), y que el nodo sea una
         Estación con Acceso al Predio habilitado y el módulo
         "estado_tiempo" activo en el proyecto -- si no, la API responde
-        400/403/404 y por eso NO se debe silenciar el error aquí."""
+        400/403/404 y por eso NO se debe silenciar el error aquí.
+
+        El endpoint guarda un solo valor por nodo/día (upsert), así que se
+        sube la lectura horaria más cercana a la hora actual -- no las 24
+        horas completas (esas sólo van al CSV/JSON)."""
         if not reporte.project_id or not reporte.node_id:
             raise SyncoApiError(
                 f"'{reporte.estacion_nombre}' no tiene project_id/node_id en el "
                 "config -- agrégalos para poder usar --push."
             )
+        if not reporte.lecturas:
+            raise SyncoApiError(f"'{reporte.estacion_nombre}' no tiene lecturas horarias que subir")
 
+        lectura = _lectura_mas_cercana_a_ahora(reporte.lecturas)
         url = f"{self.base_url}/projects/{reporte.project_id}/weather-logs"
         body = {
             "node_id": reporte.node_id,
-            "temperature_c": reporte.temperature_c,
-            "wind_kmh": reporte.wind_kmh,
-            "precipitation_mm": reporte.precipitation_mm,
-            "us_aqi": reporte.us_aqi,
+            "temperature_c": lectura.temperature_c,
+            "wind_kmh": lectura.wind_kmh,
+            "precipitation_mm": lectura.precipitation_mm,
+            "us_aqi": lectura.us_aqi,
         }
         try:
             resp = self.session.put(url, json=body, timeout=HTTP_TIMEOUT_S)
@@ -337,7 +414,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--config", required=True, type=Path, help="JSON con la lista de estaciones a consultar")
     parser.add_argument("--outdir", required=True, type=Path, help="Carpeta donde se escriben el CSV y JSON")
-    parser.add_argument("--push", action="store_true", help="Además de exportar, sube cada reporte a SynCo vía su API real")
+    parser.add_argument("--push", action="store_true", help="Además de exportar, sube la lectura más reciente de cada estación a SynCo vía su API real")
     args = parser.parse_args()
 
     try:
@@ -355,9 +432,12 @@ def main() -> int:
                 project_id=est.get("project_id"), node_id=est.get("node_id"),
             )
             reportes.append(reporte)
-            log.info("Clima obtenido para '%s': %.1f°C, %.1f mm, AQI %s",
-                      reporte.estacion_nombre, reporte.temperature_c or 0,
-                      reporte.precipitation_mm or 0, reporte.us_aqi)
+            actual = _lectura_mas_cercana_a_ahora(reporte.lecturas)
+            log.info(
+                "Clima obtenido para '%s' (%d horas, lectura actual %s): %.1f°C, %.1f mm, AQI %s",
+                reporte.estacion_nombre, len(reporte.lecturas), actual.hora_local,
+                actual.temperature_c or 0, actual.precipitation_mm or 0, actual.us_aqi,
+            )
         except WeatherFetchError as exc:
             errores += 1
             log.error("Estación '%s' omitida: %s", est.get("nombre", "?"), exc)
