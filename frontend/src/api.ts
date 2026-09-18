@@ -1995,6 +1995,21 @@ export const api = {
     request<Perforadora>('PATCH', `/projects/${pid}/control-obra/perforadoras/${id}`, body),
   deletePerforadora: (pid: string, id: string) =>
     request<{ ok: boolean }>('DELETE', `/projects/${pid}/control-obra/perforadoras/${id}`),
+  // Puente app → panel externo: mismo formato de 3 hojas (POSTES/
+  // CIMENTACION/PERFORADORAS) que ya sabe leer el panel HTML de obra que el
+  // usuario usaba antes de este módulo — ver export_control_obra_xlsx en
+  // server.py. Solo lectura, no requiere el módulo encendido.
+  downloadControlObraXlsx: async (pid: string): Promise<{ blob: Blob; filename: string }> => {
+    const tok = await getToken();
+    const res = await fetch(`${BASE}/projects/${pid}/control-obra/export.xlsx`, {
+      method: 'GET',
+      headers: tok ? { Authorization: `Bearer ${tok}` } : {},
+    });
+    if (!res.ok) throw new ApiError(res.status, await _downloadErrorMessage(res, 'Error al exportar Control de Obra'));
+    const cd = res.headers.get('Content-Disposition') || '';
+    const m = cd.match(/filename="?([^"]+)"?/);
+    return { blob: await res.blob(), filename: (m && m[1]) || 'control_obra.xlsx' };
+  },
 
   // === Módulo piloto: Seguridad e Higiene ===
   listSeguridadReportes: (pid: string) => request<SeguridadReporte[]>('GET', `/projects/${pid}/seguridad-reportes`),

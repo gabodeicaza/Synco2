@@ -2454,6 +2454,105 @@ async def delete_perforadora(pid: str, perforadora_id: str, user: dict = Depends
     return {"ok": True}
 
 
+# --- Puente app → panel externo: exportar en el MISMO formato de 3 hojas --
+# (POSTES/CIMENTACION/PERFORADORAS) que ya sabe leer el panel HTML de obra
+# que el usuario usaba antes de este módulo (ver stateToWorkbook() en ese
+# panel — layout replicado aquí celda por celda). Puente unidireccional y de
+# solo lectura: quien siga abriendo ese panel (para compartirlo sin la app,
+# o mostrarlo en una pantalla de obra) puede refrescarlo con lo capturado
+# aquí importando este archivo, sin volver a capturar nada a mano. No
+# gateado por _ensure_modulo_activo (a diferencia de los endpoints de
+# escritura arriba) — mismo criterio que list_cimentacion_elementos/
+# list_perforadoras, que tampoco lo gatean: es lectura, no captura.
+_CONTROL_OBRA_ESTATUS_CODE = {"cambio_trayectoria": 0, "sin_iniciar": 1, "en_proceso": 2, "concluido": 3}
+
+
+@api.get("/projects/{pid}/control-obra/export.xlsx")
+async def export_control_obra_xlsx(pid: str, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    from openpyxl import Workbook
+
+    nodes = await db.location_nodes.find({"project_id": pid}).to_list(length=10000)
+
+    wb = Workbook()
+
+    # --- Hoja POSTES ---
+    ws1 = wb.active
+    ws1.title = "POSTES"
+    ws1.append([])
+    ws1.append([None, None, 0, "En proceso cambio de trayectoria", None, None, 2, "En proceso", "SEMÁFORO DE AVANCE DE POSTES"])
+    ws1.append([None, None, 1, "Sin iniciar", None, None, 3, "Concluido"])
+    ws1.append([])
+    campos = ["pilas", "cabezal", "fuste", "poste"]
+    ws1.append([None, "POSTE", "Pilas", "Cabezal", "Fuste", "Poste"])
+    ws1.append([None, None, "Estatus", "Estatus", "Estatus", "Estatus"])
+    intertramos = sorted(
+        (n for n in nodes if n.get("tipo_nodo") == "intertramo" and _acceso_predio_efectivo(n)),
+        key=lambda n: (n.get("order", 0), n.get("name", "")),
+    )
+    for it in intertramos:
+        ws1.append([None, it.get("name") or ""])
+        postes = sorted(
+            (n for n in nodes if n.get("parent_id") == it["id"]),
+            key=lambda n: (n.get("order", 0), n.get("name", "")),
+        )
+        for p in postes:
+            row = [None, p.get("name") or ""]
+            for campo in campos:
+                row.append(_CONTROL_OBRA_ESTATUS_CODE.get(p.get(f"estatus_{campo}"), 1))
+            ws1.append(row)
+    ws1.column_dimensions["A"].width = 2
+    ws1.column_dimensions["B"].width = 22
+    for col_letter in ("C", "D", "E", "F"):
+        ws1.column_dimensions[col_letter].width = 11
+
+    # --- Hoja CIMENTACION ---
+    ws2 = wb.create_sheet("CIMENTACION")
+    elementos = await db.cimentacion_elementos.find({"project_id": pid}).to_list(length=2000)
+    elementos_by_node: dict = {}
+    for e in elementos:
+        elementos_by_node.setdefault(e["node_id"], []).append(e)
+    estaciones = sorted(
+        (n for n in nodes if _node_es_estacion_habilitada(n)),
+        key=lambda n: (n.get("order", 0), n.get("name", "")),
+    )
+    for est in estaciones:
+        els = elementos_by_node.get(est["id"]) or []
+        if not els:
+            continue
+        ws2.append([None, None, None, est.get("name") or ""])
+        ws2.append([None, None, None, "Elemento", "Total", "Acumulado Total", "En proceso", "% colado", "% por colar"])
+        for el in els:
+            total = el.get("total") or 0
+            acum = el.get("acumulado_total") or 0
+            pct = (acum / total) if total > 0 else 0
+            ws2.append([None, None, None, el.get("elemento") or "", total, acum, el.get("en_proceso") or 0, pct, 1 - pct])
+        ws2.append([])
+    for col_letter, w in zip(("A", "B", "C", "D", "E", "F", "G", "H", "I"), (2, 2, 2, 16, 8, 16, 11, 10, 12)):
+        ws2.column_dimensions[col_letter].width = w
+
+    # --- Hoja PERFORADORAS ---
+    ws3 = wb.create_sheet("PERFORADORAS")
+    ws3.append([None, "RELACIÓN DE PERFORADORAS"])
+    ws3.append([])
+    ws3.append([None, "PERFORADORA", "SERIE", "UBICACIÓN", "ESTATUS"])
+    perforadoras = await db.perforadoras.find({"project_id": pid}).to_list(length=500)
+    for p in perforadoras:
+        ws3.append([None, p.get("nombre") or "", p.get("serie") or "", p.get("ubicacion") or "", p.get("estatus") or ""])
+    for col_letter, w in zip(("A", "B", "C", "D", "E"), (2, 26, 22, 16, 12)):
+        ws3.column_dimensions[col_letter].width = w
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    stamp = datetime.now(timezone.utc).astimezone(MX_TZ).strftime("%Y-%m-%d_%H%M")
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="control_obra_{stamp}.xlsx"'},
+    )
+
+
 class SeguridadReporteIn(BaseModel):
     node_id: Optional[str] = None
     fecha: Optional[str] = None  # ISO date; default = hoy

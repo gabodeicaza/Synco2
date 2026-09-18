@@ -33,6 +33,7 @@ import {
 } from '@/src/api';
 import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
 import { ESTATUS_LABEL, ESTATUS_COLOR, POSTE_CAMPOS, PosteCampo } from '@/src/components/AccesoPredioManager';
+import { downloadBlob } from '@/src/utils/downloadBlob';
 
 type Tab = 'postes' | 'cimentacion' | 'perforadoras';
 
@@ -93,9 +94,27 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
   const [perfModal, setPerfModal] = useState<Perforadora | 'nueva' | null>(null);
   const [perfDraft, setPerfDraft] = useState({ nombre: '', serie: '', ubicacion: '', estatus: '' });
   const [perfSaving, setPerfSaving] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   const headerColor = project?.color_tema || colors.primary;
   const headerTextColor = contrastText(headerColor);
+
+  // Puente app → panel externo: descarga el mismo Excel de 3 hojas (POSTES/
+  // CIMENTACION/PERFORADORAS) que ya sabe leer el panel HTML de obra que se
+  // usaba antes de este módulo — así se puede refrescar con datos en vivo
+  // sin recapturar nada a mano (ver export_control_obra_xlsx en server.py).
+  async function exportXlsx() {
+    if (exporting) return;
+    setExporting(true);
+    try {
+      const { blob, filename } = await api.downloadControlObraXlsx(projectId);
+      await downloadBlob(blob, filename, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    } catch (e: any) {
+      Alert.alert('No se pudo exportar', e?.message || 'Intentalo nuevamente.');
+    } finally {
+      setExporting(false);
+    }
+  }
 
   const load = useCallback(async () => {
     if (!projectId) return;
@@ -286,7 +305,13 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
             <Ionicons name="chevron-back" size={22} color={headerTextColor} />
           </Pressable>
           <Text style={[styles.titleBar, { color: headerTextColor }]} numberOfLines={1}>Control de Obra</Text>
-          <View style={{ width: 32 }} />
+          <Pressable onPress={exportXlsx} disabled={exporting} hitSlop={10} style={styles.iconBtn}>
+            {exporting ? (
+              <ActivityIndicator size="small" color={headerTextColor} />
+            ) : (
+              <Ionicons name="download-outline" size={22} color={headerTextColor} />
+            )}
+          </Pressable>
         </View>
       </View>
 
