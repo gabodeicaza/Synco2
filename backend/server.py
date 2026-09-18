@@ -6399,6 +6399,14 @@ async def update_team_member(
     if update:
         await db.users.update_one({"id": uid}, {"$set": update})
         member.update(update)
+        # [FIX] El Hub de Invitaciones (`GET /projects/{pid}/invitations`) lee
+        # y agrupa por el `area_id` guardado en `db.invitations`, no en
+        # `db.users`. Sin este sync, reasignar el área de un miembro ya
+        # aceptado actualizaba al usuario pero la invitación original quedaba
+        # con el área vieja (o sin área) para siempre, y el Hub lo seguía
+        # mostrando como "sin área asignada" aunque el cambio sí se hubiera
+        # guardado.
+        await db.invitations.update_one({"accepted_user_id": uid, "project_id": pid}, {"$set": update})
     return user_to_out(member)
 
 
