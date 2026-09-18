@@ -89,7 +89,8 @@ export default function SpecLayout() {
             siguen alcanzables via router.push, ya no ocupan tab visible. */}
         <Tabs.Screen name="mensajes" options={{ href: null }} />
         <Tabs.Screen name="calendario" options={{ href: null }} />
-        {/* Catalogo de Conceptos (grupo de 3 opciones del menu hamburgues), sin tab visible. */}
+        {/* Catalogo de Conceptos: hub (menu hamburgues) + sus 3 pantallas destino, sin tab visible. */}
+        <Tabs.Screen name="catalogo-conceptos-hub" options={{ href: null }} />
         <Tabs.Screen name="catalogo-conceptos" options={{ href: null }} />
         <Tabs.Screen name="registrar-avance" options={{ href: null }} />
         <Tabs.Screen name="visualizar-avance" options={{ href: null }} />

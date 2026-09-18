@@ -92,7 +92,8 @@ export default function SubCoordLayout() {
         <Tabs.Screen name="fuerza-de-trabajo" options={{ href: null }} />
         {/* Archivos de consulta _ alcanzable via router.push (menu), sin tab visible. */}
         <Tabs.Screen name="archivos-consulta" options={{ href: null }} />
-        {/* Catalogo de Conceptos (grupo de 3 opciones del menu hamburgues), sin tab visible. */}
+        {/* Catalogo de Conceptos: hub (menu hamburgues) + sus 3 pantallas destino, sin tab visible. */}
+        <Tabs.Screen name="catalogo-conceptos-hub" options={{ href: null }} />
         <Tabs.Screen name="catalogo-conceptos" options={{ href: null }} />
         <Tabs.Screen name="registrar-avance" options={{ href: null }} />
         <Tabs.Screen name="visualizar-avance" options={{ href: null }} />

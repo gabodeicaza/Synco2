@@ -24,9 +24,6 @@ export function HeaderMenu({ basePath, projectId }: HeaderMenuProps) {
   const insets = useSafeAreaInsets();
   const { logout } = useAuth();
   const [open, setOpen] = useState(false);
-  // Acordeon del grupo "Catalogo de Conceptos" (3 sub-opciones) dentro del
-  // mismo Modal — evita un segundo Modal anidado solo para agrupar items.
-  const [catalogoOpen, setCatalogoOpen] = useState(false);
 
   // Sistema Multi-Proyecto Modular: qué plantillas están encendidas para el
   // proyecto actual (ver src/utils/modulos.ts para el catálogo del lado del
@@ -50,7 +47,6 @@ export function HeaderMenu({ basePath, projectId }: HeaderMenuProps) {
     extraParams?: Record<string, string>,
   ) {
     setOpen(false);
-    setCatalogoOpen(false);
     // Estas pantallas necesitan project_id para cargar (algunas, como
     // Acceso al Predio, se quedan en blanco sin él) — si el dashboard
     // todavía no terminó de cargar los proyectos, `projectId` llega null
@@ -93,22 +89,12 @@ export function HeaderMenu({ basePath, projectId }: HeaderMenuProps) {
             <MenuItem icon="folder-open-outline" label="Archivos de consulta" onPress={() => goTo('archivos-consulta')} />
             <MenuItem icon="people-outline" label="Fuerza de trabajo" onPress={() => goTo('fuerza-de-trabajo')} />
 
-            {/* Grupo "Catalogo de Conceptos": 3 sub-opciones (registrar avance
-                es de uso diario/alta frecuencia, catalogo es consulta y
-                administracion, visualizar avance es reporte por periodo). */}
-            <MenuItem
-              icon="albums-outline"
-              label="Catálogo de Conceptos"
-              onPress={() => setCatalogoOpen((v) => !v)}
-              trailingIcon={catalogoOpen ? 'chevron-up' : 'chevron-down'}
-            />
-            {catalogoOpen ? (
-              <View style={styles.submenu}>
-                <MenuItem icon="create-outline" label="Registrar avance" onPress={() => goTo('registrar-avance')} indented />
-                <MenuItem icon="list-outline" label="Catálogo de conceptos" onPress={() => goTo('catalogo-conceptos')} indented />
-                <MenuItem icon="bar-chart-outline" label="Visualizar avance" onPress={() => goTo('visualizar-avance')} indented />
-              </View>
-            ) : null}
+            {/* Catálogo de Conceptos: antes un acordeón con 3 sub-opciones
+                aquí mismo (registrar avance, catálogo, visualizar avance);
+                mismo motivo que Módulos/Actividades Generales — un botón
+                único que lleva a su propio hub (ver
+                CatalogoConceptosHubScreen.tsx). */}
+            <MenuItem icon="albums-outline" label="Catálogo de Conceptos" onPress={() => goTo('catalogo-conceptos-hub')} />
 
             {/* Actividades Generales: vista curada de las actividades ya
                 capturadas en reportes — Generales, o por Ubicación (fusiona
@@ -170,26 +156,19 @@ function MenuItem({
   label,
   onPress,
   destructive,
-  trailingIcon,
-  indented,
 }: {
   icon: keyof typeof Ionicons.glyphMap;
   label: string;
   onPress: () => void;
   destructive?: boolean;
-  trailingIcon?: keyof typeof Ionicons.glyphMap;
-  indented?: boolean;
 }) {
   return (
     <Pressable
       onPress={onPress}
-      style={({ pressed }) => [styles.menuItem, indented && styles.menuItemIndented, pressed && { backgroundColor: colors.bg }]}
+      style={({ pressed }) => [styles.menuItem, pressed && { backgroundColor: colors.bg }]}
     >
-      <Ionicons name={icon} size={indented ? 16 : 19} color={destructive ? colors.error : colors.primary} />
-      <Text style={[styles.menuItemTxt, indented && styles.menuItemTxtIndented, destructive && { color: colors.error }]}>{label}</Text>
-      {trailingIcon ? (
-        <Ionicons name={trailingIcon} size={16} color={colors.textMuted} style={{ marginLeft: 'auto' }} />
-      ) : null}
+      <Ionicons name={icon} size={19} color={destructive ? colors.error : colors.primary} />
+      <Text style={[styles.menuItemTxt, destructive && { color: colors.error }]}>{label}</Text>
     </Pressable>
   );
 }
@@ -229,17 +208,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '700',
     color: colors.text,
-  },
-  submenu: {
-    backgroundColor: colors.bg,
-  },
-  menuItemIndented: {
-    paddingLeft: spacing.md + 20,
-    paddingVertical: 10,
-  },
-  menuItemTxtIndented: {
-    fontSize: 13,
-    fontWeight: '600',
   },
   divider: {
     height: 1,
