@@ -10,68 +10,102 @@ sección "Módulo Estado del Tiempo", clase `WeatherLogIn` y los endpoints
 scraping ni un webhook hipotético -- ya existe una API HTTP documentada
 (JWT via `POST /api/auth/login`) para subir estos datos.
 
-Este script:
+MODO POR DEFECTO: AUTO-DESCUBRIMIENTO
+--------------------------------------
+Sin `--config`, el script se auto-descubre contra la propia API de SynCo:
+    1. Lista TODOS tus proyectos (`GET /api/projects`) -- incluidos los que
+       crees después de hoy, no hay ids hardcodeados en ningún lado.
+    2. Para cada proyecto con el módulo "estado_tiempo" activo, lista sus
+       nodos y filtra los que son "Estación" habilitada (misma regla que
+       `_node_es_estacion_habilitada`/`_acceso_predio_efectivo` en
+       server.py: tipo_nodo == "estacion" y acceso_predio_habilitado
+       True, o profundidad 1 si nadie lo tocó explícitamente).
+    3. Para cada estación, resuelve su coordenada: primero
+       `target_lat`/`target_lon` del nodo; si no están, la toma de la
+       ÚLTIMA lectura de campo capturada ahí (`GET
+       /nodes/{id}/history`, `measurement_value.lat/lon`) -- si nunca se
+       ha capturado nada en ese nodo, se omite (no se inventa coordenada).
+    4. *** IMPORTANTE: esas coordenadas están en UTM (Este/Norte), NO en
+       grados WGS84 *** -- confirmado en el código (`validate_measurement_value`
+       en server.py y el formulario de nodos en el frontend, `tree.tsx`:
+       "Coordenada X (Este)"/"Y (Norte)", sin restricción -90/90). Se
+       convierten a lat/lon con `pyproj` usando la zona UTM de
+       `--utm-zone`/`SYNCO_UTM_ZONE` (default 14, hemisferio norte --
+       correcto para Ciudad de México; AJUSTAR si algún proyecto futuro
+       cae en otra zona -- ver advertencia en `convertir_utm_a_latlon`).
+
+Con `--config <archivo.json>` se usa la lista de estaciones ahí definida en
+vez de auto-descubrir -- útil para pruebas locales con lat/lon ya conocidas.
+
+Una vez con la lista de estaciones (auto o de config), el script:
     1. Consulta Open-Meteo (clima + calidad del aire) en resolución HORARIA
-       (`hourly=...`) para el día de hoy (huso horario CDMX), para una o
-       varias estaciones (lat/lon). Viento a 10 m de altura
-       (`wind_speed_10m`), la altura estándar de superficie -- no a 180 m,
-       que solo aplicaría a viento en grúas/torres muy altas.
+       (`hourly=...`) para el día de hoy (huso horario CDMX). Viento a 10 m
+       de altura (`wind_speed_10m`), la altura estándar de superficie.
     2. Arma, por estación, un `ReporteClimaDiario` con una lista de
-       `LecturaHoraria` (una por hora del día) usando los mismos nombres de
-       campo que ya usa SynCo internamente (`_fetch_weather_for_export`:
-       temperature_c, wind_kmh, precipitation_mm, us_aqi) + metadata de
-       trazabilidad.
-    3. Exporta a CSV (una fila por hora por estación -- formato largo, el
-       más fácil de importar/filtrar) y a JSON (anidado, una entrada por
-       estación con su lista de lecturas horarias completa).
-    4. Opcionalmente (--push) sube al endpoint real de SynCo la lectura
-       horaria más cercana a la hora actual -- el endpoint de SynCo guarda
-       UN valor por nodo/día (upsert), no una serie horaria, así que no
-       tiene un lugar natural donde meter las 24 lecturas; ver la función
-       `_lectura_mas_cercana_a_ahora` si en vez de eso prefieres subir un
-       agregado del día (máximo de precipitación, promedio de temperatura,
-       etc.) -- es un cambio de una línea en `subir_reporte_clima`.
+       `LecturaHoraria` (una por hora) usando los mismos nombres de campo
+       que ya usa SynCo internamente (`_fetch_weather_for_export`:
+       temperature_c, wind_kmh, precipitation_mm, us_aqi).
+    3. Exporta a CSV (una fila por hora por estación) y JSON (anidado) --
+       bitácora de auditoría de cada corrida, además de lo que se sube.
+    4. Con `--push`, sube a SynCo la lectura horaria más cercana a la hora
+       actual -- el endpoint guarda un solo valor por nodo/día (upsert).
 
 USO
 ---
     cd backend
-    python scripts/weather_openmeteo_export.py --config estaciones.json --outdir ./salida
 
-    # Además de exportar, subirlo directo a SynCo (requiere credenciales
-    # por variable de entorno, ver más abajo):
-    python scripts/weather_openmeteo_export.py --config estaciones.json --outdir ./salida --push
+    # Simulación (no escribe nada en SynCo, solo exporta CSV/JSON):
+    python scripts/weather_openmeteo_export.py
 
-CONFIGURACIÓN DE ESTACIONES (--config, JSON)
----------------------------------------------
-Lista de estaciones a consultar. `node_id` es el id del LocationNode tipo
-"Estación" en SynCo (ver GET /api/projects/{pid}/nodes) -- solo se necesita
-si vas a usar --push; para solo exportar CSV/JSON puedes omitirlo.
+    # Auto-descubrimiento + push real a TODOS los proyectos elegibles:
+    python scripts/weather_openmeteo_export.py --push
 
+    # Modo manual con estaciones explícitas (sin tocar la API de proyectos):
+    python scripts/weather_openmeteo_export.py --config estaciones.json --push
+
+PROGRAMARLO A DIARIO (cron, en el servidor de producción)
+--------------------------------------------------------------
+    1. Copia weather_synco.env.example a ".env" en esta misma carpeta y
+       rellena SYNCO_EMAIL/SYNCO_PASSWORD ahí (NUNCA en el crontab ni en
+       el repo -- el script lo carga solo si existe, vía `python-dotenv`).
+    2. Agrega al crontab del usuario que corre el backend (`crontab -e`):
+
+        0 7 * * * cd /ruta/a/backend && /ruta/a/tu/venv/bin/python scripts/weather_openmeteo_export.py --push >> scripts/salida_clima/cron.log 2>&1
+
+       Corre una vez al día a las 7am hora del servidor -- ajusta la hora
+       si tu servidor no está en huso CDMX. Sube UNA lectura representativa
+       por estación (la más cercana a las 7am), consistente con que el
+       módulo "Estado del Tiempo" es una captura por día, no continua.
+
+VARIABLES DE ENTORNO (NUNCA hardcodear credenciales; ver .env.example)
+--------------------------------------------------------------------------
+    SYNCO_BASE_URL   Ej: https://apm-app.mx/api  (default; usa HTTPS)
+    SYNCO_EMAIL      Correo del usuario con acceso a los proyectos
+    SYNCO_PASSWORD   Contraseña de ese usuario
+      -- o, en vez de email/password, un token ya vigente: --
+    SYNCO_TOKEN      Un JWT ya emitido
+    SYNCO_UTM_ZONE   Zona UTM (número, ej. "14") de tus proyectos -- default 14
+
+CONFIGURACIÓN DE ESTACIONES (--config, JSON, modo manual)
+-------------------------------------------------------------
     [
       {"nombre": "Estación CDMX Centro", "lat": 19.4284, "lon": -99.1276,
        "project_id": "<id-del-proyecto-en-synco>", "node_id": "<id-del-nodo>"}
     ]
+    (aquí lat/lon SÍ son grados WGS84 -- a diferencia del modo auto, que
+    convierte desde UTM, en modo manual tú ya das la coordenada final.)
 
-VARIABLES DE ENTORNO (solo si usas --push; NUNCA hardcodear credenciales)
---------------------------------------------------------------------------
-    SYNCO_BASE_URL   Ej: https://apm-app.mx/api  (usa siempre HTTPS en prod)
-    SYNCO_EMAIL      Correo del usuario con acceso al proyecto
-    SYNCO_PASSWORD   Contraseña de ese usuario
-      -- o, en vez de email/password, un token ya vigente: --
-    SYNCO_TOKEN      Un JWT ya emitido (evita loguear en cada corrida)
-
-AJUSTES QUE DEBES REVISAR ANTES DE USAR EN PRODUCCIÓN
--------------------------------------------------------
-    - SYNCO_BASE_URL: por default apunta a producción (apm-app.mx); usa un
-      ambiente de staging si tu organización tiene uno para probar.
-    - `project_id`/`node_id` en el config: son ids reales de tu proyecto en
-      SynCo, no inventados -- consíguelos con GET /api/projects y
-      GET /api/projects/{pid}/nodes autenticado.
-    - El nodo destino debe ser tipo "Estación" (tipo_nodo == "estacion") y
-      tener Acceso al Predio habilitado, o el PUT devuelve 400 (ver
-      `_node_es_estacion_habilitada` en server.py).
-    - El módulo "estado_tiempo" debe estar activo en el proyecto
-      (`_ensure_modulo_activo`), o el PUT devuelve 403/404 según el caso.
+LIMITACIONES A REVISAR
+-------------------------
+    - Si tu organización tiene proyectos en más de una zona UTM, este
+      script asume UNA sola zona global (`--utm-zone`) para todos --
+      no hay mapeo por proyecto. Con un solo valor global incorrecto para
+      alguno de tus proyectos, sus estaciones quedarían con coordenadas (y
+      por tanto clima) erróneas -- REVISA la salida antes de confiar en
+      --push para un proyecto en una región distinta a la ya validada.
+    - Una estación sin ninguna coordenada capturada nunca (ni
+      target_lat/lon ni un reporte de campo con lat/lon) se omite --  no
+      hay forma de inventarle una ubicación.
 """
 
 from __future__ import annotations
@@ -90,6 +124,13 @@ from typing import Optional
 from zoneinfo import ZoneInfo
 
 import requests
+from dotenv import load_dotenv
+
+# Carga scripts/.env si existe (credenciales del cron diario -- ese archivo
+# NUNCA se commitea, ver .gitignore raíz: ".env", ".env.*", "*.env"). Si ya
+# hay variables de entorno puestas por otro medio, esas tienen prioridad
+# (override=False, el default de load_dotenv).
+load_dotenv(Path(__file__).parent / ".env")
 
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO"),
@@ -104,6 +145,8 @@ CDMX_TZ = ZoneInfo("America/Mexico_City")
 HTTP_TIMEOUT_S = 15
 HTTP_MAX_RETRIES = 3
 HTTP_RETRY_BACKOFF_S = 2
+
+DEFAULT_OUTDIR = Path(__file__).parent / "salida_clima"
 
 
 class WeatherFetchError(RuntimeError):
@@ -302,6 +345,40 @@ def exportar_json(reportes: list[ReporteClimaDiario], ruta: Path) -> None:
     log.info("JSON exportado: %s (%d registros)", ruta, len(reportes))
 
 
+def _separar_este_norte(a: float, b: float) -> tuple[float, float]:
+    """Determina cuál de los dos números es Este (Easting) y cuál Norte
+    (Northing) POR MAGNITUD, no por nombre de campo -- en México el Este
+    UTM siempre es < 1,000,000 (rango típico 200,000-800,000, falso este
+    de 500,000) y el Norte siempre > 1,000,000 (rango típico
+    1,900,000-3,700,000 para las latitudes del país). Esto evita
+    depender de qué tan consistentemente se nombraron los campos
+    `lat`/`lon` en cada formulario de captura de SynCo -- confirmamos que
+    NO es consistente entre `target_lat`/`target_lon` (nodo) y
+    `measurement_value.lat/lon` (reporte de campo): en uno el campo `lat`
+    resultó ser el Este y en el otro el Norte."""
+    umbral = 1_000_000
+    a_es_este, b_es_este = a < umbral, b < umbral
+    if a_es_este and not b_es_este:
+        return a, b
+    if b_es_este and not a_es_este:
+        return b, a
+    raise ValueError(f"No se pudo distinguir Este/Norte por magnitud: valores {a}, {b}")
+
+
+def convertir_utm_a_latlon(este: float, norte: float, zona: int) -> tuple[float, float]:
+    """SynCo guarda las coordenadas de obra en UTM (Este/Norte), no en
+    grados WGS84 -- ver el docstring del módulo. Convierte con `pyproj`
+    asumiendo hemisferio norte (correcto para México; si algún proyecto
+    futuro cayera en el hemisferio sur habría que parametrizar también
+    eso, no solo la zona)."""
+    from pyproj import Transformer
+
+    epsg_utm = 32600 + zona  # EPSG:326xx = WGS84 / UTM zone xxN
+    transformer = Transformer.from_crs(f"EPSG:{epsg_utm}", "EPSG:4326", always_xy=True)
+    lon, lat = transformer.transform(este, norte)
+    return lat, lon
+
+
 # --- Integración real con la API de SynCo (bonus: el endpoint SÍ existe) ---
 
 class ClienteSynco:
@@ -355,22 +432,47 @@ class ClienteSynco:
         self.session.headers["Authorization"] = f"Bearer {token}"
         log.info("Login a SynCo OK (usuario: %s)", data.get("user", {}).get("email", email))
 
+    def listar_proyectos(self) -> list[dict]:
+        resp = self.session.get(f"{self.base_url}/projects", timeout=HTTP_TIMEOUT_S)
+        resp.raise_for_status()
+        data = resp.json()
+        if isinstance(data, list):
+            return data
+        return data.get("projects") or data.get("items") or []
+
+    def listar_nodos(self, project_id: str) -> list[dict]:
+        resp = self.session.get(f"{self.base_url}/projects/{project_id}/nodes", timeout=HTTP_TIMEOUT_S)
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("items") if isinstance(data, dict) else (data or [])
+
+    def historial_nodo(self, project_id: str, node_id: str) -> Optional[dict]:
+        """GET /projects/{pid}/nodes/{nid}/history -- última lectura de
+        campo capturada en ese nodo (para nodos sin target_lat/lon fijo)."""
+        resp = self.session.get(
+            f"{self.base_url}/projects/{project_id}/nodes/{node_id}/history", timeout=HTTP_TIMEOUT_S,
+        )
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        return data.get("last_report") if data.get("has_previous") else None
+
     def subir_reporte_clima(self, reporte: ReporteClimaDiario) -> dict:
         """PUT /api/projects/{project_id}/weather-logs
 
         Requiere que `reporte.project_id` y `reporte.node_id` estén
-        definidos (vienen del config de estaciones), y que el nodo sea una
-        Estación con Acceso al Predio habilitado y el módulo
-        "estado_tiempo" activo en el proyecto -- si no, la API responde
-        400/403/404 y por eso NO se debe silenciar el error aquí.
+        definidos, y que el nodo sea una Estación con Acceso al Predio
+        habilitado y el módulo "estado_tiempo" activo en el proyecto -- si
+        no, la API responde 400/403/404 y por eso NO se debe silenciar el
+        error aquí.
 
         El endpoint guarda un solo valor por nodo/día (upsert), así que se
         sube la lectura horaria más cercana a la hora actual -- no las 24
         horas completas (esas sólo van al CSV/JSON)."""
         if not reporte.project_id or not reporte.node_id:
             raise SyncoApiError(
-                f"'{reporte.estacion_nombre}' no tiene project_id/node_id en el "
-                "config -- agrégalos para poder usar --push."
+                f"'{reporte.estacion_nombre}' no tiene project_id/node_id -- "
+                "agrégalos (o usa el modo auto-descubrimiento) para poder usar --push."
             )
         if not reporte.lecturas:
             raise SyncoApiError(f"'{reporte.estacion_nombre}' no tiene lecturas horarias que subir")
@@ -399,6 +501,72 @@ class ClienteSynco:
         return resp.json()
 
 
+def _acceso_predio_efectivo(node: dict) -> bool:
+    """Réplica exacta de `_acceso_predio_efectivo` en server.py -- default
+    "habilitado" solo a profundidad 1 (Subtramo) si nadie lo tocó."""
+    habilitado = node.get("acceso_predio_habilitado")
+    return habilitado if habilitado is not None else (node.get("depth") == 1)
+
+
+def _es_estacion_habilitada(node: dict) -> bool:
+    """Réplica exacta de `_node_es_estacion_habilitada` en server.py."""
+    return _acceso_predio_efectivo(node) and (node.get("tipo_nodo") or "estacion") == "estacion"
+
+
+def _modulo_estado_tiempo_activo(project: dict) -> bool:
+    modulos = project.get("modulos") or {}
+    return any((modulos.get(categoria) or {}).get("estado_tiempo") for categoria in modulos)
+
+
+def descubrir_estaciones(cliente: ClienteSynco, utm_zone: int) -> list[dict]:
+    """Recorre TODOS los proyectos accesibles con este usuario y arma la
+    lista de estaciones con coordenada resuelta -- sin ids hardcodeados,
+    así que un proyecto creado mañana se incluye solo con volver a correr
+    el script."""
+    estaciones: list[dict] = []
+    proyectos = cliente.listar_proyectos()
+    log.info("Proyectos encontrados: %d", len(proyectos))
+
+    for proyecto in proyectos:
+        pid = proyecto.get("id")
+        nombre_proyecto = proyecto.get("name") or proyecto.get("nombre") or pid
+        if not _modulo_estado_tiempo_activo(proyecto):
+            log.info("Proyecto '%s': módulo 'estado_tiempo' no activo, se omite.", nombre_proyecto)
+            continue
+
+        nodos = cliente.listar_nodos(pid)
+        elegibles = [n for n in nodos if _es_estacion_habilitada(n)]
+        log.info("Proyecto '%s': %d estaciones elegibles de %d nodos.", nombre_proyecto, len(elegibles), len(nodos))
+
+        for nodo in elegibles:
+            valor_a, valor_b, fuente = nodo.get("target_lat"), nodo.get("target_lon"), "target_lat/lon del nodo"
+            if valor_a is None or valor_b is None:
+                ultimo = cliente.historial_nodo(pid, nodo["id"])
+                mv = (ultimo or {}).get("measurement_value") or {}
+                valor_a, valor_b = mv.get("lat"), mv.get("lon")
+                fuente = "última lectura de campo"
+            if valor_a is None or valor_b is None:
+                log.warning(
+                    "  '%s' (%s): sin coordenada capturada nunca -- se omite (no se inventa ubicación).",
+                    nodo.get("name"), nodo["id"],
+                )
+                continue
+            try:
+                este, norte = _separar_este_norte(valor_a, valor_b)
+                lat, lon = convertir_utm_a_latlon(este, norte, utm_zone)
+            except Exception as exc:  # noqa: BLE001 -- error de conversión, se reporta y se omite esta estación
+                log.error("  '%s' (%s): no se pudo convertir UTM->WGS84 (%s): %s", nodo.get("name"), nodo["id"], fuente, exc)
+                continue
+            log.info("  '%s': UTM(E=%.2f, N=%.2f) -> lat=%.5f, lon=%.5f [%s]", nodo.get("name"), este, norte, lat, lon, fuente)
+            estaciones.append({
+                "nombre": f"{nombre_proyecto} / {nodo.get('name')}",
+                "lat": lat, "lon": lon,
+                "project_id": pid, "node_id": nodo["id"],
+            })
+
+    return estaciones
+
+
 def cargar_estaciones(ruta_config: Path) -> list[dict]:
     with ruta_config.open("r", encoding="utf-8") as f:
         estaciones = json.load(f)
@@ -412,16 +580,30 @@ def cargar_estaciones(ruta_config: Path) -> list[dict]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--config", required=True, type=Path, help="JSON con la lista de estaciones a consultar")
-    parser.add_argument("--outdir", required=True, type=Path, help="Carpeta donde se escriben el CSV y JSON")
+    parser.add_argument("--config", type=Path, default=None, help="JSON con estaciones explícitas (omite el auto-descubrimiento)")
+    parser.add_argument("--outdir", type=Path, default=DEFAULT_OUTDIR, help=f"Carpeta de salida CSV/JSON (default: {DEFAULT_OUTDIR})")
     parser.add_argument("--push", action="store_true", help="Además de exportar, sube la lectura más reciente de cada estación a SynCo vía su API real")
+    parser.add_argument("--utm-zone", type=int, default=int(os.environ.get("SYNCO_UTM_ZONE", "14")), help="Zona UTM (norte) para convertir coordenadas en modo auto-descubrimiento (default 14, CDMX)")
     args = parser.parse_args()
 
-    try:
-        estaciones = cargar_estaciones(args.config)
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
-        log.error("No se pudo leer el config de estaciones: %s", exc)
-        return 1
+    cliente: Optional[ClienteSynco] = None
+
+    if args.config:
+        try:
+            estaciones = cargar_estaciones(args.config)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            log.error("No se pudo leer el config de estaciones: %s", exc)
+            return 1
+    else:
+        try:
+            cliente = ClienteSynco.desde_entorno()
+        except SyncoApiError as exc:
+            log.error("No se pudo autenticar contra SynCo para auto-descubrir estaciones: %s", exc)
+            return 1
+        estaciones = descubrir_estaciones(cliente, args.utm_zone)
+        if not estaciones:
+            log.warning("No se encontró ninguna estación con coordenada resoluble en ningún proyecto.")
+            return 0
 
     reportes: list[ReporteClimaDiario] = []
     errores = 0
@@ -451,11 +633,12 @@ def main() -> int:
     exportar_json(reportes, args.outdir / f"reporte_obra_diario_clima_{fecha_tag}.json")
 
     if args.push:
-        try:
-            cliente = ClienteSynco.desde_entorno()
-        except SyncoApiError as exc:
-            log.error("No se pudo preparar el cliente de SynCo: %s", exc)
-            return 1
+        if cliente is None:
+            try:
+                cliente = ClienteSynco.desde_entorno()
+            except SyncoApiError as exc:
+                log.error("No se pudo preparar el cliente de SynCo: %s", exc)
+                return 1
 
         for reporte in reportes:
             try:
