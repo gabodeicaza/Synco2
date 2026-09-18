@@ -159,8 +159,18 @@ def main() -> int:
         def _pages_containing(needle: str):
             return [i for i, t in enumerate(page_texts) if needle in t]
 
-        pages_a = _pages_containing("SUBTRAMO A")
-        pages_b = _pages_containing("SUBTRAMO B")
+        def _pages_containing_all(*needles: str):
+            return [i for i, t in enumerate(page_texts) if all(n in t for n in needles)]
+
+        # FIX: desde que se corrigió el bug de "cover_meta" que borraba en
+        # silencio el nodo entero sin `cover_image` (ver server.py), cada
+        # nodo hoja también imprime su portadilla individual — que también
+        # contiene el nombre del Subtramo como parte de la ruta
+        # institucional ("Tramo 1 › Subtramo A › Poste A1"). Hay que pedir
+        # además "ESTADO DEL TIEMPO" (exclusivo de la página de RESUMEN por
+        # subtramo) para no agarrar la portadilla por error.
+        pages_a = _pages_containing_all("SUBTRAMO A", "ESTADO DEL TIEMPO")
+        pages_b = _pages_containing_all("SUBTRAMO B", "ESTADO DEL TIEMPO")
         _log(f"Páginas con 'SUBTRAMO A': {pages_a}")
         _log(f"Páginas con 'SUBTRAMO B': {pages_b}")
 

@@ -148,12 +148,20 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
     return m;
   }, [allNodes]);
 
+  // FIX: antes se filtraba sin ordenar, así que las tarjetas de "Avance por
+  // intertramo"/estación salían en el orden en que Mongo las devolviera (no
+  // necesariamente 1, 2, 3…). Mismo criterio de orden que `postesOf`
+  // (campo `order` del hub, con el nombre como desempate).
   const intertramos = useMemo(
-    () => allNodes.filter((n) => n.tipo_nodo === 'intertramo' && n.acceso_predio_efectivo),
+    () => allNodes
+      .filter((n) => n.tipo_nodo === 'intertramo' && n.acceso_predio_efectivo)
+      .sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || a.name.localeCompare(b.name)),
     [allNodes],
   );
   const estaciones = useMemo(
-    () => allNodes.filter((n) => (n.tipo_nodo || 'estacion') === 'estacion' && n.acceso_predio_efectivo),
+    () => allNodes
+      .filter((n) => (n.tipo_nodo || 'estacion') === 'estacion' && n.acceso_predio_efectivo)
+      .sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || a.name.localeCompare(b.name)),
     [allNodes],
   );
 
