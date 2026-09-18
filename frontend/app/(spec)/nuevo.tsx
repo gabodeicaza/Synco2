@@ -83,6 +83,9 @@ export default function NewReportScreen() {
   const [annotatorIdx, setAnnotatorIdx] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
   const [successReport, setSuccessReport] = useState<Report | null>(null);
+  // Advertencias previas al guardado: si no hay fotos, o si hay fotos sin
+  // descripcion, se pide confirmacion explicita antes de enviar el reporte.
+  const [confirmWarning, setConfirmWarning] = useState<'no-photos' | 'no-captions' | null>(null);
 
   // --- REPORTE ESTRUCTURADO (plantilla dinámica) ---
   const [reportTemplates, setReportTemplates] = useState<ReportTemplate[]>([]);
@@ -263,7 +266,25 @@ export default function NewReportScreen() {
     return out;
   }, [project, catalogEquipo]);
 
-  async function onSave() {
+  // Antes de guardar, revisa si faltan fotos o descripciones de fotos y pide
+  // confirmacion explicita en vez de enviar el reporte directo.
+  function onSavePressed() {
+    if (saving) return;
+    if (!selectedLeaf) return Alert.alert('Error', 'Selecciona una ubicacion.');
+
+    if (images.length === 0) {
+      setConfirmWarning('no-photos');
+      return;
+    }
+    const relevantCaptions = captions.slice(0, Math.min(images.length, 2));
+    if (relevantCaptions.some((c) => !c || !c.trim())) {
+      setConfirmWarning('no-captions');
+      return;
+    }
+    doSave();
+  }
+
+  async function doSave() {
     if (saving) return;
     if (!selectedLeaf) return Alert.alert('Error', 'Selecciona una ubicacion.');
 
@@ -662,13 +683,20 @@ export default function NewReportScreen() {
 
       {/* FOOTER GUARDAR (Imagen 6) */}
       <View style={[styles.footer, { paddingBottom: insets.bottom + 10 }]}>
-        <Pressable onPress={onSave} disabled={saving || !selectedLeaf} style={styles.finalSaveBtn}>
+        <Pressable onPress={onSavePressed} disabled={saving || !selectedLeaf} style={styles.finalSaveBtn}>
           {saving ? <ActivityIndicator color="#fff" size="small" /> : <><Ionicons name="checkmark-circle" size={20} color="#fff" /><Text style={styles.finalSaveBtnTxt}>Guardar reporte</Text></>}
         </Pressable>
       </View>
 
       {/* MODAL EXITO (Imagen 7) */}
       <SuccessModal visible={!!successReport} report={successReport} project={project} user={user} reportTemplates={reportTemplates} onClose={() => { resetForm(); router.back(); }} />
+
+      {/* ADVERTENCIA: reporte sin fotos o sin descripciones de fotos */}
+      <ConfirmWarningModal
+        warning={confirmWarning}
+        onCancel={() => setConfirmWarning(null)}
+        onConfirm={() => { setConfirmWarning(null); doSave(); }}
+      />
 
       <PhotoAnnotator
         visible={annotatorIdx !== null}
@@ -869,6 +897,37 @@ function DynRow({ item, onRemove, onUpdate, catalog, isEquipo }: any) {
         </View></View>
       </Modal>
     </View>
+  );
+}
+
+function ConfirmWarningModal({ warning, onCancel, onConfirm }: { warning: 'no-photos' | 'no-captions' | null; onCancel: () => void; onConfirm: () => void }) {
+  if (!warning) return null;
+  const message = warning === 'no-photos'
+    ? 'Estas seguro de que no quieres añadir fotos a tu reporte? Lo ideal es que lleve al menos 2.'
+    : 'Estas seguro de que no quieres añadir una descripcion a las fotos de tu reporte?';
+
+  return (
+    <Modal visible={!!warning} animationType="fade" transparent>
+      <View style={styles.modalBackdrop}>
+        <View style={[styles.modalContent, { padding: 24, alignItems: 'center' }]}>
+          <View style={[styles.successIcon, { backgroundColor: '#D97706' }]}>
+            <Ionicons name="alert" size={32} color="#fff" />
+          </View>
+          <Text style={styles.successTitle}>Espera</Text>
+          <Text style={[styles.successSub, { marginBottom: 8 }]}>{message}</Text>
+          <View style={{ width: '100%', alignItems: 'center' }}>
+            <Pressable onPress={onConfirm} style={styles.waBtn}>
+              <Ionicons name="checkmark-circle-outline" size={18} color="#fff" />
+              <Text style={styles.waBtnTxt}>Si, estoy seguro</Text>
+            </Pressable>
+            <Pressable onPress={onCancel} style={styles.copyBtn}>
+              <Ionicons name="arrow-back-outline" size={18} color={colors.primary} />
+              <Text style={styles.copyBtnTxt}>Regresar</Text>
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    </Modal>
   );
 }
 
