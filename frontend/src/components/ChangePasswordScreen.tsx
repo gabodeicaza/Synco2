@@ -1,8 +1,8 @@
 // Auto-servicio: cualquier usuario (Coordinador, Sub-coordinador, Especialista)
-// cambia su propia contraseña dando la actual — antes solo un Coordinador
-// podia restablecerla (generando una temporal) desde Equipo/Invitaciones,
-// sin que el propio usuario tuviera forma de elegir la suya. Ver
-// POST /auth/change_password en server.py.
+// cambia su propia contraseña estando autenticado, sin dar la actual — antes
+// solo un Coordinador podia restablecerla (generando una temporal) desde
+// Equipo/Invitaciones, sin que el propio usuario tuviera forma de elegir la
+// suya. Ver POST /auth/change_password en server.py.
 import React, { useState } from 'react';
 import { View, Text, StyleSheet, TextInput, KeyboardAvoidingView, Platform, ScrollView, Pressable, Alert } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -14,7 +14,6 @@ import { colors, radius, spacing } from '@/src/theme';
 
 export default function ChangePasswordScreen() {
   const insets = useSafeAreaInsets();
-  const [current, setCurrent] = useState('');
   const [nueva, setNueva] = useState('');
   const [confirmacion, setConfirmacion] = useState('');
   const [showPwd, setShowPwd] = useState(false);
@@ -23,8 +22,8 @@ export default function ChangePasswordScreen() {
 
   async function onSubmit() {
     setError(null);
-    if (!current || !nueva || !confirmacion) {
-      setError('Completa los tres campos');
+    if (!nueva || !confirmacion) {
+      setError('Completa los dos campos');
       return;
     }
     if (nueva.length < 6) {
@@ -37,7 +36,7 @@ export default function ChangePasswordScreen() {
     }
     setBusy(true);
     try {
-      await api.changePassword(current, nueva);
+      await api.changePassword(nueva);
       Alert.alert('Listo', 'Tu contraseña se actualizó correctamente.', [
         { text: 'OK', onPress: () => router.back() },
       ]);
@@ -64,22 +63,7 @@ export default function ChangePasswordScreen() {
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.card}>
-          <Text style={styles.label}>Contraseña actual</Text>
-          <View style={styles.inputWrap}>
-            <Ionicons name="lock-closed-outline" size={18} color={colors.textMuted} />
-            <TextInput
-              value={current}
-              onChangeText={setCurrent}
-              placeholder="Tu contraseña actual"
-              placeholderTextColor={colors.textMuted}
-              secureTextEntry={!showPwd}
-              style={styles.input}
-              returnKeyType="next"
-              editable={!busy}
-            />
-          </View>
-
-          <Text style={[styles.label, { marginTop: spacing.md }]}>Nueva contraseña</Text>
+          <Text style={styles.label}>Nueva contraseña</Text>
           <View style={styles.inputWrap}>
             <Ionicons name="key-outline" size={18} color={colors.textMuted} />
             <TextInput

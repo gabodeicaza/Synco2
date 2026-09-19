@@ -228,7 +228,6 @@ class LoginIn(BaseModel):
 
 
 class ChangePasswordIn(BaseModel):
-    current_password: str
     new_password: str
 
 
@@ -1257,12 +1256,9 @@ async def me(user: dict = Depends(current_user)):
 @api.post("/auth/change_password")
 async def change_password(body: ChangePasswordIn, user: dict = Depends(current_user)):
     """Auto-servicio: cualquier usuario autenticado cambia su propia
-    contraseña dando la actual. Distinto de POST .../reset_password (que
-    genera una temporal y solo puede ejecutarlo un Coordinador sobre un
-    Sub-coordinador/Especialista) — aquí el usuario ya sabe su contraseña
-    y solo la reemplaza por una elegida por él mismo."""
-    if not verify_pw(body.current_password, user["password"]):
-        raise HTTPException(401, "Contraseña actual incorrecta")
+    contraseña sin necesidad de dar la actual (basta con estar autenticado).
+    Distinto de POST .../reset_password (que genera una temporal y solo
+    puede ejecutarlo un Coordinador sobre un Sub-coordinador/Especialista)."""
     new_pw = (body.new_password or "").strip()
     if len(new_pw) < 6:
         raise HTTPException(400, "La nueva contraseña debe tener mínimo 6 caracteres")

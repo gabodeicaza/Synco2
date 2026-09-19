@@ -1542,8 +1542,8 @@ export const api = {
   login: (email: string, password: string) =>
     request<{ token: string; user: User }>('POST', '/auth/login', { email, password }),
   me: () => request<User>('GET', '/auth/me'),
-  changePassword: (current_password: string, new_password: string) =>
-    request<{ ok: boolean }>('POST', '/auth/change_password', { current_password, new_password }),
+  changePassword: (new_password: string) =>
+    request<{ ok: boolean }>('POST', '/auth/change_password', { new_password }),
   forgotPassword: (email: string) =>
     request<{ ok: boolean; message: string }>('POST', '/auth/forgot_password', { email }),
 
