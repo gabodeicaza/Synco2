@@ -6242,9 +6242,11 @@ async def patch_report_severity(
     r = await db.reports.find_one({"id": rid})
     if not r:
         raise HTTPException(404, "Reporte no existe")
-    # Autorización: Autor original, Sub-coordinador, Coordinador General o Jefe de Proyecto.
+    # Autorización: Autor original, Sub-coordinador o Coordinador General.
+    # Jefe de Proyecto es explícitamente de solo lectura (ver ROLE_JEFE) y NO
+    # debe poder editar la jerarquía del reporte, en ningún momento.
     is_author = r.get("captured_by") == user["id"]
-    is_mgmt = user.get("role") in (ROLE_COORD, ROLE_JEFE, ROLE_SUB)
+    is_mgmt = user.get("role") in (ROLE_COORD, ROLE_SUB)
 
     if not (is_author or is_mgmt):
         raise HTTPException(403, "No tienes permiso para cambiar la severidad de este reporte")

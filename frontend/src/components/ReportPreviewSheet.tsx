@@ -183,6 +183,17 @@ export function ReportPreviewSheet({
     updateSeverity(next.length ? next : ['informativo']);
   }
 
+  // Edición de jerarquía habilitada en cualquier momento SOLO para: el autor
+  // original del reporte, el Coordinador General y los Sub-coordinadores.
+  // Jefe de Proyecto es de solo lectura y el resto de especialistas no puede
+  // editar reportes ajenos (coincide con la autorización del backend en
+  // `patch_report_severity`).
+  const canEditSeverity =
+    !!user &&
+    (source.captured_by === user.id ||
+      user.role === 'coordinador_general' ||
+      user.role === 'sub_coordinador');
+
   // Titulo: strictly check valid keys (title, nombre, titulo, name).
   // DO NOT use description/notes for title as they contain activities/observations.
   const title =
@@ -358,30 +369,37 @@ export function ReportPreviewSheet({
               <Text style={styles.dateTopTxt}>{created}</Text>
             </View>
 
-            {/* ===== Severidad (Editable, seleccion multiple) ===== */}
+            {/* ===== Severidad / Jerarquia (seleccion multiple) =====
+                Editable en cualquier momento solo por: autor del reporte,
+                Coordinador General y Sub-coordinadores (`canEditSeverity`).
+                Para el resto se muestra como badges de solo lectura. */}
             {reportId && (
               <View style={styles.sevRowPreview}>
                 <TouchableOpacity
+                  disabled={!canEditSeverity}
                   onPress={() => toggleSeverity('informativo')}
-                  style={[styles.sevBtnSmall, { borderColor: '#1E40AF' }, currentSeveridad.includes('informativo') && { backgroundColor: '#1E40AF' }]}
+                  style={[styles.sevBtnSmall, { borderColor: '#1E40AF' }, currentSeveridad.includes('informativo') && { backgroundColor: '#1E40AF' }, !canEditSeverity && { opacity: 0.6 }]}
                 >
                   <Text style={[styles.sevBtnTxt, currentSeveridad.includes('informativo') ? { color: '#fff' } : { color: '#1E40AF' }]}>Inf.</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
+                  disabled={!canEditSeverity}
                   onPress={() => toggleSeverity('diario')}
-                  style={[styles.sevBtnSmall, { borderColor: '#10B981' }, currentSeveridad.includes('diario') && { backgroundColor: '#10B981' }]}
+                  style={[styles.sevBtnSmall, { borderColor: '#10B981' }, currentSeveridad.includes('diario') && { backgroundColor: '#10B981' }, !canEditSeverity && { opacity: 0.6 }]}
                 >
                   <Text style={[styles.sevBtnTxt, currentSeveridad.includes('diario') ? { color: '#fff' } : { color: '#10B981' }]}>Diario</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
+                  disabled={!canEditSeverity}
                   onPress={() => toggleSeverity('importante')}
-                  style={[styles.sevBtnSmall, { borderColor: '#D97706' }, currentSeveridad.includes('importante') && { backgroundColor: '#D97706' }]}
+                  style={[styles.sevBtnSmall, { borderColor: '#D97706' }, currentSeveridad.includes('importante') && { backgroundColor: '#D97706' }, !canEditSeverity && { opacity: 0.6 }]}
                 >
                   <Text style={[styles.sevBtnTxt, currentSeveridad.includes('importante') ? { color: '#fff' } : { color: '#D97706' }]}>Sem.</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
+                  disabled={!canEditSeverity}
                   onPress={() => toggleSeverity('urgente')}
-                  style={[styles.sevBtnSmall, { borderColor: '#DC2626' }, currentSeveridad.includes('urgente') && { backgroundColor: '#DC2626' }]}
+                  style={[styles.sevBtnSmall, { borderColor: '#DC2626' }, currentSeveridad.includes('urgente') && { backgroundColor: '#DC2626' }, !canEditSeverity && { opacity: 0.6 }]}
                 >
                   <Text style={[styles.sevBtnTxt, currentSeveridad.includes('urgente') ? { color: '#fff' } : { color: '#DC2626' }]}>Mensual</Text>
                 </TouchableOpacity>
