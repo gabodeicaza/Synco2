@@ -9286,7 +9286,6 @@ async def export_reports_pdf(
     start_dt = data["start_dt"]
     end_dt = data["end_dt"]
     prev_reading_by_node = data["prev_reading_by_node"]
-    cover_ancestor_by_node = data.get("cover_ancestor_by_node", {})
     areas_by_id = data.get("areas_by_id", {})
     nodes_by_id = data.get("nodes_by_id") or {}
     nodes_by_subtramo = data.get("nodes_by_subtramo") or {}
@@ -10310,57 +10309,6 @@ async def export_reports_pdf(
                     out[-1] = out[-1] + ellipsis
             return out
 
-
-        def draw_dynamic_cover_page(cover_name: str, cover_b64: str, page_num_val: int) -> None:
-            """Portadilla de Nodo — LIMPIA sobre el membrete del template PDF.
-
-            Contenido inyectado (SOLO esto, sin fondos ni bordes ni logos):
-              1) `cover_image` del nodo (grande, centrada, aspect-ratio
-                 preservado, dentro del área útil del membrete).
-              2) Título del nodo (path institucional) debajo de la cover.
-            El fondo y el membrete institucional los aporta la plantilla
-            PDF durante la fusión posterior.
-            """
-            title_h = 1.2 * cm
-            title_gap = 0.4 * cm
-            avail_top = PH - TOP_MARGIN_PDF
-            avail_bot = BOTTOM_MARGIN_PDF
-            avail_h = avail_top - avail_bot - title_h - title_gap
-            avail_w = PW - 3.0 * cm
-            target_ratio = 4.0 / 3.0
-            w_from_h = avail_h * target_ratio
-            if w_from_h <= avail_w:
-                img_w = w_from_h
-                img_h = avail_h
-            else:
-                img_w = avail_w
-                img_h = avail_w / target_ratio
-            img_x = (PW - img_w) / 2
-            img_y = avail_bot + title_h + title_gap + (avail_h - img_h) / 2
-            drawn = False
-            try:
-                _b64_data = _strip_b64_prefix(cover_b64) if cover_b64 else None
-                if _b64_data:
-                    raw = base64.b64decode(_b64_data)
-                    img = ImageReader(io.BytesIO(raw))
-                    c.drawImage(
-                        img, img_x, img_y, width=img_w, height=img_h,
-                        preserveAspectRatio=True, anchor='c', mask='auto',
-                    )
-                    drawn = True
-            except Exception:
-                drawn = False
-            _title = (cover_name or "SECCIÓN").upper()
-            _size = 18
-            while c.stringWidth(_title, "Helvetica-Bold", _size) > PW - 3 * cm and _size > 10:
-                _size -= 1
-            # Paridad PPTX: NODE_TITLE_COLOR = azul-oscuro casi negro para
-            # que resalte sobre el fondo BLANCO del membrete (antes se usaba
-            # `BRAND` magenta claro que quedaba ilegible sobre blanco).
-            c.setFillColor(HexColor("#0F172A"))
-            c.setFont("Helvetica-Bold", _size)
-            title_y = img_y - title_gap - title_h / 2 if drawn else avail_bot + avail_h / 2
-            c.drawCentredString(PW / 2, title_y, _title)
 
         def draw_area_cover_page(area_name: str) -> None:
             """Portadilla de Área — SÓLO el nombre del área centrado en blanco
@@ -11808,28 +11756,11 @@ async def export_reports_pdf(
             node_reps_all = workforce_reports_by_node.get(n["id"]) or []
             if not node_reps_all:
                 continue
-            # FIX (2026-09): `cover_meta` es None cuando NINGÚN ancestro del
-            # nodo tiene `cover_image` configurado — algo muy común (el
-            # Coordinador rara vez asigna portadilla a cada rama). Antes esto
-            # saltaba el nodo POR COMPLETO (`continue`), tirando en silencio
-            # fotos y actividades de reportes con severidad correcta para el
-            # informe (p.ej. "Importante" → Semanal) solo porque su rama no
-            # tenía portadilla. `draw_dynamic_cover_page` ya tolera
-            # `cover_image=None` (cae a título centrado sin imagen), así que
-            # basta con no pasar imagen — nunca se debe omitir el nodo.
-            cover_meta = cover_ancestor_by_node.get(n["id"]) or {}
             node_path = path_cache.get(n["id"]) or n.get("name", "")
 
-            # === Portadilla de Nodo (1 por nodo hoja) ========================
-            # Título: node_path COMPLETO (con separador ›), mismo formato
-            # que el PPTX (`TRAMO 1 › Subtramo E1-E2 › C1`).
-            draw_dynamic_cover_page(
-                node_path,  # ubicación institucional completa
-                cover_meta.get("cover_image"),
-                page_num,
-            )
-            c.showPage()
-            page_num += 1
+            # Portadilla de Nodo (2026-09-18): eliminada a pedido del usuario.
+            # `node_path` se sigue usando como encabezado de las Actividades
+            # Generales del Área más abajo.
 
             # === Sub-agrupación por Área dentro del nodo =====================
             # Bucket key = nombre normalizado del área (colapsa "Sub
