@@ -11,7 +11,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Modal, View, Text, StyleSheet, Pressable, Image, ActivityIndicator,
-  PanResponder, TextInput, useWindowDimensions, Platform,
+  PanResponder, TextInput, useWindowDimensions, Platform, Alert, BackHandler,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Ellipse, Line, Polygon, Rect, Text as SvgText } from 'react-native-svg';
@@ -106,6 +106,21 @@ export function PhotoAnnotator({ visible, imageUri, onClose, onSave }: Props) {
   // Al cambiar de herramienta se suelta cualquier selección — evita borrar
   // por accidente una figura que quedó seleccionada al tocar otra cosa.
   useEffect(() => { setSelectedId(null); dragRef.current = null; }, [tool]);
+
+  // El editor ya NO se envuelve en <Modal>: en Android, Modal abre una
+  // ventana nativa separada y react-native-view-shot no puede capturar
+  // vistas que viven en otra ventana (el dibujo se ve perfecto en pantalla
+  // porque es puro estado de React, pero "Guardar" fallaba en silencio).
+  // Se simula el overlay a pantalla completa con position:absolute y se
+  // maneja el botón físico de "atrás" a mano.
+  useEffect(() => {
+    if (!visible) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      onClose();
+      return true;
+    });
+    return () => sub.remove();
+  }, [visible, onClose]);
 
   const maxWidth = winWidth - spacing.md * 2;
   const maxHeight = winHeight * 0.62;
@@ -214,8 +229,11 @@ export function PhotoAnnotator({ visible, imageUri, onClose, onSave }: Props) {
       const uri = await captureRef(shotRef, { format: 'jpg', quality: 0.9, result: 'data-uri' });
       onSave(uri);
     } catch (e: any) {
-      // best-effort: si falla la captura, no se pierde la foto original —
-      // simplemente no se aplica la anotación.
+      // Si falla la captura no se pierde la foto original, pero hay que
+      // avisar — antes este error se tragaba en silencio y parecía que
+      // "Guardar" no hacía nada.
+      console.error('PhotoAnnotator: fallo al capturar la anotación', e);
+      Alert.alert('No se pudo guardar', 'No se pudieron aplicar las marcas a la foto. Intenta de nuevo.');
     } finally {
       setSaving(false);
     }
@@ -287,8 +305,10 @@ export function PhotoAnnotator({ visible, imageUri, onClose, onSave }: Props) {
     );
   }
 
+  if (!visible) return null;
+
   return (
-    <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
+    <>
       <View style={styles.container}>
         <View style={styles.header}>
           <Pressable onPress={onClose} hitSlop={10}>
@@ -358,7 +378,8 @@ export function PhotoAnnotator({ visible, imageUri, onClose, onSave }: Props) {
       </View>
 
       {/* Prompt de texto — modal chico centrado, funciona igual en iOS/Android
-          (Alert.prompt no existe en Android). */}
+          (Alert.prompt no existe en Android). Este sí puede ser <Modal>: es
+          un overlay pequeño que no pasa por captureRef. */}
       <Modal visible={!!textPrompt} transparent animationType="fade" onRequestClose={() => setTextPrompt(null)}>
         <View style={styles.textPromptBackdrop}>
           <View style={styles.textPromptCard}>
@@ -383,12 +404,18 @@ export function PhotoAnnotator({ visible, imageUri, onClose, onSave }: Props) {
           </View>
         </View>
       </Modal>
-    </Modal>
+    </>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0F172A' },
+  container: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 1000,
+    elevation: 1000,
+    flex: 1,
+    backgroundColor: '#0F172A',
+  },
   header: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     paddingHorizontal: spacing.md, paddingTop: Platform.select({ ios: 50, default: 20 }), paddingBottom: spacing.sm,
