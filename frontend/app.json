@@ -6,7 +6,7 @@
         "foregroundImage": "./assets/images/app-icon.png"
       },
       "edgeToEdgeEnabled": true,
-      "package": "app.emergent.offlinereportsyncaf47530f",
+      "package": "mx.apmapp.dirac",
       "permissions": [
         "CAMERA",
         "READ_EXTERNAL_STORAGE",
