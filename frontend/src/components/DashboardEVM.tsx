@@ -344,10 +344,14 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
       const detalleErrores = res.errores.slice(0, 10).map((e) => `Fila ${e.fila}: ${e.motivo}`).join('\n');
       const masErrores = res.errores.length > 10 ? `\n...y ${res.errores.length - 10} más.` : '';
       const truncNota = res.errores_truncados ? '\n\n(Se muestran solo los primeros 200 errores del archivo.)' : '';
+      const notaAvance = res.creados > 0
+        ? '\n\nEsto solo registró el gasto (AC). El % de avance de estos conceptos no cambia con esta importación — captura o importa Registros de Avance por separado si también quieres actualizarlo.'
+        : '';
       Alert.alert(
         res.creados > 0 ? 'Importación completada' : 'No se importó ningún gasto',
         `${res.creados} de ${res.total_filas} filas importadas.` +
-          (res.errores.length > 0 ? `\n\n${res.errores.length} con error:\n${detalleErrores}${masErrores}${truncNota}` : ''),
+          (res.errores.length > 0 ? `\n\n${res.errores.length} con error:\n${detalleErrores}${masErrores}${truncNota}` : '') +
+          notaAvance,
       );
       if (res.creados > 0) await cargar(rango, curva);
     } catch (e: any) {
@@ -383,6 +387,35 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
     await cargar(rango, curva);
     setRefreshing(false);
   }, [cargar, rango, curva]);
+
+  // Gasto Real (AC) y Registro de Avance (EV) son dos capturas totalmente
+  // independientes (ver server.py: import_gastos_reales solo escribe en
+  // gastos_reales, nunca en registros_avance) — importar gasto NUNCA mueve
+  // el % de avance. Este mapa junta ambos por concepto_id solo para
+  // mostrarlos lado a lado en la lista de abajo y que se note la brecha,
+  // en vez de que el usuario asuma (como ya pasó) que cargar dinero
+  // debería actualizar el avance físico.
+  const avancePorConcepto = useMemo(() => {
+    const map: Record<string, string> = {};
+    if (actividades) {
+      for (const lista of [actividades.pendientes, actividades.actuales, actividades.por_venir]) {
+        for (const a of lista) map[a.concepto_id] = a.porcentaje_avance;
+      }
+    }
+    return map;
+  }, [actividades]);
+
+  // Curva S: "Ganado" (EV) sale de registros_avance, "Real" (AC) sale de
+  // gastos_reales — si solo se ha importado/capturado gasto y nunca avance
+  // físico, Ganado se queda plano en 0 aunque sí haya gasto. Sin este aviso
+  // se lee como "el proyecto no ha avanzado", cuando en realidad es que
+  // nadie ha capturado avance todavía.
+  const soloHayGastoSinAvance = useMemo(() => {
+    if (!curva || !curva.meses.length) return false;
+    const ganadoTotal = curva.ganado_acumulado.reduce((acc, v) => acc + Number(v), 0);
+    const realTotal = curva.real_acumulado.reduce((acc, v) => acc + Number(v), 0);
+    return ganadoTotal === 0 && realTotal > 0;
+  }, [curva]);
 
   if (loading) {
     return (
@@ -480,6 +513,10 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
             <Text style={styles.plantillaTxt}>Descargar plantilla</Text>
           </Pressable>
         </View>
+        <Text style={styles.gastoAvisoTxt}>
+          Esto registra dinero gastado (AC), no avance físico. El % de avance de cada concepto solo cambia si capturas o
+          importas un Registro de Avance — ver "Control de actividades" más abajo.
+        </Text>
         {gastos.length === 0 ? (
           <Text style={styles.sinExcepciones}>
             Aún no has capturado ningún gasto real — por eso CPI y Variación de costo no reflejan nada. Registra uno,
@@ -496,7 +533,12 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
                   <Text style={styles.gastoTxt}>
                     {item.concepto_clave ? `${item.concepto_clave} · ` : ''}{item.concepto_texto}
                   </Text>
-                  <Text style={styles.gastoFecha}>{item.fecha}</Text>
+                  <Text style={styles.gastoFecha}>
+                    {item.fecha}
+                    {item.concepto_id && avancePorConcepto[item.concepto_id] !== undefined
+                      ? ` · Avance físico: ${avancePorConcepto[item.concepto_id]}%`
+                      : item.concepto_id ? ' · Avance físico: sin capturar' : ''}
+                  </Text>
                 </View>
                 <Text style={styles.gastoMonto}>{formatMoney(item.monto)}</Text>
                 <Pressable onPress={() => onDeleteGasto(item)} hitSlop={8} style={{ marginLeft: 8 }}>
@@ -509,6 +551,13 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
 
         <Text style={styles.seccionTitulo}>Curva S</Text>
         {curva ? <CurvaSChart curva={curva} /> : null}
+        {soloHayGastoSinAvance ? (
+          <Text style={styles.gastoAvisoTxt}>
+            La línea "Ganado" está en $0 porque todavía no se ha capturado ningún Registro de Avance en este proyecto —
+            no significa que no haya avance real, solo que aún no se ha registrado en el sistema (distinto del gasto,
+            que sí se ha capturado).
+          </Text>
+        ) : null}
 
         <Text style={styles.seccionTitulo}>Lista por excepción ({excepciones.length})</Text>
         {excepciones.length === 0 ? (
@@ -648,6 +697,7 @@ const styles = StyleSheet.create({
   leyendaDot: { width: 8, height: 8, borderRadius: 4 },
   leyendaTxt: { fontSize: 11, color: colors.textMuted },
   sinExcepciones: { fontSize: 12, color: colors.textMuted, fontStyle: 'italic' },
+  gastoAvisoTxt: { fontSize: 11, color: colors.textMuted, fontStyle: 'italic', marginBottom: 10, lineHeight: 15 },
   excepcionRow: {
     flexDirection: 'row', gap: 10, alignItems: 'flex-start', paddingVertical: 10,
     borderBottomWidth: 1, borderBottomColor: colors.border,
