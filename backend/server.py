@@ -20083,6 +20083,285 @@ async def avances_resumen(
     return AvancesResumenOut(total_registros=len(docs), importe_total=dec_to_str(round_money(total)))
 
 
+class RegistroAvanceImportErrorOut(BaseModel):
+    fila: int
+    motivo: str
+
+
+class RegistroAvanceImportResultOut(BaseModel):
+    total_filas: int
+    creados: int
+    # Filas creadas en modo PORCENTAJE cuyo valor fue MENOR que el último
+    # conocido para ese concepto (dentro del archivo o ya en Mongo) — no se
+    # rechazan (mismo criterio que create_avance: un retroceso real de obra
+    # se permite), pero se cuentan aparte para que quien importó revise si
+    # fue un error de captura o un retroceso real.
+    retrocesos: int
+    errores: List[RegistroAvanceImportErrorOut]
+    errores_truncados: bool  # True si hubo más errores de los que se listan en `errores`
+
+
+_REGISTRO_AVANCE_IMPORT_MAX_ERRORES = 200
+
+
+@api.get("/projects/{pid}/avances/import/plantilla.xlsx")
+async def avances_import_plantilla(pid: str, user: dict = Depends(current_user)):
+    """Plantilla descargable para el importador masivo de Registro de Avance
+    (EV) — columnas Clave/Fecha/Cantidad ejecutada, una fila de ejemplo y una
+    hoja de instrucciones (mismo criterio que /gastos_reales/import/plantilla.xlsx).
+    A diferencia de esa, esta plantilla SÍ es por proyecto: el significado de
+    "Cantidad ejecutada" depende de project.modo_avance (ver create_avance:
+    incremental en CANTIDAD, % acumulado en PORCENTAJE), así que el ejemplo y
+    las instrucciones cambian según el modo configurado."""
+    await ensure_project_access(user, pid)
+    project = await db.projects.find_one({"id": pid})
+    if not project:
+        raise HTTPException(404, "Proyecto no existe")
+    modo_avance = project.get("modo_avance", "CANTIDAD")
+
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Registro de avance"
+
+    headers = ["Clave", "Fecha", "Cantidad ejecutada"]
+    for col, h in enumerate(headers, start=1):
+        cell = ws.cell(row=1, column=col, value=h)
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="1E3A8A")
+        cell.alignment = Alignment(horizontal="center")
+
+    ejemplo_cantidad = "45" if modo_avance == "PORCENTAJE" else "120.50"
+    ejemplo = ["C-001", date(2026, 2, 15), ejemplo_cantidad]
+    for col, v in enumerate(ejemplo, start=1):
+        cell = ws.cell(row=2, column=col, value=v)
+        if col == 2:
+            cell.number_format = "DD/MM/YYYY"
+
+    for i, w in enumerate([14, 14, 20], start=1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+    ws.freeze_panes = "A2"
+
+    ws2 = wb.create_sheet("Instrucciones")
+    if modo_avance == "PORCENTAJE":
+        instrucciones = [
+            "Cómo llenar esta plantilla para el importador masivo de Registro de Avance (EV)",
+            "",
+            "Este proyecto captura avance en modo PORCENTAJE (precio alzado):",
+            "1. Clave: la clave de un concepto que YA EXISTA en el catálogo de este proyecto (ej. C-001). "
+            "Si la clave no existe, esa fila se reporta como error y no se importa — el resto del archivo sí se procesa.",
+            "2. Fecha: fecha en que se reportó ese avance. DEBE ser una celda con formato de FECHA de Excel, "
+            "como en la fila de ejemplo — si Excel la trae como texto no se va a leer.",
+            "3. Cantidad ejecutada: el PORCENTAJE ACUMULADO al que llegó el concepto en esa fecha (0 a 100), "
+            "NO un incremento. Ej. si el concepto va al 45%, se pone 45 — no importa cuánto se puso el mes anterior. "
+            "Para cada concepto, la fila con la fecha MÁS RECIENTE es la que manda.",
+            "4. Un valor menor al de una fila anterior del mismo concepto se acepta igual (nunca se rechaza un "
+            "retroceso real de obra), pero queda marcado para revisión.",
+            "",
+            "No hay límite práctico de filas — está pensado para cargar de golpe meses o años de avance histórico.",
+            "No borres la fila de encabezado (fila 1). La fila 2 es solo un ejemplo — bórrala antes de importar.",
+        ]
+    else:
+        modo_txt = "MATRIZ (por nodo/estación)" if modo_avance == "MATRIZ" else "CANTIDAD"
+        instrucciones = [
+            "Cómo llenar esta plantilla para el importador masivo de Registro de Avance (EV)",
+            "",
+            f"Este proyecto captura avance en modo {modo_txt}:",
+            "1. Clave: la clave de un concepto que YA EXISTA en el catálogo de este proyecto (ej. C-001). "
+            "Si la clave no existe, esa fila se reporta como error y no se importa — el resto del archivo sí se procesa.",
+            "2. Fecha: fecha en que se ejecutó ese avance. DEBE ser una celda con formato de FECHA de Excel, "
+            "como en la fila de ejemplo — si Excel la trae como texto no se va a leer.",
+            "3. Cantidad ejecutada: la cantidad física ejecutada ESE día para ese concepto (incremental — "
+            "si el mismo concepto tiene varias fechas, se SUMAN, igual que capturar varios días desde la app).",
+            "",
+            "No hay límite práctico de filas — está pensado para cargar de golpe meses o años de avance histórico.",
+            "No borres la fila de encabezado (fila 1). La fila 2 es solo un ejemplo — bórrala antes de importar.",
+        ]
+        if modo_avance == "MATRIZ":
+            instrucciones.append(
+                "ADVERTENCIA: este proyecto captura avance en modo MATRIZ (requiere nodo/estación por registro). "
+                "El importador masivo todavía NO soporta este modo — el archivo se rechazará. Usa la captura manual "
+                "por nodo desde la app."
+            )
+    for i, txt in enumerate(instrucciones, start=1):
+        c = ws2.cell(row=i, column=1, value=txt)
+        if i == 1:
+            c.font = Font(bold=True, size=13, color="1E3A8A")
+    ws2.column_dimensions["A"].width = 110
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="plantilla_registro_avance.xlsx"'},
+    )
+
+
+@api.post("/projects/{pid}/avances/import", response_model=RegistroAvanceImportResultOut)
+async def import_avances(
+    pid: str, file: UploadFile = File(...), user: dict = Depends(require_role(ROLE_SUB, ROLE_COORD)),
+):
+    """Importador masivo de Registro de Avance (EV) — mismo patrón que
+    import_gastos_reales: plantilla FIJA (Clave/Fecha/Cantidad ejecutada, ver
+    /projects/{pid}/avances/import/plantilla.xlsx), sin wizard de mapeo/
+    staging, se valida y comitea en un solo request; las filas con error no
+    se insertan y se reportan para corregirlas y volver a subir solo esas.
+
+    A diferencia de Gasto Real, la interpretación de "Cantidad ejecutada"
+    depende de project.modo_avance (ver create_avance): incremental (se suma)
+    en CANTIDAD, % acumulado-al-momento (la fecha más reciente manda) en
+    PORCENTAJE — replicando exactamente la misma lógica de congelación de
+    precio/importe y de detección de retroceso que la captura individual
+    desde la app, para que un importe de EV cargado por Excel valga lo mismo
+    que uno capturado a mano. MATRIZ no se soporta (cada registro necesitaría
+    un nodo_id que esta plantilla no captura) — se rechaza con un mensaje
+    claro en vez de inventar un nodo o dejarlo en null en silencio."""
+    await ensure_project_access(user, pid)
+    project = await db.projects.find_one({"id": pid})
+    if not project:
+        raise HTTPException(404, "Proyecto no existe")
+    modo_avance = project.get("modo_avance", "CANTIDAD")
+    if modo_avance == "MATRIZ":
+        raise HTTPException(
+            400,
+            "Este proyecto captura avance en modo MATRIZ (por nodo/estación) — el importador masivo no soporta "
+            "este modo todavía porque cada registro necesita un nodo, que esta plantilla no captura. Usa la "
+            "captura manual por nodo desde la app.",
+        )
+
+    content = await file.read()
+    sheets = _read_workbook_sheets(file.filename or "archivo.xlsx", content)
+    if not sheets:
+        raise HTTPException(400, "El archivo no tiene hojas legibles")
+    rows = next(iter(sheets.values()))
+    if len(rows) < 2:
+        raise HTTPException(400, "El archivo no tiene filas de datos (solo encabezado, o está vacío)")
+
+    headers = [str(c).strip() if c is not None else "" for c in rows[0]]
+    normalized = [_normalize_text(h) for h in headers]
+
+    def find_col(*keywords: str) -> Optional[int]:
+        for idx, h in enumerate(normalized):
+            if any(kw in h for kw in keywords):
+                return idx
+        return None
+
+    idx_clave = find_col("clave", "concepto")
+    idx_fecha = find_col("fecha")
+    idx_cantidad = find_col("cantidad", "ejecutada")
+    if idx_clave is None or idx_fecha is None or idx_cantidad is None:
+        raise HTTPException(
+            400,
+            "El archivo debe tener columnas Clave, Fecha y Cantidad ejecutada. "
+            f"Descarga la plantilla en /projects/{pid}/avances/import/plantilla.xlsx.",
+        )
+
+    data_rows = rows[1:]
+    cantidades_raw = [r[idx_cantidad] if idx_cantidad < len(r) else None for r in data_rows]
+    convencion = detectar_convencion(cantidades_raw)
+
+    conceptos = await db.conceptos.find({"project_id": pid}).to_list(length=100000)
+    conceptos_por_clave = {c["clave"]: c for c in conceptos}
+
+    # Estado "más reciente conocido" por concepto en modo PORCENTAJE, para
+    # marcar es_retroceso fila a fila igual que create_avance marcaría cada
+    # captura individual llegando en este mismo orden — arranca desde lo que
+    # ya hubiera en Mongo antes de este import.
+    ultimo_valor: dict = {}
+    if modo_avance == "PORCENTAJE":
+        concepto_ids_en_archivo = set()
+        for row in data_rows:
+            clave_raw = row[idx_clave] if idx_clave < len(row) else None
+            if clave_raw not in (None, ""):
+                c = conceptos_por_clave.get(str(clave_raw).strip())
+                if c:
+                    concepto_ids_en_archivo.add(c["id"])
+        for cid in concepto_ids_en_archivo:
+            ultimo_valor[cid] = to_decimal(await _concepto_ejecutado_acumulado(cid, "PORCENTAJE"))
+
+    docs: List[dict] = []
+    errores: List[dict] = []
+    retrocesos = 0
+    ahora = datetime.now(timezone.utc)
+    for i, row in enumerate(data_rows):
+        fila_num = i + 2  # +1 por encabezado (fila 1), +1 porque Excel es 1-based
+        clave_raw = row[idx_clave] if idx_clave < len(row) else None
+        if clave_raw in (None, ""):
+            continue  # fila vacía/de relleno, se ignora silenciosamente
+
+        clave = str(clave_raw).strip()
+        concepto = conceptos_por_clave.get(clave)
+        if not concepto:
+            errores.append({"fila": fila_num, "motivo": f"No existe ningún concepto con clave '{clave}' en este proyecto"})
+            continue
+
+        fecha_raw = row[idx_fecha] if idx_fecha < len(row) else None
+        fecha_iso = _fecha_excel_a_iso(fecha_raw)
+        if fecha_iso is None:
+            errores.append({"fila": fila_num, "motivo": f"Fecha inválida o no es una celda de fecha de Excel: {fecha_raw!r}"})
+            continue
+
+        cantidad_raw = row[idx_cantidad] if idx_cantidad < len(row) else None
+        try:
+            cantidad = _parse_celda_numerica(cantidad_raw, convencion)
+        except (CeldaErrorExcelError, NumeroAmbiguoError, ValueError) as e:
+            errores.append({"fila": fila_num, "motivo": str(e)})
+            continue
+
+        es_retroceso = False
+        if modo_avance == "PORCENTAJE":
+            if cantidad < 0 or cantidad > 100:
+                errores.append({
+                    "fila": fila_num,
+                    "motivo": f"El avance en modo PORCENTAJE debe estar entre 0 y 100 (recibido: {cantidad})",
+                })
+                continue
+            anterior = ultimo_valor.get(concepto["id"], to_decimal("0"))
+            es_retroceso = cantidad < anterior
+            if es_retroceso:
+                retrocesos += 1
+            ultimo_valor[concepto["id"]] = cantidad
+
+        if _concepto_tiene_datos_evm(concepto):
+            precio_congelado = compute_precio_unitario_dinamico(concepto["importe_total_editable"], concepto["meta_cantidad"])
+        else:
+            precio_congelado = to_decimal(concepto["precio_unitario"])
+        importe_congelado = cantidad * precio_congelado
+
+        fuera_de_ventana = False
+        if concepto.get("fecha_inicio") and concepto.get("fecha_fin"):
+            fecha_avance_d = date.fromisoformat(fecha_iso)
+            fuera_de_ventana = not (
+                date.fromisoformat(concepto["fecha_inicio"]) <= fecha_avance_d <= date.fromisoformat(concepto["fecha_fin"])
+            )
+
+        docs.append({
+            "id": str(uuid.uuid4()), "concepto_id": concepto["id"], "project_id": pid, "fecha": fecha_iso,
+            "cantidad_ejecutada": dec_to_str(cantidad), "nodo_id": None, "reporte_id": None,
+            "fotos": [], "photo_captions": [], "capturado_por": user["id"], "capturado_por_nombre": user.get("name"),
+            "creado_en": ahora, "sincronizado": True, "editado_en": None, "client_id": None,
+            "origen": "APP", "linea_base_batch_id": None, "es_retroceso": es_retroceso,
+            "precio_unitario_congelado": dec_to_str(precio_congelado),
+            "importe_ganado_congelado": dec_to_str(importe_congelado),
+            "fuera_de_ventana": fuera_de_ventana,
+        })
+
+    if docs:
+        await db.registros_avance.insert_many(docs)
+
+    truncados = len(errores) > _REGISTRO_AVANCE_IMPORT_MAX_ERRORES
+    return RegistroAvanceImportResultOut(
+        total_filas=len(data_rows), creados=len(docs), retrocesos=retrocesos,
+        errores=[RegistroAvanceImportErrorOut(**e) for e in errores[:_REGISTRO_AVANCE_IMPORT_MAX_ERRORES]],
+        errores_truncados=truncados,
+    )
+
+
 # === Etapa EVM: Análisis de Periodos (Valor Ganado) ==========================
 def _prorrateo_concepto_en_ventana(concepto: dict, ventana_ini: date, ventana_fin: date) -> Decimal:
     """PV que aporta UN concepto a la ventana consultada.

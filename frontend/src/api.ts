@@ -1415,6 +1415,20 @@ export interface GastoRealImportResult {
   errores_truncados: boolean;
 }
 
+export interface RegistroAvanceImportError {
+  fila: number;
+  motivo: string;
+}
+
+export interface RegistroAvanceImportResult {
+  total_filas: number;
+  creados: number;
+  /** Filas creadas en modo PORCENTAJE con valor menor al último conocido del concepto — no se rechazan, solo se cuentan para revisión. */
+  retrocesos: number;
+  errores: RegistroAvanceImportError[];
+  errores_truncados: boolean;
+}
+
 // ---- Programa desglosado (Etapa 2 de la Ampliación del Catálogo) ----------
 // Segundo destino del MISMO wizard de importación (subir -> hoja -> mapear ->
 // validar/preview -> commit) — no crea/edita conceptos, adjunta una
@@ -2800,6 +2814,54 @@ export const api = {
     const cd = res.headers.get('Content-Disposition') || '';
     const m = cd.match(/filename="?([^"]+)"?/);
     return { blob: await res.blob(), filename: (m && m[1]) || 'plantilla_gasto_real.xlsx' };
+  },
+
+  // Importador masivo de Registro de Avance (EV) — mismo patrón que el de
+  // Gasto Real, pero la plantilla SÍ es por proyecto porque el significado
+  // de "Cantidad ejecutada" depende de project.modo_avance (ver server.py:
+  // import_avances / avances_import_plantilla).
+  importAvances: async (
+    pid: string,
+    file: { uri: string; name: string; mimeType?: string | null },
+  ): Promise<RegistroAvanceImportResult> => {
+    if (!file || !file.uri) throw new ApiError(0, 'Archivo o URI no proporcionado');
+    const isWeb = Platform.OS === 'web';
+    const fileName = file.name || 'registro_avance.xlsx';
+    const mime = file.mimeType || 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    const url = `${BASE}/projects/${pid}/avances/import`;
+
+    if (!isWeb) {
+      return nativeMultipartUpload<RegistroAvanceImportResult>(url, file.uri, fileName, mime, 'avance_import');
+    }
+    const form = new FormData();
+    const resBlob = await fetch(file.uri);
+    const blob = await resBlob.blob();
+    try {
+      const f = new File([blob], fileName, { type: mime });
+      form.append('file', f);
+    } catch {
+      form.append('file', blob, fileName);
+    }
+    const headers = await authHeader();
+    const res = await fetch(url, { method: 'POST', headers, body: form as any });
+    const text = await res.text();
+    const data = text ? safeJson(text) : null;
+    if (!res.ok) {
+      const msg = (data && (data as any).detail) || `HTTP ${res.status}`;
+      throw new ApiError(res.status, typeof msg === 'string' ? msg : JSON.stringify(msg));
+    }
+    return data as RegistroAvanceImportResult;
+  },
+  downloadAvanceImportPlantilla: async (pid: string): Promise<{ blob: Blob; filename: string }> => {
+    const tok = await getToken();
+    const res = await fetch(`${BASE}/projects/${pid}/avances/import/plantilla.xlsx`, {
+      method: 'GET',
+      headers: tok ? { Authorization: `Bearer ${tok}` } : {},
+    });
+    if (!res.ok) throw new ApiError(res.status, await _downloadErrorMessage(res, 'Error al descargar la plantilla'));
+    const cd = res.headers.get('Content-Disposition') || '';
+    const m = cd.match(/filename="?([^"]+)"?/);
+    return { blob: await res.blob(), filename: (m && m[1]) || 'plantilla_registro_avance.xlsx' };
   },
 
   downloadCatalogoPdf: async (pid: string): Promise<{ blob: Blob; filename: string }> => {

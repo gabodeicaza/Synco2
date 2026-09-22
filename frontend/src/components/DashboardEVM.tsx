@@ -21,7 +21,7 @@ import { Ionicons } from '@expo/vector-icons';
 import Svg, { Polyline, Line as SvgLine, Text as SvgText } from 'react-native-svg';
 import * as DocumentPicker from 'expo-document-picker';
 
-import { api, AnalisisPeriodo, CurvaS, ExcepcionEvm, ActividadEvm, ActividadesEvm, GastoReal, GastoRealImportResult } from '@/src/api';
+import { api, AnalisisPeriodo, CurvaS, ExcepcionEvm, ActividadEvm, ActividadesEvm, GastoReal, GastoRealImportResult, RegistroAvanceImportResult } from '@/src/api';
 import { colors, spacing, radius, shadow } from '@/src/theme';
 import { Button } from '@/src/components/Button';
 import { confirm } from '@/src/utils/confirm';
@@ -247,6 +247,8 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
   const [savingGasto, setSavingGasto] = useState(false);
   const [importandoGastos, setImportandoGastos] = useState(false);
   const [descargandoPlantilla, setDescargandoPlantilla] = useState(false);
+  const [importandoAvances, setImportandoAvances] = useState(false);
+  const [descargandoPlantillaAvance, setDescargandoPlantillaAvance] = useState(false);
 
   const cargar = useCallback(async (rangoActual: RangoRapido, curvaPrevia: CurvaS | null) => {
     if (!projectId) return;
@@ -358,6 +360,56 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
       Alert.alert('No se pudo importar el archivo', e?.message || 'Intentalo nuevamente.');
     } finally {
       setImportandoGastos(false);
+    }
+  }
+
+  async function onDescargarPlantillaAvance() {
+    if (descargandoPlantillaAvance) return;
+    setDescargandoPlantillaAvance(true);
+    try {
+      const { blob, filename } = await api.downloadAvanceImportPlantilla(projectId);
+      await downloadBlob(blob, filename, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    } catch (e: any) {
+      Alert.alert('No se pudo descargar la plantilla', e?.message || 'Intentalo nuevamente.');
+    } finally {
+      setDescargandoPlantillaAvance(false);
+    }
+  }
+
+  async function onImportarAvancesExcel() {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: [
+          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          'application/vnd.ms-excel',
+          'text/csv',
+        ],
+        copyToCacheDirectory: true,
+      });
+      if (result.canceled || !result.assets?.[0]) return;
+      const asset = result.assets[0];
+
+      setImportandoAvances(true);
+      const res: RegistroAvanceImportResult = await api.importAvances(projectId, {
+        uri: asset.uri, name: asset.name || 'registro_avance.xlsx', mimeType: asset.mimeType,
+      });
+      const detalleErrores = res.errores.slice(0, 10).map((e) => `Fila ${e.fila}: ${e.motivo}`).join('\n');
+      const masErrores = res.errores.length > 10 ? `\n...y ${res.errores.length - 10} más.` : '';
+      const truncNota = res.errores_truncados ? '\n\n(Se muestran solo los primeros 200 errores del archivo.)' : '';
+      const notaRetrocesos = res.retrocesos > 0
+        ? `\n\n${res.retrocesos} fila(s) tienen un avance MENOR al último capturado para ese concepto — se guardaron igual, pero conviene revisarlas (¿retroceso real o error de captura?).`
+        : '';
+      Alert.alert(
+        res.creados > 0 ? 'Importación completada' : 'No se importó ningún avance',
+        `${res.creados} de ${res.total_filas} filas importadas.` +
+          (res.errores.length > 0 ? `\n\n${res.errores.length} con error:\n${detalleErrores}${masErrores}${truncNota}` : '') +
+          notaRetrocesos,
+      );
+      if (res.creados > 0) await cargar(rango, curva);
+    } catch (e: any) {
+      Alert.alert('No se pudo importar el archivo', e?.message || 'Intentalo nuevamente.');
+    } finally {
+      setImportandoAvances(false);
     }
   }
 
@@ -572,6 +624,24 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
         )}
 
         <Text style={styles.seccionTitulo}>Control de actividades</Text>
+        <View style={styles.importRow}>
+          <Pressable onPress={onImportarAvancesExcel} disabled={importandoAvances} style={styles.importBtn}>
+            {importandoAvances ? (
+              <ActivityIndicator size="small" color={colors.primary} />
+            ) : (
+              <Ionicons name="document-attach-outline" size={16} color={colors.primary} />
+            )}
+            <Text style={styles.addBtnTxt}>Importar avance desde Excel</Text>
+          </Pressable>
+          <Pressable onPress={onDescargarPlantillaAvance} disabled={descargandoPlantillaAvance} style={styles.importBtn}>
+            <Ionicons name="download-outline" size={16} color={colors.textMuted} />
+            <Text style={styles.plantillaTxt}>Descargar plantilla</Text>
+          </Pressable>
+        </View>
+        <Text style={styles.gastoAvisoTxt}>
+          Esto SÍ mueve el % de avance de cada concepto (EV) — es la importación complementaria a "Gasto real (AC)" de
+          arriba, para cargar de golpe avance físico histórico en vez de capturarlo día por día desde la app.
+        </Text>
         <View style={styles.tabsRow}>
           {TABS_ACTIVIDADES.map((t) => {
             const count = actividades ? actividades[t.key].length : 0;
