@@ -27,11 +27,11 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import * as Sharing from 'expo-sharing';
 import * as FileSystem from 'expo-file-system/legacy';
-import { api, type FeedItem, type Report, type Project } from '@/src/api';
+import { api, type FeedItem, type Report, type Project, type ReportTemplate } from '@/src/api';
 import { useAuth } from '@/src/auth-context';
 import { formatMeasurementValue } from '@/src/utils/whatsapp';
 import { fmtDateTimeCDMX } from '@/src/utils/tz';
-import { buildReportShareText } from '@/src/utils/reportText';
+import { buildReportShareText, formatDynamicValue } from '@/src/utils/reportText';
 import { shareWithAutoRecover } from '@/src/utils/share';
 import { showToast } from '@/src/utils/toast';
 
@@ -66,6 +66,9 @@ export function ReportPreviewSheet({
   const [fullReport, setFullReport] = React.useState<Report | null>(null);
   const [draftCaps, setDraftCaps] = React.useState<string[]>(['', '']);
   const [savingSev, setSavingSev] = React.useState(false);
+  // Plantillas de reporte estructurado, para traducir `dynamic_data` (claves)
+  // a las etiquetas legibles definidas en cada plantilla.
+  const [reportTemplates, setReportTemplates] = React.useState<ReportTemplate[]>([]);
 
   // === Galeria completa de fotos (2026-07-06) =============================
   // El FeedItem solo trae `thumbnail_base64` (foto 0). Para mostrar TODAS
@@ -103,6 +106,12 @@ export function ReportPreviewSheet({
       .finally(() => {
         if (alive) setGalleryLoading(false);
       });
+    // Plantillas: solo para traducir claves de `dynamic_data` a etiquetas;
+    // fallo silencioso (se muestran las claves crudas como respaldo).
+    api
+      .getReportTemplates()
+      .then((tpls) => { if (alive) setReportTemplates(tpls || []); })
+      .catch(() => { /* usa claves crudas como respaldo */ });
     return () => {
       alive = false;
     };
@@ -224,6 +233,24 @@ export function ReportPreviewSheet({
   const avance = source.avance ? String(source.avance) : '';
   const medicion = source.medicion ? String(source.medicion) : '';
 
+  // === Datos especificos de la plantilla (formulario dinamico) ============
+  // `dynamic_data` solo viene en el Report completo (no en el FeedItem del
+  // feed), asi que depende de `fullReport`. Traducimos claves a etiquetas
+  // usando la plantilla (`template_id`) cuando esta disponible.
+  const dynamicData: Record<string, any> = fullReport?.dynamic_data || {};
+  const usedTemplate = reportTemplates.find(
+    (t) => t.id === (fullReport?.template_id || (source as any).template_id),
+  ) || null;
+  const dynamicEntries = Object.entries(dynamicData).filter(
+    ([, v]) => v !== undefined && v !== null && v !== '',
+  );
+  const dynamicDataText = dynamicEntries
+    .map(([k, v]) => {
+      const label = usedTemplate?.fields.find((f) => f.key === k)?.label || k;
+      return `${label}: ${formatDynamicValue(v)}`;
+    })
+    .join('\n');
+
   // Actividades & Observaciones (Separated in 2026-07)
   // [P0] Check activities, then activities_text, then activities, then description, then comment.
   const activitiesRaw = (
@@ -262,8 +289,12 @@ export function ReportPreviewSheet({
 
   // === Texto completo + acciones (Copiar / Compartir fotos) ===============
   const shareText = React.useMemo(
-    () => buildReportShareText(source as any, { project, authorName: author }),
-    [source, project, author],
+    () =>
+      buildReportShareText(
+        { ...source, dynamic_data: dynamicData } as any,
+        { project, authorName: author, templateFields: usedTemplate?.fields },
+      ),
+    [source, project, author, dynamicData, usedTemplate],
   );
 
   const [sharingPhotos, setSharingPhotos] = React.useState(false);
@@ -464,6 +495,14 @@ export function ReportPreviewSheet({
             {avance ? <Block title="Avance" body={avance} /> : null}
             {medicion && !measurement ? (
               <Block title="Medicion" body={medicion} />
+            ) : null}
+
+            {/* Datos especificos de la plantilla elegida al capturar (si aplica). */}
+            {dynamicEntries.length > 0 ? (
+              <Block
+                title={usedTemplate ? `Datos - ${usedTemplate.name}` : 'Datos del reporte'}
+                body={dynamicDataText}
+              />
             ) : null}
 
             {/* Actividades & Observaciones: vital blocks for the field crew. */}

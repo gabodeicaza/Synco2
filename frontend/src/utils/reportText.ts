@@ -30,7 +30,7 @@ export interface ReportTextOptions {
 }
 
 /** Formatea un valor de `dynamic_data` para texto plano (booleanos → Sí/No, listas → join). */
-function formatDynamicValue(v: any): string {
+export function formatDynamicValue(v: any): string {
   if (v === null || v === undefined || v === '') return '-';
   if (typeof v === 'boolean') return v ? 'Sí' : 'No';
   if (Array.isArray(v)) return v.length ? v.join(', ') : '-';

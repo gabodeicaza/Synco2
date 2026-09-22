@@ -88,6 +88,10 @@ export default function NewReportScreen() {
   const [confirmWarning, setConfirmWarning] = useState<'no-photos' | 'no-captions' | null>(null);
 
   // --- REPORTE ESTRUCTURADO (plantilla dinámica) ---
+  // Escoger una plantilla es obligatorio: "Reporte Libre" (code
+  // "reporte_libre", categoría "General") es la plantilla base/general que se
+  // preselecciona y que cubre los casos que no tienen una plantilla específica.
+  const GENERAL_TEMPLATE_CODE = 'reporte_libre';
   const [reportTemplates, setReportTemplates] = useState<ReportTemplate[]>([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>('');
   const [dynamicData, setDynamicData] = useState<Record<string, any>>({});
@@ -96,17 +100,32 @@ export default function NewReportScreen() {
     () => reportTemplates.find((t) => t.id === selectedTemplateId) || null,
     [reportTemplates, selectedTemplateId]
   );
-  // Lista de plantillas agrupada por área/categoría (Calidad, Seguridad...),
-  // ordenada alfabeticamente para que el selector sea predecible.
+  const generalTemplate = useMemo(
+    () =>
+      reportTemplates.find((t) => t.code === GENERAL_TEMPLATE_CODE) ||
+      reportTemplates.find((t) => (t.category || '').toLowerCase() === 'general') ||
+      reportTemplates[0] ||
+      null,
+    [reportTemplates]
+  );
+  // Si aun no hay plantilla elegida (recien cargaron las plantillas), cae en
+  // automatico a la plantilla general/base.
+  useEffect(() => {
+    if (!selectedTemplateId && generalTemplate) setSelectedTemplateId(generalTemplate.id);
+  }, [generalTemplate]);
+  // Lista de plantillas especificas agrupada por área/categoría (Calidad,
+  // Seguridad...), ordenada alfabeticamente. La plantilla general se excluye
+  // de esta lista porque se muestra fija arriba como opcion base.
   const groupedTemplates = useMemo(() => {
     const byCat = new Map<string, ReportTemplate[]>();
     for (const t of reportTemplates) {
+      if (generalTemplate && t.id === generalTemplate.id) continue;
       const cat = t.category || 'General';
       if (!byCat.has(cat)) byCat.set(cat, []);
       byCat.get(cat)!.push(t);
     }
     return Array.from(byCat.entries()).sort((a, b) => a[0].localeCompare(b[0]));
-  }, [reportTemplates]);
+  }, [reportTemplates, generalTemplate]);
   const setDynamicField = useCallback((key: string, value: any) => {
     setDynamicData((prev) => ({ ...prev, [key]: value }));
   }, []);
@@ -214,7 +233,10 @@ export default function NewReportScreen() {
     setPath([]);
     setSelectedLeaf(null);
     setSuccessReport(null);
-    setSelectedTemplateId('');
+    // Vuelve a la plantilla general/base (nunca "sin plantilla": ver
+    // `generalTemplate`). Si las plantillas aun no cargaron, el efecto que
+    // observa `generalTemplate` la asigna en cuanto esten disponibles.
+    setSelectedTemplateId(generalTemplate?.id || '');
     setDynamicData({});
   };
 
@@ -271,6 +293,12 @@ export default function NewReportScreen() {
   function onSavePressed() {
     if (saving) return;
     if (!selectedLeaf) return Alert.alert('Error', 'Selecciona una ubicacion.');
+    // Escoger un tipo de reporte es obligatorio; en el flujo normal ya viene
+    // preseleccionada la plantilla general, esto es solo un respaldo (p.ej.
+    // si el catalogo de plantillas quedo vacio o fallo al cargar).
+    if (reportTemplates.length > 0 && !selectedTemplateId) {
+      return Alert.alert('Error', 'Selecciona un tipo de reporte.');
+    }
 
     if (images.length === 0) {
       setConfirmWarning('no-photos');
@@ -451,12 +479,12 @@ export default function NewReportScreen() {
               <View style={styles.cardIconBox}><Ionicons name="list" size={16} color={colors.primary} /></View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.cardLabel}>Tipo de reporte</Text>
-                <Text style={styles.cardHelp}>Opcional. Elige una plantilla para capturar datos estructurados.</Text>
+                <Text style={styles.cardHelp}>Elige la plantilla para capturar datos estructurados. Si ninguna especifica aplica, usa "{generalTemplate?.name || 'Reporte Libre'}".</Text>
               </View>
             </View>
             <Pressable onPress={() => setTplPickerOpen(true)} style={styles.tplSelectorRow}>
               <Ionicons name="document-text-outline" size={18} color={colors.primary} />
-              <Text style={styles.tplSelectorTxt}>{selectedTemplate ? selectedTemplate.name : 'Sin plantilla'}</Text>
+              <Text style={styles.tplSelectorTxt}>{selectedTemplate?.name || generalTemplate?.name || 'Cargando...'}</Text>
               <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
             </Pressable>
 
@@ -483,14 +511,16 @@ export default function NewReportScreen() {
                 <Pressable onPress={() => setTplPickerOpen(false)}><Ionicons name="close" size={24} /></Pressable>
               </View>
               <ScrollView style={{ marginTop: 10 }}>
-                <Pressable
-                  onPress={() => { setSelectedTemplateId(''); setDynamicData({}); setTplPickerOpen(false); }}
-                  style={styles.optBtn}
-                >
-                  <Ionicons name="close-circle-outline" size={18} color={colors.textMuted} />
-                  <Text style={styles.optTxt}>Sin plantilla</Text>
-                  {!selectedTemplateId && <Ionicons name="checkmark" size={18} color={colors.primary} />}
-                </Pressable>
+                {generalTemplate && (
+                  <Pressable
+                    onPress={() => { setSelectedTemplateId(generalTemplate.id); setDynamicData({}); setTplPickerOpen(false); }}
+                    style={styles.optBtn}
+                  >
+                    <Ionicons name="document-text-outline" size={18} color={colors.primary} />
+                    <Text style={styles.optTxt}>{generalTemplate.name} (general)</Text>
+                    {selectedTemplateId === generalTemplate.id && <Ionicons name="checkmark" size={18} color={colors.primary} />}
+                  </Pressable>
+                )}
                 {groupedTemplates.map(([category, tpls]) => (
                   <View key={category}>
                     <Text style={styles.tplGroupHeader}>{category}</Text>
