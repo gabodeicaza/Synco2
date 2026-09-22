@@ -1,9 +1,10 @@
 // Editor de anotaciones sobre fotos — círculos, cuadrados, flechas y texto
 // en distintos colores, para señalar cosas en las fotos que se suben en los
 // reportes. Dibuja sobre un overlay SVG encima de la imagen y, al guardar,
-// aplana imagen+overlay en un solo JPEG con react-native-view-shot (mismas
-// librerías ya instaladas en el proyecto — react-native-svg,
-// react-native-view-shot — no se agregó ninguna dependencia nueva).
+// aplana imagen+overlay en un solo JPEG (ver src/utils/captureView.ts/.web.ts
+// — mismas librerías ya instaladas en el proyecto, no se agregó ninguna
+// dependencia nueva aparte de exponer html2canvas, que ya venía como
+// dependencia transitiva de react-native-view-shot).
 //
 // El resultado (`onSave`) es un nuevo data URI base64 que reemplaza a la
 // foto original en el arreglo `images` del reporte; la foto original no se
@@ -15,7 +16,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Ellipse, Line, Polygon, Rect, Text as SvgText } from 'react-native-svg';
-import { captureRef } from 'react-native-view-shot';
+import { captureViewAsDataUri } from '@/src/utils/captureView';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, radius, spacing } from '@/src/theme';
 
@@ -226,7 +227,7 @@ export function PhotoAnnotator({ visible, imageUri, onClose, onSave }: Props) {
     if (!shotRef.current || saving) return;
     setSaving(true);
     try {
-      const uri = await captureRef(shotRef, { format: 'jpg', quality: 0.9, result: 'data-uri' });
+      const uri = await captureViewAsDataUri(shotRef, 0.9);
       onSave(uri);
     } catch (e: any) {
       // Si falla la captura no se pierde la foto original, pero hay que
