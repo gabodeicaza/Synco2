@@ -1576,6 +1576,8 @@ export const api = {
   me: () => request<User>('GET', '/auth/me'),
   changePassword: (new_password: string) =>
     request<{ ok: boolean }>('POST', '/auth/change_password', { new_password }),
+  deleteAccount: (password: string) =>
+    request<{ ok: boolean }>('POST', '/auth/delete_account', { password }),
   forgotPassword: (email: string) =>
     request<{ ok: boolean; message: string }>('POST', '/auth/forgot_password', { email }),
 

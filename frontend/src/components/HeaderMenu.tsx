@@ -12,6 +12,7 @@ import { api, ModulosConfig } from '@/src/api';
 import { colors, radius, shadow, spacing } from '@/src/theme';
 import { confirm } from '@/src/utils/confirm';
 import { modulosActivos } from '@/src/utils/modulos';
+import { t } from '@/src/i18n';
 
 type HeaderMenuProps = {
   // Grupo de rutas desde el que se abre el menu, para navegar a la pantalla
@@ -138,6 +139,11 @@ export function HeaderMenu({ basePath, projectId }: HeaderMenuProps) {
             <View style={styles.divider} />
             {/* No pasa por goTo(): a diferencia del resto de items, no depende
                 de projectId ni necesita esperar a que el proyecto cargue. */}
+            <MenuItem
+              icon="person-circle-outline"
+              label={t('perfil.titulo')}
+              onPress={() => { setOpen(false); router.push(`${basePath}/profile` as any); }}
+            />
             <MenuItem
               icon="key-outline"
               label="Cambiar mi contraseña"

@@ -127,6 +127,8 @@ export default function SubCoordLayout() {
         <Tabs.Screen name="presentacion-preview" options={{ href: null }} />
         {/* Cambiar mi contraseña — alcanzable via router.push (menu hamburgues), sin tab visible. */}
         <Tabs.Screen name="cambiar-password" options={{ href: null }} />
+        {/* Mi perfil (Acerca de, legales, eliminar cuenta) — alcanzable via el menú hamburguesa. */}
+        <Tabs.Screen name="profile" options={{ href: null }} />
       </Tabs>
       <OfflineQueueIndicator />
     </View>

@@ -10,6 +10,7 @@ import { useAuth } from '@/src/auth-context';
 import { homeRouteForRole, APP_BRAND, APP_TAGLINE } from '@/src/utils/roles';
 import { colors, radius, spacing } from '@/src/theme';
 import { t } from '@/src/i18n';
+import { LegalLinks } from '@/src/components/LegalLinks';
 
 export default function LoginScreen() {
   const insets = useSafeAreaInsets();
@@ -134,6 +135,7 @@ export default function LoginScreen() {
           </View>
 
         </View>
+        <LegalLinks />
       </ScrollView>
     </KeyboardAvoidingView>
   );

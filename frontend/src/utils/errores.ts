@@ -86,3 +86,12 @@ export function mensajeDeError(detail: unknown): string {
   if (detail && typeof detail === 'object') return t('errores.solicitudInvalida');
   return t('errores.solicitudInvalida');
 }
+
+/** ¿El fallo es de red (sin internet / servidor inalcanzable) y no una respuesta del backend? */
+export function esErrorDeRed(e: unknown): boolean {
+  const err = e as any;
+  if (err?.status === 0) return true;
+  if (typeof err?.status === 'number' && err.status > 0) return false;
+  const msg = String(err?.message ?? '');
+  return err instanceof TypeError || /network request failed|failed to fetch|network error|load failed/i.test(msg);
+}

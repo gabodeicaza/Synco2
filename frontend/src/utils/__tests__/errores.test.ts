@@ -1,4 +1,4 @@
-import { etiquetaDeCampo, mensajeDeError } from '../errores';
+import { esErrorDeRed, etiquetaDeCampo, mensajeDeError } from '../errores';
 
 describe('mensajeDeError', () => {
   it('deja pasar los mensajes de texto del backend', () => {
@@ -29,5 +29,15 @@ describe('mensajeDeError', () => {
 describe('etiquetaDeCampo', () => {
   it('humaniza campos desconocidos', () => {
     expect(etiquetaDeCampo('nombre_completo')).toBe('Nombre completo');
+  });
+});
+
+describe('esErrorDeRed', () => {
+  it('detecta fallos de conexión', () => {
+    expect(esErrorDeRed(new TypeError('Network request failed'))).toBe(true);
+    expect(esErrorDeRed({ status: 0, message: 'x' })).toBe(true);
+  });
+  it('una respuesta del backend no es error de red', () => {
+    expect(esErrorDeRed({ status: 403, message: 'La contraseña no es correcta' })).toBe(false);
   });
 });
