@@ -18797,13 +18797,18 @@ class ImportMappingIn(BaseModel):
     # Opcional: solo para el chequeo informativo de "el importe del archivo
     # no coincide con cantidad × PU" — nunca se usa como fuente de verdad.
     importe: Optional[str] = None
+    # C-03: columna opcional que marca las filas deductivas (SI, X, 1). Solo esas pueden
+    # traer cantidad <= 0.
+    deductiva: Optional[str] = None
 
 
 class ImportValidateIn(BaseModel):
     sheet: str
     header_row_index: int = 0
     mapping: ImportMappingIn
-    partida_id: str
+    # C-01: OPCIONAL. Solo sirve para colgar el catálogo importado bajo un nodo existente;
+    # la jerarquía se detecta por la clave de cada fila.
+    partida_id: Optional[str] = None
     # Si no se manda, se usa la convención detectada automáticamente al
     # subir el archivo. Mandar un valor explícito aquí RE-VALIDA el archivo
     # completo con esa convención — mismo mecanismo tanto para "cambié la
@@ -19313,7 +19318,101 @@ async def concepto_bitacora(concepto_id: str, user: dict = Depends(current_user)
 # un mapeo automático a partir de los encabezados reales. "importe" es
 # opcional: solo alimenta el chequeo informativo de 3.a, nunca se usa como
 # fuente de verdad (el importe SIEMPRE se recalcula como cantidad × PU).
-_MAPPING_TARGETS = ["clave", "descripcion", "unidad", "cantidad", "precio_unitario", "importe"]
+# === C-01 / C-03 Importador jerárquico ========================================
+# La jerarquía se detecta por la CLAVE (1 -> 1.1 -> 1.1.1). Una fila sin cantidad ni
+# P.U. es una PARTIDA (nodo del catálogo); una fila con cantidad y P.U. es un CONCEPTO
+# que cuelga de la partida más cercana por prefijo de clave. La "partida destino" pasa
+# a ser opcional: solo sirve para colgar el catálogo importado bajo un nodo existente.
+# Los nombres de nivel salen de la configuración del proyecto, no de este código.
+VALORES_MARCA_DEDUCTIVA = {"si", "s", "x", "1", "true", "verdadero", "yes", "y", "ded", "deductiva", "deductivo"}
+
+
+def es_marca_deductiva(raw: Any) -> bool:
+    """¿La celda de la columna "Deductiva" marca la fila como deductiva? (SI, X, 1, ...)"""
+    if raw is None:
+        return False
+    if isinstance(raw, bool):
+        return raw
+    return _normalize_text(str(raw)) in VALORES_MARCA_DEDUCTIVA
+
+
+def clave_a_texto(raw: Any) -> Optional[str]:
+    """Clave de una celda como texto. Un número entero de Excel (1.0) vuelve a "1"."""
+    if raw is None:
+        return None
+    if isinstance(raw, float) and raw.is_integer():
+        return str(int(raw))
+    t = str(raw).strip()
+    return t or None
+
+
+def ancestros_de_clave(clave: str) -> List[str]:
+    """Prefijos de una clave, del más cercano al más lejano: "1.1.2" -> ["1.1", "1"]."""
+    partes = (clave or "").split(".")
+    return [".".join(partes[:i]) for i in range(len(partes) - 1, 0, -1)]
+
+
+def profundidad_clave(clave: str) -> int:
+    return (clave or "").count(".")
+
+
+def padre_por_prefijo(clave: str, claves_partida: Any) -> Optional[str]:
+    """Clave de la partida más cercana que es prefijo de `clave` (o None)."""
+    for a in ancestros_de_clave(clave):
+        if a in claves_partida:
+            return a
+    return None
+
+
+def es_fila_partida(*valores: Any) -> bool:
+    """Una fila es partida si TODAS las columnas numéricas del concepto vienen vacías."""
+    return all(v is None or (isinstance(v, str) and not v.strip()) for v in valores)
+
+
+def planificar_partidas(filas_partida: List[dict], existentes: Dict[str, str]) -> List[dict]:
+    """Partidas que hay que CREAR (las de clave ya existente se reutilizan), de raíz a hoja,
+    cada una con la clave de su padre (existente o creada en este mismo plan)."""
+    conocidas = set(existentes) | {f["clave"] for f in filas_partida if f.get("clave")}
+    ordenadas = sorted(enumerate(filas_partida), key=lambda t: (profundidad_clave(t[1]["clave"]), t[0]))
+    nuevas: List[dict] = []
+    vistas: set = set()
+    for orden, f in ordenadas:
+        c = f["clave"]
+        if not c or c in existentes or c in vistas:
+            continue
+        vistas.add(c)
+        nuevas.append({
+            "clave": c, "nombre": (f.get("descripcion") or c), "orden": orden,
+            "padre_clave": padre_por_prefijo(c, conocidas),
+        })
+    return nuevas
+
+
+async def _crear_partidas_planificadas(
+    partidas_col, pid: str, plan: List[dict], existentes: Dict[str, str], raiz_id: Optional[str],
+    user: dict, registrar: Callable[..., Any],
+) -> Dict[str, str]:
+    """Crea las partidas del plan y devuelve el mapa clave -> id (existentes + creadas).
+    `registrar` anota cada creación en el log de compensación ANTES de escribir."""
+    mapa = dict(existentes)
+    for pl in plan:
+        padre_id = mapa.get(pl["padre_clave"]) if pl["padre_clave"] else raiz_id
+        nuevo_id = str(uuid.uuid4())
+        await registrar({"tipo": "partida_creada", "partida_id": nuevo_id, "valor_anterior": None})
+        await partidas_col.insert_one({
+            "id": nuevo_id, "project_id": pid, "clave": pl["clave"], "nombre": pl["nombre"],
+            "orden": pl["orden"], "activo": True, "partida_padre_id": padre_id, "peso_manual": None,
+            "created_at": datetime.now(timezone.utc), "created_by": user["id"],
+        })
+        mapa[pl["clave"]] = nuevo_id
+    return mapa
+
+
+async def _claves_partida_del_proyecto(pid: str) -> Dict[str, str]:
+    return {p["clave"]: p["id"] async for p in db.partidas.find({"project_id": pid, "activo": True})}
+
+
+_MAPPING_TARGETS = ["clave", "descripcion", "unidad", "cantidad", "precio_unitario", "importe", "deductiva"]
 _MAPPING_KEYWORDS = {
     "clave": ["clave", "codigo", "código", "no.", "num", "item", "partida"],
     "descripcion": ["descripcion", "descripción", "concepto", "nombre", "actividad", "trabajo"],
@@ -19321,6 +19420,7 @@ _MAPPING_KEYWORDS = {
     "cantidad": ["cantidad", "cant", "volumen", "vol"],
     "precio_unitario": ["precio unitario", "p.u.", "pu", "precio", "costo unitario", "costo"],
     "importe": ["importe", "total", "monto"],
+    "deductiva": ["deductiva", "deductivo", "deduccion"],
 }
 
 # Umbral de tolerancia para el chequeo informativo "importe del archivo vs.
@@ -19329,7 +19429,7 @@ _TOLERANCIA_IMPORTE = Decimal("0.01")
 
 # Orden de severidad para decidir el estado de una fila cuando aplican varios
 # problemas a la vez (ver `_calcular_vista_filas`).
-_TIPOS_ERROR = {"excel_error", "numero_ilegible", "numero_ambiguo", "campo_obligatorio_vacio"}
+_TIPOS_ERROR = {"excel_error", "numero_ilegible", "numero_ambiguo", "campo_obligatorio_vacio", "cantidad_no_positiva", "sin_partida_destino"}
 _TIPOS_DUPLICADO = {"clave_duplicada_archivo", "clave_existente_proyecto"}
 _TIPOS_ADVERTENCIA = {"unidad_no_reconocida", "importe_no_coincide"}
 
@@ -19386,6 +19486,7 @@ def _validar_archivo_completo(
     convencion: Optional[ConvencionDecimal],
     existing_by_clave: dict,
     unidades_personalizadas: Optional[List[str]] = None,
+    partidas_existentes: Optional[Dict[str, str]] = None,
 ) -> List[dict]:
     """Procesa TODAS las filas de datos de la hoja UNA vez (3.a) — no una
     muestra. Cada fila queda con su interpretación (clave/descripción/
@@ -19411,6 +19512,7 @@ def _validar_archivo_completo(
         "clave": col(mapping.clave), "descripcion": col(mapping.descripcion),
         "unidad": col(mapping.unidad), "cantidad": col(mapping.cantidad),
         "precio_unitario": col(mapping.precio_unitario), "importe": col(mapping.importe),
+        "deductiva": col(getattr(mapping, "deductiva", None)),
     }
     if idx["clave"] is None or idx["descripcion"] is None or idx["cantidad"] is None or idx["precio_unitario"] is None:
         raise HTTPException(400, "El mapeo debe incluir al menos clave, descripción, cantidad y precio unitario")
@@ -19429,7 +19531,7 @@ def _validar_archivo_completo(
         fila_num = header_row_index + 2 + i
         problemas: List[dict] = []
 
-        clave = str(clave_raw).strip() or None
+        clave = clave_a_texto(clave_raw)
         if not clave:
             problemas.append({"tipo": "campo_obligatorio_vacio", "campo": "clave", "motivo": "La clave está vacía"})
 
@@ -19437,6 +19539,18 @@ def _validar_archivo_completo(
         descripcion = (str(descripcion_raw).strip() if descripcion_raw is not None else "") or None
         if not descripcion:
             problemas.append({"tipo": "campo_obligatorio_vacio", "campo": "descripcion", "motivo": "La descripción está vacía"})
+
+        # C-01: sin cantidad ni P.U. => es una PARTIDA (nodo del catálogo), no un concepto.
+        if es_fila_partida(celda(row, "cantidad"), celda(row, "precio_unitario")):
+            filas.append({
+                "fila": fila_num, "tipo_fila": "partida", "clave": clave, "descripcion": descripcion,
+                "unidad": None, "unidad_raw": None, "cantidad": None, "cantidad_raw": None,
+                "precio_unitario": None, "precio_unitario_raw": None, "importe_archivo": None,
+                "importe_calculado": None, "concepto_existente_id": None, "deductiva": False,
+                "partida_existente_id": (partidas_existentes or {}).get(clave) if clave else None,
+                "problemas": problemas,
+            })
+            continue
 
         unidad_raw = celda(row, "unidad")
         unidad, unidad_reconocida = _map_unidad_con_flag(str(unidad_raw) if unidad_raw is not None else None)
@@ -19510,11 +19624,13 @@ def _validar_archivo_completo(
             concepto_existente_id = existing_by_clave[clave]["id"]
             problemas.append({
                 "tipo": "clave_existente_proyecto", "campo": None,
-                "motivo": f"Ya existe un concepto con clave '{clave}' en esta partida",
+                "motivo": f"Ya existe un concepto con clave '{clave}' en este proyecto",
             })
 
         filas.append({
             "fila": fila_num,
+            "tipo_fila": "concepto",
+            "deductiva": es_marca_deductiva(celda(row, "deductiva")),
             "clave": clave,
             "descripcion": descripcion,
             "unidad": unidad,
@@ -19532,7 +19648,7 @@ def _validar_archivo_completo(
     return filas
 
 
-def _calcular_vista_filas(validated_rows: List[dict], correcciones: dict) -> List[dict]:
+def _calcular_vista_filas(validated_rows: List[dict], correcciones: dict, contexto: Optional[dict] = None) -> List[dict]:
     """Aplica el overlay de correcciones (disperso, por número de fila) sobre
     el resultado inmutable de `_validar_archivo_completo` y calcula el
     estado EFECTIVO de cada fila (ok | error | advertencia | duplicado |
@@ -19548,6 +19664,14 @@ def _calcular_vista_filas(validated_rows: List[dict], correcciones: dict) -> Lis
             continue
         conteo_claves[row["clave"]] = conteo_claves.get(row["clave"], 0) + 1
     claves_repetidas = {c for c, n in conteo_claves.items() if n > 1}
+
+    # C-01: contexto de jerarquía. Sin contexto (pruebas, sesiones viejas) no se exige destino.
+    contexto = contexto or {}
+    tiene_destino = bool(contexto.get("tiene_destino", True))
+    claves_partida = set(contexto.get("claves_partida_existentes") or [])
+    for row in validated_rows:
+        if row.get("tipo_fila") == "partida" and row.get("clave") and not (correcciones.get(str(row["fila"])) or {}).get("descartar"):
+            claves_partida.add(row["clave"])
 
     vista: List[dict] = []
     for row in validated_rows:
@@ -19571,6 +19695,27 @@ def _calcular_vista_filas(validated_rows: List[dict], correcciones: dict) -> Lis
         cantidad_efectiva = correccion.get("cantidad") or row["cantidad"]
         precio_unitario_efectivo = correccion.get("precio_unitario") or row["precio_unitario"]
         unidad_efectiva = correccion.get("unidad") or row["unidad"]
+
+        if row.get("tipo_fila", "concepto") == "concepto" and not descartado:
+            # C-03: cantidad <= 0 se rechaza, salvo que la fila lleve la marca deductiva.
+            if cantidad_efectiva is not None and not row.get("deductiva"):
+                try:
+                    if to_decimal(cantidad_efectiva) <= 0:
+                        problemas_activos = problemas_activos + [{
+                            "tipo": "cantidad_no_positiva", "campo": "cantidad",
+                            "motivo": "La cantidad debe ser mayor que cero (solo una fila deductiva puede ser cero o negativa)",
+                        }]
+                except (ValueError, TypeError, InvalidOperation):
+                    pass
+            # C-01: sin destino elegido, cada concepto necesita una partida ancestro por clave.
+            if not tiene_destino and row.get("clave") and padre_por_prefijo(row["clave"], claves_partida) is None:
+                problemas_activos = problemas_activos + [{
+                    "tipo": "sin_partida_destino", "campo": None,
+                    "motivo": (
+                        f"La clave '{row['clave']}' no tiene una partida padre en el archivo ni en el proyecto. "
+                        "Incluye la fila de la partida o elige una partida destino."
+                    ),
+                }]
 
         if descartado:
             estado = "descartado"
@@ -19759,9 +19904,10 @@ async def import_validate(pid: str, import_id: str, body: ImportValidateIn, user
     sobre el resultado nuevo."""
     await ensure_project_access(user, pid)
     project = await db.projects.find_one({"id": pid})
-    partida = await db.partidas.find_one({"id": body.partida_id, "project_id": pid})
-    if not partida:
-        raise HTTPException(404, "Partida no existe en este proyecto")
+    if body.partida_id:
+        partida = await db.partidas.find_one({"id": body.partida_id, "project_id": pid})
+        if not partida:
+            raise HTTPException(404, "Partida no existe en este proyecto")
     session = await db.catalogo_import_sessions.find_one({"id": import_id, "project_id": pid})
     if not session:
         raise HTTPException(404, "Sesión de importación no existe o expiró")
@@ -19774,13 +19920,18 @@ async def import_validate(pid: str, import_id: str, body: ImportValidateIn, user
     # todo el catálogo activo de la partida destino y se compara en
     # memoria — nada de una consulta por fila. A la escala esperada
     # (decenas a unos cientos de conceptos) esto es trivial.
-    existing = await db.conceptos.find({"partida_id": body.partida_id, "activo": True}).to_list(length=10000)
+    # C-01: los duplicados se buscan en TODO el proyecto (los conceptos ya no van todos a una
+    # sola partida destino).
+    existing = await db.conceptos.find({"project_id": pid, "activo": True}).to_list(length=100000)
     existing_by_clave = {c["clave"]: c for c in existing}
 
+    partidas_proyecto = await _claves_partida_del_proyecto(pid)
     filas = _validar_archivo_completo(
         session["sheets"][body.sheet], body.header_row_index, body.mapping, convencion, existing_by_clave,
         unidades_personalizadas=(project or {}).get("unidades_personalizadas") or [],
+        partidas_existentes=partidas_proyecto,
     )
+    contexto = {"tiene_destino": bool(body.partida_id), "claves_partida_existentes": sorted(partidas_proyecto)}
 
     update_fields = {
         "validated_rows": filas,
@@ -19788,6 +19939,7 @@ async def import_validate(pid: str, import_id: str, body: ImportValidateIn, user
         "validated_header_row_index": body.header_row_index,
         "validated_mapping": body.mapping.model_dump(),
         "validated_partida_id": body.partida_id,
+        "validated_contexto": contexto,
         "convencion_usada": convencion,
         "validated_at": datetime.now(timezone.utc),
     }
@@ -19796,7 +19948,7 @@ async def import_validate(pid: str, import_id: str, body: ImportValidateIn, user
         update_fields["duplicados_accion"] = "omitir"
     await db.catalogo_import_sessions.update_one({"id": import_id}, {"$set": update_fields})
 
-    vista = _calcular_vista_filas(filas, session.get("correcciones") or {})
+    vista = _calcular_vista_filas(filas, session.get("correcciones") or {}, contexto=contexto)
     return {"resumen": _resumen_de_vista(vista), "convencion_usada": convencion}
 
 
@@ -19814,7 +19966,7 @@ async def import_preview(import_id: str, page: int = 1, page_size: int = 50, use
         raise HTTPException(400, "Todavía no se valida esta importación. Llama primero a /validate.")
 
     correcciones = session.get("correcciones") or {}
-    vista = _calcular_vista_filas(validated_rows, correcciones)
+    vista = _calcular_vista_filas(validated_rows, correcciones, contexto=session.get("validated_contexto"))
     resumen = _resumen_de_vista(vista)
 
     page = max(page, 1)
@@ -19876,7 +20028,7 @@ async def import_correct_row(import_id: str, fila: int, body: RowCorrectionIn, u
         correcciones.pop(str(fila), None)  # cuerpo vacío = revertir la fila a su valor original
     await db.catalogo_import_sessions.update_one({"id": import_id}, {"$set": {"correcciones": correcciones}})
 
-    vista = _calcular_vista_filas(validated_rows, correcciones)
+    vista = _calcular_vista_filas(validated_rows, correcciones, contexto=session.get("validated_contexto"))
     fila_actualizada = next(r for r in vista if r["fila"] == fila)
     return {"fila": fila_actualizada, "resumen": _resumen_de_vista(vista)}
 
@@ -19895,7 +20047,7 @@ async def import_revert_row(import_id: str, fila: int, user: dict = Depends(requ
     correcciones.pop(str(fila), None)
     await db.catalogo_import_sessions.update_one({"id": import_id}, {"$set": {"correcciones": correcciones}})
 
-    vista = _calcular_vista_filas(validated_rows, correcciones)
+    vista = _calcular_vista_filas(validated_rows, correcciones, contexto=session.get("validated_contexto"))
     fila_actualizada = next((r for r in vista if r["fila"] == fila), None)
     if fila_actualizada is None:
         raise HTTPException(404, f"Fila {fila} no existe en esta validación")
@@ -19923,11 +20075,12 @@ async def _ejecutar_commit_con_compensacion(
     log_bitacora: Callable[..., Any],
     pid: str,
     import_id: str,
-    partida_id: str,
+    partida_id: Optional[str],
     vista: List[dict],
     duplicados_accion: str,
     user: dict,
     filename: Optional[str],
+    partidas_col=None,
 ) -> dict:
     """Núcleo del commit, separado de la ruta HTTP para poder probarlo con
     colecciones falsas (ver tests/test_import_commit_compensacion.py) sin
@@ -19969,21 +20122,46 @@ async def _ejecutar_commit_con_compensacion(
     valor anterior guardado para poder revertir)."""
     import_batch_id = str(uuid.uuid4())
     creados, actualizados, omitidos = 0, 0, 0
+    partidas_creadas, sin_partida = 0, 0
     log_local: List[dict] = []
+
+    async def _registrar(entry: dict) -> None:
+        log_local.append(entry)
+        await sessions_col.update_one({"id": import_id}, {"$push": {"compensacion_log": entry}})
 
     async def _compensar() -> None:
         for entry in reversed(log_local):
             try:
                 if entry["tipo"] == "creado":
                     await conceptos_col.delete_one({"id": entry["concepto_id"]})
+                elif entry["tipo"] == "partida_creada":
+                    await partidas_col.delete_one({"id": entry["partida_id"]})
                 else:
                     await conceptos_col.update_one({"id": entry["concepto_id"]}, {"$set": entry["valor_anterior"]})
             except Exception as comp_err:
                 log.error("[import_commit] fallo compensando %s: %s", entry, comp_err)
 
     try:
+        # C-01: primero las PARTIDAS del archivo (filas sin cantidad ni P.U.), de raíz a hoja.
+        mapa_partidas: Dict[str, str] = {}
+        if partidas_col is not None:
+            async for pdoc in partidas_col.find({"project_id": pid, "activo": True}):
+                mapa_partidas[pdoc["clave"]] = pdoc["id"]
+            filas_partida = [
+                r for r in vista
+                if r.get("tipo_fila") == "partida" and r["estado"] in ("ok", "advertencia") and r.get("clave")
+            ]
+            plan = planificar_partidas(filas_partida, mapa_partidas)
+            n_antes = len(mapa_partidas)
+            mapa_partidas = await _crear_partidas_planificadas(partidas_col, pid, plan, mapa_partidas, partida_id, user, _registrar)
+            partidas_creadas = len(mapa_partidas) - n_antes
+            for pl in plan:
+                await log_bitacora(pid, "import", "partida", mapa_partidas[pl["clave"]], None, None, f"creada desde importación ({filename})", user)
+
         for row in vista:
             estado = row["estado"]
+            if row.get("tipo_fila") == "partida":
+                continue  # ya se procesó arriba
             if estado in ("error", "descartado"):
                 continue
             if estado == "duplicado":
@@ -20039,13 +20217,21 @@ async def _ejecutar_commit_con_compensacion(
                 )
                 actualizados += 1
             else:
+                # C-01: el concepto cuelga de la partida más cercana por prefijo de su clave;
+                # si no hay, de la partida destino (si se eligió).
+                padre_clave = padre_por_prefijo(clave, mapa_partidas) if clave else None
+                partida_destino = mapa_partidas[padre_clave] if padre_clave else partida_id
+                if not partida_destino:
+                    sin_partida += 1
+                    continue
                 cid = str(uuid.uuid4())
                 entry = {"tipo": "creado", "concepto_id": cid, "valor_anterior": None}
                 log_local.append(entry)
                 await sessions_col.update_one({"id": import_id}, {"$push": {"compensacion_log": entry}})
 
                 await conceptos_col.insert_one({
-                    "id": cid, "partida_id": partida_id, "project_id": pid,
+                    "id": cid, "partida_id": partida_destino, "project_id": pid,
+                    "deductiva": bool(row.get("deductiva")),
                     "clave": clave, "descripcion": descripcion, "unidad": unidad,
                     "cantidad": cantidad, "precio_unitario": precio_unitario,
                     # La meta de un concepto recién importado es su propia
@@ -20067,6 +20253,7 @@ async def _ejecutar_commit_con_compensacion(
     return {
         "creados": creados, "actualizados": actualizados, "omitidos": omitidos,
         "con_error": con_error, "descartados": descartados, "import_batch_id": import_batch_id,
+        "partidas_creadas": partidas_creadas, "sin_partida": sin_partida,
     }
 
 
@@ -20083,18 +20270,20 @@ async def import_commit(pid: str, import_id: str, user: dict = Depends(require_r
     if validated_rows is None:
         raise HTTPException(400, "Todavía no se valida esta importación. Llama primero a /validate.")
     partida_id = session.get("validated_partida_id")
-    partida = await db.partidas.find_one({"id": partida_id, "project_id": pid})
-    if not partida:
-        raise HTTPException(404, "La partida validada ya no existe en este proyecto")
+    if partida_id:
+        partida = await db.partidas.find_one({"id": partida_id, "project_id": pid})
+        if not partida:
+            raise HTTPException(404, "La partida validada ya no existe en este proyecto")
 
     correcciones = session.get("correcciones") or {}
     duplicados_accion = session.get("duplicados_accion", "omitir")
-    vista = _calcular_vista_filas(validated_rows, correcciones)
+    vista = _calcular_vista_filas(validated_rows, correcciones, contexto=session.get("validated_contexto"))
 
     try:
         resultado = await _ejecutar_commit_con_compensacion(
             db.conceptos, db.catalogo_import_sessions, _log_bitacora,
             pid, import_id, partida_id, vista, duplicados_accion, user, session.get("filename"),
+            partidas_col=db.partidas,
         )
     finally:
         # 3.d: SIEMPRE se limpia la sesión de staging al terminar el commit,
@@ -20128,7 +20317,7 @@ _MAPPING_KEYWORDS_EVM = {
     "fin": ["fin", "fecha fin", "f. fin", "termino", "término", "end"],
 }
 
-_TIPOS_ERROR_EVM = {"excel_error", "numero_ilegible", "numero_ambiguo", "campo_obligatorio_vacio", "fecha_ilegible", "rango_fecha_invalido"}
+_TIPOS_ERROR_EVM = {"excel_error", "numero_ilegible", "numero_ambiguo", "campo_obligatorio_vacio", "fecha_ilegible", "rango_fecha_invalido", "sin_partida_destino"}
 _TIPOS_DUPLICADO_EVM = {"clave_duplicada_archivo", "clave_existente_proyecto"}
 
 
@@ -20209,7 +20398,7 @@ class ImportValidateEvmIn(BaseModel):
     sheet: str
     header_row_index: int = 0
     mapping: ImportMappingEvmIn
-    partida_id: str
+    partida_id: Optional[str] = None  # C-01: opcional (ver ImportValidateIn)
     convencion: Optional[ConvencionDecimal] = None
 
 
@@ -20245,6 +20434,7 @@ def _validar_archivo_completo_evm(
     mapping: "ImportMappingEvmIn",
     convencion: Optional[ConvencionDecimal],
     existing_by_clave: dict,
+    partidas_existentes: Optional[Dict[str, str]] = None,
 ) -> List[dict]:
     """Mismo contrato que _validar_archivo_completo (catálogo legado):
     procesa TODAS las filas una vez, resultado inmutable, correcciones
@@ -20282,7 +20472,7 @@ def _validar_archivo_completo_evm(
         fila_num = header_row_index + 2 + i
         problemas: List[dict] = []
 
-        clave = str(clave_raw).strip() or None
+        clave = clave_a_texto(clave_raw)
         if not clave:
             problemas.append({"tipo": "campo_obligatorio_vacio", "campo": "clave", "motivo": "La clave está vacía"})
 
@@ -20290,6 +20480,17 @@ def _validar_archivo_completo_evm(
         descripcion = (str(descripcion_raw).strip() if descripcion_raw is not None else "") or None
         if not descripcion:
             problemas.append({"tipo": "campo_obligatorio_vacio", "campo": "descripcion", "motivo": "La descripción está vacía"})
+
+        # C-01: sin meta, importe ni fechas => es una PARTIDA (nodo del catálogo).
+        if es_fila_partida(celda(row, "meta"), celda(row, "importe"), celda(row, "inicio"), celda(row, "fin")):
+            filas.append({
+                "fila": fila_num, "tipo_fila": "partida", "clave": clave, "descripcion": descripcion,
+                "meta_cantidad": None, "importe_total_editable": None, "fecha_inicio": None, "fecha_fin": None,
+                "concepto_existente_id": None,
+                "partida_existente_id": (partidas_existentes or {}).get(clave) if clave else None,
+                "problemas": problemas,
+            })
+            continue
 
         def _parse_campo_numerico(raw_valor, nombre_campo: str) -> Optional[str]:
             try:
@@ -20341,11 +20542,11 @@ def _validar_archivo_completo_evm(
             concepto_existente_id = existing_by_clave[clave]["id"]
             problemas.append({
                 "tipo": "clave_existente_proyecto", "campo": None,
-                "motivo": f"Ya existe un concepto con clave '{clave}' en esta partida",
+                "motivo": f"Ya existe un concepto con clave '{clave}' en este proyecto",
             })
 
         filas.append({
-            "fila": fila_num, "clave": clave, "descripcion": descripcion,
+            "fila": fila_num, "tipo_fila": "concepto", "clave": clave, "descripcion": descripcion,
             "meta_cantidad": meta_cantidad, "importe_total_editable": importe_total_editable,
             "fecha_inicio": fecha_inicio, "fecha_fin": fecha_fin,
             "concepto_existente_id": concepto_existente_id, "problemas": problemas,
@@ -20353,7 +20554,7 @@ def _validar_archivo_completo_evm(
     return filas
 
 
-def _calcular_vista_filas_evm(validated_rows: List[dict], correcciones: dict) -> List[dict]:
+def _calcular_vista_filas_evm(validated_rows: List[dict], correcciones: dict, contexto: Optional[dict] = None) -> List[dict]:
     """Mismo contrato que _calcular_vista_filas (catálogo legado), sobre los
     campos EVM en vez de cantidad/precio_unitario/unidad."""
     conteo_claves: dict = {}
@@ -20363,6 +20564,13 @@ def _calcular_vista_filas_evm(validated_rows: List[dict], correcciones: dict) ->
             continue
         conteo_claves[row["clave"]] = conteo_claves.get(row["clave"], 0) + 1
     claves_repetidas = {c for c, n in conteo_claves.items() if n > 1}
+
+    contexto = contexto or {}
+    tiene_destino = bool(contexto.get("tiene_destino", True))
+    claves_partida = set(contexto.get("claves_partida_existentes") or [])
+    for row in validated_rows:
+        if row.get("tipo_fila") == "partida" and row.get("clave") and not (correcciones.get(str(row["fila"])) or {}).get("descartar"):
+            claves_partida.add(row["clave"])
 
     vista: List[dict] = []
     for row in validated_rows:
@@ -20383,6 +20591,16 @@ def _calcular_vista_filas_evm(validated_rows: List[dict], correcciones: dict) ->
         importe_efectivo = correccion.get("importe_total_editable") or row["importe_total_editable"]
         fecha_inicio_efectiva = correccion.get("fecha_inicio") or row["fecha_inicio"]
         fecha_fin_efectiva = correccion.get("fecha_fin") or row["fecha_fin"]
+
+        if row.get("tipo_fila", "concepto") == "concepto" and not descartado:
+            if not tiene_destino and row.get("clave") and padre_por_prefijo(row["clave"], claves_partida) is None:
+                problemas_activos = problemas_activos + [{
+                    "tipo": "sin_partida_destino", "campo": None,
+                    "motivo": (
+                        f"La clave '{row['clave']}' no tiene una partida padre en el archivo ni en el proyecto. "
+                        "Incluye la fila de la partida o elige una partida destino."
+                    ),
+                }]
 
         if descartado:
             estado = "descartado"
@@ -20414,12 +20632,13 @@ async def _ejecutar_commit_evm_con_compensacion(
     log_bitacora: Callable[..., Any],
     pid: str,
     import_id: str,
-    partida_id: str,
+    partida_id: Optional[str],
     vista: List[dict],
     duplicados_accion: str,
     user: dict,
     filename: Optional[str],
     batch_size: int = 500,
+    partidas_col=None,
 ) -> dict:
     """Commit del Importador Maestro — mismo criterio de COMPENSACIÓN MANUAL
     que _ejecutar_commit_con_compensacion del catálogo legado (ver ese
@@ -20446,12 +20665,19 @@ async def _ejecutar_commit_evm_con_compensacion(
     dispositivo estaba desconectado."""
     import_batch_id = str(uuid.uuid4())
     log_local: List[dict] = []
+    sin_partida = 0
+
+    async def _registrar(entry: dict) -> None:
+        log_local.append(entry)
+        await sessions_col.update_one({"id": import_id}, {"$push": {"compensacion_log": entry}})
 
     async def _compensar() -> None:
         for entry in reversed(log_local):
             try:
                 if entry["tipo"] == "creado":
                     await conceptos_col.delete_one({"id": entry["concepto_id"]})
+                elif entry["tipo"] == "partida_creada":
+                    await partidas_col.delete_one({"id": entry["partida_id"]})
                 else:
                     await conceptos_col.update_one({"id": entry["concepto_id"]}, {"$set": entry["valor_anterior"]})
             except Exception as comp_err:
@@ -20461,6 +20687,8 @@ async def _ejecutar_commit_evm_con_compensacion(
     filas_aplicables: List[dict] = []
     for row in vista:
         estado = row["estado"]
+        if row.get("tipo_fila") == "partida":
+            continue  # las partidas se crean aparte (C-01)
         if estado in ("error", "descartado"):
             continue
         if estado == "duplicado":
@@ -20483,6 +20711,21 @@ async def _ejecutar_commit_evm_con_compensacion(
             existing_docs[d["id"]] = d
 
     try:
+        # C-01: primero las PARTIDAS del archivo (filas sin meta ni importe), de raíz a hoja.
+        mapa_partidas: Dict[str, str] = {}
+        partidas_creadas = 0
+        if partidas_col is not None:
+            async for pdoc in partidas_col.find({"project_id": pid, "activo": True}):
+                mapa_partidas[pdoc["clave"]] = pdoc["id"]
+            filas_partida = [
+                r for r in vista
+                if r.get("tipo_fila") == "partida" and r["estado"] in ("ok", "advertencia") and r.get("clave")
+            ]
+            plan = planificar_partidas(filas_partida, mapa_partidas)
+            n_antes = len(mapa_partidas)
+            mapa_partidas = await _crear_partidas_planificadas(partidas_col, pid, plan, mapa_partidas, partida_id, user, _registrar)
+            partidas_creadas = len(mapa_partidas) - n_antes
+
         for lote_inicio in range(0, len(filas_aplicables), batch_size):
             lote = filas_aplicables[lote_inicio: lote_inicio + batch_size]
             ops: List[Any] = []
@@ -20514,10 +20757,15 @@ async def _ejecutar_commit_evm_con_compensacion(
                         }},
                     ))
                 else:
+                    padre_clave = padre_por_prefijo(row["clave"], mapa_partidas) if row.get("clave") else None
+                    partida_destino = mapa_partidas[padre_clave] if padre_clave else partida_id
+                    if not partida_destino:
+                        sin_partida += 1
+                        continue
                     cid = str(uuid.uuid4())
                     lote_log.append({"tipo": "creado", "concepto_id": cid, "valor_anterior": None})
                     ops.append(InsertOne({
-                        "id": cid, "partida_id": partida_id, "project_id": pid,
+                        "id": cid, "partida_id": partida_destino, "project_id": pid,
                         "clave": row["clave"], "descripcion": row["descripcion"], "unidad": "UNIVERSAL",
                         # Campos legado (cantidad/precio_unitario/meta) se dejan en
                         # blanco/derivados mínimos para que _concepto_out no truene
@@ -20556,7 +20804,9 @@ async def _ejecutar_commit_evm_con_compensacion(
     creados = sum(1 for e in log_local if e["tipo"] == "creado")
     actualizados = sum(1 for e in log_local if e["tipo"] == "actualizado")
     for entry in log_local:
-        if entry["tipo"] == "creado":
+        if entry["tipo"] == "partida_creada":
+            await log_bitacora(pid, "import_evm", "partida", entry["partida_id"], None, None, f"creada desde Importador Maestro ({filename})", user)
+        elif entry["tipo"] == "creado":
             await log_bitacora(pid, "import_evm", "concepto", entry["concepto_id"], None, None, f"creado desde Importador Maestro ({filename})", user)
         else:
             await log_bitacora(pid, "import_evm", "concepto", entry["concepto_id"], "importe_total_editable/fechas", None, "actualizado desde Importador Maestro", user)
@@ -20566,6 +20816,7 @@ async def _ejecutar_commit_evm_con_compensacion(
     return {
         "creados": creados, "actualizados": actualizados, "omitidos": omitidos,
         "con_error": con_error, "descartados": descartados, "import_batch_id": import_batch_id,
+        "partidas_creadas": partidas_creadas, "sin_partida": sin_partida,
     }
 
 
@@ -20630,9 +20881,10 @@ async def import_evm_headers(
 @api.post("/projects/{pid}/conceptos/import_evm/{import_id}/validate")
 async def import_evm_validate(pid: str, import_id: str, body: ImportValidateEvmIn, user: dict = Depends(require_role(ROLE_SUB, ROLE_COORD))):
     await ensure_project_access(user, pid)
-    partida = await db.partidas.find_one({"id": body.partida_id, "project_id": pid})
-    if not partida:
-        raise HTTPException(404, "Partida no existe en este proyecto")
+    if body.partida_id:
+        partida = await db.partidas.find_one({"id": body.partida_id, "project_id": pid})
+        if not partida:
+            raise HTTPException(404, "Partida no existe en este proyecto")
     session = await db.evm_import_sessions.find_one({"id": import_id, "project_id": pid})
     if not session:
         raise HTTPException(404, "Sesión de importación no existe o expiró")
@@ -20640,15 +20892,21 @@ async def import_evm_validate(pid: str, import_id: str, body: ImportValidateEvmI
         raise HTTPException(400, f"La hoja '{body.sheet}' no existe en este archivo")
 
     convencion: Optional[ConvencionDecimal] = body.convencion or session.get("convencion_decimal")
-    existing = await db.conceptos.find({"partida_id": body.partida_id, "activo": True}).to_list(length=10000)
+    # C-01: los duplicados se buscan en TODO el proyecto.
+    existing = await db.conceptos.find({"project_id": pid, "activo": True}).to_list(length=100000)
     existing_by_clave = {c["clave"]: c for c in existing}
 
-    filas = _validar_archivo_completo_evm(session["sheets"][body.sheet], body.header_row_index, body.mapping, convencion, existing_by_clave)
+    partidas_proyecto = await _claves_partida_del_proyecto(pid)
+    filas = _validar_archivo_completo_evm(
+        session["sheets"][body.sheet], body.header_row_index, body.mapping, convencion, existing_by_clave,
+        partidas_existentes=partidas_proyecto,
+    )
+    contexto = {"tiene_destino": bool(body.partida_id), "claves_partida_existentes": sorted(partidas_proyecto)}
 
     update_fields = {
         "validated_rows": filas, "validated_sheet": body.sheet,
         "validated_header_row_index": body.header_row_index, "validated_mapping": body.mapping.model_dump(),
-        "validated_partida_id": body.partida_id, "convencion_usada": convencion,
+        "validated_partida_id": body.partida_id, "validated_contexto": contexto, "convencion_usada": convencion,
         "validated_at": datetime.now(timezone.utc),
     }
     if "correcciones" not in session:
@@ -20656,7 +20914,7 @@ async def import_evm_validate(pid: str, import_id: str, body: ImportValidateEvmI
         update_fields["duplicados_accion"] = "omitir"
     await db.evm_import_sessions.update_one({"id": import_id}, {"$set": update_fields})
 
-    vista = _calcular_vista_filas_evm(filas, session.get("correcciones") or {})
+    vista = _calcular_vista_filas_evm(filas, session.get("correcciones") or {}, contexto=contexto)
     return {"resumen": _resumen_de_vista(vista), "convencion_usada": convencion}
 
 
@@ -20671,7 +20929,7 @@ async def import_evm_preview(import_id: str, page: int = 1, page_size: int = 50,
         raise HTTPException(400, "Todavía no se valida esta importación. Llama primero a /validate.")
 
     correcciones = session.get("correcciones") or {}
-    vista = _calcular_vista_filas_evm(validated_rows, correcciones)
+    vista = _calcular_vista_filas_evm(validated_rows, correcciones, contexto=session.get("validated_contexto"))
     resumen = _resumen_de_vista(vista)
 
     page = max(page, 1)
@@ -20734,7 +20992,7 @@ async def import_evm_correct_row(import_id: str, fila: int, body: RowCorrectionE
         correcciones.pop(str(fila), None)
     await db.evm_import_sessions.update_one({"id": import_id}, {"$set": {"correcciones": correcciones}})
 
-    vista = _calcular_vista_filas_evm(validated_rows, correcciones)
+    vista = _calcular_vista_filas_evm(validated_rows, correcciones, contexto=session.get("validated_contexto"))
     fila_actualizada = next(r for r in vista if r["fila"] == fila)
     return {"fila": fila_actualizada, "resumen": _resumen_de_vista(vista)}
 
@@ -20768,18 +21026,20 @@ async def import_evm_commit(pid: str, import_id: str, user: dict = Depends(requi
     if validated_rows is None:
         raise HTTPException(400, "Todavía no se valida esta importación. Llama primero a /validate.")
     partida_id = session.get("validated_partida_id")
-    partida = await db.partidas.find_one({"id": partida_id, "project_id": pid})
-    if not partida:
-        raise HTTPException(404, "La partida validada ya no existe en este proyecto")
+    if partida_id:
+        partida = await db.partidas.find_one({"id": partida_id, "project_id": pid})
+        if not partida:
+            raise HTTPException(404, "La partida validada ya no existe en este proyecto")
 
     correcciones = session.get("correcciones") or {}
     duplicados_accion = session.get("duplicados_accion", "omitir")
-    vista = _calcular_vista_filas_evm(validated_rows, correcciones)
+    vista = _calcular_vista_filas_evm(validated_rows, correcciones, contexto=session.get("validated_contexto"))
 
     try:
         resultado = await _ejecutar_commit_evm_con_compensacion(
             db.conceptos, db.evm_import_sessions, _log_bitacora,
             pid, import_id, partida_id, vista, duplicados_accion, user, session.get("filename"),
+            partidas_col=db.partidas,
         )
     finally:
         await db.evm_import_sessions.delete_one({"id": import_id})
