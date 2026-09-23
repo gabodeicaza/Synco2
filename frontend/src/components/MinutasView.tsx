@@ -43,6 +43,7 @@ import { confirm } from '@/src/utils/confirm';
 import { dayjs } from '@/src/utils/tz';
 import { downloadBlob } from '@/src/utils/downloadBlob';
 import { a11y } from '@/src/i18n';
+import { fmtFecha } from '@/src/utils/fechas';
 
 // ---------- utilidades semaforo -------------------------------------------
 type Urgency = 'red' | 'yellow' | 'green' | 'gray';
@@ -96,12 +97,10 @@ function urgencyMeta(u: Urgency) {
   }
 }
 
+// Un solo formato de fecha en toda la app: "23 sep 2026" (ver src/utils/fechas.ts).
 function fmtDate(iso?: string | null): string {
-  if (!iso) return '_';
-  const s = iso.slice(0, 10);
-  const [y, m, d] = s.split('-');
-  if (!y || !m || !d) return s;
-  return `${d}/${m}/${y}`;
+  if (!iso) return '—';
+  return fmtFecha(iso.slice(0, 10));
 }
 
 interface MinutasViewProps {

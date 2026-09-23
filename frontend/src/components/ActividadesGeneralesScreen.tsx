@@ -27,6 +27,7 @@ import { api, ActividadCurada, Area, LocationNode, NivelActividad } from '@/src/
 import { RangoFechasPicker } from '@/src/components/RangoFechasPicker';
 import { formatearRangoLegible, rangoHoy, rangoAyer, rangoEstaSemana, rangoEsteMes, RangoFechas } from '@/src/utils/rangoFechas';
 import { confirm } from '@/src/utils/confirm';
+import { fmtFecha } from '@/src/utils/fechas';
 
 // Antes había 3 pestañas (Generales / Por Estación / Por Poste) — "Por
 // Estación" (nivel SUBTRAMO) generaba confusión sin aportar nada que "Por
@@ -450,7 +451,7 @@ function ActividadRow({
   const origenLabel = item.anadida_manual
     ? 'Añadida manualmente'
     : item.reporte_fecha
-      ? `Reporte del ${new Date(item.reporte_fecha).toLocaleDateString('es-MX')}`
+      ? `Reporte del ${fmtFecha(item.reporte_fecha)}`
       : 'De un reporte';
   // Este renglón vive sobre fondo BLANCO (styles.rowCard) — usar el acento
   // crudo como texto/ícono directo se vuelve ilegible si el color de marca

@@ -10,8 +10,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { useOfflineQueue } from '@/src/offline-queue-context';
 import { QueuedReport } from '@/src/utils/offlineQueue';
 import { colors, radius, shadow, spacing } from '@/src/theme';
-import { dayjs, CDMX_TZ } from '@/src/utils/tz';
 import { a11y } from '@/src/i18n';
+import { fmtFechaHora } from '@/src/utils/fechas';
 
 function statusLabel(status: QueuedReport['status']): string {
   if (status === 'syncing') return 'Enviando...';
@@ -61,7 +61,7 @@ export default function OfflineQueueDetailModal({
                       {item.payload?.title || 'Reporte sin nombre'}
                     </Text>
                     <Text style={styles.rowMeta}>
-                      {dayjs(item.created_at).tz(CDMX_TZ).format('DD MMM YYYY, HH:mm')} {'_'} {statusLabel(item.status)}
+                      {fmtFechaHora(item.created_at)} {'_'} {statusLabel(item.status)}
                     </Text>
                     {item.status === 'failed' && item.last_error ? (
                       <Text style={styles.rowError} numberOfLines={2}>{item.last_error}</Text>

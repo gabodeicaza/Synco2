@@ -581,6 +581,12 @@ export interface Project {
   // consultar; RegistroAvance.fecha siempre guarda la fecha exacta.
   cadencia_reporte?: 'DIARIA' | 'SEMANAL' | 'MENSUAL';
   dia_inicio_semana?: 'LUNES' | 'MARTES' | 'MIERCOLES' | 'JUEVES' | 'VIERNES' | 'SABADO' | 'DOMINGO';
+  /** Zona horaria IANA del proyecto (defecto America/Mexico_City). */
+  zona_horaria?: string;
+  /** Hoy en la zona del proyecto (YYYY-MM-DD), al momento de la consulta. */
+  hoy?: string;
+  /** Desfase actual respecto a UTC en minutos (CDMX = -360). Lo usa fechas.ts. */
+  tz_offset_min?: number;
   // Sistema Multi-Proyecto Modular: plantillas encendidas/apagadas, con un
   // interruptor independiente por categoría de informe (Diario/Semanal/
   // Mensual). Ver MODULOS_KEYS en server.py — claves no reconocidas ahí
@@ -940,6 +946,9 @@ export interface ProjectEvent {
   location?: string | null;
   start_at: string;
   end_at?: string | null;
+  /** Evento de todo el día (minutas, inicio/fin de concepto): no lleva hora. */
+  all_day?: boolean;
+  fecha?: string | null;
   author_id: string;
   author_name: string;
   author_role?: string;

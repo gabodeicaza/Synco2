@@ -16,6 +16,7 @@ import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/dat
 import { api, Area, ProjectEvent, User } from '@/src/api';
 import { colors, radius, shadow, spacing, areaTone } from '@/src/theme';
 import { dayjs, CDMX_TZ, fmtTimeCDMX } from '@/src/utils/tz';
+import { diaDelEvento, esDiaCompleto } from '@/src/utils/fechas';
 import { a11y } from '@/src/i18n';
 
 // ---------------------------------------------------------------------------
@@ -126,7 +127,7 @@ export default function UniversalCalendar({ projectId, userId, isCoord }: Props)
   const markedDates = useMemo(() => {
     const map: Record<string, { dots: Array<{ key: string; color: string }>; selected?: boolean; selectedColor?: string }> = {};
     items.forEach((e) => {
-      const day = (e.start_at || '').slice(0, 10);
+      const day = diaDelEvento(e);
       if (!day) return;
       const color = e.area_color || colors.primary;
       const key = e.area_id || 'general';
@@ -147,8 +148,8 @@ export default function UniversalCalendar({ projectId, userId, isCoord }: Props)
   // Eventos del dia seleccionado (ordenados por hora).
   const dayEvents = useMemo(() => {
     return items
-      .filter((e) => (e.start_at || '').slice(0, 10) === selectedDate)
-      .sort((a, b) => (a.start_at || '').localeCompare(b.start_at || ''));
+      .filter((e) => diaDelEvento(e) === selectedDate)
+      .sort((a, b) => Number(esDiaCompleto(b)) - Number(esDiaCompleto(a)) || (a.start_at || '').localeCompare(b.start_at || ''));
   }, [items, selectedDate]);
 
   function canEdit(e: ProjectEvent): boolean {
@@ -306,8 +307,9 @@ function EventRow({
 }) {
   const baseColor = item.area_color || colors.primary;
   const tone = areaTone(baseColor);
-  const start = fmtHora(item.start_at);
-  const end = item.end_at ? fmtHora(item.end_at) : null;
+  const todoElDia = esDiaCompleto(item);
+  const start = todoElDia ? 'Todo el día' : fmtHora(item.start_at);
+  const end = !todoElDia && item.end_at ? fmtHora(item.end_at) : null;
   return (
     <View style={[styles.eventCard, { borderLeftColor: baseColor }]}>
       <View style={styles.timeBlock}>

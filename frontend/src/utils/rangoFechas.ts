@@ -4,15 +4,11 @@
 // src/utils/tz.ts — trae el locale 'es' y la zona CDMX ya configurados),
 // nunca Date nativo.
 //
-// Semana natural = Domingo a Sábado (MISMA convención que el backend
-// completo — ver `_period_range`/`_feed_range_start` en server.py, que
-// calculan `days_to_sunday = (weekday()+1) % 7` — y que `getStartOfNatural-
-// WeekCDMX` en tz.ts, vía `.day(0)`). Antes esta función calculaba Lunes a
-// Domingo, una convención DISTINTA a la del resto del sistema — "Esta
-// semana" en Visualizar Avance/Actividades Generales no coincidía con
-// "Semana" en los exports/feed. `hoy` default también usaba `dayjs()` sin
-// `.tz()` (zona horaria del dispositivo, no CDMX) — mismo bug de raíz que
-// el de RangoFechasPicker.
+// Semana natural = LUNES a Domingo (K-05). MISMA convención que el backend
+// (`inicio_semana`/`_inicio_semana_local` en server.py) y que
+// `getStartOfNaturalWeekCDMX` en tz.ts: "Esta semana" en Visualizar
+// Avance/Actividades Generales coincide con "Semana" en los exports/feed.
+// `hoy` default usa `.tz(CDMX)`, no la zona horaria del dispositivo.
 import { dayjs, CDMX_TZ } from '@/src/utils/tz';
 
 export interface RangoFechas {
@@ -40,12 +36,13 @@ export function rangoAyer(hoy = hoyCDMX()): RangoFechas {
   return { desde: d, hasta: d };
 }
 
-/** Domingo de la semana actual → hoy. `.day(0)` nunca salta hacia adelante
- * (domingo es el día 0, primero de la semana): si hoy ya es domingo, da hoy
- * mismo; para cualquier otro día, retrocede al domingo que ya pasó. */
+/** Lunes de la semana actual → hoy (la semana va de lunes a domingo). Nunca
+ * salta hacia adelante: si hoy es lunes da hoy mismo; si es domingo, retrocede
+ * al lunes que empezó esa semana. */
 export function rangoEstaSemana(hoy = hoyCDMX()): RangoFechas {
-  const domingo = hoy.startOf('day').day(0);
-  return { desde: domingo.format(FMT), hasta: hoy.format(FMT) };
+  const dia = hoy.startOf('day');
+  const lunes = dia.subtract((dia.day() + 6) % 7, 'day');
+  return { desde: lunes.format(FMT), hasta: hoy.format(FMT) };
 }
 
 /** Día 1 del mes actual → hoy. */

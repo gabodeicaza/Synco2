@@ -15,6 +15,7 @@ import { useAuth } from '@/src/auth-context';
 import { api, Announcement, Area, LocationNode } from '@/src/api';
 import { colors, radius, shadow, spacing } from '@/src/theme';
 import { a11y } from '@/src/i18n';
+import { fmtFecha } from '@/src/utils/fechas';
 
 const POLL_MS = 60000;
 
@@ -509,7 +510,7 @@ function formatDate(iso: string): string {
   if (h < 24) return `Hace ${h} h`;
   const dy = Math.floor(h / 24);
   if (dy < 7) return `Hace ${dy} d`;
-  return d.toLocaleDateString('es-MX', { day: '2-digit', month: 'short', year: 'numeric' });
+  return fmtFecha(d);
 }
 
 const styles = StyleSheet.create({

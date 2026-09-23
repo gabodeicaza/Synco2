@@ -38,6 +38,7 @@ import {
 } from '@/src/utils/tz';
 import { shareWithAutoRecover } from '@/src/utils/share';
 import { t, a11y } from '@/src/i18n';
+import { fmtFechaHora } from '@/src/utils/fechas';
 
 export default function SubCoordDashboard() {
   const insets = useSafeAreaInsets();
@@ -335,7 +336,7 @@ export default function SubCoordDashboard() {
       }
 
       const path = (item.node_path_names || []).join(' _ ') || '_';
-      const ts = item.created_at ? dayjs.utc(item.created_at).tz(CDMX_TZ).format('DD/MM/YYYY HH:mm') : '';
+      const ts = item.created_at ? fmtFechaHora(item.created_at) : '';
       const captionLines = [
         `*${t('marca.reporteDeObra')}*`,
         '',

@@ -86,10 +86,12 @@ export function timeAgoCDMX(iso?: string | null): string {
   }
 }
 
-/** `06 jul 2026` _ solo fecha. */
+/** `06 jul 2026` _ solo fecha. Un texto YYYY-MM-DD (sin hora) es un dia de calendario:
+ * NO se convierte de zona (convertirlo lo movia al dia anterior). */
 export function fmtDateCDMX(input: string | number | Date | null | undefined): string {
   if (!input) return '_';
   try {
+    if (typeof input === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(input)) return dayjs.utc(input).format('DD MMM YYYY');
     return dayjs.utc(input).tz(CDMX_TZ).format('DD MMM YYYY');
   } catch {
     return String(input);
@@ -124,11 +126,12 @@ export function getStartOfTodayCDMX() {
 }
 
 /**
- * Devuelve el inicio de la "semana natural" (Domingo) en CDMX.
+ * Devuelve el inicio de la "semana natural" (LUNES) en CDMX.
  */
 export function getStartOfNaturalWeekCDMX() {
-  // day(0) siempre es Domingo en Dayjs, independientemente del locale.
-  return dayjs().tz(CDMX_TZ).startOf('day').day(0);
+  // day() es 0 = domingo en Dayjs, independientemente del locale.
+  const hoy = dayjs().tz(CDMX_TZ).startOf('day');
+  return hoy.subtract((hoy.day() + 6) % 7, 'day');
 }
 
 /**

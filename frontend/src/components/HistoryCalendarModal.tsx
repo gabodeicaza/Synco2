@@ -7,6 +7,7 @@ import { colors, radius, shadow, spacing } from '@/src/theme';
 import { FeedItem } from '@/src/api';
 import { toISODateCDMX } from '@/src/utils/tz';
 import { a11y } from '@/src/i18n';
+import { fmtFecha } from '@/src/utils/fechas';
 
 // Localizacion a espanol.
 LocaleConfig.locales['es'] = {
@@ -128,9 +129,7 @@ export function HistoryCalendarModal({
 
 function formatDate(iso: string): string {
   try {
-    const [y, m, d] = iso.split('-');
-    const date = new Date(Number(y), Number(m) - 1, Number(d));
-    return date.toLocaleDateString('es-MX', { day: '2-digit', month: 'long', year: 'numeric' });
+    return fmtFecha(iso);
   } catch {
     return iso;
   }

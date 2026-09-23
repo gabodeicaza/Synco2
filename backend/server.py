@@ -387,6 +387,9 @@ class ProjectIn(BaseModel):
     # referencia del plan corta sábado a sábado, así que no se puede asumir
     # lunes como en un calendario ISO estándar.
     dia_inicio_semana: Literal["LUNES", "MARTES", "MIERCOLES", "JUEVES", "VIERNES", "SABADO", "DOMINGO"] = "LUNES"
+    # Zona horaria IANA del proyecto (defecto America/Mexico_City). Todo "hoy" y
+    # todo rango de fechas se calcula en esta zona.
+    zona_horaria: Optional[str] = None
     # === Sistema Multi-Proyecto Modular (Etapa 5) ===
     # Plantillas encendidas/apagadas para este proyecto — cada una con un
     # interruptor independiente por categoría de informe (Diario/Semanal/
@@ -426,6 +429,7 @@ class ProjectPatch(BaseModel):
     titulo_modulo_catalogo: Optional[str] = None
     cadencia_reporte: Optional[Literal["DIARIA", "SEMANAL", "MENSUAL"]] = None
     dia_inicio_semana: Optional[Literal["LUNES", "MARTES", "MIERCOLES", "JUEVES", "VIERNES", "SABADO", "DOMINGO"]] = None
+    zona_horaria: Optional[str] = None
     # Banderas de intención explícita — mismo idioma que `quitar_padre` en
     # PartidaPatch. Dos flags independientes (no una sola) porque
     # tipo_contrato y modo_avance son ejes que no se deben conflatar: cambiar
@@ -471,6 +475,9 @@ class ProjectOut(BaseModel):
     titulo_modulo_catalogo: str = ""
     cadencia_reporte: str = "MENSUAL"
     dia_inicio_semana: str = "LUNES"
+    zona_horaria: str = "America/Mexico_City"
+    hoy: Optional[str] = None  # fecha de hoy en la zona del proyecto (YYYY-MM-DD)
+    tz_offset_min: Optional[int] = None  # desfase actual respecto a UTC, en minutos
     modulos: dict = Field(default_factory=dict)
     created_by: str
     created_at: datetime
@@ -939,6 +946,71 @@ def user_to_out(u: dict) -> dict:
         "expo_push_tokens": u.get("expo_push_tokens") or [],
         "created_at": u.get("created_at", datetime.now(timezone.utc)),
     }
+
+
+# === FECHAS DEL PROYECTO (X-04 / A-08 / K-05) ================================
+# Única fuente de "hoy", inicio de día y semana. Todo se calcula en la zona
+# horaria del proyecto (`zona_horaria`, por defecto America/Mexico_City), nunca
+# en UTC ni en la hora del servidor. La semana va de lunes a domingo salvo que el
+# proyecto configure otro `dia_inicio_semana`.
+ZONA_POR_DEFECTO = "America/Mexico_City"
+DIAS_SEMANA = {"LUNES": 0, "MARTES": 1, "MIERCOLES": 2, "JUEVES": 3, "VIERNES": 4, "SABADO": 5, "DOMINGO": 6}
+
+
+def validar_zona_horaria(nombre: Optional[str]) -> Optional[str]:
+    """Devuelve el nombre IANA si es válido; ValueError si no. Vacío -> None (usa el defecto)."""
+    n = (nombre or "").strip()
+    if not n:
+        return None
+    try:
+        ZoneInfo(n)
+    except Exception:
+        raise ValueError(f"Zona horaria no válida: {n}")
+    return n
+
+
+def zona_proyecto(project: Optional[dict] = None):
+    nombre = (project or {}).get("zona_horaria") or ZONA_POR_DEFECTO
+    try:
+        return ZoneInfo(nombre)
+    except Exception:
+        return MX_TZ
+
+
+def hoy_proyecto(project: Optional[dict] = None, ahora_utc: Optional[datetime] = None) -> date:
+    """Fecha de hoy EN LA ZONA DEL PROYECTO."""
+    ahora = ahora_utc or datetime.now(timezone.utc)
+    return ahora.astimezone(zona_proyecto(project)).date()
+
+
+def offset_min_proyecto(project: Optional[dict] = None, ahora_utc: Optional[datetime] = None) -> int:
+    """Desfase actual de la zona respecto a UTC, en minutos (CDMX = -360)."""
+    ahora = ahora_utc or datetime.now(timezone.utc)
+    off = ahora.astimezone(zona_proyecto(project)).utcoffset()
+    return int(off.total_seconds() // 60) if off is not None else 0
+
+
+def inicio_dia_utc(fecha: date, project: Optional[dict] = None) -> datetime:
+    """00:00 del día `fecha` en la zona del proyecto, expresado en UTC."""
+    local = datetime(fecha.year, fecha.month, fecha.day, tzinfo=zona_proyecto(project))
+    return local.astimezone(timezone.utc)
+
+
+def inicio_semana(hoy: date, dia_inicio: Optional[str] = "LUNES") -> date:
+    objetivo = DIAS_SEMANA.get((dia_inicio or "LUNES").upper(), 0)
+    return hoy - timedelta(days=(hoy.weekday() - objetivo) % 7)
+
+
+def semana_de(hoy: date, dia_inicio: Optional[str] = "LUNES") -> Tuple[date, date]:
+    """(primer día, último día) de la semana que contiene `hoy`."""
+    ini = inicio_semana(hoy, dia_inicio)
+    return ini, ini + timedelta(days=6)
+
+
+async def hoy_de(pid: str) -> date:
+    """`hoy_proyecto` a partir del id del proyecto (una consulta ligera)."""
+    proj = await db.projects.find_one({"id": pid}, {"zona_horaria": 1})
+    return hoy_proyecto(proj)
 
 
 async def ensure_project_access(user: dict, project_id: str) -> dict:
@@ -2193,6 +2265,13 @@ def _sanitize_str_list(items, max_items: int = 200, max_len: int = 200) -> list:
     return out
 
 
+def _zona_o_400(nombre: Optional[str]) -> str:
+    try:
+        return validar_zona_horaria(nombre) or ZONA_POR_DEFECTO
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
 def _sanitize_color_hex(value: Optional[str]) -> Optional[str]:
     """Valida un color hex `#RRGGBB` o `#RGB`. Devuelve `#RRGGBB` en mayúsculas o None."""
     if not value or not isinstance(value, str):
@@ -2257,6 +2336,7 @@ async def create_project(body: ProjectIn, user: dict = Depends(require_role(ROLE
         "titulo_modulo_catalogo": (body.titulo_modulo_catalogo or "").strip(),
         "cadencia_reporte": body.cadencia_reporte,
         "dia_inicio_semana": body.dia_inicio_semana,
+        "zona_horaria": _zona_o_400(body.zona_horaria),
         "modulos": _sanitize_modulos(body.modulos),
         "created_by": user["id"],
         "created_at": datetime.now(timezone.utc),
@@ -2302,6 +2382,9 @@ async def get_project(pid: str, user: dict = Depends(current_user)):
     p.setdefault("titulo_modulo_catalogo", "")
     p.setdefault("cadencia_reporte", "MENSUAL")
     p.setdefault("dia_inicio_semana", "LUNES")
+    p["zona_horaria"] = p.get("zona_horaria") or ZONA_POR_DEFECTO
+    p["hoy"] = hoy_proyecto(p).isoformat()
+    p["tz_offset_min"] = offset_min_proyecto(p)
     p["modulos"] = _sanitize_modulos(p.get("modulos"))
     return p
 
@@ -2398,6 +2481,8 @@ async def update_project(pid: str, body: ProjectPatch, user: dict = Depends(requ
         upd["cadencia_reporte"] = body.cadencia_reporte
     if body.dia_inicio_semana is not None:
         upd["dia_inicio_semana"] = body.dia_inicio_semana
+    if body.zona_horaria is not None:
+        upd["zona_horaria"] = _zona_o_400(body.zona_horaria)
 
     if upd:
         await db.projects.update_one({"id": pid}, {"$set": upd})
@@ -2437,6 +2522,9 @@ def _project_public(p: dict) -> dict:
     p.setdefault("titulo_modulo_catalogo", "")
     p.setdefault("cadencia_reporte", "MENSUAL")
     p.setdefault("dia_inicio_semana", "LUNES")
+    p["zona_horaria"] = p.get("zona_horaria") or ZONA_POR_DEFECTO
+    p["hoy"] = hoy_proyecto(p).isoformat()
+    p["tz_offset_min"] = offset_min_proyecto(p)
     p["modulos"] = _sanitize_modulos(p.get("modulos"))
     return p
 
@@ -2600,7 +2688,7 @@ async def create_forestal_registro(pid: str, body: ForestalRegistroIn, user: dic
         "estacion_nombre": (node_name or "").strip() or None,
         "tipo": body.tipo,
         "cantidad": body.cantidad,
-        "fecha": body.fecha or datetime.now(MX_TZ).date().isoformat(),
+        "fecha": body.fecha or (await hoy_de(pid)).isoformat(),
         "notas": (body.notas or "").strip() or None,
         "images": body.images[:10],
         "captured_by": user["id"],
@@ -2978,7 +3066,7 @@ async def list_weather_logs(pid: str, date: Optional[str] = None, user: dict = D
     para que la pantalla de captura indexe por `node_id` en vez de pedir
     nodo por nodo."""
     await ensure_project_access(user, pid)
-    fecha_cdmx = date or datetime.now(timezone.utc).astimezone(MX_TZ).date().isoformat()
+    fecha_cdmx = date or (await hoy_de(pid)).isoformat()
     docs = await db.weather_logs.find({"project_id": pid, "fecha_cdmx": fecha_cdmx}, {"_id": 0}).to_list(length=500)
     return {"logs": docs}
 
@@ -2999,7 +3087,7 @@ async def upsert_weather_log(pid: str, body: WeatherLogIn, user: dict = Depends(
         raise HTTPException(400, "Este nodo no es una Estación habilitada en Acceso al Predio")
 
     now = datetime.now(timezone.utc)
-    fecha_cdmx = now.astimezone(MX_TZ).date().isoformat()
+    fecha_cdmx = (await hoy_de(pid)).isoformat()
     key = {"project_id": pid, "node_id": body.node_id, "fecha_cdmx": fecha_cdmx}
     upd = {
         **key,
@@ -3321,7 +3409,7 @@ async def create_seguridad_reporte(pid: str, body: SeguridadReporteIn, user: dic
         "id": str(uuid.uuid4()),
         "project_id": pid,
         "node_id": body.node_id,
-        "fecha": body.fecha or datetime.now(MX_TZ).date().isoformat(),
+        "fecha": body.fecha or (await hoy_de(pid)).isoformat(),
         "descripcion": descripcion,
         "acciones_tomadas": (body.acciones_tomadas or "").strip() or None,
         "severidad": body.severidad,
@@ -3367,7 +3455,7 @@ async def create_seguridad_checklist(pid: str, body: SeguridadChecklistIn, user:
     doc = {
         "id": str(uuid.uuid4()),
         "project_id": pid,
-        "fecha": body.fecha or datetime.now(MX_TZ).date().isoformat(),
+        "fecha": body.fecha or (await hoy_de(pid)).isoformat(),
         "items": [it.model_dump() for it in body.items],
         "captured_by": user["id"],
         "captured_by_name": user["name"],
@@ -3610,7 +3698,7 @@ async def create_estudio_bitacora(pid: str, body: EstudioBitacoraIn, user: dict 
         "project_id": pid,
         "disciplina": body.disciplina,
         "texto": texto,
-        "fecha": body.fecha or datetime.now(MX_TZ).date().isoformat(),
+        "fecha": body.fecha or (await hoy_de(pid)).isoformat(),
         "captured_by": user["id"],
         "captured_by_name": user["name"],
         "created_at": datetime.now(timezone.utc),
@@ -3737,7 +3825,7 @@ async def create_ambiental_auditoria(pid: str, body: AmbientalAuditoriaIn, user:
         "project_id": pid,
         "tipo": body.tipo,
         "descripcion": descripcion,
-        "fecha": body.fecha or datetime.now(MX_TZ).date().isoformat(),
+        "fecha": body.fecha or (await hoy_de(pid)).isoformat(),
         "notas": (body.notas or "").strip() or None,
         "images": body.images[:10],
         "captured_by": user["id"],
@@ -6613,27 +6701,34 @@ def _compress_missing_thumbnails(raw_items: List[dict]) -> dict:
     return out
 
 
-def _feed_day_bounds(date_str: str) -> Optional[tuple]:
-    """Convierte 'YYYY-MM-DD' (día natural CDMX) en (inicio, fin) UTC."""
+def _feed_day_bounds(date_str: str, zona=None) -> Optional[tuple]:
+    """Convierte 'YYYY-MM-DD' (día natural de la zona del proyecto; CDMX por
+    defecto) en (inicio, fin) UTC."""
     try:
         y, m, d = (int(x) for x in date_str.split("-"))
-        start_mx = datetime(y, m, d, 0, 0, 0, tzinfo=MX_TZ)
+        start_mx = datetime(y, m, d, 0, 0, 0, tzinfo=zona or MX_TZ)
     except Exception:
         return None
     end_mx = start_mx + timedelta(days=1)
     return start_mx.astimezone(timezone.utc), end_mx.astimezone(timezone.utc)
 
 
-def _feed_range_start(rng: str) -> Optional[datetime]:
-    """Devuelve el inicio del rango en UTC.
+def _inicio_semana_local(now_local: datetime, project: Optional[dict] = None) -> datetime:
+    """00:00 del primer día de la semana (lunes por defecto) en la zona de `now_local`."""
+    ini = inicio_semana(now_local.date(), (project or {}).get("dia_inicio_semana"))
+    return datetime(ini.year, ini.month, ini.day, tzinfo=now_local.tzinfo)
 
-    today  → hoy 00:00 CDMX
-    week   → inicio de la semana natural (Domingo) CDMX
-    month  → día 1 del mes actual CDMX
+
+def _feed_range_start(rng: str, project: Optional[dict] = None) -> Optional[datetime]:
+    """Devuelve el inicio del rango en UTC (zona del proyecto; CDMX por defecto).
+
+    today  → hoy 00:00
+    week   → inicio de la semana (lunes, o el `dia_inicio_semana` del proyecto)
+    month  → día 1 del mes actual
     all/None → None (sin filtro temporal)
     """
     now_utc = datetime.now(timezone.utc)
-    now_mx = now_utc.astimezone(MX_TZ)
+    now_mx = now_utc.astimezone(zona_proyecto(project))
     rng = (rng or "today").lower()
 
     if rng == "today":
@@ -6641,11 +6736,7 @@ def _feed_range_start(rng: str) -> Optional[datetime]:
         return start_mx.astimezone(timezone.utc)
 
     if rng == "week":
-        # [FIX] Semana natural inicia en Domingo
-        # weekday(): 0=Mon, ..., 6=Sun
-        days_to_sunday = (now_mx.weekday() + 1) % 7
-        start_mx = now_mx.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days_to_sunday)
-        return start_mx.astimezone(timezone.utc)
+        return _inicio_semana_local(now_mx, project).astimezone(timezone.utc)
 
     if rng == "month":
         # [FIX] Mes natural (día 1)
@@ -6684,7 +6775,7 @@ async def reports_feed(
     `since`: chequeo ligero de reportes nuevos — filtra `created_at` estrictamente
     posterior al ISO datetime dado, ignora `skip`/`range`/`date` y ordena desc.
     """
-    await ensure_project_access(user, pid)
+    proj_feed = await ensure_project_access(user, pid)
     query: dict = {"project_id": pid}
     if user["role"] == ROLE_ESPECIALISTA and (user.get("scope_node_ids") or []):
         query["node_id"] = {"$in": user["scope_node_ids"]}
@@ -6700,11 +6791,11 @@ async def reports_feed(
     if since_dt is not None:
         query["created_at"] = {"$gt": since_dt}
     else:
-        day_bounds = _feed_day_bounds(date) if date else None
+        day_bounds = _feed_day_bounds(date, zona_proyecto(proj_feed)) if date else None
         if day_bounds is not None:
             query["created_at"] = {"$gte": day_bounds[0], "$lt": day_bounds[1]}
         else:
-            start = _feed_range_start(range)
+            start = _feed_range_start(range, proj_feed)
             if start is not None:
                 query["created_at"] = {"$gte": start}
 
@@ -7995,6 +8086,8 @@ class EventIn(BaseModel):
     end_at: Optional[str] = None
     area_id: Optional[str] = None
     attendee_ids: List[str] = Field(default_factory=list)
+    # Evento de todo el día: `start_at` es solo la fecha; no lleva hora.
+    all_day: bool = False
 
 
 class EventPatch(BaseModel):
@@ -8009,7 +8102,15 @@ class EventPatch(BaseModel):
 
 def _event_out(doc: dict) -> dict:
     doc.pop("_id", None)
+    doc.setdefault("all_day", False)
     return doc
+
+
+def _evento_dia_completo(fecha_iso: str, project: Optional[dict]) -> datetime:
+    """Un evento con solo fecha (minuta, inicio/fin de concepto) cae en las 00:00
+    del día en la zona del proyecto. Antes se guardaba a las 00:00 UTC, que en CDMX
+    es 18:00 del día ANTERIOR y el evento salía a la hora y al día equivocados."""
+    return inicio_dia_utc(date.fromisoformat(str(fecha_iso)[:10]), project)
 
 
 async def _resolve_attendee_ids(ids: List[str]) -> tuple:
@@ -8044,9 +8145,14 @@ async def _enrich_event_with_area(doc: dict) -> dict:
     return doc
 
 
-def _parse_iso(s: str) -> datetime:
+def _parse_iso(s: str, zona=None) -> datetime:
+    """ISO 8601 -> datetime. Si viene SIN zona horaria se interpreta en `zona`
+    (la del proyecto) en vez de dejarlo naive, que Mongo guardaría como UTC."""
     try:
-        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        if dt.tzinfo is None and zona is not None:
+            dt = dt.replace(tzinfo=zona)
+        return dt
     except Exception:
         raise HTTPException(400, f"Fecha inválida: {s}")
 
@@ -8060,15 +8166,16 @@ async def list_events(
     user: dict = Depends(current_user),
 ):
     """Lista eventos. Cualquier miembro del proyecto puede leer."""
-    await ensure_project_access(user, pid)
+    proj_ev = await ensure_project_access(user, pid)
     q: dict = {"project_id": pid}
     now = datetime.now(timezone.utc)
+    # "Hoy" es el día del PROYECTO (antes se cortaba a medianoche UTC y por la
+    # tarde-noche de CDMX se ocultaban los eventos del día en curso).
+    inicio_hoy = inicio_dia_utc(hoy_proyecto(proj_ev), proj_ev)
     if range == "upcoming":
-        # eventos desde inicio del día actual (UTC) en adelante
-        start_today = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        q["start_at"] = {"$gte": start_today}
+        q["start_at"] = {"$gte": inicio_hoy}
     elif range == "past":
-        q["start_at"] = {"$lt": now.replace(hour=0, minute=0, second=0, microsecond=0)}
+        q["start_at"] = {"$lt": inicio_hoy}
     # 'all' → sin filtro
     if mine:
         # Autor o asistente asignado — mismo criterio que "Mis Minutas".
@@ -8095,7 +8202,7 @@ async def list_events(
     # calendario nunca se desincronice si el concepto cambia de fecha o se
     # borra. Se omiten en la vista "mine" (esos filtros son de autor/
     # asistente, que no aplica a un concepto).
-    start_today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    start_today = inicio_hoy
     virtuales: List[dict] = []
     if not mine:
         partida_ids = [p["id"] async for p in db.partidas.find({"project_id": pid}, {"id": 1})]
@@ -8106,19 +8213,21 @@ async def list_events(
             ):
                 etiqueta = f"{c.get('clave', '')} — {c.get('descripcion', '')}".strip(" —")
                 if c.get("fecha_inicio"):
-                    dt = datetime.fromisoformat(c["fecha_inicio"]).replace(tzinfo=timezone.utc)
+                    dt = _evento_dia_completo(c["fecha_inicio"], proj_ev)
                     virtuales.append({
                         "id": f"concepto-inicio:{c['id']}", "project_id": pid,
                         "title": f"Inicio de {etiqueta}", "description": None, "location": None,
+                        "all_day": True, "fecha": c["fecha_inicio"][:10],
                         "start_at": dt, "end_at": None, "area_id": None,
                         "author_id": "catalogo", "author_name": "Catálogo de conceptos",
                         "created_at": dt, "updated_at": dt,
                     })
                 if c.get("fecha_fin"):
-                    dt = datetime.fromisoformat(c["fecha_fin"]).replace(tzinfo=timezone.utc)
+                    dt = _evento_dia_completo(c["fecha_fin"], proj_ev)
                     virtuales.append({
                         "id": f"concepto-fin:{c['id']}", "project_id": pid,
                         "title": f"Fin de {etiqueta}", "description": None, "location": None,
+                        "all_day": True, "fecha": c["fecha_fin"][:10],
                         "start_at": dt, "end_at": None, "area_id": None,
                         "author_id": "catalogo", "author_name": "Catálogo de conceptos",
                         "created_at": dt, "updated_at": dt,
@@ -8135,11 +8244,12 @@ async def list_events(
     async for m in db.minutas.find(
         minuta_q, {"id": 1, "codigo": 1, "titulo": 1, "fecha_reunion": 1, "author_id": 1, "author_name": 1},
     ):
-        dt = datetime.fromisoformat(m["fecha_reunion"]).replace(tzinfo=timezone.utc)
+        dt = _evento_dia_completo(m["fecha_reunion"], proj_ev)
         etiqueta = f"{m.get('codigo', '')} — {m.get('titulo', '')}".strip(" —")
         virtuales.append({
             "id": f"minuta:{m['id']}", "project_id": pid,
             "title": f"Minuta: {etiqueta}", "description": None, "location": None,
+            "all_day": True, "fecha": m["fecha_reunion"][:10],
             "start_at": dt, "end_at": None, "area_id": None,
             "author_id": m.get("author_id") or "minutas", "author_name": m.get("author_name") or "Minutas",
             "created_at": dt, "updated_at": dt,
@@ -8177,14 +8287,19 @@ async def create_event(
     user: dict = Depends(current_user),
 ):
     """Cualquier miembro del proyecto puede crear eventos."""
-    await ensure_project_access(user, pid)
+    proj_ev = await ensure_project_access(user, pid)
     title = (body.title or "").strip()
     if not title:
         raise HTTPException(400, "Título requerido")
     if len(title) > 140:
         raise HTTPException(400, "Título máximo 140 caracteres")
-    start = _parse_iso(body.start_at)
-    end = _parse_iso(body.end_at) if body.end_at else None
+    zona_ev = zona_proyecto(proj_ev)
+    start = _parse_iso(body.start_at, zona_ev)
+    end = _parse_iso(body.end_at, zona_ev) if body.end_at else None
+    if body.all_day:
+        # Todo el día: sin hora. Se ancla a las 00:00 del día del proyecto.
+        start = inicio_dia_utc(start.astimezone(zona_ev).date(), proj_ev)
+        end = None
     if end and end < start:
         raise HTTPException(400, "La fecha de fin no puede ser anterior al inicio")
     desc = (body.description or "").strip() or None
@@ -8201,6 +8316,7 @@ async def create_event(
     attendee_ids, attendee_names = await _resolve_attendee_ids(body.attendee_ids)
     now = datetime.now(timezone.utc)
     doc = {
+        "all_day": bool(body.all_day),
         "id": str(uuid.uuid4()),
         "project_id": pid,
         "title": title,
@@ -9411,7 +9527,7 @@ def _format_measurement_for_display(report: dict) -> str:
     return "—"
 
 
-def _period_range(period: str) -> tuple:
+def _period_range(period: str, project: Optional[dict] = None) -> tuple:
     """Devuelve (start_utc, end_utc, etiqueta_legible).
 
     Los rangos se calculan en horario local America/Mexico_City y se
@@ -9421,7 +9537,7 @@ def _period_range(period: str) -> tuple:
       - "Mes" = REGLA ESTRICTA: día 1 del mes calendario actual CDMX 00:00:00 → ahora.
     """
     now_utc = datetime.now(timezone.utc)
-    now_mx = now_utc.astimezone(MX_TZ)
+    now_mx = now_utc.astimezone(zona_proyecto(project))
     p = (period or "today").lower().strip()
     if p in ("today", "hoy"):
         start_mx = now_mx.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -9431,10 +9547,8 @@ def _period_range(period: str) -> tuple:
         start_mx = end_mx - timedelta(days=1)
         return start_mx.astimezone(timezone.utc), end_mx.astimezone(timezone.utc), "Ayer"
     if p in ("week", "semana", "semanal"):
-        # [FIX] Bloque fijo de semana natural (Domingo a Sábado)
-        days_to_sunday = (now_mx.weekday() + 1) % 7
-        start_mx = now_mx.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days_to_sunday)
-        return start_mx.astimezone(timezone.utc), now_utc, "Semana natural"
+        # Semana natural: lunes a domingo (o el `dia_inicio_semana` del proyecto).
+        return _inicio_semana_local(now_mx, project).astimezone(timezone.utc), now_utc, "Semana natural"
     if p in ("month", "mes", "mensual"):
         # REGLA ESTRICTA: Día 1 del mes calendario CDMX 00:00 → ahora.
         start_mx = now_mx.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
@@ -9479,10 +9593,10 @@ def _normalize_period_type(period_type: Optional[str]) -> Optional[str]:
     return None
 
 
-def _period_range_for_type(period_type: str) -> tuple:
+def _period_range_for_type(period_type: str, project: Optional[dict] = None) -> tuple:
     """Rango temporal `(start_utc, end_utc, etiqueta)` para cada categoría."""
     now_utc = datetime.now(timezone.utc)
-    now_mx = now_utc.astimezone(MX_TZ)
+    now_mx = now_utc.astimezone(zona_proyecto(project))
     pt = _normalize_period_type(period_type)
     if pt == "diario":
         # Solo hoy: desde las 00:00 CDMX de hoy hasta ahora.
@@ -9493,9 +9607,8 @@ def _period_range_for_type(period_type: str) -> tuple:
             "Reporte Diario",
         )
     if pt == "semanal":
-        # [FIX] Bloque fijo de semana natural (Domingo a Sábado)
-        days_to_sunday = (now_mx.weekday() + 1) % 7
-        start_mx = now_mx.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days_to_sunday)
+        # Semana natural: lunes a domingo (o el `dia_inicio_semana` del proyecto).
+        start_mx = _inicio_semana_local(now_mx, project)
         return (
             start_mx.astimezone(timezone.utc),
             now_utc,
@@ -12886,9 +12999,9 @@ async def _gather_export_data(
 
     pt_norm = _normalize_period_type(period_type)
     if pt_norm:
-        start_dt, end_dt, period_label = _period_range_for_type(pt_norm)
+        start_dt, end_dt, period_label = _period_range_for_type(pt_norm, proj)
     else:
-        start_dt, end_dt, period_label = _period_range(period)
+        start_dt, end_dt, period_label = _period_range(period, proj)
 
     nodes_raw = await db.location_nodes.find({"project_id": pid}).to_list(length=10000)
     nodes_by_id = {n["id"]: n for n in nodes_raw}
@@ -16224,7 +16337,7 @@ async def create_minuta(pid: str, body: MinutaIn, user: dict = Depends(current_u
     if len(descripcion) > 4000:
         raise HTTPException(400, "Descripción máximo 4000 caracteres")
     area_ids, area_names = await _resolve_areas_for_minuta(pid, body.area_ids or [])
-    fecha_reunion = (body.fecha_reunion or "").strip() or datetime.now(timezone.utc).astimezone(MX_TZ).strftime("%Y-%m-%d")
+    fecha_reunion = (body.fecha_reunion or "").strip() or (await hoy_de(pid)).isoformat()
 
     # Ubicación (nodo del proyecto) — REQUERIDA por regla de negocio 2026-07.
     # Guardamos id + name + path para poder mostrar breadcrumb sin joins extra.
@@ -16331,10 +16444,10 @@ async def create_minuta(pid: str, body: MinutaIn, user: dict = Depends(current_u
     # creadas el MISMO día natural CDMX. El prefijo (2 palabras institucionales,
     # ej. "CL4 OBRA") es configurable por el Coordinador General a nivel
     # proyecto (`project.minuta_code_prefix`) y aplica a TODAS sus minutas.
-    now_mx = now.astimezone(MX_TZ)
+    now_mx = now.astimezone(zona_proyecto(proj))
     yymmdd = now_mx.strftime("%y%m%d")
     today_str = now_mx.strftime("%Y-%m-%d")
-    day_bounds = _feed_day_bounds(today_str)
+    day_bounds = _feed_day_bounds(today_str, zona_proyecto(proj))
     count_today = 0
     if day_bounds:
         start_utc, end_utc = day_bounds
@@ -16658,7 +16771,7 @@ async def minutas_badge(pid: str, user: dict = Depends(current_user)):
     'urgentes' (vencidos o que vencen HOY). Se usa para el badge del módulo.
     """
     await ensure_project_access(user, pid)
-    today = datetime.now(timezone.utc).astimezone(MX_TZ).strftime("%Y-%m-%d")
+    today = (await hoy_de(pid)).isoformat()
     cursor = db.minutas.find({
         "project_id": pid,
         "acuerdos.responsable_id": user["id"],
@@ -21405,7 +21518,7 @@ async def analisis_periodo_excepciones(pid: str, user: dict = Depends(current_us
     modo_avance = (project or {}).get("modo_avance", "CANTIDAD")
     conceptos = await db.conceptos.find({"project_id": pid, "activo": True}).to_list(length=100000)
     conceptos_por_id = {c["id"]: c for c in conceptos}
-    hoy = datetime.now(MX_TZ).date()
+    hoy = hoy_proyecto(project)
 
     excepciones: List[ExcepcionEvmOut] = []
 
@@ -21492,7 +21605,7 @@ async def analisis_periodo_actividades(pid: str, user: dict = Depends(current_us
     await ensure_project_access(user, pid)
     project = await db.projects.find_one({"id": pid})
     modo_avance = (project or {}).get("modo_avance", "CANTIDAD")
-    hoy = datetime.now(MX_TZ).date()
+    hoy = hoy_proyecto(project)
     conceptos = await db.conceptos.find({"project_id": pid, "activo": True}).to_list(length=100000)
 
     pendientes: List[ActividadEvmOut] = []

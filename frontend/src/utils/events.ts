@@ -1,9 +1,12 @@
-// SynCo v2.0 _ Helpers de formato/agrupacion de eventos.
+// Dirac v2.0 _ Helpers de formato/agrupacion de eventos.
 // Todo el bucketing se hace en CDMX (nunca en la zona horaria del dispositivo)
-// y "semana" siempre es la semana natural (domingo-sabado), no una ventana
+// y "semana" siempre es la semana natural (lunes-domingo), no una ventana
 // rodante de 7 dias.
 import { ProjectEvent } from '@/src/api';
-import { dayjs, CDMX_TZ, getStartOfNaturalWeekCDMX } from '@/src/utils/tz';
+import { dayjs, CDMX_TZ } from '@/src/utils/tz';
+import {
+  ZonaProyecto, diaDelEvento, esDiaCompleto, esSoloFecha, hoyProyecto, semanaDe, sumarDias,
+} from '@/src/utils/fechas';
 
 export interface EventSection {
   key: string;
@@ -15,22 +18,23 @@ export interface EventSection {
  * Agrupa una lista de eventos por seccion temporal.
  *   range='upcoming' _ Hoy / Manana / Esta semana / Mas adelante
  *   range='past'     _ Esta semana / Anteriores
+ * Se compara por DIA de calendario (YYYY-MM-DD) en la zona del proyecto, no por
+ * instantes: un evento de todo el dia (minuta) no se corre de dia por la zona.
  */
-export function groupEvents(items: ProjectEvent[], range: 'upcoming' | 'past'): EventSection[] {
-  const today = dayjs().tz(CDMX_TZ).startOf('day');
-  const tomorrow = today.add(1, 'day');
-  const weekStart = getStartOfNaturalWeekCDMX();
-  const weekEnd = weekStart.add(7, 'day'); // inicio de la siguiente semana natural (exclusivo)
+export function groupEvents(items: ProjectEvent[], range: 'upcoming' | 'past', zona?: ZonaProyecto | null): EventSection[] {
+  const hoy = hoyProyecto(zona);
+  const manana = sumarDias(hoy, 1);
+  const semana = semanaDe(hoy, zona?.dia_inicio_semana);
 
   if (range === 'upcoming') {
     const buckets: Record<string, ProjectEvent[]> = {
       today: [], tomorrow: [], week: [], later: [],
     };
     for (const e of items) {
-      const d = dayjs.utc(e.start_at).tz(CDMX_TZ);
-      if (d.isSame(today, 'day')) buckets.today.push(e);
-      else if (d.isSame(tomorrow, 'day')) buckets.tomorrow.push(e);
-      else if (d.isAfter(tomorrow) && d.isBefore(weekEnd)) buckets.week.push(e);
+      const d = diaDelEvento(e, zona);
+      if (d === hoy) buckets.today.push(e);
+      else if (d === manana) buckets.tomorrow.push(e);
+      else if (d > manana && d <= semana.hasta) buckets.week.push(e);
       else buckets.later.push(e);
     }
     const out: EventSection[] = [];
@@ -40,12 +44,11 @@ export function groupEvents(items: ProjectEvent[], range: 'upcoming' | 'past'): 
     if (buckets.later.length) out.push({ key: 'later', title: 'Mas adelante', items: buckets.later });
     return out;
   }
-  // past: dentro de la semana natural actual vs anteriores.
+  // past: dentro de la semana actual vs anteriores.
   const recent: ProjectEvent[] = [];
   const older: ProjectEvent[] = [];
   for (const e of items) {
-    const d = dayjs.utc(e.start_at).tz(CDMX_TZ);
-    if (d.isSameOrAfter(weekStart)) recent.push(e);
+    if (diaDelEvento(e, zona) >= semana.desde) recent.push(e);
     else older.push(e);
   }
   const out: EventSection[] = [];
@@ -55,6 +58,7 @@ export function groupEvents(items: ProjectEvent[], range: 'upcoming' | 'past'): 
 }
 
 export function formatEventTime(e: ProjectEvent): string {
+  if (esDiaCompleto(e)) return 'Todo el día';
   const start = dayjs.utc(e.start_at).tz(CDMX_TZ);
   const time = start.format('HH:mm');
   if (!e.end_at) return time;
@@ -66,7 +70,7 @@ export function formatEventTime(e: ProjectEvent): string {
 }
 
 export function formatEventDate(iso: string): string {
-  const d = dayjs.utc(iso).tz(CDMX_TZ);
+  const d = esSoloFecha(iso) ? dayjs.utc(iso) : dayjs.utc(iso).tz(CDMX_TZ);
   if (!d.isValid()) return '_';
   return d.format('ddd DD MMM YYYY');
 }

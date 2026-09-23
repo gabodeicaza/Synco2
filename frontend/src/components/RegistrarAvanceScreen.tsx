@@ -21,6 +21,7 @@ import { dayjs, CDMX_TZ } from '@/src/utils/tz';
 import { esPorcentajeValido, esRetrocesoLocal } from '@/src/utils/avancePorcentaje';
 import { requestMediaLibraryPermission } from '@/src/utils/permissions';
 import { a11y } from '@/src/i18n';
+import { fmtFecha, hoyProyecto } from '@/src/utils/fechas';
 
 export default function RegistrarAvanceScreen({ projectId }: { projectId: string }) {
   const insets = useSafeAreaInsets();
@@ -143,7 +144,7 @@ export default function RegistrarAvanceScreen({ projectId }: { projectId: string
         <View style={{ width: 32 }} />
       </View>
       <Text style={styles.titleBar}>REGISTRAR AVANCE — {(project?.name || '').toUpperCase()}</Text>
-      <Text style={styles.subtitle}>{dayjs().tz(CDMX_TZ).format('dddd D [de] MMMM')}</Text>
+      <Text style={styles.subtitle}>{fmtFecha(hoyProyecto())}</Text>
 
       <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
         {!selected ? (

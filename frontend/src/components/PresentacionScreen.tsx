@@ -24,6 +24,7 @@ import { useAuth } from '@/src/auth-context';
 import { ROLE_COORD, ROLE_JEFE, ROLE_SUB } from '@/src/utils/roles';
 import { requestMediaLibraryPermission } from '@/src/utils/permissions';
 import { a11y } from '@/src/i18n';
+import { hoyProyecto } from '@/src/utils/fechas';
 
 const TIPO_ICON: Record<PresentacionSeccionTipo, keyof typeof Ionicons.glyphMap> = {
   portada: 'bookmark-outline',
@@ -52,9 +53,9 @@ const TIPO_ORDEN_PICKER: PresentacionSeccionTipo[] = [
   'seguimiento_estudios', 'croquis_estacion', 'informacion_particular', 'avance_grafico',
 ];
 
+// Hoy en la zona del proyecto (CDMX por defecto), no el día UTC.
 function todayIso(): string {
-  const d = new Date();
-  return d.toISOString().slice(0, 10);
+  return hoyProyecto();
 }
 
 export default function PresentacionScreen({ projectId }: { projectId: string }) {
