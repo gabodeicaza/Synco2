@@ -4863,25 +4863,22 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
         try:
             end_d = date.fromisoformat(pres["fecha"])
             start_d = end_d - timedelta(days=6)
-            conceptos = await db.conceptos.find({"project_id": pid, "activo": True}).to_list(length=100000)
-            pv_total = sum((_prorrateo_concepto_en_ventana(c, start_d, end_d) for c in conceptos), start=Decimal("0"))
-            ev_total = Decimal("0")
-            async for a in db.registros_avance.find({"project_id": pid, "fecha": {"$gte": start_d.isoformat(), "$lte": end_d.isoformat()}}):
-                if a.get("importe_ganado_congelado") is not None:
-                    ev_total += to_decimal(a["importe_ganado_congelado"])
-            ac_total = Decimal("0")
-            async for g in db.gastos_reales.find({"project_id": pid, "fecha": {"$gte": start_d.isoformat(), "$lte": end_d.isoformat()}}):
-                ac_total += to_decimal(g["monto"])
-            CUATRO_DEC = Decimal("0.0001")
-            spi = (ev_total / pv_total).quantize(CUATRO_DEC, rounding=ROUND_HALF_UP) if pv_total != 0 else None
-            cpi = (ev_total / ac_total).quantize(CUATRO_DEC, rounding=ROUND_HALF_UP) if ac_total != 0 else None
+            # Mismo servicio que el tablero EVM (calcular_analisis_evm): así ambos muestran
+            # las mismas cifras para el mismo periodo, con EV contractual y EV total.
+            r = await calcular_analisis_evm(pid, start_d.isoformat(), end_d.isoformat(), proj)
+            pron = r["pronostico"]
             analisis = {
-                "pv": round_money(pv_total), "ev": round_money(ev_total), "ac": round_money(ac_total),
-                "spi": spi, "cpi": cpi,
-                "variacion_cronograma": round_money(ev_total - pv_total), "variacion_costo": round_money(ev_total - ac_total),
+                "pv": round_money(r["pv"]), "ev": round_money(r["ev_total"]),
+                "ev_contractual": round_money(r["ev_contractual"]), "ev_total": round_money(r["ev_total"]),
+                "ac": round_money(r["ac"]), "spi": r["spi"], "cpi": r["cpi"],
+                "variacion_cronograma": round_money(r["variacion_cronograma"]),
+                "variacion_costo": round_money(r["variacion_costo"]),
+                "bac": round_money(r["bac"]),
+                "eac": round_money(pron["eac"]) if pron else None,
+                "etc": round_money(pron["etc"]) if pron else None,
+                "vac": round_money(pron["vac"]) if pron else None,
             }
-            presupuesto_total = sum((_concepto_importe_efectivo(c) for c in conceptos), start=Decimal("0"))
-            presupuesto_total_str = dec_to_str(round_money(presupuesto_total))
+            presupuesto_total_str = dec_to_str(round_money(r["bac"]))
         except Exception:
             analisis = None
 
@@ -5055,15 +5052,22 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                 add_text(slide, MARGIN_X, y, content_w, _Cm(1), "Sin datos financieros (EVM) disponibles para este periodo.",
                          size=13, color=MUTED_RGB, align=_PP_ALIGN.CENTER)
                 return
+            def _m(v):
+                return f"${dec_to_str(v)}" if v is not None else "—"
+
             kpis = [
-                ("Presupuesto total", f"${presupuesto_total_str}" if presupuesto_total_str else "—"),
-                ("Valor Planeado (PV)", f"${dec_to_str(analisis['pv'])}"),
-                ("Valor Ganado (EV)", f"${dec_to_str(analisis['ev'])}"),
-                ("Costo Real (AC)", f"${dec_to_str(analisis['ac'])}"),
+                ("Presupuesto (BAC)", f"${presupuesto_total_str}" if presupuesto_total_str else "—"),
+                ("Valor Planeado (PV)", _m(analisis['pv'])),
+                ("Valor Ganado contractual", _m(analisis['ev_contractual'])),
+                ("Valor Ganado total (con excedentes)", _m(analisis['ev_total'])),
+                ("Costo Real (AC)", _m(analisis['ac'])),
                 ("SPI", dec_to_str(analisis['spi']) if analisis['spi'] is not None else "—"),
                 ("CPI", dec_to_str(analisis['cpi']) if analisis['cpi'] is not None else "—"),
-                ("Variación cronograma", f"${dec_to_str(analisis['variacion_cronograma'])}"),
-                ("Variación costo", f"${dec_to_str(analisis['variacion_costo'])}"),
+                ("Variación cronograma", _m(analisis['variacion_cronograma'])),
+                ("Variación costo", _m(analisis['variacion_costo'])),
+                ("Estimado al terminar (EAC)", _m(analisis['eac'])),
+                ("Por gastar (ETC)", _m(analisis['etc'])),
+                ("Variación al terminar (VAC)", _m(analisis['vac'])),
             ]
             cols = 4
             card_w = int((content_w - _Cm(0.4) * (cols - 1)) / cols)
@@ -18480,6 +18484,9 @@ class ConceptoIn(BaseModel):
     importe_total_editable: Optional[str] = None
     fecha_inicio: Optional[str] = None  # "YYYY-MM-DD"
     fecha_fin: Optional[str] = None  # "YYYY-MM-DD"
+    # A-02: trabajo que NO está en el catálogo contratado. Se permite crearlo; su P.U.
+    # queda "pendiente_autorizacion" hasta que el Coordinador General lo autorice.
+    extraordinario: bool = False
 
     @field_validator("meta_cantidad", "importe_total_editable")
     @classmethod
@@ -18577,6 +18584,12 @@ class ConceptoOut(BaseModel):
     fecha_inicio: Optional[str] = None
     fecha_fin: Optional[str] = None
     precio_unitario_dinamico: Optional[str] = None
+    # --- A-02: volumen excedente y conceptos extraordinarios -------------
+    extraordinario: bool = False
+    pu_estatus: Optional[str] = None  # None = P.U. del catálogo; en extraordinarios: estatus de autorización
+    cantidad_excedente: str = "0"  # ejecutado por encima de lo contratado (en modo PORCENTAJE: puntos sobre 100)
+    importe_excedente: str = "0"
+    estatus_excedente: Optional[str] = None  # None si no hay excedente
 
 
 class RegistroAvanceIn(BaseModel):
@@ -18606,6 +18619,10 @@ class RegistroAvanceIn(BaseModel):
     fotos: List[str] = Field(default_factory=list)  # base64, mismo criterio que ReportIn.images
     photo_captions: List[str] = Field(default_factory=list)
     client_id: Optional[str] = None  # idempotencia offline, igual que ReportIn.client_id
+    # A-01: "normal" = incremento capturado en campo (siempre > 0) · "ajuste" =
+    # corrección con signo (+/-) y motivo obligatorio; queda en la bitácora.
+    tipo: Literal["normal", "ajuste"] = "normal"
+    motivo: Optional[str] = None
 
     @field_validator("cantidad_ejecutada")
     @classmethod
@@ -18682,6 +18699,9 @@ class RegistroAvanceOut(BaseModel):
     # por Excepción del dashboard EVM. Siempre False si el concepto todavía
     # no tiene fecha_inicio/fecha_fin (nada que comparar).
     fuera_de_ventana: bool = False
+    # A-01: "normal" o "ajuste" (corrección con motivo).
+    tipo: str = "normal"
+    motivo: Optional[str] = None
 
 
 async def _registro_avance_out(doc: dict) -> RegistroAvanceOut:
@@ -18859,6 +18879,23 @@ async def _concepto_ejecutado_acumulado(concepto_id: str, modo_avance: str = "CA
     return _acumulado_desde_avances(avances, modo_avance)
 
 
+async def _excedente_de_concepto_doc(doc: dict, ejecutado: str, modo_avance: str, importe: Decimal):
+    """(cantidad excedente, importe excedente, estatus) de un concepto. En modo
+    PORCENTAJE el excedente son los puntos por encima de 100%."""
+    ejec = to_decimal(ejecutado)
+    if modo_avance == "PORCENTAJE":
+        exc = max(ejec - Decimal("100"), Decimal("0"))
+        imp = importe * exc / Decimal("100")
+    else:
+        exc = excedente_de_concepto(ejec, cantidad_contratada(doc))
+        imp = exc * _concepto_precio_efectivo(doc)
+    estatus = None
+    if exc > 0:
+        ed = await db.excedentes_concepto.find_one({"concepto_id": doc["id"]}, {"estatus": 1})
+        estatus = (ed or {}).get("estatus") or "pendiente_autorizacion"
+    return exc, imp, estatus
+
+
 async def _concepto_out(doc: dict) -> ConceptoOut:
     importe = _concepto_importe_efectivo(doc)
     project = await db.projects.find_one({"id": doc["project_id"]})
@@ -18867,6 +18904,7 @@ async def _concepto_out(doc: dict) -> ConceptoOut:
     precio_dinamico = None
     if _concepto_tiene_datos_evm(doc):
         precio_dinamico = dec_to_str(compute_precio_unitario_dinamico(doc["importe_total_editable"], doc["meta_cantidad"]))
+    exc, imp_exc, estatus_exc = await _excedente_de_concepto_doc(doc, ejecutado, modo_avance, importe)
     return ConceptoOut(
         id=doc["id"],
         partida_id=doc["partida_id"],
@@ -18887,6 +18925,11 @@ async def _concepto_out(doc: dict) -> ConceptoOut:
         fecha_inicio=doc.get("fecha_inicio"),
         fecha_fin=doc.get("fecha_fin"),
         precio_unitario_dinamico=precio_dinamico,
+        extraordinario=bool(doc.get("extraordinario", False)),
+        pu_estatus=doc.get("pu_estatus"),
+        cantidad_excedente=dec_to_str(exc),
+        importe_excedente=dec_to_str(round_money(imp_exc)),
+        estatus_excedente=estatus_exc,
     )
 
 
@@ -19118,8 +19161,16 @@ async def create_concepto(body: ConceptoIn, user: dict = Depends(require_role(RO
         "importe_total_editable": body.importe_total_editable,
         "fecha_inicio": body.fecha_inicio,
         "fecha_fin": body.fecha_fin,
+        # A-02: un concepto extraordinario nace con su P.U. pendiente de autorización.
+        "extraordinario": bool(body.extraordinario),
+        "pu_estatus": "pendiente_autorizacion" if body.extraordinario else None,
     }
     await db.conceptos.insert_one(doc)
+    if body.extraordinario:
+        await _log_bitacora(
+            partida["project_id"], "concepto_extraordinario", "concepto", cid,
+            "pu_estatus", None, "pendiente_autorizacion", user,
+        )
     return await _concepto_out(doc)
 
 
@@ -20771,18 +20822,28 @@ async def create_avance(body: RegistroAvanceIn, user: dict = Depends(current_use
         if not nodo:
             raise HTTPException(404, "nodo_id inválido para este proyecto")
 
-    # PRECIO_ALZADO (modo_avance=PORCENTAJE): el residente captura el
-    # PORCENTAJE al que llegó el concepto (0-100), no una cantidad física —
-    # validación obligatoria del plan. Un valor menor al anterior es un
-    # retroceso real de obra: se PERMITE (nunca se rechaza), pero se marca
-    # para revisión en vez de guardarse como si nada — nunca en silencio.
+    # A-01: la cantidad debe ser > 0 (o un ajuste con motivo), numérica y no futura.
+    # A-02: ya NO hay tope de 100% ni de volumen contratado — lo que excede se
+    # permite y se hace visible como volumen excedente.
+    try:
+        cantidad_dec, fecha_norm, motivo_norm = validar_avance(
+            tipo=body.tipo, cantidad=body.cantidad_ejecutada, fecha=body.fecha,
+            motivo=body.motivo, hoy=hoy_proyecto(project), modo_avance=modo_avance,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+    # PRECIO_ALZADO (modo_avance=PORCENTAJE): el residente captura el PORCENTAJE al
+    # que llegó el concepto. Un valor menor al anterior es un retroceso real de
+    # obra: se PERMITE (nunca se rechaza), pero se marca para revisión.
     es_retroceso = False
     if modo_avance == "PORCENTAJE":
-        valor = to_decimal(body.cantidad_ejecutada)
-        if valor < 0 or valor > 100:
-            raise HTTPException(400, f"El avance en modo PORCENTAJE debe estar entre 0 y 100 (recibido: {body.cantidad_ejecutada})")
         anterior = to_decimal(await _concepto_ejecutado_acumulado(body.concepto_id, "PORCENTAJE"))
-        es_retroceso = valor < anterior
+        es_retroceso = cantidad_dec < anterior
+    elif body.tipo == "ajuste":
+        acumulado = to_decimal(await _concepto_ejecutado_acumulado(body.concepto_id, modo_avance))
+        if acumulado + cantidad_dec < 0:
+            raise HTTPException(400, "El ajuste dejaría el acumulado del concepto en negativo.")
 
     # Idempotencia offline: si ya existe un registro con el mismo client_id,
     # se devuelve el existente en vez de duplicar (mismo criterio que reports).
@@ -20803,12 +20864,12 @@ async def create_avance(body: RegistroAvanceIn, user: dict = Depends(current_use
         precio_congelado = compute_precio_unitario_dinamico(concepto["importe_total_editable"], concepto["meta_cantidad"])
     else:
         precio_congelado = to_decimal(concepto["precio_unitario"])
-    importe_congelado = to_decimal(body.cantidad_ejecutada) * precio_congelado
+    importe_congelado = cantidad_dec * precio_congelado
 
     fuera_de_ventana = False
     if concepto.get("fecha_inicio") and concepto.get("fecha_fin"):
         try:
-            fecha_avance = date.fromisoformat(body.fecha)
+            fecha_avance = date.fromisoformat(fecha_norm)
             fuera_de_ventana = not (
                 date.fromisoformat(concepto["fecha_inicio"]) <= fecha_avance <= date.fromisoformat(concepto["fecha_fin"])
             )
@@ -20820,8 +20881,10 @@ async def create_avance(body: RegistroAvanceIn, user: dict = Depends(current_use
         "id": aid,
         "concepto_id": body.concepto_id,
         "project_id": concepto["project_id"],
-        "fecha": body.fecha,
-        "cantidad_ejecutada": body.cantidad_ejecutada,
+        "fecha": fecha_norm,
+        "cantidad_ejecutada": body.cantidad_ejecutada.strip(),
+        "tipo": body.tipo,
+        "motivo": motivo_norm,
         "nodo_id": nodo_id_efectivo,
         "reporte_id": body.reporte_id,
         "fotos": body.fotos,
@@ -20843,6 +20906,11 @@ async def create_avance(body: RegistroAvanceIn, user: dict = Depends(current_use
         "fuera_de_ventana": fuera_de_ventana,
     }
     await db.registros_avance.insert_one(doc)
+    if body.tipo == "ajuste":
+        await _log_bitacora(
+            concepto["project_id"], "ajuste_avance", "registro_avance", aid,
+            "cantidad_ejecutada", None, f"{body.cantidad_ejecutada.strip()} · motivo: {motivo_norm}", user,
+        )
     return await _registro_avance_out(doc)
 
 
@@ -20893,11 +20961,24 @@ async def update_avance(avance_id: str, body: RegistroAvancePatch, user: dict = 
     upd: dict = {"editado_en": datetime.now(timezone.utc)}
     if body.cantidad_ejecutada is not None:
         project = await db.projects.find_one({"id": avance["project_id"]})
-        if (project or {}).get("modo_avance") == "PORCENTAJE":
-            valor = to_decimal(body.cantidad_ejecutada)
-            if valor < 0 or valor > 100:
-                raise HTTPException(400, f"El avance en modo PORCENTAJE debe estar entre 0 y 100 (recibido: {body.cantidad_ejecutada})")
-        upd["cantidad_ejecutada"] = body.cantidad_ejecutada
+        modo_edit = (project or {}).get("modo_avance", "CANTIDAD")
+        tipo_reg = avance.get("tipo") or "normal"
+        try:
+            nueva_q, _f, _m = validar_avance(
+                tipo=tipo_reg, cantidad=body.cantidad_ejecutada, fecha=hoy_proyecto(project).isoformat(),
+                motivo=avance.get("motivo"), hoy=hoy_proyecto(project), modo_avance=modo_edit,
+            )
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        if tipo_reg == "ajuste" and modo_edit != "PORCENTAJE":
+            acumulado = to_decimal(await _concepto_ejecutado_acumulado(avance["concepto_id"], modo_edit))
+            if acumulado - to_decimal(avance["cantidad_ejecutada"]) + nueva_q < 0:
+                raise HTTPException(400, "El ajuste dejaría el acumulado del concepto en negativo.")
+        upd["cantidad_ejecutada"] = body.cantidad_ejecutada.strip()
+        # El importe congelado se recalcula con el MISMO precio congelado: antes, editar la
+        # cantidad dejaba el valor ganado con el importe anterior.
+        if avance.get("precio_unitario_congelado") is not None:
+            upd["importe_ganado_congelado"] = dec_to_str(nueva_q * to_decimal(avance["precio_unitario_congelado"]))
     if body.fotos is not None:
         upd["fotos"] = body.fotos
     if body.photo_captions is not None:
@@ -20907,6 +20988,11 @@ async def update_avance(avance_id: str, body: RegistroAvancePatch, user: dict = 
         await _log_bitacora(
             avance["project_id"], "correccion_linea_base", "registro_avance", avance_id,
             "cantidad_ejecutada", avance.get("cantidad_ejecutada"), body.cantidad_ejecutada, user,
+        )
+    if avance.get("tipo") == "ajuste" and body.cantidad_ejecutada is not None:
+        await _log_bitacora(
+            avance["project_id"], "ajuste_avance_editado", "registro_avance", avance_id,
+            "cantidad_ejecutada", avance.get("cantidad_ejecutada"), body.cantidad_ejecutada.strip(), user,
         )
     updated = await db.registros_avance.find_one({"id": avance_id})
     return await _registro_avance_out(updated)
@@ -21216,6 +21302,7 @@ async def import_avances(
     errores: List[dict] = []
     retrocesos = 0
     ahora = datetime.now(timezone.utc)
+    hoy_import = hoy_proyecto(project)
     for i, row in enumerate(data_rows):
         fila_num = i + 2  # +1 por encabezado (fila 1), +1 porque Excel es 1-based
         clave_raw = row[idx_clave] if idx_clave < len(row) else None
@@ -21241,14 +21328,17 @@ async def import_avances(
             errores.append({"fila": fila_num, "motivo": str(e)})
             continue
 
+        try:
+            _q, fecha_iso, _m = validar_avance(
+                tipo="normal", cantidad=cantidad, fecha=fecha_iso, motivo=None,
+                hoy=hoy_import, modo_avance=modo_avance,
+            )
+        except ValueError as e:
+            errores.append({"fila": fila_num, "motivo": str(e)})
+            continue
+
         es_retroceso = False
         if modo_avance == "PORCENTAJE":
-            if cantidad < 0 or cantidad > 100:
-                errores.append({
-                    "fila": fila_num,
-                    "motivo": f"El avance en modo PORCENTAJE debe estar entre 0 y 100 (recibido: {cantidad})",
-                })
-                continue
             anterior = ultimo_valor.get(concepto["id"], to_decimal("0"))
             es_retroceso = cantidad < anterior
             if es_retroceso:
@@ -21288,6 +21378,280 @@ async def import_avances(
         errores=[RegistroAvanceImportErrorOut(**e) for e in errores[:_REGISTRO_AVANCE_IMPORT_MAX_ERRORES]],
         errores_truncados=truncados,
     )
+
+
+# === A-01 Validación de avances · A-02 Volumen excedente y sobrecosto ==========
+# Decisión de negocio: en obra es normal ejecutar más volumen o gastar más de lo
+# presupuestado, así que NO se bloquea. Se permite, se separa (volumen excedente,
+# EV contractual vs EV total) y se hace visible (Lista por excepción, EAC/ETC/VAC).
+# Lo que sí se rechaza: cantidades <= 0, texto y fechas futuras. Una corrección se
+# captura como "ajuste" con motivo obligatorio y queda en la bitácora.
+MOTIVO_AJUSTE_MIN_CARACTERES = 5
+ESTATUS_AUTORIZACION = ("pendiente_autorizacion", "autorizado", "rechazado")
+EstatusAutorizacion = Literal["pendiente_autorizacion", "autorizado", "rechazado"]
+
+
+def validar_avance(
+    *, tipo: str, cantidad: Any, fecha: str, motivo: Optional[str], hoy: date, modo_avance: str,
+) -> Tuple[Decimal, str, Optional[str]]:
+    """Valida un avance ANTES de guardarlo. Devuelve (cantidad, fecha, motivo limpio).
+    Lanza ValueError con un mensaje legible en es-MX (el handler lo vuelve 400)."""
+    try:
+        q = to_decimal(cantidad if cantidad is not None else "")
+    except (ValueError, TypeError, InvalidOperation):
+        raise ValueError("La cantidad debe ser un número.")
+    if not q.is_finite():
+        raise ValueError("La cantidad debe ser un número.")
+    try:
+        f = date.fromisoformat((fecha or "").strip())
+    except ValueError:
+        raise ValueError("La fecha debe tener el formato AAAA-MM-DD.")
+    if f > hoy:
+        raise ValueError("La fecha del avance no puede ser futura.")
+    motivo_limpio = (motivo or "").strip() or None
+    if tipo == "ajuste":
+        if modo_avance == "PORCENTAJE":
+            raise ValueError(
+                "En proyectos que capturan porcentaje no se usan ajustes: captura el porcentaje correcto."
+            )
+        if q == 0:
+            raise ValueError("El ajuste no puede ser cero.")
+        if not motivo_limpio or len(motivo_limpio) < MOTIVO_AJUSTE_MIN_CARACTERES:
+            raise ValueError(
+                f"El motivo del ajuste es obligatorio (mínimo {MOTIVO_AJUSTE_MIN_CARACTERES} caracteres)."
+            )
+    else:
+        if q <= 0:
+            raise ValueError(
+                "La cantidad debe ser mayor que cero. Para corregir un registro captura un ajuste con su motivo."
+            )
+        motivo_limpio = None
+    return q, f.isoformat(), motivo_limpio
+
+
+def cantidad_contratada(concepto: dict) -> Decimal:
+    """Volumen contratado del concepto: la meta si ya tiene datos EVM, si no la cantidad."""
+    if _concepto_tiene_datos_evm(concepto):
+        return to_decimal(concepto["meta_cantidad"])
+    return to_decimal(concepto.get("cantidad") or "0")
+
+
+def _orden_avance(a: dict):
+    creado = a.get("creado_en")
+    if isinstance(creado, datetime):
+        creado = creado.replace(tzinfo=None)
+    return (a.get("fecha") or "", creado or datetime.min)
+
+
+def repartir_avances(avances: List[dict], contratada: Decimal) -> Dict[str, Tuple[Decimal, Decimal]]:
+    """Reproduce los avances de UN concepto en orden cronológico y separa cada uno en
+    (cantidad dentro de lo contratado, cantidad excedente). Se calcula al leer, no se
+    guarda: así nunca se desincroniza si se corrige o se borra un avance."""
+    acum = Decimal("0")
+    salida: Dict[str, Tuple[Decimal, Decimal]] = {}
+    tope = max(contratada, Decimal("0"))
+    for a in sorted(avances, key=_orden_avance):
+        q = to_decimal(a["cantidad_ejecutada"])
+        nuevo = acum + q
+        dentro_antes = min(max(acum, Decimal("0")), tope)
+        dentro_despues = min(max(nuevo, Decimal("0")), tope)
+        dentro = dentro_despues - dentro_antes
+        salida[a["id"]] = (dentro, q - dentro)
+        acum = nuevo
+    return salida
+
+
+def excedente_de_concepto(ejecutado: Decimal, contratada: Decimal) -> Decimal:
+    """Volumen excedente = lo ejecutado por encima de lo contratado (nunca negativo)."""
+    return max(ejecutado - max(contratada, Decimal("0")), Decimal("0"))
+
+
+def ev_de_registro(a: dict, dentro: Decimal) -> Tuple[Decimal, Decimal]:
+    """(EV contractual, EV total) de un registro, con su importe congelado."""
+    if a.get("importe_ganado_congelado") is None:
+        return Decimal("0"), Decimal("0")
+    total = to_decimal(a["importe_ganado_congelado"])
+    q = to_decimal(a["cantidad_ejecutada"])
+    if q == 0:
+        return Decimal("0"), total
+    return total * dentro / q, total
+
+
+def calcular_ev(
+    avances: List[dict], conceptos_por_id: Dict[str, dict], modo_avance: str,
+    desde: Optional[str] = None, hasta: Optional[str] = None,
+) -> Tuple[Decimal, Decimal]:
+    """(EV contractual, EV total) de los avances con fecha en [desde, hasta].
+    El reparto se hace sobre TODO el historial del concepto (no solo la ventana), porque
+    un avance es excedente según lo que ya se llevaba acumulado. En modo PORCENTAJE el
+    avance reportado es un estado, no un incremento: no se separa (contractual = total)."""
+    por_concepto: Dict[str, List[dict]] = {}
+    for a in avances:
+        por_concepto.setdefault(a["concepto_id"], []).append(a)
+    ev_contractual = Decimal("0")
+    ev_total = Decimal("0")
+    for cid, lista in por_concepto.items():
+        reparto = None
+        if modo_avance != "PORCENTAJE" and cid in conceptos_por_id:
+            reparto = repartir_avances(lista, cantidad_contratada(conceptos_por_id[cid]))
+        for a in lista:
+            f = a.get("fecha") or ""
+            if (desde and f < desde) or (hasta and f > hasta):
+                continue
+            if reparto is None:
+                if a.get("importe_ganado_congelado") is not None:
+                    v = to_decimal(a["importe_ganado_congelado"])
+                    ev_contractual += v
+                    ev_total += v
+                continue
+            c, t = ev_de_registro(a, reparto[a["id"]][0])
+            ev_contractual += c
+            ev_total += t
+    return ev_contractual, ev_total
+
+
+def calcular_pronostico(bac: Decimal, ev_acum: Decimal, ac_acum: Decimal) -> Optional[Dict[str, Decimal]]:
+    """EAC = BAC ÷ CPI · ETC = EAC − AC · VAC = BAC − EAC, con CPI = EV total ÷ AC.
+    None mientras no se pueda calcular (sin gasto real, o sin valor ganado)."""
+    if ac_acum <= 0 or ev_acum <= 0:
+        return None
+    cpi = ev_acum / ac_acum
+    eac = bac / cpi
+    return {"eac": eac, "etc": eac - ac_acum, "vac": bac - eac}
+
+
+class ExcedenteOut(BaseModel):
+    concepto_id: str
+    clave: str
+    descripcion: str
+    unidad: str
+    extraordinario: bool = False
+    cantidad_contratada: str
+    cantidad_ejecutada: str
+    cantidad_excedente: str
+    importe_excedente: str
+    estatus: str
+    referencia: Optional[str] = None
+    comentario: Optional[str] = None
+    autorizado_por_nombre: Optional[str] = None
+    actualizado_en: Optional[datetime] = None
+
+
+class ExcedentePatch(BaseModel):
+    estatus: EstatusAutorizacion
+    referencia: Optional[str] = None  # convenio modificatorio u orden de cambio
+    comentario: Optional[str] = None
+
+
+async def _excedentes_del_proyecto(pid: str, project: dict) -> List[ExcedenteOut]:
+    modo = (project or {}).get("modo_avance", "CANTIDAD")
+    conceptos = await db.conceptos.find({"project_id": pid, "activo": True}).to_list(length=100000)
+    avances_por_concepto: Dict[str, List[dict]] = {}
+    async for a in db.registros_avance.find({"project_id": pid}):
+        avances_por_concepto.setdefault(a["concepto_id"], []).append(a)
+    docs_estatus = {d["concepto_id"]: d async for d in db.excedentes_concepto.find({"project_id": pid})}
+    salida: List[ExcedenteOut] = []
+    for c in conceptos:
+        ejecutado = _acumulado_desde_avances(avances_por_concepto.get(c["id"], []), modo)
+        importe = _concepto_importe_efectivo(c)
+        if modo == "PORCENTAJE":
+            exc = max(to_decimal(ejecutado) - Decimal("100"), Decimal("0"))
+            imp = importe * exc / Decimal("100")
+            contratada = Decimal("100")
+        else:
+            contratada = cantidad_contratada(c)
+            exc = excedente_de_concepto(to_decimal(ejecutado), contratada)
+            imp = exc * _concepto_precio_efectivo(c)
+        if exc <= 0:
+            continue
+        ed = docs_estatus.get(c["id"]) or {}
+        salida.append(ExcedenteOut(
+            concepto_id=c["id"], clave=c["clave"], descripcion=c["descripcion"], unidad=c.get("unidad", ""),
+            extraordinario=bool(c.get("extraordinario", False)),
+            cantidad_contratada=dec_to_str(contratada), cantidad_ejecutada=ejecutado,
+            cantidad_excedente=dec_to_str(exc), importe_excedente=dec_to_str(round_money(imp)),
+            estatus=ed.get("estatus") or "pendiente_autorizacion",
+            referencia=ed.get("referencia"), comentario=ed.get("comentario"),
+            autorizado_por_nombre=ed.get("autorizado_por_nombre"), actualizado_en=ed.get("actualizado_en"),
+        ))
+    return sort_by_clave(salida, clave_getter=lambda e: e.clave)
+
+
+@api.get("/projects/{pid}/excedentes", response_model=List[ExcedenteOut])
+async def list_excedentes(pid: str, user: dict = Depends(current_user)):
+    """Volumen excedente por concepto (ejecutado > contratado) con su estatus de
+    autorización. Es informativo: nunca bloquea la captura de avances."""
+    project = await ensure_project_access(user, pid)
+    return await _excedentes_del_proyecto(pid, project)
+
+
+@api.patch("/projects/{pid}/excedentes/{concepto_id}", response_model=ExcedenteOut)
+async def set_excedente_estatus(
+    pid: str, concepto_id: str, body: ExcedentePatch, user: dict = Depends(require_role(ROLE_COORD)),
+):
+    """Solo el Coordinador General autoriza o rechaza un volumen excedente (vía
+    convenio modificatorio u orden de cambio, cuya referencia es obligatoria al
+    autorizar). Queda en la bitácora."""
+    project = await ensure_project_access(user, pid)
+    excedentes = {e.concepto_id: e for e in await _excedentes_del_proyecto(pid, project)}
+    actual = excedentes.get(concepto_id)
+    if not actual:
+        raise HTTPException(404, "Este concepto no tiene volumen excedente")
+    referencia = (body.referencia or "").strip() or None
+    if body.estatus == "autorizado" and not referencia:
+        raise HTTPException(400, "Para autorizar indica el convenio modificatorio u orden de cambio.")
+    ahora = datetime.now(timezone.utc)
+    await db.excedentes_concepto.update_one(
+        {"project_id": pid, "concepto_id": concepto_id},
+        {"$set": {
+            "estatus": body.estatus, "referencia": referencia,
+            "comentario": (body.comentario or "").strip() or None,
+            "autorizado_por": user["id"], "autorizado_por_nombre": user.get("name"), "actualizado_en": ahora,
+        }, "$setOnInsert": {"id": str(uuid.uuid4())}},
+        upsert=True,
+    )
+    await _log_bitacora(pid, "excedente_estatus", "concepto", concepto_id, "estatus", actual.estatus, body.estatus, user)
+    nuevo = {e.concepto_id: e for e in await _excedentes_del_proyecto(pid, project)}
+    return nuevo[concepto_id]
+
+
+class PuExtraordinarioPatch(BaseModel):
+    pu_estatus: EstatusAutorizacion
+    referencia: Optional[str] = None
+    precio_unitario: Optional[str] = None  # al autorizar se puede fijar el P.U. definitivo
+
+    @field_validator("precio_unitario")
+    @classmethod
+    def _v_pu(cls, v):
+        if v is not None and to_decimal(v) <= 0:
+            raise ValueError("El precio unitario debe ser mayor que cero")
+        return v
+
+
+@api.patch("/conceptos/{concepto_id}/pu_estatus", response_model=ConceptoOut)
+async def set_pu_extraordinario(
+    concepto_id: str, body: PuExtraordinarioPatch, user: dict = Depends(require_role(ROLE_COORD)),
+):
+    """Autoriza o rechaza el P.U. de un concepto EXTRAORDINARIO (trabajo que no está
+    en el catálogo). Solo el Coordinador General; la referencia es obligatoria al autorizar."""
+    concepto = await db.conceptos.find_one({"id": concepto_id})
+    if not concepto:
+        raise HTTPException(404, "Concepto no existe")
+    await ensure_project_access(user, concepto["project_id"])
+    if not concepto.get("extraordinario"):
+        raise HTTPException(400, "Solo los conceptos extraordinarios tienen P.U. por autorizar")
+    referencia = (body.referencia or "").strip() or None
+    if body.pu_estatus == "autorizado" and not referencia:
+        raise HTTPException(400, "Para autorizar indica el convenio modificatorio u orden de cambio.")
+    upd: dict = {"pu_estatus": body.pu_estatus, "pu_referencia": referencia}
+    if body.precio_unitario is not None:
+        upd["precio_unitario"] = body.precio_unitario
+    await db.conceptos.update_one({"id": concepto_id}, {"$set": upd})
+    await _log_bitacora(
+        concepto["project_id"], "pu_extraordinario", "concepto", concepto_id,
+        "pu_estatus", concepto.get("pu_estatus"), body.pu_estatus, user,
+    )
+    return await _concepto_out(await db.conceptos.find_one({"id": concepto_id}))
 
 
 # === Etapa EVM: Análisis de Periodos (Valor Ganado) ==========================
@@ -21372,20 +21736,70 @@ class AnalisisPeriodoOut(BaseModel):
     start: str
     end: str
     pv: str  # Valor Planeado
-    ev: str  # Valor Ganado
+    ev: str  # Valor Ganado TOTAL (alias de ev_total: compatibilidad con clientes viejos)
     ac: str  # Costo Real
-    spi: Optional[str] = None  # EV / PV — Schedule Performance Index
-    cpi: Optional[str] = None  # EV / AC — Cost Performance Index
-    variacion_cronograma: str  # EV - PV
-    variacion_costo: str       # EV - AC
+    spi: Optional[str] = None  # EV contractual / PV — Schedule Performance Index
+    cpi: Optional[str] = None  # EV total / AC — Cost Performance Index
+    variacion_cronograma: str  # EV contractual - PV
+    variacion_costo: str       # EV total - AC
+    # --- A-02: dos cifras de valor ganado + pronóstico de costo -----------
+    ev_contractual: str = "0.00"  # topado al volumen contratado
+    ev_total: str = "0.00"        # incluye el volumen excedente
+    bac: str = "0.00"             # presupuesto contratado
+    ev_acumulado: str = "0.00"    # EV total del proyecto a la fecha de corte
+    ac_acumulado: str = "0.00"    # AC del proyecto a la fecha de corte
+    eac: Optional[str] = None     # BAC / CPI  (None mientras AC = 0)
+    etc: Optional[str] = None     # EAC - AC
+    vac: Optional[str] = None     # BAC - EAC (negativo = sobrecosto proyectado)
+
+
+async def calcular_analisis_evm(pid: str, start: str, end: str, project: Optional[dict] = None) -> Dict[str, Any]:
+    """ÚNICO servicio de análisis EVM. Lo usan el tablero (`analisis_periodo`) y la
+    Presentación (sección Financiero), así ambos muestran lo mismo para el mismo periodo.
+    Devuelve Decimales sin redondear; quien lo muestra redondea."""
+    ventana_ini, ventana_fin = date.fromisoformat(start), date.fromisoformat(end)
+    if ventana_fin < ventana_ini:
+        raise ValueError("end no puede ser anterior a start")
+    if project is None:
+        project = await db.projects.find_one({"id": pid}) or {}
+    modo = project.get("modo_avance", "CANTIDAD")
+    conceptos = await db.conceptos.find({"project_id": pid, "activo": True}).to_list(length=100000)
+    conceptos_por_id = {c["id"]: c for c in conceptos}
+    pv = sum((_prorrateo_concepto_en_ventana(c, ventana_ini, ventana_fin) for c in conceptos), start=Decimal("0"))
+    avances = await db.registros_avance.find({"project_id": pid}).to_list(length=1000000)
+    ev_contractual, ev_total = calcular_ev(avances, conceptos_por_id, modo, start, end)
+    _, ev_acum = calcular_ev(avances, conceptos_por_id, modo, None, end)
+    ac = Decimal("0")
+    ac_acum = Decimal("0")
+    async for g in db.gastos_reales.find({"project_id": pid, "fecha": {"$lte": end}}):
+        m = to_decimal(g["monto"])
+        ac_acum += m
+        if g["fecha"] >= start:
+            ac += m
+    bac = sum((_concepto_importe_efectivo(c) for c in conceptos), start=Decimal("0"))
+    cuatro = Decimal("0.0001")
+    spi = (ev_contractual / pv).quantize(cuatro, rounding=ROUND_HALF_UP) if pv != 0 else None
+    cpi = (ev_total / ac).quantize(cuatro, rounding=ROUND_HALF_UP) if ac != 0 else None
+    return {
+        "pv": pv, "ev_contractual": ev_contractual, "ev_total": ev_total, "ac": ac,
+        "spi": spi, "cpi": cpi,
+        "variacion_cronograma": ev_contractual - pv, "variacion_costo": ev_total - ac,
+        "bac": bac, "ev_acumulado": ev_acum, "ac_acumulado": ac_acum,
+        "pronostico": calcular_pronostico(bac, ev_acum, ac_acum),
+    }
 
 
 class ExcepcionEvmOut(BaseModel):
     concepto_id: str
     clave: str
     descripcion: str
-    tipo: Literal["fuera_de_ventana", "sobre_meta", "atrasado"]
+    tipo: Literal["fuera_de_ventana", "sobre_meta", "atrasado", "excedente_volumen", "sobrecosto"]
     detalle: str
+    # A-02: los excedentes y el sobrecosto son alertas INFORMATIVAS (nunca bloquean) y
+    # llevan la cantidad y el importe.
+    severidad: Literal["alerta", "informativa"] = "alerta"
+    cantidad: Optional[str] = None
+    importe: Optional[str] = None
 
 
 class CurvaSOut(BaseModel):
@@ -21402,48 +21816,33 @@ async def analisis_periodo(pid: str, start: str, end: str, user: dict = Depends(
     cada RegistroAvance (nunca se recalcula con el precio de hoy — ver
     create_avance), AC desde gastos_reales (captura manual de
     administración)."""
-    await ensure_project_access(user, pid)
+    project = await ensure_project_access(user, pid)
     try:
-        ventana_ini, ventana_fin = date.fromisoformat(start), date.fromisoformat(end)
+        date.fromisoformat(start), date.fromisoformat(end)
     except ValueError:
         raise HTTPException(400, "start/end deben ser YYYY-MM-DD")
-    if ventana_fin < ventana_ini:
+    try:
+        r = await calcular_analisis_evm(pid, start, end, project)
+    except ValueError:
         raise HTTPException(400, "end no puede ser anterior a start")
-
-    conceptos = await db.conceptos.find({"project_id": pid, "activo": True}).to_list(length=100000)
-    pv_total = sum(
-        (_prorrateo_concepto_en_ventana(c, ventana_ini, ventana_fin) for c in conceptos),
-        start=Decimal("0"),
-    )
-
-    ev_total = Decimal("0")
-    async for a in db.registros_avance.find({"project_id": pid, "fecha": {"$gte": start, "$lte": end}}):
-        if a.get("importe_ganado_congelado") is not None:
-            ev_total += to_decimal(a["importe_ganado_congelado"])
-        # Avances capturados ANTES de la congelación (sin
-        # importe_ganado_congelado) simplemente no aportan EV — no hay
-        # precio histórico confiable que inventarles.
-
-    ac_total = Decimal("0")
-    async for g in db.gastos_reales.find({"project_id": pid, "fecha": {"$gte": start, "$lte": end}}):
-        ac_total += to_decimal(g["monto"])
-
-    # SPI/CPI son índices de desempeño, no dinero — se muestran a 4
-    # decimales (Decimal.quantize explícito con redondeo HALF_UP, nunca la
-    # división cruda: ev_total/pv_total sin redondear puede arrastrar ~28
-    # dígitos significativos del contexto de Decimal, inservible para UI).
-    CUATRO_DECIMALES = Decimal("0.0001")
-    spi = dec_to_str((ev_total / pv_total).quantize(CUATRO_DECIMALES, rounding=ROUND_HALF_UP)) if pv_total != 0 else None
-    cpi = dec_to_str((ev_total / ac_total).quantize(CUATRO_DECIMALES, rounding=ROUND_HALF_UP)) if ac_total != 0 else None
-
+    pron = r["pronostico"]
     return AnalisisPeriodoOut(
         project_id=pid, start=start, end=end,
-        pv=dec_to_str(round_money(pv_total)),
-        ev=dec_to_str(round_money(ev_total)),
-        ac=dec_to_str(round_money(ac_total)),
-        spi=spi, cpi=cpi,
-        variacion_cronograma=dec_to_str(round_money(ev_total - pv_total)),
-        variacion_costo=dec_to_str(round_money(ev_total - ac_total)),
+        pv=dec_to_str(round_money(r["pv"])),
+        ev=dec_to_str(round_money(r["ev_total"])),
+        ac=dec_to_str(round_money(r["ac"])),
+        spi=dec_to_str(r["spi"]) if r["spi"] is not None else None,
+        cpi=dec_to_str(r["cpi"]) if r["cpi"] is not None else None,
+        variacion_cronograma=dec_to_str(round_money(r["variacion_cronograma"])),
+        variacion_costo=dec_to_str(round_money(r["variacion_costo"])),
+        ev_contractual=dec_to_str(round_money(r["ev_contractual"])),
+        ev_total=dec_to_str(round_money(r["ev_total"])),
+        bac=dec_to_str(round_money(r["bac"])),
+        ev_acumulado=dec_to_str(round_money(r["ev_acumulado"])),
+        ac_acumulado=dec_to_str(round_money(r["ac_acumulado"])),
+        eac=dec_to_str(round_money(pron["eac"])) if pron else None,
+        etc=dec_to_str(round_money(pron["etc"])) if pron else None,
+        vac=dec_to_str(round_money(pron["vac"])) if pron else None,
     )
 
 
@@ -21535,22 +21934,40 @@ async def analisis_periodo_excepciones(pid: str, user: dict = Depends(current_us
             detalle=f"Tiene avances capturados fuera de su ventana {c.get('fecha_inicio')} — {c.get('fecha_fin')}",
         ))
 
-    # El chequeo de sobre-meta/atrasado es sobre cantidad física — en modo
-    # PORCENTAJE el "ejecutado" ya es un 0-100 (estado reportado), no una
-    # cantidad comparable contra meta_cantidad.
+    # A-02: volumen excedente (ejecutado > contratado): informativo, con cantidad e importe.
+    etiqueta_estatus = {"pendiente_autorizacion": "pendiente de autorización", "autorizado": "autorizado", "rechazado": "rechazado"}
+    for e in await _excedentes_del_proyecto(pid, project or {}):
+        excepciones.append(ExcepcionEvmOut(
+            concepto_id=e.concepto_id, clave=e.clave, descripcion=e.descripcion,
+            tipo="excedente_volumen", severidad="informativa",
+            cantidad=e.cantidad_excedente, importe=e.importe_excedente,
+            detalle=(
+                f"Ejecutado {e.cantidad_ejecutada} de {e.cantidad_contratada} contratados: excede "
+                f"{e.cantidad_excedente} {e.unidad} (${e.importe_excedente}). Estatus: {etiqueta_estatus.get(e.estatus, e.estatus)}."
+            ),
+        ))
+
+    # A-02: sobrecosto (costo real acumulado > presupuesto contratado): informativo.
+    bac = sum((_concepto_importe_efectivo(c) for c in conceptos), start=Decimal("0"))
+    ac_total = Decimal("0")
+    async for g in db.gastos_reales.find({"project_id": pid}):
+        ac_total += to_decimal(g["monto"])
+    if bac > 0 and ac_total > bac:
+        excepciones.append(ExcepcionEvmOut(
+            concepto_id="", clave="", descripcion="Proyecto completo",
+            tipo="sobrecosto", severidad="informativa", importe=dec_to_str(round_money(ac_total - bac)),
+            detalle=f"El costo real (${dec_to_str(round_money(ac_total))}) supera el presupuesto (${dec_to_str(round_money(bac))}).",
+        ))
+
+    # El chequeo de "atrasado" es sobre cantidad física — en modo PORCENTAJE el
+    # "ejecutado" ya es un 0-100 (estado reportado), no una cantidad comparable con la meta.
     if modo_avance != "PORCENTAJE":
         for c in conceptos:
             if not _concepto_tiene_datos_evm(c):
                 continue
             ejecutado = to_decimal(await _concepto_ejecutado_acumulado(c["id"], modo_avance))
             meta = to_decimal(c["meta_cantidad"])
-            if ejecutado > meta:
-                excepciones.append(ExcepcionEvmOut(
-                    concepto_id=c["id"], clave=c["clave"], descripcion=c["descripcion"],
-                    tipo="sobre_meta",
-                    detalle=f"Ejecutado {dec_to_str(ejecutado)} supera la meta {dec_to_str(meta)}",
-                ))
-            elif c.get("fecha_fin") and date.fromisoformat(c["fecha_fin"]) < hoy and ejecutado < meta:
+            if c.get("fecha_fin") and date.fromisoformat(c["fecha_fin"]) < hoy and ejecutado < meta:
                 excepciones.append(ExcepcionEvmOut(
                     concepto_id=c["id"], clave=c["clave"], descripcion=c["descripcion"],
                     tipo="atrasado",
@@ -21564,7 +21981,7 @@ async def analisis_periodo_excepciones(pid: str, user: dict = Depends(current_us
     # al final, es solo informativo) y dentro de cada grupo por clave, con
     # el mismo comparador numérico jerárquico que usa el resto del catálogo
     # (ver sort_by_clave) para que "C-2" no quede después de "C-10".
-    orden_tipo = {"atrasado": 0, "sobre_meta": 1, "fuera_de_ventana": 2}
+    orden_tipo = {"atrasado": 0, "sobre_meta": 1, "excedente_volumen": 2, "sobrecosto": 3, "fuera_de_ventana": 4}
     excepciones = sorted(
         sort_by_clave(excepciones, clave_getter=lambda e: e.clave),
         key=lambda e: orden_tipo[e.tipo],
