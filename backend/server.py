@@ -16,6 +16,8 @@ import uuid
 import shutil
 import logging
 import secrets
+import hashlib
+import smtplib
 import asyncio
 import unicodedata
 from pathlib import Path
@@ -1133,6 +1135,8 @@ async def startup_event():
     await db.password_reset_requests.create_index("id", unique=True)
     await db.password_reset_requests.create_index([("status", 1), ("created_at", 1)])
     await db.password_reset_requests.create_index("user_id")
+    await db.password_reset_tokens.create_index("token_hash", unique=True)
+    await db.password_reset_tokens.create_index([("user_id", 1), ("created_at", 1)])
 
     # --- Seed de plantillas de reporte estructurado (idempotente por `code`) ---
     try:
@@ -1473,6 +1477,187 @@ async def delete_account_page():
     return DELETE_ACCOUNT_HTML
 
 
+# === RECUPERAR CONTRASEÑA POR CORREO (T-08) ================================
+# La persona pide un enlace; llega por correo, sirve UNA sola vez y vence a los
+# 30 minutos. Solo se guarda el hash del token (nunca el token). Si el servidor
+# de correo no está configurado (SMTP_HOST vacío), el flujo cae al respaldo
+# administrativo anterior: queda una solicitud para el Coordinador General.
+RESET_TOKEN_TTL_MIN = 30
+RESET_MAX_POR_HORA = 3
+PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "https://apm-app.mx").rstrip("/")
+MSG_RESET_CORREO = (
+    "Si el correo está registrado, te enviamos un enlace para crear una contraseña nueva. "
+    f"El enlace sirve una sola vez y vence en {RESET_TOKEN_TTL_MIN} minutos."
+)
+MSG_RESET_RESPALDO = (
+    "Si el correo está registrado, tu Coordinador General verá la solicitud y te compartirá una contraseña nueva."
+)
+
+
+def smtp_configurado() -> bool:
+    return bool(os.environ.get("SMTP_HOST"))
+
+
+def hash_reset_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def construir_correo_reset(nombre: str, enlace: str) -> Tuple[str, str]:
+    """(asunto, cuerpo en texto plano) del correo de recuperación."""
+    asunto = "Restablece tu contraseña de Dirac"
+    cuerpo = (
+        f"Hola {nombre},\n\n"
+        "Recibimos una solicitud para crear una contraseña nueva en Dirac. "
+        "Abre este enlace para elegirla:\n\n"
+        f"{enlace}\n\n"
+        f"El enlace sirve una sola vez y vence en {RESET_TOKEN_TTL_MIN} minutos. "
+        "Si no lo pediste, ignora este correo: tu contraseña actual no cambia.\n\n"
+        "Equipo Dirac"
+    )
+    return asunto, cuerpo
+
+
+def _enviar_smtp_sync(destino: str, asunto: str, cuerpo: str) -> None:
+    from email.message import EmailMessage
+
+    host = os.environ["SMTP_HOST"]
+    port = int(os.environ.get("SMTP_PORT", "587"))
+    remitente = os.environ.get("SMTP_FROM") or os.environ.get("SMTP_USER") or SUPPORT_EMAIL
+    msg = EmailMessage()
+    msg["Subject"] = asunto
+    msg["From"] = remitente
+    msg["To"] = destino
+    msg.set_content(cuerpo)
+    if port == 465:
+        server = smtplib.SMTP_SSL(host, port, timeout=15)
+    else:
+        server = smtplib.SMTP(host, port, timeout=15)
+        if os.environ.get("SMTP_STARTTLS", "1") != "0":
+            server.starttls()
+    try:
+        if os.environ.get("SMTP_USER"):
+            server.login(os.environ["SMTP_USER"], os.environ.get("SMTP_PASSWORD", ""))
+        server.send_message(msg)
+    finally:
+        server.quit()
+
+
+async def enviar_correo(destino: str, asunto: str, cuerpo: str) -> bool:
+    """True si el servidor aceptó el correo. Nunca lanza: un fallo de correo no debe romper el login."""
+    if not smtp_configurado():
+        return False
+    try:
+        await asyncio.to_thread(_enviar_smtp_sync, destino, asunto, cuerpo)
+        return True
+    except Exception as e:  # noqa: BLE001
+        log.warning(f"[reset] No se pudo enviar el correo: {type(e).__name__}")
+        return False
+
+
+async def crear_token_reset(uid: str) -> Optional[str]:
+    """Genera un token nuevo (invalida los anteriores). None si excede el límite por hora."""
+    ahora = datetime.now(timezone.utc)
+    recientes = await db.password_reset_tokens.count_documents(
+        {"user_id": uid, "created_at": {"$gt": ahora - timedelta(hours=1)}}
+    )
+    if recientes >= RESET_MAX_POR_HORA:
+        return None
+    await db.password_reset_tokens.update_many({"user_id": uid, "used_at": None}, {"$set": {"used_at": ahora}})
+    token = secrets.token_urlsafe(32)
+    await db.password_reset_tokens.insert_one({
+        "id": str(uuid.uuid4()),
+        "user_id": uid,
+        "token_hash": hash_reset_token(token),
+        "created_at": ahora,
+        "expires_at": ahora + timedelta(minutes=RESET_TOKEN_TTL_MIN),
+        "used_at": None,
+    })
+    return token
+
+
+class ResetPasswordIn(BaseModel):
+    token: str
+    new_password: str
+
+
+@api.post("/auth/reset_password")
+async def reset_password(body: ResetPasswordIn):
+    """Consume el token del correo. Un solo uso: el `find_one_and_update` lo marca
+    como usado de forma atómica, así dos peticiones simultáneas no lo gastan dos veces."""
+    new_pw = (body.new_password or "").strip()
+    if len(new_pw) < 6:
+        raise HTTPException(400, "La nueva contraseña debe tener mínimo 6 caracteres")
+    ahora = datetime.now(timezone.utc)
+    tok = await db.password_reset_tokens.find_one_and_update(
+        {"token_hash": hash_reset_token(body.token or ""), "used_at": None, "expires_at": {"$gt": ahora}},
+        {"$set": {"used_at": ahora}},
+    )
+    if not tok:
+        raise HTTPException(400, "El enlace no es válido o ya venció. Pide uno nuevo.")
+    res = await db.users.update_one(
+        {"id": tok["user_id"], "deleted_at": {"$exists": False}},
+        {"$set": {"password": hash_pw(new_pw)}},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(400, "El enlace no es válido o ya venció. Pide uno nuevo.")
+    # Cualquier solicitud administrativa pendiente de esa persona ya no hace falta.
+    await db.password_reset_requests.update_many(
+        {"user_id": tok["user_id"], "status": "pending"},
+        {"$set": {"status": "resolved", "resolved_at": ahora}},
+    )
+    return {"ok": True}
+
+
+RESET_PAGE_HTML = _pagina_legal("Restablecer contraseña", """
+  <h1>Crea tu contraseña nueva</h1>
+  <form id="forma" novalidate>
+    <label for="pw1">Contraseña nueva (mínimo 6 caracteres)</label>
+    <input id="pw1" type="password" autocomplete="new-password" required>
+    <label for="pw2">Repite la contraseña</label>
+    <input id="pw2" type="password" autocomplete="new-password" required>
+    <button id="enviar" type="submit">Guardar contraseña</button>
+    <p id="resultado" role="status" aria-live="polite"></p>
+  </form>
+  <script>
+    const token = new URLSearchParams(location.search).get('token') || '';
+    const forma = document.getElementById('forma');
+    const salida = document.getElementById('resultado');
+    function mostrar(clase, texto) { salida.className = clase; salida.textContent = texto; }
+    forma.addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      const a = document.getElementById('pw1').value;
+      const b = document.getElementById('pw2').value;
+      if (!token) return mostrar('error', 'Este enlace está incompleto. Pide uno nuevo desde la aplicación.');
+      if (a.length < 6) return mostrar('error', 'La contraseña debe tener mínimo 6 caracteres.');
+      if (a !== b) return mostrar('error', 'Las contraseñas no coinciden.');
+      const boton = document.getElementById('enviar');
+      boton.disabled = true;
+      try {
+        const r = await fetch('/api/auth/reset_password', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token: token, new_password: a }),
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) return mostrar('error', typeof d.detail === 'string' ? d.detail : 'No se pudo guardar la contraseña.');
+        forma.reset();
+        mostrar('ok', 'Listo. Ya puedes iniciar sesión en Dirac con tu contraseña nueva.');
+      } catch (e) {
+        mostrar('error', 'No hay conexión. Inténtalo de nuevo.');
+      } finally {
+        boton.disabled = false;
+      }
+    });
+  </script>
+""")
+
+
+@app.get("/restablecer", response_class=HTMLResponse)
+@api.get("/restablecer", response_class=HTMLResponse)
+async def reset_password_page():
+    return RESET_PAGE_HTML
+
+
 # === BOOTSTRAP (idempotente) ================================================
 @api.post("/admin/bootstrap")
 async def bootstrap(body: BootstrapIn):
@@ -1590,7 +1775,7 @@ USUARIO_ELIMINADO = "Usuario eliminado"
 
 # Colecciones que NO se anonimizan por autoría: `users` se trata aparte y las
 # otras solo guardan datos personales del propio usuario (se borran o se omiten).
-_COLECCIONES_SIN_AUTORIA = {"users", "password_reset_requests", "channel_reads", "deletion_requests"}
+_COLECCIONES_SIN_AUTORIA = {"users", "password_reset_requests", "password_reset_tokens", "channel_reads", "deletion_requests"}
 
 # (campo con el id del usuario, {campo hermano con su nombre/correo: valor}).
 CAMPOS_AUTORIA: List[Tuple[str, Dict[str, Any]]] = [
@@ -1663,6 +1848,8 @@ async def anonimizar_usuario(uid: str) -> Dict[str, int]:
     r = await db.password_reset_requests.delete_many({"user_id": uid})
     conteo["documentos_borrados"] += r.deleted_count
     r = await db.channel_reads.delete_many({"user_id": uid})
+    conteo["documentos_borrados"] += r.deleted_count
+    r = await db.password_reset_tokens.delete_many({"user_id": uid})
     conteo["documentos_borrados"] += r.deleted_count
 
     # 2) Autoría en el resto de colecciones: se conserva el registro, se quita el nombre.
@@ -7014,27 +7201,53 @@ async def reset_team_member_password(pid: str, uid: str, user: dict = Depends(re
 # (genera una temporal, igual que el botón de Equipo/Invitaciones) sin
 # necesitar que el usuario esté asignado a un proyecto específico del
 # Coordinador que la atiende — Coordinador General ya tiene god-mode.
+_TAREAS_RESET: set = set()  # referencias fuertes: evita que el GC cancele el envío en segundo plano
+
+
+async def _crear_solicitud_admin(u: dict) -> None:
+    """Respaldo administrativo: deja la solicitud para que un Coordinador General la resuelva."""
+    existing = await db.password_reset_requests.find_one({"user_id": u["id"], "status": "pending"})
+    if existing:
+        return
+    await db.password_reset_requests.insert_one({
+        "id": str(uuid.uuid4()),
+        "user_id": u["id"],
+        "email": u["email"],
+        "name": u["name"],
+        "role": u["role"],
+        "project_ids": u.get("project_ids") or [],
+        "status": "pending",
+        "created_at": datetime.now(timezone.utc),
+    })
+
+
+async def _procesar_reset(u: dict) -> None:
+    """Envía el enlace por correo; si no se puede, cae al respaldo administrativo."""
+    try:
+        if smtp_configurado():
+            token = await crear_token_reset(u["id"])
+            if token is None:
+                return  # demasiadas solicitudes en la última hora: no se manda otro correo
+            asunto, cuerpo = construir_correo_reset(u["name"], f"{PUBLIC_BASE_URL}/api/restablecer?token={token}")
+            if await enviar_correo(u["email"], asunto, cuerpo):
+                return
+        await _crear_solicitud_admin(u)
+    except Exception as e:  # noqa: BLE001
+        log.warning(f"[reset] Falló el procesamiento: {type(e).__name__}: {e}")
+
+
 @api.post("/auth/forgot_password")
 async def forgot_password(body: ForgotPasswordIn):
-    """Sin autenticación (pantalla de login). Responde siempre el mismo
-    mensaje genérico exista o no el correo, para no filtrar qué cuentas
-    están registradas."""
+    """Sin autenticación (pantalla de login). Responde siempre lo mismo y tarda lo
+    mismo exista o no el correo (el envío va en segundo plano) para no filtrar qué
+    cuentas están registradas."""
     email = body.email.lower()
-    u = await db.users.find_one({"email": email})
+    u = await db.users.find_one({"email": email, "deleted_at": {"$exists": False}})
     if u:
-        existing = await db.password_reset_requests.find_one({"user_id": u["id"], "status": "pending"})
-        if not existing:
-            await db.password_reset_requests.insert_one({
-                "id": str(uuid.uuid4()),
-                "user_id": u["id"],
-                "email": u["email"],
-                "name": u["name"],
-                "role": u["role"],
-                "project_ids": u.get("project_ids") or [],
-                "status": "pending",
-                "created_at": datetime.now(timezone.utc),
-            })
-    return {"ok": True, "message": "Si el correo está registrado, tu Coordinador General verá la solicitud y te compartirá una contraseña nueva."}
+        tarea = asyncio.create_task(_procesar_reset(u))
+        _TAREAS_RESET.add(tarea)
+        tarea.add_done_callback(_TAREAS_RESET.discard)
+    return {"ok": True, "message": MSG_RESET_CORREO if smtp_configurado() else MSG_RESET_RESPALDO}
 
 
 @api.get("/admin/password_reset_requests")
