@@ -14,6 +14,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { api, SeguridadReporte, SeguridadChecklist, SeguridadChecklistItem, Project } from '@/src/api';
 import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
 import { Button } from '@/src/components/Button';
+import { requestMediaLibraryPermission } from '@/src/utils/permissions';
 
 type Tab = 'reportes' | 'checklist';
 type Severidad = 'leve' | 'moderado' | 'grave';
@@ -78,7 +79,7 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
   }
 
   async function onPickFoto() {
-    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    const perm = await requestMediaLibraryPermission();
     if (perm.status !== 'granted') {
       Alert.alert('Permiso requerido', 'Habilita el acceso a fotos para adjuntar evidencia.');
       return;

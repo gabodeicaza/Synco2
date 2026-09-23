@@ -22,6 +22,7 @@ import { HistoryCalendarModal } from '@/src/components/HistoryCalendarModal';
 import { ReportPreviewSheet } from '@/src/components/ReportPreviewSheet';
 import { fmtDateTimeCDMX } from '@/src/utils/tz';
 import { moduloActivo } from '@/src/utils/modulos';
+import { getMediaLibraryPermission, requestMediaLibraryPermission } from '@/src/utils/permissions';
 
 // Limite cliente coherente con backend (20 MB). Evita subidas que el servidor rechazaria.
 const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
@@ -715,7 +716,7 @@ export default function ProjectDetailScreen() {
   async function onAddGeneralDataImages() {
     if (gdBusy) return;
     try {
-      let perm = await ImagePicker.getMediaLibraryPermissionsAsync();
+      let perm = await getMediaLibraryPermission();
       if (perm.status !== 'granted') {
         if (!perm.canAskAgain) {
           const openIt = await confirm(
@@ -726,7 +727,7 @@ export default function ProjectDetailScreen() {
           if (openIt) Linking.openSettings();
           return;
         }
-        perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+        perm = await requestMediaLibraryPermission();
         if (perm.status !== 'granted') return;
       }
       // [P0 FIX] Subida multipart (no base64 en JSON). En movil se usa

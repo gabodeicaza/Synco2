@@ -17,6 +17,7 @@ import { api, LocationNodeTree } from '@/src/api';
 import { colors, radius, spacing, shadow } from '@/src/theme';
 import { MEASUREMENT_LABELS, MEASUREMENT_ICONS, MeasurementType } from '@/src/utils/roles';
 import { confirm } from '@/src/utils/confirm';
+import { requestMediaLibraryPermission } from '@/src/utils/permissions';
 
 // =============================================================================
 // Constructor visual del Arbol de Nodos
@@ -671,7 +672,7 @@ function NodeEditorModal({
     try {
       // Solicitar permiso (solo aplica en native; en web se ignora)
       if (Platform.OS !== 'web') {
-        const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+        const perm = await requestMediaLibraryPermission();
         if (!perm.granted) {
           setCoverErr('Sin permiso para acceder a la galeria.');
           return;

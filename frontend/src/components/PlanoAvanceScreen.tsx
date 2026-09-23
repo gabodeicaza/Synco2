@@ -26,6 +26,7 @@ import { confirm } from '@/src/utils/confirm';
 import { useAuth } from '@/src/auth-context';
 import { ROLE_COORD, ROLE_SUB } from '@/src/utils/roles';
 import { PlanoMarkerOverlay, PLANO_MARKER_ESTADO_COLOR, PLANO_MARKER_ESTADO_LABEL } from '@/src/components/PlanoMarkerOverlay';
+import { requestMediaLibraryPermission } from '@/src/utils/permissions';
 
 type AddMode = 'none' | 'punto' | 'segmento' | 'dado';
 type LabelPromptDraft = { tipo: 'punto' | 'segmento' | 'dado'; x: number; y: number; x2?: number; y2?: number };
@@ -261,7 +262,7 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
     }
     try {
       if (Platform.OS !== 'web') {
-        const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+        const perm = await requestMediaLibraryPermission();
         if (!perm.granted) {
           Alert.alert('Sin permiso', 'No hay permiso para acceder a la galería.');
           return;

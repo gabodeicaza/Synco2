@@ -19,6 +19,7 @@ import { nombreConcepto } from '@/src/utils/nombresNivel';
 import { decimalStringToCents, formatCantidad, isValidDecimalInput, pctDeDecimales } from '@/src/utils/money';
 import { dayjs, CDMX_TZ } from '@/src/utils/tz';
 import { esPorcentajeValido, esRetrocesoLocal } from '@/src/utils/avancePorcentaje';
+import { requestMediaLibraryPermission } from '@/src/utils/permissions';
 
 export default function RegistrarAvanceScreen({ projectId }: { projectId: string }) {
   const insets = useSafeAreaInsets();
@@ -66,7 +67,7 @@ export default function RegistrarAvanceScreen({ projectId }: { projectId: string
   }, [query, projectId]);
 
   async function pickPhoto() {
-    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    const perm = await requestMediaLibraryPermission();
     if (!perm.granted) {
       Alert.alert('Permiso requerido', 'Habilita el acceso a fotos para adjuntar evidencia.');
       return;

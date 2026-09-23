@@ -22,6 +22,7 @@ import { Button } from '@/src/components/Button';
 import { confirm } from '@/src/utils/confirm';
 import { useAuth } from '@/src/auth-context';
 import { ROLE_COORD, ROLE_JEFE, ROLE_SUB } from '@/src/utils/roles';
+import { requestMediaLibraryPermission } from '@/src/utils/permissions';
 
 const TIPO_ICON: Record<PresentacionSeccionTipo, keyof typeof Ionicons.glyphMap> = {
   portada: 'bookmark-outline',
@@ -246,7 +247,7 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
   async function addFotoToBloque(idx: number) {
     try {
       if (Platform.OS !== 'web') {
-        const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+        const perm = await requestMediaLibraryPermission();
         if (!perm.granted) { Alert.alert('Sin permiso', 'No hay permiso para acceder a la galería.'); return; }
       }
       const result = await ImagePicker.launchImageLibraryAsync({
