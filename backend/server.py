@@ -1214,9 +1214,17 @@ async def root():
     return {"name": "Dirac", "status": "ok"}
 
 
-@api.get("/health")
+@api.api_route("/health", methods=["GET", "HEAD"])
 async def health():
-    return {"ok": True, "ts": datetime.now(timezone.utc).isoformat()}
+    """Ping de la app (NetInfo), del banner "Sin conexión" y de los monitores.
+    200 solo si Mongo responde; si no, 503 (la app no puede trabajar sin base)."""
+    ts = datetime.now(timezone.utc).isoformat()
+    try:
+        await asyncio.wait_for(db.command("ping"), timeout=3)
+    except Exception as e:  # noqa: BLE001 - cualquier fallo de la base = no saludable
+        log.warning(f"[health] Mongo no responde: {e}")
+        return JSONResponse(status_code=503, content={"ok": False, "db": False, "ts": ts})
+    return {"ok": True, "db": True, "ts": ts}
 
 
 # === PÁGINAS LEGALES PÚBLICAS (privacidad, términos, eliminar cuenta) ======

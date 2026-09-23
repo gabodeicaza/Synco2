@@ -1,4 +1,5 @@
 import React, { useEffect } from 'react';
+import { View } from 'react-native';
 import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
@@ -15,6 +16,12 @@ import '@/src/utils/tz';
 import { useIconFonts } from '@/src/hooks/use-icon-fonts';
 import { AuthProvider } from '@/src/auth-context';
 import { OfflineQueueProvider } from '@/src/offline-queue-context';
+import { BannerSinConexion } from '@/src/components/BannerSinConexion';
+import { configurarPing } from '@/src/utils/connectivity';
+import { colors } from '@/src/theme';
+
+// El ping de conectividad usa GET /api/health (ver src/utils/connectivity.ts).
+configurarPing();
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
@@ -45,13 +52,16 @@ export default function RootLayout() {
         <AuthProvider>
           <OfflineQueueProvider>
             <StatusBar style="dark" />
-            <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: '#F8FAFC' } }}>
+            <View style={{ flex: 1 }}>
+            <BannerSinConexion />
+            <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.bg } }}>
               <Stack.Screen name="index" />
               <Stack.Screen name="(auth)" />
               <Stack.Screen name="(coord)" />
               <Stack.Screen name="(subcoord)" />
               <Stack.Screen name="(spec)" />
             </Stack>
+            </View>
           </OfflineQueueProvider>
         </AuthProvider>
       </SafeAreaProvider>
