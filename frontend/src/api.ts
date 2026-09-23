@@ -2726,6 +2726,7 @@ export const api = {
   },
   updateAvance: (id: string, payload: Partial<{ cantidad_ejecutada: string; fotos: string[]; photo_captions: string[] }>) =>
     request<RegistroAvance>('PATCH', `/avances/${id}`, payload),
+  deleteAvance: (id: string) => request<{ ok: boolean }>('DELETE', `/avances/${id}`),
   listAvances: (pid: string, opts: { desde?: string; hasta?: string; partida_id?: string; concepto_id?: string } = {}) => {
     const qs = new URLSearchParams();
     if (opts.desde) qs.set('desde', opts.desde);

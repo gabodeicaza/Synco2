@@ -14,6 +14,7 @@ import { colors, radius, shadow, spacing } from '@/src/theme';
 import { APP_BRAND } from '@/src/utils/roles';
 import { formatCantidad, formatMoney } from '@/src/utils/money';
 import { downloadBlob } from '@/src/utils/downloadBlob';
+import { confirm } from '@/src/utils/confirm';
 import { RangoFechasPicker } from '@/src/components/RangoFechasPicker';
 import {
   RangoFechas, rangoEstaSemana, rangoEsteMes, rangoMesAnterior, formatearRangoLegible,
@@ -132,6 +133,22 @@ export default function VisualizarAvanceScreen({ projectId }: { projectId: strin
     }
   }, [projectId, rango?.desde, rango?.hasta, partidaFiltro, exportandoXlsx]);
 
+  const onDeleteAvance = useCallback(async (a: RegistroAvance) => {
+    const c = conceptosById[a.concepto_id];
+    const ok = await confirm(
+      'Borrar registro de avance',
+      `¿Borrar el avance de "${c ? c.clave : a.concepto_id}" del ${a.fecha} (${formatCantidad(a.cantidad_ejecutada)} ${c?.unidad || ''})? Esto afecta el % de avance y el EV ya calculados.`,
+      { confirmText: 'Borrar', destructive: true },
+    );
+    if (!ok) return;
+    try {
+      await api.deleteAvance(a.id);
+      await load();
+    } catch (e: any) {
+      Alert.alert('No se pudo borrar', e?.message || 'Intentalo nuevamente.');
+    }
+  }, [conceptosById, load]);
+
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <StatusBar barStyle="light-content" />
@@ -228,12 +245,17 @@ export default function VisualizarAvanceScreen({ projectId }: { projectId: strin
                 <View key={a.id} style={styles.avanceCard}>
                   <View style={styles.avanceHeaderRow}>
                     <Text style={styles.avanceFecha}>{a.fecha}</Text>
-                    {!a.sincronizado ? (
-                      <View style={styles.pendingBadge}>
-                        <Ionicons name="cloud-offline-outline" size={11} color={colors.warning} />
-                        <Text style={styles.pendingTxt}>Pendiente de sincronizar</Text>
-                      </View>
-                    ) : null}
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                      {!a.sincronizado ? (
+                        <View style={styles.pendingBadge}>
+                          <Ionicons name="cloud-offline-outline" size={11} color={colors.warning} />
+                          <Text style={styles.pendingTxt}>Pendiente de sincronizar</Text>
+                        </View>
+                      ) : null}
+                      <Pressable onPress={() => onDeleteAvance(a)} hitSlop={8}>
+                        <Ionicons name="trash-outline" size={16} color={colors.error} />
+                      </Pressable>
+                    </View>
                   </View>
                   <Text style={styles.avanceConcepto} numberOfLines={1}>
                     {c ? `${c.clave} — ${c.descripcion}` : a.concepto_id}
@@ -241,6 +263,12 @@ export default function VisualizarAvanceScreen({ projectId }: { projectId: strin
                   <Text style={styles.avanceCantidad}>
                     {formatCantidad(a.cantidad_ejecutada)} {c?.unidad || ''} · {a.capturado_por_nombre || 'Usuario'}
                   </Text>
+                  {a.importe_ganado_congelado != null ? (
+                    <Text style={styles.avanceImporte}>
+                      Valor ganado: {formatMoney(a.importe_ganado_congelado)}
+                      {a.precio_unitario_congelado != null ? ` (${formatMoney(a.precio_unitario_congelado)}/${c?.unidad || 'unidad'})` : ''}
+                    </Text>
+                  ) : null}
                 </View>
               );
             })
@@ -318,6 +346,7 @@ const styles = StyleSheet.create({
   pendingTxt: { fontSize: 10, color: colors.warning, fontWeight: '700' },
   avanceConcepto: { fontSize: 13, fontWeight: '700', color: colors.text },
   avanceCantidad: { fontSize: 12, color: colors.textBody },
+  avanceImporte: { fontSize: 11, color: colors.textMuted, marginTop: 2 },
 
   footerFixed: {
     position: 'absolute', left: 0, right: 0, bottom: 0, backgroundColor: colors.surface,

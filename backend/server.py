@@ -19964,6 +19964,21 @@ def _validar_permiso_edicion_avance(avance_doc: dict, user: dict) -> None:
         )
 
 
+def _validar_ventana_edicion_avance(avance_doc: dict, user: dict) -> None:
+    """Ventana normal de corrección/borrado (fuera de LINEA_BASE, ya cubierta
+    por _validar_permiso_edicion_avance arriba): el autor original puede
+    corregir o borrar su propio registro durante 24h; después de eso, o si
+    el registro es de otro usuario, solo Sub-Coordinador puede autorizarlo.
+    Compartida por update_avance y delete_avance para no duplicar la misma
+    ventana en dos endpoints."""
+    creado_en = avance_doc["creado_en"]
+    creado_en = creado_en if creado_en.tzinfo else creado_en.replace(tzinfo=timezone.utc)
+    dentro_de_ventana = (datetime.now(timezone.utc) - creado_en) <= timedelta(hours=24)
+    es_autor = avance_doc["capturado_por"] == user["id"]
+    if not ((es_autor and dentro_de_ventana) or user.get("role") == ROLE_SUB):
+        raise HTTPException(403, "Fuera de la ventana de edición; requiere autorización de Sub-Coordinador")
+
+
 @api.patch("/avances/{avance_id}", response_model=RegistroAvanceOut)
 async def update_avance(avance_id: str, body: RegistroAvancePatch, user: dict = Depends(current_user)):
     _assert_write_allowed(user)
@@ -19974,18 +19989,10 @@ async def update_avance(avance_id: str, body: RegistroAvancePatch, user: dict = 
     _validar_permiso_edicion_avance(avance, user)
 
     if avance.get("origen") != "LINEA_BASE":
-        # Ventana de edición normal: el autor original puede corregir su
-        # propio registro durante 24h; después de eso (o si el registro es
-        # de otro usuario) solo Sub-Coordinador puede autorizar la
-        # corrección. Un registro de línea base ya pasó el chequeo más
-        # estricto de _validar_permiso_edicion_avance arriba, así que no
-        # vuelve a aplicar esta ventana.
-        creado_en = avance["creado_en"]
-        creado_en = creado_en if creado_en.tzinfo else creado_en.replace(tzinfo=timezone.utc)
-        dentro_de_ventana = (datetime.now(timezone.utc) - creado_en) <= timedelta(hours=24)
-        es_autor = avance["capturado_por"] == user["id"]
-        if not ((es_autor and dentro_de_ventana) or user.get("role") == ROLE_SUB):
-            raise HTTPException(403, "Fuera de la ventana de edición; requiere autorización de Sub-Coordinador")
+        # Un registro de línea base ya pasó el chequeo más estricto de
+        # _validar_permiso_edicion_avance arriba, así que no vuelve a
+        # aplicar esta ventana.
+        _validar_ventana_edicion_avance(avance, user)
 
     upd: dict = {"editado_en": datetime.now(timezone.utc)}
     if body.cantidad_ejecutada is not None:
@@ -20007,6 +20014,31 @@ async def update_avance(avance_id: str, body: RegistroAvancePatch, user: dict = 
         )
     updated = await db.registros_avance.find_one({"id": avance_id})
     return await _registro_avance_out(updated)
+
+
+@api.delete("/avances/{avance_id}")
+async def delete_avance(avance_id: str, user: dict = Depends(current_user)):
+    """Borra un RegistroAvance — mismo permiso que corregirlo (ver
+    update_avance/_validar_permiso_edicion_avance): existe sobre todo para
+    poder limpiar filas mal capturadas o mal importadas (ver
+    import_avances) sin tener que esperar a un Sub-Coordinador para cada
+    una, dentro de la ventana normal de 24h/autor."""
+    _assert_write_allowed(user)
+    avance = await db.registros_avance.find_one({"id": avance_id})
+    if not avance:
+        raise HTTPException(404, "Registro de avance no existe")
+    await ensure_project_access(user, avance["project_id"])
+    _validar_permiso_edicion_avance(avance, user)
+    if avance.get("origen") != "LINEA_BASE":
+        _validar_ventana_edicion_avance(avance, user)
+
+    await db.registros_avance.delete_one({"id": avance_id})
+    if avance.get("origen") == "LINEA_BASE":
+        await _log_bitacora(
+            avance["project_id"], "borrado_linea_base", "registro_avance", avance_id,
+            "cantidad_ejecutada", avance.get("cantidad_ejecutada"), None, user,
+        )
+    return {"ok": True}
 
 
 @api.get("/projects/{pid}/avances", response_model=List[RegistroAvanceOut])
