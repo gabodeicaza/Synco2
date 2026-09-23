@@ -11,6 +11,7 @@ import { api, DailyGoal } from '@/src/api';
 import { colors, radius, shadow, spacing } from '@/src/theme';
 import { useAuth } from '@/src/auth-context';
 import { confirm } from '@/src/utils/confirm';
+import { a11y } from '@/src/i18n';
 
 export function DailyGoalsPanel({ projectId }: { projectId: string }) {
   const { user } = useAuth();
@@ -116,7 +117,7 @@ export function DailyGoalsPanel({ projectId }: { projectId: string }) {
         <View style={styles.errBox}>
           <Ionicons name="alert-circle-outline" size={16} color={colors.error} />
           <Text style={styles.errTxt}>{error}</Text>
-          <Pressable onPress={load} style={styles.retryBtn}>
+          <Pressable accessibilityRole="button" onPress={load} style={styles.retryBtn}>
             <Text style={styles.retryTxt}>Reintentar</Text>
           </Pressable>
         </View>
@@ -134,7 +135,7 @@ export function DailyGoalsPanel({ projectId }: { projectId: string }) {
           {goals.map((g) => {
             const isLoading = togglingId === g.id;
             return (
-              <Pressable
+              <Pressable accessibilityRole="button"
                 key={g.id}
                 onPress={() => onToggle(g)}
                 disabled={!canWrite || isLoading}
@@ -157,7 +158,7 @@ export function DailyGoalsPanel({ projectId }: { projectId: string }) {
                   {g.text}
                 </Text>
                 {canWrite ? (
-                  <Pressable
+                  <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')}
                     onPress={() => onDelete(g)}
                     hitSlop={8}
                     style={styles.delBtn}
@@ -184,7 +185,7 @@ export function DailyGoalsPanel({ projectId }: { projectId: string }) {
             returnKeyType="done"
             maxLength={140}
           />
-          <Pressable
+          <Pressable accessibilityRole="button" accessibilityLabel={a11y('agregar')} hitSlop={8}
             onPress={onAdd}
             disabled={busy || !text.trim()}
             style={({ pressed }) => [

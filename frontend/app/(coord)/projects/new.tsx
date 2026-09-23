@@ -8,6 +8,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { Button } from '@/src/components/Button';
 import { api } from '@/src/api';
 import { colors, radius, spacing } from '@/src/theme';
+import { a11y } from '@/src/i18n';
 
 export default function NewProjectScreen() {
   const insets = useSafeAreaInsets();
@@ -55,7 +56,7 @@ export default function NewProjectScreen() {
   return (
     <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
       <View style={[styles.header, { paddingTop: insets.top + 4 }]}>
-        <Pressable onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
+        <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
           <Ionicons name="close" size={26} color={colors.text} />
         </Pressable>
         <Text style={styles.title}>Nuevo proyecto</Text>

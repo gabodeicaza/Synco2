@@ -11,6 +11,7 @@ import { useOfflineQueue } from '@/src/offline-queue-context';
 import { QueuedReport } from '@/src/utils/offlineQueue';
 import { colors, radius, shadow, spacing } from '@/src/theme';
 import { dayjs, CDMX_TZ } from '@/src/utils/tz';
+import { a11y } from '@/src/i18n';
 
 function statusLabel(status: QueuedReport['status']): string {
   if (status === 'syncing') return 'Enviando...';
@@ -37,11 +38,11 @@ export default function OfflineQueueDetailModal({
   return (
     <Modal visible={visible} animationType="fade" transparent onRequestClose={onClose}>
       <View style={styles.backdrop}>
-        <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
+        <Pressable accessibilityRole="button" style={StyleSheet.absoluteFill} onPress={onClose} />
         <View style={styles.sheet}>
           <View style={styles.header}>
             <Text style={styles.title}>Reportes pendientes ({items.length})</Text>
-            <Pressable onPress={onClose} hitSlop={12}>
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} onPress={onClose} hitSlop={12}>
               <Ionicons name="close" size={22} color={colors.text} />
             </Pressable>
           </View>
@@ -66,7 +67,7 @@ export default function OfflineQueueDetailModal({
                       <Text style={styles.rowError} numberOfLines={2}>{item.last_error}</Text>
                     ) : null}
                   </View>
-                  <Pressable onPress={() => onDiscard(item)} hitSlop={8} style={styles.trashBtn}>
+                  <Pressable accessibilityRole="button" accessibilityLabel={a11y('eliminar')} onPress={() => onDiscard(item)} hitSlop={8} style={styles.trashBtn}>
                     <Ionicons name="trash-outline" size={18} color="#DC2626" />
                   </Pressable>
                 </View>
@@ -74,7 +75,7 @@ export default function OfflineQueueDetailModal({
             />
           )}
 
-          <Pressable
+          <Pressable accessibilityRole="button"
             onPress={flushNow}
             disabled={isFlushing || items.length === 0}
             style={[styles.retryBtn, (isFlushing || items.length === 0) && { opacity: 0.6 }]}

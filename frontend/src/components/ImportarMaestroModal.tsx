@@ -23,6 +23,7 @@ import { colors, radius, spacing } from '@/src/theme';
 import { isValidDecimalInput, formatCantidad } from '@/src/utils/money';
 import { downloadBlob } from '@/src/utils/downloadBlob';
 import { confirm } from '@/src/utils/confirm';
+import { a11y } from '@/src/i18n';
 import {
   WizardStep, quedanFueraLabel, filasFueraCount, pasoSiguienteTrasSubir, pasoAnterior,
 } from '@/src/utils/importWizard';
@@ -281,7 +282,7 @@ export function ImportarMaestroModal({ visible, projectId, partidas, onClose, on
     <Modal visible={visible} animationType="slide" onRequestClose={handleClose}>
       <View style={styles.container}>
         <View style={styles.header}>
-          <Pressable
+          <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')}
             onPress={() => {
               if (step === 'archivo') handleClose();
               else setStep(pasoAnterior(step, sheetNames.length > 1));
@@ -291,7 +292,7 @@ export function ImportarMaestroModal({ visible, projectId, partidas, onClose, on
             <Ionicons name={step === 'archivo' ? 'close' : 'chevron-back'} size={24} color={colors.text} />
           </Pressable>
           <Text style={styles.title}>Importar catálogo</Text>
-          <Pressable onPress={handleClose} hitSlop={10}>
+          <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} onPress={handleClose} hitSlop={10}>
             <Ionicons name="close" size={22} color={colors.textMuted} />
           </Pressable>
         </View>
@@ -321,7 +322,7 @@ export function ImportarMaestroModal({ visible, projectId, partidas, onClose, on
                 importación necesaria: clave, descripción, meta, importe, fecha de inicio y fecha de fin
                 quedan guardados desde aquí.
               </Text>
-              <Pressable style={styles.primaryBtn} onPress={pickFile} disabled={busy}>
+              <Pressable accessibilityRole="button" style={styles.primaryBtn} onPress={pickFile} disabled={busy}>
                 {busy ? <ActivityIndicator color="#fff" /> : (
                   <>
                     <Ionicons name="folder-open-outline" size={18} color="#fff" />
@@ -329,7 +330,7 @@ export function ImportarMaestroModal({ visible, projectId, partidas, onClose, on
                   </>
                 )}
               </Pressable>
-              <Pressable style={styles.smallBtn} onPress={descargarPlantilla} disabled={descargandoPlantilla}>
+              <Pressable accessibilityRole="button" style={styles.smallBtn} onPress={descargarPlantilla} disabled={descargandoPlantilla}>
                 {descargandoPlantilla ? <ActivityIndicator color={colors.primary} /> : (
                   <Text style={styles.smallBtnTxt}>Descargar plantilla de ejemplo</Text>
                 )}
@@ -341,7 +342,7 @@ export function ImportarMaestroModal({ visible, projectId, partidas, onClose, on
             <View>
               <Text style={styles.help}>Este archivo tiene varias hojas. ¿Cuál quieres importar?</Text>
               {sheetNames.map((s) => (
-                <Pressable key={s} style={styles.optionRow} onPress={() => loadHeaders(importId!, s)} disabled={busy}>
+                <Pressable accessibilityRole="button" key={s} style={styles.optionRow} onPress={() => loadHeaders(importId!, s)} disabled={busy}>
                   <Ionicons name="grid-outline" size={18} color={colors.primary} />
                   <Text style={styles.optionTxt}>{s}</Text>
                 </Pressable>
@@ -354,7 +355,7 @@ export function ImportarMaestroModal({ visible, projectId, partidas, onClose, on
             <View style={{ gap: 14 }}>
               <Text style={styles.help}>Se detectaron {headersResp.total_rows} filas de datos. Asigna cada columna al campo correspondiente.</Text>
 
-              <Pressable onPress={() => setMostrarFilasCrudas((v) => !v)} style={styles.linkRow}>
+              <Pressable accessibilityRole="button" onPress={() => setMostrarFilasCrudas((v) => !v)} style={styles.linkRow}>
                 <Ionicons name={mostrarFilasCrudas ? 'chevron-up' : 'help-circle-outline'} size={14} color={colors.primary} />
                 <Text style={styles.linkRowTxt}>
                   {mostrarFilasCrudas ? 'Ocultar' : '¿Estos no son los encabezados correctos? Elige la fila correcta'}
@@ -370,7 +371,7 @@ export function ImportarMaestroModal({ visible, projectId, partidas, onClose, on
                     const esLaActual = idx === headersResp.header_row_index;
                     const textoFila = row.filter((c) => c !== null && c !== undefined && String(c).trim() !== '').map((c) => String(c)).join(' · ') || '(fila vacía)';
                     return (
-                      <Pressable
+                      <Pressable accessibilityRole="button"
                         key={idx}
                         onPress={() => elegirFilaEncabezado(idx)}
                         style={[styles.rawPreviewRow, esLaActual && styles.rawPreviewRowActive]}
@@ -395,7 +396,7 @@ export function ImportarMaestroModal({ visible, projectId, partidas, onClose, on
                     {headersResp.headers.filter(Boolean).map((h) => {
                       const active = mapping[f.key] === h;
                       return (
-                        <Pressable
+                        <Pressable accessibilityRole="button"
                           key={h}
                           onPress={() => setMapping((m) => ({ ...m, [f.key]: active ? undefined : h }))}
                           style={[styles.chip, active && styles.chipActive]}
@@ -413,7 +414,7 @@ export function ImportarMaestroModal({ visible, projectId, partidas, onClose, on
                 {partidas.map((p) => {
                   const active = partidaId === p.id;
                   return (
-                    <Pressable key={p.id} onPress={() => setPartidaId(p.id)} style={[styles.chip, active && styles.chipActive]}>
+                    <Pressable accessibilityRole="button" key={p.id} onPress={() => setPartidaId(p.id)} style={[styles.chip, active && styles.chipActive]}>
                       <Text style={[styles.chipTxt, active && styles.chipTxtActive]} numberOfLines={1}>{p.clave} — {p.nombre}</Text>
                     </Pressable>
                   );
@@ -426,7 +427,7 @@ export function ImportarMaestroModal({ visible, projectId, partidas, onClose, on
                   const active = convencion === c;
                   const esDetectada = headersResp.convencion_detectada === c;
                   return (
-                    <Pressable key={c} onPress={() => setConvencion(c)} style={[styles.optionRow, active && styles.optionRowActive]}>
+                    <Pressable accessibilityRole="button" key={c} onPress={() => setConvencion(c)} style={[styles.optionRow, active && styles.optionRowActive]}>
                       <Ionicons name={active ? 'radio-button-on' : 'radio-button-off'} size={18} color={colors.primary} />
                       <Text style={styles.optionTxt}>{CONVENCION_LABELS[c]}{esDetectada ? ' (detectada)' : ''}</Text>
                     </Pressable>
@@ -437,7 +438,7 @@ export function ImportarMaestroModal({ visible, projectId, partidas, onClose, on
                 ) : null}
               </View>
 
-              <Pressable
+              <Pressable accessibilityRole="button"
                 style={[styles.primaryBtn, (!puedeValidarMapeoEvm(mapping, partidaId) || busy) && { opacity: 0.5 }]}
                 onPress={() => validar()}
                 disabled={!puedeValidarMapeoEvm(mapping, partidaId) || busy}
@@ -465,10 +466,10 @@ export function ImportarMaestroModal({ visible, projectId, partidas, onClose, on
                 <View style={{ gap: 6 }}>
                   <Text style={styles.fieldLabel}>Claves ya existentes en el proyecto</Text>
                   <View style={{ flexDirection: 'row', gap: 6 }}>
-                    <Pressable onPress={() => cambiarDuplicadosAccion('omitir')} style={[styles.chip, duplicadosAccion === 'omitir' && styles.chipActive]}>
+                    <Pressable accessibilityRole="button" onPress={() => cambiarDuplicadosAccion('omitir')} style={[styles.chip, duplicadosAccion === 'omitir' && styles.chipActive]}>
                       <Text style={[styles.chipTxt, duplicadosAccion === 'omitir' && styles.chipTxtActive]}>Omitir (no tocar)</Text>
                     </Pressable>
-                    <Pressable onPress={() => cambiarDuplicadosAccion('actualizar')} style={[styles.chip, duplicadosAccion === 'actualizar' && styles.chipActive]}>
+                    <Pressable accessibilityRole="button" onPress={() => cambiarDuplicadosAccion('actualizar')} style={[styles.chip, duplicadosAccion === 'actualizar' && styles.chipActive]}>
                       <Text style={[styles.chipTxt, duplicadosAccion === 'actualizar' && styles.chipTxtActive]}>Actualizar existentes</Text>
                     </Pressable>
                   </View>
@@ -477,10 +478,10 @@ export function ImportarMaestroModal({ visible, projectId, partidas, onClose, on
               ) : null}
 
               <View style={{ flexDirection: 'row', gap: 6 }}>
-                <Pressable style={styles.smallBtn} onPress={() => validar('coma')} disabled={busy}>
+                <Pressable accessibilityRole="button" style={styles.smallBtn} onPress={() => validar('coma')} disabled={busy}>
                   <Text style={styles.smallBtnTxt}>Re-validar todo como coma decimal</Text>
                 </Pressable>
-                <Pressable style={styles.smallBtn} onPress={() => validar('punto')} disabled={busy}>
+                <Pressable accessibilityRole="button" style={styles.smallBtn} onPress={() => validar('punto')} disabled={busy}>
                   <Text style={styles.smallBtnTxt}>Re-validar todo como punto decimal</Text>
                 </Pressable>
               </View>
@@ -501,16 +502,16 @@ export function ImportarMaestroModal({ visible, projectId, partidas, onClose, on
               )}
 
               <View style={styles.pagerRow}>
-                <Pressable disabled={page <= 1} onPress={() => cargarPagina(page - 1)} style={[styles.pagerBtn, page <= 1 && { opacity: 0.4 }]}>
+                <Pressable accessibilityRole="button" accessibilityLabel={a11y('paginaAnterior')} hitSlop={8} disabled={page <= 1} onPress={() => cargarPagina(page - 1)} style={[styles.pagerBtn, page <= 1 && { opacity: 0.4 }]}>
                   <Ionicons name="chevron-back" size={16} color={colors.primary} />
                 </Pressable>
                 <Text style={styles.pagerTxt}>Página {page} de {totalPages}</Text>
-                <Pressable disabled={page >= totalPages} onPress={() => cargarPagina(page + 1)} style={[styles.pagerBtn, page >= totalPages && { opacity: 0.4 }]}>
+                <Pressable accessibilityRole="button" accessibilityLabel={a11y('paginaSiguiente')} hitSlop={8} disabled={page >= totalPages} onPress={() => cargarPagina(page + 1)} style={[styles.pagerBtn, page >= totalPages && { opacity: 0.4 }]}>
                   <Ionicons name="chevron-forward" size={16} color={colors.primary} />
                 </Pressable>
               </View>
 
-              <Pressable style={styles.primaryBtn} onPress={commit} disabled={busy}>
+              <Pressable accessibilityRole="button" style={styles.primaryBtn} onPress={commit} disabled={busy}>
                 {busy ? <ActivityIndicator color="#fff" /> : (
                   <>
                     <Ionicons name="cloud-upload-outline" size={18} color="#fff" />
@@ -529,7 +530,7 @@ export function ImportarMaestroModal({ visible, projectId, partidas, onClose, on
               {commitResult.omitidos > 0 ? <Text style={styles.help}>{commitResult.omitidos} omitidos (duplicados)</Text> : null}
               {commitResult.con_error > 0 ? <Text style={[styles.help, { color: colors.error }]}>{commitResult.con_error} con error (no se importaron)</Text> : null}
               {commitResult.descartados > 0 ? <Text style={styles.help}>{commitResult.descartados} descartadas por ti</Text> : null}
-              <Pressable style={styles.primaryBtn} onPress={() => { reset(); onImported(); }}>
+              <Pressable accessibilityRole="button" style={styles.primaryBtn} onPress={() => { reset(); onImported(); }}>
                 <Text style={styles.primaryBtnTxt}>Listo</Text>
               </Pressable>
             </View>
@@ -566,7 +567,7 @@ function FilaRevision({
 
   return (
     <View style={[styles.filaCard, { borderLeftColor: color, borderLeftWidth: 4 }]}>
-      <Pressable onPress={onToggle} style={styles.filaHeaderRow}>
+      <Pressable accessibilityRole="button" onPress={onToggle} style={styles.filaHeaderRow}>
         <View style={{ flex: 1 }}>
           <Text style={styles.filaClave} numberOfLines={1}>{fila.clave || `Fila ${fila.fila}`} — {fila.descripcion || '(sin descripción)'}</Text>
           <Text style={[styles.filaEstado, { color }]}>{ESTADO_LABEL[fila.estado] || fila.estado}</Text>
@@ -581,13 +582,13 @@ function FilaRevision({
               <Text style={styles.problemaMotivo}>{p.motivo}</Text>
               {p.tipo === 'numero_ambiguo' ? (
                 <View style={{ flexDirection: 'row', gap: 8, marginTop: 6 }}>
-                  <Pressable
+                  <Pressable accessibilityRole="button"
                     style={styles.choiceBtn}
                     onPress={() => onCorregir(fila.fila, p.campo === 'importe' ? { importe_total_editable: p.lectura_miles } : { meta_cantidad: p.lectura_miles })}
                   >
                     <Text style={styles.choiceBtnTxt}>{p.lectura_miles}</Text>
                   </Pressable>
-                  <Pressable
+                  <Pressable accessibilityRole="button"
                     style={styles.choiceBtn}
                     onPress={() => onCorregir(fila.fila, p.campo === 'importe' ? { importe_total_editable: p.lectura_decimal } : { meta_cantidad: p.lectura_decimal })}
                   >
@@ -604,7 +605,7 @@ function FilaRevision({
                     placeholder="Valor correcto"
                     style={styles.editInput}
                   />
-                  <Pressable
+                  <Pressable accessibilityRole="button" accessibilityLabel={a11y('confirmar')} hitSlop={8}
                     onPress={() => {
                       const v = p.campo === 'meta' ? draftMeta : draftImporte;
                       if (!isValidDecimalInput(v)) { Alert.alert('Valor inválido', 'Ingresa un número con hasta 2 decimales.'); return; }
@@ -623,7 +624,7 @@ function FilaRevision({
                     placeholder="YYYY-MM-DD"
                     style={styles.editInput}
                   />
-                  <Pressable
+                  <Pressable accessibilityRole="button" accessibilityLabel={a11y('confirmar')} hitSlop={8}
                     onPress={() => {
                       const v = (p.campo === 'inicio' ? draftInicio : draftFin).trim();
                       if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) { Alert.alert('Fecha inválida', 'Usa el formato YYYY-MM-DD.'); return; }
@@ -645,7 +646,7 @@ function FilaRevision({
           </View>
 
           <View style={{ flexDirection: 'row', gap: 12, marginTop: 8 }}>
-            <Pressable onPress={() => onDescartar(fila.fila, fila.estado !== 'descartado')} style={styles.linkBtn}>
+            <Pressable accessibilityRole="button" onPress={() => onDescartar(fila.fila, fila.estado !== 'descartado')} style={styles.linkBtn}>
               <Ionicons name={fila.estado === 'descartado' ? 'refresh-outline' : 'trash-outline'} size={14} color={colors.error} />
               <Text style={[styles.linkBtnTxt, { color: colors.error }]}>{fila.estado === 'descartado' ? 'Recuperar fila' : 'Descartar fila'}</Text>
             </Pressable>

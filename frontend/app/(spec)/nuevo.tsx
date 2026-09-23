@@ -22,7 +22,7 @@ import { buildReportShareText } from '@/src/utils/reportText';
 import { PhotoAnnotator } from '@/src/components/PhotoAnnotator';
 import { requestCameraPermission } from '@/src/utils/permissions';
 import { confirm } from '@/src/utils/confirm';
-import { t } from '@/src/i18n';
+import { t, a11y } from '@/src/i18n';
 
 // Persistence Keys
 const CATALOG_PERSONAL_KEY = 'syncsite_catalog_personal';
@@ -416,7 +416,7 @@ export default function NewReportScreen() {
     <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.flex}>
       {/* Header (Imagen 1) */}
       <View style={[styles.header, { paddingTop: insets.top }]}>
-        <Pressable onPress={() => router.back()} style={styles.headerBtn}><Ionicons name="close" size={24} color={colors.text} /></Pressable>
+        <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} hitSlop={8} onPress={() => router.back()} style={styles.headerBtn}><Ionicons name="close" size={24} color={colors.text} /></Pressable>
         <Text style={styles.headerTitle}>Nuevo Reporte</Text>
       </View>
 
@@ -473,7 +473,7 @@ export default function NewReportScreen() {
           {!selectedLeaf && (
             <View style={styles.nodeGrid}>
               {currentOptions.map(n => (
-                <Pressable key={n.id} onPress={() => onSelectNode(n)} style={styles.nodeItem}>
+                <Pressable accessibilityRole="button" key={n.id} onPress={() => onSelectNode(n)} style={styles.nodeItem}>
                   <Text style={styles.nodeItemTxt}>{n.name}</Text>
                   {n.is_leaf && <View style={styles.leafBadge}><Ionicons name="flag" size={10} color="#fff" /><Text style={styles.leafBadgeTxt}>Hoja</Text></View>}
                 </Pressable>
@@ -482,7 +482,7 @@ export default function NewReportScreen() {
             </View>
           )}
 
-          {path.length > 0 && <Pressable onPress={() => { setPath([]); setSelectedLeaf(null); }}><Text style={styles.resetTxt}>Reiniciar seleccion</Text></Pressable>}
+          {path.length > 0 && <Pressable accessibilityRole="button" onPress={() => { setPath([]); setSelectedLeaf(null); }}><Text style={styles.resetTxt}>Reiniciar seleccion</Text></Pressable>}
         </View>
 
         {/* BLOQUE REPORTE ESTRUCTURADO (plantilla dinámica) */}
@@ -495,7 +495,7 @@ export default function NewReportScreen() {
                 <Text style={styles.cardHelp}>Elige la plantilla para capturar datos estructurados. Si ninguna especifica aplica, usa "{generalTemplate?.name || 'Reporte Libre'}".</Text>
               </View>
             </View>
-            <Pressable onPress={() => setTplPickerOpen(true)} style={styles.tplSelectorRow}>
+            <Pressable accessibilityRole="button" onPress={() => setTplPickerOpen(true)} style={styles.tplSelectorRow}>
               <Ionicons name="document-text-outline" size={18} color={colors.primary} />
               <Text style={styles.tplSelectorTxt}>{selectedTemplate?.name || generalTemplate?.name || 'Cargando...'}</Text>
               <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
@@ -521,11 +521,11 @@ export default function NewReportScreen() {
             <View style={[styles.modalContent, { maxHeight: '80%' }]}>
               <View style={styles.modalHeader}>
                 <Text style={styles.modalTitle}>Tipo de reporte</Text>
-                <Pressable onPress={() => setTplPickerOpen(false)}><Ionicons name="close" size={24} /></Pressable>
+                <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} hitSlop={8} onPress={() => setTplPickerOpen(false)}><Ionicons name="close" size={24} /></Pressable>
               </View>
               <ScrollView style={{ marginTop: 10 }}>
                 {generalTemplate && (
-                  <Pressable
+                  <Pressable accessibilityRole="button"
                     onPress={() => { setSelectedTemplateId(generalTemplate.id); setDynamicData({}); setTplPickerOpen(false); }}
                     style={styles.optBtn}
                   >
@@ -538,7 +538,7 @@ export default function NewReportScreen() {
                   <View key={category}>
                     <Text style={styles.tplGroupHeader}>{category}</Text>
                     {tpls.map((t) => (
-                      <Pressable
+                      <Pressable accessibilityRole="button"
                         key={t.id}
                         onPress={() => { setSelectedTemplateId(t.id); setDynamicData({}); setTplPickerOpen(false); }}
                         style={styles.optBtn}
@@ -566,7 +566,7 @@ export default function NewReportScreen() {
               </View>
             </View>
 
-            <Pressable onPress={() => setRegistrarLecturas(!registrarLecturas)} style={styles.checkboxRow}>
+            <Pressable accessibilityRole="button" onPress={() => setRegistrarLecturas(!registrarLecturas)} style={styles.checkboxRow}>
               <Ionicons name={registrarLecturas ? 'checkbox' : 'square-outline'} size={22} color={colors.primary} />
               <Text style={styles.checkboxTxt}>Este reporte incluye lecturas (primera/última)</Text>
             </Pressable>
@@ -576,7 +576,7 @@ export default function NewReportScreen() {
                 <Text style={styles.inputLabelSmall}>UNIDAD DE MEDIDA</Text>
                 <View style={styles.unitRow}>
                   {(['km', 'm', 'cm'] as const).map(u => (
-                    <Pressable key={u} onPress={() => setUnidad(u)} style={[styles.unitBtn, unidad === u && styles.unitBtnActive]}>
+                    <Pressable accessibilityRole="button" key={u} onPress={() => setUnidad(u)} style={[styles.unitBtn, unidad === u && styles.unitBtnActive]}>
                       <Text style={[styles.unitBtnTxt, unidad === u && styles.unitBtnTxtActive]}>{u}</Text>
                     </Pressable>
                   ))}
@@ -632,7 +632,7 @@ export default function NewReportScreen() {
               Puedes elegir varias: el reporte aparecera en todos los informes que marques.
             </Text>
             <View style={styles.sevRow}>
-              <TouchableOpacity
+              <TouchableOpacity accessibilityRole="button"
                 onPress={() => toggleSeveridad('Informativo')}
                 style={[styles.sevBtn, { borderColor: '#1E40AF' }, severidadUI.has('Informativo') ? { backgroundColor: '#1E40AF' } : { backgroundColor: '#F8FAFC' }]}
               >
@@ -640,7 +640,7 @@ export default function NewReportScreen() {
                 <Text style={[styles.sevTxt, { color: severidadUI.has('Informativo') ? '#fff' : '#1E40AF' }]}>Informativo</Text>
               </TouchableOpacity>
 
-              <TouchableOpacity
+              <TouchableOpacity accessibilityRole="button"
                 onPress={() => toggleSeveridad('Diario')}
                 style={[styles.sevBtn, { borderColor: '#10B981' }, severidadUI.has('Diario') ? { backgroundColor: '#10B981' } : { backgroundColor: '#F8FAFC' }]}
               >
@@ -648,7 +648,7 @@ export default function NewReportScreen() {
                 <Text style={[styles.sevTxt, { color: severidadUI.has('Diario') ? '#fff' : '#10B981' }]}>Diario</Text>
               </TouchableOpacity>
 
-              <TouchableOpacity
+              <TouchableOpacity accessibilityRole="button"
                 onPress={() => toggleSeveridad('Semanal')}
                 style={[styles.sevBtn, { borderColor: '#D97706' }, severidadUI.has('Semanal') ? { backgroundColor: '#D97706' } : { backgroundColor: '#F8FAFC' }]}
               >
@@ -656,7 +656,7 @@ export default function NewReportScreen() {
                 <Text style={[styles.sevTxt, { color: severidadUI.has('Semanal') ? '#fff' : '#D97706' }]}>Semanal</Text>
               </TouchableOpacity>
 
-              <TouchableOpacity
+              <TouchableOpacity accessibilityRole="button"
                 onPress={() => toggleSeveridad('Mensual')}
                 style={[styles.sevBtn, { borderColor: '#DC2626' }, severidadUI.has('Mensual') ? { backgroundColor: '#DC2626' } : { backgroundColor: '#F8FAFC' }]}
               >
@@ -686,18 +686,18 @@ export default function NewReportScreen() {
               </View>
             </View>
             <View style={styles.row}>
-              <Pressable onPress={() => onPickImage('cam')} style={styles.photoActionBtn}><Ionicons name="camera" size={24} color={colors.textMuted} /></Pressable>
-              <Pressable onPress={() => onPickImage('gal')} style={styles.photoActionBtn}><Ionicons name="images" size={24} color={colors.textMuted} /></Pressable>
+              <Pressable accessibilityRole="button" accessibilityLabel={a11y('tomarFoto')} hitSlop={8} onPress={() => onPickImage('cam')} style={styles.photoActionBtn}><Ionicons name="camera" size={24} color={colors.textMuted} /></Pressable>
+              <Pressable accessibilityRole="button" accessibilityLabel={a11y('elegirImagen')} hitSlop={8} onPress={() => onPickImage('gal')} style={styles.photoActionBtn}><Ionicons name="images" size={24} color={colors.textMuted} /></Pressable>
             </View>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 12, marginTop: 10 }}>
               {images.map((img, idx) => (
                 <View key={idx} style={{ width: 200 }}>
                   <View style={styles.photoWrapBig}>
                     <Image source={{ uri: img }} style={styles.photo} />
-                    <Pressable onPress={() => setAnnotatorIdx(idx)} style={styles.photoMark}>
+                    <Pressable accessibilityRole="button" accessibilityLabel={a11y('dibujar')} hitSlop={8} onPress={() => setAnnotatorIdx(idx)} style={styles.photoMark}>
                       <Ionicons name="brush" size={16} color="#fff" />
                     </Pressable>
-                    <Pressable onPress={() => setImages(images.filter((_, i) => i !== idx))} style={styles.photoDel}>
+                    <Pressable accessibilityRole="button" accessibilityLabel={a11y('quitar')} hitSlop={8} onPress={() => setImages(images.filter((_, i) => i !== idx))} style={styles.photoDel}>
                       <Ionicons name="close-circle" size={22} color={colors.error} />
                     </Pressable>
                   </View>
@@ -726,7 +726,7 @@ export default function NewReportScreen() {
 
       {/* FOOTER GUARDAR (Imagen 6) */}
       <View style={[styles.footer, { paddingBottom: insets.bottom + 10 }]}>
-        <Pressable onPress={onSavePressed} disabled={saving || !selectedLeaf} style={styles.finalSaveBtn}>
+        <Pressable accessibilityRole="button" onPress={onSavePressed} disabled={saving || !selectedLeaf} style={styles.finalSaveBtn}>
           {saving ? <ActivityIndicator color="#fff" size="small" /> : <><Ionicons name="checkmark-circle" size={20} color="#fff" /><Text style={styles.finalSaveBtnTxt}>Guardar reporte</Text></>}
         </Pressable>
       </View>
@@ -771,7 +771,7 @@ function LocationStep({ label, value, onPress }: any) {
   return (
     <View style={styles.locStep}>
       <Text style={styles.locLabel}>{label}</Text>
-      <Pressable onPress={onPress} style={styles.locBtn}><Text style={styles.locValue}>{value}</Text><Ionicons name="chevron-down" size={16} color={colors.textMuted} /></Pressable>
+      <Pressable accessibilityRole="button" onPress={onPress} style={styles.locBtn}><Text style={styles.locValue}>{value}</Text><Ionicons name="chevron-down" size={16} color={colors.textMuted} /></Pressable>
     </View>
   );
 }
@@ -783,7 +783,7 @@ function DynamicTemplateField({ field, value, onChange }: any) {
         <Text style={styles.inputLabelSmall}>{field.label.toUpperCase()}</Text>
         <View style={styles.unitRow}>
           {[{ v: true, label: 'Sí' }, { v: false, label: 'No' }].map((opt) => (
-            <Pressable
+            <Pressable accessibilityRole="button"
               key={String(opt.v)}
               onPress={() => onChange(opt.v)}
               style={[styles.unitBtn, value === opt.v && styles.unitBtnActive]}
@@ -802,7 +802,7 @@ function DynamicTemplateField({ field, value, onChange }: any) {
         <Text style={styles.inputLabelSmall}>{field.label.toUpperCase()}</Text>
         <View style={styles.chipWrap}>
           {(field.options || []).map((opt: string) => (
-            <Pressable
+            <Pressable accessibilityRole="button"
               key={opt}
               onPress={() => onChange(opt)}
               style={[styles.tplChip, value === opt && styles.tplChipActive]}
@@ -825,7 +825,7 @@ function DynamicTemplateField({ field, value, onChange }: any) {
         <Text style={styles.inputLabelSmall}>{field.label.toUpperCase()}</Text>
         <View style={styles.chipWrap}>
           {(field.options || []).map((opt: string) => (
-            <Pressable
+            <Pressable accessibilityRole="button"
               key={opt}
               onPress={() => toggle(opt)}
               style={[styles.tplChip, selected.includes(opt) && styles.tplChipActive]}
@@ -860,7 +860,7 @@ function DynSectionRestored({ title, items, onAdd, onRemove, onUpdate, catalog, 
           <Text style={styles.cardLabel}>{title} ({items.length})</Text>
           <Text style={styles.cardHelp}>{isEquipo ? 'Cantidad + descripcion (ej. 1 Excavadora).' : 'Cantidad + descripcion (ej. 3 Albañiles).'}</Text>
         </View>
-        <Pressable onPress={onAdd} style={styles.addSmallBtn}><Text style={styles.addSmallTxt}>+ Agregar</Text></Pressable>
+        <Pressable accessibilityRole="button" onPress={onAdd} style={styles.addSmallBtn}><Text style={styles.addSmallTxt}>+ Agregar</Text></Pressable>
       </View>
       {items.length === 0 ? (
         <View style={styles.emptyItems}>
@@ -896,7 +896,7 @@ function DynRow({ item, onRemove, onUpdate, catalog, isEquipo }: any) {
   return (
     <View style={styles.dynRow}>
       <View style={styles.dynQtyWrap}>
-        <Pressable
+        <Pressable accessibilityRole="button" accessibilityLabel={a11y('disminuir')}
           onPress={() => onUpdate({ qty: Math.max(1, (item.qty || 1) - 1) })}
           style={styles.qtyBtn}
           hitSlop={8}
@@ -904,7 +904,7 @@ function DynRow({ item, onRemove, onUpdate, catalog, isEquipo }: any) {
           <Ionicons name="remove" size={16} color={colors.primary} />
         </Pressable>
         <Text style={styles.qtyValue}>{item.qty}</Text>
-        <Pressable
+        <Pressable accessibilityRole="button" accessibilityLabel={a11y('agregar')}
           onPress={() => onUpdate({ qty: (item.qty || 1) + 1 })}
           style={styles.qtyBtn}
           hitSlop={8}
@@ -912,27 +912,27 @@ function DynRow({ item, onRemove, onUpdate, catalog, isEquipo }: any) {
           <Ionicons name="add" size={16} color={colors.primary} />
         </Pressable>
       </View>
-      <Pressable onPress={() => setModalOpen(true)} style={styles.descInput}>
+      <Pressable accessibilityRole="button" onPress={() => setModalOpen(true)} style={styles.descInput}>
         <Text numberOfLines={2} style={[styles.descTxt, !item.desc && { color: colors.textMuted }]}>
           {display || (isEquipo ? 'Buscar equipo...' : 'Buscar personal...')}
         </Text>
       </Pressable>
-      <Pressable onPress={onRemove} hitSlop={12} style={styles.dynDelBtn}>
+      <Pressable accessibilityRole="button" accessibilityLabel={a11y('eliminar')} onPress={onRemove} hitSlop={12} style={styles.dynDelBtn}>
         <Ionicons name="trash-outline" size={18} color={colors.error} />
       </Pressable>
       <Modal visible={modalOpen} animationType="slide" transparent>
         <View style={styles.modalBackdrop}><View style={styles.modalContent}>
-          <View style={styles.modalHeader}><Text style={styles.modalTitle}>Buscar {isEquipo ? 'Equipo' : 'Personal'}</Text><Pressable onPress={() => setModalOpen(false)}><Ionicons name="close" size={24} /></Pressable></View>
+          <View style={styles.modalHeader}><Text style={styles.modalTitle}>Buscar {isEquipo ? 'Equipo' : 'Personal'}</Text><Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} hitSlop={8} onPress={() => setModalOpen(false)}><Ionicons name="close" size={24} /></Pressable></View>
           <TextInput value={search} onChangeText={setSearch} placeholder="Escribir para filtrar..." style={styles.input} autoFocus />
           <ScrollView style={{ marginTop: 10, maxHeight: 400 }}>
             {filtered.map((opt: any, idx: number) => (
-              <Pressable key={idx} onPress={() => { onUpdate({ desc: opt }); setModalOpen(false); }} style={styles.optBtn}>
+              <Pressable accessibilityRole="button" key={idx} onPress={() => { onUpdate({ desc: opt }); setModalOpen(false); }} style={styles.optBtn}>
                 <Ionicons name={isEquipo ? "construct-outline" : "person-outline"} size={16} color={colors.textMuted} />
                 <Text style={styles.optTxt}>{typeof opt === 'string' ? opt : opt.nombre}</Text>
               </Pressable>
             ))}
             {search.trim().length > 0 && (
-              <Pressable onPress={() => { onUpdate({ desc: isEquipo ? { nombre: search } : search }); setModalOpen(false); }} style={styles.customBtn}>
+              <Pressable accessibilityRole="button" onPress={() => { onUpdate({ desc: isEquipo ? { nombre: search } : search }); setModalOpen(false); }} style={styles.customBtn}>
                 <Text style={styles.customTxt}>+ Usar "{search}"</Text>
               </Pressable>
             )}
@@ -959,11 +959,11 @@ function ConfirmWarningModal({ warning, onCancel, onConfirm }: { warning: 'no-ph
           <Text style={styles.successTitle}>Espera</Text>
           <Text style={[styles.successSub, { marginBottom: 8 }]}>{message}</Text>
           <View style={{ width: '100%', alignItems: 'center' }}>
-            <Pressable onPress={onConfirm} style={styles.waBtn}>
+            <Pressable accessibilityRole="button" onPress={onConfirm} style={styles.waBtn}>
               <Ionicons name="checkmark-circle-outline" size={18} color="#fff" />
               <Text style={styles.waBtnTxt}>Si, estoy seguro</Text>
             </Pressable>
-            <Pressable onPress={onCancel} style={styles.copyBtn}>
+            <Pressable accessibilityRole="button" onPress={onCancel} style={styles.copyBtn}>
               <Ionicons name="arrow-back-outline" size={18} color={colors.primary} />
               <Text style={styles.copyBtnTxt}>Regresar</Text>
             </Pressable>
@@ -1019,9 +1019,9 @@ function SuccessModal({ visible, report, project, user, reportTemplates, onClose
             <Text style={styles.shareText}>{shareText}</Text>
           </ScrollView>
           <View style={{ width: '100%', alignItems: 'center' }}>
-            <Pressable onPress={onShareWA} style={styles.waBtn}><Ionicons name="logo-whatsapp" size={18} color="#fff" /><Text style={styles.waBtnTxt}>Enviar por WhatsApp</Text></Pressable>
-            <Pressable onPress={onCopy} style={styles.copyBtn}><Ionicons name="copy-outline" size={18} color={colors.primary} /><Text style={styles.copyBtnTxt}>Copiar texto</Text></Pressable>
-            <Pressable onPress={onClose} style={{ marginTop: 20 }}><Text style={styles.changeTxt}>Nueva captura</Text></Pressable>
+            <Pressable accessibilityRole="button" onPress={onShareWA} style={styles.waBtn}><Ionicons name="logo-whatsapp" size={18} color="#fff" /><Text style={styles.waBtnTxt}>Enviar por WhatsApp</Text></Pressable>
+            <Pressable accessibilityRole="button" onPress={onCopy} style={styles.copyBtn}><Ionicons name="copy-outline" size={18} color={colors.primary} /><Text style={styles.copyBtnTxt}>Copiar texto</Text></Pressable>
+            <Pressable accessibilityRole="button" onPress={onClose} style={{ marginTop: 20 }}><Text style={styles.changeTxt}>Nueva captura</Text></Pressable>
           </View>
         </View>
       </View>

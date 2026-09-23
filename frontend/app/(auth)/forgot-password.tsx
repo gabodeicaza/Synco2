@@ -15,7 +15,7 @@ import { Button } from '@/src/components/Button';
 import { api } from '@/src/api';
 import { colors, radius, spacing } from '@/src/theme';
 import { InlineError } from '@/src/components/InlineError';
-import { t } from '@/src/i18n';
+import { t, a11y } from '@/src/i18n';
 import { esErrorDeRed } from '@/src/utils/errores';
 import { showToast } from '@/src/utils/toast';
 
@@ -52,7 +52,7 @@ export default function ForgotPasswordScreen() {
         contentContainerStyle={[styles.scroll, { paddingTop: insets.top + 16, paddingBottom: insets.bottom + 24 }]}
       >
         <View style={styles.topBar}>
-          <Pressable onPress={() => router.replace('/(auth)/login')} hitSlop={10} style={styles.backIconBtn}>
+          <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.replace('/(auth)/login')} hitSlop={10} style={styles.backIconBtn}>
             <Ionicons name="chevron-back" size={22} color={colors.text} />
           </Pressable>
           <Text style={styles.topTitle}>Olvidé mi contraseña</Text>
@@ -94,7 +94,7 @@ export default function ForgotPasswordScreen() {
 
             <View style={{ height: spacing.md }} />
             <Button label="Enviar enlace" loading={busy} onPress={onSubmit} fullWidth />
-            <Pressable onPress={() => router.replace('/(auth)/login')} hitSlop={8} style={styles.linkRow}>
+            <Pressable accessibilityRole="button" onPress={() => router.replace('/(auth)/login')} hitSlop={8} style={styles.linkRow}>
               <Text style={styles.linkText}>Volver a inicio de sesión</Text>
             </Pressable>
           </View>

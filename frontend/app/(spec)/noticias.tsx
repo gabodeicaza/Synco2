@@ -14,6 +14,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '@/src/auth-context';
 import { api, Announcement, Area, LocationNode } from '@/src/api';
 import { colors, radius, shadow, spacing } from '@/src/theme';
+import { a11y } from '@/src/i18n';
 
 const POLL_MS = 60000;
 
@@ -110,7 +111,7 @@ export default function NoticiasScreen() {
           <Text style={styles.headerTitle}>Noticias</Text>
           <Text style={styles.headerSubtitle}>Anuncios del equipo del proyecto</Text>
         </View>
-        <Pressable onPress={() => load(false)} hitSlop={10} style={styles.refreshBtn}>
+        <Pressable accessibilityRole="button" accessibilityLabel={a11y('actualizar')} onPress={() => load(false)} hitSlop={10} style={styles.refreshBtn}>
           <Ionicons name="refresh" size={18} color="#fff" />
         </Pressable>
       </View>
@@ -133,7 +134,7 @@ export default function NoticiasScreen() {
           <View style={styles.errorBox}>
             <Ionicons name="alert-circle-outline" size={22} color={colors.error} />
             <Text style={styles.errorTxt}>{error}</Text>
-            <Pressable onPress={() => load(false)} style={styles.retryBtn}>
+            <Pressable accessibilityRole="button" onPress={() => load(false)} style={styles.retryBtn}>
               <Text style={styles.retryTxt}>Reintentar</Text>
             </Pressable>
           </View>
@@ -170,7 +171,7 @@ export default function NoticiasScreen() {
         )}
       </ScrollView>
 
-      <Pressable onPress={() => setEditor({ kind: 'create' })} style={[styles.fab, { bottom: insets.bottom + 16 }]}>
+      <Pressable accessibilityRole="button" accessibilityLabel={a11y('agregar')} hitSlop={8} onPress={() => setEditor({ kind: 'create' })} style={[styles.fab, { bottom: insets.bottom + 16 }]}>
         <Ionicons name="add" size={26} color="#fff" />
       </Pressable>
 
@@ -245,16 +246,16 @@ function AnnouncementCard({
         <Text style={styles.cardMetaTxt}>{formatDate(item.created_at)}</Text>
         <View style={{ flex: 1 }} />
         {onTogglePin ? (
-          <Pressable hitSlop={8} onPress={onTogglePin} style={styles.iconBtn}>
+          <Pressable accessibilityRole="button" accessibilityLabel={a11y(item.pinned ? 'desfijar' : 'fijar')} hitSlop={8} onPress={onTogglePin} style={styles.iconBtn}>
             <Ionicons name={item.pinned ? 'pin' : 'pin-outline'} size={16} color={colors.primary} />
           </Pressable>
         ) : null}
         {canEdit ? (
           <>
-            <Pressable hitSlop={8} onPress={onEdit} style={styles.iconBtn}>
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y('editar')} hitSlop={8} onPress={onEdit} style={styles.iconBtn}>
               <Ionicons name="create-outline" size={16} color={colors.primary} />
             </Pressable>
-            <Pressable hitSlop={8} onPress={onDelete} style={styles.iconBtn}>
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y('eliminar')} hitSlop={8} onPress={onDelete} style={styles.iconBtn}>
               <Ionicons name="trash-outline" size={16} color={colors.error} />
             </Pressable>
           </>
@@ -338,7 +339,7 @@ function AnnouncementEditor({
               <Text style={styles.modalTitle}>
                 {editor?.kind === 'edit' ? 'Editar noticia' : 'Nueva noticia'}
               </Text>
-              <Pressable onPress={onClose} hitSlop={10}>
+              <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} onPress={onClose} hitSlop={10}>
                 <Ionicons name="close" size={22} color={colors.textBody} />
               </Pressable>
             </View>
@@ -368,7 +369,7 @@ function AnnouncementEditor({
                 ].map((opt) => {
                   const active = jerarquia === opt.key;
                   return (
-                    <Pressable
+                    <Pressable accessibilityRole="button"
                       key={String(opt.key)}
                       onPress={() => setJerarquia(opt.key as any)}
                       disabled={busy}
@@ -385,7 +386,7 @@ function AnnouncementEditor({
               </View>
               <Text style={styles.modalLabel}>Audiencia (opcional)</Text>
               <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-                <Pressable
+                <Pressable accessibilityRole="button"
                   onPress={() => setAudiencia(null)}
                   disabled={busy}
                   style={{
@@ -399,7 +400,7 @@ function AnnouncementEditor({
                 {areas.map((a) => {
                   const active = (audiencia || '').toLowerCase() === a.name.toLowerCase();
                   return (
-                    <Pressable
+                    <Pressable accessibilityRole="button"
                       key={a.id}
                       onPress={() => setAudiencia(a.name)}
                       disabled={busy}
@@ -429,7 +430,7 @@ function AnnouncementEditor({
                 Si la noticia es <Text style={{ fontWeight: '800' }}>Importante</Text> o <Text style={{ fontWeight: '800' }}>Urgente</Text>, aparecera como nota dentro de la seccion del nodo en las exportaciones.
               </Text>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingVertical: 6 }}>
-                <Pressable
+                <Pressable accessibilityRole="button"
                   onPress={() => setNodeId(null)}
                   disabled={busy}
                   style={{
@@ -445,7 +446,7 @@ function AnnouncementEditor({
                 {nodes.map((nd) => {
                   const active = nodeId === nd.id;
                   return (
-                    <Pressable
+                    <Pressable accessibilityRole="button"
                       key={nd.id}
                       onPress={() => setNodeId(nd.id)}
                       disabled={busy}
@@ -475,7 +476,7 @@ function AnnouncementEditor({
                 </View>
               ) : null}
             </ScrollView>
-            <Pressable onPress={submit} style={[styles.saveBtn, busy && { opacity: 0.7 }]} disabled={busy}>
+            <Pressable accessibilityRole="button" onPress={submit} style={[styles.saveBtn, busy && { opacity: 0.7 }]} disabled={busy}>
               {busy ? <ActivityIndicator color="#fff" /> : <Text style={styles.saveTxt}>{editor?.kind === 'edit' ? 'Guardar cambios' : 'Publicar'}</Text>}
             </Pressable>
           </View>

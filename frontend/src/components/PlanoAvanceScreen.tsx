@@ -27,6 +27,7 @@ import { useAuth } from '@/src/auth-context';
 import { ROLE_COORD, ROLE_SUB } from '@/src/utils/roles';
 import { PlanoMarkerOverlay, PLANO_MARKER_ESTADO_COLOR, PLANO_MARKER_ESTADO_LABEL } from '@/src/components/PlanoMarkerOverlay';
 import { requestMediaLibraryPermission } from '@/src/utils/permissions';
+import { a11y } from '@/src/i18n';
 
 type AddMode = 'none' | 'punto' | 'segmento' | 'dado';
 type LabelPromptDraft = { tipo: 'punto' | 'segmento' | 'dado'; x: number; y: number; x2?: number; y2?: number };
@@ -323,7 +324,7 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
       <View style={{ flex: 1, backgroundColor: colors.bg }}>
         <View style={[styles.headerWrap, { backgroundColor: headerColor, paddingTop: insets.top + spacing.xs }]}>
           <View style={styles.headerTopRow}>
-            <Pressable onPress={() => setSelectedId(null)} hitSlop={10} style={styles.iconBtn}>
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => setSelectedId(null)} hitSlop={10} style={styles.iconBtn}>
               <Ionicons name="chevron-back" size={22} color={headerTextColor} />
             </Pressable>
             <Text style={[styles.titleBar, { color: headerTextColor }]} numberOfLines={1}>{detail?.nombre || 'Plano'}</Text>
@@ -337,28 +338,28 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
           <ScrollView contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + spacing.xl, alignItems: 'center' }]}>
             {canEditEstructura ? (
               <View style={styles.toolRow}>
-                <Pressable
+                <Pressable accessibilityRole="button"
                   onPress={() => { setAddMode(addMode === 'punto' ? 'none' : 'punto'); setSegmentDraft(null); setMoverActivo(false); }}
                   style={[styles.toolBtn, addMode === 'punto' && styles.toolBtnActive]}
                 >
                   <Ionicons name="ellipse-outline" size={16} color={addMode === 'punto' ? '#fff' : colors.primary} />
                   <Text style={[styles.toolBtnTxt, addMode === 'punto' && { color: '#fff' }]}>Punto</Text>
                 </Pressable>
-                <Pressable
+                <Pressable accessibilityRole="button"
                   onPress={() => { setAddMode(addMode === 'dado' ? 'none' : 'dado'); setSegmentDraft(null); setMoverActivo(false); }}
                   style={[styles.toolBtn, addMode === 'dado' && styles.toolBtnActive]}
                 >
                   <Ionicons name="square-outline" size={16} color={addMode === 'dado' ? '#fff' : colors.primary} />
                   <Text style={[styles.toolBtnTxt, addMode === 'dado' && { color: '#fff' }]}>Dado</Text>
                 </Pressable>
-                <Pressable
+                <Pressable accessibilityRole="button"
                   onPress={() => { setAddMode(addMode === 'segmento' ? 'none' : 'segmento'); setSegmentDraft(null); setMoverActivo(false); }}
                   style={[styles.toolBtn, addMode === 'segmento' && styles.toolBtnActive]}
                 >
                   <Ionicons name="remove-outline" size={16} color={addMode === 'segmento' ? '#fff' : colors.primary} />
                   <Text style={[styles.toolBtnTxt, addMode === 'segmento' && { color: '#fff' }]}>Trabe</Text>
                 </Pressable>
-                <Pressable
+                <Pressable accessibilityRole="button"
                   onPress={() => { setMoverActivo((v) => !v); setAddMode('none'); setSegmentDraft(null); }}
                   style={[styles.toolBtn, moverActivo && styles.toolBtnActive]}
                 >
@@ -439,12 +440,12 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
         {/* Modal: acciones sobre un marcador existente */}
         <Modal visible={!!markerModal} transparent animationType="fade" onRequestClose={() => setMarkerModal(null)}>
           <Pressable style={styles.modalBackdropCenter} onPress={() => setMarkerModal(null)}>
-            <Pressable style={styles.modalCard} onPress={() => {}}>
+            <Pressable accessibilityRole="button" style={styles.modalCard} onPress={() => {}}>
               <Text style={styles.modalTitle}>{markerModal?.label}</Text>
               <Text style={styles.fieldLabel}>Estado</Text>
               <View style={{ gap: spacing.xs }}>
                 {(['sin_iniciar', 'en_proceso', 'terminado'] as PlanoMarkerEstatus[]).map((k) => (
-                  <Pressable
+                  <Pressable accessibilityRole="button"
                     key={k}
                     onPress={() => onSetEstatus(k)}
                     style={[
@@ -494,7 +495,7 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <View style={[styles.headerWrap, { backgroundColor: headerColor, paddingTop: insets.top + spacing.xs }]}>
         <View style={styles.headerTopRow}>
-          <Pressable onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
+          <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
             <Ionicons name="chevron-back" size={22} color={headerTextColor} />
           </Pressable>
           <Text style={[styles.titleBar, { color: headerTextColor }]} numberOfLines={1}>Plano de Avance</Text>
@@ -506,7 +507,7 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
         <View style={styles.sectionHeaderRow}>
           <Text style={styles.sectionTitle}>Planos</Text>
           {canEditEstructura ? (
-            <Pressable onPress={() => setNewPlanoOpen(true)} style={styles.addBtn}>
+            <Pressable accessibilityRole="button" onPress={() => setNewPlanoOpen(true)} style={styles.addBtn}>
               <Ionicons name="add" size={16} color={colors.primary} />
               <Text style={styles.addBtnTxt}>Nuevo plano</Text>
             </Pressable>
@@ -522,7 +523,7 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
           ) : (
             planos.map((p, idx) => (
               <View key={p.id} style={[styles.planoRow, idx > 0 && styles.rowBorder]}>
-                <Pressable style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10 }} onPress={() => setSelectedId(p.id)}>
+                <Pressable accessibilityRole="button" style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10 }} onPress={() => setSelectedId(p.id)}>
                   <Ionicons name="map-outline" size={20} color={colors.primary} />
                   <View style={{ flex: 1 }}>
                     <Text style={styles.planoNombre} numberOfLines={1}>{p.nombre}</Text>
@@ -531,7 +532,7 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
                   <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
                 </Pressable>
                 {canEditEstructura ? (
-                  <Pressable hitSlop={8} onPress={() => onDeletePlano(p)} style={{ paddingLeft: spacing.sm }}>
+                  <Pressable accessibilityRole="button" accessibilityLabel={a11y('eliminar')} hitSlop={8} onPress={() => onDeletePlano(p)} style={{ paddingLeft: spacing.sm }}>
                     <Ionicons name="trash-outline" size={18} color={colors.error} />
                   </Pressable>
                 ) : null}

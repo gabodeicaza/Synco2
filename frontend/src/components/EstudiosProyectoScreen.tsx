@@ -16,6 +16,7 @@ import {
 } from '@/src/api';
 import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
 import { Button } from '@/src/components/Button';
+import { a11y } from '@/src/i18n';
 
 const DISCIPLINAS: EstudioDisciplina[] = ['mecanica_suelos', 'topografia', 'hidrologico', 'instalaciones'];
 
@@ -145,7 +146,7 @@ export default function EstudiosProyectoScreen({ projectId }: { projectId: strin
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <View style={[styles.headerWrap, { backgroundColor: headerColor, paddingTop: insets.top + spacing.xs }]}>
         <View style={styles.headerTopRow}>
-          <Pressable onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
+          <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
             <Ionicons name="chevron-back" size={22} color={headerTextColor} />
           </Pressable>
           <Text style={[styles.titleBar, { color: headerTextColor }]} numberOfLines={1}>Estudios y Proyecto Ejecutivo</Text>
@@ -157,7 +158,7 @@ export default function EstudiosProyectoScreen({ projectId }: { projectId: strin
         {/* === Panel superior: avance por actividad === */}
         <View style={styles.sectionHeaderRow}>
           <Text style={styles.sectionTitle}>Avance de actividades</Text>
-          <Pressable onPress={() => setActFormOpen(true)} style={styles.addBtn}>
+          <Pressable accessibilityRole="button" onPress={() => setActFormOpen(true)} style={styles.addBtn}>
             <Ionicons name="add" size={16} color={colors.primary} />
             <Text style={styles.addBtnTxt}>Agregar</Text>
           </Pressable>
@@ -171,7 +172,7 @@ export default function EstudiosProyectoScreen({ projectId }: { projectId: strin
             </View>
           ) : (
             actividades.map((a, idx) => (
-              <Pressable
+              <Pressable accessibilityRole="button"
                 key={a.id}
                 onPress={() => openEditAvance(a)}
                 style={[styles.actRow, idx > 0 && styles.rowBorder]}
@@ -191,7 +192,7 @@ export default function EstudiosProyectoScreen({ projectId }: { projectId: strin
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: spacing.sm }}>
           <View style={styles.tabsRow}>
             {DISCIPLINAS.map((d) => (
-              <Pressable
+              <Pressable accessibilityRole="button"
                 key={d}
                 onPress={() => setDisciplinaTab(d)}
                 style={[styles.tabBtn, disciplinaTab === d && styles.tabBtnActive]}
@@ -206,7 +207,7 @@ export default function EstudiosProyectoScreen({ projectId }: { projectId: strin
 
         <View style={styles.sectionHeaderRow}>
           <Text style={styles.bitacoraCount}>{bitacoraFiltrada.length} nota{bitacoraFiltrada.length === 1 ? '' : 's'}</Text>
-          <Pressable onPress={() => setBitFormOpen(true)} style={styles.addBtn}>
+          <Pressable accessibilityRole="button" onPress={() => setBitFormOpen(true)} style={styles.addBtn}>
             <Ionicons name="add" size={16} color={colors.primary} />
             <Text style={styles.addBtnTxt}>Agregar nota</Text>
           </Pressable>

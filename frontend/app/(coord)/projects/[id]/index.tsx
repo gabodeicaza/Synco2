@@ -23,7 +23,7 @@ import { ReportPreviewSheet } from '@/src/components/ReportPreviewSheet';
 import { fmtDateTimeCDMX } from '@/src/utils/tz';
 import { moduloActivo } from '@/src/utils/modulos';
 import { getMediaLibraryPermission, requestMediaLibraryPermission } from '@/src/utils/permissions';
-import { t } from '@/src/i18n';
+import { t, a11y } from '@/src/i18n';
 
 // Limite cliente coherente con backend (20 MB). Evita subidas que el servidor rechazaria.
 const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
@@ -85,7 +85,7 @@ const ReportFeedItem = React.memo(function ReportFeedItem({ report, onPress }: {
   const severidadRaw = (r as any).severidad;
   const severidadList: string[] = Array.isArray(severidadRaw) ? severidadRaw : severidadRaw ? [severidadRaw] : [];
   return (
-    <Pressable onPress={() => onPress(r)} style={({ pressed }) => [styles.feedCard, pressed && { opacity: 0.85 }]}>
+    <Pressable accessibilityRole="button" onPress={() => onPress(r)} style={({ pressed }) => [styles.feedCard, pressed && { opacity: 0.85 }]}>
       {thumb ? (
         <Image
           source={{ uri: thumb.startsWith('data:image') ? thumb : `data:image/jpeg;base64,${thumb}` }}
@@ -1061,7 +1061,7 @@ export default function ProjectDetailScreen() {
   return (
     <View style={[styles.flex, { paddingTop: insets.top }]}>
       <View style={styles.header}>
-        <Pressable onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
+        <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
           <Ionicons name="chevron-back" size={24} color={colors.text} />
         </Pressable>
         <Text style={styles.title} numberOfLines={1}>{project?.name || 'Proyecto'}</Text>
@@ -1080,7 +1080,7 @@ export default function ProjectDetailScreen() {
           {/* ===== Pestanas: Reportes / Operacion / Configuracion (justo debajo del header) ===== */}
           <View style={styles.tabBarWrap}>
             <View style={styles.tabBar}>
-              <Pressable
+              <Pressable accessibilityRole="button"
                 onPress={() => setActiveTab('reportes')}
                 style={[styles.tabBtn, activeTab === 'reportes' && styles.tabBtnActive]}
               >
@@ -1093,7 +1093,7 @@ export default function ProjectDetailScreen() {
                   Reportes
                 </Text>
               </Pressable>
-              <Pressable
+              <Pressable accessibilityRole="button"
                 onPress={() => setActiveTab('operacion')}
                 style={[styles.tabBtn, activeTab === 'operacion' && styles.tabBtnActive]}
               >
@@ -1106,7 +1106,7 @@ export default function ProjectDetailScreen() {
                   Operacion
                 </Text>
               </Pressable>
-              <Pressable
+              <Pressable accessibilityRole="button"
                 onPress={() => setActiveTab('configuracion')}
                 style={[styles.tabBtn, activeTab === 'configuracion' && styles.tabBtnActive]}
               >
@@ -1134,7 +1134,7 @@ export default function ProjectDetailScreen() {
               ListHeaderComponent={
                 <>
                   {/* Boton GRANDE: Exportar Reportes (PDF / Word / PPT / Excel) _ arriba de los filtros a peticion del Coord. General */}
-                  <Pressable
+                  <Pressable accessibilityRole="button"
                     onPress={openExportFlow}
                     disabled={exportBusy}
                     style={({ pressed }) => [
@@ -1161,7 +1161,7 @@ export default function ProjectDetailScreen() {
                   </Pressable>
 
                   {/* Killer Feature . Resumen Ejecutivo con IA */}
-                  <Pressable
+                  <Pressable accessibilityRole="button"
                     onPress={openAiSummary}
                     disabled={aiBusy}
                     style={({ pressed }) => [
@@ -1206,7 +1206,7 @@ export default function ProjectDetailScreen() {
                         ] as const).map((t) => {
                           const active = selectedTimeFilter === t.k && !selectedDate;
                           return (
-                            <Pressable
+                            <Pressable accessibilityRole="button"
                               key={t.k}
                               onPress={() => {
                                 setSelectedDate(null);
@@ -1227,7 +1227,7 @@ export default function ProjectDetailScreen() {
                         })}
 
                         {/* Boton Calendario */}
-                        <Pressable
+                        <Pressable accessibilityRole="button"
                           onPress={() => setCalendarOpen(true)}
                           style={[styles.chip, !!selectedDate && styles.chipActive]}
                         >
@@ -1240,7 +1240,7 @@ export default function ProjectDetailScreen() {
                             {selectedDate || 'Calendario'}
                           </Text>
                           {selectedDate && (
-                            <Pressable hitSlop={8} onPress={() => setSelectedDate(null)} style={{ marginLeft: 4 }}>
+                            <Pressable accessibilityRole="button" accessibilityLabel={a11y('quitar')} hitSlop={8} onPress={() => setSelectedDate(null)} style={{ marginLeft: 4 }}>
                               <Ionicons name="close-circle" size={14} color="#fff" />
                             </Pressable>
                           )}
@@ -1249,7 +1249,7 @@ export default function ProjectDetailScreen() {
 
                       {/* Fila: Filtros rapidos por estatus */}
                       <View style={[styles.chipRow, { marginTop: 8 }]}>
-                        <Pressable
+                        <Pressable accessibilityRole="button"
                           onPress={() => setSelectedStatusFilter((s) => (s === 'incidencia' ? null : 'incidencia'))}
                           style={[styles.chip, selectedStatusFilter === 'incidencia' && styles.chipActive]}
                         >
@@ -1262,7 +1262,7 @@ export default function ProjectDetailScreen() {
                             Con Incidencia
                           </Text>
                         </Pressable>
-                        <Pressable
+                        <Pressable accessibilityRole="button"
                           onPress={() => setSelectedStatusFilter((s) => (s === 'avance' ? null : 'avance'))}
                           style={[styles.chip, selectedStatusFilter === 'avance' && styles.chipActive]}
                         >
@@ -1289,7 +1289,7 @@ export default function ProjectDetailScreen() {
                           returnKeyType="search"
                         />
                         {!!searchQuery && (
-                          <Pressable onPress={() => setSearchQuery('')} hitSlop={8}>
+                          <Pressable accessibilityRole="button" accessibilityLabel={a11y('quitar')} onPress={() => setSearchQuery('')} hitSlop={8}>
                             <Ionicons name="close-circle" size={16} color="#6B7280" />
                           </Pressable>
                         )}
@@ -1302,7 +1302,7 @@ export default function ProjectDetailScreen() {
                           showsHorizontalScrollIndicator={false}
                           contentContainerStyle={[styles.chipRow, { marginTop: 8 }]}
                         >
-                          <Pressable
+                          <Pressable accessibilityRole="button"
                             onPress={() => setSelectedNodeFilter(null)}
                             style={[styles.chip, !selectedNodeFilter && styles.chipActive]}
                           >
@@ -1318,7 +1318,7 @@ export default function ProjectDetailScreen() {
                           {nodes.map((n) => {
                             const active = selectedNodeFilter === n;
                             return (
-                              <Pressable
+                              <Pressable accessibilityRole="button"
                                 key={`node-${n}`}
                                 onPress={() => setSelectedNodeFilter(active ? null : n)}
                                 style={[styles.chip, active && styles.chipActive]}
@@ -1344,7 +1344,7 @@ export default function ProjectDetailScreen() {
                           showsHorizontalScrollIndicator={false}
                           contentContainerStyle={[styles.chipRow, { marginTop: 8 }]}
                         >
-                          <Pressable
+                          <Pressable accessibilityRole="button"
                             onPress={() => setSelectedAreaFilter(null)}
                             style={[styles.chip, !selectedAreaFilter && styles.chipActive]}
                           >
@@ -1360,7 +1360,7 @@ export default function ProjectDetailScreen() {
                           {areas.map((a) => {
                             const active = selectedAreaFilter === a;
                             return (
-                              <Pressable
+                              <Pressable accessibilityRole="button"
                                 key={`area-${a}`}
                                 onPress={() => setSelectedAreaFilter(active ? null : a)}
                                 style={[styles.chip, active && styles.chipActive]}
@@ -1549,7 +1549,7 @@ export default function ProjectDetailScreen() {
               </View>
 
               {/* Calendario historico */}
-              <Pressable
+              <Pressable accessibilityRole="button"
                 onPress={() => setCalendarOpen(true)}
                 style={({ pressed }) => [styles.calendarBtn, pressed && { opacity: 0.9 }]}
               >
@@ -1717,7 +1717,7 @@ export default function ProjectDetailScreen() {
                               <Text style={styles.refItemUrl} numberOfLines={1}>{subtitle}</Text>
                             )}
                           </View>
-                          <Pressable
+                          <Pressable accessibilityRole="button"
                             onPress={() => onOpenRefFile(f)}
                             hitSlop={6}
                             style={styles.refIconBtn}
@@ -1734,7 +1734,7 @@ export default function ProjectDetailScreen() {
                               />
                             )}
                           </Pressable>
-                          <Pressable
+                          <Pressable accessibilityRole="button"
                             onPress={() => onRemoveRefFile(idx)}
                             hitSlop={6}
                             style={styles.refIconBtn}
@@ -1779,7 +1779,7 @@ export default function ProjectDetailScreen() {
                 </Text>
               </View>
 
-              <Pressable onPress={onArchive} style={styles.archiveBtn}>
+              <Pressable accessibilityRole="button" onPress={onArchive} style={styles.archiveBtn}>
                 <Ionicons name="archive-outline" size={16} color={colors.error} />
                 <Text style={styles.archiveText}>Archivar proyecto</Text>
               </Pressable>
@@ -1809,7 +1809,7 @@ export default function ProjectDetailScreen() {
               {exportStep === 'period' ? (
                 <View style={styles.exportBack} />
               ) : (
-                <Pressable
+                <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')}
                   onPress={() => {
                     if (exportBusy) return;
                     if (exportStep === 'format') setExportStep('area');
@@ -1837,7 +1837,7 @@ export default function ProjectDetailScreen() {
                     : `Paso 3 de 3 . ${exportAreaId ? exportAreas.find((a) => a.id === exportAreaId)?.name ?? 'Area' : 'Todas las areas'}`}
                 </Text>
               </View>
-              <Pressable
+              <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')}
                 onPress={closeExportFlow}
                 disabled={exportBusy}
                 hitSlop={10}
@@ -1870,7 +1870,7 @@ export default function ProjectDetailScreen() {
                 {PERIOD_OPTIONS.map((opt) => {
                   const active = exportPeriod === opt.value;
                   return (
-                    <Pressable
+                    <Pressable accessibilityRole="button"
                       key={opt.value}
                       onPress={() => onPickPeriod(opt.value)}
                       style={({ pressed }) => [
@@ -1893,7 +1893,7 @@ export default function ProjectDetailScreen() {
               </View>
             ) : exportStep === 'area' ? (
               <ScrollView contentContainerStyle={{ paddingHorizontal: spacing.md, paddingBottom: spacing.md }}>
-                <Pressable
+                <Pressable accessibilityRole="button"
                   onPress={() => onPickArea(null)}
                   style={({ pressed }) => [
                     styles.exportItem,
@@ -1916,7 +1916,7 @@ export default function ProjectDetailScreen() {
                   </Text>
                 ) : (
                   exportAreas.map((a) => (
-                    <Pressable
+                    <Pressable accessibilityRole="button"
                       key={a.id}
                       onPress={() => onPickArea(a.id)}
                       style={({ pressed }) => [
@@ -1945,7 +1945,7 @@ export default function ProjectDetailScreen() {
             ) : (
               <View style={{ paddingHorizontal: spacing.md, paddingBottom: spacing.md }}>
                 {FORMAT_OPTIONS.map((opt) => (
-                  <Pressable
+                  <Pressable accessibilityRole="button"
                     key={opt.value}
                     onPress={() => onPickFormat(opt.value)}
                     disabled={exportBusy}
@@ -2025,7 +2025,7 @@ export default function ProjectDetailScreen() {
           keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 24}
           style={styles.exportBackdrop}
         >
-          <Pressable style={StyleSheet.absoluteFill} onPress={() => !catSaving && setCatModalOpen(false)} />
+          <Pressable accessibilityRole="button" style={StyleSheet.absoluteFill} onPress={() => !catSaving && setCatModalOpen(false)} />
           <View style={[styles.exportSheet, styles.sheetSurface, { maxHeight: '85%' }]}>
             <View style={styles.exportHandle} />
             <View style={styles.exportHeader}>
@@ -2036,7 +2036,7 @@ export default function ProjectDetailScreen() {
                   Configura el objeto del contrato y las categorias que veran los especialistas al crear reportes.
                 </Text>
               </View>
-              <Pressable
+              <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')}
                 onPress={() => !catSaving && setCatModalOpen(false)}
                 hitSlop={10}
                 style={styles.exportBack}
@@ -2057,7 +2057,7 @@ export default function ProjectDetailScreen() {
                   {catPersonalList.map((it, idx) => (
                     <View key={`${it}-${idx}`} style={styles.catChip}>
                       <Text style={styles.catChipTxt}>{it}</Text>
-                      <Pressable
+                      <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')}
                         onPress={() => setCatPersonalList((arr) => arr.filter((x) => x !== it))}
                         hitSlop={6}
                       >
@@ -2079,7 +2079,7 @@ export default function ProjectDetailScreen() {
                     style={styles.catInput}
                     returnKeyType="done"
                   />
-                  <Pressable onPress={addCatPersonal} style={styles.catAddBtn}>
+                  <Pressable accessibilityRole="button" accessibilityLabel={a11y('agregar')} hitSlop={8} onPress={addCatPersonal} style={styles.catAddBtn}>
                     <Ionicons name="add" size={20} color="#fff" />
                   </Pressable>
                 </View>
@@ -2094,7 +2094,7 @@ export default function ProjectDetailScreen() {
                   {catEquipoList.map((it, idx) => (
                     <View key={`${it}-${idx}`} style={styles.catChip}>
                       <Text style={styles.catChipTxt}>{it}</Text>
-                      <Pressable
+                      <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')}
                         onPress={() => setCatEquipoList((arr) => arr.filter((x) => x !== it))}
                         hitSlop={6}
                       >
@@ -2116,13 +2116,13 @@ export default function ProjectDetailScreen() {
                     style={styles.catInput}
                     returnKeyType="done"
                   />
-                  <Pressable onPress={addCatEquipo} style={styles.catAddBtn}>
+                  <Pressable accessibilityRole="button" accessibilityLabel={a11y('agregar')} hitSlop={8} onPress={addCatEquipo} style={styles.catAddBtn}>
                     <Ionicons name="add" size={20} color="#fff" />
                   </Pressable>
                 </View>
               </View>
 
-              <Pressable
+              <Pressable accessibilityRole="button"
                 onPress={saveCatalogos}
                 disabled={catSaving}
                 style={({ pressed }) => [
@@ -2157,7 +2157,7 @@ export default function ProjectDetailScreen() {
           keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 24}
           style={styles.exportBackdrop}
         >
-          <Pressable
+          <Pressable accessibilityRole="button"
             style={StyleSheet.absoluteFill}
             onPress={() => !catalogoConfigSaving && setCatalogoConfigModalOpen(false)}
           />
@@ -2171,7 +2171,7 @@ export default function ProjectDetailScreen() {
                   Tipo de contrato, forma de captura de avance, nombres de nivel y cadencia de reporte de este proyecto.
                 </Text>
               </View>
-              <Pressable
+              <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')}
                 onPress={() => !catalogoConfigSaving && setCatalogoConfigModalOpen(false)}
                 hitSlop={10}
                 style={styles.exportBack}
@@ -2196,7 +2196,7 @@ export default function ProjectDetailScreen() {
                   ]).map((o) => {
                     const active = tipoContratoDraft === o.v;
                     return (
-                      <Pressable key={o.v} onPress={() => setTipoContratoDraft(o.v)} style={[styles.chip, active && styles.chipActive]}>
+                      <Pressable accessibilityRole="button" key={o.v} onPress={() => setTipoContratoDraft(o.v)} style={[styles.chip, active && styles.chipActive]}>
                         <Text style={{ color: active ? '#fff' : colors.text, fontWeight: '700', fontSize: 12 }}>{o.label}</Text>
                       </Pressable>
                     );
@@ -2218,7 +2218,7 @@ export default function ProjectDetailScreen() {
                   ]).map((o) => {
                     const active = modoAvanceDraft === o.v;
                     return (
-                      <Pressable key={o.v} onPress={() => setModoAvanceDraft(o.v)} style={[styles.chip, active && styles.chipActive]}>
+                      <Pressable accessibilityRole="button" key={o.v} onPress={() => setModoAvanceDraft(o.v)} style={[styles.chip, active && styles.chipActive]}>
                         <Text style={{ color: active ? '#fff' : colors.text, fontWeight: '700', fontSize: 12 }}>{o.label}</Text>
                       </Pressable>
                     );
@@ -2239,7 +2239,7 @@ export default function ProjectDetailScreen() {
                   ]).map((o) => {
                     const active = cadenciaDraft === o.v;
                     return (
-                      <Pressable key={o.v} onPress={() => setCadenciaDraft(o.v)} style={[styles.chip, active && styles.chipActive]}>
+                      <Pressable accessibilityRole="button" key={o.v} onPress={() => setCadenciaDraft(o.v)} style={[styles.chip, active && styles.chipActive]}>
                         <Text style={{ color: active ? '#fff' : colors.text, fontWeight: '700', fontSize: 12 }}>{o.label}</Text>
                       </Pressable>
                     );
@@ -2257,7 +2257,7 @@ export default function ProjectDetailScreen() {
                     {(['LUNES', 'MARTES', 'MIERCOLES', 'JUEVES', 'VIERNES', 'SABADO', 'DOMINGO'] as const).map((d) => {
                       const active = diaInicioSemanaDraft === d;
                       return (
-                        <Pressable key={d} onPress={() => setDiaInicioSemanaDraft(d)} style={[styles.chip, active && styles.chipActive]}>
+                        <Pressable accessibilityRole="button" key={d} onPress={() => setDiaInicioSemanaDraft(d)} style={[styles.chip, active && styles.chipActive]}>
                           <Text style={{ color: active ? '#fff' : colors.text, fontWeight: '700', fontSize: 12 }}>
                             {d.charAt(0) + d.slice(1).toLowerCase()}
                           </Text>
@@ -2278,7 +2278,7 @@ export default function ProjectDetailScreen() {
                   {nombresNivelesDraft.map((it, idx) => (
                     <View key={`${it}-${idx}`} style={styles.catChip}>
                       <Text style={styles.catChipTxt}>{idx + 1}. {it}</Text>
-                      <Pressable
+                      <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')}
                         onPress={() => setNombresNivelesDraft((arr) => arr.filter((_, i) => i !== idx))}
                         hitSlop={6}
                       >
@@ -2300,7 +2300,7 @@ export default function ProjectDetailScreen() {
                     style={styles.catInput}
                     returnKeyType="done"
                   />
-                  <Pressable onPress={addNombreNivel} style={styles.catAddBtn}>
+                  <Pressable accessibilityRole="button" accessibilityLabel={a11y('agregar')} hitSlop={8} onPress={addNombreNivel} style={styles.catAddBtn}>
                     <Ionicons name="add" size={20} color="#fff" />
                   </Pressable>
                 </View>
@@ -2340,7 +2340,7 @@ export default function ProjectDetailScreen() {
                   {unidadesPersonalizadasDraft.map((it, idx) => (
                     <View key={`${it}-${idx}`} style={styles.catChip}>
                       <Text style={styles.catChipTxt}>{it}</Text>
-                      <Pressable
+                      <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')}
                         onPress={() => setUnidadesPersonalizadasDraft((arr) => arr.filter((x) => x !== it))}
                         hitSlop={6}
                       >
@@ -2363,7 +2363,7 @@ export default function ProjectDetailScreen() {
                     autoCapitalize="characters"
                     returnKeyType="done"
                   />
-                  <Pressable onPress={addUnidadPersonalizada} style={styles.catAddBtn}>
+                  <Pressable accessibilityRole="button" accessibilityLabel={a11y('agregar')} hitSlop={8} onPress={addUnidadPersonalizada} style={styles.catAddBtn}>
                     <Ionicons name="add" size={20} color="#fff" />
                   </Pressable>
                 </View>
@@ -2393,7 +2393,7 @@ export default function ProjectDetailScreen() {
           keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 24}
           style={styles.exportBackdrop}
         >
-          <Pressable
+          <Pressable accessibilityRole="button"
             style={StyleSheet.absoluteFill}
             onPress={() => !objetoSaving && setObjetoModalOpen(false)}
           />
@@ -2407,7 +2407,7 @@ export default function ProjectDetailScreen() {
                   Estos datos aparecen en las portadas y encabezados de los reportes exportados (PDF, Word, PowerPoint).
                 </Text>
               </View>
-              <Pressable
+              <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')}
                 onPress={() => !objetoSaving && setObjetoModalOpen(false)}
                 hitSlop={10}
                 style={styles.exportBack}
@@ -2536,7 +2536,7 @@ export default function ProjectDetailScreen() {
                 />
               </View>
 
-              <Pressable
+              <Pressable accessibilityRole="button"
                 onPress={saveObjeto}
                 disabled={objetoSaving}
                 style={({ pressed }) => [
@@ -2573,7 +2573,7 @@ export default function ProjectDetailScreen() {
         <View style={[styles.exportSheet, styles.sheetSurface, { maxHeight: '88%' }]}>
           <View style={styles.exportHandle} />
           <View style={styles.exportHeader}>
-            <Pressable
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')}
               style={styles.exportBack}
               onPress={() => gdBusy === null && setGdModalOpen(false)}
               hitSlop={10}
@@ -2592,7 +2592,7 @@ export default function ProjectDetailScreen() {
             contentContainerStyle={{ paddingBottom: 24 }}
             keyboardShouldPersistTaps="handled"
           >
-            <Pressable
+            <Pressable accessibilityRole="button"
               onPress={onAddGeneralDataImages}
               disabled={gdBusy !== null}
               style={({ pressed }) => ({
@@ -2632,7 +2632,7 @@ export default function ProjectDetailScreen() {
                   Maximo 5 MB por imagen . hasta 30 imagenes por proyecto.
                 </Text>
                 {/* Boton secundario redundante para no perder el CTA en el empty-state */}
-                <Pressable
+                <Pressable accessibilityRole="button"
                   onPress={onAddGeneralDataImages}
                   disabled={gdBusy !== null}
                   style={({ pressed }) => ({
@@ -2675,7 +2675,7 @@ export default function ProjectDetailScreen() {
                     />
                     <View style={{ padding: 8, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
                       <Text style={{ color: colors.textMuted, fontSize: 12 }}>#{idx + 1}</Text>
-                      <Pressable
+                      <Pressable accessibilityRole="button" accessibilityLabel={a11y('eliminar')}
                         onPress={() => onDeleteGeneralDataImage(idx)}
                         disabled={gdBusy !== null}
                         hitSlop={8}
@@ -2716,7 +2716,7 @@ export default function ProjectDetailScreen() {
                 Sube fondos institucionales que se imprimiran como base al exportar reportes.
               </Text>
             </View>
-            <Pressable
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')}
               onPress={() => !tplBusyKind && setTplModalOpen(false)}
               hitSlop={10}
               style={styles.exportBack}
@@ -2777,7 +2777,7 @@ export default function ProjectDetailScreen() {
                     </View>
                   </View>
                   <View style={styles.tplBtnRow}>
-                    <Pressable
+                    <Pressable accessibilityRole="button"
                       onPress={() => onPickAndUploadTemplate(kind)}
                       disabled={!!tplBusyKind}
                       style={({ pressed }) => [
@@ -2803,7 +2803,7 @@ export default function ProjectDetailScreen() {
                       )}
                     </Pressable>
                     {hasFile && (
-                      <Pressable
+                      <Pressable accessibilityRole="button"
                         onPress={() => onDeleteTemplate(kind)}
                         disabled={!!tplBusyKind}
                         style={({ pressed }) => [
@@ -2841,7 +2841,7 @@ function InfoRow({ icon, label, value }: { icon: any; label: string; value: stri
 
 function ActionTile({ icon, title, subtitle, disabled, comingSoon, onPress, busy, badge }: any) {
   return (
-    <Pressable
+    <Pressable accessibilityRole="button"
       onPress={onPress}
       disabled={!!disabled}
       style={({ pressed }) => [styles.tile, disabled && { opacity: 0.55 }, pressed && !disabled && { transform: [{ scale: 0.99 }] }]}
@@ -2908,7 +2908,7 @@ function AiSummaryModal({
               <Text style={styles.exportTitle}>Resumen Ejecutivo con IA</Text>
               <Text style={styles.exportSubtitle}>Generado a partir de los reportes de hoy</Text>
             </View>
-            <Pressable onPress={onClose} hitSlop={10} style={styles.exportBack}>
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} onPress={onClose} hitSlop={10} style={styles.exportBack}>
               <Ionicons name="close" size={22} color={colors.text} />
             </Pressable>
           </View>
@@ -2923,7 +2923,7 @@ function AiSummaryModal({
               <View style={{ paddingVertical: 20, alignItems: 'center', gap: 8 }}>
                 <Ionicons name="alert-circle-outline" size={40} color={colors.error} />
                 <Text style={{ color: colors.error, textAlign: 'center', fontWeight: '700' }}>{error}</Text>
-                <Pressable onPress={onRegenerate} style={{ marginTop: 12, padding: 10 }}>
+                <Pressable accessibilityRole="button" onPress={onRegenerate} style={{ marginTop: 12, padding: 10 }}>
                   <Text style={{ color: colors.primary, fontWeight: '800' }}>Reintentar</Text>
                 </Pressable>
               </View>
@@ -2941,7 +2941,7 @@ function AiSummaryModal({
                 </View>
 
                 <View style={{ flexDirection: 'row', gap: 10, marginTop: 8 }}>
-                  <Pressable
+                  <Pressable accessibilityRole="button"
                     onPress={onCopy}
                     style={({ pressed }) => [
                       { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 12, borderRadius: 10, backgroundColor: copied ? colors.success : colors.primary },
@@ -2951,7 +2951,7 @@ function AiSummaryModal({
                     <Ionicons name={copied ? "checkmark-circle" : "copy-outline"} size={18} color="#fff" />
                     <Text style={{ color: '#fff', fontWeight: '800' }}>{copied ? 'Copiado' : 'Copiar resumen'}</Text>
                   </Pressable>
-                  <Pressable
+                  <Pressable accessibilityRole="button" accessibilityLabel={a11y('actualizar')} hitSlop={8}
                     onPress={onRegenerate}
                     style={({ pressed }) => [
                       { width: 44, height: 44, alignItems: 'center', justifyContent: 'center', borderRadius: 10, borderWidth: 1.5, borderColor: colors.primary },

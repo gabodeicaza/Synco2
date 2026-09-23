@@ -25,6 +25,7 @@ import { formatMoney, formatCantidad, isValidDecimalInput, sumDecimalStringsAsCe
 import { ImportarCatalogoModal } from '@/src/components/ImportarCatalogoModal';
 import { ImportarMaestroModal } from '@/src/components/ImportarMaestroModal';
 import { nombreNivel, nombreConcepto, tituloModuloCatalogo, pluralizar } from '@/src/utils/nombresNivel';
+import { a11y } from '@/src/i18n';
 
 type ViewMode = 'partidas' | 'conceptos' | 'busqueda';
 type ConceptoEditableField = 'precio_unitario' | 'meta' | 'importe_total_editable';
@@ -290,7 +291,7 @@ export default function CatalogoConceptosScreen({ projectId }: { projectId: stri
           quedaba invisible. */}
       <View style={[styles.headerWrap, { backgroundColor: headerColor, paddingTop: insets.top + spacing.xs }]}>
         <View style={styles.headerTopRow}>
-          <Pressable
+          <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')}
             onPress={() => {
               if (mode === 'conceptos') backToPartidas();
               else if (mode === 'partidas' && breadcrumb.length > 0) subirUnNivel();
@@ -334,7 +335,7 @@ export default function CatalogoConceptosScreen({ projectId }: { projectId: stri
           style={styles.searchInput}
         />
         {query || unidadFiltro ? (
-          <Pressable onPress={clearSearch} hitSlop={8}>
+          <Pressable accessibilityRole="button" accessibilityLabel={a11y('quitar')} onPress={clearSearch} hitSlop={8}>
             <Ionicons name="close-circle" size={18} color={colors.textMuted} />
           </Pressable>
         ) : null}
@@ -343,7 +344,7 @@ export default function CatalogoConceptosScreen({ projectId }: { projectId: stri
         {UNIDADES.map((u) => {
           const active = unidadFiltro === u;
           return (
-            <Pressable
+            <Pressable accessibilityRole="button"
               key={u}
               onPress={() => setUnidadFiltro(active ? null : u)}
               style={[styles.unidadChip, active && { backgroundColor: colors.primary, borderColor: colors.primary }]}
@@ -400,7 +401,7 @@ export default function CatalogoConceptosScreen({ projectId }: { projectId: stri
       )}
 
       {canImport && mode !== 'busqueda' ? (
-        <Pressable style={styles.importFab} onPress={() => setImportOpen(true)}>
+        <Pressable accessibilityRole="button" style={styles.importFab} onPress={() => setImportOpen(true)}>
           <Ionicons name="cloud-upload-outline" size={18} color="#fff" />
           <Text style={styles.importFabTxt}>Importar catálogo</Text>
         </Pressable>
@@ -518,10 +519,10 @@ function NuevaPartidaModal({
           <TextInput value={nombre} onChangeText={setNombre} style={styles.nuevaPartidaInput} editable={!busy} placeholder="Ej. Albañilerías" placeholderTextColor={colors.textMuted} />
           {err ? <Text style={{ color: colors.error, fontSize: 12, marginTop: 8 }}>{err}</Text> : null}
           <View style={{ flexDirection: 'row', gap: 10, marginTop: 16 }}>
-            <Pressable onPress={onClose} style={[styles.nuevaPartidaBtn, { backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border }]} disabled={busy}>
+            <Pressable accessibilityRole="button" onPress={onClose} style={[styles.nuevaPartidaBtn, { backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border }]} disabled={busy}>
               <Text style={{ color: colors.text, fontWeight: '700' }}>Cancelar</Text>
             </Pressable>
-            <Pressable onPress={crear} style={[styles.nuevaPartidaBtn, { backgroundColor: colors.primary }, busy && { opacity: 0.6 }]} disabled={busy}>
+            <Pressable accessibilityRole="button" onPress={crear} style={[styles.nuevaPartidaBtn, { backgroundColor: colors.primary }, busy && { opacity: 0.6 }]} disabled={busy}>
               {busy ? <ActivityIndicator color="#fff" /> : <Text style={{ color: '#fff', fontWeight: '700' }}>Crear</Text>}
             </Pressable>
           </View>
@@ -561,14 +562,14 @@ function PartidasList({
     <View style={{ flex: 1 }}>
       {breadcrumb.length > 0 ? (
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.breadcrumbRow} contentContainerStyle={{ paddingHorizontal: spacing.md, alignItems: 'center' }}>
-          <Pressable onPress={() => onIrABreadcrumb(-1)} style={styles.breadcrumbItem}>
+          <Pressable accessibilityRole="button" onPress={() => onIrABreadcrumb(-1)} style={styles.breadcrumbItem}>
             <Ionicons name="albums-outline" size={13} color={colors.primary} />
             <Text style={styles.breadcrumbTxt}>Catálogo</Text>
           </Pressable>
           {breadcrumb.map((p, idx) => (
             <React.Fragment key={p.id}>
               <Ionicons name="chevron-forward" size={12} color={colors.textMuted} />
-              <Pressable onPress={() => onIrABreadcrumb(idx)} style={styles.breadcrumbItem}>
+              <Pressable accessibilityRole="button" onPress={() => onIrABreadcrumb(idx)} style={styles.breadcrumbItem}>
                 <Text style={[styles.breadcrumbTxt, idx === breadcrumb.length - 1 && styles.breadcrumbTxtActive]} numberOfLines={1}>
                   {p.clave}
                 </Text>
@@ -579,7 +580,7 @@ function PartidasList({
       ) : null}
       <ScrollView contentContainerStyle={styles.listScroll}>
         {canImport ? (
-          <Pressable onPress={onNuevaPartida} style={styles.nuevaPartidaRow}>
+          <Pressable accessibilityRole="button" onPress={onNuevaPartida} style={styles.nuevaPartidaRow}>
             <Ionicons name="add-circle-outline" size={20} color={colors.primary} />
             <Text style={styles.nuevaPartidaRowTxt}>
               {esRaiz ? `Nueva ${nivelActual.toLowerCase()}` : `Nueva ${nivelActual.toLowerCase()} aquí`}
@@ -597,7 +598,7 @@ function PartidasList({
             const pct = Math.max(0, Math.min(100, Math.round(parseFloat(p.porcentaje_avance_partida) || 0)));
             const esCarpeta = tienePartidasHijas(p);
             return (
-              <Pressable key={p.id} onPress={() => onPressPartida(p)} style={styles.partidaRow}>
+              <Pressable accessibilityRole="button" key={p.id} onPress={() => onPressPartida(p)} style={styles.partidaRow}>
                 <Ionicons name={esCarpeta ? 'folder' : 'folder-outline'} size={22} color={colors.primary} />
                 <View style={{ flex: 1, marginLeft: 10 }}>
                   <Text style={styles.partidaTitle} numberOfLines={1}>{p.clave} — {p.nombre}</Text>
@@ -616,7 +617,7 @@ function PartidasList({
                     conceptos propios; si todavía es una hoja, el tap
                     principal va a sus conceptos y este botón es la única
                     forma de entrar a crear su PRIMERA sub-partida. */}
-                <Pressable
+                <Pressable accessibilityRole="button" accessibilityLabel={a11y(esCarpeta ? 'verConceptos' : 'abrirCarpeta')}
                   onPress={(e) => { e.stopPropagation(); esCarpeta ? onVerConceptos(p) : onAbrirCarpeta(p); }}
                   hitSlop={8}
                   style={styles.verConceptosBtn}
@@ -624,7 +625,7 @@ function PartidasList({
                   <Ionicons name={esCarpeta ? 'list-outline' : 'folder-open-outline'} size={16} color={colors.primary} />
                 </Pressable>
                 {canEdit ? (
-                  <Pressable
+                  <Pressable accessibilityRole="button" accessibilityLabel={a11y('eliminar')}
                     onPress={(e) => { e.stopPropagation(); onDeletePartida(p); }}
                     hitSlop={8}
                     style={styles.verConceptosBtn}
@@ -673,7 +674,7 @@ function ConceptosList({
   return (
     <View style={{ flex: 1 }}>
       <View style={styles.tableToggleRow}>
-        <Pressable onPress={onToggleTableView} style={styles.tableToggleBtn}>
+        <Pressable accessibilityRole="button" onPress={onToggleTableView} style={styles.tableToggleBtn}>
           <Ionicons name={tableView ? 'list-outline' : 'grid-outline'} size={16} color={colors.primary} />
           <Text style={styles.tableToggleTxt}>{tableView ? 'Vista lista' : 'Vista tabla completa'}</Text>
         </Pressable>
@@ -721,7 +722,7 @@ function ConceptoRow({
 }) {
   return (
     <View style={styles.conceptoCard}>
-      <Pressable onPress={onToggle} style={styles.conceptoCollapsedRow}>
+      <Pressable accessibilityRole="button" onPress={onToggle} style={styles.conceptoCollapsedRow}>
         <View style={styles.conceptoClaveBadge}>
           <Text style={styles.conceptoClaveBadgeTxt} numberOfLines={1}>{concepto.clave}</Text>
         </View>
@@ -778,7 +779,7 @@ function ConceptoRow({
             value={`${formatCantidad(concepto.cantidad_ejecutada_acumulada)} de ${formatCantidad(concepto.cantidad)} ${concepto.unidad}`}
           />
           {canEdit ? (
-            <Pressable onPress={() => onDelete(concepto)} style={styles.deleteConceptoBtn} hitSlop={8}>
+            <Pressable accessibilityRole="button" onPress={() => onDelete(concepto)} style={styles.deleteConceptoBtn} hitSlop={8}>
               <Ionicons name="trash-outline" size={14} color={colors.error} />
               <Text style={styles.deleteConceptoTxt}>Borrar concepto</Text>
             </Pressable>
@@ -834,10 +835,10 @@ function EditableDetailField({
             style={styles.editInput}
             autoFocus
           />
-          <Pressable onPress={() => { setEditing(false); onSave(draft); }} hitSlop={8}>
+          <Pressable accessibilityRole="button" accessibilityLabel={a11y('confirmar')} onPress={() => { setEditing(false); onSave(draft); }} hitSlop={8}>
             <Ionicons name="checkmark-circle" size={22} color={colors.success} />
           </Pressable>
-          <Pressable onPress={() => { setDraft(rawValue); setEditing(false); }} hitSlop={8}>
+          <Pressable accessibilityRole="button" accessibilityLabel={a11y('quitar')} onPress={() => { setDraft(rawValue); setEditing(false); }} hitSlop={8}>
             <Ionicons name="close-circle" size={22} color={colors.error} />
           </Pressable>
         </View>
@@ -846,7 +847,7 @@ function EditableDetailField({
   }
 
   return (
-    <Pressable onPress={() => { setDraft(rawValue); setEditing(true); }} style={styles.detailFieldRow}>
+    <Pressable accessibilityRole="button" onPress={() => { setDraft(rawValue); setEditing(true); }} style={styles.detailFieldRow}>
       <Text style={styles.detailLabel}>{label}</Text>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
         <Text style={styles.detailValue}>{value}</Text>

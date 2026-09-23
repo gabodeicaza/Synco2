@@ -63,7 +63,7 @@ export default function CoordHome() {
           <Text style={styles.greeting}>Hola, {user?.name?.split(' ')[0] || 'Coordinador'}</Text>
           <Text style={styles.role}>{roleLabel(user?.role)}</Text>
         </View>
-        <Pressable onPress={() => router.push('/(coord)/profile')} hitSlop={8} style={styles.avatar}>
+        <Pressable accessibilityRole="button" onPress={() => router.push('/(coord)/profile')} hitSlop={8} style={styles.avatar}>
           <Text style={styles.avatarText}>{(user?.name?.[0] || 'C').toUpperCase()}</Text>
         </Pressable>
       </View>
@@ -106,7 +106,7 @@ export default function CoordHome() {
         )}
       </ScrollView>
 
-      <Pressable
+      <Pressable accessibilityRole="button"
         style={[styles.fab, { bottom: insets.bottom + 20 }]}
         onPress={() => router.push('/(coord)/projects/new')}
       >
@@ -119,7 +119,7 @@ export default function CoordHome() {
 
 function ProjectCard({ project }: { project: Project }) {
   return (
-    <Pressable
+    <Pressable accessibilityRole="button"
       onPress={() => router.push({ pathname: '/(coord)/projects/[id]', params: { id: project.id } })}
       style={({ pressed }) => [styles.card, pressed && { transform: [{ scale: 0.99 }], opacity: 0.95 }]}
     >

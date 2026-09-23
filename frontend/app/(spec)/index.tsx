@@ -28,6 +28,7 @@ import { DailyGoalsPanel } from '@/src/components/DailyGoalsPanel';
 import { MyMeetingsPanel } from '@/src/components/MyMeetingsPanel';
 import { ReportPreviewSheet } from '@/src/components/ReportPreviewSheet';
 import { HistoryCalendarModal } from '@/src/components/HistoryCalendarModal';
+import { a11y } from '@/src/i18n';
 import {
   dayjs, toISODateCDMX, CDMX_TZ,
 } from '@/src/utils/tz';
@@ -341,16 +342,16 @@ export default function SpecFeedScreen() {
           {RANGE_OPTIONS.map((opt) => {
             const active = range === opt.key && !selectedDate;
             return (
-              <Pressable key={opt.key} onPress={() => { setSelectedDate(null); onPickRange(opt.key); }} style={[styles.chip, active && styles.chipActive]}>
+              <Pressable accessibilityRole="button" key={opt.key} onPress={() => { setSelectedDate(null); onPickRange(opt.key); }} style={[styles.chip, active && styles.chipActive]}>
                 <Text style={[styles.chipTxt, active && styles.chipTxtActive]}>{opt.label}</Text>
               </Pressable>
             );
           })}
-          <Pressable onPress={() => setCalendarOpen(true)} style={[styles.chip, !!selectedDate && styles.chipActive]}>
+          <Pressable accessibilityRole="button" onPress={() => setCalendarOpen(true)} style={[styles.chip, !!selectedDate && styles.chipActive]}>
             <Ionicons name="calendar-outline" size={14} color={selectedDate ? '#fff' : colors.textBody} />
             <Text style={[styles.chipTxt, !!selectedDate && styles.chipTxtActive]}>{selectedDate || 'Calendario'}</Text>
             {selectedDate && (
-              <Pressable onPress={() => setSelectedDate(null)} hitSlop={8} style={{ marginLeft: 6 }}>
+              <Pressable accessibilityRole="button" accessibilityLabel={a11y('quitar')} onPress={() => setSelectedDate(null)} hitSlop={8} style={{ marginLeft: 6 }}>
                 <Ionicons name="close-circle" size={14} color="#fff" />
               </Pressable>
             )}
@@ -369,7 +370,7 @@ export default function SpecFeedScreen() {
             style={styles.searchInput}
             autoCorrect={false}
           />
-          {searchQuery ? <Pressable onPress={() => setSearchQuery('')} hitSlop={8}><Ionicons name="close-circle" size={18} color={colors.textMuted} /></Pressable> : null}
+          {searchQuery ? <Pressable accessibilityRole="button" accessibilityLabel={a11y('quitar')} onPress={() => setSearchQuery('')} hitSlop={8}><Ionicons name="close-circle" size={18} color={colors.textMuted} /></Pressable> : null}
         </View>
       </View>
 
@@ -395,7 +396,7 @@ export default function SpecFeedScreen() {
           <Text style={styles.headerTitle}>Dirac</Text>
           <Text style={styles.headerSubtitle} numberOfLines={1}>{project?.name || 'Cargando...'}</Text>
         </View>
-        <Pressable hitSlop={10} style={styles.headerBtn}>
+        <Pressable accessibilityRole="button" accessibilityLabel={a11y('notificaciones')} hitSlop={10} style={styles.headerBtn}>
           <Ionicons name="notifications-outline" size={22} color="#fff" />
         </Pressable>
       </View>
@@ -415,7 +416,7 @@ export default function SpecFeedScreen() {
               <Ionicons name="reader-outline" size={28} color={colors.primary} />
               <Text style={styles.emptyTitle}>Sin reportes</Text>
               <Text style={styles.emptyMsg}>No se encontraron reportes para este filtro.</Text>
-              <Pressable style={styles.emptyBtn} onPress={() => router.push('/(spec)/nuevo' as any)}>
+              <Pressable accessibilityRole="button" style={styles.emptyBtn} onPress={() => router.push('/(spec)/nuevo' as any)}>
                 <Text style={styles.emptyBtnTxt}>Crear nuevo reporte</Text>
               </Pressable>
             </View>
@@ -450,23 +451,23 @@ export default function SpecFeedScreen() {
                 <Text style={styles.exportTitle}>Exportar Reportes</Text>
                 <Text style={styles.exportSubtitle}>Paso {exportStep === 'period' ? 1 : exportStep === 'scope' ? 2 : 3} de 3</Text>
               </View>
-              <Pressable onPress={closeExportFlow} hitSlop={10} style={styles.headerBtn}><Ionicons name="close" size={22} color={colors.text} /></Pressable>
+              <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} onPress={closeExportFlow} hitSlop={10} style={styles.headerBtn}><Ionicons name="close" size={22} color={colors.text} /></Pressable>
             </View>
             <View style={{ padding: spacing.md, gap: 10 }}>
               {exportStep === 'period' && PERIOD_OPTIONS.map(opt => (
-                <Pressable key={opt.value} onPress={() => onPickPeriod(opt.value)} style={styles.exportItem}>
+                <Pressable accessibilityRole="button" key={opt.value} onPress={() => onPickPeriod(opt.value)} style={styles.exportItem}>
                   <View style={styles.exportItemIcon}><Ionicons name={opt.icon} size={20} color={colors.primary} /></View>
                   <View style={{ flex: 1 }}><Text style={styles.exportItemTitle}>{opt.label}</Text><Text style={styles.exportItemSub}>{opt.sub}</Text></View>
                 </Pressable>
               ))}
               {exportStep === 'scope' && (
                 <>
-                  <Pressable onPress={() => onPickScope('mine')} style={styles.exportItem}><View style={styles.exportItemIcon}><Ionicons name="person-outline" size={20} color={colors.primary} /></View><View style={{ flex: 1 }}><Text style={styles.exportItemTitle}>Mis reportes</Text><Text style={styles.exportItemSub}>Solo lo que yo capture</Text></View></Pressable>
-                  <Pressable onPress={() => onPickScope('area')} style={styles.exportItem}><View style={styles.exportItemIcon}><Ionicons name="grid-outline" size={20} color={colors.primary} /></View><View style={{ flex: 1 }}><Text style={styles.exportItemTitle}>Mi area</Text><Text style={styles.exportItemSub}>Reportes de toda mi area</Text></View></Pressable>
+                  <Pressable accessibilityRole="button" onPress={() => onPickScope('mine')} style={styles.exportItem}><View style={styles.exportItemIcon}><Ionicons name="person-outline" size={20} color={colors.primary} /></View><View style={{ flex: 1 }}><Text style={styles.exportItemTitle}>Mis reportes</Text><Text style={styles.exportItemSub}>Solo lo que yo capture</Text></View></Pressable>
+                  <Pressable accessibilityRole="button" onPress={() => onPickScope('area')} style={styles.exportItem}><View style={styles.exportItemIcon}><Ionicons name="grid-outline" size={20} color={colors.primary} /></View><View style={{ flex: 1 }}><Text style={styles.exportItemTitle}>Mi area</Text><Text style={styles.exportItemSub}>Reportes de toda mi area</Text></View></Pressable>
                 </>
               )}
               {exportStep === 'format' && FORMAT_OPTIONS.map(opt => (
-                <Pressable key={opt.value} onPress={() => onPickFormat(opt.value)} style={styles.exportItem}>
+                <Pressable accessibilityRole="button" key={opt.value} onPress={() => onPickFormat(opt.value)} style={styles.exportItem}>
                   <View style={[styles.exportItemIcon, { backgroundColor: opt.tint + '1A' }]}><Ionicons name={opt.icon} size={20} color={opt.tint} /></View>
                   <View style={{ flex: 1 }}><Text style={styles.exportItemTitle}>{opt.label}</Text><Text style={styles.exportItemSub}>{opt.sub}</Text></View>
                 </Pressable>
@@ -521,7 +522,7 @@ const HeroCard = memo(({ user, project }: any) => {
 const ExportRow = memo(({ busy, onPress }: any) => {
   return (
     <View style={styles.exportRow}>
-      <Pressable onPress={onPress} disabled={busy} style={styles.exportMainBtn}>
+      <Pressable accessibilityRole="button" onPress={onPress} disabled={busy} style={styles.exportMainBtn}>
         {busy ? <ActivityIndicator color="#fff" size="small" /> : <Ionicons name="download-outline" size={22} color="#fff" />}
         <View style={{ flex: 1 }}>
           <Text style={styles.exportMainTitle}>Exportar Reportes</Text>
@@ -536,7 +537,7 @@ const ExportRow = memo(({ busy, onPress }: any) => {
 const AiSummaryRow = memo(({ busy, onPress }: any) => {
   return (
     <View style={styles.exportRow}>
-      <Pressable onPress={onPress} disabled={busy} style={styles.aiBtn}>
+      <Pressable accessibilityRole="button" onPress={onPress} disabled={busy} style={styles.aiBtn}>
         {busy ? <ActivityIndicator color="#fff" size="small" /> : <Ionicons name="sparkles" size={22} color="#fff" />}
         <View style={{ flex: 1 }}>
           <Text style={styles.aiBtnTitle}>_ Generar Resumen Ejecutivo con IA</Text>
@@ -573,7 +574,7 @@ function AiSummaryModal({
               <Text style={styles.exportTitle}>Resumen Ejecutivo con IA</Text>
               <Text style={styles.exportSubtitle}>Generado a partir de los reportes de hoy</Text>
             </View>
-            <Pressable onPress={onClose} hitSlop={10} style={{ width: 36, height: 36, alignItems: 'center', justifyContent: 'center' }}>
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} onPress={onClose} hitSlop={10} style={{ width: 36, height: 36, alignItems: 'center', justifyContent: 'center' }}>
               <Ionicons name="close" size={22} color={colors.text} />
             </Pressable>
           </View>
@@ -588,7 +589,7 @@ function AiSummaryModal({
               <View style={{ paddingVertical: 20, alignItems: 'center', gap: 8 }}>
                 <Ionicons name="alert-circle-outline" size={40} color={colors.error} />
                 <Text style={{ color: colors.error, textAlign: 'center', fontWeight: '700' }}>{error}</Text>
-                <Pressable onPress={onRegenerate} style={{ marginTop: 12, padding: 10 }}>
+                <Pressable accessibilityRole="button" onPress={onRegenerate} style={{ marginTop: 12, padding: 10 }}>
                   <Text style={{ color: colors.primary, fontWeight: '800' }}>Reintentar</Text>
                 </Pressable>
               </View>
@@ -606,7 +607,7 @@ function AiSummaryModal({
                 </View>
 
                 <View style={{ flexDirection: 'row', gap: 10, marginTop: 8 }}>
-                  <Pressable
+                  <Pressable accessibilityRole="button"
                     onPress={onCopy}
                     style={({ pressed }) => [
                       { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 12, borderRadius: 10, backgroundColor: copied ? colors.success : colors.primary },
@@ -616,7 +617,7 @@ function AiSummaryModal({
                     <Ionicons name={copied ? 'checkmark-circle' : 'copy-outline'} size={18} color="#fff" />
                     <Text style={{ color: '#fff', fontWeight: '800' }}>{copied ? 'Copiado' : 'Copiar resumen'}</Text>
                   </Pressable>
-                  <Pressable
+                  <Pressable accessibilityRole="button" accessibilityLabel={a11y('actualizar')} hitSlop={8}
                     onPress={onRegenerate}
                     style={({ pressed }) => [
                       { width: 44, height: 44, alignItems: 'center', justifyContent: 'center', borderRadius: 10, borderWidth: 1.5, borderColor: colors.primary },
@@ -631,7 +632,7 @@ function AiSummaryModal({
           </ScrollView>
 
           <View style={{ padding: spacing.md, paddingBottom: insets.bottom + spacing.md, borderTopWidth: 1, borderTopColor: colors.border }}>
-            <Pressable
+            <Pressable accessibilityRole="button"
               onPress={onClose}
               style={({ pressed }) => [
                 { minHeight: 46, alignItems: 'center', justifyContent: 'center', borderRadius: 10, borderWidth: 1, borderColor: colors.border },
@@ -668,7 +669,7 @@ const FeedCard = memo(function FeedCard({ item, onPreview }: FeedCardProps) {
   const handlePreview = useCallback(() => onPreview(item), [onPreview, item]);
 
   return (
-    <Pressable onPress={handlePreview} style={styles.feedCard}>
+    <Pressable accessibilityRole="button" onPress={handlePreview} style={styles.feedCard}>
       <View style={styles.feedCardIcon}><Ionicons name="document-text-outline" size={18} color={colors.primary} /></View>
       <View style={{ flex: 1, minWidth: 0 }}>
         <Text style={styles.feedCardTitle} numberOfLines={1}>{item.title || item.nombre || item.titulo || item.name || 'Reporte'}</Text>

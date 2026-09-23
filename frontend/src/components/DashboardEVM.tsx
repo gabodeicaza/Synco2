@@ -28,6 +28,7 @@ import { confirm } from '@/src/utils/confirm';
 import { formatMoney, isValidDecimalInput } from '@/src/utils/money';
 import { downloadBlob } from '@/src/utils/downloadBlob';
 import { dayjs, CDMX_TZ } from '@/src/utils/tz';
+import { a11y } from '@/src/i18n';
 
 const FECHA_ISO_RE = /^\d{4}-\d{2}-\d{2}$/;
 type TabActividades = 'pendientes' | 'actuales' | 'por_venir';
@@ -508,7 +509,7 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <View style={[styles.headerWrap, { paddingTop: insets.top + spacing.xs, backgroundColor: colors.primary }]}>
         <View style={styles.headerTopRow}>
-          <Pressable onPress={() => router.back()} hitSlop={10} style={styles.headerBackBtn}>
+          <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={10} style={styles.headerBackBtn}>
             <Ionicons name="chevron-back" size={22} color="#fff" />
           </Pressable>
           <Text style={styles.headerTitle}>Control de Obra — Valor Ganado</Text>
@@ -521,7 +522,7 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
       >
         <View style={styles.rangoRow}>
           {(['mes_actual', 'ultimos_3_meses', 'proyecto_completo'] as RangoRapido[]).map((r) => (
-            <Pressable
+            <Pressable accessibilityRole="button"
               key={r}
               onPress={() => setRango(r)}
               style={[styles.rangoChip, rango === r && { backgroundColor: colors.primary, borderColor: colors.primary }]}
@@ -573,13 +574,13 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
 
         <View style={styles.seccionHeaderRow}>
           <Text style={styles.seccionTitulo}>Gasto real (AC)</Text>
-          <Pressable onPress={openGastoForm} style={styles.addBtn}>
+          <Pressable accessibilityRole="button" onPress={openGastoForm} style={styles.addBtn}>
             <Ionicons name="add" size={16} color={colors.primary} />
             <Text style={styles.addBtnTxt}>Registrar gasto</Text>
           </Pressable>
         </View>
         <View style={styles.importRow}>
-          <Pressable onPress={onImportarGastosExcel} disabled={importandoGastos} style={styles.importBtn}>
+          <Pressable accessibilityRole="button" onPress={onImportarGastosExcel} disabled={importandoGastos} style={styles.importBtn}>
             {importandoGastos ? (
               <ActivityIndicator size="small" color={colors.primary} />
             ) : (
@@ -587,7 +588,7 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
             )}
             <Text style={styles.addBtnTxt}>Importar desde Excel</Text>
           </Pressable>
-          <Pressable onPress={onDescargarPlantillaGastos} disabled={descargandoPlantilla} style={styles.importBtn}>
+          <Pressable accessibilityRole="button" onPress={onDescargarPlantillaGastos} disabled={descargandoPlantilla} style={styles.importBtn}>
             <Ionicons name="download-outline" size={16} color={colors.textMuted} />
             <Text style={styles.plantillaTxt}>Descargar plantilla</Text>
           </Pressable>
@@ -620,7 +621,7 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
                   </Text>
                 </View>
                 <Text style={styles.gastoMonto}>{formatMoney(item.monto)}</Text>
-                <Pressable onPress={() => onDeleteGasto(item)} hitSlop={8} style={{ marginLeft: 8 }}>
+                <Pressable accessibilityRole="button" accessibilityLabel={a11y('eliminar')} onPress={() => onDeleteGasto(item)} hitSlop={8} style={{ marginLeft: 8 }}>
                   <Ionicons name="trash-outline" size={16} color={colors.error} />
                 </Pressable>
               </View>
@@ -652,7 +653,7 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
 
         <Text style={styles.seccionTitulo}>Control de actividades</Text>
         <View style={styles.importRow}>
-          <Pressable onPress={onImportarAvancesExcel} disabled={importandoAvances} style={styles.importBtn}>
+          <Pressable accessibilityRole="button" onPress={onImportarAvancesExcel} disabled={importandoAvances} style={styles.importBtn}>
             {importandoAvances ? (
               <ActivityIndicator size="small" color={colors.primary} />
             ) : (
@@ -660,7 +661,7 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
             )}
             <Text style={styles.addBtnTxt}>Importar avance desde Excel</Text>
           </Pressable>
-          <Pressable onPress={onDescargarPlantillaAvance} disabled={descargandoPlantillaAvance} style={styles.importBtn}>
+          <Pressable accessibilityRole="button" onPress={onDescargarPlantillaAvance} disabled={descargandoPlantillaAvance} style={styles.importBtn}>
             <Ionicons name="download-outline" size={16} color={colors.textMuted} />
             <Text style={styles.plantillaTxt}>Descargar plantilla</Text>
           </Pressable>
@@ -673,7 +674,7 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
           {TABS_ACTIVIDADES.map((t) => {
             const count = actividades ? actividades[t.key].length : 0;
             return (
-              <Pressable
+              <Pressable accessibilityRole="button"
                 key={t.key}
                 onPress={() => setTabActividades(t.key)}
                 style={[styles.tabBtn, tabActividades === t.key && styles.tabBtnActive]}

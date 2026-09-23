@@ -15,6 +15,7 @@ import { api, SeguridadReporte, SeguridadChecklist, SeguridadChecklistItem, Proj
 import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
 import { Button } from '@/src/components/Button';
 import { requestMediaLibraryPermission } from '@/src/utils/permissions';
+import { a11y } from '@/src/i18n';
 
 type Tab = 'reportes' | 'checklist';
 type Severidad = 'leve' | 'moderado' | 'grave';
@@ -162,17 +163,17 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <View style={[styles.headerWrap, { backgroundColor: headerColor, paddingTop: insets.top + spacing.xs }]}>
         <View style={styles.headerTopRow}>
-          <Pressable onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
+          <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
             <Ionicons name="chevron-back" size={22} color={headerTextColor} />
           </Pressable>
           <Text style={[styles.titleBar, { color: headerTextColor }]} numberOfLines={1}>Seguridad e Higiene</Text>
           <View style={{ width: 32 }} />
         </View>
         <View style={styles.tabRow}>
-          <Pressable onPress={() => setTab('reportes')} style={[styles.tabBtn, tab === 'reportes' && styles.tabBtnActive]}>
+          <Pressable accessibilityRole="button" onPress={() => setTab('reportes')} style={[styles.tabBtn, tab === 'reportes' && styles.tabBtnActive]}>
             <Text style={[styles.tabTxt, { color: tab === 'reportes' ? headerColor : headerTextColor }]}>Reportes</Text>
           </Pressable>
-          <Pressable onPress={() => setTab('checklist')} style={[styles.tabBtn, tab === 'checklist' && styles.tabBtnActive]}>
+          <Pressable accessibilityRole="button" onPress={() => setTab('checklist')} style={[styles.tabBtn, tab === 'checklist' && styles.tabBtnActive]}>
             <Text style={[styles.tabTxt, { color: tab === 'checklist' ? headerColor : headerTextColor }]}>Checklist</Text>
           </Pressable>
         </View>
@@ -238,7 +239,7 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
                     <Text style={[styles.checkTxt, it.cumplido && styles.checkTxtDone]}>{it.item}</Text>
                     <Text style={styles.checkTipo}>{it.tipo === 'preventiva' ? 'Preventiva' : 'Correctiva'}</Text>
                   </View>
-                  <Pressable hitSlop={8} onPress={() => removeChecklistItem(idx)}>
+                  <Pressable accessibilityRole="button" accessibilityLabel={a11y('quitar')} hitSlop={8} onPress={() => removeChecklistItem(idx)}>
                     <Ionicons name="close-circle" size={20} color={colors.textMuted} />
                   </Pressable>
                 </View>
@@ -247,7 +248,7 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
           </View>
 
           <View style={styles.addItemRow}>
-            <Pressable
+            <Pressable accessibilityRole="button"
               onPress={() => setTipoItemDraft(tipoItemDraft === 'preventiva' ? 'correctiva' : 'preventiva')}
               style={styles.tipoToggle}
             >
@@ -262,7 +263,7 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
               style={[styles.input, { flex: 1 }]}
               onSubmitEditing={addChecklistItem}
             />
-            <Pressable style={styles.addBtn} onPress={addChecklistItem}>
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y('agregar')} hitSlop={8} style={styles.addBtn} onPress={addChecklistItem}>
               <Ionicons name="add" size={20} color="#fff" />
             </Pressable>
           </View>
@@ -294,7 +295,7 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
       )}
 
       {tab === 'reportes' && (
-        <Pressable style={styles.fab} onPress={openForm}>
+        <Pressable accessibilityRole="button" accessibilityLabel={a11y('agregar')} hitSlop={8} style={styles.fab} onPress={openForm}>
           <Ionicons name="add" size={26} color="#fff" />
         </Pressable>
       )}
@@ -307,7 +308,7 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
             <Text style={styles.fieldLabel}>Severidad</Text>
             <View style={styles.segmentRow}>
               {SEVERIDADES.map((s) => (
-                <Pressable
+                <Pressable accessibilityRole="button"
                   key={s.value}
                   onPress={() => setSeveridadDraft(s.value)}
                   style={[styles.segmentBtn, severidadDraft === s.value && { backgroundColor: s.color, borderColor: s.color }]}
@@ -338,7 +339,7 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
             />
 
             <Text style={styles.fieldLabel}>Foto (opcional)</Text>
-            <Pressable style={styles.fotoPicker} onPress={onPickFoto}>
+            <Pressable accessibilityRole="button" style={styles.fotoPicker} onPress={onPickFoto}>
               {fotoDraft ? (
                 <Image source={{ uri: fotoDraft }} style={styles.fotoPreview} contentFit="cover" />
               ) : (

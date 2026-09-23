@@ -9,7 +9,7 @@ import { Button } from '@/src/components/Button';
 import { useAuth } from '@/src/auth-context';
 import { homeRouteForRole, APP_BRAND, APP_TAGLINE } from '@/src/utils/roles';
 import { colors, radius, spacing } from '@/src/theme';
-import { t } from '@/src/i18n';
+import { t, a11y } from '@/src/i18n';
 import { LegalLinks } from '@/src/components/LegalLinks';
 
 export default function LoginScreen() {
@@ -85,12 +85,12 @@ export default function LoginScreen() {
               onSubmitEditing={onSubmit}
               editable={!busy}
             />
-            <Pressable onPress={() => setShowPwd((v) => !v)} hitSlop={8}>
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y(showPwd ? 'ocultarPassword' : 'mostrarPassword')} onPress={() => setShowPwd((v) => !v)} hitSlop={8}>
               <Ionicons name={showPwd ? 'eye-off-outline' : 'eye-outline'} size={18} color={colors.textMuted} />
             </Pressable>
           </View>
 
-          <Pressable onPress={() => router.push('/(auth)/forgot-password')} hitSlop={8} style={styles.forgotRow} disabled={busy}>
+          <Pressable accessibilityRole="button" onPress={() => router.push('/(auth)/forgot-password')} hitSlop={8} style={styles.forgotRow} disabled={busy}>
             <Text style={styles.forgotText}>¿Olvidaste tu contraseña?</Text>
           </Pressable>
 
@@ -112,7 +112,7 @@ export default function LoginScreen() {
           </View>
 
           {/* Canje de invitacion in-app */}
-          <Pressable
+          <Pressable accessibilityRole="button"
             style={({ pressed }) => [styles.inviteBtn, pressed && { opacity: 0.85 }]}
             onPress={() => router.push('/(auth)/redeem')}
             disabled={busy}

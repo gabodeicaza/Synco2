@@ -17,7 +17,7 @@ export default function OfflineQueueIndicator() {
   return (
     <>
       {pendingCount > 0 && (
-        <Pressable
+        <Pressable accessibilityRole="button"
           onPress={() => setOpen(true)}
           style={[styles.pill, { top: insets.top + 8 }]}
           hitSlop={8}

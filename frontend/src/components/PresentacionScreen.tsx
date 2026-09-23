@@ -23,6 +23,7 @@ import { confirm } from '@/src/utils/confirm';
 import { useAuth } from '@/src/auth-context';
 import { ROLE_COORD, ROLE_JEFE, ROLE_SUB } from '@/src/utils/roles';
 import { requestMediaLibraryPermission } from '@/src/utils/permissions';
+import { a11y } from '@/src/i18n';
 
 const TIPO_ICON: Record<PresentacionSeccionTipo, keyof typeof Ionicons.glyphMap> = {
   portada: 'bookmark-outline',
@@ -323,11 +324,11 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
       <View style={{ flex: 1, backgroundColor: colors.bg }}>
         <View style={[styles.headerWrap, { backgroundColor: headerColor, paddingTop: insets.top + spacing.xs }]}>
           <View style={styles.headerTopRow}>
-            <Pressable onPress={() => setSelectedId(null)} hitSlop={10} style={styles.iconBtn}>
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => setSelectedId(null)} hitSlop={10} style={styles.iconBtn}>
               <Ionicons name="chevron-back" size={22} color={headerTextColor} />
             </Pressable>
             <Text style={[styles.titleBar, { color: headerTextColor }]} numberOfLines={1}>{detail?.titulo || 'Presentación'}</Text>
-            <Pressable hitSlop={10} style={styles.iconBtn} onPress={goToPreview}>
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y('vistaPrevia')} hitSlop={10} style={styles.iconBtn} onPress={goToPreview}>
               <Ionicons name="eye-outline" size={20} color={headerTextColor} />
             </Pressable>
           </View>
@@ -340,7 +341,7 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
             <View style={styles.sectionHeaderRow}>
               <Text style={styles.sectionTitle}>Secciones</Text>
               {canEditEstructura ? (
-                <Pressable onPress={() => setTipoPickerOpen(true)} style={styles.addBtn}>
+                <Pressable accessibilityRole="button" onPress={() => setTipoPickerOpen(true)} style={styles.addBtn}>
                   <Ionicons name="add" size={16} color={colors.primary} />
                   <Text style={styles.addBtnTxt}>Agregar</Text>
                 </Pressable>
@@ -362,19 +363,19 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
                       <Text style={styles.seccionSub} numberOfLines={1}>{seccionSubtitle(s)}</Text>
                     </View>
                     {s.tipo === 'informacion_particular' ? (
-                      <Pressable onPress={() => openBloquesEditor(s)} hitSlop={8} style={{ paddingHorizontal: 4 }}>
+                      <Pressable accessibilityRole="button" accessibilityLabel={a11y('editar')} onPress={() => openBloquesEditor(s)} hitSlop={8} style={{ paddingHorizontal: 4 }}>
                         <Ionicons name="create-outline" size={18} color={colors.primary} />
                       </Pressable>
                     ) : null}
                     {canEditEstructura ? (
                       <>
-                        <Pressable onPress={() => onMoveSeccion(s, -1)} hitSlop={8} disabled={idx === 0} style={{ paddingHorizontal: 2, opacity: idx === 0 ? 0.3 : 1 }}>
+                        <Pressable accessibilityRole="button" accessibilityLabel={a11y('moverArriba')} onPress={() => onMoveSeccion(s, -1)} hitSlop={8} disabled={idx === 0} style={{ paddingHorizontal: 2, opacity: idx === 0 ? 0.3 : 1 }}>
                           <Ionicons name="chevron-up" size={18} color={colors.textMuted} />
                         </Pressable>
-                        <Pressable onPress={() => onMoveSeccion(s, 1)} hitSlop={8} disabled={idx === secciones.length - 1} style={{ paddingHorizontal: 2, opacity: idx === secciones.length - 1 ? 0.3 : 1 }}>
+                        <Pressable accessibilityRole="button" accessibilityLabel={a11y('moverAbajo')} onPress={() => onMoveSeccion(s, 1)} hitSlop={8} disabled={idx === secciones.length - 1} style={{ paddingHorizontal: 2, opacity: idx === secciones.length - 1 ? 0.3 : 1 }}>
                           <Ionicons name="chevron-down" size={18} color={colors.textMuted} />
                         </Pressable>
-                        <Pressable onPress={() => onDeleteSeccion(s)} hitSlop={8} style={{ paddingHorizontal: 4 }}>
+                        <Pressable accessibilityRole="button" accessibilityLabel={a11y('eliminar')} onPress={() => onDeleteSeccion(s)} hitSlop={8} style={{ paddingHorizontal: 4 }}>
                           <Ionicons name="trash-outline" size={18} color={colors.error} />
                         </Pressable>
                       </>
@@ -389,10 +390,10 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
         {/* Modal: elegir tipo de sección */}
         <Modal visible={tipoPickerOpen} transparent animationType="slide" onRequestClose={() => setTipoPickerOpen(false)}>
           <Pressable style={styles.modalBackdrop} onPress={() => setTipoPickerOpen(false)}>
-            <Pressable style={styles.modalCard} onPress={() => {}}>
+            <Pressable accessibilityRole="button" style={styles.modalCard} onPress={() => {}}>
               <Text style={styles.modalTitle}>Agregar sección</Text>
               {TIPO_ORDEN_PICKER.map((t) => (
-                <Pressable key={t} onPress={() => onPickTipo(t)} style={styles.tipoOption}>
+                <Pressable accessibilityRole="button" key={t} onPress={() => onPickTipo(t)} style={styles.tipoOption}>
                   <Ionicons name={TIPO_ICON[t]} size={18} color={colors.primary} />
                   <Text style={styles.tipoOptionTxt}>{TIPO_LABEL[t]}</Text>
                 </Pressable>
@@ -427,7 +428,7 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
               <Text style={styles.modalTitle}>Elegir Estación</Text>
               <ScrollView>
                 {nodes.map((n) => (
-                  <Pressable key={n.id} onPress={() => createSeccion({ tipo: 'croquis_estacion', node_id: n.id })} style={styles.tipoOption}>
+                  <Pressable accessibilityRole="button" key={n.id} onPress={() => createSeccion({ tipo: 'croquis_estacion', node_id: n.id })} style={styles.tipoOption}>
                     <Text style={[styles.tipoOptionTxt, { marginLeft: n.depth * 12 }]}>{n.name}</Text>
                   </Pressable>
                 ))}
@@ -445,7 +446,7 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
               {planos.length === 0 ? <Text style={styles.emptyTxt}>No hay planos de avance creados todavía.</Text> : null}
               <ScrollView>
                 {planos.map((p) => (
-                  <Pressable key={p.id} onPress={() => createSeccion({ tipo: 'avance_grafico', plano_id: p.id })} style={styles.tipoOption}>
+                  <Pressable accessibilityRole="button" key={p.id} onPress={() => createSeccion({ tipo: 'avance_grafico', plano_id: p.id })} style={styles.tipoOption}>
                     <Text style={styles.tipoOptionTxt}>{p.nombre}</Text>
                   </Pressable>
                 ))}
@@ -460,7 +461,7 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
           <View style={{ flex: 1, backgroundColor: colors.bg, paddingTop: insets.top }}>
             <View style={[styles.headerWrap, { backgroundColor: headerColor }]}>
               <View style={styles.headerTopRow}>
-                <Pressable onPress={() => setBloquesSeccion(null)} hitSlop={10} style={styles.iconBtn}>
+                <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} onPress={() => setBloquesSeccion(null)} hitSlop={10} style={styles.iconBtn}>
                   <Ionicons name="close" size={22} color={headerTextColor} />
                 </Pressable>
                 <Text style={[styles.titleBar, { color: headerTextColor }]}>Información Particular</Text>
@@ -476,12 +477,12 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
                       placeholder="Título (ej. Estación 3. Perisur, Intertramo E1-E2)"
                       placeholderTextColor={colors.textMuted} style={[styles.input, { flex: 1 }]}
                     />
-                    <Pressable onPress={() => removeBloque(bIdx)} hitSlop={8}>
+                    <Pressable accessibilityRole="button" accessibilityLabel={a11y('eliminar')} onPress={() => removeBloque(bIdx)} hitSlop={8}>
                       <Ionicons name="trash-outline" size={18} color={colors.error} />
                     </Pressable>
                   </View>
                   <Text style={styles.fieldLabel}>Ligar a Estación (opcional — jala Acceso al Predio/Situación Social)</Text>
-                  <Pressable
+                  <Pressable accessibilityRole="button"
                     onPress={async () => { if (!nodes.length) { try { setNodes(await api.listNodes(projectId)); } catch { /* noop */ } } }}
                     style={styles.linkNodeBtn}
                   >
@@ -490,11 +491,11 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
                   {nodes.length ? (
                     <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: spacing.sm }}>
                       <View style={{ flexDirection: 'row', gap: 6 }}>
-                        <Pressable onPress={() => updateBloque(bIdx, { node_id: null })} style={[styles.chip, !b.node_id && styles.chipActive]}>
+                        <Pressable accessibilityRole="button" onPress={() => updateBloque(bIdx, { node_id: null })} style={[styles.chip, !b.node_id && styles.chipActive]}>
                           <Text style={[styles.chipTxt, !b.node_id && styles.chipTxtActive]}>Sin ligar</Text>
                         </Pressable>
                         {nodes.map((n) => (
-                          <Pressable key={n.id} onPress={() => updateBloque(bIdx, { node_id: n.id })} style={[styles.chip, b.node_id === n.id && styles.chipActive]}>
+                          <Pressable accessibilityRole="button" key={n.id} onPress={() => updateBloque(bIdx, { node_id: n.id })} style={[styles.chip, b.node_id === n.id && styles.chipActive]}>
                             <Text style={[styles.chipTxt, b.node_id === n.id && styles.chipTxtActive]} numberOfLines={1}>{n.name}</Text>
                           </Pressable>
                         ))}
@@ -512,7 +513,7 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
                   />
                   <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: spacing.sm }}>
                     <Text style={styles.fieldLabel}>Fotos ({b.fotos.length})</Text>
-                    <Pressable onPress={() => addFotoToBloque(bIdx)} style={styles.addBtn}>
+                    <Pressable accessibilityRole="button" onPress={() => addFotoToBloque(bIdx)} style={styles.addBtn}>
                       <Ionicons name="add" size={16} color={colors.primary} />
                       <Text style={styles.addBtnTxt}>Agregar foto</Text>
                     </Pressable>
@@ -525,10 +526,10 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
                         placeholder="Pie de foto" placeholderTextColor={colors.textMuted}
                         style={[styles.input, { flex: 1 }]}
                       />
-                      <Pressable onPress={() => updateFoto(bIdx, fIdx, { destacado: !f.destacado })} style={{ paddingHorizontal: 6 }}>
+                      <Pressable accessibilityRole="button" accessibilityLabel={a11y(f.destacado ? 'quitarDestacado' : 'destacar')} hitSlop={8} onPress={() => updateFoto(bIdx, fIdx, { destacado: !f.destacado })} style={{ paddingHorizontal: 6 }}>
                         <Ionicons name={f.destacado ? 'star' : 'star-outline'} size={18} color={f.destacado ? '#D97706' : colors.textMuted} />
                       </Pressable>
-                      <Pressable onPress={() => removeFoto(bIdx, fIdx)} hitSlop={8}>
+                      <Pressable accessibilityRole="button" accessibilityLabel={a11y('quitar')} onPress={() => removeFoto(bIdx, fIdx)} hitSlop={8}>
                         <Ionicons name="close-circle-outline" size={18} color={colors.error} />
                       </Pressable>
                     </View>
@@ -561,7 +562,7 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <View style={[styles.headerWrap, { backgroundColor: headerColor, paddingTop: insets.top + spacing.xs }]}>
         <View style={styles.headerTopRow}>
-          <Pressable onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
+          <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
             <Ionicons name="chevron-back" size={22} color={headerTextColor} />
           </Pressable>
           <Text style={[styles.titleBar, { color: headerTextColor }]} numberOfLines={1}>Presentación</Text>
@@ -573,7 +574,7 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
         <View style={styles.sectionHeaderRow}>
           <Text style={styles.sectionTitle}>Informes semanales</Text>
           {canEditEstructura ? (
-            <Pressable onPress={() => setNewOpen(true)} style={styles.addBtn}>
+            <Pressable accessibilityRole="button" onPress={() => setNewOpen(true)} style={styles.addBtn}>
               <Ionicons name="add" size={16} color={colors.primary} />
               <Text style={styles.addBtnTxt}>Nueva</Text>
             </Pressable>
@@ -589,7 +590,7 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
           ) : (
             lista.map((p, idx) => (
               <View key={p.id} style={[styles.seccionRow, idx > 0 && styles.rowBorder]}>
-                <Pressable style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10 }} onPress={() => setSelectedId(p.id)}>
+                <Pressable accessibilityRole="button" style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10 }} onPress={() => setSelectedId(p.id)}>
                   <Ionicons name="easel-outline" size={20} color={colors.primary} />
                   <View style={{ flex: 1 }}>
                     <Text style={styles.seccionTitulo} numberOfLines={1}>{p.titulo}</Text>
@@ -598,7 +599,7 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
                   <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
                 </Pressable>
                 {canEditEstructura ? (
-                  <Pressable hitSlop={8} onPress={() => onDeletePresentacion(p)} style={{ paddingLeft: spacing.sm }}>
+                  <Pressable accessibilityRole="button" accessibilityLabel={a11y('eliminar')} hitSlop={8} onPress={() => onDeletePresentacion(p)} style={{ paddingLeft: spacing.sm }}>
                     <Ionicons name="trash-outline" size={18} color={colors.error} />
                   </Pressable>
                 ) : null}

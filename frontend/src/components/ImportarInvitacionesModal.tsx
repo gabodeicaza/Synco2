@@ -15,6 +15,7 @@ import { colors, radius, spacing } from '@/src/theme';
 import { downloadBlob } from '@/src/utils/downloadBlob';
 import { confirm } from '@/src/utils/confirm';
 import { roleLabel } from '@/src/utils/roles';
+import { a11y } from '@/src/i18n';
 
 type Step = 'archivo' | 'revision' | 'resultado';
 
@@ -114,7 +115,7 @@ export function ImportarInvitacionesModal({ visible, projectId, onClose, onImpor
     <Modal visible={visible} animationType="slide" onRequestClose={handleClose}>
       <View style={styles.container}>
         <View style={styles.header}>
-          <Pressable onPress={handleClose} hitSlop={10}>
+          <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} onPress={handleClose} hitSlop={10}>
             <Ionicons name="close" size={24} color={colors.text} />
           </Pressable>
           <Text style={styles.title}>Importar invitaciones (Excel)</Text>
@@ -136,7 +137,7 @@ export function ImportarInvitacionesModal({ visible, projectId, onClose, onImpor
                 Sube un Excel con columnas: No. de Control, Iniciales, Puesto, Área, Rol
                 (especialista/subcoordinador) y Correo. La fila 1 debe ser el encabezado.
               </Text>
-              <Pressable style={styles.linkBtnCenter} onPress={descargarPlantilla} disabled={descargandoPlantilla}>
+              <Pressable accessibilityRole="button" style={styles.linkBtnCenter} onPress={descargarPlantilla} disabled={descargandoPlantilla}>
                 {descargandoPlantilla ? <ActivityIndicator color={colors.primary} /> : (
                   <>
                     <Ionicons name="download-outline" size={16} color={colors.primary} />
@@ -144,7 +145,7 @@ export function ImportarInvitacionesModal({ visible, projectId, onClose, onImpor
                   </>
                 )}
               </Pressable>
-              <Pressable style={styles.primaryBtn} onPress={pickFile} disabled={busy}>
+              <Pressable accessibilityRole="button" style={styles.primaryBtn} onPress={pickFile} disabled={busy}>
                 {busy ? <ActivityIndicator color="#fff" /> : (
                   <>
                     <Ionicons name="folder-open-outline" size={18} color="#fff" />
@@ -169,11 +170,11 @@ export function ImportarInvitacionesModal({ visible, projectId, onClose, onImpor
                 ))}
               </View>
 
-              <Pressable style={styles.smallBtn} onPress={pickFile} disabled={busy}>
+              <Pressable accessibilityRole="button" style={styles.smallBtn} onPress={pickFile} disabled={busy}>
                 <Text style={styles.smallBtnTxt}>Subir otro archivo</Text>
               </Pressable>
 
-              <Pressable style={styles.primaryBtn} onPress={importar} disabled={busy}>
+              <Pressable accessibilityRole="button" style={styles.primaryBtn} onPress={importar} disabled={busy}>
                 {busy ? <ActivityIndicator color="#fff" /> : (
                   <>
                     <Ionicons name="cloud-upload-outline" size={18} color="#fff" />
@@ -191,7 +192,7 @@ export function ImportarInvitacionesModal({ visible, projectId, onClose, onImpor
               <Text style={styles.help}>{commitResult.creados} invitación(es) creada(s)</Text>
               {commitResult.omitidos > 0 ? <Text style={styles.help}>{commitResult.omitidos} ya tenían invitación pendiente (omitidas)</Text> : null}
               {commitResult.con_error > 0 ? <Text style={[styles.help, { color: colors.error }]}>{commitResult.con_error} con error (no se importaron)</Text> : null}
-              <Pressable style={styles.primaryBtn} onPress={() => { reset(); onImported(); onClose(); }}>
+              <Pressable accessibilityRole="button" style={styles.primaryBtn} onPress={() => { reset(); onImported(); onClose(); }}>
                 <Text style={styles.primaryBtnTxt}>Listo</Text>
               </Pressable>
             </View>

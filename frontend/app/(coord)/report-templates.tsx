@@ -11,6 +11,7 @@ import { api, ApiError, ReportTemplate, ReportTemplateField } from '@/src/api';
 import { useAuth } from '@/src/auth-context';
 import { colors, radius, spacing, shadow } from '@/src/theme';
 import { confirm } from '@/src/utils/confirm';
+import { a11y } from '@/src/i18n';
 
 const FIELD_TYPES: { value: ReportTemplateField['type']; label: string }[] = [
   { value: 'string', label: 'Texto' },
@@ -157,7 +158,7 @@ export default function ReportTemplatesScreen() {
     return (
       <View style={[styles.flex, { paddingTop: insets.top }]}>
         <View style={styles.header}>
-          <Pressable onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
+          <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
             <Ionicons name="chevron-back" size={24} color={colors.text} />
           </Pressable>
           <Text style={styles.title}>Plantillas de reporte</Text>
@@ -177,7 +178,7 @@ export default function ReportTemplatesScreen() {
       style={[styles.flex, { paddingTop: insets.top }]}
     >
       <View style={styles.header}>
-        <Pressable onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
+        <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
           <Ionicons name="chevron-back" size={24} color={colors.text} />
         </Pressable>
         <Text style={styles.title}>Plantillas de reporte</Text>
@@ -202,7 +203,7 @@ export default function ReportTemplatesScreen() {
         </View>
 
         {!showForm && (
-          <Pressable onPress={startCreate} style={({ pressed }) => [styles.addBtn, pressed && { opacity: 0.85 }]}>
+          <Pressable accessibilityRole="button" onPress={startCreate} style={({ pressed }) => [styles.addBtn, pressed && { opacity: 0.85 }]}>
             <Ionicons name="add-circle" size={18} color="#fff" />
             <Text style={styles.addBtnTxt}>Nueva plantilla</Text>
           </Pressable>
@@ -212,7 +213,7 @@ export default function ReportTemplatesScreen() {
           <View style={styles.formCard}>
             <View style={styles.formHeader}>
               <Text style={styles.formTitle}>{editingId ? 'Editar plantilla' : 'Nueva plantilla'}</Text>
-              <Pressable onPress={() => { resetForm(); setShowForm(false); }} hitSlop={8}>
+              <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} onPress={() => { resetForm(); setShowForm(false); }} hitSlop={8}>
                 <Ionicons name="close" size={22} color={colors.text} />
               </Pressable>
             </View>
@@ -259,7 +260,7 @@ export default function ReportTemplatesScreen() {
                       {f.options?.length ? ` · ${f.options.join(', ')}` : ''}
                     </Text>
                   </View>
-                  <Pressable onPress={() => removeField(f.key)} hitSlop={8} style={{ padding: 4 }}>
+                  <Pressable accessibilityRole="button" accessibilityLabel={a11y('eliminar')} onPress={() => removeField(f.key)} hitSlop={8} style={{ padding: 4 }}>
                     <Ionicons name="trash-outline" size={18} color={colors.error} />
                   </Pressable>
                 </View>
@@ -277,7 +278,7 @@ export default function ReportTemplatesScreen() {
               />
               <View style={styles.chipRow}>
                 {FIELD_TYPES.map((t) => (
-                  <Pressable
+                  <Pressable accessibilityRole="button"
                     key={t.value}
                     onPress={() => setFieldDraft({ ...fieldDraft, type: t.value })}
                     style={[styles.chip, fieldDraft.type === t.value && styles.chipActive]}
@@ -294,19 +295,19 @@ export default function ReportTemplatesScreen() {
                   style={styles.input}
                 />
               )}
-              <Pressable
+              <Pressable accessibilityRole="button"
                 onPress={() => setFieldDraft({ ...fieldDraft, required: !fieldDraft.required })}
                 style={[styles.chip, fieldDraft.required && styles.chipActive, { alignSelf: 'flex-start' }]}
               >
                 <Text style={[styles.chipTxt, fieldDraft.required && styles.chipTxtActive]}>Obligatorio</Text>
               </Pressable>
-              <Pressable onPress={addField} style={({ pressed }) => [styles.addFieldBtn, pressed && { opacity: 0.85 }]}>
+              <Pressable accessibilityRole="button" onPress={addField} style={({ pressed }) => [styles.addFieldBtn, pressed && { opacity: 0.85 }]}>
                 <Ionicons name="add" size={16} color={colors.primary} />
                 <Text style={styles.addFieldBtnTxt}>Agregar campo</Text>
               </Pressable>
             </View>
 
-            <Pressable
+            <Pressable accessibilityRole="button"
               onPress={onSave}
               disabled={saving}
               style={({ pressed }) => [styles.saveBtn, saving && { opacity: 0.7 }, pressed && !saving && { opacity: 0.85 }]}
@@ -334,10 +335,10 @@ export default function ReportTemplatesScreen() {
                 <Text style={styles.tplName}>{t.name}</Text>
                 <Text style={styles.tplMeta}>{t.category} · {t.fields.length} campo{t.fields.length === 1 ? '' : 's'} · {t.code}</Text>
               </View>
-              <Pressable onPress={() => startEdit(t)} hitSlop={8} style={{ padding: 6 }}>
+              <Pressable accessibilityRole="button" accessibilityLabel={a11y('editar')} onPress={() => startEdit(t)} hitSlop={8} style={{ padding: 6 }}>
                 <Ionicons name="create-outline" size={20} color={colors.primary} />
               </Pressable>
-              <Pressable onPress={() => onDelete(t)} hitSlop={8} style={{ padding: 6 }}>
+              <Pressable accessibilityRole="button" accessibilityLabel={a11y('eliminar')} onPress={() => onDelete(t)} hitSlop={8} style={{ padding: 6 }}>
                 <Ionicons name="trash-outline" size={20} color={colors.error} />
               </Pressable>
             </View>

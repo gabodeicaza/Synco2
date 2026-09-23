@@ -113,10 +113,10 @@ export function RangoFechasPicker({ visible, desdeInicial, hastaInicial, onCance
           ) : null}
 
           <View style={styles.actions}>
-            <Pressable onPress={onCancelar} style={[styles.btn, styles.btnGhost]}>
+            <Pressable accessibilityRole="button" onPress={onCancelar} style={[styles.btn, styles.btnGhost]}>
               <Text style={styles.btnGhostTxt}>Cancelar</Text>
             </Pressable>
-            <Pressable
+            <Pressable accessibilityRole="button"
               onPress={() => { if (puedeConfirmar && desde && hasta) onConfirmar(desde, hasta); }}
               disabled={!puedeConfirmar}
               style={[styles.btn, styles.btnPrimary, !puedeConfirmar && { opacity: 0.5 }]}

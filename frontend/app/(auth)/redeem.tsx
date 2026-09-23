@@ -17,6 +17,7 @@ import { useAuth } from '@/src/auth-context';
 import { api } from '@/src/api';
 import { homeRouteForRole, roleLabel } from '@/src/utils/roles';
 import { colors, radius, spacing } from '@/src/theme';
+import { a11y } from '@/src/i18n';
 
 type Stage = 'token' | 'password';
 
@@ -96,7 +97,7 @@ export default function RedeemInviteScreen() {
       >
         {/* Top bar */}
         <View style={styles.topBar}>
-          <Pressable onPress={stage === 'password' ? backToToken : backToLogin} hitSlop={10} style={styles.backIconBtn}>
+          <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={stage === 'password' ? backToToken : backToLogin} hitSlop={10} style={styles.backIconBtn}>
             <Ionicons name="chevron-back" size={22} color={colors.text} />
           </Pressable>
           <Text style={styles.topTitle}>Unirme con codigo</Text>
@@ -137,7 +138,7 @@ export default function RedeemInviteScreen() {
                 multiline
               />
             </View>
-            <Pressable onPress={pasteFromClipboard} hitSlop={6} style={styles.pasteBtn}>
+            <Pressable accessibilityRole="button" onPress={pasteFromClipboard} hitSlop={6} style={styles.pasteBtn}>
               <Ionicons name="clipboard-outline" size={14} color={colors.primary} />
               <Text style={styles.pasteText}>Pegar desde portapapeles</Text>
             </Pressable>
@@ -158,7 +159,7 @@ export default function RedeemInviteScreen() {
               fullWidth
               icon={<Ionicons name="arrow-forward" size={18} color="#fff" />}
             />
-            <Pressable onPress={backToLogin} hitSlop={8} style={styles.linkRow}>
+            <Pressable accessibilityRole="button" onPress={backToLogin} hitSlop={8} style={styles.linkRow}>
               <Text style={styles.linkText}>Volver a inicio de sesion</Text>
             </Pressable>
           </View>
@@ -187,7 +188,7 @@ export default function RedeemInviteScreen() {
                   style={styles.input}
                   editable={!busy}
                 />
-                <Pressable onPress={() => setShowPwd((v) => !v)} hitSlop={8}>
+                <Pressable accessibilityRole="button" accessibilityLabel={a11y(showPwd ? 'ocultarPassword' : 'mostrarPassword')} onPress={() => setShowPwd((v) => !v)} hitSlop={8}>
                   <Ionicons name={showPwd ? 'eye-off-outline' : 'eye-outline'} size={18} color={colors.textMuted} />
                 </Pressable>
               </View>
@@ -223,7 +224,7 @@ export default function RedeemInviteScreen() {
                 fullWidth
                 icon={<Ionicons name="checkmark" size={18} color="#fff" />}
               />
-              <Pressable onPress={backToToken} hitSlop={8} style={styles.linkRow}>
+              <Pressable accessibilityRole="button" onPress={backToToken} hitSlop={8} style={styles.linkRow}>
                 <Text style={styles.linkText}>Usar otro codigo</Text>
               </Pressable>
             </View>

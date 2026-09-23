@@ -34,6 +34,7 @@ import {
 import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
 import { ESTATUS_LABEL, ESTATUS_COLOR } from '@/src/components/AccesoPredioManager';
 import { downloadBlob } from '@/src/utils/downloadBlob';
+import { a11y } from '@/src/i18n';
 
 type Tab = 'postes' | 'cimentacion' | 'perforadoras';
 
@@ -388,11 +389,11 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <View style={[styles.headerWrap, { backgroundColor: headerColor, paddingTop: insets.top + spacing.xs }]}>
         <View style={styles.headerTopRow}>
-          <Pressable onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
+          <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
             <Ionicons name="chevron-back" size={22} color={headerTextColor} />
           </Pressable>
           <Text style={[styles.titleBar, { color: headerTextColor }]} numberOfLines={1}>Control de Obra</Text>
-          <Pressable onPress={exportXlsx} disabled={exporting} hitSlop={10} style={styles.iconBtn}>
+          <Pressable accessibilityRole="button" accessibilityLabel={a11y('descargar')} onPress={exportXlsx} disabled={exporting} hitSlop={10} style={styles.iconBtn}>
             {exporting ? (
               <ActivityIndicator size="small" color={headerTextColor} />
             ) : (
@@ -408,7 +409,7 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
           { key: 'cimentacion', label: 'Cimentación', icon: 'layers-outline' },
           { key: 'perforadoras', label: 'Perforadoras', icon: 'construct-outline' },
         ] as { key: Tab; label: string; icon: keyof typeof Ionicons.glyphMap }[]).map((t) => (
-          <Pressable key={t.key} onPress={() => setTab(t.key)} style={[styles.tabBtn, tab === t.key && { borderBottomColor: headerColor }]}>
+          <Pressable accessibilityRole="button" key={t.key} onPress={() => setTab(t.key)} style={[styles.tabBtn, tab === t.key && { borderBottomColor: headerColor }]}>
             <Ionicons name={t.icon} size={15} color={tab === t.key ? headerColor : colors.textMuted} />
             <Text style={[styles.tabTxt, tab === t.key && { color: headerColor }]}>{t.label}</Text>
           </Pressable>
@@ -437,7 +438,7 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
             <>
               <View style={styles.sectionLabelRow}>
                 <Text style={styles.sectionLabel}>Avance por intertramo</Text>
-                <Pressable onPress={openEtapasEditor} style={styles.configBtn} hitSlop={8}>
+                <Pressable accessibilityRole="button" onPress={openEtapasEditor} style={styles.configBtn} hitSlop={8}>
                   <Ionicons name="settings-outline" size={14} color={headerColor} />
                   <Text style={[styles.configBtnTxt, { color: headerColor }]}>Configurar etapas</Text>
                 </Pressable>
@@ -447,7 +448,7 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
                   const s = intertramoStats(it.id);
                   const active = activeIntertramo?.id === it.id;
                   return (
-                    <Pressable
+                    <Pressable accessibilityRole="button"
                       key={it.id}
                       onPress={() => setActiveIntertramoId(it.id)}
                       style={[styles.stationCard, active && { borderColor: headerColor, backgroundColor: `${headerColor}0D` }]}
@@ -510,7 +511,7 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
                                 const value = poste.estatus_actividades?.[c.key] || 'sin_iniciar';
                                 const key = `${poste.id}:${c.key}`;
                                 return (
-                                  <Pressable
+                                  <Pressable accessibilityRole="button"
                                     key={c.key}
                                     onPress={() => cycleEstatusActividad(poste, c.key)}
                                     disabled={!!busyKeys[key]}
@@ -560,7 +561,7 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
                   const hasData = cimentacion.some((e) => e.node_id === est.id);
                   const active = activeEstacion?.id === est.id;
                   return (
-                    <Pressable
+                    <Pressable accessibilityRole="button"
                       key={est.id}
                       onPress={() => setActiveEstacionId(est.id)}
                       style={[styles.stationCard, active && { borderColor: headerColor, backgroundColor: `${headerColor}0D` }]}
@@ -585,7 +586,7 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
                 <View style={styles.detailCard}>
                   <View style={styles.detailHeadRow}>
                     <Text style={styles.detailTitle}>{activeEstacion.name}</Text>
-                    <Pressable onPress={() => setAddElementoOpen(true)} style={styles.addBtn}>
+                    <Pressable accessibilityRole="button" onPress={() => setAddElementoOpen(true)} style={styles.addBtn}>
                       <Ionicons name="add" size={16} color={headerColor} />
                       <Text style={[styles.addBtnTxt, { color: headerColor }]}>Agregar elemento</Text>
                     </Pressable>
@@ -605,7 +606,7 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
                           <View style={styles.elementoHeadRow}>
                             <Text style={styles.elementoName}>{el.elemento}</Text>
                             <Text style={[styles.elementoPct, { color: headerColor }]}>{fmtPct(pctColado)}% colado</Text>
-                            <Pressable onPress={() => deleteElemento(el)} hitSlop={8}>
+                            <Pressable accessibilityRole="button" accessibilityLabel={a11y('eliminar')} onPress={() => deleteElemento(el)} hitSlop={8}>
                               <Ionicons name="trash-outline" size={16} color={colors.error} />
                             </Pressable>
                           </View>
@@ -627,7 +628,7 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
                             ))}
                           </View>
                           {dirty ? (
-                            <Pressable onPress={() => saveElemento(el)} disabled={!!busyKeys[busyKey]} style={[styles.saveBtn, { backgroundColor: headerColor }]}>
+                            <Pressable accessibilityRole="button" onPress={() => saveElemento(el)} disabled={!!busyKeys[busyKey]} style={[styles.saveBtn, { backgroundColor: headerColor }]}>
                               {busyKeys[busyKey] ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.saveBtnTxt}>Guardar</Text>}
                             </Pressable>
                           ) : null}
@@ -644,7 +645,7 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
         <ScrollView contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + spacing.xl }]}>
           <View style={styles.detailHeadRow}>
             <Text style={styles.sectionLabel}>Relación de perforadoras</Text>
-            <Pressable onPress={() => openPerfModal('nueva')} style={styles.addBtn}>
+            <Pressable accessibilityRole="button" onPress={() => openPerfModal('nueva')} style={styles.addBtn}>
               <Ionicons name="add" size={16} color={headerColor} />
               <Text style={[styles.addBtnTxt, { color: headerColor }]}>Agregar perforadora</Text>
             </Pressable>
@@ -653,13 +654,13 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
             <Text style={styles.empty}>Sin perforadoras registradas todavía.</Text>
           ) : (
             perforadoras.map((p) => (
-              <Pressable key={p.id} onPress={() => openPerfModal(p)} style={styles.perfCard}>
+              <Pressable accessibilityRole="button" key={p.id} onPress={() => openPerfModal(p)} style={styles.perfCard}>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.perfName}>{p.nombre}</Text>
                   <Text style={styles.perfMeta}>{p.serie || '—'} · {p.ubicacion || 'Sin ubicación'}</Text>
                   {p.estatus ? <Text style={[styles.perfEstatus, { color: headerColor }]}>{p.estatus}</Text> : null}
                 </View>
-                <Pressable onPress={() => deletePerforadora(p)} hitSlop={8}>
+                <Pressable accessibilityRole="button" accessibilityLabel={a11y('eliminar')} onPress={() => deletePerforadora(p)} hitSlop={8}>
                   <Ionicons name="trash-outline" size={18} color={colors.error} />
                 </Pressable>
               </Pressable>
@@ -690,7 +691,7 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
                       placeholderTextColor={colors.textMuted}
                       style={[styles.input, { flex: 1 }]}
                     />
-                    <Pressable onPress={() => removeEtapaElemento(idx)} hitSlop={8}>
+                    <Pressable accessibilityRole="button" accessibilityLabel={a11y('eliminar')} onPress={() => removeEtapaElemento(idx)} hitSlop={8}>
                       <Ionicons name="trash-outline" size={18} color={colors.error} />
                     </Pressable>
                   </View>
@@ -703,26 +704,26 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
                         placeholderTextColor={colors.textMuted}
                         style={[styles.input, styles.etapaActividadInput]}
                       />
-                      <Pressable onPress={() => removeEtapaActividad(idx, actIdx)} hitSlop={8}>
+                      <Pressable accessibilityRole="button" accessibilityLabel={a11y('quitar')} onPress={() => removeEtapaActividad(idx, actIdx)} hitSlop={8}>
                         <Ionicons name="close-circle-outline" size={18} color={colors.textMuted} />
                       </Pressable>
                     </View>
                   ))}
-                  <Pressable onPress={() => addEtapaActividad(idx)} style={styles.etapaAddActividadBtn}>
+                  <Pressable accessibilityRole="button" onPress={() => addEtapaActividad(idx)} style={styles.etapaAddActividadBtn}>
                     <Ionicons name="add" size={14} color={headerColor} />
                     <Text style={[styles.configBtnTxt, { color: headerColor }]}>Agregar actividad</Text>
                   </Pressable>
                 </View>
               ))}
-              <Pressable onPress={addEtapaElemento} style={[styles.modalBtn, styles.modalBtnGhost, { marginTop: 4 }]}>
+              <Pressable accessibilityRole="button" onPress={addEtapaElemento} style={[styles.modalBtn, styles.modalBtnGhost, { marginTop: 4 }]}>
                 <Text style={styles.modalBtnGhostTxt}>+ Agregar elemento</Text>
               </Pressable>
             </ScrollView>
             <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
-              <Pressable onPress={() => setEtapasEditorOpen(false)} disabled={savingEtapas} style={[styles.modalBtn, styles.modalBtnGhost]}>
+              <Pressable accessibilityRole="button" onPress={() => setEtapasEditorOpen(false)} disabled={savingEtapas} style={[styles.modalBtn, styles.modalBtnGhost]}>
                 <Text style={styles.modalBtnGhostTxt}>Cancelar</Text>
               </Pressable>
-              <Pressable onPress={guardarEtapas} disabled={savingEtapas} style={[styles.modalBtn, { backgroundColor: headerColor }]}>
+              <Pressable accessibilityRole="button" onPress={guardarEtapas} disabled={savingEtapas} style={[styles.modalBtn, { backgroundColor: headerColor }]}>
                 {savingEtapas ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.modalBtnTxt}>Guardar</Text>}
               </Pressable>
             </View>
@@ -740,10 +741,10 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
               style={styles.input} autoFocus
             />
             <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
-              <Pressable onPress={() => setAddElementoOpen(false)} style={[styles.modalBtn, styles.modalBtnGhost]}>
+              <Pressable accessibilityRole="button" onPress={() => setAddElementoOpen(false)} style={[styles.modalBtn, styles.modalBtnGhost]}>
                 <Text style={styles.modalBtnGhostTxt}>Cancelar</Text>
               </Pressable>
-              <Pressable onPress={addElemento} style={[styles.modalBtn, { backgroundColor: headerColor }]}>
+              <Pressable accessibilityRole="button" onPress={addElemento} style={[styles.modalBtn, { backgroundColor: headerColor }]}>
                 <Text style={styles.modalBtnTxt}>Agregar</Text>
               </Pressable>
             </View>
@@ -771,10 +772,10 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
               placeholder="Ej. Activa, Mantenimiento" placeholderTextColor={colors.textMuted} style={styles.input}
             />
             <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
-              <Pressable onPress={() => setPerfModal(null)} disabled={perfSaving} style={[styles.modalBtn, styles.modalBtnGhost]}>
+              <Pressable accessibilityRole="button" onPress={() => setPerfModal(null)} disabled={perfSaving} style={[styles.modalBtn, styles.modalBtnGhost]}>
                 <Text style={styles.modalBtnGhostTxt}>Cancelar</Text>
               </Pressable>
-              <Pressable onPress={savePerforadora} disabled={perfSaving} style={[styles.modalBtn, { backgroundColor: headerColor }]}>
+              <Pressable accessibilityRole="button" onPress={savePerforadora} disabled={perfSaving} style={[styles.modalBtn, { backgroundColor: headerColor }]}>
                 {perfSaving ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.modalBtnTxt}>Guardar</Text>}
               </Pressable>
             </View>

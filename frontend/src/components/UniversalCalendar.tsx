@@ -16,6 +16,7 @@ import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/dat
 import { api, Area, ProjectEvent, User } from '@/src/api';
 import { colors, radius, shadow, spacing, areaTone } from '@/src/theme';
 import { dayjs, CDMX_TZ, fmtTimeCDMX } from '@/src/utils/tz';
+import { a11y } from '@/src/i18n';
 
 // ---------------------------------------------------------------------------
 // LocaleConfig en espanol (meses, dias, etiquetas).
@@ -274,7 +275,7 @@ export default function UniversalCalendar({ projectId, userId, isCoord }: Props)
         )}
       </ScrollView>
 
-      <Pressable onPress={() => setEditor({ kind: 'create' })} style={styles.fab}>
+      <Pressable accessibilityRole="button" accessibilityLabel={a11y('agregar')} hitSlop={8} onPress={() => setEditor({ kind: 'create' })} style={styles.fab}>
         <Ionicons name="add" size={26} color="#fff" />
       </Pressable>
 
@@ -349,10 +350,10 @@ function EventRow({
           <View style={{ flex: 1 }} />
           {canEdit ? (
             <>
-              <Pressable hitSlop={8} onPress={onEdit} style={styles.iconBtn}>
+              <Pressable accessibilityRole="button" accessibilityLabel={a11y('editar')} hitSlop={8} onPress={onEdit} style={styles.iconBtn}>
                 <Ionicons name="create-outline" size={15} color={colors.primary} />
               </Pressable>
-              <Pressable hitSlop={8} onPress={onDelete} style={styles.iconBtn}>
+              <Pressable accessibilityRole="button" accessibilityLabel={a11y('eliminar')} hitSlop={8} onPress={onDelete} style={styles.iconBtn}>
                 <Ionicons name="trash-outline" size={15} color={colors.error} />
               </Pressable>
             </>
@@ -584,7 +585,7 @@ function EventEditor({
             {areas.length > 0 ? (
               <Field label="Disciplina">
                 <View style={styles.areasWrap}>
-                  <Pressable
+                  <Pressable accessibilityRole="button"
                     onPress={() => setAreaId(null)}
                     style={[styles.areaSelectChip, !areaId && styles.areaSelectChipActive]}
                   >
@@ -594,7 +595,7 @@ function EventEditor({
                     const active = areaId === a.id;
                     const tone = areaTone(a.color);
                     return (
-                      <Pressable
+                      <Pressable accessibilityRole="button"
                         key={a.id}
                         onPress={() => setAreaId(a.id)}
                         style={[
@@ -663,7 +664,7 @@ function EventEditor({
             ) : (
               <>
                 <Field label="Fecha">
-                  <Pressable onPress={() => setPicker('startDate')} style={styles.pickerBtn} disabled={busy}>
+                  <Pressable accessibilityRole="button" onPress={() => setPicker('startDate')} style={styles.pickerBtn} disabled={busy}>
                     <Ionicons name="calendar-outline" size={16} color={colors.primary} />
                     <Text style={styles.pickerTxt}>{dateLabel}</Text>
                   </Pressable>
@@ -671,7 +672,7 @@ function EventEditor({
                 <View style={{ flexDirection: 'row', gap: spacing.sm }}>
                   <View style={{ flex: 1 }}>
                     <Field label="Hora inicio">
-                      <Pressable onPress={() => setPicker('startTime')} style={styles.pickerBtn} disabled={busy}>
+                      <Pressable accessibilityRole="button" onPress={() => setPicker('startTime')} style={styles.pickerBtn} disabled={busy}>
                         <Ionicons name="time-outline" size={16} color={colors.primary} />
                         <Text style={styles.pickerTxt}>{startTimeLabel}</Text>
                       </Pressable>
@@ -680,12 +681,12 @@ function EventEditor({
                   <View style={{ flex: 1 }}>
                     <Field label="Hora fin (opc.)">
                       <View style={{ flexDirection: 'row', gap: 4 }}>
-                        <Pressable onPress={() => setPicker('endTime')} style={[styles.pickerBtn, { flex: 1 }]} disabled={busy}>
+                        <Pressable accessibilityRole="button" onPress={() => setPicker('endTime')} style={[styles.pickerBtn, { flex: 1 }]} disabled={busy}>
                           <Ionicons name="time-outline" size={16} color={colors.primary} />
                           <Text style={styles.pickerTxt} numberOfLines={1}>{endTimeLabel}</Text>
                         </Pressable>
                         {endDate ? (
-                          <Pressable onPress={() => setEndDate(null)} style={styles.clearBtn} disabled={busy}>
+                          <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} hitSlop={8} onPress={() => setEndDate(null)} style={styles.clearBtn} disabled={busy}>
                             <Ionicons name="close" size={14} color={colors.error} />
                           </Pressable>
                         ) : null}
@@ -735,7 +736,7 @@ function EventEditor({
 
             <View style={styles.sepRow}>
               <Text style={styles.label}>Asistentes</Text>
-              <Pressable onPress={() => setAttendeesPickerOpen(true)} style={styles.addRow} disabled={busy}>
+              <Pressable accessibilityRole="button" onPress={() => setAttendeesPickerOpen(true)} style={styles.addRow} disabled={busy}>
                 <Ionicons name="person-add-outline" size={16} color={colors.primary} />
                 <Text style={styles.addRowTxt}>
                   {attendeeIds.length > 0 ? `Editar (${attendeeIds.length})` : 'Anadir personas'}
@@ -753,7 +754,7 @@ function EventEditor({
                     <View key={uid} style={styles.attendeeFormChip}>
                       <Ionicons name="person" size={11} color={colors.primary} />
                       <Text style={styles.attendeeFormChipTxt}>{u.name}</Text>
-                      <Pressable onPress={() => toggleAttendee(uid)} hitSlop={8}>
+                      <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} onPress={() => toggleAttendee(uid)} hitSlop={8}>
                         <Ionicons name="close" size={12} color={colors.textMuted} />
                       </Pressable>
                     </View>
@@ -771,10 +772,10 @@ function EventEditor({
           </ScrollView>
 
           <View style={styles.modalActions}>
-            <Pressable onPress={onClose} style={[styles.btn, styles.btnGhost]} disabled={busy}>
+            <Pressable accessibilityRole="button" onPress={onClose} style={[styles.btn, styles.btnGhost]} disabled={busy}>
               <Text style={styles.btnGhostTxt}>Cancelar</Text>
             </Pressable>
-            <Pressable onPress={submit} style={[styles.btn, styles.btnPrimary, busy && { opacity: 0.6 }]} disabled={busy}>
+            <Pressable accessibilityRole="button" onPress={submit} style={[styles.btn, styles.btnPrimary, busy && { opacity: 0.6 }]} disabled={busy}>
               {busy ? <ActivityIndicator color="#fff" /> : (
                 <Text style={styles.btnPrimaryTxt}>{editor?.kind === 'edit' ? 'Guardar' : 'Crear evento'}</Text>
               )}
@@ -794,7 +795,7 @@ function EventEditor({
             <View style={styles.pickerSheet}>
               <View style={styles.pickerHeader}>
                 <Text style={styles.pickerTitle}>Asistentes ({attendeeIds.length})</Text>
-                <Pressable onPress={() => setAttendeesPickerOpen(false)} hitSlop={8}>
+                <Pressable accessibilityRole="button" onPress={() => setAttendeesPickerOpen(false)} hitSlop={8}>
                   <Text style={styles.pickerDoneTxt}>Listo</Text>
                 </Pressable>
               </View>
@@ -805,7 +806,7 @@ function EventEditor({
                   members.map((m) => {
                     const on = attendeeIds.includes(m.id);
                     return (
-                      <Pressable key={m.id} onPress={() => toggleAttendee(m.id)} style={styles.pickerRow}>
+                      <Pressable accessibilityRole="button" key={m.id} onPress={() => toggleAttendee(m.id)} style={styles.pickerRow}>
                         <Ionicons
                           name={on ? 'checkbox' : 'square-outline'}
                           size={20}

@@ -15,6 +15,7 @@ import { colors, radius, shadow, spacing } from '@/src/theme';
 import { confirm } from '@/src/utils/confirm';
 import { formatEventTime } from '@/src/utils/events';
 import { dayjs, CDMX_TZ } from '@/src/utils/tz';
+import { a11y } from '@/src/i18n';
 
 interface Editing {
   id?: string;
@@ -171,14 +172,14 @@ export default function CoordEventsScreen() {
   return (
     <View style={[styles.flex, { paddingTop: insets.top }]}>
       <View style={styles.header}>
-        <Pressable onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
+        <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
           <Ionicons name="chevron-back" size={24} color={colors.text} />
         </Pressable>
         <View style={{ flex: 1 }}>
           <Text style={styles.title} numberOfLines={1}>Calendario</Text>
           <Text style={styles.subtitle}>Eventos visibles para todo el proyecto</Text>
         </View>
-        <Pressable onPress={newEvent} style={styles.newBtn}>
+        <Pressable accessibilityRole="button" onPress={newEvent} style={styles.newBtn}>
           <Ionicons name="add" size={18} color="#fff" />
           <Text style={styles.newBtnTxt}>Nuevo</Text>
         </Pressable>
@@ -186,7 +187,7 @@ export default function CoordEventsScreen() {
 
       <View style={styles.tabsRow}>
         {(['upcoming', 'past'] as const).map((k) => (
-          <Pressable
+          <Pressable accessibilityRole="button"
             key={k}
             onPress={() => { setTab(k); }}
             style={[styles.tabBtn, tab === k && styles.tabBtnActive]}
@@ -225,7 +226,7 @@ export default function CoordEventsScreen() {
               Programa actividades clave del proyecto. Todos los miembros podran verlas en su tab &ldquo;Calendario&rdquo;.
             </Text>
             {tab === 'upcoming' ? (
-              <Pressable style={styles.emptyBtn} onPress={newEvent}>
+              <Pressable accessibilityRole="button" style={styles.emptyBtn} onPress={newEvent}>
                 <Ionicons name="add" size={16} color="#fff" />
                 <Text style={styles.emptyBtnTxt}>Crear primer evento</Text>
               </Pressable>
@@ -269,11 +270,11 @@ export default function CoordEventsScreen() {
                   </View>
                 ) : null}
                 <View style={styles.actionsRow}>
-                  <Pressable onPress={() => editEvent(e)} style={[styles.actBtn]}>
+                  <Pressable accessibilityRole="button" onPress={() => editEvent(e)} style={[styles.actBtn]}>
                     <Ionicons name="create-outline" size={14} color={colors.primary} />
                     <Text style={styles.actBtnTxt}>Editar</Text>
                   </Pressable>
-                  <Pressable onPress={() => onDelete(e)} style={[styles.actBtn, styles.actBtnDanger]}>
+                  <Pressable accessibilityRole="button" onPress={() => onDelete(e)} style={[styles.actBtn, styles.actBtnDanger]}>
                     <Ionicons name="trash-outline" size={14} color={colors.error} />
                     <Text style={styles.actBtnTxtDanger}>Eliminar</Text>
                   </Pressable>
@@ -368,7 +369,7 @@ export default function CoordEventsScreen() {
 
               <View style={styles.sepRow}>
                 <Text style={styles.label}>Asistentes</Text>
-                <Pressable onPress={() => setAttendeesPickerOpen(true)} style={styles.addRow}>
+                <Pressable accessibilityRole="button" onPress={() => setAttendeesPickerOpen(true)} style={styles.addRow}>
                   <Ionicons name="person-add-outline" size={16} color={colors.primary} />
                   <Text style={styles.addRowTxt}>
                     {editing && editing.attendeeIds.length > 0 ? `Editar (${editing.attendeeIds.length})` : 'Anadir personas'}
@@ -386,7 +387,7 @@ export default function CoordEventsScreen() {
                       <View key={uid} style={styles.attendeeFormChip}>
                         <Ionicons name="person" size={11} color={colors.primary} />
                         <Text style={styles.attendeeFormChipTxt}>{m.name}</Text>
-                        <Pressable onPress={() => toggleAttendee(uid)} hitSlop={8}>
+                        <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} onPress={() => toggleAttendee(uid)} hitSlop={8}>
                           <Ionicons name="close" size={12} color={colors.textMuted} />
                         </Pressable>
                       </View>
@@ -398,10 +399,10 @@ export default function CoordEventsScreen() {
               {error ? <Text style={[styles.errorText, { textAlign: 'center' }]}>{error}</Text> : null}
             </ScrollView>
             <View style={styles.modalActions}>
-              <Pressable onPress={() => { setEditing(null); setError(null); }} style={[styles.btn, styles.btnGhost]}>
+              <Pressable accessibilityRole="button" onPress={() => { setEditing(null); setError(null); }} style={[styles.btn, styles.btnGhost]}>
                 <Text style={styles.btnGhostTxt}>Cancelar</Text>
               </Pressable>
-              <Pressable onPress={onSave} disabled={saving} style={[styles.btn, styles.btnPrimary, saving && { opacity: 0.6 }]}>
+              <Pressable accessibilityRole="button" onPress={onSave} disabled={saving} style={[styles.btn, styles.btnPrimary, saving && { opacity: 0.6 }]}>
                 {saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.btnPrimaryTxt}>{editing?.id ? 'Guardar' : 'Programar'}</Text>}
               </Pressable>
             </View>
@@ -420,7 +421,7 @@ export default function CoordEventsScreen() {
             <View style={styles.pickerSheet}>
               <View style={styles.pickerHeader}>
                 <Text style={styles.pickerTitle}>Asistentes ({editing?.attendeeIds.length || 0})</Text>
-                <Pressable onPress={() => setAttendeesPickerOpen(false)} hitSlop={8}>
+                <Pressable accessibilityRole="button" onPress={() => setAttendeesPickerOpen(false)} hitSlop={8}>
                   <Text style={styles.pickerDoneTxt}>Listo</Text>
                 </Pressable>
               </View>
@@ -431,7 +432,7 @@ export default function CoordEventsScreen() {
                   members.map((m) => {
                     const on = !!editing?.attendeeIds.includes(m.id);
                     return (
-                      <Pressable key={m.id} onPress={() => toggleAttendee(m.id)} style={styles.pickerRow}>
+                      <Pressable accessibilityRole="button" key={m.id} onPress={() => toggleAttendee(m.id)} style={styles.pickerRow}>
                         <Ionicons
                           name={on ? 'checkbox' : 'square-outline'}
                           size={20}

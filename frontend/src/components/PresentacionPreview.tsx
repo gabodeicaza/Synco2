@@ -21,6 +21,7 @@ import { SlideSeguimientoEstudios } from '@/src/components/presentacion/SlideSeg
 import { SlideCroquisEstacion } from '@/src/components/presentacion/SlideCroquisEstacion';
 import { SlideInformacionParticular } from '@/src/components/presentacion/SlideInformacionParticular';
 import { SlideAvanceGrafico } from '@/src/components/presentacion/SlideAvanceGrafico';
+import { a11y } from '@/src/i18n';
 
 /** `fecha - 6 días` en calendario puro (sin zona horaria) — ventana semanal
  * que cierra en la fecha del reporte, para las tarjetas de Financiero. */
@@ -142,11 +143,11 @@ export default function PresentacionPreview({ projectId, presentacionId }: { pro
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <View style={[styles.headerWrap, { backgroundColor: headerColor, paddingTop: insets.top + spacing.xs }]}>
         <View style={styles.headerTopRow}>
-          <Pressable onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
+          <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
             <Ionicons name="chevron-back" size={22} color={headerTextColor} />
           </Pressable>
           <Text style={[styles.titleBar, { color: headerTextColor }]} numberOfLines={1}>{presentacion.titulo}</Text>
-          <Pressable onPress={onExport} hitSlop={10} style={styles.iconBtn} disabled={exporting}>
+          <Pressable accessibilityRole="button" accessibilityLabel={a11y('compartir')} onPress={onExport} hitSlop={10} style={styles.iconBtn} disabled={exporting}>
             {exporting ? <ActivityIndicator size="small" color={headerTextColor} /> : <Ionicons name="share-outline" size={20} color={headerTextColor} />}
           </Pressable>
         </View>

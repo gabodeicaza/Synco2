@@ -9,6 +9,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { api, Project } from '@/src/api';
 import { colors, radius, shadow, spacing } from '@/src/theme';
 import { parseExcel, mapEquipoRows, EquipoRow } from '@/src/utils/excel';
+import { a11y } from '@/src/i18n';
 
 /**
  * Delimitador para empaquetar datos estructurados en una sola cadena.
@@ -206,11 +207,11 @@ export default function EquipmentManagementScreen() {
   return (
     <View style={styles.flex}>
       <View style={styles.header}>
-        <Pressable onPress={() => router.back()} hitSlop={10} style={styles.backBtn}>
+        <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={10} style={styles.backBtn}>
           <Ionicons name="chevron-back" size={24} color={colors.text} />
         </Pressable>
         <Text style={styles.title}>Equipo</Text>
-        <Pressable onPress={onImport} disabled={busy} style={styles.importBtn}>
+        <Pressable accessibilityRole="button" onPress={onImport} disabled={busy} style={styles.importBtn}>
           <Ionicons name="download-outline" size={18} color={colors.primary} />
           <Text style={styles.importBtnTxt}>Importar</Text>
         </Pressable>
@@ -241,7 +242,7 @@ export default function EquipmentManagementScreen() {
             placeholder="Serie / Placas"
             style={styles.input}
           />
-          <Pressable onPress={onAdd} disabled={busy || !nombre.trim()} style={[styles.addBtn, !nombre.trim() && { opacity: 0.5 }]}>
+          <Pressable accessibilityRole="button" onPress={onAdd} disabled={busy || !nombre.trim()} style={[styles.addBtn, !nombre.trim() && { opacity: 0.5 }]}>
             <Ionicons name="add" size={20} color="#fff" />
             <Text style={styles.addBtnTxt}>Agregar a catalogo</Text>
           </Pressable>
@@ -273,7 +274,7 @@ export default function EquipmentManagementScreen() {
                           <Text style={styles.itemSub}>Sin datos adicionales</Text>
                         )}
                       </View>
-                      <Pressable onPress={() => onRemove(idx)} disabled={busy} hitSlop={10}>
+                      <Pressable accessibilityRole="button" accessibilityLabel={a11y('eliminar')} onPress={() => onRemove(idx)} disabled={busy} hitSlop={10}>
                         <Ionicons name="trash-outline" size={18} color={colors.error} />
                       </Pressable>
                     </View>

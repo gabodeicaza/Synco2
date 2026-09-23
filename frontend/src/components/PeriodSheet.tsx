@@ -44,12 +44,12 @@ export function PeriodSheet({
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <Pressable style={styles.backdrop} onPress={onClose}>
-        <Pressable style={styles.sheet} onPress={(e) => e.stopPropagation()}>
+        <Pressable accessibilityRole="button" style={styles.sheet} onPress={(e) => e.stopPropagation()}>
           <View style={styles.handle} />
           <Text style={styles.title}>{title}</Text>
           <Text style={styles.subtitle}>Generaremos un PDF horizontal con la jerarquia completa</Text>
           {OPTIONS.map((o) => (
-            <Pressable
+            <Pressable accessibilityRole="button"
               key={o.value}
               onPress={() => { onSelect(o.value); }}
               style={({ pressed }) => [styles.option, pressed && { backgroundColor: colors.primaryLight }]}
@@ -64,7 +64,7 @@ export function PeriodSheet({
               <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
             </Pressable>
           ))}
-          <Pressable onPress={onClose} style={styles.cancel}>
+          <Pressable accessibilityRole="button" onPress={onClose} style={styles.cancel}>
             <Text style={styles.cancelText}>Cancelar</Text>
           </Pressable>
         </Pressable>

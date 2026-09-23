@@ -11,6 +11,7 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, spacing } from '@/src/theme';
 import { WorkforceTracker } from '@/src/components/WorkforceTracker';
+import { a11y } from '@/src/i18n';
 
 export default function FuerzaDeTrabajoRoute() {
   const insets = useSafeAreaInsets();
@@ -20,7 +21,7 @@ export default function FuerzaDeTrabajoRoute() {
   return (
     <View style={[styles.flex, { paddingTop: insets.top }]}>
       <View style={styles.header}>
-        <Pressable onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
+        <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
           <Ionicons name="chevron-back" size={24} color={colors.text} />
         </Pressable>
         <Text style={styles.title} numberOfLines={1}>Fuerza de Trabajo</Text>

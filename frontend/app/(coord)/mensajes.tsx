@@ -55,7 +55,7 @@ export default function CoordMensajesScreen() {
     return (
       <View style={{ flex: 1, backgroundColor: colors.bg }}>
         <View style={[styles.switcher, { paddingTop: insets.top + 8 }]}>
-          <Pressable
+          <Pressable accessibilityRole="button"
             onPress={() => { setSelected(null); load(); }}
             hitSlop={10}
             style={styles.switcherBtn}
@@ -121,7 +121,7 @@ export default function CoordMensajesScreen() {
           projects.map((p) => {
             const count = unread[p.id] || 0;
             return (
-              <Pressable
+              <Pressable accessibilityRole="button"
                 key={p.id}
                 onPress={() => openProject(p.id)}
                 style={({ pressed }) => [styles.projCard, pressed && { opacity: 0.85 }]}

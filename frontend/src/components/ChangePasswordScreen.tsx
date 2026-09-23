@@ -11,6 +11,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { Button } from '@/src/components/Button';
 import { api } from '@/src/api';
 import { colors, radius, spacing } from '@/src/theme';
+import { a11y } from '@/src/i18n';
 
 export default function ChangePasswordScreen() {
   const insets = useSafeAreaInsets();
@@ -50,7 +51,7 @@ export default function ChangePasswordScreen() {
   return (
     <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
       <View style={[styles.header, { paddingTop: insets.top + spacing.sm }]}>
-        <Pressable onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
+        <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
           <Ionicons name="chevron-back" size={24} color={colors.text} />
         </Pressable>
         <Text style={styles.title}>Cambiar contraseña</Text>
@@ -92,7 +93,7 @@ export default function ChangePasswordScreen() {
               onSubmitEditing={onSubmit}
               editable={!busy}
             />
-            <Pressable onPress={() => setShowPwd((v) => !v)} hitSlop={8}>
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y(showPwd ? 'ocultarPassword' : 'mostrarPassword')} onPress={() => setShowPwd((v) => !v)} hitSlop={8}>
               <Ionicons name={showPwd ? 'eye-off-outline' : 'eye-outline'} size={18} color={colors.textMuted} />
             </Pressable>
           </View>

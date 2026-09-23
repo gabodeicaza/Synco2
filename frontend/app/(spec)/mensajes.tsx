@@ -15,6 +15,7 @@ import { useAuth } from '@/src/auth-context';
 import { api, Channel, Message, User } from '@/src/api';
 import { colors, radius, shadow, spacing } from '@/src/theme';
 import { dayjs, CDMX_TZ, fmtTimeCDMX } from '@/src/utils/tz';
+import { a11y } from '@/src/i18n';
 
 const POLL_MS = 6000;
 
@@ -97,7 +98,7 @@ export function MensajesView({ projectId }: { projectId: string }) {
           <Text style={styles.headerTitle}>Mensajes</Text>
           <Text style={styles.headerSubtitle}>Canales del proyecto</Text>
         </View>
-        <Pressable onPress={() => loadChannels(false)} hitSlop={10} style={styles.refreshBtn}>
+        <Pressable accessibilityRole="button" accessibilityLabel={a11y('actualizar')} onPress={() => loadChannels(false)} hitSlop={10} style={styles.refreshBtn}>
           <Ionicons name="refresh" size={18} color="#fff" />
         </Pressable>
       </View>
@@ -108,7 +109,7 @@ export function MensajesView({ projectId }: { projectId: string }) {
         <View style={styles.errorBox}>
           <Ionicons name="alert-circle-outline" size={22} color={colors.error} />
           <Text style={styles.errorTxt}>{errorList}</Text>
-          <Pressable onPress={() => loadChannels(false)} style={styles.retryBtn}>
+          <Pressable accessibilityRole="button" onPress={() => loadChannels(false)} style={styles.retryBtn}>
             <Text style={styles.retryTxt}>Reintentar</Text>
           </Pressable>
         </View>
@@ -146,7 +147,7 @@ export function MensajesView({ projectId }: { projectId: string }) {
         />
       )}
 
-      <Pressable onPress={() => setShowDmPicker(true)} style={[styles.fab, { bottom: insets.bottom + 16 }]}>
+      <Pressable accessibilityRole="button" accessibilityLabel={a11y('agregar')} hitSlop={8} onPress={() => setShowDmPicker(true)} style={[styles.fab, { bottom: insets.bottom + 16 }]}>
         <Ionicons name="person-add" size={22} color="#fff" />
       </Pressable>
 
@@ -200,7 +201,7 @@ function ChannelRow({ channel, onPress }: { channel: Channel; onPress: () => voi
   const iconName = channel.type === 'direct' ? 'person-circle' : channel.type === 'area' ? 'pricetag' : 'megaphone';
   const tint = channel.type === 'direct' ? colors.textBody : colors.primary;
   return (
-    <Pressable onPress={onPress} style={styles.row}>
+    <Pressable accessibilityRole="button" onPress={onPress} style={styles.row}>
       <View style={[styles.rowIcon, channel.type === 'general' && { backgroundColor: colors.primary }]}>
         <Ionicons
           name={iconName as any}
@@ -348,7 +349,7 @@ function ChatView({
       <StatusBar barStyle="light-content" />
       <View style={[styles.blueTop, { height: 130 + insets.top }]} />
       <View style={[styles.header, { paddingTop: insets.top + spacing.xs }]}>
-        <Pressable onPress={onBack} hitSlop={10} style={styles.refreshBtn}>
+        <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={onBack} hitSlop={10} style={styles.refreshBtn}>
           <Ionicons name="chevron-back" size={22} color="#fff" />
         </Pressable>
         <View style={{ flex: 1 }}>
@@ -368,7 +369,7 @@ function ChatView({
           <View style={styles.errorBox}>
             <Ionicons name="alert-circle-outline" size={22} color={colors.error} />
             <Text style={styles.errorTxt}>{error}</Text>
-            <Pressable onPress={initialLoad} style={styles.retryBtn}>
+            <Pressable accessibilityRole="button" onPress={initialLoad} style={styles.retryBtn}>
               <Text style={styles.retryTxt}>Reintentar</Text>
             </Pressable>
           </View>
@@ -405,7 +406,7 @@ function ChatView({
             editable={!sending}
             maxLength={2000}
           />
-          <Pressable onPress={send} disabled={sending || !text.trim()} style={[styles.sendBtn, (sending || !text.trim()) && { opacity: 0.5 }]}>
+          <Pressable accessibilityRole="button" accessibilityLabel={a11y('enviar')} hitSlop={8} onPress={send} disabled={sending || !text.trim()} style={[styles.sendBtn, (sending || !text.trim()) && { opacity: 0.5 }]}>
             {sending ? <ActivityIndicator color="#fff" /> : <Ionicons name="send" size={18} color="#fff" />}
           </Pressable>
         </View>
@@ -424,7 +425,7 @@ function MessageBubble({
 }) {
   return (
     <View style={[styles.bubbleRow, isMine && { justifyContent: 'flex-end' }]}>
-      <Pressable onLongPress={canDelete ? onDelete : undefined} delayLongPress={400}
+      <Pressable accessibilityRole="button" onLongPress={canDelete ? onDelete : undefined} delayLongPress={400}
         style={[styles.bubble, isMine ? styles.bubbleMine : styles.bubbleOther]}>
         {!isMine ? (
           <Text style={styles.bubbleAuthor} numberOfLines={1}>{m.user_name}</Text>
@@ -484,7 +485,7 @@ function DMPicker({
         <View style={[styles.modalCard, { paddingBottom: insets.bottom + spacing.md, maxHeight: '75%' }]}>
           <View style={styles.modalHead}>
             <Text style={styles.modalTitle}>Nuevo mensaje directo</Text>
-            <Pressable onPress={onClose} hitSlop={10}><Ionicons name="close" size={22} color={colors.textBody} /></Pressable>
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} onPress={onClose} hitSlop={10}><Ionicons name="close" size={22} color={colors.textBody} /></Pressable>
           </View>
           {loading ? (
             <View style={styles.center}><ActivityIndicator color={colors.primary} /></View>
@@ -500,7 +501,7 @@ function DMPicker({
                   (c) => c.type === 'direct' && (c.member_ids || []).includes(item.id),
                 );
                 return (
-                  <Pressable onPress={() => startDM(item)} style={styles.memberRow} disabled={busyId === item.id}>
+                  <Pressable accessibilityRole="button" onPress={() => startDM(item)} style={styles.memberRow} disabled={busyId === item.id}>
                     <View style={styles.memberAvatar}>
                       <Ionicons name="person" size={20} color={colors.primary} />
                     </View>

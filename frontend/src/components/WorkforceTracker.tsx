@@ -20,6 +20,7 @@ import { api, FeedItem } from '@/src/api';
 import { colors, radius, spacing } from '@/src/theme';
 import { useAuth } from '@/src/auth-context';
 import { ROLE_COORD, ROLE_SUB } from '@/src/utils/roles';
+import { a11y } from '@/src/i18n';
 import {
   dayjs, CDMX_TZ,
   getStartOfTodayCDMX, getStartOfNaturalWeekCDMX, getStartOfNaturalMonthCDMX,
@@ -149,10 +150,10 @@ function WorkforceTable({
               <Text style={[styles.dataCell, styles.colVal]} numberOfLines={2}>{r.texto}</Text>
               {canEdit && (
                 <View style={styles.rowActions}>
-                  <Pressable onPress={() => onEditRow(r)} style={styles.editBtn} hitSlop={8}>
+                  <Pressable accessibilityRole="button" accessibilityLabel={a11y('editar')} onPress={() => onEditRow(r)} style={styles.editBtn} hitSlop={8}>
                     <Ionicons name="pencil-outline" size={14} color={colors.primary} />
                   </Pressable>
-                  <Pressable
+                  <Pressable accessibilityRole="button" accessibilityLabel={a11y('eliminar')}
                     onPress={() => onDeleteRow(r)}
                     disabled={deletingId === r.id}
                     style={styles.editBtn}
@@ -217,13 +218,13 @@ function EditEntryModal({
           autoFocus
         />
         <View style={styles.modalActions}>
-          <Pressable onPress={onDelete} disabled={saving} style={[styles.modalBtn, styles.modalBtnDanger]}>
+          <Pressable accessibilityRole="button" onPress={onDelete} disabled={saving} style={[styles.modalBtn, styles.modalBtnDanger]}>
             <Text style={styles.modalBtnDangerTxt}>Eliminar</Text>
           </Pressable>
-          <Pressable onPress={onClose} disabled={saving} style={[styles.modalBtn, styles.modalBtnGhost]}>
+          <Pressable accessibilityRole="button" onPress={onClose} disabled={saving} style={[styles.modalBtn, styles.modalBtnGhost]}>
             <Text style={styles.modalBtnGhostTxt}>Cancelar</Text>
           </Pressable>
-          <Pressable
+          <Pressable accessibilityRole="button"
             onPress={() => onSave(value)}
             disabled={saving || !value.trim()}
             style={[styles.modalBtn, styles.modalBtnPrimary, (saving || !value.trim()) && { opacity: 0.6 }]}
@@ -348,7 +349,7 @@ export function WorkforceTracker({ projectId }: { projectId: string }) {
         {PERIODS.map((p) => {
           const active = period === p.value;
           return (
-            <Pressable
+            <Pressable accessibilityRole="button"
               key={p.value}
               onPress={() => setPeriod(p.value)}
               style={[styles.chip, active && styles.chipActive]}
@@ -365,7 +366,7 @@ export function WorkforceTracker({ projectId }: { projectId: string }) {
         <View style={styles.errBox}>
           <Ionicons name="alert-circle-outline" size={16} color={colors.error} />
           <Text style={styles.errTxt}>{error}</Text>
-          <Pressable onPress={load} style={styles.retryBtn}>
+          <Pressable accessibilityRole="button" onPress={load} style={styles.retryBtn}>
             <Text style={styles.retryTxt}>Reintentar</Text>
           </Pressable>
         </View>

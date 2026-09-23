@@ -15,6 +15,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { api, Project } from '@/src/api';
 import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
 import { modulosActivos } from '@/src/utils/modulos';
+import { a11y } from '@/src/i18n';
 
 export default function ModulosHubScreen({
   projectId, basePath,
@@ -49,7 +50,7 @@ export default function ModulosHubScreen({
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <View style={[styles.headerWrap, { backgroundColor: headerColor, paddingTop: insets.top + spacing.xs }]}>
         <View style={styles.headerTopRow}>
-          <Pressable onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
+          <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
             <Ionicons name="chevron-back" size={22} color={headerTextColor} />
           </Pressable>
           <Text style={[styles.titleBar, { color: headerTextColor }]} numberOfLines={1}>Módulos</Text>
@@ -65,7 +66,7 @@ export default function ModulosHubScreen({
             <Text style={styles.empty}>Tu Coordinador General aún no ha activado ningún módulo para este proyecto.</Text>
           ) : (
             activos.map((m) => (
-              <Pressable
+              <Pressable accessibilityRole="button"
                 key={m.key}
                 style={styles.card}
                 onPress={() => router.push({ pathname: `${basePath}/${m.screen}` as any, params: { project_id: projectId } })}

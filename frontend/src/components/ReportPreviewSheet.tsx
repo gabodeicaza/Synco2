@@ -34,6 +34,7 @@ import { fmtDateTimeCDMX } from '@/src/utils/tz';
 import { buildReportShareText, formatDynamicValue } from '@/src/utils/reportText';
 import { shareWithAutoRecover } from '@/src/utils/share';
 import { showToast } from '@/src/utils/toast';
+import { a11y } from '@/src/i18n';
 
 interface ReportPreviewSheetProps {
   visible: boolean;
@@ -380,7 +381,7 @@ export function ReportPreviewSheet({
               <Text style={styles.title} numberOfLines={1}>
                 {title}
               </Text>
-              <Pressable hitSlop={10} onPress={onClose}>
+              <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} hitSlop={10} onPress={onClose}>
                 <Ionicons name="close" size={22} color="#0F172A" />
               </Pressable>
             </View>
@@ -406,28 +407,28 @@ export function ReportPreviewSheet({
                 Para el resto se muestra como badges de solo lectura. */}
             {reportId && (
               <View style={styles.sevRowPreview}>
-                <TouchableOpacity
+                <TouchableOpacity accessibilityRole="button"
                   disabled={!canEditSeverity}
                   onPress={() => toggleSeverity('informativo')}
                   style={[styles.sevBtnSmall, { borderColor: '#1E40AF' }, currentSeveridad.includes('informativo') && { backgroundColor: '#1E40AF' }, !canEditSeverity && { opacity: 0.6 }]}
                 >
                   <Text style={[styles.sevBtnTxt, currentSeveridad.includes('informativo') ? { color: '#fff' } : { color: '#1E40AF' }]}>Inf.</Text>
                 </TouchableOpacity>
-                <TouchableOpacity
+                <TouchableOpacity accessibilityRole="button"
                   disabled={!canEditSeverity}
                   onPress={() => toggleSeverity('diario')}
                   style={[styles.sevBtnSmall, { borderColor: '#10B981' }, currentSeveridad.includes('diario') && { backgroundColor: '#10B981' }, !canEditSeverity && { opacity: 0.6 }]}
                 >
                   <Text style={[styles.sevBtnTxt, currentSeveridad.includes('diario') ? { color: '#fff' } : { color: '#10B981' }]}>Diario</Text>
                 </TouchableOpacity>
-                <TouchableOpacity
+                <TouchableOpacity accessibilityRole="button"
                   disabled={!canEditSeverity}
                   onPress={() => toggleSeverity('importante')}
                   style={[styles.sevBtnSmall, { borderColor: '#D97706' }, currentSeveridad.includes('importante') && { backgroundColor: '#D97706' }, !canEditSeverity && { opacity: 0.6 }]}
                 >
                   <Text style={[styles.sevBtnTxt, currentSeveridad.includes('importante') ? { color: '#fff' } : { color: '#D97706' }]}>Sem.</Text>
                 </TouchableOpacity>
-                <TouchableOpacity
+                <TouchableOpacity accessibilityRole="button"
                   disabled={!canEditSeverity}
                   onPress={() => toggleSeverity('urgente')}
                   style={[styles.sevBtnSmall, { borderColor: '#DC2626' }, currentSeveridad.includes('urgente') && { backgroundColor: '#DC2626' }, !canEditSeverity && { opacity: 0.6 }]}
@@ -523,7 +524,7 @@ export function ReportPreviewSheet({
 
             {/* CTA para editar descripciones individuales por foto ---------- */}
             {imagesCount > 0 && reportId ? (
-              <Pressable
+              <Pressable accessibilityRole="button"
                 onPress={openEditCaptions}
                 style={({ pressed }) => [
                   styles.editCaptionsBtn,
@@ -540,14 +541,14 @@ export function ReportPreviewSheet({
 
             {/* Footer */}
             <View style={styles.footer}>
-              <Pressable
+              <Pressable accessibilityRole="button"
                 onPress={onCopyText}
                 style={({ pressed }) => [styles.copyTextBtn, pressed && { opacity: 0.85 }]}
               >
                 <Ionicons name="copy-outline" size={16} color="#1E40AF" />
                 <Text style={styles.copyTextBtnTxt}>Copiar texto</Text>
               </Pressable>
-              <Pressable
+              <Pressable accessibilityRole="button"
                 onPress={onSharePhotos}
                 disabled={sharingPhotos}
                 style={({ pressed }) => [
@@ -566,7 +567,7 @@ export function ReportPreviewSheet({
                 </Text>
               </Pressable>
               {onShare ? (
-                <Pressable
+                <Pressable accessibilityRole="button"
                   onPress={() => {
                     if (item && onShare && !sharing) {
                       onClose();
@@ -592,7 +593,7 @@ export function ReportPreviewSheet({
                   </Text>
                 </Pressable>
               ) : null}
-              <Pressable
+              <Pressable accessibilityRole="button"
                 onPress={onClose}
                 style={({ pressed }) => [
                   styles.closeBtn,
@@ -654,12 +655,12 @@ function EditCaptionsModal({
       onRequestClose={onClose}
     >
       <Pressable style={styles.editBackdrop} onPress={onClose}>
-        <Pressable style={styles.editCard} onPress={(e) => e.stopPropagation()}>
+        <Pressable accessibilityRole="button" style={styles.editCard} onPress={(e) => e.stopPropagation()}>
           <View style={styles.header}>
             <Text style={styles.title} numberOfLines={1}>
               Descripciones de fotos
             </Text>
-            <Pressable hitSlop={10} onPress={onClose}>
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} hitSlop={10} onPress={onClose}>
               <Ionicons name="close" size={22} color="#0F172A" />
             </Pressable>
           </View>
@@ -733,7 +734,7 @@ function EditCaptionsModal({
           )}
 
           <View style={styles.footer}>
-            <Pressable
+            <Pressable accessibilityRole="button"
               onPress={onClose}
               disabled={saving}
               style={({ pressed }) => [
@@ -746,7 +747,7 @@ function EditCaptionsModal({
                 Cancelar
               </Text>
             </Pressable>
-            <Pressable
+            <Pressable accessibilityRole="button"
               onPress={onSave}
               disabled={saving || loading || !report}
               style={({ pressed }) => [

@@ -10,6 +10,7 @@ import { api, PasswordResetRequest } from '@/src/api';
 import { colors, radius, spacing } from '@/src/theme';
 import { roleLabel } from '@/src/utils/roles';
 import { confirm } from '@/src/utils/confirm';
+import { a11y } from '@/src/i18n';
 
 export default function PasswordResetRequestsScreen() {
   const insets = useSafeAreaInsets();
@@ -75,7 +76,7 @@ export default function PasswordResetRequestsScreen() {
   return (
     <View style={[styles.flex, { paddingTop: insets.top }]}>
       <View style={styles.header}>
-        <Pressable onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
+        <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
           <Ionicons name="chevron-back" size={24} color={colors.text} />
         </Pressable>
         <Text style={styles.title}>Solicitudes de contraseña</Text>
@@ -97,7 +98,7 @@ export default function PasswordResetRequestsScreen() {
                 <Text style={styles.tokenLabel}>CONTRASEÑA TEMPORAL</Text>
                 <Text selectable style={styles.tokenValueText}>{resolved.temp_password}</Text>
               </View>
-              <Pressable onPress={() => setResolved(null)} style={styles.tokenDismiss}>
+              <Pressable accessibilityRole="button" onPress={() => setResolved(null)} style={styles.tokenDismiss}>
                 <Text style={styles.tokenDismissText}>Entendido</Text>
               </Pressable>
             </View>
@@ -122,14 +123,14 @@ export default function PasswordResetRequestsScreen() {
                   </View>
                 </View>
                 <View style={styles.cardActions}>
-                  <Pressable
+                  <Pressable accessibilityRole="button"
                     onPress={() => onDismiss(req)}
                     style={({ pressed }) => [styles.actionBtn, styles.actionBtnGhost, pressed && { opacity: 0.85 }]}
                     disabled={busyId === req.id}
                   >
                     <Text style={styles.actionBtnGhostText}>Descartar</Text>
                   </Pressable>
-                  <Pressable
+                  <Pressable accessibilityRole="button"
                     onPress={() => onResolve(req)}
                     style={({ pressed }) => [styles.actionBtn, styles.actionBtnPrimary, pressed && { opacity: 0.85 }]}
                     disabled={busyId === req.id}

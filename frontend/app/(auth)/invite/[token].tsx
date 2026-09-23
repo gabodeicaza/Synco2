@@ -10,7 +10,7 @@ import { useAuth } from '@/src/auth-context';
 import { api } from '@/src/api';
 import { homeRouteForRole, roleLabel } from '@/src/utils/roles';
 import { colors, radius, spacing } from '@/src/theme';
-import { t } from '@/src/i18n';
+import { t, a11y } from '@/src/i18n';
 
 export default function AcceptInviteScreen() {
   const insets = useSafeAreaInsets();
@@ -73,7 +73,7 @@ export default function AcceptInviteScreen() {
         <Ionicons name="close-circle" size={56} color={colors.error} />
         <Text style={styles.errorTitle}>Invitacion invalida</Text>
         <Text style={styles.muted}>{previewError || 'No se pudo cargar la invitacion.'}</Text>
-        <Pressable onPress={() => router.replace('/(auth)/login')} style={styles.linkBtn}>
+        <Pressable accessibilityRole="button" onPress={() => router.replace('/(auth)/login')} style={styles.linkBtn}>
           <Text style={styles.linkText}>Volver a inicio de sesion</Text>
         </Pressable>
       </View>
@@ -110,7 +110,7 @@ export default function AcceptInviteScreen() {
               placeholder="Minimo 6 caracteres" placeholderTextColor={colors.textMuted}
               secureTextEntry={!showPwd} style={styles.input} editable={!busy}
             />
-            <Pressable onPress={() => setShowPwd((v) => !v)} hitSlop={8}>
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y(showPwd ? 'ocultarPassword' : 'mostrarPassword')} onPress={() => setShowPwd((v) => !v)} hitSlop={8}>
               <Ionicons name={showPwd ? 'eye-off-outline' : 'eye-outline'} size={18} color={colors.textMuted} />
             </Pressable>
           </View>

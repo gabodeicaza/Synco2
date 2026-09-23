@@ -15,6 +15,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { api, RiesgoRegistro, Project } from '@/src/api';
 import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
 import { Button } from '@/src/components/Button';
+import { a11y } from '@/src/i18n';
 
 const AVANCE_ATAJOS = [0, 25, 50, 75, 100];
 
@@ -135,7 +136,7 @@ export default function GestionRiesgosScreen({ projectId }: { projectId: string 
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <View style={[styles.headerWrap, { backgroundColor: headerColor, paddingTop: insets.top + spacing.xs }]}>
         <View style={styles.headerTopRow}>
-          <Pressable onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
+          <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
             <Ionicons name="chevron-back" size={22} color={headerTextColor} />
           </Pressable>
           <Text style={[styles.titleBar, { color: headerTextColor }]} numberOfLines={1}>Gestión de Riesgos</Text>
@@ -167,7 +168,7 @@ export default function GestionRiesgosScreen({ projectId }: { projectId: string 
               <Text style={styles.fieldLabelSmall}>Propuesta de control</Text>
               <Text style={styles.riskTxt}>{r.propuesta_control}</Text>
 
-              <Pressable onPress={() => openEditAvance(r)} style={styles.avanceRow}>
+              <Pressable accessibilityRole="button" onPress={() => openEditAvance(r)} style={styles.avanceRow}>
                 <View style={styles.avanceBarTrack}>
                   <View style={[styles.avanceBarFill, { width: `${r.porcentaje_avance}%`, backgroundColor: avanceColor(r.porcentaje_avance) }]} />
                 </View>
@@ -179,7 +180,7 @@ export default function GestionRiesgosScreen({ projectId }: { projectId: string 
         )}
       </ScrollView>
 
-      <Pressable style={styles.fab} onPress={openForm}>
+      <Pressable accessibilityRole="button" accessibilityLabel={a11y('agregar')} hitSlop={8} style={styles.fab} onPress={openForm}>
         <Ionicons name="add" size={26} color="#fff" />
       </Pressable>
 
@@ -242,7 +243,7 @@ export default function GestionRiesgosScreen({ projectId }: { projectId: string 
             />
             <View style={styles.atajosRow}>
               {AVANCE_ATAJOS.map((v) => (
-                <Pressable key={v} onPress={() => setAvanceDraft(String(v))} style={styles.atajoBtn}>
+                <Pressable accessibilityRole="button" key={v} onPress={() => setAvanceDraft(String(v))} style={styles.atajoBtn}>
                   <Text style={styles.atajoTxt}>{v}%</Text>
                 </Pressable>
               ))}

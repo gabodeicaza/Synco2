@@ -37,7 +37,7 @@ import {
   getStartOfTodayCDMX, getStartOfNaturalWeekCDMX, getStartOfNaturalMonthCDMX
 } from '@/src/utils/tz';
 import { shareWithAutoRecover } from '@/src/utils/share';
-import { t } from '@/src/i18n';
+import { t, a11y } from '@/src/i18n';
 
 export default function SubCoordDashboard() {
   const insets = useSafeAreaInsets();
@@ -524,7 +524,7 @@ export default function SubCoordDashboard() {
             Sub-coordinador _ {roleLabel(user?.role)}
           </Text>
         </View>
-        <Pressable hitSlop={10} style={styles.headerBtn}>
+        <Pressable accessibilityRole="button" accessibilityLabel={a11y('notificaciones')} hitSlop={10} style={styles.headerBtn}>
           <Ionicons name="notifications-outline" size={22} color="#fff" />
         </Pressable>
       </View>
@@ -594,7 +594,7 @@ export default function SubCoordDashboard() {
               {projects.map((p) => {
                 const sel = p.id === pid;
                 return (
-                  <Pressable
+                  <Pressable accessibilityRole="button"
                     key={p.id}
                     onPress={() => setPid(p.id)}
                     style={[styles.chip, sel && styles.chipActive]}
@@ -629,7 +629,7 @@ export default function SubCoordDashboard() {
           ] as const).map((t) => {
             const sel = period === t.k && !selectedDate;
             return (
-              <Pressable
+              <Pressable accessibilityRole="button"
                 key={t.k}
                 onPress={() => {
                   setPeriod(t.k);
@@ -649,7 +649,7 @@ export default function SubCoordDashboard() {
             );
           })}
           {/* Boton Dia _ abre calendario historico */}
-          <Pressable
+          <Pressable accessibilityRole="button"
             onPress={() => setCalendarOpen(true)}
             style={[styles.timeChip, !!selectedDate && styles.timeChipActive]}
           >
@@ -665,7 +665,7 @@ export default function SubCoordDashboard() {
               {selectedDate || 'Dia'}
             </Text>
             {selectedDate && (
-              <Pressable
+              <Pressable accessibilityRole="button" accessibilityLabel={a11y('quitar')}
                 hitSlop={8}
                 onPress={(e) => {
                   e.stopPropagation();
@@ -686,7 +686,7 @@ export default function SubCoordDashboard() {
               showsHorizontalScrollIndicator={false}
               contentContainerStyle={styles.areaChipsContent}
             >
-              <Pressable
+              <Pressable accessibilityRole="button"
                 onPress={() => setSelectedAreas(new Set())}
                 style={[
                   styles.areaChip,
@@ -711,7 +711,7 @@ export default function SubCoordDashboard() {
                 const sel = selectedAreas.has(a.name);
                 const tone = areaTone(a.color || undefined);
                 return (
-                  <Pressable
+                  <Pressable accessibilityRole="button"
                     key={a.name}
                     onPress={() => {
                       const next = new Set(selectedAreas);
@@ -757,7 +757,7 @@ export default function SubCoordDashboard() {
           <View style={styles.errorBox}>
             <Ionicons name="alert-circle-outline" size={24} color={colors.error} />
             <Text style={styles.errorTxt}>{error}</Text>
-            <Pressable onPress={() => pid && loadData(pid)} style={styles.retryBtn}>
+            <Pressable accessibilityRole="button" onPress={() => pid && loadData(pid)} style={styles.retryBtn}>
               <Text style={styles.retryTxt}>Reintentar</Text>
             </Pressable>
           </View>
@@ -782,7 +782,7 @@ export default function SubCoordDashboard() {
 
             {/* Boton Resumen Ejecutivo IA */}
             <View style={styles.exportRow}>
-              <Pressable
+              <Pressable accessibilityRole="button"
                 onPress={openAiSummary}
                 disabled={aiBusy}
                 style={({ pressed }) => [
@@ -810,7 +810,7 @@ export default function SubCoordDashboard() {
 
             {/* Boton Exportacion Avanzada (PDF/XLSX/DOCX/PPTX _ periodo) */}
             <View style={styles.exportRow}>
-              <Pressable
+              <Pressable accessibilityRole="button"
                 onPress={() => setAdvExportOpen(true)}
                 style={({ pressed }) => [
                   styles.exportMainBtn,
@@ -843,7 +843,7 @@ export default function SubCoordDashboard() {
                   returnKeyType="search"
                 />
                 {searchQuery ? (
-                  <Pressable hitSlop={8} onPress={() => setSearchQuery('')}>
+                  <Pressable accessibilityRole="button" accessibilityLabel={a11y('quitar')} hitSlop={8} onPress={() => setSearchQuery('')}>
                     <Ionicons name="close-circle" size={17} color={colors.textMuted} />
                   </Pressable>
                 ) : null}
@@ -916,7 +916,7 @@ export default function SubCoordDashboard() {
                 <Ionicons name="sparkles" size={20} color={colors.primary} />
                 <Text style={styles.aiTitle}>Resumen Ejecutivo</Text>
               </View>
-              <Pressable
+              <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')}
                 onPress={() => setAiOpen(false)}
                 hitSlop={10}
                 style={({ pressed }) => [styles.aiClose, pressed && { opacity: 0.6 }]}
@@ -947,7 +947,7 @@ export default function SubCoordDashboard() {
             </ScrollView>
 
             <View style={styles.aiActions}>
-              <Pressable
+              <Pressable accessibilityRole="button"
                 onPress={runAiSummary}
                 disabled={aiBusy}
                 style={({ pressed }) => [
@@ -958,7 +958,7 @@ export default function SubCoordDashboard() {
                 <Ionicons name="refresh" size={16} color={colors.text} />
                 <Text style={styles.aiSecTxt}>Regenerar</Text>
               </Pressable>
-              <Pressable
+              <Pressable accessibilityRole="button"
                 onPress={copyAiSummary}
                 disabled={!aiSummary || aiBusy}
                 style={({ pressed }) => [
@@ -972,7 +972,7 @@ export default function SubCoordDashboard() {
               </Pressable>
             </View>
 
-            <Pressable
+            <Pressable accessibilityRole="button"
               onPress={shareSummaryWhatsApp}
               disabled={!aiSummary || aiBusy}
               style={({ pressed }) => [
@@ -1017,17 +1017,17 @@ export default function SubCoordDashboard() {
         animationType="fade"
         onRequestClose={() => !advExporting && setAdvExportOpen(false)}
       >
-        <Pressable
+        <Pressable accessibilityRole="button"
           style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', padding: 16 }}
           onPress={() => !advExporting && setAdvExportOpen(false)}
         >
-          <Pressable
+          <Pressable accessibilityRole="button"
             style={{ width: '92%', maxWidth: 460, maxHeight: '85%', backgroundColor: '#fff', borderRadius: 16, overflow: 'hidden' }}
             onPress={(e) => e.stopPropagation()}
           >
             <View style={styles.previewHeader}>
               <Text style={styles.previewTitle}>Exportacion Avanzada</Text>
-              <Pressable
+              <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')}
                 hitSlop={10}
                 disabled={advExporting}
                 onPress={() => setAdvExportOpen(false)}
@@ -1042,7 +1042,7 @@ export default function SubCoordDashboard() {
                   {(['xlsx', 'pdf', 'docx', 'pptx'] as const).map((f) => {
                     const active = expFormat === f;
                     return (
-                      <Pressable
+                      <Pressable accessibilityRole="button"
                         key={f}
                         onPress={() => setExpFormat(f)}
                         style={[styles.advChip, active && styles.advChipActive]}
@@ -1066,7 +1066,7 @@ export default function SubCoordDashboard() {
                   ] as const).map((p) => {
                     const active = expPeriod === p.k;
                     return (
-                      <Pressable
+                      <Pressable accessibilityRole="button"
                         key={p.k}
                         onPress={() => setExpPeriod(p.k as any)}
                         style={[styles.advChip, active && styles.advChipActive]}
@@ -1094,7 +1094,7 @@ export default function SubCoordDashboard() {
                 <View>
                   <Text style={styles.advLabel}>Area</Text>
                   <View style={styles.advGrid}>
-                    <Pressable
+                    <Pressable accessibilityRole="button"
                       onPress={() => setExpAreaId(null)}
                       style={[styles.advChip, expAreaId === null && styles.advChipActive]}
                     >
@@ -1105,7 +1105,7 @@ export default function SubCoordDashboard() {
                     {expAreas.map((a) => {
                       const active = expAreaId === a.id;
                       return (
-                        <Pressable
+                        <Pressable accessibilityRole="button"
                           key={a.id}
                           onPress={() => setExpAreaId(a.id)}
                           style={[styles.advChip, active && styles.advChipActive]}
@@ -1130,7 +1130,7 @@ export default function SubCoordDashboard() {
                   </Text>
                 </View>
               )}
-              <Pressable
+              <Pressable accessibilityRole="button"
                 onPress={onAdvExport}
                 disabled={advExporting}
                 style={({ pressed }) => [
@@ -1182,7 +1182,7 @@ const StatCard = memo(({
 
 const FeedCard = memo(({ r, tone, subtitle, onPreview, onShare, isSharing }: any) => {
   return (
-    <Pressable
+    <Pressable accessibilityRole="button"
       onPress={() => onPreview(r)}
       style={({ pressed }) => [
         styles.feedCard,
@@ -1241,7 +1241,7 @@ const FeedCard = memo(({ r, tone, subtitle, onPreview, onShare, isSharing }: any
           </Text>
         )}
       </View>
-      <Pressable
+      <Pressable accessibilityRole="button" accessibilityLabel={a11y('whatsapp')}
         onPress={() => onShare(r)}
         disabled={isSharing}
         hitSlop={8}
@@ -1310,7 +1310,7 @@ const HeroCard = memo(({ user, currentProject, globalPct, scopeNodeName }: any) 
 
 const ActionTile = memo(({ icon, title, subtitle, disabled, comingSoon, onPress, busy, badge }: any) => {
   return (
-    <Pressable
+    <Pressable accessibilityRole="button"
       onPress={onPress}
       disabled={!!disabled}
       style={({ pressed }) => [styles.tile, disabled && { opacity: 0.55 }, pressed && !disabled && { transform: [{ scale: 0.99 }] }]}

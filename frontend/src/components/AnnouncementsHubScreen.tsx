@@ -89,7 +89,7 @@ export default function AnnouncementsHubScreen() {
             {projects.map((p) => {
               const active = p.id === selected;
               return (
-                <Pressable
+                <Pressable accessibilityRole="button"
                   key={p.id}
                   onPress={() => setSelected(p.id)}
                   style={[styles.projChip, active && styles.projChipActive]}

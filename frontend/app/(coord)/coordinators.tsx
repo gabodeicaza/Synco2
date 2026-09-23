@@ -11,6 +11,7 @@ import { api, ApiError, type User } from '@/src/api';
 import { useAuth } from '@/src/auth-context';
 import { colors, radius, spacing, shadow } from '@/src/theme';
 import { fmtDateCDMX } from '@/src/utils/tz';
+import { a11y } from '@/src/i18n';
 
 function formatDate(iso?: string | null): string {
   return fmtDateCDMX(iso);
@@ -84,7 +85,7 @@ export default function CoordinatorsScreen() {
     return (
       <View style={[styles.flex, { paddingTop: insets.top }]}>
         <View style={styles.header}>
-          <Pressable onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
+          <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
             <Ionicons name="chevron-back" size={24} color={colors.text} />
           </Pressable>
           <Text style={styles.title}>Coordinadores</Text>
@@ -104,7 +105,7 @@ export default function CoordinatorsScreen() {
       style={[styles.flex, { paddingTop: insets.top }]}
     >
       <View style={styles.header}>
-        <Pressable onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
+        <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
           <Ionicons name="chevron-back" size={24} color={colors.text} />
         </Pressable>
         <Text style={styles.title}>Coordinadores Generales</Text>
@@ -133,7 +134,7 @@ export default function CoordinatorsScreen() {
         </View>
 
         {!showForm && (
-          <Pressable
+          <Pressable accessibilityRole="button"
             onPress={() => setShowForm(true)}
             style={({ pressed }) => [styles.addBtn, pressed && { opacity: 0.85 }]}
           >
@@ -146,7 +147,7 @@ export default function CoordinatorsScreen() {
           <View style={styles.formCard}>
             <View style={styles.formHeader}>
               <Text style={styles.formTitle}>Nuevo Coordinador General</Text>
-              <Pressable onPress={() => { resetForm(); setShowForm(false); }} hitSlop={8}>
+              <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} onPress={() => { resetForm(); setShowForm(false); }} hitSlop={8}>
                 <Ionicons name="close" size={22} color={colors.text} />
               </Pressable>
             </View>
@@ -184,7 +185,7 @@ export default function CoordinatorsScreen() {
               Comparte la contrasena inicial de forma segura. El nuevo Coordinador podra cambiarla despues.
             </Text>
 
-            <Pressable
+            <Pressable accessibilityRole="button"
               onPress={onSave}
               disabled={saving}
               style={({ pressed }) => [

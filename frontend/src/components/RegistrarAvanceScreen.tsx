@@ -20,6 +20,7 @@ import { decimalStringToCents, formatCantidad, isValidDecimalInput, pctDeDecimal
 import { dayjs, CDMX_TZ } from '@/src/utils/tz';
 import { esPorcentajeValido, esRetrocesoLocal } from '@/src/utils/avancePorcentaje';
 import { requestMediaLibraryPermission } from '@/src/utils/permissions';
+import { a11y } from '@/src/i18n';
 
 export default function RegistrarAvanceScreen({ projectId }: { projectId: string }) {
   const insets = useSafeAreaInsets();
@@ -135,7 +136,7 @@ export default function RegistrarAvanceScreen({ projectId }: { projectId: string
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <StatusBar barStyle="light-content" />
       <View style={[styles.header, { paddingTop: insets.top + spacing.xs }]}>
-        <Pressable onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
+        <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
           <Ionicons name="chevron-back" size={22} color="#fff" />
         </Pressable>
         <Text style={styles.brand}>{APP_BRAND}</Text>
@@ -159,7 +160,7 @@ export default function RegistrarAvanceScreen({ projectId }: { projectId: string
             </View>
             {searching ? <ActivityIndicator color={colors.primary} style={{ marginTop: 16 }} /> : null}
             {results.map((c) => (
-              <Pressable key={c.id} style={styles.resultCard} onPress={() => setSelected(c)}>
+              <Pressable accessibilityRole="button" key={c.id} style={styles.resultCard} onPress={() => setSelected(c)}>
                 <Text style={styles.resultPartida}>{c.partida_clave} — {c.partida_nombre}</Text>
                 <Text style={styles.resultClave}>{c.clave} · {c.descripcion}</Text>
                 <Text style={styles.resultMeta}>
@@ -172,7 +173,7 @@ export default function RegistrarAvanceScreen({ projectId }: { projectId: string
           </>
         ) : (
           <View style={styles.formCard}>
-            <Pressable onPress={() => setSelected(null)} style={styles.changeBtn}>
+            <Pressable accessibilityRole="button" onPress={() => setSelected(null)} style={styles.changeBtn}>
               <Ionicons name="chevron-back" size={14} color={colors.primary} />
               <Text style={styles.changeBtnTxt}>Cambiar concepto</Text>
             </Pressable>
@@ -240,13 +241,13 @@ export default function RegistrarAvanceScreen({ projectId }: { projectId: string
             {nodes.length > 0 ? (
               <>
                 <Text style={styles.fieldLabel}>Nodo (opcional)</Text>
-                <Pressable style={styles.nodoBtn} onPress={() => setNodoPickerOpen(true)}>
+                <Pressable accessibilityRole="button" style={styles.nodoBtn} onPress={() => setNodoPickerOpen(true)}>
                   <Ionicons name="location-outline" size={16} color={colors.primary} />
                   <Text style={styles.nodoBtnTxt} numberOfLines={1}>
                     {selectedNodo ? selectedNodo.name : 'Sin especificar'}
                   </Text>
                   {selectedNodo ? (
-                    <Pressable onPress={() => setSelectedNodo(null)} hitSlop={8}>
+                    <Pressable accessibilityRole="button" accessibilityLabel={a11y('quitar')} onPress={() => setSelectedNodo(null)} hitSlop={8}>
                       <Ionicons name="close-circle" size={16} color={colors.textMuted} />
                     </Pressable>
                   ) : (
@@ -256,13 +257,13 @@ export default function RegistrarAvanceScreen({ projectId }: { projectId: string
               </>
             ) : null}
 
-            <Pressable style={styles.photoBtn} onPress={pickPhoto}>
+            <Pressable accessibilityRole="button" style={styles.photoBtn} onPress={pickPhoto}>
               <Ionicons name="camera-outline" size={18} color={colors.primary} />
               <Text style={styles.photoBtnTxt}>{foto ? 'Cambiar foto de evidencia' : 'Adjuntar foto de evidencia (opcional)'}</Text>
             </Pressable>
             {foto ? <Image source={{ uri: foto }} style={styles.photoPreview} /> : null}
 
-            <Pressable style={[styles.submitBtn, (!cantidad || saving) && { opacity: 0.5 }]} onPress={submit} disabled={!cantidad || saving}>
+            <Pressable accessibilityRole="button" style={[styles.submitBtn, (!cantidad || saving) && { opacity: 0.5 }]} onPress={submit} disabled={!cantidad || saving}>
               {saving ? <ActivityIndicator color="#fff" /> : (
                 <>
                   <Ionicons name="checkmark-circle-outline" size={18} color="#fff" />
@@ -314,13 +315,13 @@ function NodoPickerModal({
         <View style={styles.pickerCard}>
           <View style={styles.pickerHeader}>
             <Text style={styles.pickerTitle}>Elegir nodo</Text>
-            <Pressable onPress={onClose} hitSlop={8}>
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} onPress={onClose} hitSlop={8}>
               <Ionicons name="close" size={22} color={colors.textMuted} />
             </Pressable>
           </View>
           <ScrollView style={{ maxHeight: 360 }}>
             {flat.map(({ node, depth }) => (
-              <Pressable key={node.id} style={[styles.pickerRow, { paddingLeft: 14 + depth * 18 }]} onPress={() => onSelect(node)}>
+              <Pressable accessibilityRole="button" key={node.id} style={[styles.pickerRow, { paddingLeft: 14 + depth * 18 }]} onPress={() => onSelect(node)}>
                 <Ionicons name="location-outline" size={14} color={colors.primary} />
                 <Text style={styles.pickerRowTxt} numberOfLines={1}>{node.name}</Text>
               </Pressable>

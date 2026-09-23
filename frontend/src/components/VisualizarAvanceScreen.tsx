@@ -16,6 +16,7 @@ import { formatCantidad, formatMoney } from '@/src/utils/money';
 import { downloadBlob } from '@/src/utils/downloadBlob';
 import { confirm } from '@/src/utils/confirm';
 import { RangoFechasPicker } from '@/src/components/RangoFechasPicker';
+import { a11y } from '@/src/i18n';
 import {
   RangoFechas, rangoEstaSemana, rangoEsteMes, rangoMesAnterior, formatearRangoLegible,
 } from '@/src/utils/rangoFechas';
@@ -153,7 +154,7 @@ export default function VisualizarAvanceScreen({ projectId }: { projectId: strin
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <StatusBar barStyle="light-content" />
       <View style={[styles.header, { paddingTop: insets.top + spacing.xs }]}>
-        <Pressable onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
+        <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
           <Ionicons name="chevron-back" size={22} color="#fff" />
         </Pressable>
         <Text style={styles.brand}>{APP_BRAND}</Text>
@@ -166,14 +167,14 @@ export default function VisualizarAvanceScreen({ projectId }: { projectId: strin
         </Text>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
           {atajo === 'personalizado' ? (
-            <Pressable onPress={() => elegirAtajo('todo')} style={styles.limpiarFiltroBtn} hitSlop={8}>
+            <Pressable accessibilityRole="button" onPress={() => elegirAtajo('todo')} style={styles.limpiarFiltroBtn} hitSlop={8}>
               <Ionicons name="close-circle-outline" size={13} color={colors.primary} />
               <Text style={styles.limpiarFiltroTxt}>Limpiar filtro</Text>
             </Pressable>
           ) : null}
           {avances.length > 0 ? (
             <>
-              <Pressable
+              <Pressable accessibilityRole="button"
                 onPress={exportarXlsx}
                 disabled={exportandoXlsx}
                 style={[styles.exportXlsxBtn, exportandoXlsx && { opacity: 0.6 }]}
@@ -186,7 +187,7 @@ export default function VisualizarAvanceScreen({ projectId }: { projectId: strin
                 )}
                 <Text style={styles.exportXlsxTxt}>Exportar Excel</Text>
               </Pressable>
-              <Pressable
+              <Pressable accessibilityRole="button"
                 onPress={exportarPdf}
                 disabled={exportando}
                 style={[styles.exportPdfBtn, exportando && { opacity: 0.6 }]}
@@ -208,7 +209,7 @@ export default function VisualizarAvanceScreen({ projectId }: { projectId: strin
         {(['esta_semana', 'este_mes', 'mes_anterior', 'todo', 'personalizado'] as AtajoRango[]).map((a) => {
           const active = atajo === a;
           return (
-            <Pressable key={a} onPress={() => elegirAtajo(a)} style={[styles.chip, active && styles.chipActive]}>
+            <Pressable accessibilityRole="button" key={a} onPress={() => elegirAtajo(a)} style={[styles.chip, active && styles.chipActive]}>
               {a === 'personalizado' ? <Ionicons name="calendar-outline" size={13} color={active ? '#fff' : colors.textBody} /> : null}
               <Text style={[styles.chipTxt, active && styles.chipTxtActive]}>{ATAJO_LABELS[a]}</Text>
             </Pressable>
@@ -218,7 +219,7 @@ export default function VisualizarAvanceScreen({ projectId }: { projectId: strin
         {partidas.map((p) => {
           const active = partidaFiltro === p.id;
           return (
-            <Pressable key={p.id} onPress={() => setPartidaFiltro(active ? null : p.id)} style={[styles.chip, active && styles.chipActive]}>
+            <Pressable accessibilityRole="button" key={p.id} onPress={() => setPartidaFiltro(active ? null : p.id)} style={[styles.chip, active && styles.chipActive]}>
               <Text style={[styles.chipTxt, active && styles.chipTxtActive]} numberOfLines={1}>{p.clave}</Text>
             </Pressable>
           );
@@ -252,7 +253,7 @@ export default function VisualizarAvanceScreen({ projectId }: { projectId: strin
                           <Text style={styles.pendingTxt}>Pendiente de sincronizar</Text>
                         </View>
                       ) : null}
-                      <Pressable onPress={() => onDeleteAvance(a)} hitSlop={8}>
+                      <Pressable accessibilityRole="button" accessibilityLabel={a11y('eliminar')} onPress={() => onDeleteAvance(a)} hitSlop={8}>
                         <Ionicons name="trash-outline" size={16} color={colors.error} />
                       </Pressable>
                     </View>

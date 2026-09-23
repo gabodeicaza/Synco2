@@ -17,6 +17,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { api, ModulosConfig, ModuloCategoria, Project } from '@/src/api';
 import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
 import { MODULOS, CATEGORIA_LABEL, CATEGORIA_ORDEN } from '@/src/utils/modulos';
+import { a11y } from '@/src/i18n';
 
 function vacio(): ModulosConfig {
   return { reportes_diarios: {}, reportes_semanales: {}, reportes_mensuales: {} };
@@ -84,7 +85,7 @@ export default function ModulosConfigScreen() {
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <View style={[styles.headerWrap, { backgroundColor: headerColor, paddingTop: insets.top + spacing.xs }]}>
         <View style={styles.headerTopRow}>
-          <Pressable onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
+          <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
             <Ionicons name="chevron-back" size={22} color={headerTextColor} />
           </Pressable>
           <Text style={[styles.titleBar, { color: headerTextColor }]} numberOfLines={1}>Módulos del proyecto</Text>

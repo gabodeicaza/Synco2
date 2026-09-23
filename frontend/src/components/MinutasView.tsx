@@ -42,6 +42,7 @@ import { colors, radius, shadow, spacing } from '@/src/theme';
 import { confirm } from '@/src/utils/confirm';
 import { dayjs } from '@/src/utils/tz';
 import { downloadBlob } from '@/src/utils/downloadBlob';
+import { a11y } from '@/src/i18n';
 
 // ---------- utilidades semaforo -------------------------------------------
 type Urgency = 'red' | 'yellow' | 'green' | 'gray';
@@ -320,7 +321,7 @@ export default function MinutasView({
       {/* Header */}
       <View style={styles.header}>
         {!embedded && (
-          <Pressable onPress={() => router.back()} hitSlop={12} style={styles.iconBtn}>
+          <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={12} style={styles.iconBtn}>
             <Ionicons name="chevron-back" size={22} color={colors.text} />
           </Pressable>
         )}
@@ -329,7 +330,7 @@ export default function MinutasView({
           <Text style={styles.hSub}>{headerSubtitle || 'Acuerdos y seguimiento de obra'}</Text>
         </View>
         {canCreate && (
-          <Pressable onPress={() => setCreateOpen(true)} style={styles.newBtn}>
+          <Pressable accessibilityRole="button" onPress={() => setCreateOpen(true)} style={styles.newBtn}>
             <Ionicons name="add" size={18} color="#fff" />
             <Text style={styles.newBtnTxt}>Nueva</Text>
           </Pressable>
@@ -357,10 +358,10 @@ export default function MinutasView({
               <ActivityIndicator size="small" color={colors.primary} />
             ) : (
               <>
-                <Pressable onPress={onSavePrefix} hitSlop={8}>
+                <Pressable accessibilityRole="button" accessibilityLabel={a11y('confirmar')} onPress={onSavePrefix} hitSlop={8}>
                   <Ionicons name="checkmark" size={18} color={colors.primary} />
                 </Pressable>
-                <Pressable
+                <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')}
                   onPress={() => { setPrefixEditing(false); setPrefixDraft(project?.minuta_code_prefix || ''); }}
                   hitSlop={8}
                 >
@@ -375,7 +376,7 @@ export default function MinutasView({
               Codigo de minutas: <Text style={styles.codePrefixVal}>{project?.minuta_code_prefix || 'Sin definir'}</Text>
             </Text>
             {canEditCodigoPrefix ? (
-              <Pressable
+              <Pressable accessibilityRole="button" accessibilityLabel={a11y('editar')}
                 onPress={() => { setPrefixDraft(project?.minuta_code_prefix || ''); setPrefixEditing(true); }}
                 hitSlop={8}
               >
@@ -420,12 +421,12 @@ export default function MinutasView({
               returnKeyType="search"
             />
             {q.length > 0 && (
-              <Pressable onPress={() => setQ('')} hitSlop={8}>
+              <Pressable accessibilityRole="button" accessibilityLabel={a11y('quitar')} onPress={() => setQ('')} hitSlop={8}>
                 <Ionicons name="close-circle" size={16} color={colors.textMuted} />
               </Pressable>
             )}
           </View>
-          <Pressable
+          <Pressable accessibilityRole="button"
             onPress={() => setMine((v) => !v)}
             style={[styles.mineBtn, mine && styles.mineBtnOn]}
           >
@@ -446,7 +447,7 @@ export default function MinutasView({
           ] as const).map((opt) => {
             const active = tipoFilter === opt.key;
             return (
-              <Pressable
+              <Pressable accessibilityRole="button"
                 key={opt.key}
                 onPress={() => setTipoFilter(opt.key)}
                 style={[styles.chip, active && { backgroundColor: colors.primary, borderColor: colors.primary }]}
@@ -467,7 +468,7 @@ export default function MinutasView({
             {areas.map((a) => {
               const active = areaFilter.includes(a.id);
               return (
-                <Pressable
+                <Pressable accessibilityRole="button"
                   key={a.id}
                   onPress={() => onToggleArea(a.id)}
                   style={[
@@ -493,7 +494,7 @@ export default function MinutasView({
               );
             })}
             {areaFilter.length > 0 && (
-              <Pressable onPress={() => setAreaFilter([])} style={[styles.chip, styles.chipClear]}>
+              <Pressable accessibilityRole="button" onPress={() => setAreaFilter([])} style={[styles.chip, styles.chipClear]}>
                 <Ionicons name="close" size={12} color={colors.textMuted} />
                 <Text style={[styles.chipTxt, { color: colors.textMuted }]}>Limpiar</Text>
               </Pressable>
@@ -511,7 +512,7 @@ export default function MinutasView({
             {nodes.map((n) => {
               const active = ubicacionFilter.includes(n.id);
               return (
-                <Pressable
+                <Pressable accessibilityRole="button"
                   key={n.id}
                   onPress={() => onToggleUbicacion(n.id)}
                   style={[
@@ -537,7 +538,7 @@ export default function MinutasView({
               );
             })}
             {ubicacionFilter.length > 0 && (
-              <Pressable
+              <Pressable accessibilityRole="button"
                 onPress={() => setUbicacionFilter([])}
                 style={[styles.chip, styles.chipClear]}
               >
@@ -635,7 +636,7 @@ function TabBtn({
   onPress: () => void;
 }) {
   return (
-    <Pressable
+    <Pressable accessibilityRole="button"
       onPress={onPress}
       style={[styles.tabBtn, active && styles.tabBtnActive]}
     >
@@ -675,7 +676,7 @@ const MinutaCard = memo(({
 
   return (
     <View style={[styles.card, { borderLeftWidth: 4, borderLeftColor: meta.color }]}>
-      <Pressable style={styles.cardHead} onPress={onToggleExpand}>
+      <Pressable accessibilityRole="button" style={styles.cardHead} onPress={onToggleExpand}>
         <View style={[styles.badge, { backgroundColor: meta.color }]}>
           <Ionicons name={meta.icon} size={12} color="#fff" />
           <Text style={styles.badgeTxt}>{meta.label}</Text>
@@ -756,7 +757,7 @@ const MinutaCard = memo(({
         </View>
         <View style={{ position: 'absolute', top: 10, right: 10, flexDirection: 'row', gap: 6 }}>
           {canDelete && (
-            <Pressable
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y('eliminar')}
               onPress={() => onDelete(minuta)}
               hitSlop={8}
               style={styles.iconGhost}
@@ -863,7 +864,7 @@ const MinutaPdfBlock = memo(({ minuta, onChanged }: { minuta: Minuta; onChanged:
     <View style={styles.pdfBlock}>
       {minuta.pdf_file_id ? (
         <>
-          <Pressable onPress={openPdf} disabled={opening} style={styles.pdfRow}>
+          <Pressable accessibilityRole="button" onPress={openPdf} disabled={opening} style={styles.pdfRow}>
             <Ionicons name="document-attach" size={16} color={colors.primary} />
             <Text style={styles.pdfRowTxt} numberOfLines={1}>
               {minuta.pdf_original_name || 'minuta.pdf'}
@@ -875,16 +876,16 @@ const MinutaPdfBlock = memo(({ minuta, onChanged }: { minuta: Minuta; onChanged:
             )}
           </Pressable>
           <View style={{ flexDirection: 'row', gap: 16, marginTop: 6 }}>
-            <Pressable onPress={pickAndUpload} disabled={busy} hitSlop={8}>
+            <Pressable accessibilityRole="button" onPress={pickAndUpload} disabled={busy} hitSlop={8}>
               <Text style={styles.pdfActionTxt}>Reemplazar</Text>
             </Pressable>
-            <Pressable onPress={removePdf} disabled={busy} hitSlop={8}>
+            <Pressable accessibilityRole="button" onPress={removePdf} disabled={busy} hitSlop={8}>
               <Text style={[styles.pdfActionTxt, { color: '#DC2626' }]}>Quitar</Text>
             </Pressable>
           </View>
         </>
       ) : (
-        <Pressable onPress={pickAndUpload} disabled={busy} style={styles.pdfAttachBtn}>
+        <Pressable accessibilityRole="button" onPress={pickAndUpload} disabled={busy} style={styles.pdfAttachBtn}>
           {busy ? (
             <ActivityIndicator size="small" color={colors.primary} />
           ) : (
@@ -924,7 +925,7 @@ const AcuerdoRow = memo(({
 
   return (
     <View style={[styles.acuerdoRow, acuerdo.estado && { opacity: 0.6 }]}>
-      <Pressable
+      <Pressable accessibilityRole="checkbox" accessibilityLabel={a11y('acuerdoCumplido')} accessibilityState={{ checked: !!acuerdo.estado, disabled: !canToggle }}
         onPress={() => onToggle(!acuerdo.estado)}
         disabled={!canToggle}
         hitSlop={8}
@@ -1130,7 +1131,7 @@ function CreateMinutaModal({
           <View style={[styles.modalSheet, { paddingBottom: insets.bottom + 12 }]}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Nueva minuta</Text>
-              <Pressable onPress={onClose} hitSlop={12} style={styles.iconBtn}>
+              <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} onPress={onClose} hitSlop={12} style={styles.iconBtn}>
                 <Ionicons name="close" size={22} color={colors.text} />
               </Pressable>
             </View>
@@ -1138,14 +1139,14 @@ function CreateMinutaModal({
             <ScrollView contentContainerStyle={{ padding: spacing.md, paddingBottom: 32 }}>
               <Text style={styles.label}>Tipo de minuta *</Text>
               <View style={styles.tipoRow}>
-                <Pressable
+                <Pressable accessibilityRole="button"
                   onPress={() => setTipo('compromiso')}
                   style={[styles.tipoBtn, tipo === 'compromiso' && styles.tipoBtnActive]}
                 >
                   <Ionicons name="checkbox-outline" size={16} color={tipo === 'compromiso' ? '#fff' : colors.text} />
                   <Text style={[styles.tipoBtnTxt, tipo === 'compromiso' && styles.tipoBtnTxtActive]}>Compromiso</Text>
                 </Pressable>
-                <Pressable
+                <Pressable accessibilityRole="button"
                   onPress={() => setTipo('informativo')}
                   style={[styles.tipoBtn, tipo === 'informativo' && styles.tipoBtnActive]}
                 >
@@ -1191,7 +1192,7 @@ function CreateMinutaModal({
 
               {/* Ubicacion (nodo del proyecto) _ obligatorio 2026-07 */}
               <Text style={styles.label}>Ubicacion *</Text>
-              <Pressable
+              <Pressable accessibilityRole="button"
                 onPress={() => setUbicacionPickerOpen(true)}
                 style={[
                   styles.input,
@@ -1227,7 +1228,7 @@ function CreateMinutaModal({
                 {areas.map((a) => {
                   const on = selAreas.includes(a.id);
                   return (
-                    <Pressable
+                    <Pressable accessibilityRole="button"
                       key={a.id}
                       onPress={() => toggleArea(a.id)}
                       style={[
@@ -1251,7 +1252,7 @@ function CreateMinutaModal({
 
               <View style={styles.sepRow}>
                 <Text style={styles.label}>Involucrados</Text>
-                <Pressable
+                <Pressable accessibilityRole="button"
                   onPress={() => setInvolvedPickerOpen(true)}
                   style={styles.addRow}
                 >
@@ -1277,7 +1278,7 @@ function CreateMinutaModal({
                       <View key={uid} style={styles.involvedChip}>
                         <Ionicons name="person" size={11} color={colors.primary} />
                         <Text style={styles.involvedChipTxt}>{u.name}</Text>
-                        <Pressable onPress={() => toggleInvolved(uid)} hitSlop={8}>
+                        <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} onPress={() => toggleInvolved(uid)} hitSlop={8}>
                           <Ionicons name="close" size={12} color={colors.textMuted} />
                         </Pressable>
                       </View>
@@ -1293,12 +1294,12 @@ function CreateMinutaModal({
                 <View style={styles.pdfRow}>
                   <Ionicons name="document-attach" size={16} color={colors.primary} />
                   <Text style={styles.pdfRowTxt} numberOfLines={1}>{pdfAsset.name}</Text>
-                  <Pressable onPress={() => setPdfAsset(null)} hitSlop={8}>
+                  <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} onPress={() => setPdfAsset(null)} hitSlop={8}>
                     <Ionicons name="close" size={16} color={colors.textMuted} />
                   </Pressable>
                 </View>
               ) : (
-                <Pressable onPress={pickPdf} style={styles.pdfAttachBtn}>
+                <Pressable accessibilityRole="button" onPress={pickPdf} style={styles.pdfAttachBtn}>
                   <Ionicons name="attach-outline" size={16} color={colors.primary} />
                   <Text style={styles.pdfAttachTxt}>Seleccionar PDF (una hoja)</Text>
                 </Pressable>
@@ -1308,7 +1309,7 @@ function CreateMinutaModal({
                 <>
                   <View style={styles.sepRow}>
                     <Text style={styles.label}>Acuerdos *</Text>
-                    <Pressable onPress={addAcuerdo} style={styles.addRow}>
+                    <Pressable accessibilityRole="button" onPress={addAcuerdo} style={styles.addRow}>
                       <Ionicons name="add" size={16} color={colors.primary} />
                       <Text style={styles.addRowTxt}>Anadir</Text>
                     </Pressable>
@@ -1319,7 +1320,7 @@ function CreateMinutaModal({
                       <View style={styles.acuerdoDraftHead}>
                         <Text style={styles.acuerdoDraftIdx}>#{i + 1}</Text>
                         {acuerdos.length > 1 && (
-                          <Pressable onPress={() => removeAcuerdo(i)} hitSlop={8}>
+                          <Pressable accessibilityRole="button" accessibilityLabel={a11y('quitar')} onPress={() => removeAcuerdo(i)} hitSlop={8}>
                             <Ionicons name="close-circle" size={18} color="#DC2626" />
                           </Pressable>
                         )}
@@ -1333,7 +1334,7 @@ function CreateMinutaModal({
                         multiline
                         maxLength={1200}
                       />
-                      <Pressable
+                      <Pressable accessibilityRole="button"
                         onPress={() => setRespPickerFor(i)}
                         style={[styles.input, styles.selectRow]}
                       >
@@ -1363,10 +1364,10 @@ function CreateMinutaModal({
             </ScrollView>
 
             <View style={styles.modalFooter}>
-              <Pressable onPress={onClose} style={styles.btnGhost} disabled={saving}>
+              <Pressable accessibilityRole="button" onPress={onClose} style={styles.btnGhost} disabled={saving}>
                 <Text style={styles.btnGhostTxt}>Cancelar</Text>
               </Pressable>
-              <Pressable onPress={onSave} style={styles.btnPrimary} disabled={saving}>
+              <Pressable accessibilityRole="button" onPress={onSave} style={styles.btnPrimary} disabled={saving}>
                 {saving ? (
                   <ActivityIndicator color="#fff" />
                 ) : (
@@ -1394,7 +1395,7 @@ function CreateMinutaModal({
                 <ScrollView style={{ maxHeight: 380 }}>
                   {/* "Contratista" siempre disponible: no es una cuenta de usuario,
                       representa a la empresa contratista del proyecto. */}
-                  <Pressable
+                  <Pressable accessibilityRole="button"
                     onPress={() => {
                       setAcuerdoField(respPickerFor!, { responsable_id: 'contratista' });
                       setRespPickerFor(null);
@@ -1413,7 +1414,7 @@ function CreateMinutaModal({
                     </Text>
                   ) : (
                     members.map((m) => (
-                      <Pressable
+                      <Pressable accessibilityRole="button"
                         key={m.id}
                         onPress={() => {
                           setAcuerdoField(respPickerFor!, { responsable_id: m.id });
@@ -1452,7 +1453,7 @@ function CreateMinutaModal({
                   padding: 8, borderBottomWidth: 1, borderBottomColor: colors.border,
                 }}>
                   <Text style={styles.pickerTitle}>Involucrados ({involvedIds.length})</Text>
-                  <Pressable onPress={() => setInvolvedPickerOpen(false)} hitSlop={8}>
+                  <Pressable accessibilityRole="button" onPress={() => setInvolvedPickerOpen(false)} hitSlop={8}>
                     <Text style={{ color: colors.primary, fontWeight: '800' }}>Listo</Text>
                   </Pressable>
                 </View>
@@ -1465,7 +1466,7 @@ function CreateMinutaModal({
                     members.map((m) => {
                       const on = involvedIds.includes(m.id);
                       return (
-                        <Pressable
+                        <Pressable accessibilityRole="button"
                           key={m.id}
                           onPress={() => toggleInvolved(m.id)}
                           style={[styles.pickerRow, on && { backgroundColor: colors.bg }]}
@@ -1508,7 +1509,7 @@ function CreateMinutaModal({
                   padding: 8, borderBottomWidth: 1, borderBottomColor: colors.border,
                 }}>
                   <Text style={styles.pickerTitle}>Ubicacion</Text>
-                  <Pressable onPress={() => setUbicacionPickerOpen(false)} hitSlop={8}>
+                  <Pressable accessibilityRole="button" onPress={() => setUbicacionPickerOpen(false)} hitSlop={8}>
                     <Text style={{ color: colors.primary, fontWeight: '800' }}>Cerrar</Text>
                   </Pressable>
                 </View>
@@ -1523,7 +1524,7 @@ function CreateMinutaModal({
                       .map((n) => {
                       const on = ubicacionId === n.id;
                       return (
-                        <Pressable
+                        <Pressable accessibilityRole="button"
                           key={n.id}
                           onPress={() => {
                             setUbicacionId(n.id);

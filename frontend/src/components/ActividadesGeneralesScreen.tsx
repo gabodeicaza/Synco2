@@ -250,7 +250,7 @@ export function ActividadesGeneralesScreen({ projectId, projectColor: projectCol
 
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.filtrosRapidosRow}>
           {FILTROS_RAPIDOS.map((f) => (
-            <Pressable
+            <Pressable accessibilityRole="button"
               key={f.key}
               onPress={() => aplicarFiltroRapido(f.key)}
               style={[styles.filtroChip, { backgroundColor: chipBg }, filtroRapido === f.key && { backgroundColor: headerTextColor }]}
@@ -261,7 +261,7 @@ export function ActividadesGeneralesScreen({ projectId, projectColor: projectCol
             </Pressable>
           ))}
           {desde || hasta ? (
-            <Pressable onPress={limpiarFiltroFecha} style={[styles.filtroChip, { backgroundColor: chipBg }]}>
+            <Pressable accessibilityRole="button" onPress={limpiarFiltroFecha} style={[styles.filtroChip, { backgroundColor: chipBg }]}>
               <Ionicons name="close" size={13} color={headerTextColor} />
               <Text style={[styles.filtroChipTxt, { color: headerTextColor }]}>Quitar</Text>
             </Pressable>
@@ -269,14 +269,14 @@ export function ActividadesGeneralesScreen({ projectId, projectColor: projectCol
         </ScrollView>
 
         <View style={styles.headerRow}>
-          <Pressable style={[styles.chipBtn, { backgroundColor: chipBg }]} onPress={() => setRangoOpen(true)}>
+          <Pressable accessibilityRole="button" style={[styles.chipBtn, { backgroundColor: chipBg }]} onPress={() => setRangoOpen(true)}>
             <Ionicons name="calendar-outline" size={14} color={headerTextColor} />
             <Text style={[styles.chipBtnTxt, { color: headerTextColor }]}>{periodoLabel}</Text>
           </Pressable>
           {canSelectArea ? (
             <AreaSelector areas={areas} value={areaId} onChange={setAreaId} textColor={headerTextColor} chipBg={chipBg} />
           ) : null}
-          <Pressable style={[styles.chipBtn, { backgroundColor: chipBg }]} onPress={() => setPreviewOpen(true)}>
+          <Pressable accessibilityRole="button" style={[styles.chipBtn, { backgroundColor: chipBg }]} onPress={() => setPreviewOpen(true)}>
             <Ionicons name="eye-outline" size={14} color={headerTextColor} />
             <Text style={[styles.chipBtnTxt, { color: headerTextColor }]}>Previsualizar</Text>
           </Pressable>
@@ -285,7 +285,7 @@ export function ActividadesGeneralesScreen({ projectId, projectColor: projectCol
 
       <View style={styles.tabs}>
         {TAB_ORDER_UI.map((t) => (
-          <Pressable
+          <Pressable accessibilityRole="button"
             key={t}
             onPress={() => setNivel(t)}
             style={[styles.tab, nivel === t && { borderBottomColor: tabAccent, borderBottomWidth: 2 }]}
@@ -300,7 +300,7 @@ export function ActividadesGeneralesScreen({ projectId, projectColor: projectCol
       ) : error ? (
         <View style={styles.center}>
           <Text style={styles.errorTxt}>{error}</Text>
-          <Pressable onPress={() => load()} style={[styles.retryBtn, { backgroundColor: acento }]}>
+          <Pressable accessibilityRole="button" onPress={() => load()} style={[styles.retryBtn, { backgroundColor: acento }]}>
             <Text style={[styles.retryBtnTxt, { color: headerTextColor }]}>Reintentar</Text>
           </Pressable>
         </View>
@@ -309,7 +309,7 @@ export function ActividadesGeneralesScreen({ projectId, projectColor: projectCol
           contentContainerStyle={{ padding: spacing.md, paddingBottom: 100 }}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={acento} />}
         >
-          <Pressable style={styles.toggleOcultas} onPress={() => setIncluirOcultas((v) => !v)}>
+          <Pressable accessibilityRole="button" style={styles.toggleOcultas} onPress={() => setIncluirOcultas((v) => !v)}>
             <Ionicons name={incluirOcultas ? 'eye' : 'eye-off-outline'} size={14} color={colors.textMuted} />
             <Text style={styles.toggleOcultasTxt}>{incluirOcultas ? 'Viendo ocultas también' : 'Ver actividades ocultas'}</Text>
           </Pressable>
@@ -349,7 +349,7 @@ export function ActividadesGeneralesScreen({ projectId, projectColor: projectCol
       )}
 
       {!isReadOnly ? (
-        <Pressable
+        <Pressable accessibilityRole="button"
           style={[styles.fab, { backgroundColor: acento, bottom: insets.bottom + spacing.md }]}
           onPress={() => setAddOpen(true)}
         >
@@ -403,19 +403,19 @@ function AreaSelector({
   const label = value ? (areas.find((a) => a.id === value)?.name || 'Área') : 'Todas las áreas';
   return (
     <>
-      <Pressable style={[styles.chipBtn, { backgroundColor: chipBg }]} onPress={() => setOpen(true)}>
+      <Pressable accessibilityRole="button" style={[styles.chipBtn, { backgroundColor: chipBg }]} onPress={() => setOpen(true)}>
         <Ionicons name="color-palette-outline" size={14} color={textColor} />
         <Text style={[styles.chipBtnTxt, { color: textColor }]} numberOfLines={1}>{label}</Text>
       </Pressable>
       <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
         <Pressable style={styles.backdrop} onPress={() => setOpen(false)}>
           <View style={styles.pickerCard}>
-            <Pressable style={styles.pickerRow} onPress={() => { onChange(null); setOpen(false); }}>
+            <Pressable accessibilityRole="button" style={styles.pickerRow} onPress={() => { onChange(null); setOpen(false); }}>
               <Text style={styles.pickerRowTxt}>Todas las áreas</Text>
               {!value ? <Ionicons name="checkmark" size={16} color={colors.primary} /> : null}
             </Pressable>
             {areas.map((a) => (
-              <Pressable key={a.id} style={styles.pickerRow} onPress={() => { onChange(a.id); setOpen(false); }}>
+              <Pressable accessibilityRole="button" key={a.id} style={styles.pickerRow} onPress={() => { onChange(a.id); setOpen(false); }}>
                 <Text style={styles.pickerRowTxt}>{a.name}</Text>
                 {value === a.id ? <Ionicons name="checkmark" size={16} color={colors.primary} /> : null}
               </Pressable>
@@ -459,7 +459,7 @@ function ActividadRow({
 
   return (
     <View style={[styles.rowCard, item.oculta && { opacity: 0.55 }]}>
-      <Pressable onPress={onToggle} style={styles.rowCollapsed}>
+      <Pressable accessibilityRole="button" onPress={onToggle} style={styles.rowCollapsed}>
         <Ionicons name={origenIcon as any} size={16} color={colors.textMuted} />
         <Text style={styles.rowTxt} numberOfLines={expanded ? undefined : 2}>{item.texto}</Text>
         {item.editada ? <Badge label="editada" color={accentOnWhite} /> : null}
@@ -498,7 +498,7 @@ function ActividadRow({
           ) : null}
 
           {item.editada ? (
-            <Pressable onPress={onRevertir} style={styles.linkBtn}>
+            <Pressable accessibilityRole="button" onPress={onRevertir} style={styles.linkBtn}>
               <Ionicons name="arrow-undo-outline" size={13} color={accentOnWhite} />
               <Text style={[styles.linkBtnTxt, { color: accentOnWhite }]}>Ver original / revertir</Text>
             </Pressable>
@@ -513,10 +513,10 @@ function ActividadRow({
                 style={styles.editInput}
               />
               <View style={styles.editActions}>
-                <Pressable style={styles.smallBtnGhost} onPress={() => { setDraft(item.texto); setEditing(false); }}>
+                <Pressable accessibilityRole="button" style={styles.smallBtnGhost} onPress={() => { setDraft(item.texto); setEditing(false); }}>
                   <Text style={styles.smallBtnGhostTxt}>Cancelar</Text>
                 </Pressable>
-                <Pressable
+                <Pressable accessibilityRole="button"
                   style={[styles.smallBtn, { backgroundColor: acento }]}
                   onPress={() => { onGuardar(draft); setEditing(false); }}
                 >
@@ -526,15 +526,15 @@ function ActividadRow({
             </View>
           ) : item.puede_editar && !isReadOnly ? (
             <View style={styles.rowActions}>
-              <Pressable style={styles.iconBtn} onPress={() => setEditing(true)}>
+              <Pressable accessibilityRole="button" style={styles.iconBtn} onPress={() => setEditing(true)}>
                 <Ionicons name="pencil-outline" size={16} color={colors.text} />
                 <Text style={styles.iconBtnTxt}>Editar</Text>
               </Pressable>
-              <Pressable style={styles.iconBtn} onPress={onMover}>
+              <Pressable accessibilityRole="button" style={styles.iconBtn} onPress={onMover}>
                 <Ionicons name="swap-horizontal-outline" size={16} color={colors.text} />
                 <Text style={styles.iconBtnTxt}>Mover</Text>
               </Pressable>
-              <Pressable style={styles.iconBtn} onPress={onOcultar}>
+              <Pressable accessibilityRole="button" style={styles.iconBtn} onPress={onOcultar}>
                 <Ionicons name={item.oculta ? 'eye-outline' : 'eye-off-outline'} size={16} color={item.oculta ? accentOnWhite : colors.error} />
                 <Text style={[styles.iconBtnTxt, { color: item.oculta ? accentOnWhite : colors.error }]}>{item.oculta ? 'Restaurar' : 'Ocultar'}</Text>
               </Pressable>
@@ -603,7 +603,7 @@ function AddActividadModal({
           <Text style={styles.fieldLabel}>Nivel</Text>
           <View style={styles.segmented}>
             {TAB_ORDER_UI.map((t) => (
-              <Pressable
+              <Pressable accessibilityRole="button"
                 key={t}
                 onPress={() => { setNivel(t); setNodeId(null); }}
                 style={[styles.segItem, nivel === t && { backgroundColor: acento }]}
@@ -618,7 +618,7 @@ function AddActividadModal({
               <Text style={styles.fieldLabel}>Ubicación</Text>
               <ScrollView style={{ maxHeight: 140 }} nestedScrollEnabled>
                 {opciones.map((n) => (
-                  <Pressable key={n.id} style={styles.pickerRow} onPress={() => setNodeId(n.id)}>
+                  <Pressable accessibilityRole="button" key={n.id} style={styles.pickerRow} onPress={() => setNodeId(n.id)}>
                     <Text style={styles.pickerRowTxt}>{n.name}</Text>
                     {nodeId === n.id ? <Ionicons name="checkmark" size={16} color={readableAccent(acento)} /> : null}
                   </Pressable>
@@ -633,7 +633,7 @@ function AddActividadModal({
               <Text style={styles.fieldLabel}>Área</Text>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: spacing.sm }}>
                 {areas.map((a) => (
-                  <Pressable
+                  <Pressable accessibilityRole="button"
                     key={a.id}
                     onPress={() => setAreaId(a.id)}
                     style={[styles.areaChip, areaId === a.id && { backgroundColor: acento, borderColor: acento }]}
@@ -655,10 +655,10 @@ function AddActividadModal({
           />
 
           <View style={styles.actions}>
-            <Pressable onPress={onCancelar} style={[styles.btn, styles.btnGhost]}>
+            <Pressable accessibilityRole="button" onPress={onCancelar} style={[styles.btn, styles.btnGhost]}>
               <Text style={styles.btnGhostTxt}>Cancelar</Text>
             </Pressable>
-            <Pressable
+            <Pressable accessibilityRole="button"
               disabled={!puedeConfirmar}
               onPress={confirmar}
               style={[styles.btn, { backgroundColor: acento }, !puedeConfirmar && { opacity: 0.5 }]}
@@ -697,12 +697,12 @@ function MoverModal({
             <>
               <Text style={styles.title}>Mover a...</Text>
               {actualEsGeneral ? (
-                <Pressable style={styles.pickerRow} onPress={() => setPaso('nodo')}>
+                <Pressable accessibilityRole="button" style={styles.pickerRow} onPress={() => setPaso('nodo')}>
                   <Text style={styles.pickerRowTxt}>Por Ubicación</Text>
                   <Ionicons name="chevron-forward" size={14} color={colors.textMuted} />
                 </Pressable>
               ) : (
-                <Pressable style={styles.pickerRow} onPress={() => onSeleccionar('GENERAL', null)}>
+                <Pressable accessibilityRole="button" style={styles.pickerRow} onPress={() => onSeleccionar('GENERAL', null)}>
                   <Text style={styles.pickerRowTxt}>Generales</Text>
                   <Ionicons name="chevron-forward" size={14} color={colors.textMuted} />
                 </Pressable>
@@ -713,7 +713,7 @@ function MoverModal({
               <Text style={styles.title}>Elige la ubicación</Text>
               <ScrollView style={{ maxHeight: 260 }} nestedScrollEnabled>
                 {opciones.map((n) => (
-                  <Pressable key={n.id} style={styles.pickerRow} onPress={() => onSeleccionar(nivelParaNodo(n), n.id)}>
+                  <Pressable accessibilityRole="button" key={n.id} style={styles.pickerRow} onPress={() => onSeleccionar(nivelParaNodo(n), n.id)}>
                     <Text style={styles.pickerRowTxt}>{n.name}</Text>
                     <Ionicons name="chevron-forward" size={14} color={colors.textMuted} />
                   </Pressable>
@@ -761,7 +761,7 @@ function PreviewModal({
               </View>
             ))}
           </ScrollView>
-          <Pressable onPress={onCerrar} style={[styles.btn, styles.btnGhost, { marginTop: spacing.md }]}>
+          <Pressable accessibilityRole="button" onPress={onCerrar} style={[styles.btn, styles.btnGhost, { marginTop: spacing.md }]}>
             <Text style={styles.btnGhostTxt}>Cerrar</Text>
           </Pressable>
         </View>

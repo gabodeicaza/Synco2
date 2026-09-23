@@ -10,6 +10,7 @@ import { Button } from '@/src/components/Button';
 import { api, Area } from '@/src/api';
 import { colors, radius, spacing, shadow } from '@/src/theme';
 import { confirm } from '@/src/utils/confirm';
+import { a11y } from '@/src/i18n';
 
 const PALETTE = [
   '#0EA5E9', '#22C55E', '#F59E0B', '#EF4444',
@@ -83,7 +84,7 @@ export default function AreasScreen() {
   return (
     <View style={[styles.flex, { paddingTop: insets.top }]}>
       <View style={styles.header}>
-        <Pressable onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
+        <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
           <Ionicons name="chevron-back" size={24} color={colors.text} />
         </Pressable>
         <View style={{ flex: 1 }}>
@@ -118,7 +119,7 @@ export default function AreasScreen() {
                   <Text style={styles.cardName}>{a.name}</Text>
                   <Text style={styles.cardId}>{a.color.toUpperCase()}</Text>
                 </View>
-                <Pressable onPress={() => onDelete(a)} hitSlop={8} style={styles.deleteBtn}>
+                <Pressable accessibilityRole="button" accessibilityLabel={a11y('eliminar')} onPress={() => onDelete(a)} hitSlop={8} style={styles.deleteBtn}>
                   <Ionicons name="trash-outline" size={18} color={colors.error} />
                 </Pressable>
               </View>
@@ -127,7 +128,7 @@ export default function AreasScreen() {
         )}
       </ScrollView>
 
-      <Pressable style={[styles.fab, { bottom: insets.bottom + 20 }]} onPress={openCreate}>
+      <Pressable accessibilityRole="button" style={[styles.fab, { bottom: insets.bottom + 20 }]} onPress={openCreate}>
         <Ionicons name="add" size={26} color={colors.textInverse} />
         <Text style={styles.fabText}>Nueva area</Text>
       </Pressable>
@@ -138,7 +139,7 @@ export default function AreasScreen() {
             <View style={[styles.modalCard, { paddingBottom: insets.bottom + spacing.md }]}>
               <View style={styles.modalHeader}>
                 <Text style={styles.modalTitle}>Nueva area</Text>
-                <Pressable onPress={() => setShowCreate(false)} hitSlop={8}><Ionicons name="close" size={24} color={colors.text} /></Pressable>
+                <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} onPress={() => setShowCreate(false)} hitSlop={8}><Ionicons name="close" size={24} color={colors.text} /></Pressable>
               </View>
 
               <Text style={styles.label}>Nombre de la disciplina</Text>
@@ -156,7 +157,7 @@ export default function AreasScreen() {
               <Text style={[styles.label, { marginTop: spacing.md }]}>Color de identificacion</Text>
               <View style={styles.swatchRow}>
                 {PALETTE.map((c) => (
-                  <Pressable
+                  <Pressable accessibilityRole="button" accessibilityLabel={a11y('elegirColor')} accessibilityState={{ selected: newColor === c }} hitSlop={8}
                     key={c}
                     onPress={() => setNewColor(c)}
                     style={[styles.swatch, { backgroundColor: c }, newColor === c && styles.swatchOn]}

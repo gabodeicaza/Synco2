@@ -16,6 +16,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { api, LocationNode, PosteEstatus } from '@/src/api';
 import { colors, radius, shadow, spacing } from '@/src/theme';
+import { a11y } from '@/src/i18n';
 
 type AccesoValue = 'Con acceso' | 'Sin acceso' | null;
 type TipoNodo = 'estacion' | 'intertramo';
@@ -231,7 +232,7 @@ export function AccesoPredioManager({ projectId }: { projectId: string }) {
           Estatus de acceso y situacion social de cada nodo habilitado. Se muestran en la pagina de resumen exportada (PDF/PPT).
         </Text>
 
-        <Pressable onPress={() => setSelectorOpen(true)} style={styles.configRow}>
+        <Pressable accessibilityRole="button" onPress={() => setSelectorOpen(true)} style={styles.configRow}>
           <Ionicons name="options-outline" size={18} color={colors.primary} />
           <Text style={styles.configRowTxt}>Elegir que nodos tienen Acceso al Predio</Text>
           <Ionicons name="chevron-forward" size={16} color={colors.textMuted} />
@@ -255,7 +256,7 @@ export function AccesoPredioManager({ projectId }: { projectId: string }) {
                   {(['estacion', 'intertramo'] as TipoNodo[]).map((tipo) => {
                     const activo = (s.tipo_nodo || 'estacion') === tipo;
                     return (
-                      <Pressable
+                      <Pressable accessibilityRole="button"
                         key={tipo}
                         onPress={() => setTipoNodo(s, tipo)}
                         disabled={!!tipoBusy[s.id]}
@@ -272,7 +273,7 @@ export function AccesoPredioManager({ projectId }: { projectId: string }) {
 
                 {(s.tipo_nodo || 'estacion') === 'estacion' ? (
                   <View style={styles.toggleRow}>
-                    <Pressable
+                    <Pressable accessibilityRole="button"
                       onPress={() => setAcceso(s.id, acceso === 'Con acceso' ? null : 'Con acceso')}
                       disabled={!!accesoBusy[s.id]}
                       style={[styles.toggleBtn, acceso === 'Con acceso' && styles.toggleBtnOnGreen]}
@@ -280,7 +281,7 @@ export function AccesoPredioManager({ projectId }: { projectId: string }) {
                       <Ionicons name="checkmark-circle-outline" size={18} color={acceso === 'Con acceso' ? '#fff' : colors.textBody} />
                       <Text style={[styles.toggleTxt, acceso === 'Con acceso' && styles.toggleTxtOn]}>Con acceso</Text>
                     </Pressable>
-                    <Pressable
+                    <Pressable accessibilityRole="button"
                       onPress={() => setAcceso(s.id, acceso === 'Sin acceso' ? null : 'Sin acceso')}
                       disabled={!!accesoBusy[s.id]}
                       style={[styles.toggleBtn, acceso === 'Sin acceso' && styles.toggleBtnOnRed]}
@@ -307,7 +308,7 @@ export function AccesoPredioManager({ projectId }: { projectId: string }) {
                   editable={!situBusy[s.id]}
                 />
                 {dirty ? (
-                  <Pressable
+                  <Pressable accessibilityRole="button"
                     onPress={() => saveSituacion(s.id)}
                     disabled={!!situBusy[s.id]}
                     style={styles.saveBtn}
@@ -347,7 +348,7 @@ export function AccesoPredioManager({ projectId }: { projectId: string }) {
                                 editable={!ubicacionBusy[child.id]}
                               />
                               {ubicDirty ? (
-                                <Pressable
+                                <Pressable accessibilityRole="button" accessibilityLabel={a11y('guardar')} hitSlop={8}
                                   onPress={() => saveUbicacion(child.id)}
                                   disabled={!!ubicacionBusy[child.id]}
                                   style={styles.posteUbicSaveBtn}
@@ -366,7 +367,7 @@ export function AccesoPredioManager({ projectId }: { projectId: string }) {
                                 const value = (child[field] as PosteEstatus) || 'sin_iniciar';
                                 const busyKey = `${child.id}:${campo}`;
                                 return (
-                                  <Pressable
+                                  <Pressable accessibilityRole="button"
                                     key={campo}
                                     onPress={() => setEstatusPicker({ childId: child.id, campo, label })}
                                     disabled={!!estatusBusy[busyKey]}
@@ -405,7 +406,7 @@ export function AccesoPredioManager({ projectId }: { projectId: string }) {
           <View style={styles.pickerCard}>
             <Text style={styles.pickerTitle}>{estatusPicker?.label}</Text>
             {ESTATUS_OPTIONS.map((opt) => (
-              <Pressable
+              <Pressable accessibilityRole="button"
                 key={opt.value}
                 style={styles.pickerOption}
                 onPress={() => {
@@ -425,7 +426,7 @@ export function AccesoPredioManager({ projectId }: { projectId: string }) {
         <View style={styles.selectorFlex}>
           <View style={styles.selectorHeader}>
             <Text style={styles.selectorTitle}>Nodos con Acceso al Predio</Text>
-            <Pressable onPress={() => setSelectorOpen(false)} hitSlop={10}>
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} onPress={() => setSelectorOpen(false)} hitSlop={10}>
               <Ionicons name="close" size={22} color={colors.text} />
             </Pressable>
           </View>

@@ -8,6 +8,7 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, spacing } from '@/src/theme';
 import { AccesoPredioManager } from '@/src/components/AccesoPredioManager';
+import { a11y } from '@/src/i18n';
 
 export default function AccesoPredioScreen() {
   const insets = useSafeAreaInsets();
@@ -17,7 +18,7 @@ export default function AccesoPredioScreen() {
   return (
     <KeyboardAvoidingView style={[styles.flex, { paddingTop: insets.top }]} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <View style={styles.header}>
-        <Pressable onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
+        <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
           <Ionicons name="chevron-back" size={24} color={colors.text} />
         </Pressable>
         <Text style={styles.title} numberOfLines={1}>Acceso al Predio</Text>

@@ -14,7 +14,7 @@ import { colors, radius, spacing, shadow } from '@/src/theme';
 import { roleLabel, ROLE_SUB, ROLE_ESP, ROLE_JEFE } from '@/src/utils/roles';
 import { confirm, notify } from '@/src/utils/confirm';
 import { ImportarInvitacionesModal } from '@/src/components/ImportarInvitacionesModal';
-import { t } from '@/src/i18n';
+import { t, a11y } from '@/src/i18n';
 
 type WizardStep = 0 | 1 | 2 | 3;
 type WizardRole = 'sub_coordinador' | 'especialista' | 'jefe_proyecto';
@@ -277,14 +277,14 @@ export default function InvitationsScreen() {
     <View style={styles.root}>
       <View style={[styles.flex1, { paddingTop: insets.top }]}>
         <View style={styles.header}>
-          <Pressable onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
+          <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
             <Ionicons name="chevron-back" size={24} color={colors.text} />
           </Pressable>
           <View style={{ flex: 1 }}>
             <Text style={styles.title}>Invitaciones</Text>
             <Text style={styles.subtitle}>{invitations.length} en total</Text>
           </View>
-          <Pressable onPress={() => setBulkImportOpen(true)} hitSlop={8} style={styles.importHeaderBtn}>
+          <Pressable accessibilityRole="button" onPress={() => setBulkImportOpen(true)} hitSlop={8} style={styles.importHeaderBtn}>
             <Ionicons name="document-attach-outline" size={16} color={colors.primary} />
             <Text style={styles.importHeaderBtnTxt}>Importar Excel</Text>
           </Pressable>
@@ -300,7 +300,7 @@ export default function InvitationsScreen() {
             autoCapitalize="none"
           />
           {!!search && (
-            <Pressable onPress={() => setSearch('')} hitSlop={10}>
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y('quitar')} onPress={() => setSearch('')} hitSlop={10}>
               <Ionicons name="close-circle" size={18} color={colors.textMuted} />
             </Pressable>
           )}
@@ -341,7 +341,7 @@ export default function InvitationsScreen() {
           ))}
         </ScrollView>
 
-        <Pressable style={[styles.fab, { bottom: insets.bottom + 20 }]} onPress={openWizard}>
+        <Pressable accessibilityRole="button" style={[styles.fab, { bottom: insets.bottom + 20 }]} onPress={openWizard}>
           <Ionicons name="add" size={26} color={colors.textInverse} />
           <Text style={styles.fabText}>Nueva invitación</Text>
         </Pressable>
@@ -353,7 +353,7 @@ export default function InvitationsScreen() {
             <View style={[styles.modalCard, { height: windowHeight * 0.9, marginTop: windowHeight * 0.1 }]}>
               <View style={styles.modalHeader}>
                 <Text style={styles.modalTitle}>Nueva invitación - Paso {step + 1}</Text>
-                <Pressable onPress={() => setWizardOpen(false)} hitSlop={15}><Ionicons name="close" size={24} color={colors.text} /></Pressable>
+                <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} onPress={() => setWizardOpen(false)} hitSlop={15}><Ionicons name="close" size={24} color={colors.text} /></Pressable>
               </View>
 
               <View style={styles.flex1}>
@@ -380,7 +380,7 @@ export default function InvitationsScreen() {
 
               <View style={[styles.wizardActions, { paddingBottom: Math.max(insets.bottom, 20) }]}>
                 {step > 0 && (
-                  <Pressable onPress={back} style={styles.backBtn}><Text style={styles.backText}>Atrás</Text></Pressable>
+                  <Pressable accessibilityRole="button" onPress={back} style={styles.backBtn}><Text style={styles.backText}>Atrás</Text></Pressable>
                 )}
                 <Button
                   label={step === 3 ? "Generar" : "Continuar"}
@@ -405,11 +405,11 @@ export default function InvitationsScreen() {
             </View>
 
             <View style={styles.successActions}>
-              <Pressable style={styles.actionPill} onPress={() => createdInvite && copyToken(createdInvite.token)}>
+              <Pressable accessibilityRole="button" style={styles.actionPill} onPress={() => createdInvite && copyToken(createdInvite.token)}>
                 <Ionicons name="copy-outline" size={16} color={colors.primary} />
                 <Text style={styles.actionPillText}>Token</Text>
               </Pressable>
-              <Pressable style={styles.actionPill} onPress={() => createdInvite && shareInvite(createdInvite)}>
+              <Pressable accessibilityRole="button" style={styles.actionPill} onPress={() => createdInvite && shareInvite(createdInvite)}>
                 <Ionicons name="share-social-outline" size={16} color={colors.primary} />
                 <Text style={styles.actionPillText}>Compartir</Text>
               </Pressable>
@@ -426,7 +426,7 @@ export default function InvitationsScreen() {
             <View style={styles.editCard}>
               <View style={styles.modalHeader}>
                 <Text style={styles.modalTitle}>Editar {editTarget ? roleLabel(editTarget.role) : ''}</Text>
-                <Pressable onPress={() => setEditTarget(null)} hitSlop={15}>
+                <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} onPress={() => setEditTarget(null)} hitSlop={15}>
                   <Ionicons name="close" size={22} color={colors.text} />
                 </Pressable>
               </View>
@@ -459,12 +459,12 @@ export default function InvitationsScreen() {
                   <Text style={styles.label}>Área {editTarget?.role === ROLE_SUB ? '(opcional)' : ''}</Text>
                   <View style={styles.areaRow}>
                     {editTarget?.role === ROLE_SUB && (
-                      <Pressable onPress={() => setEditAreaId(null)} style={[styles.areaPill, !editAreaId && styles.areaPillOn]}>
+                      <Pressable accessibilityRole="button" onPress={() => setEditAreaId(null)} style={[styles.areaPill, !editAreaId && styles.areaPillOn]}>
                         <Text>Obra Civil</Text>
                       </Pressable>
                     )}
                     {areas.map((a) => (
-                      <Pressable key={a.id} onPress={() => setEditAreaId(a.id)} style={[styles.areaPill, editAreaId === a.id && styles.areaPillOn]}>
+                      <Pressable accessibilityRole="button" key={a.id} onPress={() => setEditAreaId(a.id)} style={[styles.areaPill, editAreaId === a.id && styles.areaPillOn]}>
                         <Text>{a.name}</Text>
                       </Pressable>
                     ))}
@@ -476,7 +476,7 @@ export default function InvitationsScreen() {
                 <Button label="Guardar cambios" fullWidth onPress={saveEdit} loading={editSaving} />
               </View>
 
-              <Pressable onPress={resetPassword} style={styles.resetPasswordBtn} disabled={resettingPassword}>
+              <Pressable accessibilityRole="button" onPress={resetPassword} style={styles.resetPasswordBtn} disabled={resettingPassword}>
                 {resettingPassword ? <ActivityIndicator color={colors.error} /> : (
                   <>
                     <Ionicons name="key-outline" size={16} color={colors.error} />
@@ -501,7 +501,7 @@ export default function InvitationsScreen() {
               <Text style={styles.tokenLabel}>CONTRASEÑA TEMPORAL</Text>
               <Text selectable style={styles.tokenValueText}>{tempPassword}</Text>
             </View>
-            <Pressable
+            <Pressable accessibilityRole="button"
               style={styles.actionPill}
               onPress={async () => { if (tempPassword) { await Clipboard.setStringAsync(tempPassword); notify('Copiado', 'Contraseña copiada'); } }}
             >
@@ -530,7 +530,7 @@ function StepRole({ role, onChange }: any) {
     <View style={{ gap: 12 }}>
       <Text style={styles.stepTitle}>Selecciona el rol</Text>
       {[ROLE_ESP, ROLE_SUB, ROLE_JEFE].map((r) => (
-        <Pressable key={r} onPress={() => onChange(r)} style={[styles.roleCard, role === r && styles.roleCardOn]}>
+        <Pressable accessibilityRole="button" key={r} onPress={() => onChange(r)} style={[styles.roleCard, role === r && styles.roleCardOn]}>
           <View>
             <Text style={styles.roleTitle}>{roleLabel(r)}</Text>
             <Text style={styles.roleDesc}>{r === ROLE_ESP ? 'Captura mediciones' : r === ROLE_SUB ? 'Supervisa tramos' : 'Solo lectura global'}</Text>
@@ -561,10 +561,10 @@ function StepArea({ role, areas, areaId, onArea }: any) {
       <Text style={styles.label}>{role === ROLE_ESP ? 'Selecciona el área' : 'Selecciona el área (opcional)'}</Text>
       <View style={styles.areaRow}>
         {role === ROLE_SUB && (
-          <Pressable onPress={() => onArea(null)} style={[styles.areaPill, !areaId && styles.areaPillOn]}><Text>Obra Civil</Text></Pressable>
+          <Pressable accessibilityRole="button" onPress={() => onArea(null)} style={[styles.areaPill, !areaId && styles.areaPillOn]}><Text>Obra Civil</Text></Pressable>
         )}
         {areas.map((a: any) => (
-          <Pressable key={a.id} onPress={() => onArea(a.id)} style={[styles.areaPill, areaId === a.id && styles.areaPillOn]}><Text>{a.name}</Text></Pressable>
+          <Pressable accessibilityRole="button" key={a.id} onPress={() => onArea(a.id)} style={[styles.areaPill, areaId === a.id && styles.areaPillOn]}><Text>{a.name}</Text></Pressable>
         ))}
       </View>
     </View>
@@ -612,15 +612,15 @@ function InviteCard({ inv, onCopyToken, onCopyLink, onShare, onRevoke, onEdit, o
         <Text style={{ fontSize: 11, color: colors.primary, fontWeight: '800' }}>{inv.status.toUpperCase()}</Text>
         {isPending && (
           <View style={{ flexDirection: 'row', gap: 12 }}>
-            <Pressable onPress={onCopyToken}><Ionicons name="copy-outline" size={18} color={colors.primary} /></Pressable>
-            <Pressable onPress={onShare}><Ionicons name="share-social-outline" size={18} color={colors.primary} /></Pressable>
-            <Pressable onPress={onRevoke}><Ionicons name="trash-outline" size={18} color={colors.error} /></Pressable>
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y('copiar')} hitSlop={8} onPress={onCopyToken}><Ionicons name="copy-outline" size={18} color={colors.primary} /></Pressable>
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y('compartir')} hitSlop={8} onPress={onShare}><Ionicons name="share-social-outline" size={18} color={colors.primary} /></Pressable>
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y('eliminar')} hitSlop={8} onPress={onRevoke}><Ionicons name="trash-outline" size={18} color={colors.error} /></Pressable>
           </View>
         )}
         {isAccepted && (
           <View style={{ flexDirection: 'row', gap: 12 }}>
-            <Pressable onPress={onEdit}><Ionicons name="create-outline" size={18} color={colors.primary} /></Pressable>
-            <Pressable onPress={onRemove}><Ionicons name="person-remove-outline" size={18} color={colors.error} /></Pressable>
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y('editar')} hitSlop={8} onPress={onEdit}><Ionicons name="create-outline" size={18} color={colors.primary} /></Pressable>
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y('quitarPersona')} hitSlop={8} onPress={onRemove}><Ionicons name="person-remove-outline" size={18} color={colors.error} /></Pressable>
           </View>
         )}
       </View>

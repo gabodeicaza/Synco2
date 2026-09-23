@@ -28,6 +28,7 @@ import { api, Announcement, Area, LocationNode } from '@/src/api';
 import { colors, radius, shadow, spacing } from '@/src/theme';
 import { confirm } from '@/src/utils/confirm';
 import { fmtDateTimeCDMX } from '@/src/utils/tz';
+import { a11y } from '@/src/i18n';
 
 type Jerarquia = 'urgente' | 'importante' | 'informativo' | null;
 type Editing = {
@@ -159,7 +160,7 @@ export default function AnnouncementsView({
     <View style={[styles.flex, { paddingTop: topPadding !== undefined ? topPadding : insets.top }]}>
       <View style={styles.header}>
         {!embedded && (
-          <Pressable onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
+          <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
             <Ionicons name="chevron-back" size={24} color={colors.text} />
           </Pressable>
         )}
@@ -167,7 +168,7 @@ export default function AnnouncementsView({
           <Text style={styles.title} numberOfLines={1}>{headerTitle || 'Noticias'}</Text>
           <Text style={styles.subtitle}>{headerSubtitle || 'Anuncios visibles para todo el proyecto'}</Text>
         </View>
-        <Pressable
+        <Pressable accessibilityRole="button"
           onPress={() => setEditing({ title: '', body: '', pinned: false, jerarquia: null, audiencia: 'general', node_id: null })}
           style={styles.newBtn}
         >
@@ -200,7 +201,7 @@ export default function AnnouncementsView({
             <Text style={styles.emptyMsg}>
               Publica anuncios visibles para Sub-Coordinadores y Especialistas del proyecto.
             </Text>
-            <Pressable style={styles.emptyBtn} onPress={() => setEditing({ title: '', body: '', pinned: false, jerarquia: null, audiencia: 'general', node_id: null })}>
+            <Pressable accessibilityRole="button" style={styles.emptyBtn} onPress={() => setEditing({ title: '', body: '', pinned: false, jerarquia: null, audiencia: 'general', node_id: null })}>
               <Ionicons name="add" size={16} color="#fff" />
               <Text style={styles.emptyBtnTxt}>Publicar primera</Text>
             </Pressable>
@@ -223,7 +224,7 @@ export default function AnnouncementsView({
             >
               <View style={styles.cardTopRow}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap', flex: 1 }}>
-                  <Pressable style={styles.pinChip} onPress={() => onTogglePin(a)}>
+                  <Pressable accessibilityRole="button" style={styles.pinChip} onPress={() => onTogglePin(a)}>
                     <Ionicons
                       name={a.pinned ? 'pin' : 'pin-outline'}
                       size={12}
@@ -241,7 +242,7 @@ export default function AnnouncementsView({
                   ) : null}
                 </View>
                 <View style={{ flexDirection: 'row', gap: 6 }}>
-                  <Pressable
+                  <Pressable accessibilityRole="button" accessibilityLabel={a11y('editar')} hitSlop={8}
                     onPress={() => setEditing({
                       id: a.id,
                       title: a.title,
@@ -255,7 +256,7 @@ export default function AnnouncementsView({
                   >
                     <Ionicons name="create-outline" size={16} color={colors.primary} />
                   </Pressable>
-                  <Pressable onPress={() => onDelete(a)} style={[styles.iconAction, { backgroundColor: colors.errorBg }]}>
+                  <Pressable accessibilityRole="button" accessibilityLabel={a11y('eliminar')} hitSlop={8} onPress={() => onDelete(a)} style={[styles.iconAction, { backgroundColor: colors.errorBg }]}>
                     <Ionicons name="trash-outline" size={16} color={colors.error} />
                   </Pressable>
                 </View>
@@ -338,7 +339,7 @@ export default function AnnouncementsView({
               <View>
                 <Text style={styles.label}>Jerarquia</Text>
                 <View style={styles.chipsRow}>
-                  <Pressable
+                  <Pressable accessibilityRole="button"
                     onPress={() => setEditing((e) => e ? { ...e, jerarquia: null } : e)}
                     style={[styles.audChip, !editing?.jerarquia && styles.audChipActive]}
                   >
@@ -348,7 +349,7 @@ export default function AnnouncementsView({
                     const cfg = JERARQUIA_COLORS[k];
                     const active = editing?.jerarquia === k;
                     return (
-                      <Pressable
+                      <Pressable accessibilityRole="button"
                         key={k}
                         onPress={() => setEditing((e) => e ? { ...e, jerarquia: k } : e)}
                         style={[
@@ -369,7 +370,7 @@ export default function AnnouncementsView({
                 <Text style={styles.label}>Audiencia</Text>
                 <Text style={styles.helper}>Elige a quien va dirigida la noticia.</Text>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6, paddingVertical: 6 }}>
-                  <Pressable
+                  <Pressable accessibilityRole="button"
                     onPress={() => setEditing((e) => e ? { ...e, audiencia: 'general' } : e)}
                     style={[styles.audChip, (editing?.audiencia || 'general') === 'general' && styles.audChipActive]}
                   >
@@ -379,7 +380,7 @@ export default function AnnouncementsView({
                   {areas.map((ar) => {
                     const active = editing?.audiencia === ar.id;
                     return (
-                      <Pressable
+                      <Pressable accessibilityRole="button"
                         key={ar.id}
                         onPress={() => setEditing((e) => e ? { ...e, audiencia: ar.id } : e)}
                         style={[styles.audChip, active && styles.audChipActive]}
@@ -398,7 +399,7 @@ export default function AnnouncementsView({
                   Si lo seleccionas, esta noticia aparecera en la seccion del nodo al exportar reportes (solo si es Importante o Urgente).
                 </Text>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6, paddingVertical: 6 }}>
-                  <Pressable
+                  <Pressable accessibilityRole="button"
                     onPress={() => setEditing((e) => e ? { ...e, node_id: null } : e)}
                     style={[styles.audChip, !editing?.node_id && styles.audChipActive]}
                   >
@@ -408,7 +409,7 @@ export default function AnnouncementsView({
                   {nodes.map((nd) => {
                     const active = editing?.node_id === nd.id;
                     return (
-                      <Pressable
+                      <Pressable accessibilityRole="button"
                         key={nd.id}
                         onPress={() => setEditing((e) => e ? { ...e, node_id: nd.id } : e)}
                         style={[styles.audChip, active && styles.audChipActive]}
@@ -425,10 +426,10 @@ export default function AnnouncementsView({
               {error ? <Text style={[styles.errorText, { textAlign: 'center' }]}>{error}</Text> : null}
             </ScrollView>
             <View style={styles.modalActions}>
-              <Pressable onPress={() => { setEditing(null); setError(null); }} style={[styles.btn, styles.btnGhost]}>
+              <Pressable accessibilityRole="button" onPress={() => { setEditing(null); setError(null); }} style={[styles.btn, styles.btnGhost]}>
                 <Text style={styles.btnGhostTxt}>Cancelar</Text>
               </Pressable>
-              <Pressable onPress={onSave} disabled={saving} style={[styles.btn, styles.btnPrimary, saving && { opacity: 0.6 }]}>
+              <Pressable accessibilityRole="button" onPress={onSave} disabled={saving} style={[styles.btn, styles.btnPrimary, saving && { opacity: 0.6 }]}>
                 {saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.btnPrimaryTxt}>{editing?.id ? 'Guardar' : 'Publicar'}</Text>}
               </Pressable>
             </View>

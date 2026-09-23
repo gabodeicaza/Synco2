@@ -6,6 +6,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { colors, radius, shadow, spacing } from '@/src/theme';
 import { FeedItem } from '@/src/api';
 import { toISODateCDMX } from '@/src/utils/tz';
+import { a11y } from '@/src/i18n';
 
 // Localizacion a espanol.
 LocaleConfig.locales['es'] = {
@@ -65,7 +66,7 @@ export function HistoryCalendarModal({
                 {selectedDate ? `Filtrando: ${formatDate(selectedDate)}` : 'Toca un dia para filtrar reportes'}
               </Text>
             </View>
-            <Pressable onPress={onClose} hitSlop={10} style={styles.closeBtn}>
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} onPress={onClose} hitSlop={10} style={styles.closeBtn}>
               <Ionicons name="close" size={20} color={colors.text} />
             </Pressable>
           </View>
@@ -99,7 +100,7 @@ export function HistoryCalendarModal({
           />
 
           <View style={styles.actions}>
-            <Pressable
+            <Pressable accessibilityRole="button"
               onPress={() => onPickDate(null)}
               style={({ pressed }) => [
                 styles.btnGhost,
@@ -109,7 +110,7 @@ export function HistoryCalendarModal({
               <Ionicons name="refresh" size={16} color={colors.primary} />
               <Text style={styles.btnGhostTxt}>Quitar filtro</Text>
             </Pressable>
-            <Pressable
+            <Pressable accessibilityRole="button"
               onPress={onClose}
               style={({ pressed }) => [
                 styles.btnPrimary,

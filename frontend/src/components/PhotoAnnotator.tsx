@@ -19,6 +19,7 @@ import Svg, { Ellipse, Line, Polygon, Rect, Text as SvgText } from 'react-native
 import { captureViewAsDataUri } from '@/src/utils/captureView';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, radius, spacing } from '@/src/theme';
+import { a11y } from '@/src/i18n';
 
 type Tool = 'select' | 'circle' | 'rect' | 'arrow' | 'text';
 
@@ -29,12 +30,12 @@ type Shape =
   | { id: number; tool: 'text'; color: string; x: number; y: number; text: string };
 
 const COLORS = ['#EF4444', '#F59E0B', '#22C55E', '#2563EB', '#FFFFFF', '#000000'];
-const TOOLS: { key: Tool; icon: React.ComponentProps<typeof Ionicons>['name'] }[] = [
-  { key: 'select', icon: 'move-outline' },
-  { key: 'circle', icon: 'ellipse-outline' },
-  { key: 'rect', icon: 'square-outline' },
-  { key: 'arrow', icon: 'arrow-up-outline' },
-  { key: 'text', icon: 'text-outline' },
+const TOOLS: { key: Tool; label: string; icon: React.ComponentProps<typeof Ionicons>['name'] }[] = [
+  { key: 'select', label: a11y('herramientaMover'), icon: 'move-outline' },
+  { key: 'circle', label: a11y('herramientaCirculo'), icon: 'ellipse-outline' },
+  { key: 'rect', label: a11y('herramientaRectangulo'), icon: 'square-outline' },
+  { key: 'arrow', label: a11y('herramientaFlecha'), icon: 'arrow-up-outline' },
+  { key: 'text', label: a11y('herramientaTexto'), icon: 'text-outline' },
 ];
 
 // Distancia mínima de tolerancia al tocar una figura (dedo grueso vs. trazo
@@ -312,11 +313,11 @@ export function PhotoAnnotator({ visible, imageUri, onClose, onSave }: Props) {
     <>
       <View style={styles.container}>
         <View style={styles.header}>
-          <Pressable onPress={onClose} hitSlop={10}>
+          <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} onPress={onClose} hitSlop={10}>
             <Ionicons name="close" size={24} color={colors.text} />
           </Pressable>
           <Text style={styles.title}>Marcar foto</Text>
-          <Pressable onPress={guardar} disabled={saving || !canvasSize} hitSlop={10}>
+          <Pressable accessibilityRole="button" onPress={guardar} disabled={saving || !canvasSize} hitSlop={10}>
             {saving ? <ActivityIndicator color={colors.primary} /> : (
               <Text style={styles.saveTxt}>Guardar</Text>
             )}
@@ -345,7 +346,7 @@ export function PhotoAnnotator({ visible, imageUri, onClose, onSave }: Props) {
         <View style={[styles.toolbar, { paddingBottom: spacing.md + insets.bottom }]}>
           <View style={styles.toolRow}>
             {TOOLS.map((t) => (
-              <Pressable
+              <Pressable accessibilityRole="button" accessibilityLabel={t.label} accessibilityState={{ selected: tool === t.key }} hitSlop={8}
                 key={t.key}
                 onPress={() => setTool(t.key)}
                 style={[styles.toolBtn, tool === t.key && styles.toolBtnActive]}
@@ -354,16 +355,16 @@ export function PhotoAnnotator({ visible, imageUri, onClose, onSave }: Props) {
               </Pressable>
             ))}
             <View style={styles.toolDivider} />
-            <Pressable onPress={deshacer} disabled={shapes.length === 0} style={[styles.toolBtn, shapes.length === 0 && { opacity: 0.4 }]}>
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y('deshacer')} hitSlop={8} onPress={deshacer} disabled={shapes.length === 0} style={[styles.toolBtn, shapes.length === 0 && { opacity: 0.4 }]}>
               <Ionicons name="arrow-undo-outline" size={20} color={colors.textBody} />
             </Pressable>
-            <Pressable onPress={borrarSeleccionado} disabled={selectedId === null} style={[styles.toolBtn, selectedId === null && { opacity: 0.4 }]}>
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y('eliminar')} hitSlop={8} onPress={borrarSeleccionado} disabled={selectedId === null} style={[styles.toolBtn, selectedId === null && { opacity: 0.4 }]}>
               <Ionicons name="trash-outline" size={20} color={selectedId === null ? colors.textBody : '#F87171'} />
             </Pressable>
           </View>
           <View style={styles.colorRow}>
             {COLORS.map((c) => (
-              <Pressable
+              <Pressable accessibilityRole="button"
                 key={c}
                 onPress={() => setColor(c)}
                 style={[
@@ -395,10 +396,10 @@ export function PhotoAnnotator({ visible, imageUri, onClose, onSave }: Props) {
               onSubmitEditing={confirmarTexto}
             />
             <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
-              <Pressable onPress={() => setTextPrompt(null)} style={[styles.textPromptBtn, { backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border }]}>
+              <Pressable accessibilityRole="button" onPress={() => setTextPrompt(null)} style={[styles.textPromptBtn, { backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border }]}>
                 <Text style={{ color: colors.text, fontWeight: '700' }}>Cancelar</Text>
               </Pressable>
-              <Pressable onPress={confirmarTexto} style={[styles.textPromptBtn, { backgroundColor: colors.primary }]}>
+              <Pressable accessibilityRole="button" onPress={confirmarTexto} style={[styles.textPromptBtn, { backgroundColor: colors.primary }]}>
                 <Text style={{ color: '#fff', fontWeight: '700' }}>Agregar</Text>
               </Pressable>
             </View>

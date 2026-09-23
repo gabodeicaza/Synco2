@@ -106,7 +106,7 @@ export function ReferenceFilesList({ projectId }: { projectId: string }) {
             ? [f.original_name || '', formatBytes(f.size)].filter(Boolean).join(' . ')
             : f.url;
           return (
-            <Pressable
+            <Pressable accessibilityRole="button"
               key={key}
               onPress={() => onOpenFile(f)}
               disabled={opening}

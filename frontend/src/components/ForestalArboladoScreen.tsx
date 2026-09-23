@@ -21,6 +21,7 @@ import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
 import { Button } from '@/src/components/Button';
 import { useAuth } from '@/src/auth-context';
 import { ROLE_COORD, ROLE_SUB } from '@/src/utils/roles';
+import { a11y } from '@/src/i18n';
 
 type TipoForestal = 'poda' | 'trasplante' | 'derribo';
 const TIPOS: { value: TipoForestal; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
@@ -268,7 +269,7 @@ export default function ForestalArboladoScreen({ projectId }: { projectId: strin
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <View style={[styles.headerWrap, { backgroundColor: headerColor, paddingTop: insets.top + spacing.xs }]}>
         <View style={styles.headerTopRow}>
-          <Pressable onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
+          <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
             <Ionicons name="chevron-back" size={22} color={headerTextColor} />
           </Pressable>
           <Text style={[styles.titleBar, { color: headerTextColor }]} numberOfLines={1}>Forestal y Arbolado</Text>
@@ -298,7 +299,7 @@ export default function ForestalArboladoScreen({ projectId }: { projectId: strin
             </View>
           ) : (
             autorizado.map((row, idx) => (
-              <Pressable
+              <Pressable accessibilityRole="button"
                 key={row.id}
                 onPress={() => canEditAutorizado && openRowForm(row)}
                 style={[styles.tableRow, idx % 2 === 1 && { backgroundColor: SHEET.greenBg }]}
@@ -321,7 +322,7 @@ export default function ForestalArboladoScreen({ projectId }: { projectId: strin
             </View>
           )}
           {canEditAutorizado && (
-            <Pressable style={styles.addRowBtn} onPress={() => openRowForm(null)}>
+            <Pressable accessibilityRole="button" style={styles.addRowBtn} onPress={() => openRowForm(null)}>
               <Ionicons name="add-circle-outline" size={18} color={colors.primary} />
               <Text style={styles.addRowTxt}>Agregar estación</Text>
             </Pressable>
@@ -347,13 +348,13 @@ export default function ForestalArboladoScreen({ projectId }: { projectId: strin
         {/* --- Actividades ejecutadas de la semana --- */}
         <View style={styles.card}>
           <View style={[styles.bar, styles.weekBar, { backgroundColor: SHEET.pink }]}>
-            <Pressable hitSlop={8} onPress={() => setWeekStart((w) => addDaysISO(w, -6))}>
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y('semanaAnterior')} hitSlop={8} onPress={() => setWeekStart((w) => addDaysISO(w, -6))}>
               <Ionicons name="chevron-back-circle-outline" size={22} color={SHEET.title} />
             </Pressable>
             <Text style={styles.barTxt} numberOfLines={2}>
               ACTIVIDADES EJECUTADAS SEMANA {semanal ? formatRangoSemana(semanal.desde, semanal.hasta) : ''}
             </Text>
-            <Pressable hitSlop={8} onPress={() => setWeekStart((w) => addDaysISO(w, 6))}>
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y('semanaSiguiente')} hitSlop={8} onPress={() => setWeekStart((w) => addDaysISO(w, 6))}>
               <Ionicons name="chevron-forward-circle-outline" size={22} color={SHEET.title} />
             </Pressable>
           </View>
@@ -411,7 +412,7 @@ export default function ForestalArboladoScreen({ projectId }: { projectId: strin
         </View>
       </ScrollView>
 
-      <Pressable style={styles.fab} onPress={openForm}>
+      <Pressable accessibilityRole="button" accessibilityLabel={a11y('agregar')} hitSlop={8} style={styles.fab} onPress={openForm}>
         <Ionicons name="add" size={26} color="#fff" />
       </Pressable>
 
@@ -423,7 +424,7 @@ export default function ForestalArboladoScreen({ projectId }: { projectId: strin
             <Text style={styles.fieldLabel}>Tipo</Text>
             <View style={styles.segmentRow}>
               {TIPOS.map((t) => (
-                <Pressable
+                <Pressable accessibilityRole="button"
                   key={t.value}
                   onPress={() => setTipoDraft(t.value)}
                   style={[styles.segmentBtn, tipoDraft === t.value && styles.segmentBtnActive]}

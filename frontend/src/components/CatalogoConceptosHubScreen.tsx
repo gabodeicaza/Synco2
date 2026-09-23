@@ -11,6 +11,7 @@ import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { api, Project } from '@/src/api';
 import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
+import { a11y } from '@/src/i18n';
 
 const ITEMS: { icon: keyof typeof Ionicons.glyphMap; label: string; subtitle: string; screen: string }[] = [
   { icon: 'create-outline', label: 'Registrar avance', subtitle: 'Captura de uso diario', screen: 'registrar-avance' },
@@ -49,7 +50,7 @@ export default function CatalogoConceptosHubScreen({
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <View style={[styles.headerWrap, { backgroundColor: headerColor, paddingTop: insets.top + spacing.xs }]}>
         <View style={styles.headerTopRow}>
-          <Pressable onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
+          <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
             <Ionicons name="chevron-back" size={22} color={headerTextColor} />
           </Pressable>
           <Text style={[styles.titleBar, { color: headerTextColor }]} numberOfLines={1}>Catálogo de Conceptos</Text>
@@ -62,7 +63,7 @@ export default function CatalogoConceptosHubScreen({
       ) : (
         <ScrollView contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + spacing.xl }]}>
           {ITEMS.map((it) => (
-            <Pressable
+            <Pressable accessibilityRole="button"
               key={it.screen}
               style={styles.card}
               onPress={() => router.push({ pathname: `${basePath}/${it.screen}` as any, params: { project_id: projectId } })}

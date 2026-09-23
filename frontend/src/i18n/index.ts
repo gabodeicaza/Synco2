@@ -15,4 +15,9 @@ export function t(clave: ClaveI18n, vars?: Record<string, string | number>): str
   return texto.replace(/\{(\w+)\}/g, (_, k) => (k in vars ? String(vars[k]) : `{${k}}`));
 }
 
+/** Etiqueta accesible (lector de pantalla) del catálogo `a11y`. */
+export function a11y(clave: keyof typeof esMX.a11y): string {
+  return esMX.a11y[clave];
+}
+
 export { esMX };

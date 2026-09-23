@@ -22,6 +22,7 @@ import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
 import { Button } from '@/src/components/Button';
 import { useAuth } from '@/src/auth-context';
 import { ROLE_COORD, ROLE_SUB } from '@/src/utils/roles';
+import { a11y } from '@/src/i18n';
 
 const ACT_COL_W = 150;
 const VAL_COL_W = 68;
@@ -263,7 +264,7 @@ export default function TablaResumenScreen({ projectId }: { projectId: string })
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <View style={[styles.headerWrap, { backgroundColor: headerColor, paddingTop: insets.top + spacing.xs }]}>
         <View style={styles.headerTopRow}>
-          <Pressable onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
+          <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
             <Ionicons name="chevron-back" size={22} color={headerTextColor} />
           </Pressable>
           <Text style={[styles.titleBar, { color: headerTextColor }]} numberOfLines={1}>Tabla Resumen</Text>
@@ -273,11 +274,11 @@ export default function TablaResumenScreen({ projectId }: { projectId: string })
 
       {canEditEstructura && (
         <View style={styles.toolbar}>
-          <Pressable style={styles.toolBtn} onPress={() => openActForm(null)}>
+          <Pressable accessibilityRole="button" style={styles.toolBtn} onPress={() => openActForm(null)}>
             <Ionicons name="add-circle-outline" size={16} color={colors.primary} />
             <Text style={styles.toolBtnTxt}>Actividad</Text>
           </Pressable>
-          <Pressable style={styles.toolBtn} onPress={() => openColForm(null)}>
+          <Pressable accessibilityRole="button" style={styles.toolBtn} onPress={() => openColForm(null)}>
             <Ionicons name="add-circle-outline" size={16} color={colors.primary} />
             <Text style={styles.toolBtnTxt}>Columna</Text>
           </Pressable>
@@ -302,7 +303,7 @@ export default function TablaResumenScreen({ projectId }: { projectId: string })
                   <Text style={styles.headerTxt}>Actividad</Text>
                 </View>
                 {columnas.map((col) => (
-                  <Pressable
+                  <Pressable accessibilityRole="button"
                     key={col.id}
                     onPress={() => canEditEstructura && openColForm(col)}
                     style={[
@@ -321,7 +322,7 @@ export default function TablaResumenScreen({ projectId }: { projectId: string })
               <ScrollView style={{ flex: 1 }}>
                 {actividades.map((act) => (
                   <View key={act.id} style={styles.row}>
-                    <Pressable
+                    <Pressable accessibilityRole="button"
                       onPress={() => canEditEstructura && openActForm(act)}
                       style={[styles.cell, styles.cellActividad]}
                     >
@@ -331,7 +332,7 @@ export default function TablaResumenScreen({ projectId }: { projectId: string })
                       const celda = celdaMap.get(`${act.id}|${col.id}`);
                       const v = celdaVisual(celda);
                       return (
-                        <Pressable
+                        <Pressable accessibilityRole="button"
                           key={col.id}
                           onPress={() => openCeldaForm(act, col)}
                           style={[styles.cell, styles.cellValor, { backgroundColor: v.bg }]}
@@ -397,13 +398,13 @@ export default function TablaResumenScreen({ projectId }: { projectId: string })
             <Text style={styles.modalTitle}>{colForm.editing ? 'Editar columna' : 'Nueva columna'}</Text>
             <Text style={styles.fieldLabel}>Tipo</Text>
             <View style={styles.segmentRow}>
-              <Pressable
+              <Pressable accessibilityRole="button"
                 onPress={() => setColForm((s) => ({ ...s, tipo: 'estacion' }))}
                 style={[styles.segmentBtn, colForm.tipo === 'estacion' && styles.segmentBtnActive]}
               >
                 <Text style={[styles.segmentTxt, colForm.tipo === 'estacion' && styles.segmentTxtActive]}>Estación</Text>
               </Pressable>
-              <Pressable
+              <Pressable accessibilityRole="button"
                 onPress={() => setColForm((s) => ({ ...s, tipo: 'intertramo' }))}
                 style={[styles.segmentBtn, colForm.tipo === 'intertramo' && styles.segmentBtnActive]}
               >

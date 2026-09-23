@@ -12,6 +12,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { api, AmbientalAuditoriaItem, Project } from '@/src/api';
 import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
 import { Button } from '@/src/components/Button';
+import { a11y } from '@/src/i18n';
 
 type Tipo = 'cumplimiento' | 'incumplimiento';
 
@@ -93,7 +94,7 @@ export default function ImpactoAmbientalScreen({ projectId }: { projectId: strin
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <View style={[styles.headerWrap, { backgroundColor: headerColor, paddingTop: insets.top + spacing.xs }]}>
         <View style={styles.headerTopRow}>
-          <Pressable onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
+          <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
             <Ionicons name="chevron-back" size={22} color={headerTextColor} />
           </Pressable>
           <Text style={[styles.titleBar, { color: headerTextColor }]} numberOfLines={1}>Impacto Ambiental</Text>
@@ -114,7 +115,7 @@ export default function ImpactoAmbientalScreen({ projectId }: { projectId: strin
             ) : (
               cumplimientos.map((i) => <AuditCard key={i.id} item={i} good />)
             )}
-            <Pressable onPress={() => openForm('cumplimiento')} style={[styles.addBtn, styles.addBtnGood]}>
+            <Pressable accessibilityRole="button" onPress={() => openForm('cumplimiento')} style={[styles.addBtn, styles.addBtnGood]}>
               <Ionicons name="add" size={16} color={colors.success} />
               <Text style={[styles.addBtnTxt, { color: colors.success }]}>Agregar</Text>
             </Pressable>
@@ -131,7 +132,7 @@ export default function ImpactoAmbientalScreen({ projectId }: { projectId: strin
             ) : (
               incumplimientos.map((i) => <AuditCard key={i.id} item={i} good={false} />)
             )}
-            <Pressable onPress={() => openForm('incumplimiento')} style={[styles.addBtn, styles.addBtnBad]}>
+            <Pressable accessibilityRole="button" onPress={() => openForm('incumplimiento')} style={[styles.addBtn, styles.addBtnBad]}>
               <Ionicons name="add" size={16} color={colors.error} />
               <Text style={[styles.addBtnTxt, { color: colors.error }]}>Agregar</Text>
             </Pressable>

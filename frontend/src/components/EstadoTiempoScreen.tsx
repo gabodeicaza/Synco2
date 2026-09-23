@@ -19,6 +19,7 @@ import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { api, LocationNode, Project, WeatherLog } from '@/src/api';
 import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
+import { a11y } from '@/src/i18n';
 
 function nodePathNames(nodeId: string, byId: Record<string, LocationNode>): string[] {
   const names: string[] = [];
@@ -147,7 +148,7 @@ export default function EstadoTiempoScreen({ projectId }: { projectId: string })
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <View style={[styles.headerWrap, { backgroundColor: headerColor, paddingTop: insets.top + spacing.xs }]}>
         <View style={styles.headerTopRow}>
-          <Pressable onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
+          <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
             <Ionicons name="chevron-back" size={22} color={headerTextColor} />
           </Pressable>
           <Text style={[styles.titleBar, { color: headerTextColor }]} numberOfLines={1}>Estado del Tiempo</Text>
@@ -198,7 +199,7 @@ export default function EstadoTiempoScreen({ projectId }: { projectId: string })
                 </View>
 
                 {dirty ? (
-                  <Pressable onPress={() => save(n.id)} disabled={!!busy[n.id]} style={styles.saveBtn}>
+                  <Pressable accessibilityRole="button" onPress={() => save(n.id)} disabled={!!busy[n.id]} style={styles.saveBtn}>
                     {busy[n.id] ? (
                       <ActivityIndicator size="small" color="#fff" />
                     ) : (

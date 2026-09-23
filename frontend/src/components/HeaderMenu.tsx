@@ -76,7 +76,7 @@ export function HeaderMenu({ basePath, projectId }: HeaderMenuProps) {
 
   return (
     <>
-      <Pressable hitSlop={10} style={styles.headerBtn} onPress={() => setOpen(true)} accessibilityLabel="Abrir menu">
+      <Pressable accessibilityRole="button" hitSlop={10} style={styles.headerBtn} onPress={() => setOpen(true)} accessibilityLabel="Abrir menu">
         <Ionicons name="menu" size={22} color="#fff" />
       </Pressable>
 
@@ -169,7 +169,7 @@ function MenuItem({
   destructive?: boolean;
 }) {
   return (
-    <Pressable
+    <Pressable accessibilityRole="button"
       onPress={onPress}
       style={({ pressed }) => [styles.menuItem, pressed && { backgroundColor: colors.bg }]}
     >

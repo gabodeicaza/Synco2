@@ -18,6 +18,7 @@ import { colors, radius, spacing, shadow } from '@/src/theme';
 import { MEASUREMENT_LABELS, MEASUREMENT_ICONS, MeasurementType } from '@/src/utils/roles';
 import { confirm } from '@/src/utils/confirm';
 import { requestMediaLibraryPermission } from '@/src/utils/permissions';
+import { a11y } from '@/src/i18n';
 
 // =============================================================================
 // Constructor visual del Arbol de Nodos
@@ -285,17 +286,17 @@ export default function TreeBuilderScreen() {
   return (
     <View style={[styles.flex, { paddingTop: insets.top }]}>
       <View style={styles.header}>
-        <Pressable onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
+        <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
           <Ionicons name="chevron-back" size={24} color={colors.text} />
         </Pressable>
         <View style={{ flex: 1 }}>
           <Text style={styles.title}>Arbol de nodos</Text>
           <Text style={styles.subtitle}>{totalCount} nodo{totalCount === 1 ? '' : 's'} _ {leafCount} hoja{leafCount === 1 ? '' : 's'}</Text>
         </View>
-        <Pressable onPress={tree.length === 0 ? undefined : expandAll} hitSlop={8} style={styles.iconBtn}>
+        <Pressable accessibilityRole="button" accessibilityLabel={a11y('expandirTodo')} onPress={tree.length === 0 ? undefined : expandAll} hitSlop={8} style={styles.iconBtn}>
           <Ionicons name="expand" size={20} color={tree.length === 0 ? colors.textMuted : colors.text} />
         </Pressable>
-        <Pressable onPress={tree.length === 0 ? undefined : collapseAll} hitSlop={8} style={styles.iconBtn}>
+        <Pressable accessibilityRole="button" accessibilityLabel={a11y('contraerTodo')} onPress={tree.length === 0 ? undefined : collapseAll} hitSlop={8} style={styles.iconBtn}>
           <Ionicons name="contract" size={20} color={tree.length === 0 ? colors.textMuted : colors.text} />
         </Pressable>
         <Pressable
@@ -379,7 +380,7 @@ export default function TreeBuilderScreen() {
         )}
       </ScrollView>
 
-      <Pressable style={[styles.fab, { bottom: insets.bottom + 20 }]} onPress={() => setEditor({ kind: 'create_root' })}>
+      <Pressable accessibilityRole="button" style={[styles.fab, { bottom: insets.bottom + 20 }]} onPress={() => setEditor({ kind: 'create_root' })}>
         <Ionicons name="add" size={26} color={colors.textInverse} />
         <Text style={styles.fabText}>Agregar nodo raiz</Text>
       </Pressable>
@@ -424,7 +425,7 @@ function NodeBranch({
         {node.depth > 0 ? <View style={[styles.guide, { left: indent - 6 }]} /> : null}
 
         {/* Toggle / spacer */}
-        <Pressable
+        <Pressable accessibilityRole="button" accessibilityLabel={a11y(isOpen ? 'contraer' : 'expandir')} accessibilityState={{ expanded: isOpen, disabled: !hasChildren }}
           onPress={() => hasChildren && onToggle(node.id)}
           hitSlop={6}
           style={styles.toggleBtn}
@@ -447,7 +448,7 @@ function NodeBranch({
         </View>
 
         {/* Label */}
-        <Pressable
+        <Pressable accessibilityRole="button"
           style={{ flex: 1, paddingVertical: 6 }}
           onPress={() => hasChildren ? onToggle(node.id) : onEdit(node)}
           onLongPress={() => onEdit(node)}
@@ -482,10 +483,10 @@ function NodeBranch({
         </Pressable>
 
         {/* Quick actions */}
-        <Pressable onPress={() => onAddChild(node)} hitSlop={6} style={styles.actionBtn}>
+        <Pressable accessibilityRole="button" accessibilityLabel={a11y('agregar')} onPress={() => onAddChild(node)} hitSlop={6} style={styles.actionBtn}>
           <Ionicons name="add-circle-outline" size={20} color={colors.primary} />
         </Pressable>
-        <Pressable onPress={() => setMenuOpen((o) => !o)} hitSlop={6} style={styles.actionBtn}>
+        <Pressable accessibilityRole="button" accessibilityLabel={a11y('masOpciones')} onPress={() => setMenuOpen((o) => !o)} hitSlop={6} style={styles.actionBtn}>
           <Ionicons name="ellipsis-vertical" size={18} color={colors.textBody} />
         </Pressable>
       </View>
@@ -493,16 +494,16 @@ function NodeBranch({
       {/* Inline action menu */}
       {menuOpen ? (
         <View style={[styles.menu, { marginLeft: indent + 36 }]}>
-          <Pressable style={styles.menuItem} onPress={() => { setMenuOpen(false); onEdit(node); }}>
+          <Pressable accessibilityRole="button" style={styles.menuItem} onPress={() => { setMenuOpen(false); onEdit(node); }}>
             <Ionicons name="create-outline" size={16} color={colors.textBody} />
             <Text style={styles.menuText}>Editar</Text>
           </Pressable>
-          <Pressable style={styles.menuItem} onPress={() => { setMenuOpen(false); onAddChild(node); }}>
+          <Pressable accessibilityRole="button" style={styles.menuItem} onPress={() => { setMenuOpen(false); onAddChild(node); }}>
             <Ionicons name="git-branch-outline" size={16} color={colors.textBody} />
             <Text style={styles.menuText}>Agregar nodo hijo</Text>
           </Pressable>
           {node.metadata && Object.keys(node.metadata).length > 0 ? (
-            <Pressable
+            <Pressable accessibilityRole="button"
               style={styles.menuItem}
               onPress={() => {
                 setMenuOpen(false);
@@ -515,7 +516,7 @@ function NodeBranch({
               <Text style={styles.menuText}>Ver metadatos ({Object.keys(node.metadata).length})</Text>
             </Pressable>
           ) : null}
-          <Pressable style={[styles.menuItem, styles.menuDanger]} onPress={() => { setMenuOpen(false); onDelete(node); }}>
+          <Pressable accessibilityRole="button" style={[styles.menuItem, styles.menuDanger]} onPress={() => { setMenuOpen(false); onDelete(node); }}>
             <Ionicons name="trash-outline" size={16} color={colors.error} />
             <Text style={[styles.menuText, { color: colors.error }]}>Eliminar</Text>
           </Pressable>
@@ -771,7 +772,7 @@ function NodeEditorModal({
           <View style={[styles.modalCard, { paddingBottom: insets.bottom + spacing.md }]}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle} numberOfLines={1}>{title}</Text>
-              <Pressable onPress={onClose} hitSlop={8}><Ionicons name="close" size={24} color={colors.text} /></Pressable>
+              <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} onPress={onClose} hitSlop={8}><Ionicons name="close" size={24} color={colors.text} /></Pressable>
             </View>
 
             <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ gap: spacing.md, paddingTop: spacing.sm }}>
@@ -804,7 +805,7 @@ function NodeEditorModal({
                         { key: 'Con acceso', label: 'Con acceso', icon: 'checkmark-circle-outline' },
                         { key: 'Sin acceso', label: 'Sin acceso', icon: 'close-circle-outline' },
                       ] as const).map((opt) => (
-                        <Pressable
+                        <Pressable accessibilityRole="button"
                           key={opt.label}
                           onPress={() => setAccesoPredio(opt.key)}
                           style={[styles.mOption, accesoPredio === opt.key && styles.mOptionOn]}
@@ -925,7 +926,7 @@ function NodeEditorModal({
                 </View>
               )}
 
-              <Pressable
+              <Pressable accessibilityRole="button"
                 onPress={() => setIsLeaf((v) => !v)}
                 style={[styles.leafToggle, isLeaf && styles.leafToggleOn]}
               >
@@ -952,7 +953,7 @@ function NodeEditorModal({
                   <Text style={styles.label}>Tipo de medicion</Text>
                   <View style={{ gap: 8 }}>
                     {(Object.keys(MEASUREMENT_LABELS) as MeasurementType[]).map((k) => (
-                      <Pressable
+                      <Pressable accessibilityRole="button"
                         key={k}
                         onPress={() => setMtype(k)}
                         style={[styles.mOption, mtype === k && styles.mOptionOn]}
