@@ -1071,6 +1071,34 @@ export interface Concepto {
   fecha_fin?: string | null; // "YYYY-MM-DD"
   /** precio_unitario_dinamico = importe_total_editable / meta_cantidad, calculado por el servidor — null si el concepto no tiene datos EVM. */
   precio_unitario_dinamico?: string | null;
+  // ---- A-02: volumen excedente y conceptos extraordinarios ------------------
+  /** Trabajo que no está en el catálogo contratado. */
+  extraordinario?: boolean;
+  /** Estatus del P.U. de un extraordinario (null en conceptos normales). */
+  pu_estatus?: EstatusAutorizacion | null;
+  /** Ejecutado por encima de lo contratado (en modo porcentaje: puntos sobre 100). */
+  cantidad_excedente?: string;
+  importe_excedente?: string;
+  estatus_excedente?: EstatusAutorizacion | null;
+}
+
+export type EstatusAutorizacion = 'pendiente_autorizacion' | 'autorizado' | 'rechazado';
+
+export interface Excedente {
+  concepto_id: string;
+  clave: string;
+  descripcion: string;
+  unidad: string;
+  extraordinario: boolean;
+  cantidad_contratada: string;
+  cantidad_ejecutada: string;
+  cantidad_excedente: string;
+  importe_excedente: string;
+  estatus: EstatusAutorizacion;
+  referencia?: string | null;
+  comentario?: string | null;
+  autorizado_por_nombre?: string | null;
+  actualizado_en?: string | null;
 }
 
 export interface ConceptoSearchResult extends Concepto {
@@ -1161,6 +1189,9 @@ export interface RegistroAvance {
   // null solo para avances capturados ANTES de esta etapa. ---------------
   precio_unitario_congelado?: string | null;
   importe_ganado_congelado?: string | null;
+  /** A-01: `normal` (incremento > 0) o `ajuste` (corrección con signo y motivo obligatorio). */
+  tipo?: 'normal' | 'ajuste';
+  motivo?: string | null;
   /** true si `fecha` cayó fuera de [concepto.fecha_inicio, concepto.fecha_fin] al momento de capturar — nunca bloquea, solo se muestra en la Lista por Excepción. */
   fuera_de_ventana?: boolean;
 }
@@ -1371,13 +1402,27 @@ export interface AnalisisPeriodo {
   end: string;
   /** Valor Planeado (PV) — string decimal exacto, ver src/utils/money.ts. */
   pv: string;
-  /** Valor Ganado (EV). */
+  /** Valor Ganado TOTAL (alias de ev_total; se conserva por compatibilidad). */
   ev: string;
+  /** EV contractual: topado al volumen contratado. */
+  ev_contractual?: string;
+  /** EV total: incluye el volumen excedente. */
+  ev_total?: string;
+  /** Presupuesto contratado (BAC). */
+  bac?: string;
+  ev_acumulado?: string;
+  ac_acumulado?: string;
+  /** Estimado al terminar = BAC / CPI. null mientras no haya gasto real. */
+  eac?: string | null;
+  /** Por gastar = EAC - AC. */
+  etc?: string | null;
+  /** Variación al terminar = BAC - EAC (negativo = sobrecosto proyectado). */
+  vac?: string | null;
   /** Costo Real (AC), desde gastos_reales. */
   ac: string;
-  /** SPI = EV/PV — null si PV es 0 (nada planeado en la ventana). */
+  /** SPI = EV contractual / PV — null si PV es 0 (nada planeado en la ventana). */
   spi: string | null;
-  /** CPI = EV/AC — null si AC es 0 (nada de gasto real capturado). */
+  /** CPI = EV total / AC — null si AC es 0 (nada de gasto real capturado). */
   cpi: string | null;
   variacion_cronograma: string;
   variacion_costo: string;
@@ -1394,8 +1439,12 @@ export interface ExcepcionEvm {
   concepto_id: string;
   clave: string;
   descripcion: string;
-  tipo: 'fuera_de_ventana' | 'sobre_meta' | 'atrasado';
+  tipo: 'fuera_de_ventana' | 'sobre_meta' | 'atrasado' | 'excedente_volumen' | 'sobrecosto';
   detalle: string;
+  /** Los excedentes y el sobrecosto son informativos: nunca bloquean nada. */
+  severidad?: 'alerta' | 'informativa';
+  cantidad?: string | null;
+  importe?: string | null;
 }
 
 export interface ActividadEvm {
@@ -2458,6 +2507,7 @@ export const api = {
   createConcepto: (payload: {
     partida_id: string; clave: string; descripcion: string; unidad: string;
     cantidad: string; precio_unitario: string; meta: string; periodicidad_meta: 'SEMANAL' | 'MENSUAL';
+    extraordinario?: boolean;
   }) => request<Concepto>('POST', '/conceptos', payload),
   updateConcepto: (id: string, payload: Partial<{
     clave: string; descripcion: string; unidad: string; cantidad: string;
@@ -2726,6 +2776,7 @@ export const api = {
   createAvance: async (payload: {
     concepto_id: string; fecha: string; cantidad_ejecutada: string;
     nodo_id?: string; reporte_id?: string; fotos?: string[]; photo_captions?: string[]; client_id?: string;
+    tipo?: 'normal' | 'ajuste'; motivo?: string;
   }): Promise<RegistroAvance> => {
     const finalPayload = { ...payload, client_id: payload.client_id || generateAvanceClientId() };
     const localEcho = (createdAt: string): RegistroAvance => ({
@@ -2741,6 +2792,8 @@ export const api = {
       capturado_por: '',
       creado_en: createdAt,
       sincronizado: false,
+      tipo: finalPayload.tipo ?? 'normal',
+      motivo: finalPayload.motivo ?? null,
     });
 
     if (!(await isAvanceLikelyOnline())) {
@@ -2786,6 +2839,11 @@ export const api = {
     request<CurvaS>('GET', `/projects/${pid}/analisis_periodo/curva_s`),
   analisisPeriodoPresupuestoTotal: (pid: string) =>
     request<{ project_id: string; presupuesto_total: string }>('GET', `/projects/${pid}/analisis_periodo/presupuesto_total`),
+  listExcedentes: (pid: string) => request<Excedente[]>('GET', `/projects/${pid}/excedentes`),
+  setExcedenteEstatus: (pid: string, conceptoId: string, body: { estatus: EstatusAutorizacion; referencia?: string; comentario?: string }) =>
+    request<Excedente>('PATCH', `/projects/${pid}/excedentes/${conceptoId}`, body),
+  setPuExtraordinario: (conceptoId: string, body: { pu_estatus: EstatusAutorizacion; referencia?: string; precio_unitario?: string }) =>
+    request<Concepto>('PATCH', `/conceptos/${conceptoId}/pu_estatus`, body),
   analisisPeriodoExcepciones: (pid: string) =>
     request<ExcepcionEvm[]>('GET', `/projects/${pid}/analisis_periodo/excepciones`),
   analisisPeriodoActividades: (pid: string) =>

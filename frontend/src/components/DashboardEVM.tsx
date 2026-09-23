@@ -28,7 +28,8 @@ import { confirm } from '@/src/utils/confirm';
 import { formatMoney, isValidDecimalInput } from '@/src/utils/money';
 import { downloadBlob } from '@/src/utils/downloadBlob';
 import { dayjs, CDMX_TZ } from '@/src/utils/tz';
-import { a11y } from '@/src/i18n';
+import { a11y, t } from '@/src/i18n';
+import { ExcedentesSection } from '@/src/components/ExcedentesSection';
 
 const FECHA_ISO_RE = /^\d{4}-\d{2}-\d{2}$/;
 type TabActividades = 'pendientes' | 'actuales' | 'por_venir';
@@ -221,6 +222,9 @@ const EXCEPCION_META: Record<ExcepcionEvm['tipo'], { icon: keyof typeof Ionicons
   fuera_de_ventana: { icon: 'time-outline', color: colors.warning },
   sobre_meta: { icon: 'trending-up-outline', color: colors.error },
   atrasado: { icon: 'alert-circle-outline', color: colors.error },
+  // A-02: informativas (nunca bloquean): se permiten y se hacen visibles.
+  excedente_volumen: { icon: 'layers-outline', color: colors.warning },
+  sobrecosto: { icon: 'cash-outline', color: colors.warning },
 };
 
 function ExcepcionRow({ item }: { item: ExcepcionEvm }) {
@@ -231,6 +235,7 @@ function ExcepcionRow({ item }: { item: ExcepcionEvm }) {
       <View style={{ flex: 1 }}>
         <Text style={styles.excepcionClave}>{item.clave} · {item.descripcion}</Text>
         <Text style={styles.excepcionDetalle}>{item.detalle}</Text>
+        {item.severidad === 'informativa' ? <Text style={styles.excepcionInfo}>{t('excedentes.informativa')}</Text> : null}
       </View>
     </View>
   );
@@ -566,8 +571,46 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
 
             <View style={styles.pvEvAcRow}>
               <Text style={styles.pvEvAcTxt}>PV {formatMoney(analisis.pv)}</Text>
-              <Text style={styles.pvEvAcTxt}>EV {formatMoney(analisis.ev)}</Text>
               <Text style={styles.pvEvAcTxt}>AC {formatMoney(analisis.ac)}</Text>
+            </View>
+            {/* A-02: dos cifras de valor ganado, claramente etiquetadas. El excedente
+                no cuenta en la contractual pero sí en la total. */}
+            <View style={styles.evDosRow}>
+              <View style={styles.evDosCard}>
+                <Text style={styles.evDosLabel}>{t('evm.evContractual')}</Text>
+                <Text style={styles.evDosValor}>{formatMoney(analisis.ev_contractual ?? analisis.ev)}</Text>
+                <Text style={styles.evDosSub}>{t('evm.evContractualAyuda')}</Text>
+              </View>
+              <View style={styles.evDosCard}>
+                <Text style={styles.evDosLabel}>{t('evm.evTotal')}</Text>
+                <Text style={styles.evDosValor}>{formatMoney(analisis.ev_total ?? analisis.ev)}</Text>
+                <Text style={styles.evDosSub}>{t('evm.evTotalAyuda')}</Text>
+              </View>
+            </View>
+
+            <Text style={styles.seccionTitulo}>{t('evm.pronostico')}</Text>
+            <View style={styles.kpiRow}>
+              <KpiCard label={t('evm.bac')} valor={formatMoney(analisis.bac ?? '0')} sub={t('evm.bacAyuda')} color={colors.textMuted} />
+              <KpiCard
+                label={t('evm.eac')}
+                valor={analisis.eac != null ? formatMoney(analisis.eac) : '—'}
+                sub={analisis.eac == null ? t('evm.sinGasto') : t('evm.eacAyuda')}
+                color={colors.textMuted}
+              />
+            </View>
+            <View style={styles.kpiRow}>
+              <KpiCard
+                label={t('evm.etc')}
+                valor={analisis.etc != null ? formatMoney(analisis.etc) : '—'}
+                sub={analisis.etc == null ? t('evm.sinGasto') : t('evm.etcAyuda')}
+                color={colors.textMuted}
+              />
+              <KpiCard
+                label={t('evm.vac')}
+                valor={analisis.vac != null ? formatMoney(analisis.vac) : '—'}
+                sub={analisis.vac == null ? t('evm.sinGasto') : Number(analisis.vac) < 0 ? t('evm.vacSobrecosto') : t('evm.vacAhorro')}
+                color={analisis.vac == null ? colors.textMuted : Number(analisis.vac) >= 0 ? colors.success : colors.error}
+              />
             </View>
           </>
         ) : null}
@@ -639,9 +682,12 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
           </Text>
         ) : null}
 
+        <Text style={styles.seccionTitulo}>{t('excedentes.titulo')}</Text>
+        <ExcedentesSection projectId={projectId} onChanged={() => cargar(rango, curva)} />
+
         <Text style={styles.seccionTitulo}>Lista por excepción ({excepciones.length})</Text>
         {excepciones.length === 0 ? (
-          <Text style={styles.sinExcepciones}>Sin anomalías: ningún avance fuera de ventana, concepto sobre meta, ni actividad atrasada.</Text>
+          <Text style={styles.sinExcepciones}>Sin anomalías: ningún avance fuera de ventana, excedente de volumen, sobrecosto ni actividad atrasada.</Text>
         ) : (
           <FlatList
             data={excepciones}
@@ -802,6 +848,15 @@ const styles = StyleSheet.create({
   },
   excepcionClave: { fontSize: 13, fontWeight: '700', color: colors.text },
   excepcionDetalle: { fontSize: 12, color: colors.textMuted, marginTop: 2 },
+  excepcionInfo: { fontSize: 10, fontWeight: '800', color: colors.primary, marginTop: 2, textTransform: 'uppercase' },
+  evDosRow: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm },
+  evDosCard: {
+    flex: 1, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border,
+    padding: spacing.sm, gap: 2,
+  },
+  evDosLabel: { fontSize: 10, fontWeight: '800', color: colors.textMuted, textTransform: 'uppercase' },
+  evDosValor: { fontSize: 16, fontWeight: '800', color: colors.text },
+  evDosSub: { fontSize: 10, color: colors.textMuted },
   seccionHeaderRow: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     marginTop: spacing.md, marginBottom: 8,

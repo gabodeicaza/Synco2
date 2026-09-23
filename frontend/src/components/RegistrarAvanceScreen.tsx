@@ -16,11 +16,16 @@ import { colors, radius, shadow, spacing } from '@/src/theme';
 import { APP_BRAND } from '@/src/utils/roles';
 import { UNIDAD_LABELS, Unidad } from '@/src/utils/unidades';
 import { nombreConcepto } from '@/src/utils/nombresNivel';
-import { decimalStringToCents, formatCantidad, isValidDecimalInput, pctDeDecimales } from '@/src/utils/money';
-import { dayjs, CDMX_TZ } from '@/src/utils/tz';
-import { esPorcentajeValido, esRetrocesoLocal } from '@/src/utils/avancePorcentaje';
+import { centsToDecimalString, decimalStringToCents, formatCantidad, pctDeDecimales } from '@/src/utils/money';
+import { esRetrocesoLocal } from '@/src/utils/avancePorcentaje';
+import { InlineError } from '@/src/components/InlineError';
+import { showToast } from '@/src/utils/toast';
+import { esErrorDeRed } from '@/src/utils/errores';
+import {
+  ErroresAvance, TipoAvance, excedenteAlCapturar, excedentePorcentajeAlCapturar, hayErrores, validarAvance,
+} from '@/src/utils/validacionAvance';
 import { requestMediaLibraryPermission } from '@/src/utils/permissions';
-import { a11y } from '@/src/i18n';
+import { a11y, t } from '@/src/i18n';
 import { fmtFecha, hoyProyecto } from '@/src/utils/fechas';
 
 export default function RegistrarAvanceScreen({ projectId }: { projectId: string }) {
@@ -32,12 +37,15 @@ export default function RegistrarAvanceScreen({ projectId }: { projectId: string
   const [searching, setSearching] = useState(false);
   const [selected, setSelected] = useState<Concepto | null>(null);
 
-  // [FIX] `dayjs()` sin `.tz()` usa la zona horaria del dispositivo, no
-  // CDMX -- si alguien capturaba avance de noche en un dispositivo en otra
-  // zona horaria, la fecha guardada podía quedar corrida un día respecto al
-  // día calendario CDMX real (mismo bug de raíz que RangoFechasPicker).
-  const [fecha] = useState(dayjs().tz(CDMX_TZ).format('YYYY-MM-DD'));
+  // La fecha de la captura es el "hoy" de la zona del PROYECTO (no la del
+  // dispositivo ni UTC) y se calcula al enviar, así sigue correcta si la
+  // pantalla queda abierta pasada la medianoche.
   const [cantidad, setCantidad] = useState('');
+  // A-01: "avance" (incremento > 0) o "ajuste" (corrección con signo y motivo).
+  const [tipo, setTipo] = useState<TipoAvance>('normal');
+  const [motivo, setMotivo] = useState('');
+  const [errores, setErrores] = useState<ErroresAvance>({});
+  const [errorGeneral, setErrorGeneral] = useState<string | null>(null);
   const [foto, setFoto] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -87,51 +95,72 @@ export default function RegistrarAvanceScreen({ projectId }: { projectId: string
 
   const esPorcentaje = project?.modo_avance === 'PORCENTAJE';
 
+  function limpiarFormulario() {
+    setSelected(null);
+    setCantidad('');
+    setMotivo('');
+    setTipo('normal');
+    setFoto(null);
+    setSelectedNodo(null);
+    setQuery('');
+    setResults([]);
+    setErrores({});
+    setErrorGeneral(null);
+  }
+
   async function submit() {
-    if (!selected) return;
-    if (esPorcentaje) {
-      if (!esPorcentajeValido(cantidad)) {
-        Alert.alert('Porcentaje inválido', 'Ingresa un valor entre 0 y 100, con hasta 2 decimales.');
-        return;
-      }
-    } else if (!isValidDecimalInput(cantidad)) {
-      Alert.alert('Cantidad inválida', 'Ingresa un número con hasta 2 decimales.');
-      return;
-    }
+    if (!selected || saving) return;
+    const fecha = hoyProyecto(project);
+    const e = validarAvance({ cantidad, tipo, motivo, fecha, hoy: hoyProyecto(project), esPorcentaje });
+    setErrores(e);
+    setErrorGeneral(null);
+    if (hayErrores(e)) return;
     try {
       setSaving(true);
       const res = await api.createAvance({
         concepto_id: selected.id,
         fecha,
-        cantidad_ejecutada: cantidad,
+        cantidad_ejecutada: cantidad.trim(),
         fotos: foto ? [foto] : [],
         nodo_id: selectedNodo?.id,
+        tipo,
+        motivo: tipo === 'ajuste' ? motivo.trim() : undefined,
       });
       const resumen = esPorcentaje
         ? `${selected.clave} · va al ${formatCantidad(cantidad)}%`
         : `${selected.clave} · ${formatCantidad(cantidad)} ${selected.unidad}`;
       if (res.es_retroceso) {
         // Un retroceso se permite (nunca se rechaza) pero nunca se guarda
-        // como si nada — el aviso es distinto del de éxito normal.
-        Alert.alert(
-          'Avance registrado — es un retroceso',
-          `${resumen}\n\nEste valor es menor que el porcentaje anterior registrado. Se guardó de todas formas y quedó marcado para revisión.`,
-        );
+        // como si nada: el aviso es distinto del de éxito normal.
+        showToast(`${t('avance.retrocesoTitulo')}. ${resumen}. ${t('avance.retrocesoDetalle')}`);
       } else {
-        Alert.alert('Avance registrado', resumen);
+        showToast(`${tipo === 'ajuste' ? t('avance.ajusteRegistrado') : t('avance.registrado')}: ${resumen}`);
       }
-      setSelected(null);
-      setCantidad('');
-      setFoto(null);
-      setSelectedNodo(null);
-      setQuery('');
-      setResults([]);
-    } catch (e: any) {
-      Alert.alert('No se pudo registrar', e?.message || 'Intentalo nuevamente.');
+      limpiarFormulario();
+    } catch (err: any) {
+      if (esErrorDeRed(err)) showToast(t('red.errorDeRed'));
+      else setErrorGeneral(err?.message || t('avance.noSePudoRegistrar'));
     } finally {
       setSaving(false);
     }
   }
+
+  // Aviso informativo (nunca bloquea): la captura pasa de lo contratado.
+  const avisoExcedente = (() => {
+    if (!selected || !cantidad || tipo === 'ajuste') return null;
+    if (esPorcentaje) {
+      const r = excedentePorcentajeAlCapturar(cantidad);
+      return r.excede ? t('avance.excedePorcentaje', { excedente: formatCantidad(r.excedente) }) : null;
+    }
+    const r = excedenteAlCapturar(selected.cantidad_ejecutada_acumulada, cantidad, selected.cantidad);
+    if (!r.excede) return null;
+    return t('avance.excedeVolumen', {
+      ejecutado: formatCantidad(centsToDecimalString(decimalStringToCents(selected.cantidad_ejecutada_acumulada) + decimalStringToCents(cantidad))),
+      contratado: formatCantidad(selected.cantidad),
+      unidad: selected.unidad,
+      excedente: formatCantidad(r.excedente),
+    });
+  })();
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
@@ -209,6 +238,25 @@ export default function RegistrarAvanceScreen({ projectId }: { projectId: string
               );
             })()}
 
+            {!esPorcentaje ? (
+              <View style={styles.modeRow} accessibilityRole="tablist">
+                {(['normal', 'ajuste'] as TipoAvance[]).map((m) => (
+                  <Pressable
+                    key={m}
+                    accessibilityRole="tab"
+                    accessibilityState={{ selected: tipo === m }}
+                    onPress={() => { setTipo(m); setErrores({}); setErrorGeneral(null); }}
+                    style={[styles.modeChip, tipo === m && styles.modeChipOn]}
+                  >
+                    <Text style={[styles.modeChipTxt, tipo === m && styles.modeChipTxtOn]}>
+                      {m === 'normal' ? t('avance.modoAvance') : t('avance.modoAjuste')}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            ) : null}
+            {tipo === 'ajuste' ? <Text style={styles.ayudaTxt}>{t('avance.ajusteAyuda')}</Text> : null}
+
             {esPorcentaje ? (
               <>
                 <View style={styles.pctLabelRow}>
@@ -223,16 +271,39 @@ export default function RegistrarAvanceScreen({ projectId }: { projectId: string
                     obra existe) pero se avisa al confirmar, ver submit(). */}
               </>
             ) : (
-              <Text style={styles.fieldLabel}>Cantidad ejecutada hoy ({selected.unidad})</Text>
+              <Text style={styles.fieldLabel}>
+                {tipo === 'ajuste' ? t('avance.cantidadAjuste', { unidad: selected.unidad }) : `Cantidad ejecutada hoy (${selected.unidad})`}
+              </Text>
             )}
             <TextInput
               value={cantidad}
-              onChangeText={setCantidad}
-              placeholder={esPorcentaje ? '0-100' : '0.00'}
-              keyboardType="decimal-pad"
-              style={styles.qtyInput}
+              onChangeText={(v) => { setCantidad(v); if (errores.cantidad) setErrores((x) => ({ ...x, cantidad: undefined })); }}
+              placeholder={esPorcentaje ? '0.00' : tipo === 'ajuste' ? '-0.00' : '0.00'}
+              keyboardType={tipo === 'ajuste' ? 'numbers-and-punctuation' : 'decimal-pad'}
+              style={[styles.qtyInput, errores.cantidad ? styles.inputConError : null]}
               autoFocus
+              editable={!saving}
+              accessibilityLabel={esPorcentaje ? 'Porcentaje al que va el concepto' : 'Cantidad ejecutada'}
             />
+            <InlineError message={errores.cantidad} />
+            {avisoExcedente ? <Text style={styles.avisoExcedente}>{avisoExcedente}</Text> : null}
+            {tipo === 'ajuste' ? (
+              <>
+                <Text style={styles.fieldLabel}>{t('avance.motivo')}</Text>
+                <TextInput
+                  value={motivo}
+                  onChangeText={(v) => { setMotivo(v); if (errores.motivo) setErrores((x) => ({ ...x, motivo: undefined })); }}
+                  placeholder={t('avance.motivoPlaceholder')}
+                  placeholderTextColor={colors.textMuted}
+                  style={[styles.motivoInput, errores.motivo ? styles.inputConError : null]}
+                  multiline
+                  editable={!saving}
+                  accessibilityLabel={t('avance.motivo')}
+                />
+                <InlineError message={errores.motivo} />
+              </>
+            ) : null}
+            <InlineError message={errores.fecha} />
             {esPorcentaje && cantidad && esRetrocesoLocal(cantidad, selected.cantidad_ejecutada_acumulada) ? (
               <Text style={styles.pctRetrocesoTxt}>
                 Este valor es menor que el {formatCantidad(selected.cantidad_ejecutada_acumulada)}% anterior — se permite, pero se marcará como retroceso.
@@ -264,11 +335,13 @@ export default function RegistrarAvanceScreen({ projectId }: { projectId: string
             </Pressable>
             {foto ? <Image source={{ uri: foto }} style={styles.photoPreview} /> : null}
 
+            <InlineError message={errorGeneral} />
+
             <Pressable accessibilityRole="button" style={[styles.submitBtn, (!cantidad || saving) && { opacity: 0.5 }]} onPress={submit} disabled={!cantidad || saving}>
               {saving ? <ActivityIndicator color="#fff" /> : (
                 <>
                   <Ionicons name="checkmark-circle-outline" size={18} color="#fff" />
-                  <Text style={styles.submitBtnTxt}>Registrar avance</Text>
+                  <Text style={styles.submitBtnTxt}>{tipo === 'ajuste' ? 'Registrar ajuste' : 'Registrar avance'}</Text>
                 </>
               )}
             </Pressable>
@@ -375,6 +448,24 @@ const styles = StyleSheet.create({
   pctLabelRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 8 },
   pctAnteriorTxt: { fontSize: 12, fontWeight: '700', color: colors.textMuted },
   pctRetrocesoTxt: { fontSize: 11, color: colors.warning, fontWeight: '600', marginTop: 4 },
+  modeRow: { flexDirection: 'row', gap: 8, marginTop: 8 },
+  modeChip: {
+    flex: 1, minHeight: 44, alignItems: 'center', justifyContent: 'center', borderRadius: radius.md,
+    borderWidth: 1, borderColor: colors.border, backgroundColor: colors.bg,
+  },
+  modeChipOn: { backgroundColor: colors.primary, borderColor: colors.primary },
+  modeChipTxt: { fontSize: 13, fontWeight: '700', color: colors.textBody },
+  modeChipTxtOn: { color: colors.textInverse },
+  ayudaTxt: { fontSize: 11, color: colors.textMuted, marginTop: 4 },
+  inputConError: { borderColor: colors.error },
+  avisoExcedente: {
+    fontSize: 12, color: colors.textBody, backgroundColor: colors.warningBg, borderRadius: radius.md,
+    padding: 10, fontWeight: '600', marginTop: 6,
+  },
+  motivoInput: {
+    borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, paddingHorizontal: 12, paddingVertical: 10,
+    fontSize: 14, color: colors.text, backgroundColor: colors.bg, minHeight: 64, textAlignVertical: 'top',
+  },
 
   nodoBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 8, borderWidth: 1, borderColor: colors.border,

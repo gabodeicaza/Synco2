@@ -7,6 +7,7 @@ import { View, Text, StyleSheet, ScrollView } from 'react-native';
 import { colors, radius, spacing } from '@/src/theme';
 import { formatMoney } from '@/src/utils/money';
 import type { AnalisisPeriodo } from '@/src/api';
+import { t } from '@/src/i18n';
 
 function Kpi({ label, value, tone }: { label: string; value: string; tone?: string }) {
   return (
@@ -37,14 +38,22 @@ export function SlideFinanciero({
     <ScrollView style={styles.wrap} contentContainerStyle={styles.scroll}>
       <Text style={[styles.header, { color: colorTema }]}>FINANCIERO</Text>
       <View style={styles.grid}>
-        <Kpi label="Presupuesto total" value={presupuestoTotal ? formatMoney(presupuestoTotal) : '—'} />
+        <Kpi label={t('evm.bac')} value={presupuestoTotal ? formatMoney(presupuestoTotal) : '—'} />
         <Kpi label="Valor Planeado (PV)" value={formatMoney(analisis.pv)} />
-        <Kpi label="Valor Ganado (EV)" value={formatMoney(analisis.ev)} />
+        <Kpi label={t('evm.evContractual')} value={formatMoney(analisis.ev_contractual ?? analisis.ev)} />
+        <Kpi label={t('evm.evTotal')} value={formatMoney(analisis.ev_total ?? analisis.ev)} />
         <Kpi label="Costo Real (AC)" value={formatMoney(analisis.ac)} />
         <Kpi label="SPI" value={spi != null ? spi.toFixed(2) : '—'} tone={spi != null ? (spi >= 1 ? colors.success : colors.error) : undefined} />
         <Kpi label="CPI" value={cpi != null ? cpi.toFixed(2) : '—'} tone={cpi != null ? (cpi >= 1 ? colors.success : colors.error) : undefined} />
         <Kpi label="Variación cronograma" value={formatMoney(analisis.variacion_cronograma)} />
         <Kpi label="Variación costo" value={formatMoney(analisis.variacion_costo)} />
+        <Kpi label={t('evm.eac')} value={analisis.eac != null ? formatMoney(analisis.eac) : '—'} />
+        <Kpi label={t('evm.etc')} value={analisis.etc != null ? formatMoney(analisis.etc) : '—'} />
+        <Kpi
+          label={t('evm.vac')}
+          value={analisis.vac != null ? formatMoney(analisis.vac) : '—'}
+          tone={analisis.vac != null ? (Number(analisis.vac) >= 0 ? colors.success : colors.error) : undefined}
+        />
       </View>
     </ScrollView>
   );
