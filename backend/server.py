@@ -20628,6 +20628,19 @@ async def analisis_periodo_excepciones(pid: str, user: dict = Depends(current_us
                     tipo="atrasado",
                     detalle=f"Debía terminar el {c['fecha_fin']} y lleva {dec_to_str(ejecutado)} de {dec_to_str(meta)} {c.get('unidad', 'UNIVERSAL')}",
                 ))
+
+    # Sin esto, el orden salía de iterar un `set` (no determinístico) y
+    # luego los conceptos en el orden que Mongo los devolviera — se veía
+    # desordenado en cada refresh. Se agrupa por tipo (atrasado primero, es
+    # el más accionable — un concepto vencido sin terminar; fuera_de_ventana
+    # al final, es solo informativo) y dentro de cada grupo por clave, con
+    # el mismo comparador numérico jerárquico que usa el resto del catálogo
+    # (ver sort_by_clave) para que "C-2" no quede después de "C-10".
+    orden_tipo = {"atrasado": 0, "sobre_meta": 1, "fuera_de_ventana": 2}
+    excepciones = sorted(
+        sort_by_clave(excepciones, clave_getter=lambda e: e.clave),
+        key=lambda e: orden_tipo[e.tipo],
+    )
     return excepciones
 
 
