@@ -1609,9 +1609,26 @@ CAMPOS_AUTORIA: List[Tuple[str, Dict[str, Any]]] = [
 ]
 
 
+# Arreglos paralelos ids/nombres (minutas.involved_*, events.attendee_*): el nombre
+# de cada persona vive en la misma posición que su id.
+ARREGLOS_PARALELOS: List[Tuple[str, str]] = [
+    ("involved_ids", "involved_names"),
+    ("attendee_ids", "attendee_names"),
+]
+
+
+def nombres_sin_usuario(ids: List[str], nombres: List[str], uid: str) -> List[str]:
+    """Copia de `nombres` con USUARIO_ELIMINADO en las posiciones donde `ids` == uid."""
+    salida = list(nombres or [])
+    for i, x in enumerate(ids or []):
+        if x == uid and i < len(salida):
+            salida[i] = USUARIO_ELIMINADO
+    return salida
+
+
 def correo_eliminado(uid: str) -> str:
     """Correo de relleno único (la colección exige `email` único) y no enviable."""
-    return f"eliminado-{uid}@eliminado.invalid"
+    return f"eliminado-{uid}@eliminado.example.com"
 
 
 def campos_usuario_anonimizado(uid: str, ahora: datetime) -> Dict[str, Any]:
@@ -1657,6 +1674,12 @@ async def anonimizar_usuario(uid: str) -> Dict[str, int]:
             for campo, valor in hermanos.items():
                 res = await col.update_many({campo_id: uid, campo: {"$exists": True}}, {"$set": {campo: valor}})
                 conteo["documentos_anonimizados"] += res.modified_count
+    # Arreglos paralelos ids/nombres (participantes de minutas y eventos).
+        for ids_f, names_f in ARREGLOS_PARALELOS:
+            for d in await col.find({ids_f: uid, names_f: {"$exists": True}}).to_list(length=10000):
+                nuevos = nombres_sin_usuario(d.get(ids_f) or [], d.get(names_f) or [], uid)
+                await col.update_one({"_id": d["_id"]}, {"$set": {names_f: nuevos}})
+                conteo["documentos_anonimizados"] += 1
     # Minutas: el responsable de cada acuerdo va dentro de un arreglo.
     res = await db.minutas.update_many(
         {"acuerdos.responsable_id": uid},

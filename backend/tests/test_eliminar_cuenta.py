@@ -39,6 +39,8 @@ class FakeDb:
             c.update_many = AsyncMock(return_value=res)
             c.delete_many = AsyncMock(return_value=res)
             c.find_one = AsyncMock(return_value=None)
+            c.find = MagicMock(return_value=MagicMock(to_list=AsyncMock(return_value=[])))
+            c.update_one = AsyncMock()
             self._cols[nombre] = c
         return self._cols[nombre]
 
@@ -63,7 +65,7 @@ def test_campos_usuario_anonimizado_quita_datos_personales():
     ahora = datetime.now(timezone.utc)
     campos = server.campos_usuario_anonimizado("u1", ahora)
     assert campos["name"] == server.USUARIO_ELIMINADO == "Usuario eliminado"
-    assert campos["email"] == "eliminado-u1@eliminado.invalid"
+    assert campos["email"] == "eliminado-u1@eliminado.example.com"
     assert campos["expo_push_tokens"] == [] and campos["project_ids"] == []
     assert campos["deleted_at"] == ahora
     assert server.verify_pw("cualquiera", campos["password"]) is False
@@ -90,7 +92,7 @@ def test_anonimizar_conserva_registros_y_cambia_solo_el_nombre():
     args = db.users.update_one.call_args.args
     assert args[0] == {"id": "u1"}
     assert args[1]["$set"]["name"] == "Usuario eliminado"
-    assert args[1]["$set"]["email"] == "eliminado-u1@eliminado.invalid"
+    assert args[1]["$set"]["email"] == "eliminado-u1@eliminado.example.com"
 
 
 def test_anonimizar_no_recorre_users_ni_solicitudes():
@@ -107,7 +109,7 @@ def test_invitaciones_pendientes_quedan_revocadas():
     revoca = [c for c in llamadas if c.args[1] == {"$set": {"status": "revoked"}}]
     assert revoca and revoca[0].args[0]["status"] == "pending"
     quita_pii = [c for c in llamadas if "phone" in c.args[1]["$set"]]
-    assert quita_pii[0].args[1]["$set"]["email"] == "eliminado-u1@eliminado.invalid"
+    assert quita_pii[0].args[1]["$set"]["email"] == "eliminado-u1@eliminado.example.com"
 
 
 def test_usuario_inexistente_da_404():
@@ -150,3 +152,26 @@ def test_paginas_legales_publicas_en_espanol_con_acentos():
     assert "/api/public/deletion_request" in server.DELETE_ACCOUNT_HTML
     for html in (server.PRIVACY_POLICY_HTML, server.TERMS_HTML, server.DELETE_ACCOUNT_HTML):
         assert "SynCo" not in html and "{{" not in html
+
+
+def test_correo_de_relleno_pasa_la_validacion_de_correo():
+    """Las invitaciones se serializan con EmailStr: un correo de relleno que
+    Pydantic rechace (p. ej. dominios .invalid) rompería el listado de invitaciones."""
+    from pydantic import EmailStr, TypeAdapter
+
+    assert TypeAdapter(EmailStr).validate_python(server.correo_eliminado("3f2a-uuid"))
+
+
+def test_nombres_sin_usuario_reemplaza_solo_su_posicion():
+    assert server.nombres_sin_usuario(["a", "u1", "b"], ["Ana", "Luis", "Bea"], "u1") == ["Ana", "Usuario eliminado", "Bea"]
+    assert server.nombres_sin_usuario(["a"], ["Ana"], "u1") == ["Ana"]
+    assert server.nombres_sin_usuario([], [], "u1") == []
+
+
+def test_participantes_de_minutas_y_eventos_tambien_se_anonimizan():
+    db = FakeDb(["minutas"], dict(USUARIO))
+    doc = {"_id": 1, "involved_ids": ["u1", "x"], "involved_names": ["Ana", "Xavi"]}
+    db["minutas"].find = MagicMock(return_value=MagicMock(to_list=AsyncMock(return_value=[doc])))
+    _correr(db, lambda: server.anonimizar_usuario("u1"))
+    llamadas = [c.args for c in db["minutas"].update_one.call_args_list]
+    assert ({"_id": 1}, {"$set": {"involved_names": ["Usuario eliminado", "Xavi"]}}) in llamadas
