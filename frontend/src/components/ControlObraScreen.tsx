@@ -44,6 +44,7 @@ type Tab = 'postes' | 'cimentacion' | 'perforadoras';
 // según sus columnas).
 const POSTE_ID_COL_WIDTH = 88;
 const POSTE_ACT_COL_WIDTH = 60;
+const POSTE_PCT_COL_WIDTH = 64;
 
 const CYCLE: PosteEstatus[] = ['sin_iniciar', 'en_proceso', 'concluido', 'cambio_trayectoria'];
 
@@ -489,6 +490,7 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
                               {el.nombre}
                             </Text>
                           ))}
+                          <Text style={[styles.posteGroupCell, { width: POSTE_PCT_COL_WIDTH, backgroundColor: colors.border }]}>% Avance</Text>
                         </View>
                         <View style={styles.posteHeaderRow}>
                           <View style={[styles.posteIdCol, styles.posteSubHeaderCell]} />
@@ -497,30 +499,37 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
                               {c.actividad}
                             </Text>
                           ))}
+                          <View style={[styles.posteSubHeaderCell, { width: POSTE_PCT_COL_WIDTH }]} />
                         </View>
-                        {postesOf(activeIntertramo.id).map((poste) => (
-                          <View key={poste.id} style={[styles.posteRow, posteHasAlert(poste, actividadCols) && styles.posteRowAlert]}>
-                            <Text style={[styles.posteIdCell, styles.posteIdCol]} numberOfLines={1}>{poste.name}</Text>
-                            {actividadCols.map((c) => {
-                              const value = poste.estatus_actividades?.[c.key] || 'sin_iniciar';
-                              const key = `${poste.id}:${c.key}`;
-                              return (
-                                <Pressable
-                                  key={c.key}
-                                  onPress={() => cycleEstatusActividad(poste, c.key)}
-                                  disabled={!!busyKeys[key]}
-                                  style={[styles.posteCell, { width: POSTE_ACT_COL_WIDTH, backgroundColor: `${ESTATUS_COLOR[value]}22` }]}
-                                >
-                                  {busyKeys[key] ? (
-                                    <ActivityIndicator size="small" color={ESTATUS_COLOR[value]} />
-                                  ) : (
-                                    <View style={[styles.posteDot, { backgroundColor: ESTATUS_COLOR[value] }]} />
-                                  )}
-                                </Pressable>
-                              );
-                            })}
-                          </View>
-                        ))}
+                        {postesOf(activeIntertramo.id).map((poste) => {
+                          const pct = fmtPct(posteProgress(poste, actividadCols));
+                          return (
+                            <View key={poste.id} style={[styles.posteRow, posteHasAlert(poste, actividadCols) && styles.posteRowAlert]}>
+                              <Text style={[styles.posteIdCell, styles.posteIdCol]} numberOfLines={1}>{poste.name}</Text>
+                              {actividadCols.map((c) => {
+                                const value = poste.estatus_actividades?.[c.key] || 'sin_iniciar';
+                                const key = `${poste.id}:${c.key}`;
+                                return (
+                                  <Pressable
+                                    key={c.key}
+                                    onPress={() => cycleEstatusActividad(poste, c.key)}
+                                    disabled={!!busyKeys[key]}
+                                    style={[styles.posteCell, { width: POSTE_ACT_COL_WIDTH, backgroundColor: `${ESTATUS_COLOR[value]}22` }]}
+                                  >
+                                    {busyKeys[key] ? (
+                                      <ActivityIndicator size="small" color={ESTATUS_COLOR[value]} />
+                                    ) : (
+                                      <View style={[styles.posteDot, { backgroundColor: ESTATUS_COLOR[value] }]} />
+                                    )}
+                                  </Pressable>
+                                );
+                              })}
+                              <View style={[styles.posteCell, styles.postePctCell, { width: POSTE_PCT_COL_WIDTH }]}>
+                                <Text style={[styles.postePctTxt, { color: headerColor }]}>{pct}%</Text>
+                              </View>
+                            </View>
+                          );
+                        })}
                       </View>
                     </ScrollView>
                   )}
@@ -832,6 +841,8 @@ const styles = StyleSheet.create({
   posteIdCell: { fontSize: 12, fontWeight: '700', color: colors.text, textAlignVertical: 'center', paddingLeft: 8, paddingVertical: 10 },
   posteCell: { alignItems: 'center', justifyContent: 'center', paddingVertical: 10, borderLeftWidth: 1, borderLeftColor: colors.border },
   posteDot: { width: 14, height: 14, borderRadius: 7 },
+  postePctCell: { borderLeftWidth: 2, backgroundColor: colors.bg },
+  postePctTxt: { fontSize: 12.5, fontWeight: '800' },
 
   sectionLabelRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 },
   configBtn: { flexDirection: 'row', alignItems: 'center', gap: 4 },
