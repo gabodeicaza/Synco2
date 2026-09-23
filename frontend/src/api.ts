@@ -567,6 +567,9 @@ export interface Project {
   nombres_niveles_partida?: string[];
   nombre_nivel_concepto?: string;
   unidades_personalizadas?: string[];
+  // Plantilla de elementos/actividades de Poste (tab "Postes" de Control
+  // de Obra) — ver EtapaPosteElemento en server.py.
+  etapas_poste?: EtapaPosteElemento[];
   // Título visible del módulo (pantalla, PDF, nombre de archivo). No se
   // deriva — fallback "Catálogo de Conceptos" si vacío (ver nombresNivel.ts
   // para el porqué de no derivarlo).
@@ -627,12 +630,24 @@ export interface LocationNode {
   estatus_cabezal?: PosteEstatus | null;
   estatus_fuste?: PosteEstatus | null;
   estatus_poste?: PosteEstatus | null;
+  // Estatus granular por actividad de la plantilla configurable (ver
+  // EtapaPosteElemento), keyed por "Elemento::Actividad" — independiente
+  // de los 4 campos estatus_* de arriba.
+  estatus_actividades?: Record<string, PosteEstatus>;
 }
 
 // "cambio_trayectoria": 4to estado de excepción (módulo Control de Obra) —
 // el poste cambió de posición planeada y necesita revisión; cuenta como
 // "sin avance" en el % pero se resalta aparte como alerta.
 export type PosteEstatus = 'sin_iniciar' | 'en_proceso' | 'concluido' | 'cambio_trayectoria';
+
+// Plantilla configurable de elementos/actividades de Poste (Pilas/Cabezal/
+// Fuste/Poste y sus pasos de construcción) — ver server.py EtapaPosteElemento.
+// Propia de cada proyecto, editable desde el tab "Postes" de Control de Obra.
+export interface EtapaPosteElemento {
+  nombre: string;
+  actividades: string[];
+}
 
 export interface LocationNodeTree extends LocationNode {
   children: LocationNodeTree[];
@@ -1998,6 +2013,10 @@ export const api = {
   updatePosteEstatus: (nodeId: string, body: Partial<{
     estatus_pilas: PosteEstatus; estatus_cabezal: PosteEstatus; estatus_fuste: PosteEstatus; estatus_poste: PosteEstatus;
   }>) => request<LocationNode>('PATCH', `/nodes/${nodeId}/poste-estatus`, body),
+  // Estatus granular por actividad (plantilla configurable, ver
+  // EtapaPosteElemento) — actividad_key = "Elemento::Actividad".
+  updatePosteActividadEstatus: (nodeId: string, actividad_key: string, estatus: PosteEstatus) =>
+    request<LocationNode>('PATCH', `/nodes/${nodeId}/poste-actividad-estatus`, { actividad_key, estatus }),
   listCimentacionElementos: (pid: string) =>
     request<{ elementos: CimentacionElemento[] }>('GET', `/projects/${pid}/control-obra/cimentacion`),
   createCimentacionElemento: (pid: string, body: { node_id: string; elemento: string; total?: number; acumulado_total?: number; en_proceso?: number }) =>

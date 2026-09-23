@@ -264,6 +264,54 @@ class PushTokenIn(BaseModel):
     platform: Optional[str] = None  # 'ios' | 'android' | 'web' (informativo)
 
 
+class EtapaPosteElemento(BaseModel):
+    """Un 'elemento' estructural de Poste (ej. Pilas, Cabezal) y sus
+    actividades de construcción — la plantilla configurable que edita el
+    módulo Control de Obra (tab "Postes"). Es la MISMA idea que
+    `unidades_personalizadas`: una lista propia de cada proyecto, editable
+    desde ahí, en vez de un catálogo fijo en código (proyectos que no
+    construyen igual pueden tener sus propios elementos/actividades).
+
+    El estatus por poste se guarda en LocationNode.estatus_actividades,
+    keyed por "Elemento::Actividad" (ver update_poste_actividad_estatus) —
+    NO por id: si renombras un elemento o actividad aquí, los estatus ya
+    capturados con el nombre anterior quedan huérfanos (vuelven a verse
+    como "sin iniciar"). Aceptado a propósito por simplicidad — igual que
+    unidades_personalizadas, esto se configura una vez al arrancar el
+    proyecto, no se espera que cambie seguido."""
+    nombre: str
+    actividades: List[str] = Field(default_factory=list)
+
+    @field_validator("nombre")
+    @classmethod
+    def _v_nombre(cls, v):
+        v = (v or "").strip()
+        if not v:
+            raise ValueError("El nombre del elemento no puede estar vacío")
+        return v
+
+    @field_validator("actividades")
+    @classmethod
+    def _v_actividades(cls, v):
+        limpio = [a.strip() for a in (v or []) if a and a.strip()]
+        if not limpio:
+            raise ValueError("Cada elemento necesita al menos una actividad")
+        return limpio
+
+
+# Plantilla con la que arranca todo proyecto nuevo (y cualquier proyecto
+# viejo que nunca haya guardado la suya, ver _project_public/get_project) —
+# el caso Cablebús: Pilas -> Cabezal -> Fuste -> Poste, cada uno con sus
+# actividades de construcción en orden. Totalmente editable después desde
+# la herramienta de Control de Obra; esto es solo el punto de partida.
+_ETAPAS_POSTE_DEFAULT = [
+    {"nombre": "Pilas", "actividades": ["Perforaciones", "Hincado de Acero", "Colado"]},
+    {"nombre": "Cabezal", "actividades": ["Excavación", "Plantilla", "Descabece", "Armado de acero", "Cimbrado", "Colado", "Relleno"]},
+    {"nombre": "Fuste", "actividades": ["Armado de Acero", "Cimbrado", "Colado"]},
+    {"nombre": "Poste", "actividades": ["Montaje"]},
+]
+
+
 class ProjectIn(BaseModel):
     name: str
     constructora: str
@@ -316,6 +364,10 @@ class ProjectIn(BaseModel):
     # resto del módulo de catálogo), propias de este proyecto — la captura
     # sigue siendo de lista cerrada, nunca texto libre.
     unidades_personalizadas: List[str] = Field(default_factory=list)
+    # Plantilla de elementos/actividades de Poste del módulo Control de
+    # Obra (ver EtapaPosteElemento) — [] deja que el backend aplique
+    # _ETAPAS_POSTE_DEFAULT en vez de forzar el caso Cablebús aquí.
+    etapas_poste: List[EtapaPosteElemento] = Field(default_factory=list)
     # Título visible del módulo de catálogo (pantalla, encabezado del PDF y
     # nombre del archivo exportado). NO se deriva pluralizando
     # nombre_nivel_concepto — pluralizar una palabra libre da resultados
@@ -368,6 +420,7 @@ class ProjectPatch(BaseModel):
     nombres_niveles_partida: Optional[List[str]] = None
     nombre_nivel_concepto: Optional[str] = None
     unidades_personalizadas: Optional[List[str]] = None
+    etapas_poste: Optional[List[EtapaPosteElemento]] = None
     titulo_modulo_catalogo: Optional[str] = None
     cadencia_reporte: Optional[Literal["DIARIA", "SEMANAL", "MENSUAL"]] = None
     dia_inicio_semana: Optional[Literal["LUNES", "MARTES", "MIERCOLES", "JUEVES", "VIERNES", "SABADO", "DOMINGO"]] = None
@@ -412,6 +465,7 @@ class ProjectOut(BaseModel):
     nombres_niveles_partida: List[str] = Field(default_factory=list)
     nombre_nivel_concepto: str = ""
     unidades_personalizadas: List[str] = Field(default_factory=list)
+    etapas_poste: List[EtapaPosteElemento] = Field(default_factory=list)
     titulo_modulo_catalogo: str = ""
     cadencia_reporte: str = "MENSUAL"
     dia_inicio_semana: str = "LUNES"
@@ -480,6 +534,11 @@ class LocationNodeOut(BaseModel):
     estatus_cabezal: Optional[str] = None
     estatus_fuste: Optional[str] = None
     estatus_poste: Optional[str] = None
+    # Estatus granular por actividad (ver EtapaPosteElemento / tab "Postes"
+    # de Control de Obra), keyed por "Elemento::Actividad" — independiente
+    # de los 4 campos estatus_* de arriba, que siguen siendo la fuente de
+    # verdad para Acceso al Predio y el resumen impreso por Subtramo.
+    estatus_actividades: Dict[str, str] = Field(default_factory=dict)
     avance_actual: float = 0.0
     # Portada institucional del nodo (foto de render/arquitectura). Se usa como
     # fondo de la "Portadilla de Nodo" dinámica en el PDF exportado.
@@ -1537,6 +1596,7 @@ async def create_project(body: ProjectIn, user: dict = Depends(require_role(ROLE
         "nombres_niveles_partida": _sanitize_str_list(body.nombres_niveles_partida),
         "nombre_nivel_concepto": (body.nombre_nivel_concepto or "").strip(),
         "unidades_personalizadas": _sanitize_str_list(body.unidades_personalizadas),
+        "etapas_poste": [e.model_dump() for e in body.etapas_poste] if body.etapas_poste else _ETAPAS_POSTE_DEFAULT,
         "titulo_modulo_catalogo": (body.titulo_modulo_catalogo or "").strip(),
         "cadencia_reporte": body.cadencia_reporte,
         "dia_inicio_semana": body.dia_inicio_semana,
@@ -1581,6 +1641,7 @@ async def get_project(pid: str, user: dict = Depends(current_user)):
     p.setdefault("nombres_niveles_partida", [])
     p.setdefault("nombre_nivel_concepto", "")
     p.setdefault("unidades_personalizadas", [])
+    p.setdefault("etapas_poste", _ETAPAS_POSTE_DEFAULT)
     p.setdefault("titulo_modulo_catalogo", "")
     p.setdefault("cadencia_reporte", "MENSUAL")
     p.setdefault("dia_inicio_semana", "LUNES")
@@ -1672,6 +1733,8 @@ async def update_project(pid: str, body: ProjectPatch, user: dict = Depends(requ
         upd["nombre_nivel_concepto"] = body.nombre_nivel_concepto.strip()
     if body.unidades_personalizadas is not None:
         upd["unidades_personalizadas"] = _sanitize_str_list(body.unidades_personalizadas)
+    if body.etapas_poste is not None:
+        upd["etapas_poste"] = [e.model_dump() for e in body.etapas_poste]
     if body.titulo_modulo_catalogo is not None:
         upd["titulo_modulo_catalogo"] = body.titulo_modulo_catalogo.strip()
     if body.cadencia_reporte is not None:
@@ -1713,6 +1776,7 @@ def _project_public(p: dict) -> dict:
     p.setdefault("nombres_niveles_partida", [])
     p.setdefault("nombre_nivel_concepto", "")
     p.setdefault("unidades_personalizadas", [])
+    p.setdefault("etapas_poste", _ETAPAS_POSTE_DEFAULT)
     p.setdefault("titulo_modulo_catalogo", "")
     p.setdefault("cadencia_reporte", "MENSUAL")
     p.setdefault("dia_inicio_semana", "LUNES")
@@ -3317,6 +3381,41 @@ async def update_poste_estatus(nid: str, body: PosteEstatusPatch, user: dict = D
             upd[campo] = val
     if upd:
         await db.location_nodes.update_one({"id": nid}, {"$set": upd})
+    out = await db.location_nodes.find_one({"id": nid})
+    out.pop("_id", None)
+    return out
+
+
+# --- Estatus por actividad de Poste (plantilla configurable, ver
+# EtapaPosteElemento) — endpoint aparte de update_poste_estatus (arriba):
+# ese sigue existiendo tal cual para Acceso al Predio y el resumen impreso,
+# este es el detalle fino que consume el tab "Postes" de Control de Obra.
+class PosteActividadEstatusPatch(BaseModel):
+    actividad_key: str  # "Elemento::Actividad", debe existir en project.etapas_poste
+    estatus: Literal["sin_iniciar", "en_proceso", "concluido", "cambio_trayectoria"]
+
+
+@api.patch("/nodes/{nid}/poste-actividad-estatus")
+async def update_poste_actividad_estatus(nid: str, body: PosteActividadEstatusPatch, user: dict = Depends(current_user)):
+    _assert_write_allowed(user)
+    node = await db.location_nodes.find_one({"id": nid})
+    if not node:
+        raise HTTPException(404, "Nodo no existe")
+    project = await ensure_project_access(user, node["project_id"])
+    _ensure_modulo_activo(project, "control_obra")
+
+    etapas = project.get("etapas_poste") or _ETAPAS_POSTE_DEFAULT
+    claves_validas = {f"{el['nombre']}::{act}" for el in etapas for act in el.get("actividades", [])}
+    if body.actividad_key not in claves_validas:
+        raise HTTPException(400, f"'{body.actividad_key}' no es una actividad configurada en la plantilla de este proyecto")
+
+    # Dot-notation de Mongo para tocar SOLO esta clave del dict — nunca lee-
+    # modifica-escribe el mapa completo, así que dos posteos concurrentes a
+    # actividades distintas del mismo poste nunca se pisan entre sí.
+    await db.location_nodes.update_one(
+        {"id": nid},
+        {"$set": {f"estatus_actividades.{body.actividad_key}": body.estatus}},
+    )
     out = await db.location_nodes.find_one({"id": nid})
     out.pop("_id", None)
     return out

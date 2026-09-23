@@ -29,13 +29,21 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import {
-  api, LocationNode, Project, PosteEstatus, CimentacionElemento, Perforadora,
+  api, LocationNode, Project, PosteEstatus, EtapaPosteElemento, CimentacionElemento, Perforadora,
 } from '@/src/api';
 import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
-import { ESTATUS_LABEL, ESTATUS_COLOR, POSTE_CAMPOS, PosteCampo } from '@/src/components/AccesoPredioManager';
+import { ESTATUS_LABEL, ESTATUS_COLOR } from '@/src/components/AccesoPredioManager';
 import { downloadBlob } from '@/src/utils/downloadBlob';
 
 type Tab = 'postes' | 'cimentacion' | 'perforadoras';
+
+// Ancho FIJO de columna (no flex): con hasta 14 actividades configuradas
+// (caso Cablebús) la tabla ya no cabe en pantalla, así que se envuelve en
+// un ScrollView horizontal — flex:1 por celda pelearía con ese scroll
+// (el contenedor intentaría llenar el ancho disponible en vez de crecer
+// según sus columnas).
+const POSTE_ID_COL_WIDTH = 88;
+const POSTE_ACT_COL_WIDTH = 60;
 
 const CYCLE: PosteEstatus[] = ['sin_iniciar', 'en_proceso', 'concluido', 'cambio_trayectoria'];
 
@@ -44,22 +52,38 @@ function nextEstatus(cur: PosteEstatus | null | undefined): PosteEstatus {
   return CYCLE[(idx + 1) % CYCLE.length];
 }
 
-function fieldFor(campo: PosteCampo): 'estatus_pilas' | 'estatus_cabezal' | 'estatus_fuste' | 'estatus_poste' {
-  return `estatus_${campo}` as const;
+// Aplana la plantilla de elementos/actividades del proyecto (ver
+// EtapaPosteElemento en server.py — Pilas/Cabezal/Fuste/Poste y sus pasos
+// de construcción, editable desde el botón "Configurar etapas" de este
+// tab) a la lista de columnas de la tabla, cada una con la MISMA clave
+// "Elemento::Actividad" que usa el backend en LocationNode.estatus_actividades.
+type ActividadCol = { elemento: string; actividad: string; key: string };
+function flattenEtapas(etapas: EtapaPosteElemento[] | undefined): ActividadCol[] {
+  const flat: ActividadCol[] = [];
+  (etapas || []).forEach((el) => {
+    (el.actividades || []).forEach((act) => {
+      flat.push({ elemento: el.nombre, actividad: act, key: `${el.nombre}::${act}` });
+    });
+  });
+  return flat;
 }
 
 // Mismo criterio que el panel de referencia: concluido=1, en_proceso=0.5,
 // sin_iniciar/cambio_trayectoria=0 (la excepción no suma avance, se marca
-// aparte como alerta — ver posteHasAlert).
-function posteProgress(node: LocationNode): number {
-  const vals = POSTE_CAMPOS.map(({ campo }) => node[fieldFor(campo)]).filter(Boolean) as PosteEstatus[];
-  if (!vals.length) return 0;
+// aparte como alerta — ver posteHasAlert). Ahora sobre TODAS las
+// actividades configuradas (hasta 14 en el caso Cablebús), no solo los 4
+// elementos — el % refleja el detalle real, no solo el macro-estatus.
+function posteProgress(node: LocationNode, cols: ActividadCol[]): number {
+  if (!cols.length) return 0;
   let sum = 0;
-  vals.forEach((v) => { if (v === 'concluido') sum += 1; else if (v === 'en_proceso') sum += 0.5; });
-  return sum / vals.length;
+  cols.forEach(({ key }) => {
+    const v = node.estatus_actividades?.[key];
+    if (v === 'concluido') sum += 1; else if (v === 'en_proceso') sum += 0.5;
+  });
+  return sum / cols.length;
 }
-function posteHasAlert(node: LocationNode): boolean {
-  return POSTE_CAMPOS.some(({ campo }) => node[fieldFor(campo)] === 'cambio_trayectoria');
+function posteHasAlert(node: LocationNode, cols: ActividadCol[]): boolean {
+  return cols.some(({ key }) => node.estatus_actividades?.[key] === 'cambio_trayectoria');
 }
 function fmtPct(x: number): number { return Math.round(x * 100); }
 
@@ -86,6 +110,13 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
   const [activeIntertramoId, setActiveIntertramoId] = useState<string | null>(null);
   const [activeEstacionId, setActiveEstacionId] = useState<string | null>(null);
   const [busyKeys, setBusyKeys] = useState<Record<string, boolean>>({});
+
+  // Editor de la plantilla de elementos/actividades de Poste (ver
+  // flattenEtapas) — "la herramienta" para poder reconfigurar esto en
+  // otros proyectos sin tocar código.
+  const [etapasEditorOpen, setEtapasEditorOpen] = useState(false);
+  const [etapasDraft, setEtapasDraft] = useState<EtapaPosteElemento[]>([]);
+  const [savingEtapas, setSavingEtapas] = useState(false);
 
   const [addElementoOpen, setAddElementoOpen] = useState(false);
   const [elementoDraft, setElementoDraft] = useState('');
@@ -171,11 +202,13 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
       .sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || a.name.localeCompare(b.name));
   }
 
+  const actividadCols = useMemo(() => flattenEtapas(project?.etapas_poste), [project?.etapas_poste]);
+
   function intertramoStats(intertramoId: string) {
     const postes = postesOf(intertramoId);
     if (!postes.length) return { pct: 0, total: 0, alertCount: 0 };
     let sum = 0, alertCount = 0;
-    postes.forEach((p) => { sum += posteProgress(p); if (posteHasAlert(p)) alertCount++; });
+    postes.forEach((p) => { sum += posteProgress(p, actividadCols); if (posteHasAlert(p, actividadCols)) alertCount++; });
     return { pct: sum / postes.length, total: postes.length, alertCount };
   }
 
@@ -184,10 +217,10 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
     intertramos.forEach((it) => { all = all.concat(postesOf(it.id)); });
     if (!all.length) return { pct: 0, total: 0, alertCount: 0 };
     let sum = 0, alertCount = 0;
-    all.forEach((p) => { sum += posteProgress(p); if (posteHasAlert(p)) alertCount++; });
+    all.forEach((p) => { sum += posteProgress(p, actividadCols); if (posteHasAlert(p, actividadCols)) alertCount++; });
     return { pct: sum / all.length, total: all.length, alertCount };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allNodes, intertramos]);
+  }, [allNodes, intertramos, actividadCols]);
 
   function estacionPct(estacionId: string): number {
     const elems = cimentacion.filter((e) => e.node_id === estacionId);
@@ -197,19 +230,64 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
     return totalSum > 0 ? acumSum / totalSum : 0;
   }
 
-  async function cycleEstatus(node: LocationNode, campo: PosteCampo) {
-    const field = fieldFor(campo);
-    const key = `${node.id}:${campo}`;
+  async function cycleEstatusActividad(node: LocationNode, actividadKey: string) {
+    const key = `${node.id}:${actividadKey}`;
     if (busyKeys[key]) return;
-    const next = nextEstatus(node[field] as PosteEstatus | undefined);
+    const next = nextEstatus(node.estatus_actividades?.[actividadKey]);
     setBusyKeys((b) => ({ ...b, [key]: true }));
     try {
-      const updated = await api.updatePosteEstatus(node.id, { [field]: next } as any);
-      setAllNodes((list) => list.map((n) => (n.id === node.id ? { ...n, [field]: (updated as any)[field] } : n)));
+      const updated = await api.updatePosteActividadEstatus(node.id, actividadKey, next);
+      setAllNodes((list) => list.map((n) => (n.id === node.id ? { ...n, estatus_actividades: (updated as any).estatus_actividades } : n)));
     } catch (e: any) {
       Alert.alert('Error', e?.message || 'No se pudo actualizar el estatus');
     } finally {
       setBusyKeys((b) => ({ ...b, [key]: false }));
+    }
+  }
+
+  // === Editor de plantilla de Poste (elementos/actividades) ===============
+  function openEtapasEditor() {
+    const base = project?.etapas_poste && project.etapas_poste.length ? project.etapas_poste : [];
+    // Copia profunda: el draft se edita libremente y solo se aplica al
+    // proyecto real si el usuario confirma "Guardar".
+    setEtapasDraft(base.map((el) => ({ nombre: el.nombre, actividades: [...el.actividades] })));
+    setEtapasEditorOpen(true);
+  }
+  function addEtapaElemento() {
+    setEtapasDraft((d) => [...d, { nombre: '', actividades: [''] }]);
+  }
+  function removeEtapaElemento(idx: number) {
+    setEtapasDraft((d) => d.filter((_, i) => i !== idx));
+  }
+  function renameEtapaElemento(idx: number, nombre: string) {
+    setEtapasDraft((d) => d.map((el, i) => (i === idx ? { ...el, nombre } : el)));
+  }
+  function addEtapaActividad(idx: number) {
+    setEtapasDraft((d) => d.map((el, i) => (i === idx ? { ...el, actividades: [...el.actividades, ''] } : el)));
+  }
+  function removeEtapaActividad(idx: number, actIdx: number) {
+    setEtapasDraft((d) => d.map((el, i) => (i === idx ? { ...el, actividades: el.actividades.filter((_, ai) => ai !== actIdx) } : el)));
+  }
+  function renameEtapaActividad(idx: number, actIdx: number, nombre: string) {
+    setEtapasDraft((d) => d.map((el, i) => (i === idx ? { ...el, actividades: el.actividades.map((a, ai) => (ai === actIdx ? nombre : a)) } : el)));
+  }
+  async function guardarEtapas() {
+    const limpio = etapasDraft
+      .map((el) => ({ nombre: el.nombre.trim(), actividades: el.actividades.map((a) => a.trim()).filter(Boolean) }))
+      .filter((el) => el.nombre && el.actividades.length > 0);
+    if (!limpio.length) {
+      Alert.alert('Falta información', 'Agrega al menos un elemento (ej. "Pilas") con al menos una actividad.');
+      return;
+    }
+    setSavingEtapas(true);
+    try {
+      const updated = await api.updateProject(projectId, { etapas_poste: limpio });
+      setProject(updated);
+      setEtapasEditorOpen(false);
+    } catch (e: any) {
+      Alert.alert('No se pudo guardar', e?.message || 'Intentalo nuevamente.');
+    } finally {
+      setSavingEtapas(false);
     }
   }
 
@@ -356,7 +434,13 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
             <Text style={styles.empty}>No hay nodos tipo Intertramo habilitados en Acceso al Predio todavía.</Text>
           ) : (
             <>
-              <Text style={styles.sectionLabel}>Avance por intertramo</Text>
+              <View style={styles.sectionLabelRow}>
+                <Text style={styles.sectionLabel}>Avance por intertramo</Text>
+                <Pressable onPress={openEtapasEditor} style={styles.configBtn} hitSlop={8}>
+                  <Ionicons name="settings-outline" size={14} color={headerColor} />
+                  <Text style={[styles.configBtnTxt, { color: headerColor }]}>Configurar etapas</Text>
+                </Pressable>
+              </View>
               <View style={styles.cardsGrid}>
                 {intertramos.map((it) => {
                   const s = intertramoStats(it.id);
@@ -383,38 +467,62 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
                   <Text style={styles.detailTitle}>{activeIntertramo.name}</Text>
                   {postesOf(activeIntertramo.id).length === 0 ? (
                     <Text style={styles.empty}>Este intertramo todavía no tiene postes (hijos) en el árbol.</Text>
+                  ) : actividadCols.length === 0 ? (
+                    <Text style={styles.empty}>
+                      Este proyecto todavía no tiene etapas de Poste configuradas — toca "Configurar etapas" arriba
+                      para definir los elementos (ej. Pilas, Cabezal) y sus actividades.
+                    </Text>
                   ) : (
-                    <View style={styles.posteTable}>
-                      <View style={styles.posteHeaderRow}>
-                        <Text style={[styles.posteHeaderCell, styles.posteIdCol, { backgroundColor: `${headerColor}1A` }]}>Poste</Text>
-                        {POSTE_CAMPOS.map(({ campo, label }) => (
-                          <Text key={campo} style={[styles.posteHeaderCell, { backgroundColor: `${headerColor}1A` }]}>{label}</Text>
+                    <ScrollView horizontal showsHorizontalScrollIndicator>
+                      <View style={styles.posteTable}>
+                        <View style={styles.posteHeaderRow}>
+                          <Text style={[styles.posteGroupCell, styles.posteIdCol, { backgroundColor: `${headerColor}1A` }]}>Poste</Text>
+                          {(project?.etapas_poste && project.etapas_poste.length ? project.etapas_poste : []).map((el, i) => (
+                            <Text
+                              key={`${el.nombre}-${i}`}
+                              numberOfLines={1}
+                              style={[
+                                styles.posteGroupCell,
+                                { width: el.actividades.length * POSTE_ACT_COL_WIDTH, backgroundColor: i % 2 === 0 ? `${headerColor}1A` : `${headerColor}33` },
+                              ]}
+                            >
+                              {el.nombre}
+                            </Text>
+                          ))}
+                        </View>
+                        <View style={styles.posteHeaderRow}>
+                          <View style={[styles.posteIdCol, styles.posteSubHeaderCell]} />
+                          {actividadCols.map((c) => (
+                            <Text key={c.key} numberOfLines={3} style={[styles.posteSubHeaderCell, { width: POSTE_ACT_COL_WIDTH }]}>
+                              {c.actividad}
+                            </Text>
+                          ))}
+                        </View>
+                        {postesOf(activeIntertramo.id).map((poste) => (
+                          <View key={poste.id} style={[styles.posteRow, posteHasAlert(poste, actividadCols) && styles.posteRowAlert]}>
+                            <Text style={[styles.posteIdCell, styles.posteIdCol]} numberOfLines={1}>{poste.name}</Text>
+                            {actividadCols.map((c) => {
+                              const value = poste.estatus_actividades?.[c.key] || 'sin_iniciar';
+                              const key = `${poste.id}:${c.key}`;
+                              return (
+                                <Pressable
+                                  key={c.key}
+                                  onPress={() => cycleEstatusActividad(poste, c.key)}
+                                  disabled={!!busyKeys[key]}
+                                  style={[styles.posteCell, { width: POSTE_ACT_COL_WIDTH, backgroundColor: `${ESTATUS_COLOR[value]}22` }]}
+                                >
+                                  {busyKeys[key] ? (
+                                    <ActivityIndicator size="small" color={ESTATUS_COLOR[value]} />
+                                  ) : (
+                                    <View style={[styles.posteDot, { backgroundColor: ESTATUS_COLOR[value] }]} />
+                                  )}
+                                </Pressable>
+                              );
+                            })}
+                          </View>
                         ))}
                       </View>
-                      {postesOf(activeIntertramo.id).map((poste) => (
-                        <View key={poste.id} style={[styles.posteRow, posteHasAlert(poste) && styles.posteRowAlert]}>
-                          <Text style={[styles.posteIdCell, styles.posteIdCol]} numberOfLines={1}>{poste.name}</Text>
-                          {POSTE_CAMPOS.map(({ campo }) => {
-                            const value = (poste[fieldFor(campo)] as PosteEstatus) || 'sin_iniciar';
-                            const key = `${poste.id}:${campo}`;
-                            return (
-                              <Pressable
-                                key={campo}
-                                onPress={() => cycleEstatus(poste, campo)}
-                                disabled={!!busyKeys[key]}
-                                style={[styles.posteCell, { backgroundColor: `${ESTATUS_COLOR[value]}22` }]}
-                              >
-                                {busyKeys[key] ? (
-                                  <ActivityIndicator size="small" color={ESTATUS_COLOR[value]} />
-                                ) : (
-                                  <View style={[styles.posteDot, { backgroundColor: ESTATUS_COLOR[value] }]} />
-                                )}
-                              </Pressable>
-                            );
-                          })}
-                        </View>
-                      ))}
-                    </View>
+                    </ScrollView>
                   )}
                   <View style={styles.legendRow}>
                     {(Object.keys(ESTATUS_LABEL) as PosteEstatus[]).map((k) => (
@@ -552,6 +660,67 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
       )}
 
       {/* Modal: agregar elemento de cimentación */}
+      {/* Modal: editor de plantilla de elementos/actividades de Poste — "la
+          herramienta" para reconfigurar esto por proyecto (ver EtapaPosteElemento). */}
+      <Modal visible={etapasEditorOpen} transparent animationType="slide" onRequestClose={() => setEtapasEditorOpen(false)}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
+          <View style={[styles.modalCard, { maxHeight: '85%' }]}>
+            <Text style={styles.modalTitle}>Configurar etapas de Poste</Text>
+            <Text style={styles.etapasHint}>
+              Elementos (ej. Pilas, Cabezal) y sus actividades de construcción, en el orden en que quieres que
+              aparezcan como columnas de la tabla "Postes". Se guarda solo para este proyecto.
+            </Text>
+            <ScrollView style={{ maxHeight: 380 }}>
+              {etapasDraft.map((el, idx) => (
+                <View key={idx} style={styles.etapaElementoCard}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <TextInput
+                      value={el.nombre}
+                      onChangeText={(t) => renameEtapaElemento(idx, t)}
+                      placeholder="Nombre del elemento (ej. Pilas)"
+                      placeholderTextColor={colors.textMuted}
+                      style={[styles.input, { flex: 1 }]}
+                    />
+                    <Pressable onPress={() => removeEtapaElemento(idx)} hitSlop={8}>
+                      <Ionicons name="trash-outline" size={18} color={colors.error} />
+                    </Pressable>
+                  </View>
+                  {el.actividades.map((act, actIdx) => (
+                    <View key={actIdx} style={styles.etapaActividadRow}>
+                      <TextInput
+                        value={act}
+                        onChangeText={(t) => renameEtapaActividad(idx, actIdx, t)}
+                        placeholder={`Actividad ${actIdx + 1}`}
+                        placeholderTextColor={colors.textMuted}
+                        style={[styles.input, styles.etapaActividadInput]}
+                      />
+                      <Pressable onPress={() => removeEtapaActividad(idx, actIdx)} hitSlop={8}>
+                        <Ionicons name="close-circle-outline" size={18} color={colors.textMuted} />
+                      </Pressable>
+                    </View>
+                  ))}
+                  <Pressable onPress={() => addEtapaActividad(idx)} style={styles.etapaAddActividadBtn}>
+                    <Ionicons name="add" size={14} color={headerColor} />
+                    <Text style={[styles.configBtnTxt, { color: headerColor }]}>Agregar actividad</Text>
+                  </Pressable>
+                </View>
+              ))}
+              <Pressable onPress={addEtapaElemento} style={[styles.modalBtn, styles.modalBtnGhost, { marginTop: 4 }]}>
+                <Text style={styles.modalBtnGhostTxt}>+ Agregar elemento</Text>
+              </Pressable>
+            </ScrollView>
+            <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
+              <Pressable onPress={() => setEtapasEditorOpen(false)} disabled={savingEtapas} style={[styles.modalBtn, styles.modalBtnGhost]}>
+                <Text style={styles.modalBtnGhostTxt}>Cancelar</Text>
+              </Pressable>
+              <Pressable onPress={guardarEtapas} disabled={savingEtapas} style={[styles.modalBtn, { backgroundColor: headerColor }]}>
+                {savingEtapas ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.modalBtnTxt}>Guardar</Text>}
+              </Pressable>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
       <Modal visible={addElementoOpen} transparent animationType="slide" onRequestClose={() => setAddElementoOpen(false)}>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
@@ -655,13 +824,18 @@ const styles = StyleSheet.create({
 
   posteTable: { borderWidth: 1, borderColor: colors.border, borderRadius: radius.sm, overflow: 'hidden' },
   posteHeaderRow: { flexDirection: 'row' },
-  posteHeaderCell: { flex: 1, fontSize: 10.5, fontWeight: '800', color: colors.text, textAlign: 'center', paddingVertical: 8 },
-  posteIdCol: { flex: 0.7 },
+  posteGroupCell: { fontSize: 10.5, fontWeight: '800', color: colors.text, textAlign: 'center', paddingVertical: 8 },
+  posteSubHeaderCell: { fontSize: 9, fontWeight: '700', color: colors.textMuted, textAlign: 'center', paddingVertical: 4, paddingHorizontal: 2, borderLeftWidth: 1, borderLeftColor: colors.border },
+  posteIdCol: { width: POSTE_ID_COL_WIDTH },
   posteRow: { flexDirection: 'row', borderTopWidth: 1, borderTopColor: colors.border },
   posteRowAlert: { backgroundColor: '#8F48891A' },
-  posteIdCell: { flex: 0.7, fontSize: 12, fontWeight: '700', color: colors.text, textAlignVertical: 'center', paddingLeft: 8, paddingVertical: 10 },
-  posteCell: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 10, borderLeftWidth: 1, borderLeftColor: colors.border },
+  posteIdCell: { fontSize: 12, fontWeight: '700', color: colors.text, textAlignVertical: 'center', paddingLeft: 8, paddingVertical: 10 },
+  posteCell: { alignItems: 'center', justifyContent: 'center', paddingVertical: 10, borderLeftWidth: 1, borderLeftColor: colors.border },
   posteDot: { width: 14, height: 14, borderRadius: 7 },
+
+  sectionLabelRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 },
+  configBtn: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  configBtnTxt: { fontSize: 12, fontWeight: '700' },
 
   legendRow: { flexDirection: 'row', gap: 12, flexWrap: 'wrap' },
   legendItem: { flexDirection: 'row', alignItems: 'center', gap: 5 },
@@ -702,4 +876,12 @@ const styles = StyleSheet.create({
   modalBtnGhost: { backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border },
   modalBtnGhostTxt: { color: colors.text, fontWeight: '700', fontSize: 13 },
   modalBtnTxt: { color: '#fff', fontWeight: '700', fontSize: 13 },
+  etapasHint: { fontSize: 11.5, color: colors.textMuted, marginBottom: spacing.sm },
+  etapaElementoCard: {
+    backgroundColor: colors.bg, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border,
+    padding: spacing.sm, marginBottom: spacing.sm, gap: 6,
+  },
+  etapaActividadRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginLeft: spacing.md },
+  etapaActividadInput: { flex: 1, paddingVertical: 8 },
+  etapaAddActividadBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, marginLeft: spacing.md, marginTop: 2 },
 });
