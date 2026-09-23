@@ -18,7 +18,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import Svg, { Polyline, Line as SvgLine, Text as SvgText } from 'react-native-svg';
+import Svg, { Polyline, Line as SvgLine, Text as SvgText, Circle } from 'react-native-svg';
 import * as DocumentPicker from 'expo-document-picker';
 
 import { api, AnalisisPeriodo, CurvaS, ExcepcionEvm, ActividadEvm, ActividadesEvm, GastoReal, GastoRealImportResult, RegistroAvanceImportResult } from '@/src/api';
@@ -118,15 +118,24 @@ function CurvaSChart({ curva }: { curva: CurvaS }) {
     const real = curva.real_acumulado.map(Number);
     const maxVal = Math.max(1, ...planeado, ...ganado, ...real);
     const puntos = (serie: number[]) =>
-      serie
-        .map((v, i) => {
-          const x = n <= 1 ? CURVA_PAD_LEFT : CURVA_PAD_LEFT + (i / (n - 1)) * innerWidth;
-          const y = height - CURVA_PAD_BOTTOM - (v / maxVal) * (height - CURVA_PAD_TOP - CURVA_PAD_BOTTOM);
-          return `${x},${y}`;
-        })
-        .join(' ');
-    return { series: { planeado: puntos(planeado), ganado: puntos(ganado), real: puntos(real) }, max: maxVal };
+      serie.map((v, i) => ({
+        x: n <= 1 ? CURVA_PAD_LEFT : CURVA_PAD_LEFT + (i / (n - 1)) * innerWidth,
+        y: height - CURVA_PAD_BOTTOM - (v / maxVal) * (height - CURVA_PAD_TOP - CURVA_PAD_BOTTOM),
+      }));
+    return {
+      series: { planeado: puntos(planeado), ganado: puntos(ganado), real: puntos(real) },
+      max: maxVal,
+    };
   }, [curva, innerWidth, height, n]);
+
+  // 3 líneas del mismo color de fondo (azul/gris/rojo) se vuelven
+  // indistinguibles en cuanto dos series quedan muy cerca o una aplasta a
+  // las otras en escala (ver caso real: Ganado en billones vs. Planeado/
+  // Real en millones, las últimas dos se ven "pegadas" al eje X) — un
+  // patrón de trazo distinto por serie SIGUE siendo legible aunque el
+  // color no ayude, y los puntos marcan cada mes con dato real aunque la
+  // línea se vea plana en esta escala.
+  const puntosStr = (pts: { x: number; y: number }[]) => pts.map((p) => `${p.x},${p.y}`).join(' ');
 
   if (!curva.meses.length) {
     return (
@@ -165,26 +174,44 @@ function CurvaSChart({ curva }: { curva: CurvaS }) {
               </React.Fragment>
             );
           })}
-          <Polyline points={series.planeado} fill="none" stroke={colors.textMuted} strokeWidth={2.5} />
-          <Polyline points={series.ganado} fill="none" stroke={colors.primary} strokeWidth={2.5} />
-          <Polyline points={series.real} fill="none" stroke={colors.error} strokeWidth={2.5} />
+          <Polyline points={puntosStr(series.planeado)} fill="none" stroke={colors.textMuted} strokeWidth={2.5} strokeDasharray="8,5" />
+          <Polyline points={puntosStr(series.ganado)} fill="none" stroke={colors.primary} strokeWidth={2.5} />
+          <Polyline points={puntosStr(series.real)} fill="none" stroke={colors.error} strokeWidth={2.5} strokeDasharray="1,4" strokeLinecap="round" />
+          {series.planeado.map((p, i) => (
+            <Circle key={`p-${i}`} cx={p.x} cy={p.y} r={2.5} fill={colors.textMuted} />
+          ))}
+          {series.real.map((p, i) => (
+            <Circle key={`r-${i}`} cx={p.x} cy={p.y} r={2.5} fill={colors.error} />
+          ))}
+          {series.ganado.map((p, i) => (
+            <Circle key={`g-${i}`} cx={p.x} cy={p.y} r={2.5} fill={colors.primary} />
+          ))}
         </Svg>
       </ScrollView>
       <Text style={styles.ejeXTitulo}>Mes</Text>
       <View style={styles.leyendaRow}>
-        <LeyendaItem color={colors.textMuted} label="Planeado" />
-        <LeyendaItem color={colors.primary} label="Ganado" />
-        <LeyendaItem color={colors.error} label="Real" />
+        <LeyendaItem color={colors.textMuted} label="Planeado" dash="8,5" valor={curva.planeado_acumulado[curva.planeado_acumulado.length - 1]} />
+        <LeyendaItem color={colors.primary} label="Ganado" valor={curva.ganado_acumulado[curva.ganado_acumulado.length - 1]} />
+        <LeyendaItem color={colors.error} label="Real" dash="1,4" valor={curva.real_acumulado[curva.real_acumulado.length - 1]} />
       </View>
     </View>
   );
 }
 
-function LeyendaItem({ color, label }: { color: string; label: string }) {
+/** El punto (línea sólida vs. punteada vs. discontinua) es un swatch
+ * pequeño dibujado a mano con SVG en vez de solo un color de fondo —
+ * el color por sí solo deja de servir en cuanto una serie aplasta a las
+ * otras en escala (ver nota junto a CurvaSChart). El valor acumulado más
+ * reciente junto a cada etiqueta hace evidente esa diferencia de escala
+ * en números, no solo en píxeles. */
+function LeyendaItem({ color, label, dash, valor }: { color: string; label: string; dash?: string; valor?: string }) {
   return (
     <View style={styles.leyendaItem}>
-      <View style={[styles.leyendaDot, { backgroundColor: color }]} />
+      <Svg width={18} height={10}>
+        <SvgLine x1={0} y1={5} x2={18} y2={5} stroke={color} strokeWidth={2.5} strokeDasharray={dash} />
+      </Svg>
       <Text style={styles.leyendaTxt}>{label}</Text>
+      {valor !== undefined ? <Text style={styles.leyendaValor}>{formatMoneyCompact(Number(valor))}</Text> : null}
     </View>
   );
 }
@@ -762,10 +789,10 @@ const styles = StyleSheet.create({
   curvaVaciaTxt: { color: colors.textMuted, fontSize: 12 },
   ejeYTitulo: { fontSize: 11, fontWeight: '700', color: colors.textMuted, marginBottom: 4, marginLeft: CURVA_PAD_LEFT },
   ejeXTitulo: { fontSize: 11, fontWeight: '700', color: colors.textMuted, marginTop: 2, textAlign: 'center' },
-  leyendaRow: { flexDirection: 'row', gap: 16, marginTop: 8, justifyContent: 'center' },
+  leyendaRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 16, marginTop: 8, justifyContent: 'center' },
   leyendaItem: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  leyendaDot: { width: 8, height: 8, borderRadius: 4 },
   leyendaTxt: { fontSize: 11, color: colors.textMuted },
+  leyendaValor: { fontSize: 11, fontWeight: '700', color: colors.text },
   sinExcepciones: { fontSize: 12, color: colors.textMuted, fontStyle: 'italic' },
   gastoAvisoTxt: { fontSize: 11, color: colors.textMuted, fontStyle: 'italic', marginBottom: 10, lineHeight: 15 },
   excepcionRow: {
