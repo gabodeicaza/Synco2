@@ -433,3 +433,21 @@ class TestExtraordinarios:
         asyncio.run(server.create_concepto(body, USER))
         doc = db.conceptos.insert_one.await_args.args[0]
         assert doc["extraordinario"] is False and doc["pu_estatus"] is None
+
+
+# ------------------------------------------------------------------ 422 serializable
+class TestRespuesta422:
+    def test_un_error_de_validador_propio_ya_no_termina_en_500(self):
+        """Antes `exc.errors()` llevaba la excepción original en `ctx` y no se podía serializar:
+        el cliente recibía 500 en vez de 422 con el mensaje."""
+        import json
+        from fastapi.exceptions import RequestValidationError
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError) as e:
+            server.RegistroAvanceIn(concepto_id="c", fecha="2026-01-01", cantidad_ejecutada="abc")
+        with pytest.raises(TypeError):
+            json.dumps(e.value.errors())  # el comportamiento anterior
+        seguro = server._errores_422_serializables(RequestValidationError(e.value.errors()))
+        texto = json.dumps(seguro)
+        assert "cantidad_ejecutada" in texto and "input" not in seguro[0]

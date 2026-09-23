@@ -20,6 +20,11 @@ describe('mensajeDeError', () => {
     expect(mensajeDeError(detail)).toBe('Cantidad: debe ser un número. Descripción: este dato es obligatorio');
   });
 
+  it('conserva el mensaje en español de un validador propio', () => {
+    const detail = [{ loc: ['body', 'cantidad_ejecutada'], msg: 'Value error, La cantidad debe ser un número.', type: 'value_error' }];
+    expect(mensajeDeError(detail)).toBe('Cantidad ejecutada: La cantidad debe ser un número.');
+  });
+
   it('nunca devuelve JSON crudo', () => {
     expect(mensajeDeError({ raro: true })).not.toMatch(/[{}[\]]/);
     expect(mensajeDeError([{ msg: 'x' }])).not.toMatch(/[{}[\]]/);

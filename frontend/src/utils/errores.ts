@@ -61,6 +61,11 @@ export function etiquetaDeCampo(campo: string): string {
 }
 
 function traducirMensaje(msg: string, tipo?: string): string {
+  // Un validador propio del backend ya escribe su mensaje en español ("Value error, ...").
+  if (tipo === 'value_error') {
+    const propio = msg.replace(/^Value error,\s*/i, '').trim();
+    if (propio && /[áéíóúñ¿¡]|\s(debe|no|es|la|el)\s/i.test(propio)) return propio;
+  }
   const base = `${tipo ?? ''} ${msg}`;
   for (const [patron, texto] of MENSAJES_PYDANTIC) if (patron.test(base)) return texto();
   return t('errores.valorInvalido');

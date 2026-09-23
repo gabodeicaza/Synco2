@@ -101,7 +101,22 @@ async def _log_422(request, exc: RequestValidationError):
         )
     except Exception as _e:
         log.warning("[422 handler] logging failed: %s", _e)
-    return JSONResponse(status_code=422, content={"detail": exc.errors()})
+    return JSONResponse(status_code=422, content={"detail": _errores_422_serializables(exc)})
+
+
+def _errores_422_serializables(exc: RequestValidationError) -> list:
+    """`exc.errors()` puede traer `ctx` con la EXCEPCIÓN original (p. ej. un ValueError de un
+    validador propio): no es serializable a JSON, y el intento de responderla terminaba en un
+    500 en lugar del 422 con el mensaje. Se convierte a texto y se omite el `input` crudo
+    (puede ser una imagen base64 enorme)."""
+    salida = []
+    for e in exc.errors() or []:
+        e = dict(e)
+        e.pop("input", None)
+        if e.get("ctx"):
+            e["ctx"] = {k: str(v) for k, v in e["ctx"].items()}
+        salida.append(e)
+    return salida
 
 
 # Handler temporal para diagnosticar 500 (excepciones no controladas).
@@ -18430,6 +18445,8 @@ class PartidaOut(BaseModel):
     activo: bool
     partida_padre_id: Optional[str] = None
     created_at: datetime
+    # C-01: partida creada por la migración con la clave como nombre; se limpia al renombrarla.
+    nombre_pendiente: bool = False
     # --- Calculados: nunca almacenados ---
     numero_conceptos: int = 0
     importe_contratado_partida: str = "0"
@@ -19012,6 +19029,7 @@ async def _partida_out(doc: dict, all_partidas: List[dict]) -> PartidaOut:
         activo=doc.get("activo", True),
         partida_padre_id=doc.get("partida_padre_id"),
         created_at=doc["created_at"],
+        nombre_pendiente=bool(doc.get("nombre_pendiente", False)),
         numero_conceptos=len(conceptos),
         importe_contratado_partida=dec_to_str(importe_total),
         porcentaje_avance_partida=dec_to_str(round_money(pct_partida * to_decimal("100"))),
@@ -19073,6 +19091,7 @@ async def update_partida(partida_id: str, body: PartidaPatch, user: dict = Depen
         upd["clave"] = body.clave.strip()
     if body.nombre is not None:
         upd["nombre"] = body.nombre.strip()
+        upd["nombre_pendiente"] = False  # ya tiene nombre real
     if body.orden is not None:
         upd["orden"] = body.orden
     if body.activo is not None:
@@ -21912,6 +21931,212 @@ async def set_pu_extraordinario(
         "pu_estatus", concepto.get("pu_estatus"), body.pu_estatus, user,
     )
     return await _concepto_out(await db.conceptos.find_one({"id": concepto_id}))
+
+
+# === C-01 MIGRACIÓN: reubicar conceptos según el prefijo de su clave ===========
+# Los catálogos ya importados quedaron PLANOS (todos los conceptos en una partida) porque
+# el importador descartaba las filas de partida. Esta migración crea los nodos que faltan
+# (nombre = la clave, marcados "nombre pendiente" para renombrarlos: el nombre original
+# no se puede recuperar) y mueve cada concepto a su partida por prefijo de clave.
+#
+# Reglas de seguridad (proyectos reales):
+#   · Solo el Coordinador General, UN proyecto a la vez, con vista previa y confirm=true.
+#   · Los proyectos "Cablebús Línea 4" quedan EXCLUIDOS: la API se niega a tocarlos.
+#   · Idempotente (correrla otra vez no cambia nada) y REVERSIBLE (se guarda el
+#     partida_id original de cada concepto). Nunca se borra nada: las partidas creadas se
+#     dan de baja (activo=false) al revertir.
+def es_proyecto_excluido(nombre: str) -> bool:
+    n = _normalize_text(nombre or "")
+    return "cablebus" in n or re.search(r"\blinea\s*4\b", n) is not None
+
+
+def planificar_reubicacion(partidas: List[dict], conceptos: List[dict]) -> Dict[str, Any]:
+    """Plan puro (sin DB): nodos por crear y conceptos por mover. Ver el bloque de arriba."""
+    por_clave: Dict[str, str] = {p["clave"]: p["id"] for p in partidas if p.get("activo", True) and p.get("clave")}
+    creadas: Dict[str, dict] = {}
+    orden: List[str] = []
+    movimientos: List[dict] = []
+    for c in sorted(conceptos, key=lambda x: clave_sort_key(x.get("clave") or "")):
+        clave = c.get("clave") or ""
+        if "." not in clave or not c.get("activo", True):
+            continue
+        cadena = list(reversed(ancestros_de_clave(clave)))  # raíz -> hoja: ["1", "1.1"]
+        idx = -1
+        for i, a in enumerate(cadena):
+            if a in por_clave or a in creadas:
+                idx = i
+        if idx >= 0:
+            a = cadena[idx]
+            ref = ("id", por_clave[a]) if a in por_clave else ("nuevo", a)
+        else:
+            ref = ("id", c["partida_id"])  # sin ancestro conocido: se cuelga donde ya estaba
+        for a in cadena[idx + 1:]:
+            creadas[a] = {"clave": a, "padre": ref}
+            orden.append(a)
+            ref = ("nuevo", a)
+        if ref == ("id", c["partida_id"]):
+            continue  # ya está en su lugar (idempotencia)
+        movimientos.append({
+            "concepto_id": c["id"], "clave": clave, "desde": c["partida_id"], "hacia": ref,
+        })
+    return {"nodos_a_crear": [creadas[a] for a in orden], "movimientos": movimientos}
+
+
+async def _plan_reubicacion_de_proyecto(pid: str) -> Dict[str, Any]:
+    partidas = await db.partidas.find({"project_id": pid, "activo": True}).to_list(length=100000)
+    conceptos = await db.conceptos.find({"project_id": pid, "activo": True}).to_list(length=1000000)
+    return planificar_reubicacion(partidas, conceptos)
+
+
+async def _proyecto_migrable_o_error(pid: str, user: dict) -> dict:
+    proyecto = await ensure_project_access(user, pid)
+    if es_proyecto_excluido(proyecto.get("name", "")):
+        raise HTTPException(403, "Este proyecto está excluido de la migración (Cablebús Línea 4).")
+    return proyecto
+
+
+async def aplicar_reubicacion(pid: str, plan: Dict[str, Any], user: dict) -> Optional[str]:
+    """Ejecuta el plan. Registra cada paso ANTES de escribirlo; si algo falla revierte lo hecho."""
+    if not plan["nodos_a_crear"] and not plan["movimientos"]:
+        return None
+    mig_id = str(uuid.uuid4())
+    await db.migraciones_catalogo.insert_one({
+        "id": mig_id, "project_id": pid, "tipo": "catalogo_jerarquia", "estado": "aplicando",
+        "iniciada_en": datetime.now(timezone.utc), "por": user["id"], "por_nombre": user.get("name"),
+        "partidas_creadas": [], "movimientos": [],
+    })
+    ids_nuevos: Dict[str, str] = {}
+    try:
+        for orden, nodo in enumerate(plan["nodos_a_crear"]):
+            tipo_padre, valor = nodo["padre"]
+            padre_id = valor if tipo_padre == "id" else ids_nuevos[valor]
+            nuevo_id = str(uuid.uuid4())
+            await db.migraciones_catalogo.update_one({"id": mig_id}, {"$push": {"partidas_creadas": nuevo_id}})
+            await db.partidas.insert_one({
+                "id": nuevo_id, "project_id": pid, "clave": nodo["clave"], "nombre": nodo["clave"],
+                "nombre_pendiente": True, "orden": orden, "activo": True, "partida_padre_id": padre_id,
+                "peso_manual": None, "created_at": datetime.now(timezone.utc), "created_by": user["id"],
+                "migracion_id": mig_id,
+            })
+            ids_nuevos[nodo["clave"]] = nuevo_id
+        for mov in plan["movimientos"]:
+            tipo_dest, valor = mov["hacia"]
+            destino_id = valor if tipo_dest == "id" else ids_nuevos[valor]
+            await db.migraciones_catalogo.update_one(
+                {"id": mig_id},
+                {"$push": {"movimientos": {"concepto_id": mov["concepto_id"], "desde": mov["desde"], "hacia": destino_id}}},
+            )
+            await db.conceptos.update_one({"id": mov["concepto_id"]}, {"$set": {"partida_id": destino_id}})
+    except Exception as e:  # noqa: BLE001
+        log.error("[migracion_catalogo] falló, revirtiendo %s: %s", mig_id, e)
+        await revertir_migracion(mig_id, user)
+        raise HTTPException(500, f"La migración falló y se revirtió automáticamente: {e}")
+    await db.migraciones_catalogo.update_one(
+        {"id": mig_id}, {"$set": {"estado": "aplicada", "aplicada_en": datetime.now(timezone.utc)}},
+    )
+    await _log_bitacora(
+        pid, "migracion_catalogo", "proyecto", pid, None, None,
+        f"{len(plan['nodos_a_crear'])} partidas creadas, {len(plan['movimientos'])} conceptos reubicados (migración {mig_id})", user,
+    )
+    return mig_id
+
+
+async def revertir_migracion(mig_id: str, user: dict) -> Dict[str, int]:
+    """Devuelve cada concepto a su partida original y da de baja (activo=false) las partidas creadas.
+    Un concepto que alguien ya movió después no se toca. Idempotente."""
+    mig = await db.migraciones_catalogo.find_one({"id": mig_id})
+    if not mig:
+        raise HTTPException(404, "Migración no existe")
+    restaurados = 0
+    for mov in reversed(mig.get("movimientos") or []):
+        c = await db.conceptos.find_one({"id": mov["concepto_id"]})
+        if c and c.get("partida_id") == mov["hacia"]:
+            await db.conceptos.update_one({"id": mov["concepto_id"]}, {"$set": {"partida_id": mov["desde"]}})
+            restaurados += 1
+    dadas_de_baja = 0
+    for pid_nueva in mig.get("partidas_creadas") or []:
+        restantes = await db.conceptos.count_documents({"partida_id": pid_nueva, "activo": True})
+        if restantes == 0:
+            await db.partidas.update_one({"id": pid_nueva}, {"$set": {"activo": False}})
+            dadas_de_baja += 1
+    await db.migraciones_catalogo.update_one(
+        {"id": mig_id},
+        {"$set": {"estado": "revertida", "revertida_en": datetime.now(timezone.utc), "revertida_por": user["id"]}},
+    )
+    return {"conceptos_restaurados": restaurados, "partidas_dadas_de_baja": dadas_de_baja}
+
+
+class MigracionConfirmIn(BaseModel):
+    confirm: bool = False
+    migracion_id: Optional[str] = None
+
+
+@api.get("/admin/migraciones/catalogo-jerarquia")
+async def listar_migracion_catalogo(user: dict = Depends(require_role(ROLE_COORD))):
+    """Proyectos con cuántas partidas se crearían y cuántos conceptos se moverían. Solo lectura."""
+    salida = []
+    async for p in db.projects.find({"archived": {"$ne": True}}, {"id": 1, "name": 1}):
+        excluido = es_proyecto_excluido(p.get("name", ""))
+        item = {
+            "project_id": p["id"], "nombre": p.get("name", ""), "excluido": excluido,
+            "partidas_a_crear": 0, "conceptos_a_mover": 0, "ultima_migracion": None,
+        }
+        if not excluido:
+            plan = await _plan_reubicacion_de_proyecto(p["id"])
+            item["partidas_a_crear"] = len(plan["nodos_a_crear"])
+            item["conceptos_a_mover"] = len(plan["movimientos"])
+        ult = await db.migraciones_catalogo.find(
+            {"project_id": p["id"], "tipo": "catalogo_jerarquia"}, {"_id": 0, "id": 1, "estado": 1, "aplicada_en": 1, "revertida_en": 1},
+        ).sort("iniciada_en", -1).to_list(length=1)
+        item["ultima_migracion"] = ult[0] if ult else None
+        salida.append(item)
+    salida.sort(key=lambda x: (x["excluido"], x["nombre"].lower()))
+    return salida
+
+
+@api.get("/admin/migraciones/catalogo-jerarquia/{pid}/vista-previa")
+async def vista_previa_migracion_catalogo(pid: str, user: dict = Depends(require_role(ROLE_COORD))):
+    """Qué haría la migración en este proyecto (no escribe nada)."""
+    await _proyecto_migrable_o_error(pid, user)
+    plan = await _plan_reubicacion_de_proyecto(pid)
+    return {
+        "project_id": pid,
+        "partidas_a_crear": [{"clave": n["clave"], "padre": n["padre"][1] if n["padre"][0] == "nuevo" else None} for n in plan["nodos_a_crear"]],
+        "conceptos_a_mover": len(plan["movimientos"]),
+        "muestra_movimientos": [
+            {"clave": m["clave"], "hacia": m["hacia"][1] if m["hacia"][0] == "nuevo" else "(partida existente)"}
+            for m in plan["movimientos"][:200]
+        ],
+        "nota": "Las partidas nuevas se llaman igual que su clave y quedan marcadas «nombre pendiente» para que las renombres.",
+    }
+
+
+@api.post("/admin/migraciones/catalogo-jerarquia/{pid}/aplicar")
+async def aplicar_migracion_catalogo(pid: str, body: MigracionConfirmIn, user: dict = Depends(require_role(ROLE_COORD))):
+    if not body.confirm:
+        raise HTTPException(400, "Falta confirmar la migración de este proyecto (confirm=true).")
+    await _proyecto_migrable_o_error(pid, user)
+    plan = await _plan_reubicacion_de_proyecto(pid)
+    mig_id = await aplicar_reubicacion(pid, plan, user)
+    return {
+        "ok": True, "migracion_id": mig_id, "sin_cambios": mig_id is None,
+        "partidas_creadas": len(plan["nodos_a_crear"]), "conceptos_reubicados": len(plan["movimientos"]),
+    }
+
+
+@api.post("/admin/migraciones/catalogo-jerarquia/{pid}/revertir")
+async def revertir_migracion_catalogo(pid: str, body: MigracionConfirmIn, user: dict = Depends(require_role(ROLE_COORD))):
+    if not body.confirm:
+        raise HTTPException(400, "Falta confirmar la reversa (confirm=true).")
+    await _proyecto_migrable_o_error(pid, user)
+    filtro: Dict[str, Any] = {"project_id": pid, "tipo": "catalogo_jerarquia", "estado": "aplicada"}
+    if body.migracion_id:
+        filtro["id"] = body.migracion_id
+    ult = await db.migraciones_catalogo.find(filtro).sort("iniciada_en", -1).to_list(length=1)
+    if not ult:
+        raise HTTPException(404, "No hay una migración aplicada para revertir en este proyecto.")
+    r = await revertir_migracion(ult[0]["id"], user)
+    return {"ok": True, "migracion_id": ult[0]["id"], **r}
 
 
 # === Etapa EVM: Análisis de Periodos (Valor Ganado) ==========================
