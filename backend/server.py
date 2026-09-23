@@ -64,7 +64,7 @@ GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
 client = AsyncIOMotorClient(MONGO_URL, serverSelectionTimeoutMS=5000)
 db = client[DB_NAME]
 
-app = FastAPI(title="SynCo v2.0 API")
+app = FastAPI(title="Dirac API")
 api = APIRouter(prefix="/api")
 bearer = HTTPBearer(auto_error=False)
 
@@ -1205,13 +1205,13 @@ async def startup_event():
     # Loop en segundo plano: recordatorios push de reuniones (1h antes).
     asyncio.create_task(_meeting_reminder_loop())
 
-    log.info("[startup] SynCo v2.0 ready")
+    log.info("[startup] Dirac ready")
 
 
 # === ROOT / HEALTH ==========================================================
 @api.get("/")
 async def root():
-    return {"name": "SynCo v2.0", "status": "ok"}
+    return {"name": "Dirac", "status": "ok"}
 
 
 @api.get("/health")
@@ -4608,7 +4608,7 @@ async def bulk_upload_template(
     buf.seek(0)
 
     headers = {
-        "Content-Disposition": 'attachment; filename="plantilla_nodos_synco.xlsx"',
+        "Content-Disposition": 'attachment; filename="plantilla_nodos_dirac.xlsx"',
     }
     return StreamingResponse(
         buf,
@@ -5410,7 +5410,7 @@ async def invitations_bulk_template(pid: str, user: dict = Depends(require_role(
     return StreamingResponse(
         buf,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": 'attachment; filename="plantilla_invitaciones_synco.xlsx"'},
+        headers={"Content-Disposition": 'attachment; filename="plantilla_invitaciones_dirac.xlsx"'},
     )
 
 
@@ -6240,14 +6240,14 @@ async def get_report_collage(rid: str, user: dict = Depends(current_user)):
             break
         canvas.paste(cell, positions[i])
 
-    # Marca SynCo discreta en la esquina inferior derecha
+    # Marca Dirac discreta en la esquina inferior derecha
     try:
         draw = ImageDraw.Draw(canvas)
         try:
             font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 22)
         except Exception:
             font = ImageFont.load_default()
-        stamp = f"SynCo · {len(cells)} foto{'s' if len(cells) != 1 else ''}"
+        stamp = f"Dirac · {len(cells)} foto{'s' if len(cells) != 1 else ''}"
         bbox = draw.textbbox((0, 0), stamp, font=font)
         w = bbox[2] - bbox[0]
         h = bbox[3] - bbox[1]
@@ -8493,7 +8493,7 @@ async def export_reports_xlsx(pid: str, user: dict = Depends(current_user)):
 
     # Cabecera del archivo: nombre del proyecto y fecha
     ws.insert_rows(1)
-    ws.cell(row=1, column=1, value=f"SynCo · {proj.get('name','Proyecto')} · Reporte exportado {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
+    ws.cell(row=1, column=1, value=f"Dirac · {proj.get('name','Proyecto')} · Reporte exportado {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(headers))
     title_cell = ws.cell(row=1, column=1)
     title_cell.font = Font(bold=True, size=12, color="1E3A8A")
@@ -8505,7 +8505,7 @@ async def export_reports_xlsx(pid: str, user: dict = Depends(current_user)):
     buf.seek(0)
 
     safe_name = re.sub(r"[^A-Za-z0-9_-]+", "_", proj.get("name", "proyecto"))[:60] or "proyecto"
-    fname = f"synco_{safe_name}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M')}.xlsx"
+    fname = f"dirac_{safe_name}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M')}.xlsx"
     return StreamingResponse(
         buf,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

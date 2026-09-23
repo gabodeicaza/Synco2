@@ -8,6 +8,7 @@ import { Button } from '@/src/components/Button';
 import { colors, radius, spacing } from '@/src/theme';
 import { roleLabel } from '@/src/utils/roles';
 import { confirm } from '@/src/utils/confirm';
+import { t } from '@/src/i18n';
 
 export default function CoordProfile() {
   const insets = useSafeAreaInsets();
@@ -47,7 +48,7 @@ export default function CoordProfile() {
           <Text style={styles.cardLabel}>Cuenta</Text>
           <Row icon="mail-outline" label="Correo" value={user?.email || '_'} />
           <Row icon="shield-outline" label="Rol" value={roleLabel(user?.role)} />
-          <Row icon="folder-outline" label="Proyectos accesibles" value={user?.role === 'coordinador_general' ? 'Todos (god mode)' : String(user?.project_ids?.length ?? 0)} />
+          <Row icon="folder-outline" label="Proyectos accesibles" value={user?.role === 'coordinador_general' ? t('perfil.accesoTodosProyectos') : String(user?.project_ids?.length ?? 0)} />
         </View>
 
         {user?.role === 'coordinador_general' && (

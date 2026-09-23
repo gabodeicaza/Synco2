@@ -14,6 +14,7 @@ import { colors, radius, spacing, shadow } from '@/src/theme';
 import { roleLabel, ROLE_SUB, ROLE_ESP, ROLE_JEFE } from '@/src/utils/roles';
 import { confirm, notify } from '@/src/utils/confirm';
 import { ImportarInvitacionesModal } from '@/src/components/ImportarInvitacionesModal';
+import { t } from '@/src/i18n';
 
 type WizardStep = 0 | 1 | 2 | 3;
 type WizardRole = 'sub_coordinador' | 'especialista' | 'jefe_proyecto';
@@ -178,7 +179,7 @@ export default function InvitationsScreen() {
 
   async function shareInvite(inv: Invitation) {
     const url = `https://apm-app.mx/invite/${inv.token}`;
-    const msg = `Hola ${inv.name}, te invito a SynCo.\nEnlace: ${url}\nToken: ${inv.token}`;
+    const msg = t('marca.invitacion', { nombre: inv.name, enlace: url, token: inv.token });
     try { await Share.share({ message: msg }); } catch {}
   }
 

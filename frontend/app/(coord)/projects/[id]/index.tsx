@@ -23,6 +23,7 @@ import { ReportPreviewSheet } from '@/src/components/ReportPreviewSheet';
 import { fmtDateTimeCDMX } from '@/src/utils/tz';
 import { moduloActivo } from '@/src/utils/modulos';
 import { getMediaLibraryPermission, requestMediaLibraryPermission } from '@/src/utils/permissions';
+import { t } from '@/src/i18n';
 
 // Limite cliente coherente con backend (20 MB). Evita subidas que el servidor rechazaria.
 const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
@@ -2729,7 +2730,7 @@ export default function ProjectDetailScreen() {
             <View style={styles.tplHelperBox}>
               <Ionicons name="information-circle-outline" size={18} color={colors.primary} />
               <Text style={styles.tplHelperTxt}>
-                <Text style={{ fontWeight: '900' }}>Modo Superposicion (PDF)</Text> - recomendado. Exporta tu plantilla PowerPoint a PDF y subela aqui. El motor imprime el reporte SynCo sobre las paginas de tu plantilla como marca de agua institucional. Convencion por numero de pagina:{'\n'}
+                <Text style={{ fontWeight: '900' }}>Modo Superposicion (PDF)</Text> - recomendado. Exporta tu plantilla PowerPoint a PDF y subela aqui. Dirac imprime el reporte sobre las paginas de tu plantilla como marca de agua institucional. Convencion por numero de pagina:{'\n'}
                 . <Text style={{ fontWeight: '900' }}>Pagina 1</Text> = Portada (fondo).{'\n'}
                 . <Text style={{ fontWeight: '900' }}>Pagina 2</Text> = Portadilla de Nodo (se inserta tal cual antes de cada nodo).{'\n'}
                 . <Text style={{ fontWeight: '900' }}>Pagina 3+</Text> = Base para paginas de datos (ciclada). Fotos 13.37 x 10 cm.{'\n'}
@@ -2742,10 +2743,10 @@ export default function ProjectDetailScreen() {
                 kind === 'pdf'
                   ? { label: 'PDF . plantilla base', sub: 'Portada + Portadilla de Nodo + Base de contenido', icon: 'document-text' as const, tint: '#DC2626' }
                   : kind === 'docx'
-                  ? { label: 'Word (opcional)', sub: 'Se usa como base tal cual - sin token-relleno', icon: 'document' as const, tint: '#1D4ED8' }
+                  ? { label: t('proyecto.plantillaWordOpcional'), sub: t('proyecto.plantillaWordDescripcion'), icon: 'document' as const, tint: '#1D4ED8' }
                   : kind === 'pptx'
                   ? { label: 'PowerPoint (opcional)', sub: 'Se usa como base tal cual - recomendado exportar a PDF', icon: 'easel' as const, tint: '#B45309' }
-                  : { label: 'Mapa / Ubicacion', sub: 'Imagen (JPG/PNG) - usada por otros motores auxiliares', icon: 'map' as const, tint: '#059669' };
+                  : { label: t('proyecto.mapaUbicacion'), sub: t('proyecto.mapaUbicacionDescripcion'), icon: 'map' as const, tint: '#059669' };
               const hasFile = !!(project as any)?.[`template_${kind}`];
               const busy = tplBusyKind === kind;
               return (

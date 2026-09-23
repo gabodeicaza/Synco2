@@ -9,6 +9,7 @@ import { Button } from '@/src/components/Button';
 import { useAuth } from '@/src/auth-context';
 import { homeRouteForRole, APP_BRAND, APP_TAGLINE } from '@/src/utils/roles';
 import { colors, radius, spacing } from '@/src/theme';
+import { t } from '@/src/i18n';
 
 export default function LoginScreen() {
   const insets = useSafeAreaInsets();
@@ -128,7 +129,7 @@ export default function LoginScreen() {
           <View style={styles.infoBox}>
             <Ionicons name="information-circle-outline" size={16} color={colors.textMuted} />
             <Text style={styles.infoText}>
-              El acceso a SynCo es solo por invitacion. Tu Coordinador General te enviara un codigo por WhatsApp o correo.
+              {t('auth.accesoSoloInvitacion')}
             </Text>
           </View>
 

@@ -10,6 +10,7 @@ import { useAuth } from '@/src/auth-context';
 import { api } from '@/src/api';
 import { homeRouteForRole, roleLabel } from '@/src/utils/roles';
 import { colors, radius, spacing } from '@/src/theme';
+import { t } from '@/src/i18n';
 
 export default function AcceptInviteScreen() {
   const insets = useSafeAreaInsets();
@@ -87,7 +88,7 @@ export default function AcceptInviteScreen() {
       >
         <View style={styles.header}>
           <Ionicons name="mail-open" size={48} color={colors.primary} />
-          <Text style={styles.title}>Bienvenido a SynCo</Text>
+          <Text style={styles.title}>{t('auth.bienvenida')}</Text>
           <Text style={styles.subtitle}>Has sido invitado a colaborar</Text>
         </View>
 

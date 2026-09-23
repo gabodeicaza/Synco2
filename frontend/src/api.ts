@@ -3,13 +3,14 @@
 import { Alert, Platform } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
 import { storage } from '@/src/utils/storage';
+import { mensajeDeError } from '@/src/utils/errores';
 import { BACKEND_URL, BASE, ApiError, setAuthTokenCache, request, safeJson, getToken, authHeader } from '@/src/httpClient';
 import { generateClientId, enqueueReport, isLikelyOnline } from '@/src/utils/offlineQueue';
 import { generateAvanceClientId, enqueueAvance, isAvanceLikelyOnline } from '@/src/utils/avanceQueue';
 
 // [DIAG 2026-07-08] Toggle para mostrar Alert diagnostico en dispositivo
 // cuando falla un upload. Poner en `false` cuando termine la investigacion.
-const UPLOAD_DIAG_ALERT = true;
+const UPLOAD_DIAG_ALERT = __DEV__;
 
 // Extrae el mensaje real de error de una respuesta no-2xx (el backend manda
 // `{"detail": "..."}` via HTTPException). Antes, las descargas de
@@ -22,7 +23,7 @@ async function _downloadErrorMessage(res: Response, fallback: string): Promise<s
     const data = text ? safeJson(text) : null;
     const detail = data && (data as any).detail;
     if (typeof detail === 'string' && detail.trim()) return `${fallback} (${res.status}): ${detail}`;
-    if (detail) return `${fallback} (${res.status}): ${JSON.stringify(detail)}`;
+    if (detail) return `${fallback} (${res.status}): ${mensajeDeError(detail)}`;
   } catch {
     // noop: nos quedamos con el fallback
   }
@@ -153,14 +154,16 @@ async function nativeMultipartUpload<T>(
         );
       } catch { /* noop */ }
     }
-    throw new ApiError(0, `uploadAsync fallo -> ${nativeMsg}. url=${url} localUri=${normalized.uri} size=${normalized.size} mime=${normalized.type}`);
+    if (__DEV__) console.warn(`[upload] uploadAsync falló -> ${nativeMsg}. url=${url} localUri=${normalized.uri} size=${normalized.size} mime=${normalized.type}`);
+    throw new ApiError(0, 'No se pudo subir el archivo. Revisa tu conexión e inténtalo de nuevo.');
   }
 
   const { status, body } = response;
   const data = body ? safeJson(body) : null;
   if (status < 200 || status >= 300) {
     const detail = (data && (data as any).detail) || body?.slice(0, 200) || 'sin cuerpo';
-    throw new ApiError(status, `HTTP ${status}. detail="${typeof detail === 'string' ? detail : JSON.stringify(detail)}" url=${url} size=${normalized.size} mime=${normalized.type}`);
+    if (__DEV__) console.warn(`[upload] HTTP ${status} url=${url} size=${normalized.size} mime=${normalized.type}`);
+    throw new ApiError(status, mensajeDeError(detail));
   }
   return data as T;
 }
@@ -1653,7 +1656,7 @@ export const api = {
     const data = text ? safeJson(text) : null;
     if (!res.ok) {
       const msg = (data && (data as any).detail) || `HTTP ${res.status}`;
-      throw new ApiError(res.status, typeof msg === 'string' ? msg : JSON.stringify(msg));
+      throw new ApiError(res.status, mensajeDeError(msg));
     }
     return data as LocationNode;
   },
@@ -1694,7 +1697,7 @@ export const api = {
     const data = text ? safeJson(text) : null;
     if (!res.ok) {
       const msg = (data && (data as any).detail) || `HTTP ${res.status}`;
-      throw new ApiError(res.status, typeof msg === 'string' ? msg : JSON.stringify(msg));
+      throw new ApiError(res.status, mensajeDeError(msg));
     }
     return data as PlanoAvance;
   },
@@ -1749,7 +1752,7 @@ export const api = {
     const data = text ? safeJson(text) : null;
     if (!res.ok) {
       const msg = (data && (data as any).detail) || `HTTP ${res.status}`;
-      throw new ApiError(res.status, typeof msg === 'string' ? msg : JSON.stringify(msg));
+      throw new ApiError(res.status, mensajeDeError(msg));
     }
     return data as any;
   },
@@ -1788,7 +1791,7 @@ export const api = {
     const data = text ? safeJson(text) : null;
     if (!res.ok) {
       const msg = (data && (data as any).detail) || `HTTP ${res.status}`;
-      throw new ApiError(res.status, typeof msg === 'string' ? msg : JSON.stringify(msg));
+      throw new ApiError(res.status, mensajeDeError(msg));
     }
     return data as any;
   },
@@ -1829,7 +1832,7 @@ export const api = {
     const data = text ? safeJson(text) : null;
     if (!res.ok) {
       const msg = (data && (data as any).detail) || `HTTP ${res.status}`;
-      throw new ApiError(res.status, typeof msg === 'string' ? msg : JSON.stringify(msg));
+      throw new ApiError(res.status, mensajeDeError(msg));
     }
     return data as Project;
   },
@@ -1875,7 +1878,7 @@ export const api = {
     const data = text ? safeJson(text) : null;
     if (!res.ok) {
       const msg = (data && (data as any).detail) || `HTTP ${res.status}`;
-      throw new ApiError(res.status, typeof msg === 'string' ? msg : JSON.stringify(msg));
+      throw new ApiError(res.status, mensajeDeError(msg));
     }
     return data as Project;
   },
@@ -1907,7 +1910,7 @@ export const api = {
     const data = text ? safeJson(text) : null;
     if (!res.ok) {
       const msg = (data && (data as any).detail) || `HTTP ${res.status}`;
-      throw new ApiError(res.status, typeof msg === 'string' ? msg : JSON.stringify(msg));
+      throw new ApiError(res.status, mensajeDeError(msg));
     }
     return data as { data_url: string };
   },
@@ -1922,7 +1925,7 @@ export const api = {
   downloadNodesTemplate: async (pid: string): Promise<{ blob?: Blob; uri?: string; filename: string }> => {
     const headers = await authHeader();
     const url = `${BASE}/projects/${pid}/nodes/bulk-upload/template`;
-    const filename = 'plantilla_nodos_synco.xlsx';
+    const filename = 'plantilla_nodos_dirac.xlsx';
     const res = await fetch(url, { method: 'GET', headers });
     if (!res.ok) {
       throw new ApiError(res.status, `HTTP ${res.status} al descargar la plantilla`);
@@ -2139,7 +2142,7 @@ export const api = {
     if (!res.ok) throw new ApiError(res.status, await _downloadErrorMessage(res, 'Error al descargar la plantilla'));
     const cd = res.headers.get('Content-Disposition') || '';
     const m = cd.match(/filename="?([^"]+)"?/);
-    return { blob: await res.blob(), filename: (m && m[1]) || 'plantilla_invitaciones_synco.xlsx' };
+    return { blob: await res.blob(), filename: (m && m[1]) || 'plantilla_invitaciones_dirac.xlsx' };
   },
   invitationsBulkValidate: async (
     pid: string,
@@ -2169,7 +2172,7 @@ export const api = {
     const data = text ? safeJson(text) : null;
     if (!res.ok) {
       const msg = (data && (data as any).detail) || `HTTP ${res.status}`;
-      throw new ApiError(res.status, typeof msg === 'string' ? msg : JSON.stringify(msg));
+      throw new ApiError(res.status, mensajeDeError(msg));
     }
     return data as InvitationBulkValidateResponse;
   },
@@ -2404,7 +2407,7 @@ export const api = {
     const data = text ? safeJson(text) : null;
     if (!res.ok) {
       const msg = (data && (data as any).detail) || `HTTP ${res.status}`;
-      throw new ApiError(res.status, typeof msg === 'string' ? msg : JSON.stringify(msg));
+      throw new ApiError(res.status, mensajeDeError(msg));
     }
     return data as Minuta;
   },
@@ -2524,7 +2527,7 @@ export const api = {
     const data = text ? safeJson(text) : null;
     if (!res.ok) {
       const msg = (data && (data as any).detail) || `HTTP ${res.status}`;
-      throw new ApiError(res.status, typeof msg === 'string' ? msg : JSON.stringify(msg));
+      throw new ApiError(res.status, mensajeDeError(msg));
     }
     return data as ImportSheetsResponse;
   },
@@ -2601,7 +2604,7 @@ export const api = {
     const data = text ? safeJson(text) : null;
     if (!res.ok) {
       const msg = (data && (data as any).detail) || `HTTP ${res.status}`;
-      throw new ApiError(res.status, typeof msg === 'string' ? msg : JSON.stringify(msg));
+      throw new ApiError(res.status, mensajeDeError(msg));
     }
     return data as ImportSheetsResponse;
   },
@@ -2676,7 +2679,7 @@ export const api = {
     const data = text ? safeJson(text) : null;
     if (!res.ok) {
       const msg = (data && (data as any).detail) || `HTTP ${res.status}`;
-      throw new ApiError(res.status, typeof msg === 'string' ? msg : JSON.stringify(msg));
+      throw new ApiError(res.status, mensajeDeError(msg));
     }
     return data as ImportSheetsResponse;
   },
@@ -2820,7 +2823,7 @@ export const api = {
     const data = text ? safeJson(text) : null;
     if (!res.ok) {
       const msg = (data && (data as any).detail) || `HTTP ${res.status}`;
-      throw new ApiError(res.status, typeof msg === 'string' ? msg : JSON.stringify(msg));
+      throw new ApiError(res.status, mensajeDeError(msg));
     }
     return data as GastoRealImportResult;
   },
@@ -2868,7 +2871,7 @@ export const api = {
     const data = text ? safeJson(text) : null;
     if (!res.ok) {
       const msg = (data && (data as any).detail) || `HTTP ${res.status}`;
-      throw new ApiError(res.status, typeof msg === 'string' ? msg : JSON.stringify(msg));
+      throw new ApiError(res.status, mensajeDeError(msg));
     }
     return data as RegistroAvanceImportResult;
   },

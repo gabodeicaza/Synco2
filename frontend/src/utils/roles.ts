@@ -4,7 +4,7 @@
 //   - sub_coordinador     (scope: sub-arbol)
 //   - especialista        (scope: hojas asignadas)
 
-export const APP_BRAND = 'SynCo';
+export const APP_BRAND = 'Dirac';
 export const APP_TAGLINE = 'Reporte de obra inteligente, sin huella local.';
 
 export type AppRole = 'coordinador_general' | 'jefe_proyecto' | 'sub_coordinador' | 'especialista';

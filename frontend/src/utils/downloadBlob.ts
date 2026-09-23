@@ -1,4 +1,5 @@
 import { Platform } from 'react-native';
+import { t } from '@/src/i18n';
 
 /**
  * Descarga un Blob al dispositivo / navegador.
@@ -44,7 +45,7 @@ export async function downloadBlob(
   if (await Sharing.isAvailableAsync()) {
     await Sharing.shareAsync(dest, {
       mimeType: mimeType || 'application/octet-stream',
-      dialogTitle: 'Compartir reporte SynCo',
+      dialogTitle: t('marca.compartirReporte'),
     });
   }
 }

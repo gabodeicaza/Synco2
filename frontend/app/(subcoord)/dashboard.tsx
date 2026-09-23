@@ -25,7 +25,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '@/src/auth-context';
 import { api, FeedItem, LocationNode, Project, ProjectEvent } from '@/src/api';
 import { colors, radius, shadow, spacing, areaTone } from '@/src/theme';
-import { roleLabel } from '@/src/utils/roles';
+import { APP_BRAND, roleLabel } from '@/src/utils/roles';
 import { HeaderMenu } from '@/src/components/HeaderMenu';
 import { DailyGoalsPanel } from '@/src/components/DailyGoalsPanel';
 import { MyMeetingsPanel } from '@/src/components/MyMeetingsPanel';
@@ -37,6 +37,7 @@ import {
   getStartOfTodayCDMX, getStartOfNaturalWeekCDMX, getStartOfNaturalMonthCDMX
 } from '@/src/utils/tz';
 import { shareWithAutoRecover } from '@/src/utils/share';
+import { t } from '@/src/i18n';
 
 export default function SubCoordDashboard() {
   const insets = useSafeAreaInsets();
@@ -306,7 +307,7 @@ export default function SubCoordDashboard() {
       }
       const ts = Date.now();
       const fileUri = `${FileSystem.cacheDirectory}resumen_ejecutivo_${ts}.txt`;
-      const header = `__ Resumen Ejecutivo _ SynCo\n${
+      const header = `${t('marca.resumenEjecutivo')}\n${
         aiMeta ? `${aiMeta.reports_count} reportes _ ultimas ${aiMeta.period_hours}h\n` : ''
       }\n`;
       await FileSystem.writeAsStringAsync(fileUri, header + aiSummary, {
@@ -336,7 +337,7 @@ export default function SubCoordDashboard() {
       const path = (item.node_path_names || []).join(' _ ') || '_';
       const ts = item.created_at ? dayjs.utc(item.created_at).tz(CDMX_TZ).format('DD/MM/YYYY HH:mm') : '';
       const captionLines = [
-        '__ *Reporte de obra _ SynCo*',
+        `*${t('marca.reporteDeObra')}*`,
         '',
         `__ *Ubicacion:* ${path}`,
         `__ *Capturado por:* ${item.captured_by_name || '_'}`,
@@ -410,7 +411,7 @@ export default function SubCoordDashboard() {
           await Sharing.shareAsync(dest, {
             mimeType:
               'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            dialogTitle: 'Compartir reporte SynCo',
+            dialogTitle: t('marca.compartirReporte'),
           });
         } else {
           Alert.alert('Listo', `Archivo guardado en cache:\n${dest}`);
@@ -491,7 +492,7 @@ export default function SubCoordDashboard() {
           encoding: FileSystem.EncodingType.Base64,
         });
         if (await Sharing.isAvailableAsync()) {
-          await Sharing.shareAsync(dest, { dialogTitle: 'Compartir reporte SynCo' });
+          await Sharing.shareAsync(dest, { dialogTitle: t('marca.compartirReporte') });
         } else {
           Alert.alert('Listo', `Archivo guardado en cache:\n${dest}`);
         }
@@ -518,7 +519,7 @@ export default function SubCoordDashboard() {
       <View style={[styles.header, { paddingTop: insets.top + spacing.xs }]}>
         <HeaderMenu basePath="/(subcoord)" projectId={pid} />
         <View style={{ flex: 1, alignItems: 'center' }}>
-          <Text style={styles.headerTitle}>SynCo</Text>
+          <Text style={styles.headerTitle}>{APP_BRAND}</Text>
           <Text style={styles.headerSubtitle} numberOfLines={1}>
             Sub-coordinador _ {roleLabel(user?.role)}
           </Text>

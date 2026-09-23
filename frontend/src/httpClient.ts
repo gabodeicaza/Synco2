@@ -1,7 +1,8 @@
 // SynCo v2.0 _ Cliente HTTP generico (extraido de api.ts para que
 // utils/offlineQueue.ts pueda reusar `request`/`ApiError` sin generar un
 // import circular con api.ts, que a su vez necesita encolar reportes).
-import { storage } from '@/src/utils/storage';
+import { leerToken } from '@/src/utils/sessionKeys';
+import { mensajeDeError } from '@/src/utils/errores';
 
 /**
  * BASE URL del backend.
@@ -55,7 +56,7 @@ export function setAuthTokenCache(token: string | null): void {
 
 export async function getToken(): Promise<string> {
   if (cachedToken === undefined) {
-    cachedToken = (await storage.secureGet<string>('syncsite_token', '')) || null;
+    cachedToken = (await leerToken()) || null;
   }
   return cachedToken || '';
 }
@@ -80,7 +81,7 @@ export async function request<T>(method: string, path: string, body?: any): Prom
 
   if (!res.ok) {
     const msg = (data && (data as any).detail) || `HTTP ${res.status}`;
-    throw new ApiError(res.status, typeof msg === 'string' ? msg : JSON.stringify(msg));
+    throw new ApiError(res.status, mensajeDeError(msg));
   }
   return data as T;
 }
