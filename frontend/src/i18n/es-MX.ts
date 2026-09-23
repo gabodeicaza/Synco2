@@ -39,7 +39,7 @@ export const esMX = {
     notificaciones: 'Notificaciones',
     notificacionesActivas: 'Activadas · toca para cambiar en Ajustes',
     notificacionesInactivas: 'Desactivadas · toca para activarlas en Ajustes',
-    notificacionesDesconocidas: 'Administra los avisos en Ajustes',
+    notificacionesDesconocidas: 'Aún no decides · toca para activar los avisos',
     privacidad: 'Política de privacidad',
     terminos: 'Términos de uso',
     abrirEnlaceFallo: 'No se pudo abrir el enlace. Inténtalo de nuevo.',
@@ -56,6 +56,16 @@ export const esMX = {
     cancelar: 'Cancelar',
     mostrarPassword: 'Mostrar contraseña',
     ocultarPassword: 'Ocultar contraseña',
+  },
+  permisos: {
+    camaraTitulo: 'Permiso de cámara',
+    camaraMensaje: 'Dirac usa la cámara solo para tomar fotos de evidencia de obra. Actívala en Ajustes para continuar.',
+    abrirAjustes: 'Abrir ajustes',
+    avisosTitulo: '¿Activar avisos?',
+    avisosMensaje:
+      'Dirac te avisa cuando un acuerdo está por vencer, cuando hay una noticia urgente o cuando te invitan a un proyecto. Puedes cambiarlo cuando quieras en Perfil.',
+    avisosActivar: 'Activar avisos',
+    avisosAhoraNo: 'Ahora no',
   },
   red: {
     sinConexion: 'Sin conexión',

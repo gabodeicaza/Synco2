@@ -2,7 +2,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, ActivityIndicator, Pressable, Alert,
-  TextInput, KeyboardAvoidingView, Platform, Modal, Image, TouchableOpacity, FlatList,
+  TextInput, KeyboardAvoidingView, Platform, Modal, Image, TouchableOpacity, FlatList, Linking,
 } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -20,6 +20,9 @@ import { dayjs, CDMX_TZ } from '@/src/utils/tz';
 import { shareWithAutoRecover } from '@/src/utils/share';
 import { buildReportShareText } from '@/src/utils/reportText';
 import { PhotoAnnotator } from '@/src/components/PhotoAnnotator';
+import { requestCameraPermission } from '@/src/utils/permissions';
+import { confirm } from '@/src/utils/confirm';
+import { t } from '@/src/i18n';
 
 // Persistence Keys
 const CATALOG_PERSONAL_KEY = 'syncsite_catalog_personal';
@@ -388,6 +391,16 @@ export default function NewReportScreen() {
   }
 
   async function onPickImage(mode: 'cam' | 'gal') {
+    if (mode === 'cam') {
+      const perm = await requestCameraPermission();
+      if (!perm.granted) {
+        if (!perm.canAskAgain) {
+          const abrir = await confirm(t('permisos.camaraTitulo'), t('permisos.camaraMensaje'), { confirmText: t('permisos.abrirAjustes') });
+          if (abrir) Linking.openSettings();
+        }
+        return;
+      }
+    }
     const res = mode === 'cam'
       ? await ImagePicker.launchCameraAsync({ quality: 0.7, base64: true })
       : await ImagePicker.launchImageLibraryAsync({ quality: 0.7, base64: true });

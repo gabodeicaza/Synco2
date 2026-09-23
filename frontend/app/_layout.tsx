@@ -17,6 +17,7 @@ import { useIconFonts } from '@/src/hooks/use-icon-fonts';
 import { AuthProvider } from '@/src/auth-context';
 import { OfflineQueueProvider } from '@/src/offline-queue-context';
 import { BannerSinConexion } from '@/src/components/BannerSinConexion';
+import { PedirNotificaciones } from '@/src/components/PedirNotificaciones';
 import { configurarPing } from '@/src/utils/connectivity';
 import { colors } from '@/src/theme';
 
@@ -54,6 +55,7 @@ export default function RootLayout() {
             <StatusBar style="dark" />
             <View style={{ flex: 1 }}>
             <BannerSinConexion />
+            <PedirNotificaciones />
             <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.bg } }}>
               <Stack.Screen name="index" />
               <Stack.Screen name="(auth)" />

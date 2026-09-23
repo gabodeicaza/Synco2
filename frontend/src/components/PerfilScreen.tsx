@@ -6,7 +6,6 @@ import { View, Text, StyleSheet, ScrollView, Pressable, Linking } from 'react-na
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import * as Notifications from 'expo-notifications';
 import { useAuth } from '@/src/auth-context';
 import { Button } from '@/src/components/Button';
 import { EliminarCuentaModal } from '@/src/components/EliminarCuentaModal';
@@ -14,6 +13,7 @@ import { t } from '@/src/i18n';
 import { colors, radius, spacing } from '@/src/theme';
 import { SOPORTE_EMAIL, urlLegal, versionApp, PaginaLegal } from '@/src/utils/appInfo';
 import { confirm } from '@/src/utils/confirm';
+import { estadoNotificaciones, registerForPushNotificationsAsync } from '@/src/utils/pushNotifications';
 import { roleLabel } from '@/src/utils/roles';
 import { showToast } from '@/src/utils/toast';
 
@@ -23,16 +23,25 @@ export function PerfilScreen({ basePath }: { basePath: BasePath }) {
   const insets = useSafeAreaInsets();
   const { user, logout } = useAuth();
   const [borrando, setBorrando] = useState(false);
-  const [notif, setNotif] = useState<'activas' | 'inactivas' | 'desconocidas'>('desconocidas');
+  const [notif, setNotif] = useState<{ estado: 'activas' | 'inactivas' | 'sin_decidir'; puedePreguntar: boolean }>({ estado: 'sin_decidir', puedePreguntar: false });
   const { version, build } = versionApp();
 
   useEffect(() => {
     let vivo = true;
-    Notifications.getPermissionsAsync()
-      .then((p) => { if (vivo) setNotif(p.granted ? 'activas' : p.status === 'undetermined' ? 'desconocidas' : 'inactivas'); })
-      .catch(() => {});
+    estadoNotificaciones().then((n) => { if (vivo) setNotif(n); });
     return () => { vivo = false; };
   }, []);
+
+  // Sin decidir: se pide el permiso aquí (acción explícita de la persona). Si ya
+  // se decidió, el sistema no vuelve a preguntar: se abren los Ajustes.
+  async function onNotificaciones() {
+    if (notif.estado === 'sin_decidir' && notif.puedePreguntar) {
+      await registerForPushNotificationsAsync({ pedirPermiso: true }).catch(() => null);
+      setNotif(await estadoNotificaciones());
+      return;
+    }
+    Linking.openSettings().catch(() => showToast(t('acercaDe.abrirEnlaceFallo')));
+  }
 
   async function onLogout() {
     const ok = await confirm(t('perfil.cerrarSesion'), t('perfil.cerrarSesionPregunta'), {
@@ -55,8 +64,8 @@ export function PerfilScreen({ basePath }: { basePath: BasePath }) {
   const abrirLegal = (p: PaginaLegal) => abrir(urlLegal(p));
   const esCoordGeneral = user?.role === 'coordinador_general';
   const notifTexto =
-    notif === 'activas' ? t('acercaDe.notificacionesActivas')
-    : notif === 'inactivas' ? t('acercaDe.notificacionesInactivas')
+    notif.estado === 'activas' ? t('acercaDe.notificacionesActivas')
+    : notif.estado === 'inactivas' ? t('acercaDe.notificacionesInactivas')
     : t('acercaDe.notificacionesDesconocidas');
 
   return (
@@ -145,7 +154,7 @@ export function PerfilScreen({ basePath }: { basePath: BasePath }) {
             icon="notifications-outline"
             label={t('acercaDe.notificaciones')}
             value={notifTexto}
-            onPress={() => Linking.openSettings().catch(() => showToast(t('acercaDe.abrirEnlaceFallo')))}
+            onPress={onNotificaciones}
           />
           <LinkRow
             icon="document-text-outline"

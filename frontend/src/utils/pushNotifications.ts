@@ -1,8 +1,9 @@
 /**
- * Push notifications bootstrap for SynCo.
+ * Push notifications bootstrap for Dirac.
  *
  * Responsibilities:
- *   1. Ask for notification permissions (respecting prior denial).
+ *   1. Ask for notification permissions ONLY when `pedirPermiso` is true (after the user
+ *      accepted the in-app explanation, see PedirNotificaciones.tsx) — never at launch/login.
  *   2. Obtain the Expo Push Token (only on physical devices).
  *   3. Send the token to the backend (`POST /api/users/push-token`).
  *   4. Configure the Android notification channel (required for SDK 33+).
@@ -67,7 +68,9 @@ function getProjectId(): string | undefined {
  *   - El usuario denego permiso.
  *   - Ocurrio un error en cualquier paso (sin romper la app).
  */
-export async function registerForPushNotificationsAsync(): Promise<string | null> {
+export async function registerForPushNotificationsAsync(
+  opts: { pedirPermiso?: boolean } = {},
+): Promise<string | null> {
   // 1) Web: expo-notifications no soporta web push de manera consistente. Salir limpio.
   if (Platform.OS === 'web') {
     return null;
@@ -88,7 +91,7 @@ export async function registerForPushNotificationsAsync(): Promise<string | null
     await Notifications.getPermissionsAsync();
   let finalStatus = existingStatus;
 
-  if (existingStatus !== 'granted' && canAskAgain) {
+  if (existingStatus !== 'granted' && canAskAgain && opts.pedirPermiso) {
     const { status } = await Notifications.requestPermissionsAsync();
     finalStatus = status;
   }
@@ -191,4 +194,18 @@ export async function scheduleMinuteReminder(id: string, title: string, dueDate:
  */
 export async function clearCachedPushToken() {
   await storage.removeItem(STORAGE_KEY_LAST_TOKEN);
+}
+
+export type EstadoNotificaciones = 'activas' | 'inactivas' | 'sin_decidir';
+
+/** Estado del permiso de notificaciones y si todavía se puede preguntar. */
+export async function estadoNotificaciones(): Promise<{ estado: EstadoNotificaciones; puedePreguntar: boolean }> {
+  try {
+    const p = await Notifications.getPermissionsAsync();
+    if (p.granted) return { estado: 'activas', puedePreguntar: false };
+    if (p.status === 'undetermined') return { estado: 'sin_decidir', puedePreguntar: p.canAskAgain !== false };
+    return { estado: 'inactivas', puedePreguntar: !!p.canAskAgain };
+  } catch {
+    return { estado: 'sin_decidir', puedePreguntar: false };
+  }
 }

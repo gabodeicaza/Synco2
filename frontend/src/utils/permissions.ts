@@ -14,6 +14,11 @@ export async function getMediaLibraryPermission(): Promise<PermisoGaleria> {
   return ImagePicker.getMediaLibraryPermissionsAsync();
 }
 
+/** Cámara: se pide justo al tocar "Tomar foto", nunca al abrir la app. */
+export async function requestCameraPermission(): Promise<PermisoGaleria> {
+  return ImagePicker.requestCameraPermissionsAsync();
+}
+
 export async function requestMediaLibraryPermission(): Promise<PermisoGaleria> {
   if (Platform.OS === 'android') return CONCEDIDO;
   return ImagePicker.requestMediaLibraryPermissionsAsync();
