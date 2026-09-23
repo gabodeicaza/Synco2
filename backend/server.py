@@ -33,7 +33,7 @@ import bcrypt
 import openpyxl
 from dotenv import load_dotenv
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Query, UploadFile, File
-from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.responses import StreamingResponse, FileResponse, HTMLResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -906,7 +906,7 @@ async def current_user(creds: Optional[HTTPAuthorizationCredentials] = Depends(b
     except jwt.PyJWTError:
         raise HTTPException(401, "Token inválido")
     u = await db.users.find_one({"id": uid})
-    if not u:
+    if not u or u.get("deleted_at"):
         raise HTTPException(401, "Usuario no existe")
     u.pop("_id", None)
     u.pop("password", None)
@@ -1219,6 +1219,252 @@ async def health():
     return {"ok": True, "ts": datetime.now(timezone.utc).isoformat()}
 
 
+# === PÁGINAS LEGALES PÚBLICAS (privacidad, términos, eliminar cuenta) ======
+# Google Play y la App Store piden URLs públicas para estas tres páginas. Viven
+# aquí (y no en archivos estáticos) porque el despliegue solo copia server.py.
+SUPPORT_EMAIL = os.environ.get("SUPPORT_EMAIL", "gabodeicaza@gmail.com")
+LEGAL_FECHA = "23 de septiembre de 2026"
+
+_LEGAL_PLANTILLA = """<!DOCTYPE html>
+<html lang="es-MX">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{TITULO}} · Dirac</title>
+<style>
+  :root { --marca: #1E40AF; --texto: #1f2937; --tenue: #6b7280; --error: #B91C1C; --ok: #166534; }
+  body { font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; max-width: 760px; margin: 0 auto; padding: 32px 20px 64px; color: var(--texto); line-height: 1.6; }
+  h1 { color: var(--marca); font-size: 1.6rem; }
+  h2 { color: var(--marca); font-size: 1.15rem; margin-top: 2rem; }
+  ul { padding-left: 1.2rem; }
+  .fecha { color: var(--tenue); font-size: 0.9rem; }
+  a { color: var(--marca); }
+  label { display: block; font-weight: 600; margin-top: 1rem; }
+  input, textarea { width: 100%; box-sizing: border-box; padding: 10px; font-size: 1rem; border: 1px solid var(--tenue); border-radius: 6px; }
+  button { margin-top: 1rem; padding: 12px 20px; font-size: 1rem; background: var(--marca); color: #fff; border: 0; border-radius: 6px; cursor: pointer; min-height: 44px; }
+  button:disabled { opacity: .6; cursor: default; }
+  #resultado { margin-top: 1rem; font-weight: 600; }
+  #resultado.error { color: var(--error); }
+  #resultado.ok { color: var(--ok); }
+</style>
+</head>
+<body>
+{{CUERPO}}
+</body>
+</html>
+"""
+
+
+def _pagina_legal(titulo: str, cuerpo: str) -> str:
+    return _LEGAL_PLANTILLA.replace("{{TITULO}}", titulo).replace("{{CUERPO}}", cuerpo)
+
+
+_CONTACTO_HTML = f"""<h2>Contacto</h2>
+  <p>Gabriel Esteban de Icaza Dávila<br>
+  Correo: <a href="mailto:{SUPPORT_EMAIL}">{SUPPORT_EMAIL}</a></p>"""
+
+PRIVACY_POLICY_HTML = _pagina_legal("Política de privacidad", f"""
+  <h1>Política de privacidad de Dirac</h1>
+  <p class="fecha">Última actualización: {LEGAL_FECHA}</p>
+
+  <p>Dirac es una aplicación para la captura y gestión de reportes técnicos, avances y control de
+  obra en campo, desarrollada y operada por <strong>Gabriel Esteban de Icaza Dávila</strong>. Esta
+  página explica qué datos recopila la aplicación, para qué se usan y cómo se protegen.</p>
+
+  <h2>Qué datos recopilamos</h2>
+  <ul>
+    <li><strong>Datos de cuenta:</strong> correo electrónico, contraseña (almacenada de forma
+    cifrada), nombre, puesto y rol dentro del proyecto. El acceso a la aplicación es únicamente
+    por invitación.</li>
+    <li><strong>Ubicación:</strong> coordenadas GPS, únicamente cuando el usuario lo autoriza y
+    adjunta evidencia fotográfica o marca un punto de obra, para georreferenciar esa evidencia.</li>
+    <li><strong>Fotografías:</strong> imágenes tomadas con la cámara o elegidas de la galería como
+    evidencia de obra. Se envían al servidor del proyecto.</li>
+    <li><strong>Archivos adjuntos:</strong> documentos o imágenes que el usuario decida adjuntar
+    (planos, plantillas, catálogos y hojas de cálculo).</li>
+    <li><strong>Datos de obra:</strong> texto, fechas, cantidades, avances, gastos, minutas,
+    mensajes y demás información técnica capturada por el equipo del proyecto.</li>
+    <li><strong>Token de notificaciones push:</strong> un identificador técnico del dispositivo,
+    gestionado a través de Expo Application Services (EAS), usado únicamente para enviar
+    notificaciones relacionadas con la operación (por ejemplo, avisos de reuniones o acuerdos).</li>
+  </ul>
+
+  <h2>Para qué usamos estos datos</h2>
+  <p>Los datos se usan exclusivamente para operar la aplicación: autenticar usuarios, generar y
+  sincronizar reportes de obra con un servidor centralizado, calcular indicadores del proyecto y
+  notificar eventos relevantes a los usuarios correspondientes. No usamos estos datos con fines
+  publicitarios.</p>
+
+  <h2>Con quién compartimos datos</h2>
+  <p>No vendemos ni compartimos datos personales con terceros con fines comerciales. La única
+  excepción es el envío de notificaciones push, para lo cual el token del dispositivo se procesa
+  a través de <strong>Expo Application Services (EAS)</strong> como proveedor técnico. La
+  aplicación no integra redes de publicidad ni herramientas de analítica o rastreo de terceros.</p>
+
+  <h2>Dónde se almacenan los datos</h2>
+  <p>Los datos se almacenan en una base de datos propia (MongoDB) alojada en un servidor bajo
+  control directo del operador de la aplicación. Toda la comunicación entre la aplicación y el
+  servidor viaja cifrada mediante HTTPS/TLS. En el dispositivo, la sesión se guarda en el
+  almacén seguro del sistema.</p>
+
+  <h2>Cuánto tiempo conservamos los datos</h2>
+  <p>Los datos se conservan mientras la cuenta y el proyecto asociado permanezcan activos.</p>
+
+  <h2>Eliminación de tu cuenta</h2>
+  <p>Puedes eliminar tu cuenta desde la aplicación (Perfil → Eliminar mi cuenta) o solicitarlo en
+  <a href="/eliminar-cuenta">esta página</a>. Al eliminarla borramos tu correo, nombre, teléfono,
+  contraseña y tokens de notificación. Los reportes, avances y minutas que capturaste son parte
+  del registro de obra del proyecto y se conservan, pero con tu nombre reemplazado por
+  «Usuario eliminado».</p>
+
+  <h2>Tus derechos</h2>
+  <p>Puedes solicitar acceso, rectificación, cancelación u oposición al tratamiento de tus datos
+  personales en cualquier momento escribiendo al correo de contacto de esta página.</p>
+
+  <h2>Menores de edad</h2>
+  <p>Esta aplicación está dirigida a personal técnico y operativo de obra, y no a menores de edad.</p>
+
+  <h2>Cambios a esta política</h2>
+  <p>Cualquier cambio se publicará en esta misma página junto con su fecha de actualización.</p>
+
+  {_CONTACTO_HTML}
+""")
+
+TERMS_HTML = _pagina_legal("Términos de uso", f"""
+  <h1>Términos de uso de Dirac</h1>
+  <p class="fecha">Última actualización: {LEGAL_FECHA}</p>
+
+  <h2>1. Aceptación</h2>
+  <p>Al crear una cuenta o usar Dirac aceptas estos términos y la
+  <a href="/privacidad">política de privacidad</a>. Si no estás de acuerdo, no uses la aplicación.</p>
+
+  <h2>2. Cuentas y acceso</h2>
+  <p>El acceso es por invitación del Coordinador General de tu proyecto. Eres responsable de
+  mantener la confidencialidad de tu contraseña y de la actividad realizada con tu cuenta.</p>
+
+  <h2>3. Uso permitido</h2>
+  <p>Dirac debe usarse para gestionar información de obra de los proyectos a los que fuiste
+  invitado. No debes capturar información falsa, intentar acceder a proyectos ajenos, alterar el
+  funcionamiento del servicio ni usarlo para fines ilícitos.</p>
+
+  <h2>4. Contenido y datos de obra</h2>
+  <p>La información que captures pertenece a la organización titular del proyecto. Nos otorgas
+  permiso para almacenarla, procesarla y mostrarla a los usuarios autorizados del proyecto con el
+  único fin de operar el servicio.</p>
+
+  <h2>5. Indicadores y reportes</h2>
+  <p>Los indicadores (avance, valor ganado, costos, proyecciones) se calculan con los datos que
+  captura el equipo. Son una herramienta de apoyo a la toma de decisiones y no sustituyen la
+  revisión técnica de un profesional responsable de la obra.</p>
+
+  <h2>6. Disponibilidad</h2>
+  <p>Procuramos que el servicio esté disponible de forma continua, pero puede haber
+  interrupciones por mantenimiento o causas ajenas. La aplicación permite capturar sin conexión y
+  sincronizar después.</p>
+
+  <h2>7. Limitación de responsabilidad</h2>
+  <p>El servicio se ofrece «tal cual». En la medida permitida por la ley, el operador no
+  responde por daños indirectos derivados del uso o de la imposibilidad de uso de la aplicación,
+  ni por decisiones de obra tomadas con base en la información capturada.</p>
+
+  <h2>8. Terminación</h2>
+  <p>Puedes eliminar tu cuenta en cualquier momento desde la aplicación o en
+  <a href="/eliminar-cuenta">esta página</a>. Podemos suspender cuentas que incumplan estos términos.</p>
+
+  <h2>9. Cambios</h2>
+  <p>Podemos actualizar estos términos; los cambios se publicarán en esta página con su fecha.</p>
+
+  <h2>10. Ley aplicable</h2>
+  <p>Estos términos se rigen por las leyes de los Estados Unidos Mexicanos. Para cualquier
+  controversia, las partes se someten a los tribunales competentes de la Ciudad de México.</p>
+
+  {_CONTACTO_HTML}
+""")
+
+DELETE_ACCOUNT_HTML = _pagina_legal("Eliminar mi cuenta", f"""
+  <h1>Eliminar mi cuenta de Dirac</h1>
+  <p class="fecha">Última actualización: {LEGAL_FECHA}</p>
+
+  <h2>Desde la aplicación</h2>
+  <p>Abre <strong>Perfil → Eliminar mi cuenta</strong>, confirma y escribe tu contraseña. La
+  eliminación es inmediata.</p>
+
+  <h2>Desde esta página</h2>
+  <p>Si ya no tienes la aplicación, escribe el correo de tu cuenta. Atenderemos tu solicitud y te
+  lo confirmaremos.</p>
+  <form id="forma" novalidate>
+    <label for="correo">Correo de tu cuenta</label>
+    <input id="correo" type="email" autocomplete="email" required>
+    <label for="nota">Comentario (opcional)</label>
+    <textarea id="nota" rows="3" maxlength="500"></textarea>
+    <button id="enviar" type="submit">Solicitar eliminación</button>
+    <p id="resultado" role="status" aria-live="polite"></p>
+  </form>
+
+  <h2>Qué se elimina y qué se conserva</h2>
+  <ul>
+    <li><strong>Se elimina:</strong> tu correo, nombre, teléfono, puesto, contraseña, tokens de
+    notificación y solicitudes de contraseña.</li>
+    <li><strong>Se conserva:</strong> los reportes, avances y minutas que capturaste, porque son
+    parte del registro de obra del proyecto. Aparecerán firmados por «Usuario eliminado» y sin
+    ningún dato que te identifique.</li>
+  </ul>
+
+  {_CONTACTO_HTML}
+  <script>
+    const forma = document.getElementById('forma');
+    const salida = document.getElementById('resultado');
+    forma.addEventListener('submit', async (ev) => {{
+      ev.preventDefault();
+      const correo = document.getElementById('correo').value.trim();
+      salida.className = '';
+      if (!/^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$/.test(correo)) {{
+        salida.className = 'error';
+        salida.textContent = 'Escribe un correo válido.';
+        return;
+      }}
+      const boton = document.getElementById('enviar');
+      boton.disabled = true;
+      try {{
+        const r = await fetch('/api/public/deletion_request', {{
+          method: 'POST',
+          headers: {{ 'Content-Type': 'application/json' }},
+          body: JSON.stringify({{ email: correo, note: document.getElementById('nota').value }}),
+        }});
+        if (!r.ok) throw new Error('http ' + r.status);
+        const d = await r.json();
+        salida.className = 'ok';
+        salida.textContent = d.message;
+        forma.reset();
+      }} catch (e) {{
+        salida.className = 'error';
+        salida.textContent = 'No pudimos enviar la solicitud. Inténtalo de nuevo o escríbenos por correo.';
+      }} finally {{
+        boton.disabled = false;
+      }}
+    }});
+  </script>
+""")
+
+
+@app.get("/privacidad", response_class=HTMLResponse)
+@api.get("/privacidad", response_class=HTMLResponse)
+async def privacy_policy():
+    return PRIVACY_POLICY_HTML
+
+
+@app.get("/terminos", response_class=HTMLResponse)
+@api.get("/terminos", response_class=HTMLResponse)
+async def terms_of_use():
+    return TERMS_HTML
+
+
+@app.get("/eliminar-cuenta", response_class=HTMLResponse)
+@api.get("/eliminar-cuenta", response_class=HTMLResponse)
+async def delete_account_page():
+    return DELETE_ACCOUNT_HTML
+
+
 # === BOOTSTRAP (idempotente) ================================================
 @api.post("/admin/bootstrap")
 async def bootstrap(body: BootstrapIn):
@@ -1257,7 +1503,7 @@ async def list_coordinators(user: dict = Depends(require_role(ROLE_COORD))):
     """Lista todos los Coordinadores Generales. Sólo accesible por otro
     Coordinador General. Devuelve el directorio con email, nombre y fecha
     de alta para auditoría."""
-    items = await db.users.find({"role": ROLE_COORD}).sort("created_at", 1).to_list(length=500)
+    items = await db.users.find({"role": ROLE_COORD, "deleted_at": {"$exists": False}}).sort("created_at", 1).to_list(length=500)
     return [user_to_out(u) for u in items]
 
 
@@ -1302,7 +1548,7 @@ async def create_coordinator(
 @api.post("/auth/login", response_model=Token)
 async def login(body: LoginIn):
     u = await db.users.find_one({"email": body.email.lower()})
-    if not u or not verify_pw(body.password, u["password"]):
+    if not u or u.get("deleted_at") or not verify_pw(body.password, u["password"]):
         raise HTTPException(401, "Credenciales inválidas")
     return {"token": make_token(u["id"]), "user": user_to_out(u)}
 
@@ -1323,6 +1569,199 @@ async def change_password(body: ChangePasswordIn, user: dict = Depends(current_u
         raise HTTPException(400, "La nueva contraseña debe tener mínimo 6 caracteres")
     await db.users.update_one({"id": user["id"]}, {"$set": {"password": hash_pw(new_pw)}})
     return {"ok": True}
+
+
+# === ELIMINACIÓN DE CUENTA (T-01) ===========================================
+# Google Play y la App Store exigen poder borrar la cuenta desde la app y desde
+# una página web pública. La cuenta se ANONIMIZA (no se borra la fila): los
+# reportes, avances y minutas que firmó se conservan porque son registro de obra
+# del proyecto, pero con el autor "Usuario eliminado". Se eliminan los datos
+# personales: correo, nombre, teléfono, contraseña, tokens de notificación y
+# solicitudes de contraseña.
+USUARIO_ELIMINADO = "Usuario eliminado"
+
+# Colecciones que NO se anonimizan por autoría: `users` se trata aparte y las
+# otras solo guardan datos personales del propio usuario (se borran o se omiten).
+_COLECCIONES_SIN_AUTORIA = {"users", "password_reset_requests", "channel_reads", "deletion_requests"}
+
+# (campo con el id del usuario, {campo hermano con su nombre/correo: valor}).
+CAMPOS_AUTORIA: List[Tuple[str, Dict[str, Any]]] = [
+    ("created_by", {"created_by_name": USUARIO_ELIMINADO}),
+    ("updated_by", {"updated_by_name": USUARIO_ELIMINADO}),
+    ("captured_by", {"captured_by_name": USUARIO_ELIMINADO}),
+    ("author_id", {"author_name": USUARIO_ELIMINADO}),
+    ("user_id", {"user_name": USUARIO_ELIMINADO, "user_email": None}),
+    ("capturado_por", {"capturado_por_nombre": USUARIO_ELIMINADO}),
+    ("creado_por", {"creado_por_nombre": USUARIO_ELIMINADO}),
+    ("uploaded_by", {"uploaded_by_name": USUARIO_ELIMINADO}),
+    ("pdf_uploaded_by", {"pdf_uploaded_by_name": USUARIO_ELIMINADO}),
+    ("completed_by", {"completed_by_name": USUARIO_ELIMINADO}),
+    ("resolved_by", {"resolved_by_name": USUARIO_ELIMINADO}),
+    ("responsable_id", {"responsable_name": USUARIO_ELIMINADO}),
+]
+
+
+def correo_eliminado(uid: str) -> str:
+    """Correo de relleno único (la colección exige `email` único) y no enviable."""
+    return f"eliminado-{uid}@eliminado.invalid"
+
+
+def campos_usuario_anonimizado(uid: str, ahora: datetime) -> Dict[str, Any]:
+    """`$set` que deja el documento de usuario sin datos personales ni acceso."""
+    return {
+        "name": USUARIO_ELIMINADO,
+        "email": correo_eliminado(uid),
+        "password": hash_pw(secrets.token_urlsafe(32)),  # nadie la conoce: no puede entrar
+        "expo_push_tokens": [],
+        "project_ids": [],
+        "scope_node_id": None,
+        "scope_node_ids": [],
+        "area": None,
+        "area_id": None,
+        "puesto": None,
+        "no_control": None,
+        "phone": None,
+        "deleted_at": ahora,
+    }
+
+
+async def anonimizar_usuario(uid: str) -> Dict[str, int]:
+    """Anonimiza a `uid` en toda la base. Idempotente. Devuelve conteos por tipo."""
+    ahora = datetime.now(timezone.utc)
+    u = await db.users.find_one({"id": uid})
+    if not u:
+        raise HTTPException(404, "Usuario no existe")
+    email_original = (u.get("email") or "").lower()
+    conteo = {"documentos_anonimizados": 0, "documentos_borrados": 0}
+
+    # 1) Datos personales propios: se borran.
+    r = await db.password_reset_requests.delete_many({"user_id": uid})
+    conteo["documentos_borrados"] += r.deleted_count
+    r = await db.channel_reads.delete_many({"user_id": uid})
+    conteo["documentos_borrados"] += r.deleted_count
+
+    # 2) Autoría en el resto de colecciones: se conserva el registro, se quita el nombre.
+    for cname in await db.list_collection_names():
+        if cname in _COLECCIONES_SIN_AUTORIA or cname.startswith("system."):
+            continue
+        col = db[cname]
+        for campo_id, hermanos in CAMPOS_AUTORIA:
+            for campo, valor in hermanos.items():
+                res = await col.update_many({campo_id: uid, campo: {"$exists": True}}, {"$set": {campo: valor}})
+                conteo["documentos_anonimizados"] += res.modified_count
+    # Minutas: el responsable de cada acuerdo va dentro de un arreglo.
+    res = await db.minutas.update_many(
+        {"acuerdos.responsable_id": uid},
+        {"$set": {"acuerdos.$[a].responsable_name": USUARIO_ELIMINADO}},
+        array_filters=[{"a.responsable_id": uid}],
+    )
+    conteo["documentos_anonimizados"] += res.modified_count
+
+    # 3) Invitaciones: quita nombre y correo; las pendientes ya no se pueden canjear.
+    filtro_inv: Dict[str, Any] = {"accepted_user_id": uid}
+    if email_original:
+        filtro_inv = {"$or": [{"accepted_user_id": uid}, {"email": email_original}]}
+    await db.invitations.update_many({**filtro_inv, "status": "pending"}, {"$set": {"status": "revoked"}})
+    res = await db.invitations.update_many(
+        filtro_inv,
+        {"$set": {"name": USUARIO_ELIMINADO, "email": correo_eliminado(uid), "phone": None}},
+    )
+    conteo["documentos_anonimizados"] += res.modified_count
+
+    # 4) El usuario en sí (al final: si algo falla antes, se puede reintentar).
+    await db.users.update_one({"id": uid}, {"$set": campos_usuario_anonimizado(uid, ahora)})
+    conteo["documentos_anonimizados"] += 1
+    log.info(f"[cuenta] Usuario {uid} anonimizado: {conteo}")
+    return conteo
+
+
+async def _validar_puede_eliminarse(u: dict) -> None:
+    """No se permite dejar el sistema sin ningún Coordinador General."""
+    if u.get("role") == ROLE_COORD:
+        otros = await db.users.count_documents(
+            {"role": ROLE_COORD, "id": {"$ne": u["id"]}, "deleted_at": {"$exists": False}}
+        )
+        if otros == 0:
+            raise HTTPException(
+                409,
+                "Eres el único Coordinador General. Crea o promueve a otro antes de eliminar tu cuenta.",
+            )
+
+
+class DeleteAccountIn(BaseModel):
+    password: str
+
+
+@api.post("/auth/delete_account")
+async def delete_account(body: DeleteAccountIn, user: dict = Depends(current_user)):
+    """Eliminación de cuenta iniciada por la persona (exige su contraseña)."""
+    completo = await db.users.find_one({"id": user["id"]})
+    if not completo or not verify_pw(body.password or "", completo.get("password", "")):
+        raise HTTPException(403, "La contraseña no es correcta")
+    await _validar_puede_eliminarse(completo)
+    await anonimizar_usuario(user["id"])
+    return {"ok": True}
+
+
+class DeletionRequestIn(BaseModel):
+    email: EmailStr
+    note: Optional[str] = None
+
+
+@api.post("/public/deletion_request")
+async def public_deletion_request(body: DeletionRequestIn):
+    """Formulario público de la página /eliminar-cuenta (sin sesión). Responde
+    siempre lo mismo, exista o no la cuenta, para no revelar quién es usuario."""
+    email = body.email.lower()
+    u = await db.users.find_one({"email": email, "deleted_at": {"$exists": False}})
+    ya = await db.deletion_requests.find_one({"email": email, "status": "pending"})
+    if not ya:
+        await db.deletion_requests.insert_one({
+            "id": str(uuid.uuid4()),
+            "email": email,
+            "user_id": u["id"] if u else None,
+            "note": (body.note or "").strip()[:500] or None,
+            "status": "pending",
+            "created_at": datetime.now(timezone.utc),
+        })
+    return {"ok": True, "message": "Recibimos tu solicitud. Si el correo corresponde a una cuenta, la eliminaremos y te lo confirmaremos."}
+
+
+@api.get("/admin/deletion_requests")
+async def list_deletion_requests(user: dict = Depends(require_role(ROLE_COORD))):
+    items = await db.deletion_requests.find({"status": "pending"}).sort("created_at", 1).to_list(length=500)
+    for it in items:
+        it.pop("_id", None)
+    return items
+
+
+class ExecuteDeletionIn(BaseModel):
+    confirm: bool = False
+
+
+@api.post("/admin/deletion_requests/{rid}/execute")
+async def execute_deletion_request(rid: str, body: ExecuteDeletionIn, user: dict = Depends(require_role(ROLE_COORD))):
+    """El Coordinador General atiende una solicitud pública. Requiere confirm=true."""
+    if not body.confirm:
+        raise HTTPException(400, "Falta confirmar la eliminación (confirm=true)")
+    req = await db.deletion_requests.find_one({"id": rid})
+    if not req:
+        raise HTTPException(404, "Solicitud no existe")
+    if req["status"] != "pending":
+        raise HTTPException(410, "Solicitud ya atendida")
+    conteo = None
+    if req.get("user_id"):
+        target = await db.users.find_one({"id": req["user_id"]})
+        if target and not target.get("deleted_at"):
+            await _validar_puede_eliminarse(target)
+            conteo = await anonimizar_usuario(target["id"])
+    # La solicitud conserva el correo solo mientras está pendiente.
+    await db.deletion_requests.update_one(
+        {"id": rid},
+        {"$set": {"status": "done", "resolved_at": datetime.now(timezone.utc), "resolved_by": user["id"],
+                  "email": correo_eliminado(req.get("user_id") or rid), "note": None}},
+    )
+    return {"ok": True, "resultado": conteo}
 
 
 # === PUSH NOTIFICATIONS (Expo) ==============================================
@@ -5801,6 +6240,7 @@ async def _notify_supervisors_new_report(
             {
                 "project_ids": project_id,
                 "role": {"$in": [ROLE_COORD, ROLE_JEFE]},
+                "deleted_at": {"$exists": False},
             },
             {"_id": 0, "id": 1, "name": 1, "role": 1, "expo_push_tokens": 1},
         )
@@ -6402,7 +6842,7 @@ async def list_project_users(pid: str, user: dict = Depends(current_user)):
     # Incluye también a los Coord Generales y Jefes de Proyecto (que tienen
     # acceso global y pueden no estar en project_ids del documento).
     items = await db.users.find(
-        {"$or": [
+        {"deleted_at": {"$exists": False}, "$or": [
             {"project_ids": pid},
             {"role": {"$in": [ROLE_COORD, ROLE_JEFE]}},
         ]}
@@ -6417,7 +6857,7 @@ async def list_project_members(pid: str, user: dict = Depends(current_user)):
     """Alias semántico de /users — lista miembros del proyecto."""
     await ensure_project_access(user, pid)
     items = await db.users.find(
-        {"$or": [
+        {"deleted_at": {"$exists": False}, "$or": [
             {"project_ids": pid},
             {"role": {"$in": [ROLE_COORD, ROLE_JEFE]}},
         ]}
