@@ -32,6 +32,7 @@ import { MyMeetingsPanel } from '@/src/components/MyMeetingsPanel';
 import { ReportPreviewSheet } from '@/src/components/ReportPreviewSheet';
 import { periodToInformeType } from '@/src/components/PeriodSheet';
 import { HistoryCalendarModal } from '@/src/components/HistoryCalendarModal';
+import { ReportesVacio } from '@/src/components/ReportesVacio';
 import {
   dayjs, toISODateCDMX, fmtTimeCDMX, CDMX_TZ,
   getStartOfTodayCDMX, getStartOfNaturalWeekCDMX, getStartOfNaturalMonthCDMX
@@ -860,23 +861,11 @@ export default function SubCoordDashboard() {
             </View>
 
             {todayReports.length === 0 ? (
-              <View style={styles.emptyBox}>
-                <View style={styles.emptyIcon}>
-                  <Ionicons
-                    name={debouncedQuery ? 'search-outline' : 'time-outline'}
-                    size={26}
-                    color={colors.primary}
-                  />
-                </View>
-                <Text style={styles.emptyTitle}>
-                  {debouncedQuery ? 'Sin resultados' : 'Aun sin reportes hoy'}
-                </Text>
-                <Text style={styles.emptyMsg}>
-                  {debouncedQuery
-                    ? `No encontramos reportes que coincidan con "${debouncedQuery}".`
-                    : 'Cuando tu equipo capture actividad, aparecera aqui.'}
-                </Text>
-              </View>
+              <ReportesVacio
+                variante="sub"
+                busqueda={debouncedQuery}
+                onQuitarFiltros={() => setSearchQuery('')}
+              />
             ) : (
               <View style={{ paddingHorizontal: spacing.md, gap: spacing.sm }}>
                 {todayReports.map((r) => {

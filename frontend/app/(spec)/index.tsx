@@ -24,6 +24,9 @@ import { api, FeedItem, FeedResponse, Project, ProjectEvent } from '@/src/api';
 import { storage } from '@/src/utils/storage';
 import { ReportPeriod, periodToInformeType } from '@/src/components/PeriodSheet';
 import { downloadBlob } from '@/src/utils/downloadBlob';
+import { SinReportesAviso } from '@/src/components/SinReportesAviso';
+import { ReportesVacio } from '@/src/components/ReportesVacio';
+import { verificarConteoExportacion } from '@/src/utils/conteoExportacion';
 import { DailyGoalsPanel } from '@/src/components/DailyGoalsPanel';
 import { MyMeetingsPanel } from '@/src/components/MyMeetingsPanel';
 import { ReportPreviewSheet } from '@/src/components/ReportPreviewSheet';
@@ -94,6 +97,7 @@ export default function SpecFeedScreen() {
   const [exportPeriod, setExportPeriod] = useState<ReportPeriod>('today');
   const [exportScope, setExportScope] = useState<ExportScope>('mine');
   const [exportBusy, setExportBusy] = useState(false);
+  const [exportSinReportes, setExportSinReportes] = useState<{ fmt: ExportFormat; otros: number } | null>(null);
 
   const [calendarOpen, setCalendarOpen] = useState(false);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
@@ -205,6 +209,7 @@ export default function SpecFeedScreen() {
     setExportStep('period');
     setExportPeriod('today');
     setExportScope('mine');
+    setExportSinReportes(null);
     setExportOpen(true);
   }
 
@@ -251,13 +256,21 @@ export default function SpecFeedScreen() {
   }
 
   function onPickPeriod(p: ReportPeriod) { setExportPeriod(p); setExportStep('scope'); }
-  function onPickScope(s: ExportScope) { setExportScope(s); setExportStep('format'); }
+  function onPickScope(s: ExportScope) { setExportScope(s); setExportSinReportes(null); setExportStep('format'); }
 
-  async function onPickFormat(fmt: ExportFormat) {
+  async function onPickFormat(fmt: ExportFormat, forzar?: boolean) {
     if (!projectId) return;
     try {
       setExportBusy(true);
+      setExportSinReportes(null);
       const opts = { scope: exportScope, period_type: periodToInformeType(exportPeriod) } as { scope: ExportScope; period_type?: string };
+      if (!forzar) {
+        const conteo = await verificarConteoExportacion(projectId, exportPeriod, opts);
+        if (conteo.vacio) {
+          setExportSinReportes({ fmt, otros: conteo.otros });
+          return;
+        }
+      }
       let blob: Blob; let filename: string; let mime: string;
       if (fmt === 'docx') {
         const r = await api.downloadReportsDocx(projectId, exportPeriod, opts);
@@ -412,14 +425,13 @@ export default function SpecFeedScreen() {
         ListHeaderComponent={ListHeader}
         ListEmptyComponent={
           !loading ? (
-            <View style={styles.emptyBox}>
-              <Ionicons name="reader-outline" size={28} color={colors.primary} />
-              <Text style={styles.emptyTitle}>Sin reportes</Text>
-              <Text style={styles.emptyMsg}>No se encontraron reportes para este filtro.</Text>
-              <Pressable accessibilityRole="button" style={styles.emptyBtn} onPress={() => router.push('/(spec)/nuevo' as any)}>
-                <Text style={styles.emptyBtnTxt}>Crear nuevo reporte</Text>
-              </Pressable>
-            </View>
+            <ReportesVacio
+              variante="spec"
+              hayFiltros={range !== 'all' || !!selectedDate}
+              busqueda={debouncedQuery}
+              onQuitarFiltros={() => { setSelectedDate(null); setSearchQuery(''); onPickRange('all'); }}
+              onCrear={() => router.push('/(spec)/nuevo' as any)}
+            />
           ) : null
         }
         contentContainerStyle={{ paddingBottom: spacing.xl }}
@@ -466,6 +478,13 @@ export default function SpecFeedScreen() {
                   <Pressable accessibilityRole="button" onPress={() => onPickScope('area')} style={styles.exportItem}><View style={styles.exportItemIcon}><Ionicons name="grid-outline" size={20} color={colors.primary} /></View><View style={{ flex: 1 }}><Text style={styles.exportItemTitle}>Mi area</Text><Text style={styles.exportItemSub}>Reportes de toda mi area</Text></View></Pressable>
                 </>
               )}
+              {exportStep === 'format' && exportSinReportes ? (
+                <SinReportesAviso
+                  otros={exportSinReportes.otros}
+                  onCambiarPeriodo={() => { setExportSinReportes(null); setExportStep('period'); }}
+                  onExportarDeTodosModos={() => onPickFormat(exportSinReportes.fmt, true)}
+                />
+              ) : null}
               {exportStep === 'format' && FORMAT_OPTIONS.map(opt => (
                 <Pressable accessibilityRole="button" key={opt.value} onPress={() => onPickFormat(opt.value)} style={styles.exportItem}>
                   <View style={[styles.exportItemIcon, { backgroundColor: opt.tint + '1A' }]}><Ionicons name={opt.icon} size={20} color={opt.tint} /></View>
