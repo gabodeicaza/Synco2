@@ -1,14 +1,14 @@
 // Validación pura de la captura de avance en modo_avance=PORCENTAJE
 // (Etapa 4) — separada de RegistrarAvanceScreen.tsx para poder probarla sin
 // renderizar nada, mismo criterio que claveComparator.ts / programaImportWizard.ts.
-import { decimalStringToCents, isValidDecimalInput } from '@/src/utils/money';
+import { decimalStringToScaled, isValidDecimalInputN } from '@/src/utils/money';
+import { DECIMALES_CANTIDAD } from '@/src/utils/numeros';
 
-/** Porcentaje > 0 con hasta 2 decimales. Ya NO hay tope de 100% (decisión A-02:
+/** Porcentaje > 0 con hasta 4 decimales. Ya NO hay tope de 100% (decisión A-02:
  * pasar de 100% se permite y queda como volumen excedente pendiente de
- * autorización). Reusa isValidDecimalInput para el formato (nunca vacío, nunca
- * más de 2 decimales). */
+ * autorización). Nunca vacío, nunca más de 4 decimales. */
 export function esPorcentajeValido(v: string): boolean {
-  return isValidDecimalInput(v) && decimalStringToCents(v) > 0;
+  return isValidDecimalInputN(v, DECIMALES_CANTIDAD) && decimalStringToScaled(v, DECIMALES_CANTIDAD) > 0;
 }
 
 /** true si `nuevo` es menor que `anterior` — mismo criterio que

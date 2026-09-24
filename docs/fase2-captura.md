@@ -39,7 +39,7 @@ Rama `worktree-dirac-tiendas`. Base común: `FormField`, `useFormErrors`, `useEn
 8. **Configuración:** elegir separador decimal "coma" y volver a Avance: `1,5` significa uno y medio. Agregar una unidad repetida o un nivel repetido: mensaje junto al campo. La sección "Programa de obra" abre el importador mensual.
 
 ## Pendientes y decisiones
-- **Cantidad de avance con 2 decimales.** Los nuevos campos de catálogo admiten 4 decimales en cantidades, pero la captura de avance sigue en 2 porque `validacionAvance.ts` calcula en centavos. Pasarla a 4 exige reescribir esa validación.
+- **Cantidad de avance con 4 decimales (cerrado tras el "OK fase 2").** La captura de avance, el aviso de excedente y el porcentaje usan enteros escalados a 4 decimales (`decimalStringToScaled` en `money.ts`); el servidor ya guardaba el texto exacto. Los importes (gasto, P.U.) siguen en 2.
 - **Fecha futura del gasto:** no se rechaza (A-01 solo lo pide para avances).
 - **Editar evento de todo el día en la app:** el servidor ya lo acepta; `EventoForm` aún bloquea la fecha de un evento de todo el día al editarlo.
 - **C-13 en otros importadores:** el importador Maestro y el de programa siguen leyendo todas las celdas para detectar la convención decimal. Conviene corregirlos igual.

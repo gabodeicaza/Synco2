@@ -62,13 +62,41 @@ export function isValidDecimalInput(value: string): boolean {
   return /^-?\d+(\.\d{1,2})?$/.test(value.trim());
 }
 
+/** Decimal exacto ("12.3456") -> entero escalado a `escala` decimales (12.3456 con escala 4 = 123456).
+ * Trunca los decimales de más. Seguro hasta 2^53 (unos 9e11 con escala 4). */
+export function decimalStringToScaled(value: string | null | undefined, escala: number): number {
+  const s = (value ?? '0').trim();
+  const negative = s.startsWith('-');
+  const clean = negative ? s.slice(1) : s;
+  const [intPart, fracPartRaw = ''] = clean.split('.');
+  const fracPart = (fracPartRaw + '0'.repeat(escala)).slice(0, escala);
+  const n = parseInt((intPart || '0') + fracPart, 10);
+  if (!Number.isFinite(n)) return 0;
+  return negative ? -n : n;
+}
+
+/** Entero escalado -> decimal exacto con `escala` decimales ("123456" escala 4 -> "12.3456"). */
+export function scaledToDecimalString(n: number, escala: number): string {
+  const negative = n < 0;
+  const abs = Math.abs(Math.trunc(n));
+  const base = 10 ** escala;
+  const intPart = Math.floor(abs / base);
+  const fracPart = String(abs % base).padStart(escala, '0');
+  return `${negative ? '-' : ''}${intPart}${escala > 0 ? `.${fracPart}` : ''}`;
+}
+
+/** Valida un decimal capturado (con punto) con hasta `maxDecimales` decimales. */
+export function isValidDecimalInputN(value: string, maxDecimales: number): boolean {
+  return new RegExp(`^-?\\d+(\\.\\d{1,${maxDecimales}})?$`).test(value.trim());
+}
+
 /** % que representa `parte` de `total` (ambos decimales exactos), a 1 decimal.
  * Solo para MOSTRAR en UI — no es aritmética de dinero, un float aquí es
  * aceptable porque nunca se vuelve a guardar. `total` en 0 devuelve 0 (no
  * NaN/Infinity) para no romper el render con un concepto recién creado. */
 export function pctDeDecimales(parte: string | null | undefined, total: string | null | undefined): number {
-  const totalCents = decimalStringToCents(total);
-  if (totalCents <= 0) return 0;
-  const parteCents = decimalStringToCents(parte);
-  return Math.round((parteCents / totalCents) * 1000) / 10;
+  const totalEscalado = decimalStringToScaled(total, 4);
+  if (totalEscalado <= 0) return 0;
+  const parteEscalada = decimalStringToScaled(parte, 4);
+  return Math.round((parteEscalada / totalEscalado) * 1000) / 10;
 }

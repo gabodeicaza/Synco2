@@ -13,9 +13,10 @@ describe('esPorcentajeValido', () => {
     expect(esPorcentajeValido('-1')).toBe(false);
   });
 
-  it('rechaza formato inválido (vacío, más de 2 decimales, no numérico)', () => {
+  it('rechaza formato inválido (vacío, más de 4 decimales, no numérico)', () => {
     expect(esPorcentajeValido('')).toBe(false);
-    expect(esPorcentajeValido('45.555')).toBe(false);
+    expect(esPorcentajeValido('45.55555')).toBe(false);
+    expect(esPorcentajeValido('45.5555')).toBe(true);
     expect(esPorcentajeValido('abc')).toBe(false);
   });
 });

@@ -138,13 +138,22 @@ describe('Registrar avance: captura numérica (A-07 / X-05)', () => {
     expect(screen.queryByText(/mayor que cero/)).toBeNull();
   });
 
-  it('más de 2 decimales se avisa con su propio mensaje', async () => {
+  it('más de 4 decimales se avisa con su propio mensaje', async () => {
     await abrirConcepto();
-    fireEvent.changeText(screen.getByLabelText('Cantidad ejecutada'), '1.234');
+    fireEvent.changeText(screen.getByLabelText('Cantidad ejecutada'), '1.23456');
     fireEvent.press(screen.getByText('Registrar avance'));
     await avanzar(0);
-    expect(screen.getByText('La cantidad admite hasta 2 decimales.')).toBeTruthy();
+    expect(screen.getByText('La cantidad admite hasta 4 decimales.')).toBeTruthy();
     expect(crear).not.toHaveBeenCalled();
+  });
+
+  it('acepta hasta 4 decimales y los envía completos', async () => {
+    await abrirConcepto();
+    fireEvent.changeText(screen.getByLabelText('Cantidad ejecutada'), '1.2345');
+    fireEvent.press(screen.getByText('Registrar avance'));
+    await avanzar(0);
+    expect(crear).toHaveBeenCalledTimes(1);
+    expect(crear.mock.calls[0][0].cantidad_ejecutada).toBe('1.2345');
   });
 
   it('un avance que pasa de lo contratado se permite y solo se avisa (A-02)', async () => {

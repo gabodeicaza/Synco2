@@ -16,14 +16,14 @@ import { colors, radius, shadow, spacing } from '@/src/theme';
 import { APP_BRAND } from '@/src/utils/roles';
 import { UNIDAD_LABELS, Unidad } from '@/src/utils/unidades';
 import { nombreConcepto } from '@/src/utils/nombresNivel';
-import { centsToDecimalString, decimalStringToCents, formatCantidad, pctDeDecimales } from '@/src/utils/money';
+import { decimalStringToScaled, formatCantidad, pctDeDecimales } from '@/src/utils/money';
 import { esRetrocesoLocal } from '@/src/utils/avancePorcentaje';
 import { InlineError } from '@/src/components/InlineError';
 import { showToast } from '@/src/utils/toast';
 import {
-  TipoAvance, excedenteAlCapturar, excedentePorcentajeAlCapturar, hayErrores, validarAvance,
+  TipoAvance, excedenteAlCapturar, excedentePorcentajeAlCapturar, hayErrores, sumarCantidades, validarAvance,
 } from '@/src/utils/validacionAvance';
-import { DECIMALES_IMPORTE, formatoNumero, mensajeNumeroInvalido, parseNumeroEntrada, SeparadorDecimal } from '@/src/utils/numeros';
+import { DECIMALES_CANTIDAD, formatoNumero, mensajeNumeroInvalido, parseNumeroEntrada, SeparadorDecimal } from '@/src/utils/numeros';
 import { useBusquedaConceptos } from '@/src/hooks/useBusquedaConceptos';
 import { useEnvio } from '@/src/hooks/useEnvio';
 import { useFormErrors } from '@/src/hooks/useFormErrors';
@@ -81,15 +81,15 @@ export default function RegistrarAvanceScreen({ projectId }: { projectId: string
   const esPorcentaje = project?.modo_avance === 'PORCENTAJE';
 
   // A-07/X-05: se acepta "1,500" y "1500" según el separador del proyecto; al API siempre
-  // va el decimal con punto. La cantidad de avance se maneja en centavos (2 decimales).
+  // va el decimal con punto. La cantidad de avance admite hasta 4 decimales.
   const separador: SeparadorDecimal = project?.separador_decimal === ',' ? ',' : '.';
-  const opcionesNumero = { separador, maxDecimales: DECIMALES_IMPORTE, permitirNegativo: tipo === 'ajuste' };
+  const opcionesNumero = { separador, maxDecimales: DECIMALES_CANTIDAD, permitirNegativo: tipo === 'ajuste' };
   const lectura = parseNumeroEntrada(cantidad, opcionesNumero);
   const cantidadApi = lectura.ok ? lectura.valor : '';
 
   function darFormatoCantidad() {
     if (!lectura.ok) return;
-    const texto = formatoNumero(lectura.valor, { separador, maxDecimales: DECIMALES_IMPORTE });
+    const texto = formatoNumero(lectura.valor, { separador, maxDecimales: DECIMALES_CANTIDAD });
     if (texto && texto !== cantidad) setCantidad(texto);
   }
 
@@ -110,7 +110,7 @@ export default function RegistrarAvanceScreen({ projectId }: { projectId: string
       const fecha = hoyProyecto(project);
       const e = validarAvance({ cantidad: cantidadApi, tipo, motivo, fecha, hoy: hoyProyecto(project), esPorcentaje });
       if (!lectura.ok && lectura.motivo === 'decimales') {
-        e.cantidad = mensajeNumeroInvalido('decimales', DECIMALES_IMPORTE, t('capturaAvance.cantidad'));
+        e.cantidad = mensajeNumeroInvalido('decimales', DECIMALES_CANTIDAD, t('capturaAvance.cantidad'));
       }
       if (ponerTodos(e) || hayErrores(e)) return;
       try {
@@ -150,7 +150,7 @@ export default function RegistrarAvanceScreen({ projectId }: { projectId: string
     const r = excedenteAlCapturar(selected.cantidad_ejecutada_acumulada, cantidadApi, selected.cantidad);
     if (!r.excede) return null;
     return t('avance.excedeVolumen', {
-      ejecutado: formatCantidad(centsToDecimalString(decimalStringToCents(selected.cantidad_ejecutada_acumulada) + decimalStringToCents(cantidadApi))),
+      ejecutado: formatCantidad(sumarCantidades(selected.cantidad_ejecutada_acumulada, cantidadApi)),
       contratado: formatCantidad(selected.cantidad),
       unidad: selected.unidad,
       excedente: formatCantidad(r.excedente),
@@ -240,7 +240,7 @@ export default function RegistrarAvanceScreen({ projectId }: { projectId: string
                 ? `${formatCantidad(selected.cantidad_ejecutada_acumulada)}%`
                 : `${formatCantidad(selected.cantidad_ejecutada_acumulada)} / ${formatCantidad(selected.cantidad)} ${selected.unidad}`;
               const avancePct = esPorcentaje
-                ? decimalStringToCents(selected.cantidad_ejecutada_acumulada) / 100
+                ? decimalStringToScaled(selected.cantidad_ejecutada_acumulada, DECIMALES_CANTIDAD) / 10 ** DECIMALES_CANTIDAD
                 : pctDeDecimales(selected.cantidad_ejecutada_acumulada, selected.cantidad);
               const barWidth = Math.max(0, Math.min(100, avancePct));
               return (
