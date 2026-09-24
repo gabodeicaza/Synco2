@@ -23,7 +23,7 @@ import { colors, radius, spacing } from '@/src/theme';
 import { isValidDecimalInput, formatCantidad } from '@/src/utils/money';
 import { downloadBlob } from '@/src/utils/downloadBlob';
 import { confirm } from '@/src/utils/confirm';
-import { a11y } from '@/src/i18n';
+import { a11y, t } from '@/src/i18n';
 import {
   WizardStep, quedanFueraLabel, filasFueraCount, pasoSiguienteTrasSubir, pasoAnterior,
 } from '@/src/utils/importWizard';
@@ -57,8 +57,9 @@ const STEPS: { key: WizardStep; label: string }[] = [
   { key: 'resultado', label: '4. Importar' },
 ];
 
-function puedeValidarMapeoEvm(m: ImportMappingEvm, partidaId: string | null): boolean {
-  return !!(m.clave && m.descripcion && m.meta && m.importe && m.inicio && m.fin && partidaId);
+function puedeValidarMapeoEvm(m: ImportMappingEvm, _partidaId?: string | null): boolean {
+  // C-01: la partida destino es opcional; la jerarquía sale de la clave de cada fila.
+  return !!(m.clave && m.descripcion && m.meta && m.importe && m.inicio && m.fin);
 }
 
 interface Props {
@@ -175,19 +176,16 @@ export function ImportarMaestroModal({ visible, projectId, partidas, onClose, on
   }
 
   async function validar(convencionForzada?: ConvencionDecimal) {
-    if (!importId || !selectedSheet || !partidaId) {
-      Alert.alert('Falta información', 'Elige la partida destino antes de validar.');
-      return;
-    }
+    if (!importId || !selectedSheet) return;
     if (!puedeValidarMapeoEvm(mapping, partidaId)) {
-      Alert.alert('Mapeo incompleto', 'Asigna Clave, Descripción, Meta, Importe, Inicio y Fin.');
+      setError('Mapeo incompleto: asigna Clave, Descripción, Meta, Importe, Inicio y Fin.');
       return;
     }
     try {
       setBusy(true); setError(null);
       const res = await api.importEvmValidate(projectId, importId, {
         sheet: selectedSheet, header_row_index: headersResp?.header_row_index ?? 0,
-        mapping, partida_id: partidaId,
+        mapping, partida_id: partidaId ?? undefined,
         convencion: convencionForzada || convencion,
       });
       setResumen(res.resumen);
@@ -409,8 +407,12 @@ export function ImportarMaestroModal({ visible, projectId, partidas, onClose, on
                 </View>
               ))}
 
-              <Text style={styles.fieldLabel}>Partida destino *</Text>
+              <Text style={styles.fieldLabel}>{t('importador.destinoTitulo')}</Text>
+              <Text style={styles.helpSmall}>{t('importador.destinoAyuda')}</Text>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6 }}>
+                <Pressable accessibilityRole="button" accessibilityState={{ selected: partidaId === null }} onPress={() => setPartidaId(null)} style={[styles.chip, partidaId === null && styles.chipActive]}>
+                  <Text style={[styles.chipTxt, partidaId === null && styles.chipTxtActive]} numberOfLines={1}>{t('importador.sinDestino')}</Text>
+                </Pressable>
                 {partidas.map((p) => {
                   const active = partidaId === p.id;
                   return (
@@ -527,6 +529,8 @@ export function ImportarMaestroModal({ visible, projectId, partidas, onClose, on
               <Ionicons name="checkmark-circle" size={48} color={colors.success} />
               <Text style={styles.resultTitle}>Importación completada</Text>
               <Text style={styles.help}>{commitResult.creados} creados · {commitResult.actualizados} actualizados</Text>
+              {(commitResult as any).partidas_creadas > 0 ? <Text style={styles.help}>{t('importador.partidasCreadas', { n: (commitResult as any).partidas_creadas })}</Text> : null}
+              {(commitResult as any).sin_partida > 0 ? <Text style={[styles.help, { color: colors.error }]}>{t('importador.sinPartida', { n: (commitResult as any).sin_partida })}</Text> : null}
               {commitResult.omitidos > 0 ? <Text style={styles.help}>{commitResult.omitidos} omitidos (duplicados)</Text> : null}
               {commitResult.con_error > 0 ? <Text style={[styles.help, { color: colors.error }]}>{commitResult.con_error} con error (no se importaron)</Text> : null}
               {commitResult.descartados > 0 ? <Text style={styles.help}>{commitResult.descartados} descartadas por ti</Text> : null}

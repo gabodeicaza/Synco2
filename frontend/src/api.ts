@@ -1246,6 +1246,8 @@ export interface ImportMapping {
   cantidad?: string;
   precio_unitario?: string;
   importe?: string;
+  /** C-03: columna opcional que marca las filas deductivas (SI, X, 1). */
+  deductiva?: string;
 }
 
 // tipo: 'excel_error' | 'numero_ilegible' | 'numero_ambiguo' | 'campo_obligatorio_vacio'
@@ -1262,6 +1264,9 @@ export type ImportEstadoFila = 'ok' | 'error' | 'advertencia' | 'duplicado' | 'd
 
 export interface ImportFila {
   fila: number;
+  /** C-01: una fila sin cantidad ni P.U. es una partida (nodo del catálogo). */
+  tipo_fila?: 'partida' | 'concepto';
+  deductiva?: boolean;
   clave: string | null;
   descripcion: string | null;
   unidad: string;
@@ -1311,6 +1316,10 @@ export interface ImportPreviewResponse {
 }
 
 export interface ImportCommitResult {
+  /** C-01: partidas creadas a partir de las filas sin cantidad ni P.U. */
+  partidas_creadas?: number;
+  /** Conceptos que no se importaron por no tener partida padre ni destino. */
+  sin_partida?: number;
   creados: number;
   actualizados: number;
   omitidos: number;
@@ -1350,6 +1359,7 @@ export interface ImportMappingEvm {
 // tipo incluye, además de los del catálogo legado: 'fecha_ilegible' | 'rango_fecha_invalido'
 export interface ImportFilaEvm {
   fila: number;
+  tipo_fila?: 'partida' | 'concepto';
   clave: string | null;
   descripcion: string | null;
   meta_cantidad: string | null;
@@ -2606,7 +2616,7 @@ export const api = {
   // cambiar la convención, o "aplicar esta interpretación a todas las
   // filas ambiguas") re-valida el archivo completo desde cero.
   importCatalogoValidate: (pid: string, importId: string, payload: {
-    sheet: string; header_row_index?: number; mapping: ImportMapping; partida_id: string; convencion?: ConvencionDecimal;
+    sheet: string; header_row_index?: number; mapping: ImportMapping; partida_id?: string; convencion?: ConvencionDecimal;
   }) => request<ImportValidateResult>('POST', `/projects/${pid}/conceptos/import/${importId}/validate`, payload),
   // Vista previa paginada del resultado ya validado — no procesa nada.
   importCatalogoPreview: (importId: string, opts: { page?: number; page_size?: number } = {}) => {
@@ -2677,7 +2687,7 @@ export const api = {
     return request<ImportHeadersResponse>('GET', `/conceptos/import_evm/${importId}/headers${suffix ? `?${suffix}` : ''}`);
   },
   importEvmValidate: (pid: string, importId: string, payload: {
-    sheet: string; header_row_index?: number; mapping: ImportMappingEvm; partida_id: string; convencion?: ConvencionDecimal;
+    sheet: string; header_row_index?: number; mapping: ImportMappingEvm; partida_id?: string; convencion?: ConvencionDecimal;
   }) => request<ImportValidateEvmResult>('POST', `/projects/${pid}/conceptos/import_evm/${importId}/validate`, payload),
   importEvmPreview: (importId: string, opts: { page?: number; page_size?: number } = {}) => {
     const qs = new URLSearchParams();

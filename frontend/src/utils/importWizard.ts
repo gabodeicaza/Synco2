@@ -30,10 +30,11 @@ export function quedanFueraLabel(resumen: ImportResumen | null): string {
 }
 
 /** Gate del botón "Validar archivo completo": clave/descripción/cantidad/
- * precio unitario mapeados + partida elegida. Unidad e importe son
+ * precio unitario mapeados. La partida destino es OPCIONAL (C-01): la
+ * jerarquía sale de la clave de cada fila. Unidad, importe y deductiva son
  * opcionales. */
-export function puedeValidar(mapping: ImportMapping, partidaId: string | null): boolean {
-  return !!(mapping.clave && mapping.descripcion && mapping.cantidad && mapping.precio_unitario && partidaId);
+export function puedeValidar(mapping: ImportMapping, _partidaId?: string | null): boolean {
+  return !!(mapping.clave && mapping.descripcion && mapping.cantidad && mapping.precio_unitario);
 }
 
 /** Paso al que se llega tras subir el archivo: si el libro tiene más de

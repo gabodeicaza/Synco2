@@ -98,6 +98,17 @@ export const esMX = {
     vacAhorro: 'Ahorro proyectado',
     sinGasto: 'Sin gasto real capturado',
   },
+  importador: {
+    destinoTitulo: 'Partida destino (opcional)',
+    destinoAyuda:
+      'La jerarquía se arma sola con la clave de cada fila (1 → 1.1 → 1.1.1): las filas sin cantidad ni precio son partidas y las demás cuelgan de la más cercana. Elige una partida solo si quieres colgar todo este catálogo bajo un nodo que ya existe.',
+    sinDestino: 'Sin partida destino',
+    deductivaAyuda: 'Marca con SI, X o 1 las filas deductivas: son las únicas que pueden traer cantidad cero o negativa.',
+    filaPartida: 'Partida',
+    partidasCreadas: '{n} partidas creadas',
+    sinPartida: '{n} conceptos sin partida (no se importaron)',
+    cantidadNoPositivaAyuda: 'Corrige la cantidad, descarta la fila o, si es una deductiva, márcala en la columna Deductiva del Excel y vuelve a subirlo.',
+  },
   minuta: {
     errores: {
       fechaReunionInvalida: 'La fecha de la reunión debe ser una fecha real con el formato AAAA-MM-DD.',

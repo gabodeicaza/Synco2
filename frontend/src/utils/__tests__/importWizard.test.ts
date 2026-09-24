@@ -34,9 +34,10 @@ describe('puedeValidar', () => {
     expect(puedeValidar({ clave: 'A', descripcion: 'B', cantidad: 'C' }, partidaId)).toBe(false);
   });
 
-  it('false si no hay partida elegida, aunque el mapeo esté completo', () => {
+  it('la partida destino es opcional: sin ella, con el mapeo completo, sí se puede validar', () => {
     const mapping = { clave: 'A', descripcion: 'B', cantidad: 'C', precio_unitario: 'D' };
-    expect(puedeValidar(mapping, null)).toBe(false);
+    expect(puedeValidar(mapping, null)).toBe(true);
+    expect(puedeValidar(mapping)).toBe(true);
   });
 
   it('true con los 4 campos obligatorios + partida, unidad/importe opcionales', () => {

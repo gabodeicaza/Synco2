@@ -22,13 +22,13 @@ import { colors, radius, shadow, spacing } from '@/src/theme';
 import { UNIDADES } from '@/src/utils/unidades';
 import { formatCantidad, isValidDecimalInput } from '@/src/utils/money';
 import { confirm } from '@/src/utils/confirm';
-import { a11y } from '@/src/i18n';
+import { a11y, t } from '@/src/i18n';
 import {
   WizardStep, quedanFueraLabel, filasFueraCount, puedeValidar as puedeValidarMapeo,
   pasoSiguienteTrasSubir, pasoAnterior, pasoInicialDeSesionPendiente,
 } from '@/src/utils/importWizard';
 
-type MappingField = 'clave' | 'descripcion' | 'unidad' | 'cantidad' | 'precio_unitario' | 'importe';
+type MappingField = 'clave' | 'descripcion' | 'unidad' | 'cantidad' | 'precio_unitario' | 'importe' | 'deductiva';
 const MAPPING_FIELDS: { key: MappingField; label: string; required: boolean }[] = [
   { key: 'clave', label: 'Clave', required: true },
   { key: 'descripcion', label: 'Descripción', required: true },
@@ -36,6 +36,7 @@ const MAPPING_FIELDS: { key: MappingField; label: string; required: boolean }[] 
   { key: 'cantidad', label: 'Cantidad', required: true },
   { key: 'precio_unitario', label: 'Precio unitario', required: true },
   { key: 'importe', label: 'Importe (solo referencia)', required: false },
+  { key: 'deductiva', label: 'Deductiva (opcional)', required: false },
 ];
 
 const CONVENCION_LABELS: Record<ConvencionDecimal, string> = {
@@ -241,19 +242,16 @@ export function ImportarCatalogoModal({ visible, projectId, partidas, onClose, o
 
   // --- Paso 2 -> 3: validar (todo el archivo, una sola vez) ------------------
   async function validar(convencionForzada?: ConvencionDecimal) {
-    if (!importId || !selectedSheet || !partidaId) {
-      Alert.alert('Falta información', 'Elige la partida destino antes de validar.');
-      return;
-    }
+    if (!importId || !selectedSheet) return;
     if (!mapping.clave || !mapping.descripcion || !mapping.cantidad || !mapping.precio_unitario) {
-      Alert.alert('Mapeo incompleto', 'Asigna al menos Clave, Descripción, Cantidad y Precio unitario.');
+      setError('Mapeo incompleto: asigna al menos Clave, Descripción, Cantidad y Precio unitario.');
       return;
     }
     try {
       setBusy(true); setError(null);
       const res = await api.importCatalogoValidate(projectId, importId, {
         sheet: selectedSheet, header_row_index: headersResp?.header_row_index ?? 0,
-        mapping, partida_id: partidaId,
+        mapping, partida_id: partidaId ?? undefined,
         convencion: convencionForzada || convencion,
       });
       setResumen(res.resumen);
@@ -497,8 +495,13 @@ export function ImportarCatalogoModal({ visible, projectId, partidas, onClose, o
                 </View>
               ))}
 
-              <Text style={styles.fieldLabel}>Partida destino *</Text>
+              <Text style={styles.fieldLabel}>{t('importador.destinoTitulo')}</Text>
+              <Text style={styles.helpSmall}>{t('importador.destinoAyuda')}</Text>
+              <Text style={styles.helpSmall}>{t('importador.deductivaAyuda')}</Text>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6 }}>
+                <Pressable accessibilityRole="button" accessibilityState={{ selected: partidaId === null }} onPress={() => setPartidaId(null)} style={[styles.chip, partidaId === null && styles.chipActive]}>
+                  <Text style={[styles.chipTxt, partidaId === null && styles.chipTxtActive]} numberOfLines={1}>{t('importador.sinDestino')}</Text>
+                </Pressable>
                 {partidas.map((p) => {
                   const active = partidaId === p.id;
                   return (
@@ -620,6 +623,8 @@ export function ImportarCatalogoModal({ visible, projectId, partidas, onClose, o
               <Ionicons name="checkmark-circle" size={48} color={colors.success} />
               <Text style={styles.resultTitle}>Importación completada</Text>
               <Text style={styles.help}>{commitResult.creados} creados · {commitResult.actualizados} actualizados</Text>
+              {(commitResult as any).partidas_creadas > 0 ? <Text style={styles.help}>{t('importador.partidasCreadas', { n: (commitResult as any).partidas_creadas })}</Text> : null}
+              {(commitResult as any).sin_partida > 0 ? <Text style={[styles.help, { color: colors.error }]}>{t('importador.sinPartida', { n: (commitResult as any).sin_partida })}</Text> : null}
               {commitResult.omitidos > 0 ? <Text style={styles.help}>{commitResult.omitidos} omitidos (duplicados)</Text> : null}
               {commitResult.con_error > 0 ? <Text style={[styles.help, { color: colors.error }]}>{commitResult.con_error} con error (no se importaron)</Text> : null}
               {commitResult.descartados > 0 ? <Text style={styles.help}>{commitResult.descartados} descartadas por ti</Text> : null}
@@ -661,7 +666,9 @@ function FilaRevision({
     <View style={[styles.filaCard, { borderLeftColor: color, borderLeftWidth: 4 }]}>
       <Pressable accessibilityRole="button" onPress={onToggle} style={styles.filaHeaderRow}>
         <View style={{ flex: 1 }}>
-          <Text style={styles.filaClave} numberOfLines={1}>{fila.clave || `Fila ${fila.fila}`} — {fila.descripcion || '(sin descripción)'}</Text>
+          <Text style={styles.filaClave} numberOfLines={1}>
+            {fila.tipo_fila === 'partida' ? `[${t('importador.filaPartida')}] ` : ''}{fila.clave || `Fila ${fila.fila}`} — {fila.descripcion || '(sin descripción)'}
+          </Text>
           <Text style={[styles.filaEstado, { color }]}>{ESTADO_LABEL[fila.estado] || fila.estado}</Text>
         </View>
         <Ionicons name={expanded ? 'chevron-up' : 'chevron-down'} size={16} color={colors.textMuted} />
@@ -688,7 +695,8 @@ function FilaRevision({
                   </Pressable>
                 </View>
               ) : null}
-              {p.tipo === 'numero_ilegible' && (p.campo === 'cantidad' || p.campo === 'precio_unitario') ? (
+              {p.tipo === 'cantidad_no_positiva' ? <Text style={styles.helpSmall}>{t('importador.cantidadNoPositivaAyuda')}</Text> : null}
+              {(p.tipo === 'numero_ilegible' || p.tipo === 'cantidad_no_positiva') && (p.campo === 'cantidad' || p.campo === 'precio_unitario') ? (
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 6 }}>
                   <TextInput
                     value={p.campo === 'cantidad' ? draftCantidad : draftPu}
