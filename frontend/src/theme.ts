@@ -124,3 +124,12 @@ export function readableAccent(hex?: string | null): string {
   }
   return colors.primary;
 }
+
+/** Colores por defecto de la identidad del proyecto (los mismos que aplica el servidor). */
+export const COLOR_IDENTIDAD_DEFECTO = '#003366';
+export const COLOR_TEXTO_REPORTE_DEFECTO = '#0F172A';
+
+/** Paleta sugerida para elegir el color de identidad (además de escribir #RRGGBB). */
+export const paletaIdentidad = [
+  '#003366', '#1E40AF', '#0F766E', '#15803D', '#B45309', '#B91C1C', '#7E22CE', '#0F172A',
+];

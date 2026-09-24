@@ -2287,6 +2287,25 @@ def _zona_o_400(nombre: Optional[str]) -> str:
         raise HTTPException(400, str(e))
 
 
+COLOR_HEX_ESTRICTO = re.compile(r"^#[0-9A-Fa-f]{6}$")
+
+
+def validar_color_hex(valor: Optional[str], etiqueta: str) -> Optional[str]:
+    """P-02: al GUARDAR un color se exige #RRGGBB exacto y NUNCA se sustituye en silencio un
+    valor inválido por el color por defecto: se responde 400 con un mensaje claro.
+    Vacío/None = "no configurado" (devuelve None; quien llama decide el color por defecto)."""
+    if valor is None:
+        return None
+    if not isinstance(valor, str):
+        raise HTTPException(400, f"{etiqueta}: el color debe ser texto con el formato #RRGGBB (por ejemplo #1E40AF).")
+    v = valor.strip()
+    if v == "":
+        return None
+    if not COLOR_HEX_ESTRICTO.match(v):
+        raise HTTPException(400, f"{etiqueta}: el color debe tener el formato #RRGGBB (por ejemplo #1E40AF). Escribiste «{valor}».")
+    return v.upper()
+
+
 def _sanitize_color_hex(value: Optional[str]) -> Optional[str]:
     """Valida un color hex `#RRGGBB` o `#RGB`. Devuelve `#RRGGBB` en mayúsculas o None."""
     if not value or not isinstance(value, str):
@@ -2331,9 +2350,9 @@ async def create_project(body: ProjectIn, user: dict = Depends(require_role(ROLE
         "contract_number": body.contract_number.strip(),
         "objeto_contrato": (body.objeto_contrato or "").strip() or None,
         "cliente_principal": (body.cliente_principal or "").strip() or None,
-        "color_tema": _sanitize_color_hex(body.color_tema) or "#003366",
-        "color_institucional": _sanitize_color_hex(body.color_institucional) or "#003366",
-        "report_text_color": _sanitize_color_hex(body.report_text_color) or "#0F172A",
+        "color_tema": validar_color_hex(body.color_tema, "Color del título de portada") or "#003366",
+        "color_institucional": validar_color_hex(body.color_institucional, "Color institucional") or "#003366",
+        "report_text_color": validar_color_hex(body.report_text_color, "Color del texto de reportes") or "#0F172A",
         "start_date": body.start_date,
         "end_date": body.end_date,
         "description": (body.description or "").strip() or None,
@@ -2429,11 +2448,11 @@ async def update_project(pid: str, body: ProjectPatch, user: dict = Depends(requ
     if body.cliente_principal is not None:
         upd["cliente_principal"] = body.cliente_principal.strip() or None
     if body.color_tema is not None:
-        upd["color_tema"] = _sanitize_color_hex(body.color_tema) or "#003366"
+        upd["color_tema"] = validar_color_hex(body.color_tema, "Color del título de portada") or "#003366"
     if body.color_institucional is not None:
-        upd["color_institucional"] = _sanitize_color_hex(body.color_institucional) or "#003366"
+        upd["color_institucional"] = validar_color_hex(body.color_institucional, "Color institucional") or "#003366"
     if body.report_text_color is not None:
-        upd["report_text_color"] = _sanitize_color_hex(body.report_text_color) or "#0F172A"
+        upd["report_text_color"] = validar_color_hex(body.report_text_color, "Color del texto de reportes") or "#0F172A"
     if body.start_date is not None:
         upd["start_date"] = body.start_date
     if body.end_date is not None:
@@ -5818,7 +5837,7 @@ async def create_area(pid: str, body: AreaIn, user: dict = Depends(require_role(
         "id": str(uuid.uuid4()),
         "project_id": pid,
         "name": name,
-        "color": body.color or "#1E40AF",
+        "color": validar_color_hex(body.color, "Color del área") or "#1E40AF",
         "created_at": datetime.now(timezone.utc),
     }
     await db.areas.insert_one(doc)
@@ -16357,6 +16376,10 @@ async def create_minuta(pid: str, body: MinutaIn, user: dict = Depends(current_u
         raise HTTPException(400, "Descripción máximo 4000 caracteres")
     area_ids, area_names = await _resolve_areas_for_minuta(pid, body.area_ids or [])
     fecha_reunion = (body.fecha_reunion or "").strip() or (await hoy_de(pid)).isoformat()
+    try:
+        date.fromisoformat(fecha_reunion)
+    except ValueError:
+        raise HTTPException(400, "La fecha de la reunión debe tener el formato AAAA-MM-DD.")
 
     # Ubicación (nodo del proyecto) — REQUERIDA por regla de negocio 2026-07.
     # Guardamos id + name + path para poder mostrar breadcrumb sin joins extra.
@@ -16442,6 +16465,12 @@ async def create_minuta(pid: str, body: MinutaIn, user: dict = Depends(current_u
             datetime.strptime(fl, "%Y-%m-%d")
         except ValueError:
             raise HTTPException(400, f"Acuerdo #{i+1}: fecha límite debe ser YYYY-MM-DD")
+        # K-03: un acuerdo no puede vencer antes de la reunión en la que se tomó.
+        if fl < fecha_reunion:
+            raise HTTPException(
+                400,
+                f"Acuerdo #{i+1}: la fecha límite ({fl}) no puede ser anterior a la fecha de la reunión ({fecha_reunion}).",
+            )
         acuerdos_out.append({
             "id": str(uuid.uuid4()),
             "descripcion": desc,

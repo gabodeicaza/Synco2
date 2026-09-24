@@ -11,7 +11,12 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { api, ApiError, Project, ReferenceFile, FeedItem, LocationNode } from '@/src/api';
-import { colors, radius, shadow, spacing } from '@/src/theme';
+import { COLOR_IDENTIDAD_DEFECTO, COLOR_TEXTO_REPORTE_DEFECTO, colors, radius, shadow, spacing } from '@/src/theme';
+import { ColorInput } from '@/src/components/ColorInput';
+import { InlineError } from '@/src/components/InlineError';
+import { errorDeColor, normalizarColorHex } from '@/src/utils/color';
+import { esErrorDeRed } from '@/src/utils/errores';
+import { showToast } from '@/src/utils/toast';
 import { Button } from '@/src/components/Button';
 import { confirm } from '@/src/utils/confirm';
 import { ReportPeriod, periodToInformeType } from '@/src/components/PeriodSheet';
@@ -252,15 +257,16 @@ export default function ProjectDetailScreen() {
   const [tplBusyKind, setTplBusyKind] = useState<'pdf' | 'docx' | 'pptx' | null>(null);
   const [gdModalOpen, setGdModalOpen] = useState(false);
   const [objetoSaving, setObjetoSaving] = useState(false);
+  const [objetoError, setObjetoError] = useState<string | null>(null);
   const [objetoDraft, setObjetoDraft] = useState('');
   const [clienteDraft, setClienteDraft] = useState('');
   // color_tema: ACOTADO al título de portada del Informe PDF/PPTX exportado.
-  const [colorDraft, setColorDraft] = useState('#003366');
+  const [colorDraft, setColorDraft] = useState(COLOR_IDENTIDAD_DEFECTO);
   // color_institucional: color de marca real -- banners, tablas, botones y
   // acentos de toda la app y el resto de documentos exportados.
   const [colorInstitucionalDraft, setColorInstitucionalDraft] = useState('#003366');
   // Color del texto de observaciones (pie de foto) en reportes ejecutivos.
-  const [reportTextColorDraft, setReportTextColorDraft] = useState('#0F172A');
+  const [reportTextColorDraft, setReportTextColorDraft] = useState(COLOR_TEXTO_REPORTE_DEFECTO);
 
   const load = useCallback(async () => {
     try {
@@ -579,28 +585,36 @@ export default function ProjectDetailScreen() {
     if (!project) return;
     setObjetoDraft((project as any).objeto_contrato || '');
     setClienteDraft((project as any).cliente_principal || '');
-    setColorDraft((project as any).color_tema || '#003366');
-    setColorInstitucionalDraft((project as any).color_institucional || '#003366');
-    setReportTextColorDraft((project as any).report_text_color || '#0F172A');
+    setColorDraft((project as any).color_tema || COLOR_IDENTIDAD_DEFECTO);
+    setColorInstitucionalDraft((project as any).color_institucional || COLOR_IDENTIDAD_DEFECTO);
+    setReportTextColorDraft((project as any).report_text_color || COLOR_TEXTO_REPORTE_DEFECTO);
+    setObjetoError(null);
     setObjetoModalOpen(true);
   }
 
   async function saveObjeto() {
     if (!pid || objetoSaving) return;
+    setObjetoError(null);
+    // P-02: un color inválido NO se sustituye en silencio: se avisa junto al campo y no se guarda.
+    if (errorDeColor(colorDraft) || errorDeColor(colorInstitucionalDraft) || errorDeColor(reportTextColorDraft)) {
+      setObjetoError(t('color.corrige'));
+      return;
+    }
     try {
       setObjetoSaving(true);
       const upd = await api.updateProject(pid, {
         objeto_contrato: objetoDraft.trim() || null,
         cliente_principal: clienteDraft.trim() || null,
-        color_tema: colorDraft.trim() || null,
-        color_institucional: colorInstitucionalDraft.trim() || null,
-        report_text_color: reportTextColorDraft.trim() || null,
+        color_tema: normalizarColorHex(colorDraft),
+        color_institucional: normalizarColorHex(colorInstitucionalDraft),
+        report_text_color: normalizarColorHex(reportTextColorDraft),
       } as any);
       setProject((p) => ({ ...(p || ({} as any)), ...upd }));
       setObjetoModalOpen(false);
-      Alert.alert('Guardado', 'La identidad institucional del proyecto se actualizo correctamente.');
+      showToast('La identidad institucional del proyecto se actualizó correctamente.');
     } catch (e: any) {
-      Alert.alert('No se pudo guardar', e?.message || 'Intentalo nuevamente.');
+      if (esErrorDeRed(e)) showToast(t('red.errorDeRed'));
+      else setObjetoError(e?.message || 'No se pudo guardar. Inténtalo de nuevo.');
     } finally {
       setObjetoSaving(false);
     }
@@ -2433,93 +2447,28 @@ export default function ProjectDetailScreen() {
                 />
               </View>
 
-              <View>
-                <Text style={styles.catLabel}>Color institucional (#RRGGBB)</Text>
-                <Text style={styles.catHelper}>
-                  Color principal usado en banners, tablas, botones y acentos de toda la app y los reportes exportados.
-                </Text>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-                  <TextInput
-                    value={colorInstitucionalDraft}
-                    onChangeText={setColorInstitucionalDraft}
-                    placeholder="#003366"
-                    placeholderTextColor={colors.textMuted}
-                    autoCapitalize="characters"
-                    style={[styles.catInput, { flex: 1 }]}
-                  />
-                  <View
-                    style={{
-                      width: 44,
-                      height: 44,
-                      borderRadius: radius.sm,
-                      borderWidth: 1,
-                      borderColor: colors.borderStrong,
-                      backgroundColor: /^#([0-9a-fA-F]{3}){1,2}$/.test((colorInstitucionalDraft || '').trim())
-                        ? colorInstitucionalDraft.trim()
-                        : '#003366',
-                    }}
-                  />
-                </View>
-              </View>
-
-              <View>
-                <Text style={styles.catLabel}>Color del título de portada (#RRGGBB)</Text>
-                <Text style={styles.catHelper}>
-                  Color del título grande en la portada del Informe exportado (PDF/PPTX Diario/Semanal/Mensual).
-                  Ya no afecta banners ni tablas -- usa "Color institucional" para eso.
-                </Text>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-                  <TextInput
-                    value={colorDraft}
-                    onChangeText={setColorDraft}
-                    placeholder="#003366"
-                    placeholderTextColor={colors.textMuted}
-                    autoCapitalize="characters"
-                    style={[styles.catInput, { flex: 1 }]}
-                  />
-                  <View
-                    style={{
-                      width: 44,
-                      height: 44,
-                      borderRadius: radius.sm,
-                      borderWidth: 1,
-                      borderColor: colors.borderStrong,
-                      backgroundColor: /^#([0-9a-fA-F]{3}){1,2}$/.test((colorDraft || '').trim())
-                        ? colorDraft.trim()
-                        : '#003366',
-                    }}
-                  />
-                </View>
-              </View>
-
-              <View>
-                <Text style={styles.catLabel}>Color del texto de observaciones (#RRGGBB)</Text>
-                <Text style={styles.catHelper}>
-                  Color del pie de foto (observaciones) que acompana cada imagen en los reportes ejecutivos PDF/PPTX.
-                </Text>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-                  <TextInput
-                    value={reportTextColorDraft}
-                    onChangeText={setReportTextColorDraft}
-                    placeholder="#0F172A"
-                    placeholderTextColor={colors.textMuted}
-                    autoCapitalize="characters"
-                    style={[styles.catInput, { flex: 1 }]}
-                  />
-                  <View
-                    style={{
-                      width: 44,
-                      height: 44,
-                      borderRadius: radius.sm,
-                      borderWidth: 1,
-                      borderColor: colors.borderStrong,
-                      backgroundColor: /^#([0-9a-fA-F]{3}){1,2}$/.test((reportTextColorDraft || '').trim())
-                        ? reportTextColorDraft.trim()
-                        : '#0F172A',
-                    }}
-                  />
-                </View>
-              </View>
+              <ColorInput
+                label="Color institucional (#RRGGBB)"
+                ayuda="Color principal usado en banners, tablas, botones y acentos de toda la app y los reportes exportados."
+                value={colorInstitucionalDraft}
+                onChange={setColorInstitucionalDraft}
+                editable={!objetoSaving}
+              />
+              <ColorInput
+                label="Color del título de portada (#RRGGBB)"
+                ayuda={'Color del título grande en la portada del Informe exportado (PDF/PPTX Diario/Semanal/Mensual). No afecta banners ni tablas: usa "Color institucional" para eso.'}
+                value={colorDraft}
+                onChange={setColorDraft}
+                editable={!objetoSaving}
+              />
+              <ColorInput
+                label="Color del texto de observaciones (#RRGGBB)"
+                ayuda="Color del pie de foto (observaciones) que acompaña cada imagen en los reportes ejecutivos PDF/PPTX."
+                value={reportTextColorDraft}
+                onChange={setReportTextColorDraft}
+                placeholder={COLOR_TEXTO_REPORTE_DEFECTO}
+                editable={!objetoSaving}
+              />
 
               <View>
                 <Text style={styles.catLabel}>Objeto del contrato</Text>
@@ -2535,6 +2484,8 @@ export default function ProjectDetailScreen() {
                   style={[styles.catInput, { minHeight: 90, textAlignVertical: 'top', paddingTop: 10 }]}
                 />
               </View>
+
+              <InlineError message={objetoError} />
 
               <Pressable accessibilityRole="button"
                 onPress={saveObjeto}

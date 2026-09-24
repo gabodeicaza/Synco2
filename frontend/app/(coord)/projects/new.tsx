@@ -7,8 +7,13 @@ import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { Button } from '@/src/components/Button';
 import { api } from '@/src/api';
-import { colors, radius, spacing } from '@/src/theme';
-import { a11y } from '@/src/i18n';
+import { COLOR_IDENTIDAD_DEFECTO, colors, radius, spacing } from '@/src/theme';
+import { a11y, t } from '@/src/i18n';
+import { ColorInput } from '@/src/components/ColorInput';
+import { InlineError } from '@/src/components/InlineError';
+import { errorDeColor, normalizarColorHex } from '@/src/utils/color';
+import { esErrorDeRed } from '@/src/utils/errores';
+import { showToast } from '@/src/utils/toast';
 
 export default function NewProjectScreen() {
   const insets = useSafeAreaInsets();
@@ -17,8 +22,8 @@ export default function NewProjectScreen() {
   const [contract, setContract] = useState('');
   const [objetoContrato, setObjetoContrato] = useState('');
   const [clientePrincipal, setClientePrincipal] = useState('');
-  const [colorTema, setColorTema] = useState('#003366');
-  const [colorInstitucional, setColorInstitucional] = useState('#003366');
+  const [colorTema, setColorTema] = useState(COLOR_IDENTIDAD_DEFECTO);
+  const [colorInstitucional, setColorInstitucional] = useState(COLOR_IDENTIDAD_DEFECTO);
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [description, setDescription] = useState('');
@@ -26,9 +31,14 @@ export default function NewProjectScreen() {
   const [error, setError] = useState<string | null>(null);
 
   async function onCreate() {
+    if (busy) return;
     setError(null);
     if (!name.trim() || !constructora.trim() || !contract.trim()) {
-      setError('Nombre, constructora y numero de contrato son obligatorios');
+      setError('Nombre, constructora y número de contrato son obligatorios.');
+      return;
+    }
+    if (errorDeColor(colorInstitucional) || errorDeColor(colorTema)) {
+      setError(t('color.corrige'));
       return;
     }
     setBusy(true);
@@ -39,15 +49,16 @@ export default function NewProjectScreen() {
         contract_number: contract.trim(),
         objeto_contrato: objetoContrato.trim() || null,
         cliente_principal: clientePrincipal.trim() || null,
-        color_tema: colorTema.trim() || null,
-        color_institucional: colorInstitucional.trim() || null,
+        color_tema: normalizarColorHex(colorTema),
+        color_institucional: normalizarColorHex(colorInstitucional),
         start_date: startDate.trim() || null,
         end_date: endDate.trim() || null,
         description: description.trim() || null,
       });
       router.replace({ pathname: '/(coord)/projects/[id]', params: { id: p.id } });
     } catch (e: any) {
-      setError(e?.message || 'No se pudo crear');
+      if (esErrorDeRed(e)) showToast(t('red.errorDeRed'));
+      else setError(e?.message || 'No se pudo crear el proyecto.');
     } finally {
       setBusy(false);
     }
@@ -85,53 +96,25 @@ export default function NewProjectScreen() {
           placeholder="Ej. Secretaria de Comunicaciones y Transportes"
           icon="ribbon-outline"
         />
-        <Field
+        <ColorInput
           label="Color institucional (#RRGGBB)"
+          ayuda="Usado en banners, tablas y acentos de toda la app y las exportaciones"
           value={colorInstitucional}
-          onChangeText={setColorInstitucional}
-          placeholder="#003366"
-          icon="color-palette-outline"
-          autoCapitalize="characters"
+          onChange={setColorInstitucional}
+          editable={!busy}
         />
-        {/* Vista previa rapida del color */}
-        <View style={styles.colorPreviewRow}>
-          <Text style={styles.colorPreviewLabel}>Vista previa:</Text>
-          <View
-            style={[
-              styles.colorSwatch,
-              { backgroundColor: /^#([0-9a-fA-F]{3}){1,2}$/.test(colorInstitucional.trim()) ? colorInstitucional.trim() : '#003366' },
-            ]}
-          />
-          <Text style={styles.colorPreviewHint}>(Usado en banners, tablas y acentos de toda la app y las exportaciones)</Text>
-        </View>
-        <Field
+        <ColorInput
           label="Color del título de portada (#RRGGBB)"
+          ayuda="Solo el título de la portada del Informe PDF/PPTX exportado"
           value={colorTema}
-          onChangeText={setColorTema}
-          placeholder="#003366"
-          icon="color-palette-outline"
-          autoCapitalize="characters"
+          onChange={setColorTema}
+          editable={!busy}
         />
-        <View style={styles.colorPreviewRow}>
-          <Text style={styles.colorPreviewLabel}>Vista previa:</Text>
-          <View
-            style={[
-              styles.colorSwatch,
-              { backgroundColor: /^#([0-9a-fA-F]{3}){1,2}$/.test(colorTema.trim()) ? colorTema.trim() : '#003366' },
-            ]}
-          />
-          <Text style={styles.colorPreviewHint}>(Solo el título de la portada del Informe PDF/PPTX exportado)</Text>
-        </View>
         <Field label="Fecha de inicio (YYYY-MM-DD)" value={startDate} onChangeText={setStartDate} placeholder="2026-01-15" icon="calendar-outline" />
         <Field label="Fecha de termino (YYYY-MM-DD)" value={endDate} onChangeText={setEndDate} placeholder="2027-06-30" icon="calendar-outline" />
         <Field label="Descripcion (opcional)" value={description} onChangeText={setDescription} placeholder="Notas_" icon="chatbox-ellipses-outline" multiline />
 
-        {error ? (
-          <View style={styles.errorBox}>
-            <Ionicons name="alert-circle" size={16} color={colors.error} />
-            <Text style={styles.errorText}>{error}</Text>
-          </View>
-        ) : null}
+        <InlineError message={error} />
 
         <View style={{ height: spacing.md }} />
         <Button label="Crear proyecto" onPress={onCreate} loading={busy} fullWidth />

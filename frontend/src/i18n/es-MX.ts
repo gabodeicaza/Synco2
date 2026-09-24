@@ -98,6 +98,14 @@ export const esMX = {
     vacAhorro: 'Ahorro proyectado',
     sinGasto: 'Sin gasto real capturado',
   },
+  color: {
+    formatoInvalido: 'El color debe tener el formato #RRGGBB (por ejemplo #1E40AF). Escribiste «{valor}».',
+    placeholder: '#003366',
+    vistaPrevia: 'Vista previa del color {valor}',
+    sinVistaPrevia: 'Sin vista previa: el color escrito no es válido',
+    elegir: 'Elegir el color {valor}',
+    corrige: 'Corrige los colores marcados antes de guardar.',
+  },
   excedentes: {
     titulo: 'Volumen excedente',
     informativa: 'Alerta informativa: no bloquea nada',
