@@ -52,11 +52,12 @@ export function isUnidad(value: string | null | undefined): value is Unidad {
 }
 
 /** Periodicidad de la Meta (ritmo objetivo) de un concepto. */
-export type PeriodicidadMeta = 'SEMANAL' | 'MENSUAL';
+export type PeriodicidadMeta = 'DIARIA' | 'SEMANAL' | 'MENSUAL';
 
-export const PERIODICIDADES_META: PeriodicidadMeta[] = ['SEMANAL', 'MENSUAL'];
+export const PERIODICIDADES_META: PeriodicidadMeta[] = ['DIARIA', 'SEMANAL', 'MENSUAL'];
 
 export const PERIODICIDAD_META_LABELS: Record<PeriodicidadMeta, string> = {
+  DIARIA: 'Diaria',
   SEMANAL: 'Semanal',
   MENSUAL: 'Mensual',
 };

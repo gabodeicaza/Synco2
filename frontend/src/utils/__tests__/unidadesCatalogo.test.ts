@@ -96,8 +96,18 @@ describe('validarNuevoConcepto (C-05)', () => {
     expect(r.errores).toEqual({});
     expect(r.valores).toEqual({
       clave: '1.2', descripcion: 'Muro', unidad: 'M2', cantidad: '1500.5', precio_unitario: '10',
-      meta: '1500.5', periodicidad_meta: 'SEMANAL', extraordinario: false,
+      meta: '', periodicidad_meta: 'MENSUAL', fecha_inicio: null, fecha_fin: null, extraordinario: false,
     });
+  });
+
+  it('C-06: con fechas la meta se calcula con la cadencia del proyecto; a mano manda la capturada', () => {
+    const conFechas = { ...base, cantidad: '1000', fechaInicio: '2026-10-01', fechaFin: '2026-10-10' };
+    expect(validarNuevoConcepto(conFechas, { ...opciones, cadencia: 'DIARIA' }).valores).toMatchObject({
+      meta: '100', periodicidad_meta: 'DIARIA', fecha_inicio: '2026-10-01', fecha_fin: '2026-10-10',
+    });
+    expect(validarNuevoConcepto(conFechas, { ...opciones, cadencia: 'SEMANAL' }).valores?.meta).toBe('700');
+    expect(validarNuevoConcepto({ ...conFechas, meta: '1,5' }, { ...opciones, cadencia: 'SEMANAL', separador: ',' }).valores?.meta).toBe('1.5');
+    expect(validarNuevoConcepto({ ...conFechas, meta: 'abc' }, opciones).errores.meta).toBe('La meta debe ser un número válido.');
   });
 
   it('marca cada campo faltante', () => {

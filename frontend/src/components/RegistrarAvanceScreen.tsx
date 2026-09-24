@@ -214,7 +214,7 @@ export default function RegistrarAvanceScreen({ projectId }: { projectId: string
                 <Text style={styles.resultMeta}>
                   {project?.modo_avance === 'PORCENTAJE'
                     ? `Va al ${formatCantidad(c.cantidad_ejecutada_acumulada)}%`
-                    : `Meta: ${formatCantidad(c.meta)} ${c.unidad} · Ejecutado: ${formatCantidad(c.cantidad_ejecutada_acumulada)} de ${formatCantidad(c.cantidad)} ${c.unidad}`}
+                    : `${c.meta ? `Meta: ${formatCantidad(c.meta)} ${c.unidad} · ` : ''}Ejecutado: ${formatCantidad(c.cantidad_ejecutada_acumulada)} de ${formatCantidad(c.cantidad)} ${c.unidad}`}
                 </Text>
               </Pressable>
             )) : null}

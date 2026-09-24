@@ -20,7 +20,8 @@ import { useAuth } from '@/src/auth-context';
 import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
 import { confirm } from '@/src/utils/confirm';
 import { ROLE_SUB, ROLE_COORD, APP_BRAND } from '@/src/utils/roles';
-import { UNIDAD_LABELS, PERIODICIDAD_META_LABELS, Unidad, unidadesDelProyecto } from '@/src/utils/unidades';
+import { UNIDAD_LABELS, Unidad, unidadesDelProyecto } from '@/src/utils/unidades';
+import { textoDeMeta } from '@/src/utils/metaPorDefecto';
 import { formatMoney, formatCantidad, sumDecimalStringsAsCents, centsToDecimalString } from '@/src/utils/money';
 import { DECIMALES_CANTIDAD, DECIMALES_IMPORTE, SeparadorDecimal, mensajeNumeroInvalido, parseNumeroEntrada } from '@/src/utils/numeros';
 import { showToast } from '@/src/utils/toast';
@@ -250,7 +251,7 @@ export default function CatalogoConceptosScreen({ projectId }: { projectId: stri
     }
     value = leido.valor;
     const esDinero = field !== 'meta';
-    const fmt = (v: string) => (esDinero ? formatMoney(v) : formatCantidad(v));
+    const fmt = (v: string) => (esDinero ? formatMoney(v) : v ? formatCantidad(v) : t('meta.sinMeta').toLowerCase());
     const actual = field === 'importe_total_editable' ? (concepto.importe_total_editable || '0') : concepto[field];
     const ok = await confirm(
       `Actualizar ${label}`,
@@ -837,7 +838,7 @@ function ConceptoRow({
             {concepto.descripcion}
           </Text>
           <Text style={styles.conceptoMetaCollapsed} numberOfLines={1}>
-            Meta: {formatCantidad(concepto.meta)} {concepto.unidad}/{PERIODICIDAD_META_LABELS[concepto.periodicidad_meta].toLowerCase()}
+            {concepto.meta ? `Meta: ${textoDeMeta(concepto.meta, concepto.unidad, concepto.periodicidad_meta)}` : textoDeMeta('', concepto.unidad)}
           </Text>
         </View>
         <Ionicons name={expanded ? 'chevron-up' : 'chevron-down'} size={18} color={colors.textMuted} />
@@ -875,7 +876,7 @@ function ConceptoRow({
           )}
           <EditableDetailField
             label="Meta (ritmo)"
-            value={`${formatCantidad(concepto.meta)} ${concepto.unidad} / ${PERIODICIDAD_META_LABELS[concepto.periodicidad_meta].toLowerCase()}`}
+            value={textoDeMeta(concepto.meta, concepto.unidad, concepto.periodicidad_meta)}
             rawValue={concepto.meta}
             canEdit={canEdit}
             onSave={(v) => onSaveField(concepto, 'meta', v)}

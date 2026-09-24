@@ -14,7 +14,8 @@ import { useFormErrors } from '@/src/hooks/useFormErrors';
 import { t } from '@/src/i18n';
 import { colors, radius, shadow, spacing } from '@/src/theme';
 import { nombreConcepto } from '@/src/utils/nombresNivel';
-import { DECIMALES_CANTIDAD, DECIMALES_IMPORTE, SeparadorDecimal } from '@/src/utils/numeros';
+import { cadenciaDeProyecto, metaPorDefecto } from '@/src/utils/metaPorDefecto';
+import { DECIMALES_CANTIDAD, DECIMALES_IMPORTE, SeparadorDecimal, formatoNumero, parseNumeroEntrada } from '@/src/utils/numeros';
 import { showToast } from '@/src/utils/toast';
 import { UNIDAD_DEFAULT, UNIDAD_LABELS, Unidad, unidadesDelProyecto } from '@/src/utils/unidades';
 import { CampoConcepto, validarNuevoConcepto } from '@/src/utils/validacionCatalogo';
@@ -39,21 +40,34 @@ export function NuevoConceptoModal({ visible, project, partida, onClose, onCread
   const [cantidad, setCantidad] = useState('');
   const [precio, setPrecio] = useState('');
   const [extraordinario, setExtraordinario] = useState(false);
+  const [fechaInicio, setFechaInicio] = useState('');
+  const [fechaFin, setFechaFin] = useState('');
+  const [meta, setMeta] = useState('');
   const { errores, errorGeneral, poner, ponerTodos, alCambiar, errorDeGuardado, limpiarTodo, limpiar } = useFormErrors<CampoConcepto>();
   const { guardando, ejecutar } = useEnvio();
 
   useEffect(() => {
     if (!visible) return;
     setClave(''); setDescripcion(''); setUnidad(UNIDAD_DEFAULT); setCantidad(''); setPrecio(''); setExtraordinario(false);
+    setFechaInicio(''); setFechaFin(''); setMeta('');
     limpiarTodo();
   }, [visible, limpiarTodo]);
+
+  // C-06: meta por defecto = cantidad ÷ duración en la cadencia del proyecto; sin fechas queda vacía.
+  const periodicidad = cadenciaDeProyecto(project?.cadencia_reporte);
+  const periodoTxt = t(periodicidad === 'DIARIA' ? 'meta.porDia' : periodicidad === 'SEMANAL' ? 'meta.porSemana' : 'meta.porMes');
+  const metaCalculada = useMemo(() => {
+    const c = parseNumeroEntrada(cantidad, { separador, maxDecimales: DECIMALES_CANTIDAD });
+    return c.ok ? metaPorDefecto(c.valor, fechaInicio.trim(), fechaFin.trim(), periodicidad) : null;
+  }, [cantidad, fechaInicio, fechaFin, periodicidad, separador]);
+  const metaCalculadaTxt = metaCalculada ? formatoNumero(metaCalculada, { separador, maxDecimales: DECIMALES_CANTIDAD }) : '';
 
   async function crear() {
     if (!partida) return;
     await ejecutar(async () => {
       const r = validarNuevoConcepto(
-        { clave, descripcion, unidad, cantidad, precioUnitario: precio, extraordinario },
-        { separador, unidadesValidas: unidades },
+        { clave, descripcion, unidad, cantidad, precioUnitario: precio, extraordinario, fechaInicio, fechaFin, meta },
+        { separador, unidadesValidas: unidades, cadencia: project?.cadencia_reporte },
       );
       if (ponerTodos(r.errores) || !r.valores) return;
       try {
@@ -140,6 +154,41 @@ export function NuevoConceptoModal({ visible, project, partida, onClose, onCread
               returnKeyType="done"
               onSubmitEditing={crear}
               obligatorio={!extraordinario}
+            />
+
+            <FormField
+              label={t('meta.fechaInicio')}
+              value={fechaInicio}
+              onChangeText={alCambiar<string>('fechaInicio', setFechaInicio)}
+              error={errores.fechaInicio}
+              placeholder={t('meta.fechaEjemplo')}
+              autoCapitalize="none"
+              autoCorrect={false}
+              maxLength={10}
+              editable={!guardando}
+            />
+            <FormField
+              label={t('meta.fechaFin')}
+              value={fechaFin}
+              onChangeText={alCambiar<string>('fechaFin', setFechaFin)}
+              error={errores.fechaFin}
+              placeholder={t('meta.fechaEjemplo')}
+              autoCapitalize="none"
+              autoCorrect={false}
+              maxLength={10}
+              editable={!guardando}
+            />
+            <FormField
+              label={t('meta.titulo', { periodo: periodoTxt })}
+              value={meta}
+              onChangeText={alCambiar<string>('meta', setMeta)}
+              error={errores.meta}
+              placeholder={metaCalculadaTxt}
+              ayuda={metaCalculada
+                ? t('meta.calculada', { meta: metaCalculadaTxt, unidad, periodo: periodoTxt })
+                : t('meta.sinPrograma')}
+              numero={{ separador, maxDecimales: DECIMALES_CANTIDAD }}
+              editable={!guardando}
             />
 
             <Pressable

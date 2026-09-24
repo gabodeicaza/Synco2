@@ -149,8 +149,60 @@ describe('NuevoConceptoModal (C-05, C-04)', () => {
     await waitFor(() => expect(props.onCreado).toHaveBeenCalledWith({ id: 'c9', clave: '1.1' }));
     expect(crearConcepto).toHaveBeenCalledWith({
       partida_id: 'pa1', clave: '1.1', descripcion: 'Muro de block', unidad: 'SACO', cantidad: '1500',
-      precio_unitario: '25.5', meta: '1500', periodicidad_meta: 'SEMANAL', extraordinario: false,
+      precio_unitario: '25.5', meta: '', periodicidad_meta: 'MENSUAL', fecha_inicio: null, fecha_fin: null,
+      extraordinario: false,
     });
+  });
+
+  it('C-06: sin fechas no hay programa, así que la meta queda vacía y se explica por qué', async () => {
+    crearConcepto.mockResolvedValue({ id: 'c11' });
+    conceptoModal();
+    llenarConcepto({ clave: '1.1', descripcion: 'Muro', cantidad: '1,500', precio: '25' });
+    expect(screen.getByText(/la meta queda vacía/)).toBeTruthy();
+    fireEvent.press(screen.getByText('Crear'));
+    await waitFor(() => expect(crearConcepto).toHaveBeenCalled());
+    expect(crearConcepto.mock.calls[0][0]).toMatchObject({ meta: '', fecha_inicio: null, fecha_fin: null });
+  });
+
+  it('C-06: con cantidad y fechas precalcula la meta en la cadencia del proyecto y la manda', async () => {
+    crearConcepto.mockResolvedValue({ id: 'c12' });
+    conceptoModal({ project: { ...proyecto, cadencia_reporte: 'SEMANAL' } });
+    llenarConcepto({ clave: '1.1', descripcion: 'Muro', cantidad: '1,000', precio: '25' });
+    fireEvent.changeText(screen.getByLabelText('Fecha de inicio (opcional)'), '2026-10-01');
+    fireEvent.changeText(screen.getByLabelText('Fecha de fin (opcional)'), '2026-10-14');
+    // 14 días = 2 semanas: 1,000 / 2 = 500 por semana.
+    expect(screen.getByText(/Calculada con la cantidad y las fechas: 500 \S+ por semana/)).toBeTruthy();
+    expect(screen.getByLabelText('Meta por semana').props.placeholder).toBe('500');
+    fireEvent.press(screen.getByText('Crear'));
+    await waitFor(() => expect(crearConcepto).toHaveBeenCalled());
+    expect(crearConcepto.mock.calls[0][0]).toMatchObject({
+      meta: '500', periodicidad_meta: 'SEMANAL', fecha_inicio: '2026-10-01', fecha_fin: '2026-10-14',
+    });
+  });
+
+  it('C-06: la meta capturada a mano manda sobre la calculada', async () => {
+    crearConcepto.mockResolvedValue({ id: 'c13' });
+    conceptoModal({ project: { ...proyecto, cadencia_reporte: 'DIARIA' } });
+    llenarConcepto({ clave: '1.1', descripcion: 'Muro', cantidad: '100', precio: '25' });
+    fireEvent.changeText(screen.getByLabelText('Fecha de inicio (opcional)'), '2026-10-01');
+    fireEvent.changeText(screen.getByLabelText('Fecha de fin (opcional)'), '2026-10-10');
+    fireEvent.changeText(screen.getByLabelText('Meta por día'), '7.5');
+    fireEvent.press(screen.getByText('Crear'));
+    await waitFor(() => expect(crearConcepto).toHaveBeenCalled());
+    expect(crearConcepto.mock.calls[0][0]).toMatchObject({ meta: '7.5', periodicidad_meta: 'DIARIA' });
+  });
+
+  it('C-06: fechas inválidas o fin anterior al inicio se marcan junto al campo', async () => {
+    conceptoModal();
+    llenarConcepto({ clave: '1.1', descripcion: 'Muro', cantidad: '10', precio: '25' });
+    fireEvent.changeText(screen.getByLabelText('Fecha de inicio (opcional)'), '2026-02-31');
+    fireEvent.changeText(screen.getByLabelText('Fecha de fin (opcional)'), '2026-01-01');
+    fireEvent.press(screen.getByText('Crear'));
+    expect(await screen.findByText('La fecha de inicio debe ser una fecha válida (AAAA-MM-DD).')).toBeTruthy();
+    fireEvent.changeText(screen.getByLabelText('Fecha de inicio (opcional)'), '2026-03-01');
+    fireEvent.press(screen.getByText('Crear'));
+    expect(await screen.findByText('La fecha de fin no puede ser anterior a la de inicio.')).toBeTruthy();
+    expect(crearConcepto).not.toHaveBeenCalled();
   });
 
   it('un extraordinario deja el P.U. opcional y lo manda como pendiente de autorización', async () => {

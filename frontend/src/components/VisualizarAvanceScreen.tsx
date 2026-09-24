@@ -1,7 +1,7 @@
 // Visualizar avance — reporte por periodo (uso de oficina). Lista los
 // registros de avance del proyecto en un rango de fechas, con filtro por
 // partida y totales agrupados por concepto.
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, StatusBar, Alert,
 } from 'react-native';
@@ -16,7 +16,9 @@ import { formatCantidad, formatMoney } from '@/src/utils/money';
 import { downloadBlob } from '@/src/utils/downloadBlob';
 import { confirm } from '@/src/utils/confirm';
 import { RangoFechasPicker } from '@/src/components/RangoFechasPicker';
-import { a11y } from '@/src/i18n';
+import { a11y, t } from '@/src/i18n';
+import { nombreNivel } from '@/src/utils/nombresNivel';
+import { alTocarPartida, filasDeChips } from '@/src/utils/partidasJerarquia';
 import {
   RangoFechas, rangoEstaSemana, rangoEsteMes, rangoMesAnterior, formatearRangoLegible,
 } from '@/src/utils/rangoFechas';
@@ -33,6 +35,7 @@ export default function VisualizarAvanceScreen({ projectId }: { projectId: strin
   const [partidas, setPartidas] = useState<Partida[]>([]);
   const [conceptosById, setConceptosById] = useState<Record<string, Concepto>>({});
   const [partidaFiltro, setPartidaFiltro] = useState<string | null>(null);
+  const filasPartidas = useMemo(() => filasDeChips(partidas, partidaFiltro), [partidas, partidaFiltro]);
 
   // null = "Todo el proyecto" (sin filtro de fecha). El atajo activo es
   // independiente del rango resultante: "Personalizado" también puede
@@ -215,16 +218,32 @@ export default function VisualizarAvanceScreen({ projectId }: { projectId: strin
             </Pressable>
           );
         })}
-        <View style={styles.chipDivider} />
-        {partidas.map((p) => {
-          const active = partidaFiltro === p.id;
-          return (
-            <Pressable accessibilityRole="button" key={p.id} onPress={() => setPartidaFiltro(active ? null : p.id)} style={[styles.chip, active && styles.chipActive]}>
-              <Text style={[styles.chipTxt, active && styles.chipTxtActive]} numberOfLines={1}>{p.clave}</Text>
-            </Pressable>
-          );
-        })}
       </ScrollView>
+
+      {filasPartidas.length > 0 ? (
+        <View style={styles.partidasBox}>
+          <Text style={styles.partidasAyuda}>{t('visualizarAvance.incluyeContenido', { nivel: nombreNivel(project, 0).toLowerCase() })}</Text>
+          {filasPartidas.map((fila) => (
+            <View key={fila.nivel} style={styles.partidasFila}>
+              <Text style={styles.partidasNivel} numberOfLines={1}>{nombreNivel(project, fila.nivel)}</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6, paddingRight: spacing.md }}>
+                {fila.chips.map((c) => (
+                  <Pressable
+                    key={c.id}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: c.enRuta }}
+                    accessibilityLabel={`${c.clave} ${c.nombre}`}
+                    onPress={() => setPartidaFiltro(alTocarPartida(partidas, partidaFiltro, c.id))}
+                    style={[styles.chip, c.enRuta && styles.chipActive]}
+                  >
+                    <Text style={[styles.chipTxt, c.enRuta && styles.chipTxtActive]} numberOfLines={1}>{c.clave}</Text>
+                  </Pressable>
+                ))}
+              </ScrollView>
+            </View>
+          ))}
+        </View>
+      ) : null}
 
       {error ? (
         <View style={styles.errorBox}>
@@ -333,6 +352,10 @@ const styles = StyleSheet.create({
   chipTxt: { fontSize: 12, fontWeight: '700', color: colors.textBody },
   chipTxtActive: { color: '#fff' },
   chipDivider: { width: 1, backgroundColor: colors.border, marginVertical: 4 },
+  partidasBox: { paddingHorizontal: spacing.md, paddingTop: 8, gap: 6 },
+  partidasAyuda: { fontSize: 11, color: colors.textMuted },
+  partidasFila: { gap: 4 },
+  partidasNivel: { fontSize: 11, fontWeight: '700', color: colors.textMuted },
 
   errorBox: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: colors.errorBg, padding: 10, borderRadius: 10, marginHorizontal: spacing.md, marginTop: spacing.sm },
   errorText: { flex: 1, color: colors.error, fontSize: 12, fontWeight: '600' },

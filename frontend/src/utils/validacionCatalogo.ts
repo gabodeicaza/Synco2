@@ -2,13 +2,14 @@
 // devuelve un error por campo para mostrarlo junto al campo. Sin React ni red, para
 // poder probarla sola. Los números se leen con el separador decimal del proyecto.
 import { t } from '@/src/i18n';
-import { claveComparable } from '@/src/utils/unidades';
+import { claveComparable, PeriodicidadMeta } from '@/src/utils/unidades';
+import { cadenciaDeProyecto, duracionEnDias, metaPorDefecto } from '@/src/utils/metaPorDefecto';
 import {
   DECIMALES_CANTIDAD, DECIMALES_IMPORTE, SeparadorDecimal, mensajeNumeroInvalido, parseNumeroEntrada,
 } from '@/src/utils/numeros';
 
 export type CampoPartida = 'clave' | 'nombre';
-export type CampoConcepto = 'clave' | 'descripcion' | 'unidad' | 'cantidad' | 'precioUnitario';
+export type CampoConcepto = 'clave' | 'descripcion' | 'unidad' | 'cantidad' | 'precioUnitario' | 'fechaInicio' | 'fechaFin' | 'meta';
 
 export interface PartidaMinima {
   clave: string;
@@ -43,6 +44,11 @@ export interface DatosConcepto {
   cantidad: string;
   precioUnitario: string;
   extraordinario: boolean;
+  /** YYYY-MM-DD, opcionales: con ambas se calcula la meta por defecto (C-06). */
+  fechaInicio?: string;
+  fechaFin?: string;
+  /** Meta capturada a mano (con el separador del proyecto); vacía = usar la calculada. */
+  meta?: string;
 }
 
 export interface ConceptoParaApi {
@@ -51,8 +57,11 @@ export interface ConceptoParaApi {
   unidad: string;
   cantidad: string;
   precio_unitario: string;
+  /** "" si no hay programa ni meta capturada (C-06). */
   meta: string;
-  periodicidad_meta: 'SEMANAL';
+  periodicidad_meta: PeriodicidadMeta;
+  fecha_inicio: string | null;
+  fecha_fin: string | null;
   extraordinario: boolean;
 }
 
@@ -64,7 +73,7 @@ export interface ResultadoConcepto {
 /** Nuevo concepto: cantidad > 0 (hasta 4 decimales) y P.U. >= 0 (hasta 2). Un extraordinario puede dejar el P.U. vacío (queda en 0, pendiente de autorización). */
 export function validarNuevoConcepto(
   datos: DatosConcepto,
-  opciones: { separador: SeparadorDecimal; unidadesValidas: string[]; clavesExistentes?: string[] },
+  opciones: { separador: SeparadorDecimal; unidadesValidas: string[]; clavesExistentes?: string[]; cadencia?: string | null },
 ): ResultadoConcepto {
   const errores: Partial<Record<CampoConcepto, string>> = {};
   const clave = datos.clave.trim();
@@ -93,13 +102,37 @@ export function validarNuevoConcepto(
     else precio = p.valor;
   }
 
+  const inicio = (datos.fechaInicio || '').trim();
+  const fin = (datos.fechaFin || '').trim();
+  if (inicio && duracionEnDias(inicio, inicio) === null) {
+    errores.fechaInicio = t('meta.fechaInvalida', { campo: t('meta.campoFechaInicio') });
+  }
+  if (fin && duracionEnDias(fin, fin) === null) {
+    errores.fechaFin = t('meta.fechaInvalida', { campo: t('meta.campoFechaFin') });
+  }
+  if (inicio && fin && !errores.fechaInicio && !errores.fechaFin && duracionEnDias(inicio, fin) === null) {
+    errores.fechaFin = t('meta.finAnterior');
+  }
+
+  // C-06: la meta capturada manda; si no hay, se calcula con la duración y la cadencia del proyecto;
+  // sin programa queda vacía (ya no es "toda la cantidad por semana").
+  const periodicidad = cadenciaDeProyecto(opciones.cadencia);
+  let meta = '';
+  if ((datos.meta || '').trim()) {
+    const m = parseNumeroEntrada(datos.meta!, { separador: opciones.separador, maxDecimales: DECIMALES_CANTIDAD });
+    if (!m.ok) errores.meta = mensajeNumeroInvalido(m.motivo, DECIMALES_CANTIDAD, t('meta.campoMeta'));
+    else meta = m.valor;
+  } else if (cantidad) {
+    meta = metaPorDefecto(cantidad, inicio, fin, periodicidad) ?? '';
+  }
+
   if (Object.keys(errores).length > 0) return { errores, valores: null };
   return {
     errores,
     valores: {
       clave, descripcion, unidad: datos.unidad, cantidad, precio_unitario: precio,
-      // La meta de un concepto nuevo es su propia cantidad (igual que en el importador).
-      meta: cantidad, periodicidad_meta: 'SEMANAL', extraordinario: datos.extraordinario,
+      meta, periodicidad_meta: periodicidad, fecha_inicio: inicio || null, fecha_fin: fin || null,
+      extraordinario: datos.extraordinario,
     },
   };
 }
