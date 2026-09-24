@@ -1,6 +1,6 @@
 import React, { useCallback, useMemo, useState, useRef, useEffect } from 'react';
 import {
-  View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, Alert,
+  View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator,
   Modal, TextInput, KeyboardAvoidingView, Platform, RefreshControl, Share,
   useWindowDimensions,
 } from 'react-native';
@@ -9,7 +9,14 @@ import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import { Button } from '@/src/components/Button';
+import { FormField } from '@/src/components/FormField';
+import { InlineError } from '@/src/components/InlineError';
 import { api, ApiError, Invitation, Area } from '@/src/api';
+import { useEnvio } from '@/src/hooks/useEnvio';
+import { useFormErrors } from '@/src/hooks/useFormErrors';
+import { esErrorDeRed } from '@/src/utils/errores';
+import { showToast } from '@/src/utils/toast';
+import { validarArea, validarIdentidad } from '@/src/utils/validacionInvitacion';
 import { colors, radius, spacing, shadow } from '@/src/theme';
 import { roleLabel, ROLE_SUB, ROLE_ESP, ROLE_JEFE } from '@/src/utils/roles';
 import { confirm, notify } from '@/src/utils/confirm';
@@ -40,8 +47,9 @@ export default function InvitationsScreen() {
   const [puesto, setPuesto] = useState('');
   const [noControl, setNoControl] = useState('');
   const [areaId, setAreaId] = useState<string | null>(null);
-  const [wizardErr, setWizardErr] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
+  const wizardForm = useFormErrors<'name' | 'email' | 'area'>();
+  const envioInvitacion = useEnvio();
+  const [errorAccion, setErrorAccion] = useState<string | null>(null);
 
   const wizardScrollRef = useRef<ScrollView>(null);
 
@@ -62,7 +70,7 @@ export default function InvitationsScreen() {
       setInvitations(items || []);
       setAreas(a || []);
     } catch (e: any) {
-      setError(e?.message || 'Error al cargar invitaciones');
+      setError(e?.message || t('invitaciones.errorCargar'));
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -101,46 +109,34 @@ export default function InvitationsScreen() {
     setStep(0); setRole('especialista');
     setName(''); setEmail(''); setPuesto(''); setNoControl('');
     setAreaId(null);
-    setWizardErr(null); setWizardOpen(true);
+    wizardForm.limpiarTodo(); setWizardOpen(true);
     try {
       const a = await api.listAreas(pid);
       setAreas(a || []);
     } catch {}
   }
 
-  const wizardCanProceed = useMemo(() => {
-    if (step === 0) return true;
-    if (step === 1) return name.trim().length > 0 && email.trim().length > 0;
-    if (step === 2) {
-      if (role === ROLE_ESP) return !!areaId;
-      return true;
-    }
-    return true;
-  }, [step, role, name, email, areaId]);
-
   function next() {
-    setWizardErr(null);
+    wizardForm.limpiarTodo();
     if (step === 0) setStep(1);
     else if (step === 1) {
-      if (!name.trim()) return setWizardErr('Ingresa el nombre');
-      if (!email.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) return setWizardErr('Correo no válido');
+      if (wizardForm.ponerTodos(validarIdentidad({ name, email }))) return;
       role === ROLE_JEFE ? setStep(3) : setStep(2);
     } else if (step === 2) {
-      if (role === ROLE_ESP && !areaId) return setWizardErr('Selecciona el área');
+      if (wizardForm.ponerTodos({ area: validarArea(role === ROLE_ESP, areaId) })) return;
       setStep(3);
     }
   }
 
   function back() {
-    setWizardErr(null);
+    wizardForm.limpiarTodo();
     if (step === 3 && role === ROLE_JEFE) setStep(1);
     else setStep((s) => (s > 0 ? ((s - 1) as WizardStep) : s));
   }
 
   async function submitInvite() {
-    setWizardErr(null);
-    setSubmitting(true);
-    try {
+    await envioInvitacion.ejecutar(async () => {
+      wizardForm.limpiarTodo();
       const body: any = {
         project_id: pid,
         email: email.trim().toLowerCase(),
@@ -150,20 +146,26 @@ export default function InvitationsScreen() {
         no_control: noControl.trim() || null,
         area_id: areaId,
       };
-      const inv: any = await api.createInvitation(pid, body);
+      let inv: any;
+      try {
+        inv = await api.createInvitation(pid, body);
+      } catch (e: any) {
+        if (e instanceof ApiError && e.status === 409) {
+          wizardForm.poner('email', t('invitaciones.correoDuplicado'));
+          setStep(1);
+        } else {
+          wizardForm.errorDeGuardado(e, t('invitaciones.noSeCreo'));
+        }
+        return;
+      }
       setWizardOpen(false);
       if (inv && inv.status === 'auto_linked') {
-        await load();
-        Alert.alert('Usuario vinculado');
+        showToast(t('invitaciones.usuarioVinculado'));
       } else {
         setCreatedInvite(inv);
-        await load();
       }
-    } catch (e: any) {
-      setWizardErr(e?.message || 'Error al crear');
-    } finally {
-      setSubmitting(false);
-    }
+      await load();
+    });
   }
 
   async function copyToken(token: string) {
@@ -186,8 +188,15 @@ export default function InvitationsScreen() {
   async function revoke(inv: Invitation) {
     const ok = await confirm('Revocar', '¿Revocar invitación?', { destructive: true });
     if (!ok) return;
+    setErrorAccion(null);
     try { await api.revokeInvitation(inv.id); await load(); }
-    catch (e: any) { Alert.alert('Error', e?.message); }
+    catch (e: any) { mostrarErrorAccion(e, t('invitaciones.noSePudoRevocar')); }
+  }
+
+  // Un fallo de una acción de la lista (fuera de un formulario): red -> toast; otro -> aviso sobre la lista.
+  function mostrarErrorAccion(e: unknown, respaldo: string) {
+    if (esErrorDeRed(e)) showToast(t('red.errorDeRed'));
+    else setErrorAccion((e as any)?.message || respaldo);
   }
 
   // === Edición / baja de miembros ya aceptados (Sub-coordinador / Especialista) ===
@@ -197,7 +206,8 @@ export default function InvitationsScreen() {
   const [editPuesto, setEditPuesto] = useState('');
   const [editNoControl, setEditNoControl] = useState('');
   const [editAreaId, setEditAreaId] = useState<string | null>(null);
-  const [editSaving, setEditSaving] = useState(false);
+  const editForm = useFormErrors<'name' | 'email' | 'area'>();
+  const envioEdicion = useEnvio();
   const [resettingPassword, setResettingPassword] = useState(false);
   const [tempPassword, setTempPassword] = useState<string | null>(null);
 
@@ -208,35 +218,36 @@ export default function InvitationsScreen() {
     setEditPuesto(inv.puesto || '');
     setEditNoControl(inv.no_control || '');
     setEditAreaId(inv.area_id || null);
+    editForm.limpiarTodo();
   }
 
   async function saveEdit() {
-    if (!editTarget?.accepted_user_id || editSaving) return;
-    const name = editName.trim();
-    const email = editEmail.trim().toLowerCase();
-    if (!name) return Alert.alert('Campo requerido', 'Ingresa el nombre');
-    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return Alert.alert('Correo inválido', 'Ingresa un correo válido');
-    if (editTarget.role === ROLE_ESP && !editAreaId) return Alert.alert('Campo requerido', 'Selecciona el área');
-    try {
-      setEditSaving(true);
-      await api.updateTeamMember(pid, editTarget.accepted_user_id, {
-        name,
-        email,
-        puesto: editTarget.role === ROLE_ESP ? (editPuesto.trim() || undefined) : undefined,
-        no_control: editNoControl.trim() || undefined,
-        area_id: editAreaId || '',
-      });
+    const objetivo = editTarget;
+    if (!objetivo?.accepted_user_id) return;
+    await envioEdicion.ejecutar(async () => {
+      const name = editName.trim();
+      const email = editEmail.trim().toLowerCase();
+      const problemas = {
+        ...validarIdentidad({ name, email }),
+        area: validarArea(objetivo.role === ROLE_ESP, editAreaId),
+      };
+      if (editForm.ponerTodos(problemas)) return;
+      try {
+        await api.updateTeamMember(pid, objetivo.accepted_user_id!, {
+          name,
+          email,
+          puesto: objetivo.role === ROLE_ESP ? (editPuesto.trim() || undefined) : undefined,
+          no_control: editNoControl.trim() || undefined,
+          area_id: editAreaId || '',
+        });
+      } catch (e: any) {
+        if (e instanceof ApiError && e.status === 409) editForm.poner('email', t('invitaciones.correoDuplicado'));
+        else editForm.errorDeGuardado(e, t('invitaciones.noSePudoGuardar'));
+        return;
+      }
       setEditTarget(null);
       await load();
-    } catch (e: any) {
-      if (e instanceof ApiError && e.status === 409) {
-        Alert.alert('Correo duplicado', 'Ya existe un usuario con ese correo.');
-      } else {
-        Alert.alert('No se pudo guardar', e?.message || 'Intentalo nuevamente.');
-      }
-    } finally {
-      setEditSaving(false);
-    }
+    });
   }
 
   async function resetPassword() {
@@ -246,12 +257,13 @@ export default function InvitationsScreen() {
       `Se generará una contraseña temporal nueva para ${editTarget.name}. La contraseña anterior dejará de funcionar. ¿Continuar?`,
     );
     if (!ok) return;
+    editForm.limpiarTodo();
     try {
       setResettingPassword(true);
       const res = await api.resetTeamMemberPassword(pid, editTarget.accepted_user_id);
       setTempPassword(res.temp_password);
     } catch (e: any) {
-      Alert.alert('No se pudo restablecer', e?.message || 'Intentalo nuevamente.');
+      editForm.errorDeGuardado(e, t('invitaciones.noSePudoRestablecer'));
     } finally {
       setResettingPassword(false);
     }
@@ -265,11 +277,12 @@ export default function InvitationsScreen() {
       { confirmText: 'Sacar', destructive: true },
     );
     if (!ok) return;
+    setErrorAccion(null);
     try {
       await api.removeTeamMember(pid, inv.accepted_user_id);
       await load();
     } catch (e: any) {
-      Alert.alert('No se pudo quitar', e?.message || 'Intentalo nuevamente.');
+      mostrarErrorAccion(e, t('invitaciones.noSePudoQuitar'));
     }
   }
 
@@ -281,12 +294,12 @@ export default function InvitationsScreen() {
             <Ionicons name="chevron-back" size={24} color={colors.text} />
           </Pressable>
           <View style={{ flex: 1 }}>
-            <Text style={styles.title}>Invitaciones</Text>
-            <Text style={styles.subtitle}>{invitations.length} en total</Text>
+            <Text style={styles.title}>{t('invitaciones.titulo')}</Text>
+            <Text style={styles.subtitle}>{t('invitaciones.enTotal', { n: invitations.length })}</Text>
           </View>
           <Pressable accessibilityRole="button" onPress={() => setBulkImportOpen(true)} hitSlop={8} style={styles.importHeaderBtn}>
             <Ionicons name="document-attach-outline" size={16} color={colors.primary} />
-            <Text style={styles.importHeaderBtnTxt}>Importar Excel</Text>
+            <Text style={styles.importHeaderBtnTxt}>{t('invitaciones.importarExcel')}</Text>
           </Pressable>
         </View>
 
@@ -295,8 +308,9 @@ export default function InvitationsScreen() {
           <TextInput
             value={search}
             onChangeText={setSearch}
-            placeholder="Buscar por nombre o correo..."
+            placeholder={t('invitaciones.buscar')}
             style={styles.searchInput}
+            accessibilityLabel={t('invitaciones.buscar')}
             autoCapitalize="none"
           />
           {!!search && (
@@ -311,11 +325,12 @@ export default function InvitationsScreen() {
           contentContainerStyle={{ flexGrow: 1, padding: spacing.md, paddingBottom: 120 }}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={colors.primary} />}
         >
+          <InlineError message={errorAccion} style={{ marginBottom: spacing.sm }} />
           {loading ? (
             <ActivityIndicator color={colors.primary} style={{ marginTop: 40 }} />
           ) : groupedInvitations.length === 0 ? (
             <Text style={styles.emptyText}>
-              {search ? `Sin resultados para "${search}"` : 'Aun no hay invitaciones.'}
+              {search ? t('invitaciones.sinResultados', { busqueda: search }) : t('invitaciones.vacio')}
             </Text>
           ) : groupedInvitations.map((group) => (
             <View key={group.areaName} style={styles.group}>
@@ -343,7 +358,7 @@ export default function InvitationsScreen() {
 
         <Pressable accessibilityRole="button" style={[styles.fab, { bottom: insets.bottom + 20 }]} onPress={openWizard}>
           <Ionicons name="add" size={26} color={colors.textInverse} />
-          <Text style={styles.fabText}>Nueva invitación</Text>
+          <Text style={styles.fabText}>{t('invitaciones.nueva')}</Text>
         </Pressable>
       </View>
 
@@ -352,7 +367,7 @@ export default function InvitationsScreen() {
           <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.flex1}>
             <View style={[styles.modalCard, { height: windowHeight * 0.9, marginTop: windowHeight * 0.1 }]}>
               <View style={styles.modalHeader}>
-                <Text style={styles.modalTitle}>Nueva invitación - Paso {step + 1}</Text>
+                <Text style={styles.modalTitle}>{t('invitaciones.pasoTitulo', { n: step + 1 })}</Text>
                 <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} onPress={() => setWizardOpen(false)} hitSlop={15}><Ionicons name="close" size={24} color={colors.text} /></Pressable>
               </View>
 
@@ -366,27 +381,35 @@ export default function InvitationsScreen() {
                   {step === 0 ? <StepRole role={role} onChange={setRole} /> :
                   step === 1 ? (
                     <StepIdentity
-                      name={name} setName={setName} email={email} setEmail={setEmail}
+                      name={name} setName={wizardForm.alCambiar<string>('name', setName)}
+                      email={email} setEmail={wizardForm.alCambiar<string>('email', setEmail)}
                       role={role} puesto={puesto} setPuesto={setPuesto}
                       noControl={noControl} setNoControl={setNoControl}
+                      errores={wizardForm.errores}
+                      onSubmit={next}
                     />
                   ) :
-                  step === 2 ? <StepArea role={role} areas={areas} areaId={areaId} onArea={setAreaId} /> :
+                  step === 2 ? (
+                    <StepArea
+                      role={role} areas={areas} areaId={areaId}
+                      onArea={wizardForm.alCambiar<string | null>('area', setAreaId)}
+                      error={wizardForm.errores.area}
+                    />
+                  ) :
                   <StepReview role={role} name={name} email={email} areas={areas} areaId={areaId} />}
 
-                  {wizardErr && <Text style={styles.errorTextInline}>{wizardErr}</Text>}
+                  <InlineError message={wizardForm.errorGeneral} style={{ marginTop: 10 }} />
                 </ScrollView>
               </View>
 
               <View style={[styles.wizardActions, { paddingBottom: Math.max(insets.bottom, 20) }]}>
                 {step > 0 && (
-                  <Pressable accessibilityRole="button" onPress={back} style={styles.backBtn}><Text style={styles.backText}>Atrás</Text></Pressable>
+                  <Pressable accessibilityRole="button" onPress={back} style={styles.backBtn}><Text style={styles.backText}>{t('invitaciones.atras')}</Text></Pressable>
                 )}
                 <Button
-                  label={step === 3 ? "Generar" : "Continuar"}
+                  label={step === 3 ? t('invitaciones.generar') : t('invitaciones.continuar')}
                   onPress={step === 3 ? submitInvite : next}
-                  loading={submitting}
-                  disabled={!wizardCanProceed}
+                  loading={envioInvitacion.guardando}
                 />
               </View>
             </View>
@@ -425,55 +448,56 @@ export default function InvitationsScreen() {
           <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.flex1} pointerEvents="box-none">
             <View style={styles.editCard}>
               <View style={styles.modalHeader}>
-                <Text style={styles.modalTitle}>Editar {editTarget ? roleLabel(editTarget.role) : ''}</Text>
+                <Text style={styles.modalTitle}>{t('invitaciones.editarTitulo', { rol: editTarget ? roleLabel(editTarget.role) : '' })}</Text>
                 <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} onPress={() => setEditTarget(null)} hitSlop={15}>
                   <Ionicons name="close" size={22} color={colors.text} />
                 </Pressable>
               </View>
 
-              <Text style={styles.label}>Nombre completo</Text>
-              <TextInput value={editName} onChangeText={setEditName} style={styles.inputSimple} placeholder="Nombre completo" />
-
-              <Text style={styles.label}>Correo electrónico</Text>
-              <TextInput
+              <FormField
+                label={t('invitaciones.nombreCompleto')}
+                value={editName}
+                onChangeText={editForm.alCambiar<string>('name', setEditName)}
+                error={editForm.errores.name}
+                obligatorio
+              />
+              <FormField
+                label={t('invitaciones.correo')}
                 value={editEmail}
-                onChangeText={setEditEmail}
-                style={styles.inputSimple}
-                placeholder="Correo electrónico"
+                onChangeText={editForm.alCambiar<string>('email', setEditEmail)}
+                error={editForm.errores.email}
                 keyboardType="email-address"
                 autoCapitalize="none"
+                autoCorrect={false}
+                obligatorio
               />
-
               {editTarget?.role === ROLE_ESP && (
-                <>
-                  <Text style={styles.label}>Puesto</Text>
-                  <TextInput value={editPuesto} onChangeText={setEditPuesto} style={styles.inputSimple} placeholder="Puesto" />
-                </>
+                <FormField label={t('invitaciones.puesto')} value={editPuesto} onChangeText={setEditPuesto} />
               )}
-
-              <Text style={styles.label}>No. de Control (opcional)</Text>
-              <TextInput value={editNoControl} onChangeText={setEditNoControl} style={styles.inputSimple} placeholder="No. de Control" />
+              <FormField label={t('invitaciones.noControl')} value={editNoControl} onChangeText={setEditNoControl} />
 
               {(editTarget?.role === ROLE_ESP || editTarget?.role === ROLE_SUB) && (
                 <>
                   <Text style={styles.label}>Área {editTarget?.role === ROLE_SUB ? '(opcional)' : ''}</Text>
                   <View style={styles.areaRow}>
                     {editTarget?.role === ROLE_SUB && (
-                      <Pressable accessibilityRole="button" onPress={() => setEditAreaId(null)} style={[styles.areaPill, !editAreaId && styles.areaPillOn]}>
+                      <Pressable accessibilityRole="button" onPress={() => { editForm.limpiar('area'); setEditAreaId(null); }} style={[styles.areaPill, !editAreaId && styles.areaPillOn]}>
                         <Text>Obra Civil</Text>
                       </Pressable>
                     )}
                     {areas.map((a) => (
-                      <Pressable accessibilityRole="button" key={a.id} onPress={() => setEditAreaId(a.id)} style={[styles.areaPill, editAreaId === a.id && styles.areaPillOn]}>
+                      <Pressable accessibilityRole="button" key={a.id} onPress={() => { editForm.limpiar('area'); setEditAreaId(a.id); }} style={[styles.areaPill, editAreaId === a.id && styles.areaPillOn]}>
                         <Text>{a.name}</Text>
                       </Pressable>
                     ))}
                   </View>
+                  <InlineError message={editForm.errores.area} style={{ marginTop: 6 }} />
                 </>
               )}
 
+              <InlineError message={editForm.errorGeneral} style={{ marginTop: 12 }} />
               <View style={{ marginTop: 20 }}>
-                <Button label="Guardar cambios" fullWidth onPress={saveEdit} loading={editSaving} />
+                <Button label={t('invitaciones.guardarCambios')} fullWidth onPress={saveEdit} loading={envioEdicion.guardando} />
               </View>
 
               <Pressable accessibilityRole="button" onPress={resetPassword} style={styles.resetPasswordBtn} disabled={resettingPassword}>
@@ -542,19 +566,27 @@ function StepRole({ role, onChange }: any) {
   );
 }
 
-function StepIdentity({ name, setName, email, setEmail, role, puesto, setPuesto, noControl, setNoControl }: any) {
+function StepIdentity({ name, setName, email, setEmail, role, puesto, setPuesto, noControl, setNoControl, errores, onSubmit }: any) {
   return (
-    <View style={{ gap: 12 }}>
+    <View style={{ gap: 4 }}>
       <Text style={styles.stepTitle}>Datos básicos</Text>
-      <TextInput value={name} onChangeText={setName} style={styles.inputSimple} placeholder="Nombre completo" />
-      <TextInput value={email} onChangeText={setEmail} style={styles.inputSimple} placeholder="Correo electrónico" keyboardType="email-address" autoCapitalize="none" />
-      {role === ROLE_ESP && <TextInput value={puesto} onChangeText={setPuesto} style={styles.inputSimple} placeholder="Puesto" />}
-      <TextInput value={noControl} onChangeText={setNoControl} style={styles.inputSimple} placeholder="No. de Control (opcional)" />
+      <FormField
+        label={t('invitaciones.nombreCompleto')} value={name} onChangeText={setName}
+        error={errores?.name} obligatorio returnKeyType="next"
+      />
+      <FormField
+        label={t('invitaciones.correo')} value={email} onChangeText={setEmail}
+        error={errores?.email} obligatorio keyboardType="email-address"
+        autoCapitalize="none" autoCorrect={false} returnKeyType={role === ROLE_ESP ? 'next' : 'done'}
+        onSubmitEditing={role === ROLE_ESP ? undefined : onSubmit}
+      />
+      {role === ROLE_ESP && <FormField label={t('invitaciones.puesto')} value={puesto} onChangeText={setPuesto} />}
+      <FormField label={t('invitaciones.noControl')} value={noControl} onChangeText={setNoControl} returnKeyType="done" onSubmitEditing={onSubmit} />
     </View>
   );
 }
 
-function StepArea({ role, areas, areaId, onArea }: any) {
+function StepArea({ role, areas, areaId, onArea, error }: any) {
   return (
     <View style={{ gap: 15 }}>
       <Text style={styles.stepTitle}>Área / Disciplina</Text>
@@ -567,6 +599,7 @@ function StepArea({ role, areas, areaId, onArea }: any) {
           <Pressable accessibilityRole="button" key={a.id} onPress={() => onArea(a.id)} style={[styles.areaPill, areaId === a.id && styles.areaPillOn]}><Text>{a.name}</Text></Pressable>
         ))}
       </View>
+      <InlineError message={error} />
     </View>
   );
 }
@@ -656,8 +689,6 @@ const styles = StyleSheet.create({
   stepTitle: { fontSize: 18, fontWeight: '800', marginBottom: 10 },
   label: { fontSize: 13, fontWeight: '700', color: colors.textMuted, marginTop: 5 },
 
-  inputSimple: { borderBottomWidth: 1, borderBottomColor: colors.border, paddingVertical: 12, fontSize: 16 },
-
   roleCard: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 15, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: '#f9f9f9', marginBottom: 8 },
   roleCardOn: { borderColor: colors.primary, backgroundColor: colors.primaryLight + '20' },
   roleTitle: { fontWeight: '700' },
@@ -673,8 +704,6 @@ const styles = StyleSheet.create({
   wizardActions: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 20, borderTopWidth: 1, borderTopColor: colors.border, backgroundColor: 'white' },
   backBtn: { padding: 10 },
   backText: { fontWeight: '700', color: colors.textMuted },
-
-  errorTextInline: { color: colors.error, fontWeight: '700', marginTop: 10 },
 
   fab: { position: 'absolute', right: 20, flexDirection: 'row', alignItems: 'center', backgroundColor: colors.primary, paddingHorizontal: 20, paddingVertical: 12, borderRadius: 30, elevation: 5 },
   fabText: { color: 'white', fontWeight: '800', marginLeft: 8 },

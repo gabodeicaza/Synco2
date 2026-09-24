@@ -1,15 +1,22 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  View, Text, StyleSheet, ScrollView, ActivityIndicator, Pressable, Alert, TextInput,
+  View, Text, StyleSheet, ScrollView, ActivityIndicator, Pressable, TextInput,
 } from 'react-native';
 import { useLocalSearchParams, router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import { api, Project } from '@/src/api';
+import { FormField } from '@/src/components/FormField';
+import { InlineError } from '@/src/components/InlineError';
+import { useColaDeEnvios } from '@/src/hooks/useEnvio';
+import { useFormErrors } from '@/src/hooks/useFormErrors';
 import { colors, radius, shadow, spacing } from '@/src/theme';
 import { parseExcel, mapEquipoRows, EquipoRow } from '@/src/utils/excel';
-import { a11y } from '@/src/i18n';
+import { esErrorDeRed } from '@/src/utils/errores';
+import { normalizarNombre } from '@/src/utils/nombres';
+import { showToast } from '@/src/utils/toast';
+import { a11y, t } from '@/src/i18n';
 
 /**
  * Delimitador para empaquetar datos estructurados en una sola cadena.
@@ -40,25 +47,17 @@ function unpack(s: string): EquipoRow {
   };
 }
 
+/** Dos equipos son el mismo si coinciden nombre y serie (sin acentos, mayúsculas ni espacios sobrantes). */
+function claveEquipo(it: EquipoRow): string {
+  return `${normalizarNombre(it.nombre)}|${normalizarNombre(it.serie)}`;
+}
+
 /**
  * Normaliza un nombre de equipo para agrupar variantes ("Retroexcavadora",
  * "RETROEXCAVADORA CAT", "Retro-excavadora") bajo la misma categoria.
  */
-function stripAccents(s: string): string {
-  try {
-    if (!s.normalize) return s;
-    return s.normalize('NFD')
-      .split('')
-      .filter((ch) => { const code = ch.charCodeAt(0); return code < 0x0300 || code > 0x036f; })
-      .join('');
-  } catch {
-    return s;
-  }
-}
-
 function normalizeKey(s: string): string {
-  const res = stripAccents(s.toLowerCase().trim());
-  return res.replace(/[^a-z0-9]+/g, ' ').trim();
+  return normalizarNombre(s).replace(/[^a-z0-9]+/g, ' ').trim();
 }
 
 interface EquipoGroup {
@@ -73,7 +72,7 @@ function groupEquipo(list: EquipoRow[]): EquipoGroup[] {
     const key = normalizeKey(item.nombre) || '_sin_nombre';
     let group = map.get(key);
     if (!group) {
-      group = { key, label: item.nombre || 'Sin nombre', entries: [] };
+      group = { key, label: item.nombre || t('equipo.sinNombre'), entries: [] };
       map.set(key, group);
     }
     group.entries.push({ item, idx });
@@ -81,82 +80,136 @@ function groupEquipo(list: EquipoRow[]): EquipoGroup[] {
   return Array.from(map.values()).sort((a, b) => a.label.localeCompare(b.label, 'es'));
 }
 
+// Una captura pendiente de guardar. El formulario se limpia al encolarla; si el
+// guardado falla, `campos` permite devolverle al usuario lo que había escrito.
+interface Captura {
+  nombre: string;
+  campos?: EquipoRow;
+  aplicar: (lista: EquipoRow[]) => EquipoRow[];
+  alGuardar?: () => void;
+}
+
 export default function EquipmentManagementScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const pid = id as string;
 
-  const [project, setProject] = useState<Project | null>(null);
+  const [, setProject] = useState<Project | null>(null);
   const [list, setList] = useState<EquipoRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
+  const [importando, setImportando] = useState(false);
+  const form = useFormErrors<'nombre' | 'serie'>();
 
   // Draft form
   const [nombre, setNombre] = useState('');
   const [marca, setMarca] = useState('');
   const [modelo, setModelo] = useState('');
   const [serie, setSerie] = useState('');
+  const nombreRef = useRef<TextInput>(null);
+
+  // Última lista confirmada por el servidor (los guardados corren en serie sobre ella)
+  // y capturas agregadas que aún esperan su turno (para detectar duplicados al escribir).
+  const listaRef = useRef<EquipoRow[]>([]);
+  const pendientesRef = useRef<EquipoRow[]>([]);
+
+  const actualizarLista = useCallback((nueva: EquipoRow[]) => {
+    listaRef.current = nueva;
+    setList(nueva);
+  }, []);
 
   const load = useCallback(async () => {
     try {
       setLoading(true);
       const p = await api.getProject(pid);
       setProject(p);
-      const raw = p.categorias_equipo || [];
-      setList(raw.map(unpack));
+      actualizarLista((p.categorias_equipo || []).map(unpack));
     } catch (e: any) {
-      Alert.alert('Error', e?.message || 'No se pudo cargar el equipo');
+      if (esErrorDeRed(e)) showToast(t('red.errorDeRed'));
+      form.setErrorGeneral(e?.message || t('equipo.errorCargar'));
     } finally {
       setLoading(false);
     }
-  }, [pid]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pid, actualizarLista]);
 
   useEffect(() => { load(); }, [load]);
 
   const groups = useMemo(() => groupEquipo(list), [list]);
 
-  async function save(newList: EquipoRow[]) {
-    if (busy) return;
+  async function guardarCaptura(c: Captura) {
     try {
-      setBusy(true);
-      const packedList = newList.map(pack);
-      const upd = await api.setProjectCatalogos(pid, { categorias_equipo: packedList });
+      const actual = listaRef.current;
+      const siguiente = c.aplicar(actual);
+      if (siguiente === actual) { c.alGuardar?.(); return; }
+      const upd = await api.setProjectCatalogos(pid, { categorias_equipo: siguiente.map(pack) });
+      const confirmada = (upd.categorias_equipo || []).map(unpack);
       setProject(upd);
-      setList((upd.categorias_equipo || []).map(unpack));
-      return true;
-    } catch (e: any) {
-      console.error('[Equipment] Save Error:', e);
-      Alert.alert('Error', e?.message || 'No se pudo guardar la configuracion');
-      return false;
+      actualizarLista(confirmada);
+      // El servidor descarta repetidos y recorta listas muy largas: si devolvió menos
+      // de lo pedido, algo no se guardó y no debe pasar como éxito.
+      if (confirmada.length < siguiente.length) throw new Error(t('equipo.noSeConfirmo'));
+      c.alGuardar?.();
     } finally {
-      setBusy(false);
+      if (c.campos) pendientesRef.current = pendientesRef.current.filter((x) => x !== c.campos);
     }
   }
 
+  function alFallarCaptura(c: Captura, e: unknown) {
+    if (c.campos && !nombre && !marca && !modelo && !serie) {
+      setNombre(c.campos.nombre); setMarca(c.campos.marca || ''); setModelo(c.campos.modelo || ''); setSerie(c.campos.serie || '');
+    }
+    const red = esErrorDeRed(e);
+    if (red) showToast(t('red.errorDeRed'));
+    const motivo = !red && (e as any)?.message ? ` ${(e as any).message}` : '';
+    form.setErrorGeneral(t('formulario.noSeGuardo', { nombre: c.nombre }) + motivo);
+  }
+
+  const { encolar, pendientes } = useColaDeEnvios<Captura>(guardarCaptura, alFallarCaptura);
+
   function onAdd() {
-    const n = nombre.trim();
-    if (!n) return;
-    const newItem: EquipoRow = {
-      nombre: n,
+    const item: EquipoRow = {
+      nombre: nombre.trim(),
       marca: marca.trim(),
       modelo: modelo.trim(),
       serie: serie.trim(),
     };
-    // Basic dup check
-    if (list.some((it) => it.nombre === n && it.serie === newItem.serie)) {
-      Alert.alert('Duplicado', 'Ya existe un equipo con ese nombre y serie.');
-      return;
+    const errores: { nombre?: string; serie?: string } = {};
+    if (!item.nombre) {
+      errores.nombre = t('equipo.nombreObligatorio');
+    } else {
+      const clave = claveEquipo(item);
+      const repetido = [...listaRef.current, ...pendientesRef.current].some((it) => claveEquipo(it) === clave);
+      if (repetido) errores[item.serie ? 'serie' : 'nombre'] = t('equipo.duplicado');
     }
-    const next = [...list, newItem];
-    save(next);
+    if (form.ponerTodos(errores)) return;
+
+    pendientesRef.current = [...pendientesRef.current, item];
     setNombre(''); setMarca(''); setModelo(''); setSerie('');
+    nombreRef.current?.focus();
+    void encolar({
+      nombre: item.nombre,
+      campos: item,
+      aplicar: (l) => {
+        const clave = claveEquipo(item);
+        if (l.some((it) => claveEquipo(it) === clave)) throw new Error(t('equipo.duplicado'));
+        return [...l, item];
+      },
+    });
   }
 
-  function onRemove(idx: number) {
-    const next = list.filter((_, i) => i !== idx);
-    save(next);
+  function onRemove(item: EquipoRow) {
+    form.limpiarTodo();
+    void encolar({
+      nombre: item.nombre,
+      aplicar: (l) => {
+        const i = l.findIndex((it) => pack(it) === pack(item));
+        return i < 0 ? l : l.filter((_, k) => k !== i);
+      },
+    });
   }
 
   async function onImport() {
+    if (importando) return;
+    form.limpiarTodo();
     try {
       const result = await DocumentPicker.getDocumentAsync({
         type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -165,7 +218,7 @@ export default function EquipmentManagementScreen() {
 
       if (result.canceled || !result.assets?.[0]) return;
 
-      setBusy(true);
+      setImportando(true);
       const asset = result.assets[0];
       const base64 = await FileSystem.readAsStringAsync(asset.uri, { encoding: 'base64' });
 
@@ -173,34 +226,30 @@ export default function EquipmentManagementScreen() {
       const newItems = mapEquipoRows(rawRows);
 
       if (newItems.length === 0) {
-        const firstRows = rawRows.slice(0, 3).map(r => r.join(' | ')).join('\n');
-        Alert.alert(
-          'Importacion vacia',
-          `No se encontraron registros de equipo.\n\nFilas detectadas:\n${firstRows}\n\nAsegurate de que la columna "Nombre" tenga datos.`
-        );
+        form.setErrorGeneral(t('equipo.importVacia'));
         return;
       }
 
-      // Merge avoiding duplicates
-      const filteredNew = newItems.filter(newIt =>
-        !list.some(existing => existing.nombre === newIt.nombre && existing.serie === newIt.serie)
-      );
-
+      const existentes = new Set([...listaRef.current, ...pendientesRef.current].map(claveEquipo));
+      const filteredNew = newItems.filter((it) => !existentes.has(claveEquipo(it)));
       if (filteredNew.length === 0) {
-        Alert.alert('Sin cambios', 'Todos los registros ya existen en el catalogo.');
+        form.setErrorGeneral(t('equipo.importSinCambios'));
         return;
       }
 
-      const next = [...list, ...filteredNew];
-      const ok = await save(next);
-      if (ok) {
-        Alert.alert('Exito', `Se importaron ${filteredNew.length} registros de equipo.`);
-      }
+      await encolar({
+        nombre: t('equipo.importacion'),
+        aplicar: (l) => {
+          const ya = new Set(l.map(claveEquipo));
+          const nuevos = filteredNew.filter((it) => !ya.has(claveEquipo(it)));
+          return nuevos.length ? [...l, ...nuevos] : l;
+        },
+        alGuardar: () => showToast(t('equipo.importados', { n: filteredNew.length })),
+      });
     } catch (e: any) {
-      console.error('[ExcelImport] Equipo Error:', e);
-      Alert.alert('Error', `No se pudo procesar el archivo Excel: ${e?.message || String(e)}`);
+      form.setErrorGeneral(t('equipo.importError', { motivo: e?.message || String(e) }));
     } finally {
-      setBusy(false);
+      setImportando(false);
     }
   }
 
@@ -210,42 +259,62 @@ export default function EquipmentManagementScreen() {
         <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={10} style={styles.backBtn}>
           <Ionicons name="chevron-back" size={24} color={colors.text} />
         </Pressable>
-        <Text style={styles.title}>Equipo</Text>
-        <Pressable accessibilityRole="button" onPress={onImport} disabled={busy} style={styles.importBtn}>
+        <Text style={styles.title}>{t('equipo.titulo')}</Text>
+        <Pressable accessibilityRole="button" onPress={onImport} disabled={importando} style={styles.importBtn}>
           <Ionicons name="download-outline" size={18} color={colors.primary} />
-          <Text style={styles.importBtnTxt}>Importar</Text>
+          <Text style={styles.importBtnTxt}>{t('equipo.importar')}</Text>
         </Pressable>
       </View>
 
-      <ScrollView contentContainerStyle={styles.scroll}>
+      <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
         <View style={styles.inputCard}>
-          <Text style={styles.label}>Nuevo equipo estructurado</Text>
-          <TextInput
-            value={nombre} onChangeText={setNombre}
-            placeholder="Nombre / Descripcion *"
-            style={styles.input}
+          <Text style={styles.label}>{t('equipo.nuevoEquipo')}</Text>
+          <FormField
+            {...({ ref: nombreRef } as any)}
+            label={t('equipo.nombre')}
+            value={nombre}
+            onChangeText={form.alCambiar<string>('nombre', setNombre)}
+            error={form.errores.nombre}
+            obligatorio
+            returnKeyType="done"
+            onSubmitEditing={onAdd}
+            style={styles.campo}
           />
           <View style={styles.row}>
-            <TextInput
-              value={marca} onChangeText={setMarca}
-              placeholder="Marca"
-              style={[styles.input, { flex: 1 }]}
+            <FormField
+              label={t('equipo.marca')}
+              value={marca}
+              onChangeText={setMarca}
+              returnKeyType="done"
+              onSubmitEditing={onAdd}
+              style={[styles.campo, { flex: 1 }]}
             />
-            <TextInput
-              value={modelo} onChangeText={setModelo}
-              placeholder="Modelo"
-              style={[styles.input, { flex: 1 }]}
+            <FormField
+              label={t('equipo.modelo')}
+              value={modelo}
+              onChangeText={setModelo}
+              returnKeyType="done"
+              onSubmitEditing={onAdd}
+              style={[styles.campo, { flex: 1 }]}
             />
           </View>
-          <TextInput
-            value={serie} onChangeText={setSerie}
-            placeholder="Serie / Placas"
-            style={styles.input}
+          <FormField
+            label={t('equipo.serie')}
+            value={serie}
+            onChangeText={form.alCambiar<string>('serie', setSerie)}
+            error={form.errores.serie}
+            returnKeyType="done"
+            onSubmitEditing={onAdd}
+            style={styles.campo}
           />
-          <Pressable accessibilityRole="button" onPress={onAdd} disabled={busy || !nombre.trim()} style={[styles.addBtn, !nombre.trim() && { opacity: 0.5 }]}>
-            <Ionicons name="add" size={20} color="#fff" />
-            <Text style={styles.addBtnTxt}>Agregar a catalogo</Text>
+          <InlineError message={form.errorGeneral} />
+          <Pressable accessibilityRole="button" onPress={onAdd} style={styles.addBtn}>
+            <Ionicons name="add" size={20} color={colors.textInverse} />
+            <Text style={styles.addBtnTxt}>{t('equipo.agregar')}</Text>
           </Pressable>
+          {pendientes > 0 ? (
+            <Text style={styles.pendientes} accessibilityLiveRegion="polite">{t('formulario.pendientes', { n: pendientes })}</Text>
+          ) : null}
         </View>
 
         {loading ? (
@@ -268,13 +337,13 @@ export default function EquipmentManagementScreen() {
                           <Text style={styles.itemSub}>{item.marca || ''} {item.modelo || ''}</Text>
                         )}
                         {item.serie && (
-                          <Text style={styles.itemSerie}>S/N: {item.serie}</Text>
+                          <Text style={styles.itemSerie}>{t('equipo.numeroSerie', { serie: item.serie })}</Text>
                         )}
                         {!item.marca && !item.modelo && !item.serie && (
-                          <Text style={styles.itemSub}>Sin datos adicionales</Text>
+                          <Text style={styles.itemSub}>{t('equipo.sinDatos')}</Text>
                         )}
                       </View>
-                      <Pressable accessibilityRole="button" accessibilityLabel={a11y('eliminar')} onPress={() => onRemove(idx)} disabled={busy} hitSlop={10}>
+                      <Pressable accessibilityRole="button" accessibilityLabel={t('equipo.quitar', { nombre: item.nombre })} onPress={() => onRemove(item)} hitSlop={10}>
                         <Ionicons name="trash-outline" size={18} color={colors.error} />
                       </Pressable>
                     </View>
@@ -283,7 +352,7 @@ export default function EquipmentManagementScreen() {
               </View>
             ))}
             {list.length === 0 && (
-              <Text style={styles.empty}>Aun no hay equipo registrado.</Text>
+              <Text style={styles.empty}>{t('equipo.vacio')}</Text>
             )}
           </View>
         )}
@@ -302,10 +371,11 @@ const styles = StyleSheet.create({
   scroll: { padding: spacing.md, paddingBottom: 40 },
   inputCard: { backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.md, ...shadow.card, marginBottom: spacing.md, gap: 10 },
   label: { fontSize: 12, fontWeight: '800', color: colors.textMuted, marginBottom: 4, textTransform: 'uppercase' },
+  campo: { marginTop: 0 },
   row: { flexDirection: 'row', gap: 10 },
-  input: { height: 48, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, paddingHorizontal: 12, fontSize: 15, color: colors.text, backgroundColor: colors.bg },
   addBtn: { height: 48, backgroundColor: colors.primary, borderRadius: radius.md, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 8 },
-  addBtnTxt: { color: '#fff', fontWeight: '800', fontSize: 14 },
+  addBtnTxt: { color: colors.textInverse, fontWeight: '800', fontSize: 14 },
+  pendientes: { fontSize: 12, color: colors.textMuted, fontWeight: '600', textAlign: 'center' },
   list: { gap: 16 },
   group: { gap: 6 },
   groupHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 4 },
