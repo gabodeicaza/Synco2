@@ -1458,6 +1458,8 @@ export interface AnalisisPeriodo {
   cpi: string | null;
   variacion_cronograma: string;
   variacion_costo: string;
+  /** Conceptos activos sin fechas ni distribución en el programa (no aportan PV). */
+  conceptos_sin_programa?: number;
 }
 
 export interface CurvaS {
@@ -1564,6 +1566,7 @@ export interface ProgramaImportHeadersResponse {
 }
 
 // tipo: 'importe_ilegible' | 'concepto_no_encontrado' | 'celda_mes_ilegible' | 'distribucion_no_cuadra'
+//       | 'rango_mes_ilegible' | 'rango_fecha_invalido'
 export interface ProgramaImportProblema {
   tipo: string;
   campo: string | null;
@@ -2548,10 +2551,11 @@ export const api = {
   deleteConcepto: (id: string) => request<{ ok: boolean }>('DELETE', `/conceptos/${id}`),
   conceptoBitacora: (conceptoId: string) => request<BitacoraCambio[]>('GET', `/conceptos/${conceptoId}/bitacora`),
 
-  searchConceptos: (pid: string, opts: { q?: string; unidad?: string } = {}) => {
+  searchConceptos: (pid: string, opts: { q?: string; unidad?: string; limit?: number } = {}) => {
     const qs = new URLSearchParams();
     if (opts.q && opts.q.trim()) qs.set('q', opts.q.trim());
     if (opts.unidad) qs.set('unidad', opts.unidad);
+    if (opts.limit) qs.set('limit', String(opts.limit));
     const suffix = qs.toString();
     return request<ConceptoSearchResult[]>('GET', `/projects/${pid}/conceptos/search${suffix ? `?${suffix}` : ''}`);
   },

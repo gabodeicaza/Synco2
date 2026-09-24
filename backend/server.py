@@ -8146,6 +8146,7 @@ class EventPatch(BaseModel):
     end_at: Optional[str] = None
     area_id: Optional[str] = None
     attendee_ids: Optional[List[str]] = None
+    all_day: Optional[bool] = None
 
 
 def _event_out(doc: dict) -> dict:
@@ -8396,7 +8397,8 @@ async def update_event(
     e = await db.events.find_one({"id": eid})
     if not e:
         raise HTTPException(404, "Evento no existe")
-    await ensure_project_access(user, e["project_id"])
+    proj_ev = await ensure_project_access(user, e["project_id"])
+    zona_ev = zona_proyecto(proj_ev)
     is_author = e.get("author_id") == user["id"]
     is_coord = user["role"] == ROLE_COORD
     if not (is_author or is_coord):
@@ -8420,9 +8422,18 @@ async def update_event(
             raise HTTPException(400, "Ubicación máximo 200 caracteres")
         update["location"] = loc or None
     if body.start_at is not None:
-        update["start_at"] = _parse_iso(body.start_at)
+        update["start_at"] = _parse_iso(body.start_at, zona_ev)
     if body.end_at is not None:
-        update["end_at"] = _parse_iso(body.end_at) if body.end_at else None
+        update["end_at"] = _parse_iso(body.end_at, zona_ev) if body.end_at else None
+    if body.all_day is not None:
+        update["all_day"] = bool(body.all_day)
+        if body.all_day:
+            # Todo el día: sin hora, anclado a las 00:00 del día del proyecto y sin fin.
+            ancla = update.get("start_at", e["start_at"])
+            if ancla.tzinfo is None:
+                ancla = ancla.replace(tzinfo=timezone.utc)
+            update["start_at"] = inicio_dia_utc(ancla.astimezone(zona_ev).date(), proj_ev)
+            update["end_at"] = None
     if body.area_id is not None:
         aid = (body.area_id or None) or None
         if aid:
@@ -18212,10 +18223,12 @@ def _normalize_text(s: str) -> str:
     return _strip_accents((s or "")).strip().lower()
 
 
-def _map_unidad_con_flag(raw: Optional[str]) -> "tuple[str, bool]":
+def _map_unidad_con_flag(raw: Optional[str], personalizadas: Optional[List[str]] = None) -> "tuple[str, bool]":
     """Igual que el mapeo de unidad de Etapa 2, pero además dice si la
     reconoció (para poder marcar la fila con una ADVERTENCIA en la vista
-    previa en vez de fallar en silencio con UNIVERSAL)."""
+    previa en vez de fallar en silencio con UNIVERSAL). C-04: también
+    reconoce las unidades personalizadas del proyecto (sin acentos ni
+    mayúsculas) y devuelve la unidad tal como el proyecto la configuró."""
     if not raw:
         return "UNIVERSAL", True  # celda vacía: no es un error de reconocimiento, es ausencia de dato
     key = _normalize_text(str(raw))
@@ -18223,6 +18236,9 @@ def _map_unidad_con_flag(raw: Optional[str]) -> "tuple[str, bool]":
         return key.upper(), True
     if key in _UNIDAD_ALIASES:
         return _UNIDAD_ALIASES[key], True
+    for propia in personalizadas or []:
+        if propia and _normalize_text(propia) == key:
+            return propia, True
     return "UNIVERSAL", False
 
 
@@ -18407,6 +18423,11 @@ def validar_cuadre_distribucion(importe_concepto: Decimal, valores_mensuales: Li
         return None
     return {
         "tipo": "distribucion_no_cuadra",
+        "campo": "meses",
+        "motivo": (
+            f"La suma de los meses ({dec_to_str(round_money(suma))}) no coincide con el importe del "
+            f"concepto ({dec_to_str(round_money(importe_concepto))}); diferencia de {dec_to_str(round_money(diferencia))}."
+        ),
         "importe_concepto": dec_to_str(round_money(importe_concepto)),
         "suma_distribucion": dec_to_str(round_money(suma)),
         "diferencia": dec_to_str(round_money(diferencia)),
@@ -19202,6 +19223,12 @@ async def create_concepto(body: ConceptoIn, user: dict = Depends(require_role(RO
         raise HTTPException(404, "Partida no existe")
     project = await db.projects.find_one({"id": partida["project_id"]})
     _validar_unidad_para_proyecto(body.unidad, project or {})
+    # C-05: la clave de un concepto es única en el proyecto (igual que en el importador).
+    clave_nueva = body.clave.strip()
+    if not clave_nueva or not body.descripcion.strip():
+        raise HTTPException(400, "La clave y la descripción son obligatorias")
+    if await db.conceptos.find_one({"project_id": partida["project_id"], "activo": True, "clave": clave_nueva}):
+        raise HTTPException(409, f"Ya existe un concepto con la clave '{clave_nueva}' en este proyecto")
     cid = str(uuid.uuid4())
     doc = {
         "id": cid,
@@ -19322,24 +19349,37 @@ async def delete_concepto(concepto_id: str, user: dict = Depends(require_role(RO
     return {"ok": True}
 
 
-@api.get("/projects/{pid}/conceptos/search", response_model=List[dict])
-async def search_conceptos(pid: str, q: Optional[str] = None, unidad: Optional[str] = None, user: dict = Depends(current_user)):
-    """Búsqueda global (atraviesa partidas) por clave o cualquier palabra de la
-    descripción: parcial, sin distinguir acentos ni mayúsculas. Cada resultado
-    indica a qué partida pertenece."""
-    await ensure_project_access(user, pid)
-    query: dict = {"project_id": pid, "activo": True}
-    if unidad:
-        query["unidad"] = unidad
-    docs = await db.conceptos.find(query).to_list(length=100000)
-    docs = sort_by_clave(docs)
-
+def filtrar_conceptos_busqueda(docs: list, q: Optional[str], limit: Optional[int] = None) -> list:
+    """Filtra por subcadena (sin acentos ni mayúsculas) en clave o descripción y recorta a
+    `limit`. Sin `q` devuelve todo (en el orden recibido). La búsqueda es por texto
+    literal: "1.1." o "(a)" no son expresiones regulares y no rompen nada."""
     if q and q.strip():
         needle = _normalize_text(q)
         docs = [
             d for d in docs
             if needle in _normalize_text(d["clave"]) or needle in _normalize_text(d["descripcion"])
         ]
+    if limit is not None:
+        docs = docs[:limit]
+    return docs
+
+
+@api.get("/projects/{pid}/conceptos/search", response_model=List[dict])
+async def search_conceptos(
+    pid: str, q: Optional[str] = None, unidad: Optional[str] = None,
+    limit: Optional[int] = Query(None, ge=1, le=500),
+    user: dict = Depends(current_user),
+):
+    """Búsqueda global (atraviesa partidas) por clave o cualquier palabra de la
+    descripción: parcial, sin distinguir acentos ni mayúsculas. Cada resultado
+    indica a qué partida pertenece. Sin `q` lista los conceptos por clave; `limit`
+    acota la lista (Registrar avance muestra los primeros por defecto)."""
+    await ensure_project_access(user, pid)
+    query: dict = {"project_id": pid, "activo": True}
+    if unidad:
+        query["unidad"] = unidad
+    docs = await db.conceptos.find(query).to_list(length=100000)
+    docs = filtrar_conceptos_busqueda(sort_by_clave(docs), q, limit)
 
     partida_ids = {d["partida_id"] for d in docs}
     partidas = await db.partidas.find({"id": {"$in": list(partida_ids)}}).to_list(length=10000)
@@ -19487,9 +19527,10 @@ _TOLERANCIA_IMPORTE = Decimal("0.01")
 
 # Orden de severidad para decidir el estado de una fila cuando aplican varios
 # problemas a la vez (ver `_calcular_vista_filas`).
-_TIPOS_ERROR = {"excel_error", "numero_ilegible", "numero_ambiguo", "campo_obligatorio_vacio", "cantidad_no_positiva", "sin_partida_destino"}
+_TIPOS_ERROR = {"excel_error", "numero_ilegible", "numero_ambiguo", "campo_obligatorio_vacio", "cantidad_no_positiva", "sin_partida_destino", "clave_duplicada_sin_gemela_valida"}
 _TIPOS_DUPLICADO = {"clave_duplicada_archivo", "clave_existente_proyecto"}
-_TIPOS_ADVERTENCIA = {"unidad_no_reconocida", "importe_no_coincide"}
+# C-07: unidad vacía y P.U. 0 avisan pero no bloquean. C-09: clave sin el prefijo de su partida padre.
+_TIPOS_ADVERTENCIA = {"unidad_no_reconocida", "importe_no_coincide", "unidad_vacia", "precio_unitario_cero", "clave_sin_prefijo_padre"}
 
 
 def _read_workbook_sheets(filename: str, content: bytes) -> dict:
@@ -19535,6 +19576,48 @@ def _propose_mapping(headers: List[str]) -> dict:
             mapping[target] = headers[best_idx]
             used_idx.add(best_idx)
     return mapping
+
+
+def candidatos_numericos_de_hoja(rows: List[list], header_row_index: int, mapping: Any) -> List[object]:
+    """C-13: celdas que pueden informar la convención decimal = las de las
+    columnas numéricas mapeadas (cantidad, P.U., importe). Las claves ("1.1.1"),
+    descripciones, fechas y demás columnas NO cuentan: un "1.1.1" tiene dos
+    puntos pero es una clave, no un miles europeo, y antes votaba "coma decimal"
+    para todo el archivo."""
+    if not rows or header_row_index >= len(rows):
+        return []
+    headers = [str(c) if c is not None else "" for c in rows[header_row_index]]
+
+    def _nombre(campo: str) -> Optional[str]:
+        return mapping.get(campo) if isinstance(mapping, dict) else getattr(mapping, campo, None)
+
+    indices = [
+        headers.index(n) for n in (_nombre("cantidad"), _nombre("precio_unitario"), _nombre("importe"))
+        if n and n in headers
+    ]
+    candidatos: List[object] = []
+    for fila in rows[header_row_index + 1:]:
+        for i in indices:
+            if i < len(fila) and fila[i] is not None:
+                candidatos.append(fila[i])
+    return candidatos
+
+
+def detectar_convencion_hoja(rows: List[list], header_row_index: int, mapping: Any) -> Optional[ConvencionDecimal]:
+    return detectar_convencion(candidatos_numericos_de_hoja(rows, header_row_index, mapping))
+
+
+def detectar_convencion_archivo(sheets: Dict[str, List[list]]) -> Optional[ConvencionDecimal]:
+    """Convención propuesta al subir el archivo (todavía sin mapeo elegido): por hoja se
+    toma la fila de encabezado y el mapeo propuestos y se mira solo lo numérico."""
+    candidatos: List[object] = []
+    for rows in sheets.values():
+        if not rows:
+            continue
+        hdr = next((i for i, r in enumerate(rows[:15]) if _fila_parece_encabezado(r)), 0)
+        headers = [str(c) if c is not None else "" for c in rows[hdr]]
+        candidatos.extend(candidatos_numericos_de_hoja(rows, hdr, _propose_mapping(headers)))
+    return detectar_convencion(candidatos)
 
 
 def _validar_archivo_completo(
@@ -19611,30 +19694,20 @@ def _validar_archivo_completo(
             continue
 
         unidad_raw = celda(row, "unidad")
-        unidad, unidad_reconocida = _map_unidad_con_flag(str(unidad_raw) if unidad_raw is not None else None)
-        if not unidad_reconocida:
-            # TODO(Etapa 6 — importación de la matriz): _map_unidad_con_flag
-            # solo conoce UNIDADES + _UNIDAD_ALIASES, nunca
-            # project.unidades_personalizadas — el importador de catálogo
-            # (este archivo) sigue sin poder reconocer una unidad
-            # personalizada del proyecto directamente desde Excel, aunque
-            # sí la acepte si se escribe a mano en el catálogo (ver
-            # _validar_unidad_para_proyecto). Mientras tanto, el matiz de
-            # abajo evita que el aviso lea como "unidad inventada" cuando en
-            # realidad es una unidad que el proyecto configuró a propósito.
-            es_personalizada = str(unidad_raw or "").strip().upper() in {
-                (u or "").strip().upper() for u in (unidades_personalizadas or [])
-            }
-            if es_personalizada:
-                motivo = (
-                    f"Unidad '{unidad_raw}' no reconocida por el importador; si es una unidad "
-                    f"personalizada del proyecto, corrígela aquí (el importador aún no lee "
-                    f"unidades personalizadas directamente del Excel) — de lo contrario se "
-                    f"usará UNIVERSAL si no se corrige"
-                )
-            else:
-                motivo = f"Unidad '{unidad_raw}' no reconocida; se usará UNIVERSAL si no se corrige"
-            problemas.append({"tipo": "unidad_no_reconocida", "campo": "unidad", "motivo": motivo})
+        unidad, unidad_reconocida = _map_unidad_con_flag(
+            str(unidad_raw) if unidad_raw is not None else None, unidades_personalizadas,
+        )
+        if idx["unidad"] is not None and not str(unidad_raw if unidad_raw is not None else "").strip():
+            # C-07: unidad vacía -> se avisa (antes pasaba en silencio como UNIVERSAL).
+            problemas.append({
+                "tipo": "unidad_vacia", "campo": "unidad",
+                "motivo": "La unidad está vacía; se usará UNIVERSAL si no se corrige",
+            })
+        elif not unidad_reconocida:
+            problemas.append({
+                "tipo": "unidad_no_reconocida", "campo": "unidad",
+                "motivo": f"Unidad '{unidad_raw}' no reconocida; se usará UNIVERSAL si no se corrige",
+            })
 
         def _parse_campo_numerico(raw_valor, nombre_campo: str) -> Optional[str]:
             try:
@@ -19657,6 +19730,12 @@ def _validar_archivo_completo(
         cantidad = _parse_campo_numerico(cantidad_raw, "cantidad")
         pu_raw = celda(row, "precio_unitario")
         precio_unitario = _parse_campo_numerico(pu_raw, "precio_unitario")
+        if precio_unitario is not None and to_decimal(precio_unitario) == 0:
+            # C-07: un P.U. en 0 deja el importe del concepto en 0; se avisa sin bloquear.
+            problemas.append({
+                "tipo": "precio_unitario_cero", "campo": "precio_unitario",
+                "motivo": "El precio unitario es 0; el importe de este concepto quedará en 0",
+            })
 
         importe_archivo_raw = celda(row, "importe")
         importe_archivo = None
@@ -19713,25 +19792,17 @@ def _calcular_vista_filas(validated_rows: List[dict], correcciones: dict, contex
     descartado). Se recalcula en cada lectura (preview, commit) — nunca se
     guarda un "estado" fijo en `validated_rows`, porque depende de
     correcciones y descartes que cambian entre lecturas."""
-    # Claves duplicadas DENTRO del archivo: se recalcula aquí (no en la
-    # validación) porque depende de qué filas están descartadas ahora mismo.
-    conteo_claves: dict = {}
-    for row in validated_rows:
-        correccion = correcciones.get(str(row["fila"])) or {}
-        if correccion.get("descartar") or not row["clave"]:
-            continue
-        conteo_claves[row["clave"]] = conteo_claves.get(row["clave"], 0) + 1
-    claves_repetidas = {c for c, n in conteo_claves.items() if n > 1}
-
     # C-01: contexto de jerarquía. Sin contexto (pruebas, sesiones viejas) no se exige destino.
     contexto = contexto or {}
     tiene_destino = bool(contexto.get("tiene_destino", True))
+    destino_clave = contexto.get("destino_clave")
     claves_partida = set(contexto.get("claves_partida_existentes") or [])
     for row in validated_rows:
         if row.get("tipo_fila") == "partida" and row.get("clave") and not (correcciones.get(str(row["fila"])) or {}).get("descartar"):
             claves_partida.add(row["clave"])
 
-    vista: List[dict] = []
+    # Pasada 1: problemas propios de cada fila (sin el chequeo de claves repetidas en el archivo).
+    entradas: List[dict] = []
     for row in validated_rows:
         fila_key = str(row["fila"])
         correccion = correcciones.get(fila_key) or {}
@@ -19743,12 +19814,6 @@ def _calcular_vista_filas(validated_rows: List[dict], correcciones: dict, contex
         # (contrato aprobado) — sus problemas solo se resuelven descartando.
         campos_corregidos = {k for k in ("cantidad", "precio_unitario", "unidad") if correccion.get(k) is not None}
         problemas_activos = [p for p in row["problemas"] if p.get("campo") not in campos_corregidos]
-
-        if not descartado and row["clave"] in claves_repetidas:
-            problemas_activos = problemas_activos + [{
-                "tipo": "clave_duplicada_archivo", "campo": None,
-                "motivo": f"La clave '{row['clave']}' aparece más de una vez en el archivo; descarta todas menos una",
-            }]
 
         cantidad_efectiva = correccion.get("cantidad") or row["cantidad"]
         precio_unitario_efectivo = correccion.get("precio_unitario") or row["precio_unitario"]
@@ -19766,7 +19831,8 @@ def _calcular_vista_filas(validated_rows: List[dict], correcciones: dict, contex
                 except (ValueError, TypeError, InvalidOperation):
                     pass
             # C-01: sin destino elegido, cada concepto necesita una partida ancestro por clave.
-            if not tiene_destino and row.get("clave") and padre_por_prefijo(row["clave"], claves_partida) is None:
+            padre = padre_por_prefijo(row["clave"], claves_partida) if row.get("clave") else None
+            if not tiene_destino and row.get("clave") and padre is None:
                 problemas_activos = problemas_activos + [{
                     "tipo": "sin_partida_destino", "campo": None,
                     "motivo": (
@@ -19774,8 +19840,63 @@ def _calcular_vista_filas(validated_rows: List[dict], correcciones: dict, contex
                         "Incluye la fila de la partida o elige una partida destino."
                     ),
                 }]
+            # C-09: con partida destino, una clave jerárquica que no lleva el prefijo de su padre
+            # (ej. "7.1" bajo la partida "3.3") se importa bajo el destino, pero se avisa.
+            if tiene_destino and destino_clave and row.get("clave") and padre is None and profundidad_clave(row["clave"]) >= 1:
+                problemas_activos = problemas_activos + [{
+                    "tipo": "clave_sin_prefijo_padre", "campo": None,
+                    "motivo": (
+                        f"La clave '{row['clave']}' no empieza con la de su partida padre '{destino_clave}'; "
+                        "se importará dentro de esa partida. Revisa que la clave sea la correcta."
+                    ),
+                }]
 
-        if descartado:
+        entradas.append({
+            "row": row, "correccion": correccion, "descartado": descartado, "problemas": problemas_activos,
+            "cantidad": cantidad_efectiva, "pu": precio_unitario_efectivo, "unidad": unidad_efectiva,
+        })
+
+    # C-08: claves repetidas DENTRO del archivo (entre filas no descartadas). La primera fila
+    # válida es la "gemela válida" y se conserva; las demás se omiten SOLO porque esa gemela
+    # existe. Si ninguna fila con esa clave es válida no se omite nada en silencio: todas quedan
+    # en error para que el usuario corrija una y descarte el resto.
+    grupos: Dict[str, List[dict]] = {}
+    for e in entradas:
+        clave = e["row"].get("clave")
+        if e["descartado"] or not clave:
+            continue
+        grupos.setdefault(clave, []).append(e)
+    for clave, grupo in grupos.items():
+        if len(grupo) < 2:
+            continue
+        validas = [e for e in grupo if not ({p["tipo"] for p in e["problemas"]} & _TIPOS_ERROR)]
+        if validas:
+            gemela = validas[0]
+            for e in grupo:
+                if e is gemela:
+                    continue
+                e["problemas"] = e["problemas"] + [{
+                    "tipo": "clave_duplicada_archivo", "campo": None, "fila_gemela": gemela["row"]["fila"],
+                    "motivo": (
+                        f"La clave '{clave}' ya aparece en la fila {gemela['row']['fila']}, que es válida; "
+                        "esta fila se omitirá"
+                    ),
+                }]
+        else:
+            for e in grupo:
+                e["problemas"] = e["problemas"] + [{
+                    "tipo": "clave_duplicada_sin_gemela_valida", "campo": None,
+                    "motivo": (
+                        f"La clave '{clave}' aparece {len(grupo)} veces y ninguna de esas filas es válida; "
+                        "corrige una y descarta las demás"
+                    ),
+                }]
+
+    vista: List[dict] = []
+    for e in entradas:
+        row = e["row"]
+        problemas_activos = e["problemas"]
+        if e["descartado"]:
             estado = "descartado"
         else:
             tipos_activos = {p["tipo"] for p in problemas_activos}
@@ -19790,11 +19911,11 @@ def _calcular_vista_filas(validated_rows: List[dict], correcciones: dict, contex
 
         vista.append({
             **row,
-            "cantidad_efectiva": cantidad_efectiva,
-            "precio_unitario_efectivo": precio_unitario_efectivo,
-            "unidad_efectiva": unidad_efectiva,
+            "cantidad_efectiva": e["cantidad"],
+            "precio_unitario_efectivo": e["pu"],
+            "unidad_efectiva": e["unidad"],
             "problemas_activos": problemas_activos,
-            "correccion": correccion or None,
+            "correccion": e["correccion"] or None,
             "estado": estado,
         })
     return vista
@@ -19825,8 +19946,7 @@ async def import_upload_sheets(pid: str, file: UploadFile = File(...), user: dic
     # mapeo de columnas elegido en este paso), buscando casos inequívocos.
     # Los números nativos (int/float) no aportan evidencia: no tienen
     # separador que desambiguar.
-    candidatos = [cell for rows in sheets.values() for row in rows for cell in row]
-    convencion_detectada = detectar_convencion(candidatos)
+    convencion_detectada = detectar_convencion_archivo(sheets)
 
     import_id = str(uuid.uuid4())
     await db.catalogo_import_sessions.insert_one({
@@ -19942,7 +20062,10 @@ async def import_headers(
         "suggested_mapping": _propose_mapping(headers),
         "sample_rows": sample_rows,
         "total_rows": max(len(rows) - header_row_index - 1, 0),
-        "convencion_detectada": session.get("convencion_decimal"),
+        "convencion_detectada": (
+            detectar_convencion_hoja(rows, header_row_index, _propose_mapping(headers))
+            or session.get("convencion_decimal")
+        ),
         # Primeras filas TAL CUAL vienen en el archivo (sin importar cuál se
         # está usando como encabezado ahora) — para que el usuario elija.
         "preview_rows": rows[: min(len(rows), 15)],
@@ -19972,7 +20095,11 @@ async def import_validate(pid: str, import_id: str, body: ImportValidateIn, user
     if body.sheet not in session["sheets"]:
         raise HTTPException(400, f"La hoja '{body.sheet}' no existe en este archivo")
 
-    convencion: Optional[ConvencionDecimal] = body.convencion or session.get("convencion_decimal")
+    convencion: Optional[ConvencionDecimal] = (
+        body.convencion
+        or detectar_convencion_hoja(session["sheets"][body.sheet], body.header_row_index, body.mapping)
+        or session.get("convencion_decimal")
+    )
 
     # Consulta única de duplicados (Respuesta 2, aprobada): se trae UNA vez
     # todo el catálogo activo de la partida destino y se compara en
@@ -19989,7 +20116,11 @@ async def import_validate(pid: str, import_id: str, body: ImportValidateIn, user
         unidades_personalizadas=(project or {}).get("unidades_personalizadas") or [],
         partidas_existentes=partidas_proyecto,
     )
-    contexto = {"tiene_destino": bool(body.partida_id), "claves_partida_existentes": sorted(partidas_proyecto)}
+    contexto = {
+        "tiene_destino": bool(body.partida_id),
+        "destino_clave": partida["clave"] if body.partida_id else None,
+        "claves_partida_existentes": sorted(partidas_proyecto),
+    }
 
     update_fields = {
         "validated_rows": filas,
@@ -20073,8 +20204,8 @@ async def import_correct_row(import_id: str, fila: int, body: RowCorrectionIn, u
         except Exception:
             raise HTTPException(400, "precio_unitario inválido")
     if body.unidad is not None:
-        if body.unidad not in UNIDADES:
-            raise HTTPException(400, f"Unidad '{body.unidad}' no válida")
+        proyecto_sesion = await db.projects.find_one({"id": session["project_id"]})
+        _validar_unidad_para_proyecto(body.unidad, proyecto_sesion or {})
         entry["unidad"] = body.unidad
     if body.descartar:
         entry["descartar"] = True
@@ -20593,7 +20724,7 @@ def _validar_archivo_completo_evm(
             problemas.append({"tipo": tipo, "campo": "fin", "motivo": f"Fecha de fin inválida o no es una celda de fecha de Excel: {fin_raw!r}"})
 
         if fecha_inicio and fecha_fin and date.fromisoformat(fecha_fin) < date.fromisoformat(fecha_inicio):
-            problemas.append({"tipo": "rango_fecha_invalido", "campo": "fin", "motivo": f"fecha_fin ({fecha_fin}) es anterior a fecha_inicio ({fecha_inicio})"})
+            problemas.append({"tipo": "rango_fecha_invalido", "campo": "fin", "motivo": f"La fecha de fin ({fecha_fin}) es anterior a la fecha de inicio ({fecha_inicio})."})
 
         concepto_existente_id = None
         if clave and clave in existing_by_clave:
@@ -22179,6 +22310,22 @@ async def revertir_migracion_catalogo(pid: str, body: MigracionConfirmIn, user: 
 
 
 # === Etapa EVM: Análisis de Periodos (Valor Ganado) ==========================
+def _fechas_programa_concepto(concepto: dict) -> Optional["tuple[date, date]"]:
+    """(inicio, fin) del programa lineal de un concepto, o None si no tiene datos EVM,
+    le faltan fechas, son ilegibles o el fin es anterior al inicio (rango invertido:
+    no aporta PV ni curva; el Importador Maestro y el PATCH ya lo rechazan al capturar)."""
+    if not _concepto_tiene_datos_evm(concepto) or not concepto.get("fecha_inicio") or not concepto.get("fecha_fin"):
+        return None
+    try:
+        c_ini = date.fromisoformat(concepto["fecha_inicio"])
+        c_fin = date.fromisoformat(concepto["fecha_fin"])
+    except (TypeError, ValueError):
+        return None
+    if c_fin < c_ini:
+        return None
+    return c_ini, c_fin
+
+
 def _prorrateo_concepto_en_ventana(concepto: dict, ventana_ini: date, ventana_fin: date) -> Decimal:
     """PV que aporta UN concepto a la ventana consultada.
 
@@ -22187,10 +22334,10 @@ def _prorrateo_concepto_en_ventana(concepto: dict, ventana_ini: date, ventana_fi
     miles de conceptos. Devuelve 0 si el concepto no tiene datos EVM
     todavía (ver _concepto_tiene_datos_evm) o no intersecta la ventana —
     nunca lanza, un concepto sin migrar simplemente no aporta PV."""
-    if not _concepto_tiene_datos_evm(concepto) or not concepto.get("fecha_inicio") or not concepto.get("fecha_fin"):
+    fechas = _fechas_programa_concepto(concepto)
+    if fechas is None:
         return Decimal("0")
-    c_ini = date.fromisoformat(concepto["fecha_inicio"])
-    c_fin = date.fromisoformat(concepto["fecha_fin"])
+    c_ini, c_fin = fechas
 
     overlap_ini = max(c_ini, ventana_ini)
     overlap_fin = min(c_fin, ventana_fin)
@@ -22234,10 +22381,10 @@ def _curva_mensual_concepto(concepto: dict) -> List[dict]:
     sea EXACTAMENTE importe_total_editable: cualquier residuo de la
     división se asigna al ÚLTIMO mes, nunca se pierde ni se reparte
     disperso (reparto de centavos estándar)."""
-    if not _concepto_tiene_datos_evm(concepto) or not concepto.get("fecha_inicio") or not concepto.get("fecha_fin"):
+    fechas = _fechas_programa_concepto(concepto)
+    if fechas is None:
         return []
-    c_ini = date.fromisoformat(concepto["fecha_inicio"])
-    c_fin = date.fromisoformat(concepto["fecha_fin"])
+    c_ini, c_fin = fechas
     dias_totales = (c_fin - c_ini).days + 1
     importe = to_decimal(concepto["importe_total_editable"])
 
@@ -22253,6 +22400,80 @@ def _curva_mensual_concepto(concepto: dict) -> List[dict]:
             acumulado += valor_mes
         resultado.append({"mes": mes_ini.strftime("%Y-%m"), "valor": dec_to_str(valor_mes)})
     return resultado
+
+
+# --- A-06: curva planeada del Programa desglosado (versión vigente) ---------
+# Si un concepto tiene distribución mensual en la versión VIGENTE del programa, esa
+# curva es su plan (PV y Curva S); si no, se prorratea linealmente entre fecha_inicio
+# y fecha_fin como antes. Un concepto sin ninguna de las dos no tiene programa.
+def _meses_de_distribucion(dist: Optional[dict]) -> List["tuple[date, date, Decimal]"]:
+    salida = []
+    for m in (dist or {}).get("meses") or []:
+        try:
+            ini = date.fromisoformat(m.get("fecha_inicio") or "")
+            fin = date.fromisoformat(m.get("fecha_fin") or "")
+        except (TypeError, ValueError):
+            continue
+        if fin < ini:
+            continue
+        salida.append((ini, fin, to_decimal(m.get("importe") or "0")))
+    return salida
+
+
+def _prorrateo_distribucion_en_ventana(dist: Optional[dict], ventana_ini: date, ventana_fin: date) -> Decimal:
+    total = Decimal("0")
+    for ini, fin, importe in _meses_de_distribucion(dist):
+        ov_ini, ov_fin = max(ini, ventana_ini), min(fin, ventana_fin)
+        if ov_ini > ov_fin:
+            continue
+        total += importe * Decimal((ov_fin - ov_ini).days + 1) / Decimal((fin - ini).days + 1)
+    return total
+
+
+def _curva_mensual_distribucion(dist: Optional[dict]) -> List[dict]:
+    """Valor planeado por mes calendario de una distribución (cada columna del programa
+    puede cruzar meses: se reparte por días y el residuo exacto va al último tramo)."""
+    por_mes: Dict[str, Decimal] = {}
+    for ini, fin, importe in _meses_de_distribucion(dist):
+        dias_totales = (fin - ini).days + 1
+        tramos = _rango_meses(ini, fin)
+        acumulado = Decimal("0")
+        for i, (t_ini, t_fin) in enumerate(tramos):
+            if i == len(tramos) - 1:
+                valor = importe - acumulado
+            else:
+                valor = importe * Decimal((t_fin - t_ini).days + 1) / Decimal(dias_totales)
+                acumulado += valor
+            clave = t_ini.strftime("%Y-%m")
+            por_mes[clave] = por_mes.get(clave, Decimal("0")) + valor
+    return [{"mes": m, "valor": dec_to_str(v)} for m, v in sorted(por_mes.items())]
+
+
+def _pv_de_concepto(concepto: dict, dist: Optional[dict], ventana_ini: date, ventana_fin: date) -> Decimal:
+    if _meses_de_distribucion(dist):
+        return _prorrateo_distribucion_en_ventana(dist, ventana_ini, ventana_fin)
+    return _prorrateo_concepto_en_ventana(concepto, ventana_ini, ventana_fin)
+
+
+def _curva_planeada_concepto(concepto: dict, dist: Optional[dict]) -> List[dict]:
+    if _meses_de_distribucion(dist):
+        return _curva_mensual_distribucion(dist)
+    return _curva_mensual_concepto(concepto)
+
+
+def _concepto_tiene_programa(concepto: dict, dist: Optional[dict]) -> bool:
+    return bool(_meses_de_distribucion(dist)) or _fechas_programa_concepto(concepto) is not None
+
+
+async def _distribuciones_vigentes(pid: str) -> Dict[str, dict]:
+    """concepto_id -> distribución de la versión VIGENTE del programa (vacío si no hay)."""
+    versiones = await db.programa_versiones.find({"project_id": pid, "vigente": True}).to_list(length=100)
+    if not versiones:
+        return {}
+    docs = await db.programa_distribucion.find(
+        {"programa_version_id": {"$in": [v["id"] for v in versiones]}}
+    ).to_list(length=100000)
+    return {d["concepto_id"]: d for d in docs if d.get("concepto_id")}
 
 
 class AnalisisPeriodoOut(BaseModel):
@@ -22275,6 +22496,8 @@ class AnalisisPeriodoOut(BaseModel):
     eac: Optional[str] = None     # BAC / CPI  (None mientras AC = 0)
     etc: Optional[str] = None     # EAC - AC
     vac: Optional[str] = None     # BAC - EAC (negativo = sobrecosto proyectado)
+    # A-06: conceptos activos sin fechas ni distribución en el programa (no aportan PV).
+    conceptos_sin_programa: int = 0
 
 
 async def calcular_analisis_evm(pid: str, start: str, end: str, project: Optional[dict] = None) -> Dict[str, Any]:
@@ -22289,7 +22512,12 @@ async def calcular_analisis_evm(pid: str, start: str, end: str, project: Optiona
     modo = project.get("modo_avance", "CANTIDAD")
     conceptos = await db.conceptos.find({"project_id": pid, "activo": True}).to_list(length=100000)
     conceptos_por_id = {c["id"]: c for c in conceptos}
-    pv = sum((_prorrateo_concepto_en_ventana(c, ventana_ini, ventana_fin) for c in conceptos), start=Decimal("0"))
+    distribuciones = await _distribuciones_vigentes(pid)
+    pv = sum(
+        (_pv_de_concepto(c, distribuciones.get(c["id"]), ventana_ini, ventana_fin) for c in conceptos),
+        start=Decimal("0"),
+    )
+    sin_programa = sum(1 for c in conceptos if not _concepto_tiene_programa(c, distribuciones.get(c["id"])))
     avances = await db.registros_avance.find({"project_id": pid}).to_list(length=1000000)
     ev_contractual, ev_total = calcular_ev(avances, conceptos_por_id, modo, start, end)
     _, ev_acum = calcular_ev(avances, conceptos_por_id, modo, None, end)
@@ -22310,6 +22538,7 @@ async def calcular_analisis_evm(pid: str, start: str, end: str, project: Optiona
         "variacion_cronograma": ev_contractual - pv, "variacion_costo": ev_total - ac,
         "bac": bac, "ev_acumulado": ev_acum, "ac_acumulado": ac_acum,
         "pronostico": calcular_pronostico(bac, ev_acum, ac_acum),
+        "conceptos_sin_programa": sin_programa,
     }
 
 
@@ -22367,6 +22596,7 @@ async def analisis_periodo(pid: str, start: str, end: str, user: dict = Depends(
         eac=dec_to_str(round_money(pron["eac"])) if pron else None,
         etc=dec_to_str(round_money(pron["etc"])) if pron else None,
         vac=dec_to_str(round_money(pron["vac"])) if pron else None,
+        conceptos_sin_programa=r["conceptos_sin_programa"],
     )
 
 
@@ -22395,9 +22625,10 @@ async def analisis_periodo_curva_s(pid: str, user: dict = Depends(current_user))
     await ensure_project_access(user, pid)
     conceptos = await db.conceptos.find({"project_id": pid, "activo": True}).to_list(length=100000)
 
+    distribuciones = await _distribuciones_vigentes(pid)
     planeado_por_mes: Dict[str, Decimal] = {}
     for c in conceptos:
-        for punto in _curva_mensual_concepto(c):
+        for punto in _curva_planeada_concepto(c, distribuciones.get(c["id"])):
             planeado_por_mes[punto["mes"]] = planeado_por_mes.get(punto["mes"], Decimal("0")) + to_decimal(punto["valor"])
 
     ganado_por_mes: Dict[str, Decimal] = {}
@@ -23433,9 +23664,32 @@ def _validar_archivo_programa_completo(
         inicio = _fecha_excel_a_iso(fila_datos[idx_inicio]) if idx_inicio is not None and idx_inicio < len(fila_datos) else None
         fin = _fecha_excel_a_iso(fila_datos[idx_fin]) if idx_fin is not None and idx_fin < len(fila_datos) else None
 
+        if inicio and fin and fin < inicio:
+            problemas.append({
+                "tipo": "rango_fecha_invalido", "campo": "fin",
+                "motivo": f"La fecha de fin ({fin}) es anterior a la fecha de inicio ({inicio}).",
+            })
+
         valores_mensuales, errores_mes = extraer_distribucion_mensual_bloque(bloque["fila_importes"], idx_meses, convencion)
         for err in errores_mes:
             problemas.append({"tipo": "celda_mes_ilegible", "campo": "meses", "motivo": err})
+
+        # Un mes con importe pero sin rango de fechas legible (o con el fin antes del inicio)
+        # no se puede ubicar en el tiempo: nunca se importa en silencio como si valiera 0.
+        for i, nombre_mes in enumerate(mapping.meses):
+            rango = rangos_mes[i]
+            if valores_mensuales[i] == 0:
+                continue
+            if rango is None:
+                problemas.append({
+                    "tipo": "rango_mes_ilegible", "campo": "meses",
+                    "motivo": f"La columna «{nombre_mes}» trae importe pero su rango de fechas no se pudo leer (esperado: «DEL 1/12/25 AL 31/12/25»).",
+                })
+            elif rango[1] < rango[0]:
+                problemas.append({
+                    "tipo": "rango_mes_ilegible", "campo": "meses",
+                    "motivo": f"En la columna «{nombre_mes}» la fecha final ({rango[1]}) es anterior a la inicial ({rango[0]}).",
+                })
 
         tiene_distribucion_propia = bloque["fila_importes"] is not None
         if tiene_distribucion_propia:
@@ -23466,7 +23720,10 @@ def _validar_archivo_programa_completo(
     return filas
 
 
-_TIPOS_ERROR_PROGRAMA = {"importe_ilegible", "concepto_no_encontrado", "distribucion_no_cuadra", "celda_mes_ilegible"}
+_TIPOS_ERROR_PROGRAMA = {
+    "importe_ilegible", "concepto_no_encontrado", "distribucion_no_cuadra", "celda_mes_ilegible",
+    "rango_mes_ilegible", "rango_fecha_invalido",
+}
 
 
 def _calcular_vista_programa(filas: List[dict], correcciones: dict) -> List[dict]:
