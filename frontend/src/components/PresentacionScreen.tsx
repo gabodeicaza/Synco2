@@ -15,7 +15,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import {
   api, InformacionParticularBloque, InformacionParticularFoto, LocationNode, PlanoAvance,
-  Presentacion, PresentacionSeccion, PresentacionSeccionTipo, Project,
+  Presentacion, PresentacionSeccion, PresentacionSeccionTipo, Project, PeriodoFinanciero,
 } from '@/src/api';
 import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
 import { Button } from '@/src/components/Button';
@@ -25,6 +25,9 @@ import { ROLE_COORD, ROLE_JEFE, ROLE_SUB } from '@/src/utils/roles';
 import { requestMediaLibraryPermission } from '@/src/utils/permissions';
 import { a11y } from '@/src/i18n';
 import { hoyProyecto } from '@/src/utils/fechas';
+import { PeriodoFinancieroSelector } from '@/src/components/PeriodoFinancieroSelector';
+import { PERIODO_FINANCIERO_DEFECTO, periodoDePresentacion } from '@/src/utils/finanzas';
+import { showToast } from '@/src/utils/toast';
 
 const TIPO_ICON: Record<PresentacionSeccionTipo, keyof typeof Ionicons.glyphMap> = {
   portada: 'bookmark-outline',
@@ -74,6 +77,8 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
   const [newOpen, setNewOpen] = useState(false);
   const [fechaDraft, setFechaDraft] = useState(todayIso());
   const [tituloDraft, setTituloDraft] = useState('INFORME DE ACTIVIDADES');
+  const [periodoDraft, setPeriodoDraft] = useState<PeriodoFinanciero>(PERIODO_FINANCIERO_DEFECTO);
+  const [guardandoPeriodo, setGuardandoPeriodo] = useState(false);
   const [creating, setCreating] = useState(false);
 
   const [tipoPickerOpen, setTipoPickerOpen] = useState(false);
@@ -136,7 +141,7 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
     }
     try {
       setCreating(true);
-      const created = await api.createPresentacion(projectId, { fecha: fechaDraft.trim(), titulo: tituloDraft.trim() || undefined });
+      const created = await api.createPresentacion(projectId, { fecha: fechaDraft.trim(), titulo: tituloDraft.trim() || undefined, periodo_financiero: periodoDraft });
       setNewOpen(false);
       await loadList();
       setSelectedId(created.id);
@@ -144,6 +149,21 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
       Alert.alert('No se pudo crear', e?.message || 'Intentalo nuevamente.');
     } finally {
       setCreating(false);
+    }
+  }
+
+  async function onCambiarPeriodo(periodo: PeriodoFinanciero) {
+    if (!detail || guardandoPeriodo || periodoDePresentacion(detail.periodo_financiero) === periodo) return;
+    const anterior = detail;
+    setDetail({ ...detail, periodo_financiero: periodo });
+    try {
+      setGuardandoPeriodo(true);
+      await api.updatePresentacion(projectId, detail.id, { periodo_financiero: periodo });
+    } catch (e: any) {
+      setDetail(anterior);
+      showToast(e?.message || 'No se pudo cambiar el periodo.');
+    } finally {
+      setGuardandoPeriodo(false);
     }
   }
 
@@ -339,6 +359,15 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
           <View style={styles.center}><ActivityIndicator color={colors.primary} /></View>
         ) : (
           <ScrollView contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + spacing.xl }]}>
+            {secciones.some((s) => s.tipo === 'financiero') ? (
+              <View style={[styles.card, { padding: spacing.md, marginBottom: spacing.md }]}>
+                <PeriodoFinancieroSelector
+                  value={periodoDePresentacion(detail.periodo_financiero)}
+                  onChange={onCambiarPeriodo}
+                  disabled={!canEditEstructura || guardandoPeriodo}
+                />
+              </View>
+            ) : null}
             <View style={styles.sectionHeaderRow}>
               <Text style={styles.sectionTitle}>Secciones</Text>
               {canEditEstructura ? (
@@ -618,6 +647,7 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
             <TextInput value={fechaDraft} onChangeText={setFechaDraft} style={styles.input} placeholder="2026-09-10" placeholderTextColor={colors.textMuted} />
             <Text style={styles.fieldLabel}>Título</Text>
             <TextInput value={tituloDraft} onChangeText={setTituloDraft} style={styles.input} />
+            <PeriodoFinancieroSelector value={periodoDraft} onChange={setPeriodoDraft} />
             <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
               <Button label="Cancelar" variant="secondary" onPress={() => setNewOpen(false)} style={{ flex: 1 }} />
               <Button label="Crear" loading={creating} onPress={onCreatePresentacion} style={{ flex: 1 }} />

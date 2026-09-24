@@ -22,15 +22,7 @@ import { SlideCroquisEstacion } from '@/src/components/presentacion/SlideCroquis
 import { SlideInformacionParticular } from '@/src/components/presentacion/SlideInformacionParticular';
 import { SlideAvanceGrafico } from '@/src/components/presentacion/SlideAvanceGrafico';
 import { a11y } from '@/src/i18n';
-
-/** `fecha - 6 días` en calendario puro (sin zona horaria) — ventana semanal
- * que cierra en la fecha del reporte, para las tarjetas de Financiero. */
-function weekStart(fechaIso: string): string {
-  const [y, m, d] = fechaIso.split('-').map((v) => parseInt(v, 10));
-  const dt = new Date(Date.UTC(y, (m || 1) - 1, d || 1));
-  dt.setUTCDate(dt.getUTCDate() - 6);
-  return dt.toISOString().slice(0, 10);
-}
+import { periodoDePresentacion, textoRangoPeriodo } from '@/src/utils/finanzas';
 
 export default function PresentacionPreview({ projectId, presentacionId }: { projectId: string; presentacionId: string }) {
   const insets = useSafeAreaInsets();
@@ -81,10 +73,9 @@ export default function PresentacionPreview({ projectId, presentacionId }: { pro
       }
 
       if (secciones.some((s) => s.tipo === 'financiero')) {
-        const end = pres.fecha;
-        const start = weekStart(pres.fecha);
+        // Mismo servicio y mismo periodo que el tablero EVM (A-05): el servidor resuelve la ventana.
         const [an, pt] = await Promise.all([
-          api.analisisPeriodo(projectId, start, end).catch(() => null),
+          api.analisisPeriodoPorPeriodo(projectId, periodoDePresentacion(pres.periodo_financiero), pres.fecha).catch(() => null),
           api.analisisPeriodoPresupuestoTotal(projectId).catch(() => null),
         ]);
         setAnalisis(an);
@@ -174,7 +165,7 @@ export default function PresentacionPreview({ projectId, presentacionId }: { pro
                 ) : item.tipo === 'divisor' ? (
                   <SlideDivisor titulo={item.titulo || ''} colorTema={headerColor} />
                 ) : item.tipo === 'financiero' ? (
-                  <SlideFinanciero analisis={analisis} presupuestoTotal={presupuestoTotal} colorTema={headerColor} />
+                  <SlideFinanciero analisis={analisis} presupuestoTotal={presupuestoTotal} colorTema={headerColor} periodoTexto={textoRangoPeriodo(analisis?.start, analisis?.end)} />
                 ) : item.tipo === 'seguimiento_estudios' ? (
                   <SlideSeguimientoEstudios rows={disciplinaRows} nodesById={nodesById} colorTema={headerColor} />
                 ) : item.tipo === 'croquis_estacion' ? (
