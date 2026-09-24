@@ -506,11 +506,16 @@ export interface PresentacionSeccion {
   bloques?: InformacionParticularBloque[];
 }
 
+/** Periodos del análisis financiero: los mismos en el tablero EVM y en la Presentación (A-05). */
+export type PeriodoFinanciero = 'mes_actual' | 'ultimos_3_meses' | 'proyecto_completo';
+
 export interface Presentacion {
   id: string;
   project_id: string;
   fecha: string;
   titulo: string;
+  /** Periodo de la sección Financiero. Las presentaciones viejas no lo traen: se toma mes_actual. */
+  periodo_financiero?: PeriodoFinanciero;
   secciones: PresentacionSeccion[];
   created_by: string;
   created_by_name: string;
@@ -1059,8 +1064,9 @@ export interface Concepto {
   unidad: string;
   cantidad: string;
   precio_unitario: string;
+  /** Ritmo objetivo por periodicidad_meta; "" si el concepto no tiene programa (C-06). */
   meta: string;
-  periodicidad_meta: 'SEMANAL' | 'MENSUAL';
+  periodicidad_meta: 'DIARIA' | 'SEMANAL' | 'MENSUAL';
   activo: boolean;
   created_at: string;
   // Calculados por el servidor
@@ -1457,7 +1463,8 @@ export interface AnalisisPeriodo {
   /** CPI = EV total / AC — null si AC es 0 (nada de gasto real capturado). */
   cpi: string | null;
   variacion_cronograma: string;
-  variacion_costo: string;
+  /** CV = EV total − AC — null mientras AC es 0 (sin gasto real capturado), igual que el CPI. */
+  variacion_costo: string | null;
   /** Conceptos activos sin fechas ni distribución en el programa (no aportan PV). */
   conceptos_sin_programa?: number;
 }
@@ -1473,12 +1480,17 @@ export interface ExcepcionEvm {
   concepto_id: string;
   clave: string;
   descripcion: string;
-  tipo: 'fuera_de_ventana' | 'sobre_meta' | 'atrasado' | 'excedente_volumen' | 'sobrecosto';
+  tipo:
+    | 'fuera_de_ventana' | 'atrasado' | 'excedente_volumen' | 'sobrecosto'
+    | 'ajuste_negativo' | 'acuerdo_vencido' | 'sin_avance_en_ventana';
   detalle: string;
-  /** Los excedentes y el sobrecosto son informativos: nunca bloquean nada. */
+  /** Excedentes, sobrecosto, ajustes negativos, acuerdos vencidos y conceptos sin avance son informativos: nunca bloquean nada. */
   severidad?: 'alerta' | 'informativa';
   cantidad?: string | null;
   importe?: string | null;
+  /** Solo `acuerdo_vencido`. */
+  dias_atraso?: number | null;
+  responsable?: string | null;
 }
 
 export interface ActividadEvm {
@@ -2191,10 +2203,10 @@ export const api = {
 
   // === Presentación (Informe de Actividades semanal) ===
   listPresentaciones: (pid: string) => request<Presentacion[]>('GET', `/projects/${pid}/presentaciones`),
-  createPresentacion: (pid: string, body: { fecha: string; titulo?: string }) =>
+  createPresentacion: (pid: string, body: { fecha: string; titulo?: string; periodo_financiero?: PeriodoFinanciero }) =>
     request<Presentacion>('POST', `/projects/${pid}/presentaciones`, { project_id: pid, ...body }),
   getPresentacion: (pid: string, presId: string) => request<Presentacion>('GET', `/projects/${pid}/presentaciones/${presId}`),
-  updatePresentacion: (pid: string, presId: string, body: Partial<{ fecha: string; titulo: string }>) =>
+  updatePresentacion: (pid: string, presId: string, body: Partial<{ fecha: string; titulo: string; periodo_financiero: PeriodoFinanciero }>) =>
     request<Presentacion>('PATCH', `/projects/${pid}/presentaciones/${presId}`, body),
   deletePresentacion: (pid: string, presId: string) =>
     request<{ ok: boolean }>('DELETE', `/projects/${pid}/presentaciones/${presId}`),
@@ -2378,6 +2390,16 @@ export const api = {
   createDirectChannel: (pid: string, target_user_id: string) => request<Channel>('POST', `/projects/${pid}/channels/direct`, { target_user_id }),
   listProjectMembers: (pid: string) => request<User[]>('GET', `/projects/${pid}/members`),
 
+  /** Cuántos reportes exportaría un PDF/Word/PPTX con estos filtros (R-03). */
+  countExportReports: (pid: string, period: string, opts?: { area_id?: string; scope?: string; period_type?: string }) => {
+    const qs = new URLSearchParams({ period });
+    if (opts?.area_id) qs.set('area_id', opts.area_id);
+    if (opts?.scope) qs.set('scope', opts.scope);
+    if (opts?.period_type) qs.set('period_type', opts.period_type);
+    return request<{ reportes: number; reportes_fuerza_trabajo: number; periodo: string; inicio: string; fin: string }>(
+      'GET', `/projects/${pid}/export/reports/count?${qs.toString()}`,
+    );
+  },
   exportReportsXlsxUrl: (pid: string) => `${BASE}/projects/${pid}/export/reports.xlsx`,
   downloadReportsXlsx: async (pid: string): Promise<{ blob: Blob; filename: string }> => {
     const tok = await getToken();
@@ -2541,12 +2563,13 @@ export const api = {
     request<Concepto[]>('GET', `/partidas/${partidaId}/conceptos${incluirInactivos ? '?incluir_inactivos=true' : ''}`),
   createConcepto: (payload: {
     partida_id: string; clave: string; descripcion: string; unidad: string;
-    cantidad: string; precio_unitario: string; meta: string; periodicidad_meta: 'SEMANAL' | 'MENSUAL';
+    cantidad: string; precio_unitario: string; meta?: string; periodicidad_meta?: 'DIARIA' | 'SEMANAL' | 'MENSUAL';
+    fecha_inicio?: string | null; fecha_fin?: string | null;
     extraordinario?: boolean;
   }) => request<Concepto>('POST', '/conceptos', payload),
   updateConcepto: (id: string, payload: Partial<{
     clave: string; descripcion: string; unidad: string; cantidad: string;
-    precio_unitario: string; meta: string; periodicidad_meta: 'SEMANAL' | 'MENSUAL'; activo: boolean;
+    precio_unitario: string; meta: string; periodicidad_meta: 'DIARIA' | 'SEMANAL' | 'MENSUAL'; activo: boolean;
   }>) => request<Concepto>('PATCH', `/conceptos/${id}`, payload),
   deleteConcepto: (id: string) => request<{ ok: boolean }>('DELETE', `/conceptos/${id}`),
   conceptoBitacora: (conceptoId: string) => request<BitacoraCambio[]>('GET', `/conceptos/${conceptoId}/bitacora`),
@@ -2871,6 +2894,13 @@ export const api = {
   // ---- Análisis de Periodos EVM (Valor Ganado) / Dashboard -----------------
   analisisPeriodo: (pid: string, start: string, end: string) =>
     request<AnalisisPeriodo>('GET', `/projects/${pid}/analisis_periodo?start=${start}&end=${end}`),
+  /** Mismo análisis, con la ventana que resuelve el servidor (la misma función que usa la Presentación).
+   * `fecha` es la fecha de corte (defecto: hoy en la zona del proyecto). */
+  analisisPeriodoPorPeriodo: (pid: string, periodo: PeriodoFinanciero, fecha?: string) =>
+    request<AnalisisPeriodo>(
+      'GET',
+      `/projects/${pid}/analisis_periodo?periodo=${periodo}${fecha ? `&fecha=${fecha}` : ''}`,
+    ),
   analisisPeriodoCurvaS: (pid: string) =>
     request<CurvaS>('GET', `/projects/${pid}/analisis_periodo/curva_s`),
   analisisPeriodoPresupuestoTotal: (pid: string) =>

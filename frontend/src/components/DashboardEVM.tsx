@@ -21,13 +21,14 @@ import { Ionicons } from '@expo/vector-icons';
 import Svg, { Polyline, Line as SvgLine, Text as SvgText, Circle } from 'react-native-svg';
 import * as DocumentPicker from 'expo-document-picker';
 
-import { api, AnalisisPeriodo, CurvaS, ExcepcionEvm, ActividadEvm, ActividadesEvm, GastoReal, GastoRealImportResult, RegistroAvanceImportResult } from '@/src/api';
+import { EXCEPCION_META, claveTituloExcepcion, etiquetaExcepcion } from '@/src/utils/excepcionesMeta';
+import { api, AnalisisPeriodo, CurvaS, PeriodoFinanciero, ExcepcionEvm, ActividadEvm, ActividadesEvm, GastoReal, GastoRealImportResult, RegistroAvanceImportResult } from '@/src/api';
 import { colors, spacing, radius, shadow } from '@/src/theme';
 import { Button } from '@/src/components/Button';
 import { confirm } from '@/src/utils/confirm';
 import { formatMoney } from '@/src/utils/money';
 import { downloadBlob } from '@/src/utils/downloadBlob';
-import { dayjs, CDMX_TZ } from '@/src/utils/tz';
+import { variacionCostoUI } from '@/src/utils/finanzas';
 import { a11y, t } from '@/src/i18n';
 import { ExcedentesSection } from '@/src/components/ExcedentesSection';
 import { GastoRealForm } from '@/src/components/GastoRealForm';
@@ -39,20 +40,7 @@ const TABS_ACTIVIDADES: { key: TabActividades; label: string }[] = [
   { key: 'por_venir', label: 'Por venir' },
 ];
 
-type RangoRapido = 'mes_actual' | 'ultimos_3_meses' | 'proyecto_completo';
-
-function rangoDesde(rango: RangoRapido, curva: CurvaS | null): { start: string; end: string } {
-  const hoy = dayjs().tz(CDMX_TZ);
-  if (rango === 'mes_actual') {
-    return { start: hoy.startOf('month').format('YYYY-MM-DD'), end: hoy.format('YYYY-MM-DD') };
-  }
-  if (rango === 'ultimos_3_meses') {
-    return { start: hoy.subtract(3, 'month').startOf('month').format('YYYY-MM-DD'), end: hoy.format('YYYY-MM-DD') };
-  }
-  // proyecto_completo: desde el primer mes con datos en la Curva S hasta hoy.
-  const primerMes = curva && curva.meses.length ? `${curva.meses[0]}-01` : hoy.startOf('year').format('YYYY-MM-DD');
-  return { start: primerMes, end: hoy.format('YYYY-MM-DD') };
-}
+type RangoRapido = PeriodoFinanciero;
 
 /** SPI/CPI vienen como string decimal (ver server.py: quantize a 4
  * decimales, nunca la división cruda) — Number() aquí es seguro porque es
@@ -218,22 +206,14 @@ function LeyendaItem({ color, label, dash, valor }: { color: string; label: stri
   );
 }
 
-const EXCEPCION_META: Record<ExcepcionEvm['tipo'], { icon: keyof typeof Ionicons.glyphMap; color: string }> = {
-  fuera_de_ventana: { icon: 'time-outline', color: colors.warning },
-  sobre_meta: { icon: 'trending-up-outline', color: colors.error },
-  atrasado: { icon: 'alert-circle-outline', color: colors.error },
-  // A-02: informativas (nunca bloquean): se permiten y se hacen visibles.
-  excedente_volumen: { icon: 'layers-outline', color: colors.warning },
-  sobrecosto: { icon: 'cash-outline', color: colors.warning },
-};
-
 function ExcepcionRow({ item }: { item: ExcepcionEvm }) {
   const meta = EXCEPCION_META[item.tipo];
   return (
     <View style={styles.excepcionRow}>
       <Ionicons name={meta.icon} size={18} color={meta.color} />
       <View style={{ flex: 1 }}>
-        <Text style={styles.excepcionClave}>{item.clave} · {item.descripcion}</Text>
+        <Text style={styles.excepcionInfo}>{t(claveTituloExcepcion(item.tipo))}</Text>
+        <Text style={styles.excepcionClave}>{etiquetaExcepcion(item)}</Text>
         <Text style={styles.excepcionDetalle}>{item.detalle}</Text>
         {item.severidad === 'informativa' ? <Text style={styles.excepcionInfo}>{t('excedentes.informativa')}</Text> : null}
       </View>
@@ -278,13 +258,13 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
     if (!projectId) return;
     setError(null);
     try {
-      // La Curva S se pide primero porque "proyecto completo" necesita su
-      // primer mes para saber desde dónde arrancar la ventana de analisisPeriodo.
       const curvaResp = await api.analisisPeriodoCurvaS(projectId);
       setCurva(curvaResp);
-      const { start, end } = rangoDesde(rangoActual, curvaResp || curvaPrevia);
-      const [analisisResp, excepcionesResp, actividadesResp, gastosResp] = await Promise.all([
-        api.analisisPeriodo(projectId, start, end),
+      // El servidor resuelve la ventana del periodo (la misma función que usa la Presentación)
+      // y la devuelve en start/end: de ahí sale también el rango de la lista de gastos.
+      const analisisResp = await api.analisisPeriodoPorPeriodo(projectId, rangoActual);
+      const { start, end } = analisisResp;
+      const [excepcionesResp, actividadesResp, gastosResp] = await Promise.all([
         api.analisisPeriodoExcepciones(projectId),
         api.analisisPeriodoActividades(projectId),
         // Acotado al mismo rango que las tarjetas — un proyecto con miles de
@@ -525,12 +505,17 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
                 sub={analisis.cpi === null ? 'Sin gasto real capturado' : undefined}
                 color={colorIndice(analisis.cpi)}
               />
-              <KpiCard
-                label="Variación de costo"
-                valor={formatMoney(analisis.variacion_costo)}
-                sub="Ganado − Real"
-                color={Number(analisis.variacion_costo) >= 0 ? colors.success : colors.error}
-              />
+              {(() => {
+                const cv = variacionCostoUI(analisis.variacion_costo);
+                return (
+                  <KpiCard
+                    label="Variación de costo"
+                    valor={cv.valor}
+                    sub={cv.nota}
+                    color={cv.tono === 'positivo' ? colors.success : cv.tono === 'negativo' ? colors.error : colors.textMuted}
+                  />
+                );
+              })()}
             </View>
 
             <View style={styles.pvEvAcRow}>
@@ -649,9 +634,9 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
         <Text style={styles.seccionTitulo}>{t('excedentes.titulo')}</Text>
         <ExcedentesSection projectId={projectId} onChanged={() => cargar(rango, curva)} />
 
-        <Text style={styles.seccionTitulo}>Lista por excepción ({excepciones.length})</Text>
+        <Text style={styles.seccionTitulo}>{t('excepciones.titulo', { n: excepciones.length })}</Text>
         {excepciones.length === 0 ? (
-          <Text style={styles.sinExcepciones}>Sin anomalías: ningún avance fuera de ventana, excedente de volumen, sobrecosto ni actividad atrasada.</Text>
+          <Text style={styles.sinExcepciones}>{t('excepciones.vacio')}</Text>
         ) : (
           <FlatList
             data={excepciones}

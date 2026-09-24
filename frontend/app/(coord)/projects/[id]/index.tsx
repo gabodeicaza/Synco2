@@ -32,6 +32,9 @@ import { getMediaLibraryPermission, requestMediaLibraryPermission } from '@/src/
 import { t, a11y } from '@/src/i18n';
 import { olvidarSeparadorDecimal } from '@/src/hooks/useSeparadorDecimal';
 import { ProgramaObraSection } from '@/src/components/ProgramaObraSection';
+import { SinReportesAviso } from '@/src/components/SinReportesAviso';
+import { ReportesVacio } from '@/src/components/ReportesVacio';
+import { verificarConteoExportacion } from '@/src/utils/conteoExportacion';
 import { validarNombreNivel, validarUnidadPersonalizada } from '@/src/utils/unidades';
 
 // Limite cliente coherente con backend (20 MB). Evita subidas que el servidor rechazaria.
@@ -213,6 +216,7 @@ export default function ProjectDetailScreen() {
   const [exportStep, setExportStep] = useState<ExportStep>('period');
   const [exportPeriod, setExportPeriod] = useState<ReportPeriod>('today');
   const [exportBusy, setExportBusy] = useState(false);
+  const [exportSinReportes, setExportSinReportes] = useState<{ fmt: ExportFormat; otros: number } | null>(null);
   // P0 Mega-Feature: filtro por Area para exportacion
   const [exportAreas, setExportAreas] = useState<{ id: string; name: string; color?: string }[]>([]);
   const [exportAreaId, setExportAreaId] = useState<string | null>(null); // null = "Todas"
@@ -976,6 +980,7 @@ export default function ProjectDetailScreen() {
     setExportStep('period');
     setExportPeriod('today');
     setExportAreaId(null);
+    setExportSinReportes(null);
     setExportOpen(true);
     // Cargar areas en paralelo
     if (pid) {
@@ -1000,13 +1005,15 @@ export default function ProjectDetailScreen() {
 
   function onPickArea(areaId: string | null) {
     setExportAreaId(areaId);
+    setExportSinReportes(null);
     setExportStep('format');
   }
 
-  async function onPickFormat(fmt: ExportFormat) {
+  async function onPickFormat(fmt: ExportFormat, forzar?: boolean) {
     if (!pid) return;
     try {
       setExportBusy(true);
+      setExportSinReportes(null);
       if (fmt === 'xlsx') {
         // Excel ignora periodo (sabana completa). Reusamos descarga existente.
         if (Platform.OS === 'web') {
@@ -1042,6 +1049,13 @@ export default function ProjectDetailScreen() {
           ...(exportAreaId ? { area_id: exportAreaId } : {}),
           period_type: periodToInformeType(exportPeriod),
         };
+        if (!forzar) {
+          const conteo = await verificarConteoExportacion(pid, exportPeriod, opts);
+          if (conteo.vacio) {
+            setExportSinReportes({ fmt, otros: conteo.otros });
+            return;
+          }
+        }
         let blob: Blob; let filename: string; let mime: string;
         if (fmt === 'docx') {
           const r = await api.downloadReportsDocx(pid, exportPeriod, opts);
@@ -1426,16 +1440,20 @@ export default function ProjectDetailScreen() {
                 feedInitialLoading ? (
                   <View style={styles.center}><ActivityIndicator color={colors.primary} /></View>
                 ) : (
-                  <View style={styles.feedEmptyState}>
-                    <View style={styles.feedEmptyIconWrap}>
-                      <Ionicons name="document-text-outline" size={28} color={colors.textMuted} />
-                    </View>
-                    <Text style={styles.feedEmptyTxt}>
-                      {debouncedSearch
-                        ? 'No hay reportes para este filtro.'
-                        : 'Aun no hay reportes capturados para este filtro.'}
-                    </Text>
-                  </View>
+                  <ReportesVacio
+                    variante="coord"
+                    hayFiltros={!!(selectedNodeFilter || selectedAreaFilter || selectedStatusFilter || selectedDate || selectedTimeFilter !== 'all')}
+                    busqueda={debouncedSearch}
+                    onQuitarFiltros={() => {
+                      setSelectedNodeFilter(null);
+                      setSelectedAreaFilter(null);
+                      setSelectedStatusFilter(null);
+                      setSelectedDate(null);
+                      setSelectedTimeFilter('all');
+                      setSearchQuery('');
+                    }}
+                    onInvitar={() => router.push({ pathname: '/(coord)/projects/[id]/invitations' as any, params: { id: pid } })}
+                  />
                 )
               }
               ListFooterComponent={
@@ -1982,6 +2000,13 @@ export default function ProjectDetailScreen() {
               </ScrollView>
             ) : (
               <View style={{ paddingHorizontal: spacing.md, paddingBottom: spacing.md }}>
+                {exportSinReportes ? (
+                  <SinReportesAviso
+                    otros={exportSinReportes.otros}
+                    onCambiarPeriodo={() => { setExportSinReportes(null); setExportStep('period'); }}
+                    onExportarDeTodosModos={() => onPickFormat(exportSinReportes.fmt, true)}
+                  />
+                ) : null}
                 {FORMAT_OPTIONS.map((opt) => (
                   <Pressable accessibilityRole="button"
                     key={opt.value}

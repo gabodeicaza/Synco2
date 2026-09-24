@@ -704,6 +704,10 @@ class ReportIn(BaseModel):
     # ReportTemplate) y los valores capturados para sus campos dinámicos.
     template_id: Optional[str] = None
     dynamic_data: dict = Field(default_factory=dict)
+    # Captura rápida de Fuerza de Trabajo: reporte mínimo con solo personal y/o
+    # equipo. No exige valor de medición del nodo (no aplica) pero sí al menos
+    # una categoría de personal o de equipo.
+    solo_fuerza_trabajo: bool = False
 
 
 class ReportOut(BaseModel):
@@ -4623,11 +4627,14 @@ class PresentacionIn(BaseModel):
     project_id: str
     fecha: str  # ISO date, mostrada en la Portada
     titulo: str = "INFORME DE ACTIVIDADES"
+    # Periodo de la sección Financiero: el mismo catálogo que el tablero EVM (A-05).
+    periodo_financiero: Literal["mes_actual", "ultimos_3_meses", "proyecto_completo"] = "mes_actual"
 
 
 class PresentacionPatch(BaseModel):
     fecha: Optional[str] = None
     titulo: Optional[str] = None
+    periodo_financiero: Optional[Literal["mes_actual", "ultimos_3_meses", "proyecto_completo"]] = None
 
 
 @api.post("/projects/{pid}/presentaciones")
@@ -4643,6 +4650,7 @@ async def create_presentacion(pid: str, body: PresentacionIn, user: dict = Depen
         "project_id": pid,
         "fecha": body.fecha,
         "titulo": titulo,
+        "periodo_financiero": body.periodo_financiero,
         "secciones": [],
         "created_by": user["id"],
         "created_by_name": user["name"],
@@ -4695,6 +4703,8 @@ async def update_presentacion(
         if not v:
             raise HTTPException(400, "Título requerido")
         upd["titulo"] = v
+    if body.periodo_financiero is not None:
+        upd["periodo_financiero"] = body.periodo_financiero
     if upd:
         upd["updated_at"] = datetime.now(timezone.utc)
         await db.presentaciones.update_one({"id": pres_id}, {"$set": upd})
@@ -4903,27 +4913,20 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
 
     analisis: Optional[dict] = None
     presupuesto_total_str: Optional[str] = None
+    periodo_financiero_txt: Optional[str] = None
     if any(s.get("tipo") == "financiero" for s in secciones):
         try:
-            end_d = date.fromisoformat(pres["fecha"])
-            start_d = end_d - timedelta(days=6)
-            # Mismo servicio que el tablero EVM (calcular_analisis_evm): así ambos muestran
-            # las mismas cifras para el mismo periodo, con EV contractual y EV total.
-            r = await calcular_analisis_evm(pid, start_d.isoformat(), end_d.isoformat(), proj)
-            pron = r["pronostico"]
-            analisis = {
-                "pv": round_money(r["pv"]), "ev": round_money(r["ev_total"]),
-                "ev_contractual": round_money(r["ev_contractual"]), "ev_total": round_money(r["ev_total"]),
-                "ac": round_money(r["ac"]), "spi": r["spi"], "cpi": r["cpi"],
-                "variacion_cronograma": round_money(r["variacion_cronograma"]),
-                "variacion_costo": round_money(r["variacion_costo"]),
-                "bac": round_money(r["bac"]),
-                "eac": round_money(pron["eac"]) if pron else None,
-                "etc": round_money(pron["etc"]) if pron else None,
-                "vac": round_money(pron["vac"]) if pron else None,
-            }
-            presupuesto_total_str = dec_to_str(round_money(r["bac"]))
+            # Mismo servicio y mismo periodo que el tablero EVM (A-05): así ambos muestran
+            # las mismas cifras, con EV contractual y EV total.
+            fin = await datos_financieros_presentacion(pid, pres, proj)
+            analisis = fin["cifras"]
+            presupuesto_total_str = dec_to_str(analisis["bac"])
+            periodo_financiero_txt = (
+                f"Periodo: {_fmt_dia_corto_es(fin['start'])} al {_fmt_dia_corto_es(fin['end'])}"
+            )
         except Exception:
+            # No se traga en silencio: queda en el log y la slide dice que no hay datos.
+            log.exception("Presentación %s: no se pudo calcular la sección Financiero", pres_id)
             analisis = None
 
     disciplina_rows: list = []
@@ -5096,6 +5099,10 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                 add_text(slide, MARGIN_X, y, content_w, _Cm(1), "Sin datos financieros (EVM) disponibles para este periodo.",
                          size=13, color=MUTED_RGB, align=_PP_ALIGN.CENTER)
                 return
+            if periodo_financiero_txt:
+                add_text(slide, MARGIN_X, y, content_w, _Cm(0.7), periodo_financiero_txt,
+                         size=11, color=MUTED_RGB, align=_PP_ALIGN.CENTER)
+                y += _Cm(0.9)
             def _m(v):
                 return f"${dec_to_str(v)}" if v is not None else "—"
 
@@ -5125,6 +5132,11 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                          size=9, bold=True, color=MUTED_RGB, align=_PP_ALIGN.CENTER)
                 add_text(slide, x + _Cm(0.15), yy + _Cm(0.9), card_w - _Cm(0.3), _Cm(1.2), value,
                          size=14, bold=True, color=TEXT_RGB, align=_PP_ALIGN.CENTER)
+            if analisis.get("variacion_costo") is None:
+                filas = (len(kpis) + cols - 1) // cols
+                add_text(slide, MARGIN_X, int(y + filas * (card_h + _Cm(0.4))), content_w, _Cm(0.7),
+                         "Sin gasto real capturado en el periodo: el CPI y la variación de costo no se calculan.",
+                         size=10, color=MUTED_RGB, align=_PP_ALIGN.CENTER)
 
         def slide_seguimiento_estudios():
             slide = _clone_membrete()
@@ -6438,7 +6450,11 @@ async def create_report(body: ReportIn, user: dict = Depends(current_user)):
                 pre_mv["coord_source"] = "node_metadata"
                 body.measurement_value = pre_mv
 
-    validate_measurement_value(node["measurement_type"], body.measurement_value)
+    if body.solo_fuerza_trabajo:
+        if not any((p or "").strip() for p in body.personnel) and not any((e or "").strip() for e in body.equipment):
+            raise HTTPException(400, "Captura al menos una categoría de personal o de equipo")
+    if not (body.solo_fuerza_trabajo and not body.measurement_value):
+        validate_measurement_value(node["measurement_type"], body.measurement_value)
     path_names = await node_path_names(body.node_id)
     area_name = None
     if body.area_id:
@@ -6460,7 +6476,7 @@ async def create_report(body: ReportIn, user: dict = Depends(current_user)):
     # Si pre-validación ya marcó coord_source=node_metadata, se mantiene.
     # En caso contrario, asumimos user_input.
     # ====================================================================
-    if node.get("measurement_type") == "coord_latlon" and "coord_source" not in mv:
+    if node.get("measurement_type") == "coord_latlon" and "coord_source" not in mv and not body.solo_fuerza_trabajo:
         mv["coord_source"] = "user_input"
     inherited_target = None
     if mv.get("coord_source") == "node_metadata":
@@ -6526,6 +6542,8 @@ async def create_report(body: ReportIn, user: dict = Depends(current_user)):
         "template_id": body.template_id or None,
         "dynamic_data": body.dynamic_data or {},
     }
+    if body.solo_fuerza_trabajo:
+        doc["solo_fuerza_trabajo"] = True
     if body.client_id:
         # Solo se agrega si hay valor: el índice es sparse, y una clave con
         # `None` explícito en todos los docs rompería esa exclusión.
@@ -13021,36 +13039,20 @@ def _overlay_pdf_on_template(
 # Procesamiento ESTRICTAMENTE en memoria (io.BytesIO) - NO se escribe ningún
 # archivo al disco del dispositivo ni del servidor.
 
-async def _gather_export_data(
+async def _export_reports_query(
     pid: str,
     period: str,
     user: dict,
     area_id: Optional[str] = None,
     scope_mine_only: bool = False,
     period_type: Optional[str] = None,
-) -> dict:
-    """Carga proyecto, nodos, reportes, anuncios y rutas aplicando filtros.
+):
+    """Criterios de selección de reportes de TODAS las exportaciones (PDF/Word/PPTX)
+    y del conteo previo (`export_reports_count`): una sola fuente para que el aviso
+    "0 reportes" coincida siempre con lo que luego exporta el documento.
 
-    Reglas:
-      - `period_type` (opcional): categoriza el informe en "diario",
-          "semanal" o "mensual". Si se provee, TIENE PRIORIDAD sobre
-          `period` para calcular el rango temporal y sobrescribe el filtro
-          de severidad según la jerarquía elegida al capturar (ver
-          `_severity_set_for_period_type`):
-            * diario  → SOLO severidad "diario".
-            * semanal → SOLO severidad "importante".
-            * mensual → SOLO severidad "urgente".
-            * "informativo" nunca se incluye.
-        Si no se provee, se conserva el comportamiento clásico (`period` +
-        severidad por rol vía `_export_severity_filter`).
-      - Área: si `area_id` viene, filtra reportes por esa área.
-      - Scope:
-        * Coord / Sub-coord / Jefe → ven todos (a menos que pasen area_id).
-        * Especialista → ve sus propios por defecto; si `scope_mine_only=False`
-          y tiene `area_id`, ve los reportes del área.
-      - Noticias inyectables: Importante + Urgente vinculadas a cada nodo
-        (o sus ancestros) dentro del periodo.
-    """
+    Devuelve (proj, period_type normalizado, inicio, fin, etiqueta del periodo,
+    query con severidad, query sin severidad para Fuerza de Trabajo)."""
     await ensure_project_access(user, pid)
     proj = await db.projects.find_one({"id": pid})
     if not proj:
@@ -13061,19 +13063,6 @@ async def _gather_export_data(
         start_dt, end_dt, period_label = _period_range_for_type(pt_norm, proj)
     else:
         start_dt, end_dt, period_label = _period_range(period, proj)
-
-    nodes_raw = await db.location_nodes.find({"project_id": pid}).to_list(length=10000)
-    nodes_by_id = {n["id"]: n for n in nodes_raw}
-    root_ids = [n["id"] for n in nodes_raw if not n.get("parent_id")]
-    root_ids.sort(key=lambda nid: (nodes_by_id[nid].get("order", 0), nodes_by_id[nid].get("name", "")))
-    leaf_nodes = _flatten_tree_in_order(nodes_by_id, root_ids)
-
-    # --- Nodos agrupados por su Subtramo dueño (para Acceso al Predio "a
-    # cualquier profundidad" — ver `_resolve_acceso_predio_node`) ---
-    nodes_by_subtramo: dict = {}
-    for nid in nodes_by_id:
-        sid = _subtramo_id_for(nid, nodes_by_id)
-        nodes_by_subtramo.setdefault(sid, []).append(nodes_by_id[nid])
 
     role = user["role"]
     # Severidad efectiva: si viene period_type, se aplica su política; si
@@ -13108,13 +13097,6 @@ async def _gather_export_data(
     if role == ROLE_ESPECIALISTA and area_id and not scope_mine_only:
         q["area_id"] = area_id
 
-    reports = await db.reports.find(q).to_list(length=20000)
-    reports_by_node: dict = {}
-    for r in reports:
-        reports_by_node.setdefault(r.get("node_id"), []).append(r)
-    for nid, lst in reports_by_node.items():
-        lst.sort(key=lambda r: r.get("created_at") or datetime.min)
-
     # --- Reportes SIN filtro de severidad, para Fuerza de Trabajo/Maquinaria ---
     # `q` excluye "informativo" (y, con period_type, restringe a una sola
     # severidad) porque esa política aplica al contenido narrativo del
@@ -13124,6 +13106,99 @@ async def _gather_export_data(
     # tablas de Fuerza de Trabajo salían vacías en la exportación.
     q_workforce = dict(q)
     q_workforce.pop("severidad", None)
+    return proj, pt_norm, start_dt, end_dt, period_label, q, q_workforce
+
+
+@api.get("/projects/{pid}/export/reports/count")
+async def export_reports_count(
+    pid: str,
+    period: str = Query("today", description="today|yesterday|week|month"),
+    period_type: Optional[str] = Query(None, description="diario | semanal | mensual"),
+    area_id: Optional[str] = Query(None, description="Filtro por área (opcional)"),
+    scope: Optional[str] = Query(None, description="mine|area (para especialistas)"),
+    user: dict = Depends(current_user),
+):
+    """Cuántos reportes exportaría hoy un PDF/Word/PPTX con estos mismos filtros.
+
+    `reportes`: los que entran a la parte narrativa (según la política de severidad).
+    `reportes_fuerza_trabajo`: los del mismo periodo y alcance sin filtrar severidad
+    (solo alimentan las tablas de Fuerza de Trabajo/Maquinaria). Con periodo vacío
+    los documentos SÍ se generan, con la leyenda "sin reportes en el periodo"."""
+    scope_mine_only = (scope or "").lower() == "mine"
+    _proj, _pt, start_dt, end_dt, period_label, q, q_workforce = await _export_reports_query(
+        pid, period, user,
+        area_id=area_id, scope_mine_only=scope_mine_only, period_type=period_type,
+    )
+    reportes = await db.reports.count_documents(q)
+    reportes_ft = await db.reports.count_documents(q_workforce)
+    return {
+        "reportes": reportes,
+        "reportes_fuerza_trabajo": reportes_ft,
+        "periodo": period_label,
+        "inicio": start_dt.isoformat(),
+        "fin": end_dt.isoformat(),
+    }
+
+
+async def _gather_export_data(
+    pid: str,
+    period: str,
+    user: dict,
+    area_id: Optional[str] = None,
+    scope_mine_only: bool = False,
+    period_type: Optional[str] = None,
+) -> dict:
+    """Carga proyecto, nodos, reportes, anuncios y rutas aplicando filtros.
+
+    Reglas:
+      - `period_type` (opcional): categoriza el informe en "diario",
+          "semanal" o "mensual". Si se provee, TIENE PRIORIDAD sobre
+          `period` para calcular el rango temporal y sobrescribe el filtro
+          de severidad según la jerarquía elegida al capturar (ver
+          `_severity_set_for_period_type`):
+            * diario  → SOLO severidad "diario".
+            * semanal → SOLO severidad "importante".
+            * mensual → SOLO severidad "urgente".
+            * "informativo" nunca se incluye.
+        Si no se provee, se conserva el comportamiento clásico (`period` +
+        severidad por rol vía `_export_severity_filter`).
+      - Área: si `area_id` viene, filtra reportes por esa área.
+      - Scope:
+        * Coord / Sub-coord / Jefe → ven todos (a menos que pasen area_id).
+        * Especialista → ve sus propios por defecto; si `scope_mine_only=False`
+          y tiene `area_id`, ve los reportes del área.
+      - Noticias inyectables: Importante + Urgente vinculadas a cada nodo
+        (o sus ancestros) dentro del periodo.
+    """
+    proj, pt_norm, start_dt, end_dt, period_label, q, q_workforce = await _export_reports_query(
+        pid, period, user,
+        area_id=area_id, scope_mine_only=scope_mine_only, period_type=period_type,
+    )
+
+    nodes_raw = await db.location_nodes.find({"project_id": pid}).to_list(length=10000)
+    nodes_by_id = {n["id"]: n for n in nodes_raw}
+    root_ids = [n["id"] for n in nodes_raw if not n.get("parent_id")]
+    root_ids.sort(key=lambda nid: (nodes_by_id[nid].get("order", 0), nodes_by_id[nid].get("name", "")))
+    leaf_nodes = _flatten_tree_in_order(nodes_by_id, root_ids)
+
+    # --- Nodos agrupados por su Subtramo dueño (para Acceso al Predio "a
+    # cualquier profundidad" — ver `_resolve_acceso_predio_node`) ---
+    nodes_by_subtramo: dict = {}
+    for nid in nodes_by_id:
+        sid = _subtramo_id_for(nid, nodes_by_id)
+        nodes_by_subtramo.setdefault(sid, []).append(nodes_by_id[nid])
+
+    role = user["role"]
+
+    reports = await db.reports.find(q).to_list(length=20000)
+    reports_by_node: dict = {}
+    for r in reports:
+        reports_by_node.setdefault(r.get("node_id"), []).append(r)
+    for nid, lst in reports_by_node.items():
+        lst.sort(key=lambda r: r.get("created_at") or datetime.min)
+
+    # `q_workforce` (ver `_export_reports_query`) no filtra por severidad: el
+    # personal/maquinaria capturado cuenta sin importar la severidad del reporte.
     reports_workforce = await db.reports.find(q_workforce).to_list(length=20000)
     reports_by_node_workforce: dict = {}
     for r in reports_workforce:
@@ -16166,20 +16241,177 @@ class AISummaryResponse(BaseModel):
     generated_at: datetime
 
 
+# === A-11: entrada del Resumen con IA (pura, sin DB ni red) =================
+RESUMEN_IA_MAX_AVANCES = 100
+RESUMEN_IA_MAX_GASTOS = 50
+RESUMEN_IA_MAX_EXCEPCIONES = 50
+
+RESUMEN_IA_SIN_DATOS = (
+    "• Avances: no disponible en los reportes (sin reportes en las últimas 24h).\n"
+    "• Actividades: no disponible en los reportes.\n"
+    "• Fuerza laboral: no disponible en los reportes.\n"
+    "• Noticias: no hay noticias vigentes.\n"
+    "• Excepciones y control de costos: sin excepciones ni gastos registrados."
+)
+
+RESUMEN_IA_SYSTEM_MESSAGE = (
+    "ERES UN ANALISTA DE OBRA CIVIL DE NIVEL EJECUTIVO. TUS REGLAS SON INQUEBRANTABLES:\n"
+    "1) NO PUEDES INVENTAR DATOS (ALUCINAR). SOLO PUEDES USAR LO QUE APARECE LITERALMENTE EN "
+    "LOS REPORTES, NOTICIAS Y EL BLOQUE DE DATOS DE CONTROL QUE SE TE DAN. SI NO HAY INFORMACIÓN "
+    "PARA UNA CATEGORÍA, ESCRIBE EXACTAMENTE 'No disponible en los reportes' (o 'Sin noticias "
+    "vigentes' para esa categoría, o 'Sin excepciones ni gastos registrados' para la de excepciones "
+    "y costos) EN VEZ DE INFERIR, ESTIMAR O COMPLETAR CON SUPOSICIONES.\n"
+    "2) NO PUEDES FALLAR.\n"
+    "3) TU ÚNICA FUNCIÓN ES RESUMIR EXACTAMENTE LO QUE DICEN LOS REPORTES, NOTICIAS Y EL BLOQUE DE "
+    "DATOS DE CONTROL, SIN AGREGAR INTERPRETACIONES NI NOMBRES QUE NO APAREZCAN EN EL TEXTO FUENTE. "
+    "CIFRAS: PUEDES CITAR EXACTAMENTE LAS CIFRAS DEL BLOQUE DE DATOS DE CONTROL (cantidades, importes, "
+    "fechas, días de atraso y conteos) TAL COMO APARECEN, Y SOLO ESAS: NO CALCULES, REDONDEES, SUMES "
+    "NI DERIVES OTRAS CIFRAS.\n"
+    "4) ESTRUCTURA BASE: ESTAS 5 VIÑETAS SIEMPRE, EN ESTE ORDEN:\n"
+    "   • Avances: qué se avanzó y dónde (nodo/tramo), según el campo Avance de los reportes y los "
+    "registros de avance del día del bloque de datos.\n"
+    "   • Actividades: qué actividades se realizaron, según el campo Actividades de los reportes.\n"
+    "   • Fuerza laboral: personal y equipo/maquinaria que estuvieron en obra.\n"
+    "   • Noticias: anuncios vigentes del proyecto (últimas 24h).\n"
+    "   • Excepciones y control de costos: excepciones del proyecto (excedentes de volumen, "
+    "sobrecosto, ajustes negativos, acuerdos vencidos, conceptos atrasados o sin avance) y gastos "
+    "reales del día, según el bloque de datos. Son alertas informativas: nunca las presentes como "
+    "bloqueos.\n\n"
+    "5) DESARROLLA CADA VIÑETA CON TODO EL DETALLE QUE EXISTA EN LOS DATOS FUENTE: si hay "
+    "información suficiente, usa varias oraciones (no una sola línea genérica) mencionando "
+    "explícitamente nodos/tramos afectados, cifras y unidades de avance tal como aparecen, "
+    "nombres de contratistas, cantidades y nombres de personal/equipo, y agrupa o compara entre "
+    "distintas áreas o tramos cuando el mismo campo aparezca repetido en varios reportes. Nunca "
+    "resumas de más comprimiendo detalles que sí están en el texto fuente: entre más rico sea el "
+    "reporte fuente, más rica debe ser la viñeta. Solo usa 'No disponible en los reportes' cuando "
+    "realmente no haya nada que reportar para esa categoría.\n"
+    "6) VIÑETA ADICIONAL OPCIONAL: si tras cubrir las 5 categorías anteriores identificas en el "
+    "campo Actividades u otro campo información relevante que no encaje en ninguna de ellas "
+    "(p. ej. pendientes, incidencias, riesgos o bloqueos mencionados explícitamente por quien "
+    "capturó el reporte), agrégala al final como '• Observaciones adicionales: ...'. Agrega esta "
+    "viñeta SOLO si hay contenido real y literal que reportar; nunca la inventes ni la agregues "
+    "vacía.\n\n"
+    "Responde SIEMPRE en español. Cada viñeta debe iniciar con '• ' y el nombre de su categoría "
+    "seguido de dos puntos (ej. '• Avances: ...'). Sin introducciones ni cierres genéricos fuera "
+    "de las viñetas."
+)
+
+
+def _iso_o_texto(valor) -> str:
+    return valor.isoformat() if isinstance(valor, datetime) else str(valor)
+
+
+def construir_entrada_resumen_ia(
+    *, pid: str, reportes: List[dict], noticias: List[dict], avances: List[dict], gastos: List[dict],
+    excepciones: List[dict], conceptos_por_id: Dict[str, dict], bac: Decimal, ac_total: Decimal, hoy: date,
+    max_avances: int = RESUMEN_IA_MAX_AVANCES, max_gastos: int = RESUMEN_IA_MAX_GASTOS,
+    max_excepciones: int = RESUMEN_IA_MAX_EXCEPCIONES,
+) -> Dict[str, Any]:
+    """Arma el texto de entrada del Resumen con IA. Devuelve {"user_text", "hay_datos", "omitidos"}.
+    `avances` y `gastos` ya vienen filtrados al día; `excepciones` son dicts de ExcepcionEvmOut
+    (ya ordenados por severidad). Los bloques de datos llevan tope y dicen cuántos se omitieron.
+    Todas las cifras salen de aquí tal cual: el prompt permite citarlas y solo esas."""
+    reporte_lines: List[str] = []
+    for r in reportes:
+        path = " › ".join(r.get("node_path_names") or []) or "(sin nodo)"
+        reporte_lines.append(
+            f"- [{_iso_o_texto(r.get('created_at'))}] {path} | Área: {r.get('area_name') or '—'} | "
+            f"Avance: {r.get('avance') or '—'} | Actividades: {(r.get('actividades') or '').strip() or '—'} | "
+            f"Contratista: {r.get('contratista') or '—'} | Personal: {', '.join(r.get('personnel') or []) or '—'} | "
+            f"Equipo: {', '.join(r.get('equipment') or []) or '—'} | Capturó: {r.get('captured_by_name') or '—'}"
+        )
+    body = "\n".join(reporte_lines) if reporte_lines else "(sin reportes en las últimas 24h)"
+
+    ann_lines = [
+        f"- [{_iso_o_texto(a.get('created_at'))}] {a.get('title') or '(sin título)'}: {a.get('body') or ''}".strip()
+        for a in noticias
+    ]
+    ann_body = "\n".join(ann_lines) if ann_lines else "(sin noticias vigentes)"
+
+    avance_lines: List[str] = []
+    for a in avances[:max_avances]:
+        c = conceptos_por_id.get(a.get("concepto_id")) or {}
+        ganado = a.get("importe_ganado_congelado")
+        linea = (
+            f"- {c.get('clave', '?')} {c.get('descripcion', '')} | {a.get('tipo') or 'normal'} | "
+            f"cantidad: {a.get('cantidad_ejecutada')} {c.get('unidad', '')}".rstrip()
+        )
+        if ganado is not None:
+            linea += f" | valor ganado: ${dec_to_str(round_money(ganado))}"
+        motivo = (a.get("motivo") or "").strip()
+        if motivo:
+            linea += f" | motivo: {motivo}"
+        avance_lines.append(linea)
+    om_avances = max(len(avances) - max_avances, 0)
+    if om_avances:
+        avance_lines.append(f"(y {om_avances} registros de avance más no listados)")
+
+    gasto_lines: List[str] = []
+    for g in gastos[:max_gastos]:
+        clave = f" (concepto {g['concepto_clave']})" if g.get("concepto_clave") else ""
+        gasto_lines.append(f"- {g.get('concepto_texto') or '(sin descripción)'}{clave} | ${dec_to_str(round_money(g['monto']))}")
+    om_gastos = max(len(gastos) - max_gastos, 0)
+    if om_gastos:
+        gasto_lines.append(f"(y {om_gastos} gastos más no listados)")
+
+    exc_lines: List[str] = []
+    for e in excepciones[:max_excepciones]:
+        etiqueta = f"{e.get('clave')} {e.get('descripcion')}".strip()
+        linea = f"- [{e.get('tipo')}] {etiqueta}: {e.get('detalle')}"
+        if e.get("cantidad"):
+            linea += f" | cantidad: {e['cantidad']}"
+        if e.get("importe"):
+            linea += f" | importe: ${e['importe']}"
+        exc_lines.append(linea)
+    om_exc = max(len(excepciones) - max_excepciones, 0)
+    if om_exc:
+        exc_lines.append(f"(y {om_exc} excepciones más no listadas)")
+
+    costos = "(sin presupuesto contratado capturado)"
+    if bac > 0:
+        pct = (ac_total * Decimal("100") / bac).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+        costos = (
+            f"Presupuesto contratado: ${dec_to_str(round_money(bac))} | Costo real acumulado: "
+            f"${dec_to_str(round_money(ac_total))} | Costo real sobre presupuesto: {dec_to_str(pct)}%"
+        )
+    elif ac_total > 0:
+        costos = f"Costo real acumulado: ${dec_to_str(round_money(ac_total))} (sin presupuesto contratado capturado)"
+
+    user_text = (
+        f"Reportes de las últimas 24 horas del proyecto (id={pid}). "
+        f"Total: {len(reportes)} entradas.\n\n{body}\n\n"
+        f"Noticias vigentes del proyecto. Total: {len(noticias)} entradas.\n\n{ann_body}\n\n"
+        f"BLOQUE DE DATOS DE CONTROL (cifras exactas; puedes citarlas tal cual y solo estas). "
+        f"Fecha de hoy en el proyecto: {hoy.isoformat()}.\n\n"
+        f"Registros de avance del día. Total: {len(avances)}.\n"
+        f"{chr(10).join(avance_lines) if avance_lines else '(sin registros de avance hoy)'}\n\n"
+        f"Gastos reales del día. Total: {len(gastos)}.\n"
+        f"{chr(10).join(gasto_lines) if gasto_lines else '(sin gastos reales hoy)'}\n\n"
+        f"Control de costos del proyecto: {costos}\n\n"
+        f"Excepciones del proyecto. Total: {len(excepciones)}.\n"
+        f"{chr(10).join(exc_lines) if exc_lines else '(sin excepciones)'}\n\n"
+        "Genera el resumen ejecutivo solicitado, usando SOLO lo anterior."
+    )
+    return {
+        "user_text": user_text,
+        "hay_datos": bool(reportes or noticias or avances or gastos or excepciones),
+        "omitidos": {"avances": om_avances, "gastos": om_gastos, "excepciones": om_exc},
+    }
+
+
 @api.post("/projects/{pid}/ai_summary", response_model=AISummaryResponse)
 async def project_ai_summary(pid: str, user: dict = Depends(current_user)):
-    """Genera un resumen ejecutivo (3 viñetas) usando IA con base en los
-    reportes de las últimas 24h del proyecto. Disponible para todos los roles
-    con acceso al proyecto."""
-    await ensure_project_access(user, pid)
+    """Genera un resumen ejecutivo (5 viñetas) usando IA con base en los reportes y noticias de las
+    últimas 24h, los registros de avance y gastos reales del día y las excepciones del proyecto.
+    Disponible para todos los roles con acceso al proyecto."""
+    project = await ensure_project_access(user, pid)
 
     if not GEMINI_API_KEY:
         raise HTTPException(500, "GEMINI_API_KEY no configurada en el servidor.")
 
-    # [FIX] Día natural: desde 00:00:00 CDMX hoy
-    now_mx = datetime.now(timezone.utc).astimezone(MX_TZ)
-    since_mx = now_mx.replace(hour=0, minute=0, second=0, microsecond=0)
-    since = since_mx.astimezone(timezone.utc)
+    # Día natural en la zona del PROYECTO (no en la hora de CDMX ni la del servidor).
+    hoy = hoy_proyecto(project)
+    since = inicio_dia_utc(hoy, project)
 
     q: dict = {"project_id": pid, "created_at": {"$gte": since}}
     # Aplica el mismo scope RBAC que el feed.
@@ -16195,84 +16427,38 @@ async def project_ai_summary(pid: str, user: dict = Depends(current_user)):
         {"project_id": pid, "expires_at": {"$gt": datetime.now(timezone.utc)}}
     ).sort([("pinned", -1), ("created_at", -1)]).to_list(length=100)
 
-    if not raw and not ann_raw:
+    # A-11: además de reportes y noticias, el resumen incluye los Registros de avance del día,
+    # los gastos reales del día, el control de costos y las excepciones del tablero EVM (mismo
+    # servicio: calcular_excepciones_evm). Mismo scope RBAC que el feed para los avances.
+    conceptos = await db.conceptos.find({"project_id": pid, "activo": True}).to_list(length=100000)
+    conceptos_por_id = {c["id"]: c for c in conceptos}
+    q_avances: dict = {"project_id": pid, "fecha": hoy.isoformat()}
+    if user["role"] == ROLE_ESPECIALISTA and (user.get("scope_node_ids") or []):
+        q_avances["nodo_id"] = {"$in": user["scope_node_ids"]}
+    avances_hoy = await db.registros_avance.find(q_avances).sort("creado_en", 1).to_list(length=5000)
+    gastos_todos = await db.gastos_reales.find({"project_id": pid}).to_list(length=1000000)
+    gastos_hoy = [g for g in gastos_todos if g.get("fecha") == hoy.isoformat()]
+    bac, ac_total = _bac_y_ac(conceptos, gastos_todos)
+    try:
+        excepciones = [e.model_dump() for e in await calcular_excepciones_evm(pid, project)]
+    except Exception:
+        # Un fallo en las excepciones no debe tumbar el resumen de reportes.
+        log.exception("[ai_summary] no se pudieron calcular las excepciones")
+        excepciones = []
+
+    entrada = construir_entrada_resumen_ia(
+        pid=pid, reportes=raw, noticias=ann_raw, avances=avances_hoy, gastos=gastos_hoy,
+        excepciones=excepciones, conceptos_por_id=conceptos_por_id, bac=bac, ac_total=ac_total, hoy=hoy,
+    )
+    if not entrada["hay_datos"]:
         return AISummaryResponse(
-            summary=(
-                "• Avances: no disponible en los reportes (sin reportes en las últimas 24h).\n"
-                "• Actividades: no disponible en los reportes.\n"
-                "• Fuerza laboral: no disponible en los reportes.\n"
-                "• Noticias: no hay noticias vigentes."
-            ),
+            summary=RESUMEN_IA_SIN_DATOS,
             reports_count=0,
             period_hours=24,
             generated_at=datetime.now(timezone.utc),
         )
-
-    # Formatea reportes como texto plano legible para el LLM.
-    lines: List[str] = []
-    for r in raw:
-        path = " › ".join(r.get("node_path_names") or []) or "(sin nodo)"
-        area = r.get("area_name") or "—"
-        avance = r.get("avance") or "—"
-        actividades = (r.get("actividades") or "").strip() or "—"
-        contratista = r.get("contratista") or "—"
-        personnel = ", ".join(r.get("personnel") or []) or "—"
-        equipment = ", ".join(r.get("equipment") or []) or "—"
-        captured_by = r.get("captured_by_name") or "—"
-        created = r.get("created_at")
-        created_s = created.isoformat() if isinstance(created, datetime) else str(created)
-        lines.append(
-            f"- [{created_s}] {path} | Área: {area} | Avance: {avance} | "
-            f"Actividades: {actividades} | Contratista: {contratista} | "
-            f"Personal: {personnel} | Equipo: {equipment} | Capturó: {captured_by}"
-        )
-    body = "\n".join(lines) if lines else "(sin reportes en las últimas 24h)"
-
-    ann_lines: List[str] = []
-    for a in ann_raw:
-        created = a.get("created_at")
-        created_s = created.isoformat() if isinstance(created, datetime) else str(created)
-        ann_lines.append(f"- [{created_s}] {a.get('title') or '(sin título)'}: {a.get('body') or ''}".strip())
-    ann_body = "\n".join(ann_lines) if ann_lines else "(sin noticias vigentes)"
-
-    system_message = (
-        "ERES UN ANALISTA DE OBRA CIVIL DE NIVEL EJECUTIVO. TUS REGLAS SON INQUEBRANTABLES:\n"
-        "1) NO PUEDES INVENTAR DATOS (ALUCINAR). SOLO PUEDES USAR LO QUE APARECE LITERALMENTE EN "
-        "LOS REPORTES Y NOTICIAS QUE SE TE DAN. SI NO HAY INFORMACIÓN PARA UNA CATEGORÍA, ESCRIBE "
-        "EXACTAMENTE 'No disponible en los reportes' (o 'Sin noticias vigentes' para esa categoría) "
-        "EN VEZ DE INFERIR, ESTIMAR O COMPLETAR CON SUPOSICIONES.\n"
-        "2) NO PUEDES FALLAR.\n"
-        "3) TU ÚNICA FUNCIÓN ES RESUMIR EXACTAMENTE LO QUE DICEN LOS REPORTES Y NOTICIAS, SIN AGREGAR "
-        "INTERPRETACIONES, CIFRAS NI NOMBRES QUE NO APAREZCAN EN EL TEXTO FUENTE.\n"
-        "4) ESTRUCTURA BASE: ESTAS 4 VIÑETAS SIEMPRE, EN ESTE ORDEN:\n"
-        "   • Avances: qué se avanzó y dónde (nodo/tramo), según el campo Avance de los reportes.\n"
-        "   • Actividades: qué actividades se realizaron, según el campo Actividades de los reportes.\n"
-        "   • Fuerza laboral: personal y equipo/maquinaria que estuvieron en obra.\n"
-        "   • Noticias: anuncios vigentes del proyecto (últimas 24h).\n\n"
-        "5) DESARROLLA CADA VIÑETA CON TODO EL DETALLE QUE EXISTA EN LOS REPORTES FUENTE: si hay "
-        "información suficiente, usa varias oraciones (no una sola línea genérica) mencionando "
-        "explícitamente nodos/tramos afectados, cifras y unidades de avance tal como aparecen, "
-        "nombres de contratistas, cantidades y nombres de personal/equipo, y agrupa o compara entre "
-        "distintas áreas o tramos cuando el mismo campo aparezca repetido en varios reportes. Nunca "
-        "resumas de más comprimiendo detalles que sí están en el texto fuente: entre más rico sea el "
-        "reporte fuente, más rica debe ser la viñeta. Solo usa 'No disponible en los reportes' cuando "
-        "realmente no haya nada que reportar para esa categoría.\n"
-        "6) VIÑETA ADICIONAL OPCIONAL: si tras cubrir las 4 categorías anteriores identificas en el "
-        "campo Actividades u otro campo información relevante que no encaje en ninguna de ellas "
-        "(p. ej. pendientes, incidencias, riesgos o bloqueos mencionados explícitamente por quien "
-        "capturó el reporte), agrégala al final como '• Observaciones adicionales: ...'. Agrega esta "
-        "viñeta SOLO si hay contenido real y literal que reportar; nunca la inventes ni la agregues "
-        "vacía.\n\n"
-        "Responde SIEMPRE en español. Cada viñeta debe iniciar con '• ' y el nombre de su categoría "
-        "seguido de dos puntos (ej. '• Avances: ...'). Sin introducciones ni cierres genéricos fuera "
-        "de las viñetas."
-    )
-    user_text = (
-        f"Reportes de las últimas 24 horas del proyecto (id={pid}). "
-        f"Total: {len(raw)} entradas.\n\n{body}\n\n"
-        f"Noticias vigentes del proyecto. Total: {len(ann_raw)} entradas.\n\n{ann_body}\n\n"
-        "Genera el resumen ejecutivo solicitado, usando SOLO lo anterior."
-    )
+    system_message = RESUMEN_IA_SYSTEM_MESSAGE
+    user_text = entrada["user_text"]
 
     try:
         import httpx  # local import: mismo patrón que EXPO_PUSH_API_URL más arriba
@@ -16284,7 +16470,7 @@ async def project_ai_summary(pid: str, user: dict = Depends(current_user)):
                 json={
                     "system_instruction": {"parts": [{"text": system_message}]},
                     "contents": [{"parts": [{"text": user_text}]}],
-                    "generationConfig": {"maxOutputTokens": 1400},
+                    "generationConfig": {"maxOutputTokens": 1800},
                 },
             )
             if resp.status_code != 200:
@@ -18178,8 +18364,52 @@ UNIDADES: tuple = (
 # libre a nivel de Pydantic; siguen siendo lista cerrada a nivel de negocio,
 # nunca texto libre para el usuario final (el selector de la UI ofrece solo
 # UNIDADES + las del proyecto).
-PERIODICIDADES: tuple = ("SEMANAL", "MENSUAL")
-PeriodicidadType = Literal["SEMANAL", "MENSUAL"]
+PERIODICIDADES: tuple = ("DIARIA", "SEMANAL", "MENSUAL")
+PeriodicidadType = Literal["DIARIA", "SEMANAL", "MENSUAL"]
+
+# C-06: meta por defecto = cantidad ÷ duración programada, en la cadencia del proyecto.
+DIAS_POR_SEMANA_META = Decimal("7")
+DIAS_POR_MES_META = Decimal("30.4")
+META_MINIMA = Decimal("0.0001")
+CUATRO_DECIMALES = Decimal("0.0001")
+
+
+def cadencia_de_proyecto(project: Optional[dict]) -> str:
+    """Cadencia de reporte del proyecto (DIARIA|SEMANAL|MENSUAL); MENSUAL si falta o es inválida."""
+    valor = ((project or {}).get("cadencia_reporte") or "").upper()
+    return valor if valor in PERIODICIDADES else "MENSUAL"
+
+
+def meta_por_defecto(cantidad: Any, fecha_inicio: Optional[str], fecha_fin: Optional[str], cadencia: str) -> Optional[str]:
+    """Meta por defecto de un concepto: la cantidad repartida en su duración programada
+    (días inclusive), expresada en la cadencia dada. Devuelve un decimal exacto en texto
+    (hasta 4 decimales, HALF_UP solo al final, nunca "0" si hay cantidad) o None si no hay
+    programa: sin fechas, fechas ilegibles o invertidas, o cantidad no positiva.
+    DIARIA = cantidad ÷ días; SEMANAL = cantidad ÷ (días/7); MENSUAL = cantidad ÷ (días/30.4)."""
+    if cantidad is None or not str(cantidad).strip():
+        return None
+    try:
+        q = to_decimal(str(cantidad).strip())
+        inicio = date.fromisoformat((fecha_inicio or "").strip())
+        fin = date.fromisoformat((fecha_fin or "").strip())
+    except (ValueError, TypeError, InvalidOperation):
+        return None
+    if not q.is_finite() or q <= 0:
+        return None
+    dias = (fin - inicio).days + 1
+    if dias < 1:
+        return None
+    dias_d = Decimal(dias)
+    if cadencia == "DIARIA":
+        valor = q / dias_d
+    elif cadencia == "SEMANAL":
+        valor = q * DIAS_POR_SEMANA_META / dias_d
+    else:
+        valor = q * DIAS_POR_MES_META / dias_d
+    valor = valor.quantize(CUATRO_DECIMALES, rounding=ROUND_HALF_UP)
+    if valor < META_MINIMA:
+        valor = META_MINIMA
+    return format(valor.normalize(), "f")
 
 
 def _validar_unidad_para_proyecto(unidad: str, project: dict) -> None:
@@ -18530,8 +18760,11 @@ class ConceptoIn(BaseModel):
     unidad: str = "UNIVERSAL"
     cantidad: str
     precio_unitario: str
-    meta: str
-    periodicidad_meta: PeriodicidadType = "SEMANAL"
+    # C-06: la meta puede quedar vacía (sin programa no hay ritmo que calcular); si llega
+    # vacía y hay fechas, create_concepto la calcula con la cadencia del proyecto.
+    meta: str = ""
+    # Sin valor, se usa la cadencia del proyecto (cadencia_reporte).
+    periodicidad_meta: Optional[PeriodicidadType] = None
 
     @field_validator("unidad")
     @classmethod
@@ -18541,10 +18774,18 @@ class ConceptoIn(BaseModel):
             raise ValueError("unidad no puede estar vacía")
         return v
 
-    @field_validator("cantidad", "precio_unitario", "meta")
+    @field_validator("cantidad", "precio_unitario")
     @classmethod
     def _v_decimal(cls, v):
         to_decimal(v)  # valida que sea un decimal exacto parseable (nunca float)
+        return v
+
+    @field_validator("meta")
+    @classmethod
+    def _v_meta(cls, v):
+        v = (v or "").strip()
+        if v:
+            to_decimal(v)
         return v
 
     # --- Etapa EVM (aditivo, todos opcionales) --------------------------
@@ -18615,10 +18856,21 @@ class ConceptoPatch(BaseModel):
                 raise ValueError("unidad no puede estar vacía")
         return v
 
-    @field_validator("cantidad", "precio_unitario", "meta", "meta_cantidad", "importe_total_editable")
+    @field_validator("cantidad", "precio_unitario", "meta_cantidad", "importe_total_editable")
     @classmethod
     def _v_decimal(cls, v):
         if v is not None:
+            to_decimal(v)
+        return v
+
+    @field_validator("meta")
+    @classmethod
+    def _v_meta(cls, v):
+        # C-06: "" vacía la meta (concepto sin programa).
+        if v is None:
+            return v
+        v = v.strip()
+        if v:
             to_decimal(v)
         return v
 
@@ -18996,8 +19248,8 @@ async def _concepto_out(doc: dict) -> ConceptoOut:
         unidad=doc["unidad"],
         cantidad=doc["cantidad"],
         precio_unitario=doc["precio_unitario"],
-        meta=doc["meta"],
-        periodicidad_meta=doc["periodicidad_meta"],
+        meta=doc.get("meta") or "",
+        periodicidad_meta=doc.get("periodicidad_meta") or "SEMANAL",
         activo=doc.get("activo", True),
         created_at=doc["created_at"],
         importe_contratado=dec_to_str(importe),
@@ -19229,6 +19481,12 @@ async def create_concepto(body: ConceptoIn, user: dict = Depends(require_role(RO
         raise HTTPException(400, "La clave y la descripción son obligatorias")
     if await db.conceptos.find_one({"project_id": partida["project_id"], "activo": True, "clave": clave_nueva}):
         raise HTTPException(409, f"Ya existe un concepto con la clave '{clave_nueva}' en este proyecto")
+    # C-06: sin meta capturada, se calcula con la duración programada y la cadencia del
+    # proyecto; sin programa (sin fechas) queda vacía.
+    periodicidad_meta = body.periodicidad_meta or cadencia_de_proyecto(project)
+    meta_inicial = body.meta or (
+        meta_por_defecto(body.cantidad, body.fecha_inicio, body.fecha_fin, periodicidad_meta) or ""
+    )
     cid = str(uuid.uuid4())
     doc = {
         "id": cid,
@@ -19239,8 +19497,8 @@ async def create_concepto(body: ConceptoIn, user: dict = Depends(require_role(RO
         "unidad": body.unidad,
         "cantidad": body.cantidad,
         "precio_unitario": body.precio_unitario,
-        "meta": body.meta,
-        "periodicidad_meta": body.periodicidad_meta,
+        "meta": meta_inicial,
+        "periodicidad_meta": periodicidad_meta,
         "activo": True,
         "created_at": datetime.now(timezone.utc),
         "created_by": user["id"],
@@ -19292,10 +19550,10 @@ async def update_concepto(concepto_id: str, body: ConceptoPatch, user: dict = De
             "precio_unitario", concepto["precio_unitario"], body.precio_unitario, user,
         )
         upd["precio_unitario"] = body.precio_unitario
-    if body.meta is not None and body.meta != concepto["meta"]:
+    if body.meta is not None and body.meta != concepto.get("meta", ""):
         await _log_bitacora(
             concepto["project_id"], "meta", "concepto", concepto_id,
-            "meta", concepto["meta"], body.meta, user,
+            "meta", concepto.get("meta", ""), body.meta, user,
         )
         upd["meta"] = body.meta
 
@@ -20270,6 +20528,7 @@ async def _ejecutar_commit_con_compensacion(
     user: dict,
     filename: Optional[str],
     partidas_col=None,
+    cadencia: str = "MENSUAL",
 ) -> dict:
     """Núcleo del commit, separado de la ruta HTTP para poder probarlo con
     colecciones falsas (ver tests/test_import_commit_compensacion.py) sin
@@ -20423,10 +20682,11 @@ async def _ejecutar_commit_con_compensacion(
                     "deductiva": bool(row.get("deductiva")),
                     "clave": clave, "descripcion": descripcion, "unidad": unidad,
                     "cantidad": cantidad, "precio_unitario": precio_unitario,
-                    # La meta de un concepto recién importado es su propia
-                    # cantidad contratada — no hay columna Meta en el
-                    # importador (feedback: "la meta debe de ser la cantidad").
-                    "meta": cantidad, "periodicidad_meta": "SEMANAL", "activo": True,
+                    # C-06: este importador no trae fechas, así que no hay programa
+                    # del que calcular un ritmo: la meta nace VACÍA (ya no es "toda
+                    # la cantidad por semana") y se completa al programar el
+                    # concepto. La periodicidad es la cadencia del proyecto.
+                    "meta": "", "periodicidad_meta": cadencia, "activo": True,
                     "created_at": datetime.now(timezone.utc), "created_by": user["id"],
                     "import_batch_id": import_batch_id,
                 })
@@ -20451,7 +20711,7 @@ async def import_commit(pid: str, import_id: str, user: dict = Depends(require_r
     """Paso 4: aplica el resultado ya validado (import_validate) + las
     correcciones del usuario. No recibe body — todo lo necesario ya quedó
     confirmado en la sesión de staging en los pasos anteriores."""
-    await ensure_project_access(user, pid)
+    proyecto_import = await ensure_project_access(user, pid)
     session = await db.catalogo_import_sessions.find_one({"id": import_id, "project_id": pid})
     if not session:
         raise HTTPException(404, "Sesión de importación no existe o expiró")
@@ -20472,7 +20732,7 @@ async def import_commit(pid: str, import_id: str, user: dict = Depends(require_r
         resultado = await _ejecutar_commit_con_compensacion(
             db.conceptos, db.catalogo_import_sessions, _log_bitacora,
             pid, import_id, partida_id, vista, duplicados_accion, user, session.get("filename"),
-            partidas_col=db.partidas,
+            partidas_col=db.partidas, cadencia=cadencia_de_proyecto(proyecto_import),
         )
     finally:
         # 3.d: SIEMPRE se limpia la sesión de staging al terminar el commit,
@@ -20828,6 +21088,7 @@ async def _ejecutar_commit_evm_con_compensacion(
     filename: Optional[str],
     batch_size: int = 500,
     partidas_col=None,
+    cadencia: str = "MENSUAL",
 ) -> dict:
     """Commit del Importador Maestro — mismo criterio de COMPENSACIÓN MANUAL
     que _ejecutar_commit_con_compensacion del catálogo legado (ver ese
@@ -20962,8 +21223,13 @@ async def _ejecutar_commit_evm_con_compensacion(
                         # legado — importe_contratado legado queda en "0" hasta que
                         # alguien lo edite a mano; el que manda para este concepto
                         # es precio_unitario_dinamico (ver _concepto_tiene_datos_evm).
-                        "cantidad": row["meta_cantidad_efectiva"], "precio_unitario": "0", "meta": row["meta_cantidad_efectiva"],
-                        "periodicidad_meta": "SEMANAL",
+                        "cantidad": row["meta_cantidad_efectiva"], "precio_unitario": "0",
+                        # C-06: meta = cantidad ÷ duración (inicio-fin de la fila) en la
+                        # cadencia del proyecto; sin fechas válidas queda vacía.
+                        "meta": meta_por_defecto(
+                            row["meta_cantidad_efectiva"], row["fecha_inicio_efectiva"], row["fecha_fin_efectiva"], cadencia,
+                        ) or "",
+                        "periodicidad_meta": cadencia,
                         "meta_cantidad": row["meta_cantidad_efectiva"],
                         "importe_total_editable": row["importe_total_editable_efectivo"],
                         "fecha_inicio": row["fecha_inicio_efectiva"], "fecha_fin": row["fecha_fin_efectiva"],
@@ -21207,7 +21473,7 @@ async def import_evm_descartar_sesion(pid: str, import_id: str, user: dict = Dep
 async def import_evm_commit(pid: str, import_id: str, user: dict = Depends(require_role(ROLE_SUB, ROLE_COORD))):
     """Paso 4: aplica el resultado ya validado — no recibe body, todo lo
     necesario ya quedó confirmado en la sesión de staging."""
-    await ensure_project_access(user, pid)
+    proyecto_import = await ensure_project_access(user, pid)
     session = await db.evm_import_sessions.find_one({"id": import_id, "project_id": pid})
     if not session:
         raise HTTPException(404, "Sesión de importación no existe o expiró")
@@ -21228,7 +21494,7 @@ async def import_evm_commit(pid: str, import_id: str, user: dict = Depends(requi
         resultado = await _ejecutar_commit_evm_con_compensacion(
             db.conceptos, db.evm_import_sessions, _log_bitacora,
             pid, import_id, partida_id, vista, duplicados_accion, user, session.get("filename"),
-            partidas_col=db.partidas,
+            partidas_col=db.partidas, cadencia=cadencia_de_proyecto(proyecto_import),
         )
     finally:
         await db.evm_import_sessions.delete_one({"id": import_id})
@@ -22486,7 +22752,7 @@ class AnalisisPeriodoOut(BaseModel):
     spi: Optional[str] = None  # EV contractual / PV — Schedule Performance Index
     cpi: Optional[str] = None  # EV total / AC — Cost Performance Index
     variacion_cronograma: str  # EV contractual - PV
-    variacion_costo: str       # EV total - AC
+    variacion_costo: Optional[str] = None  # EV total - AC (None mientras AC = 0: A-04)
     # --- A-02: dos cifras de valor ganado + pronóstico de costo -----------
     ev_contractual: str = "0.00"  # topado al volumen contratado
     ev_total: str = "0.00"        # incluye el volumen excedente
@@ -22535,24 +22801,105 @@ async def calcular_analisis_evm(pid: str, start: str, end: str, project: Optiona
     return {
         "pv": pv, "ev_contractual": ev_contractual, "ev_total": ev_total, "ac": ac,
         "spi": spi, "cpi": cpi,
-        "variacion_cronograma": ev_contractual - pv, "variacion_costo": ev_total - ac,
+        "variacion_cronograma": ev_contractual - pv,
+        # A-04: sin gasto real en el periodo el CV no significa nada (saldría el EV completo).
+        "variacion_costo": (ev_total - ac) if ac != 0 else None,
         "bac": bac, "ev_acumulado": ev_acum, "ac_acumulado": ac_acum,
         "pronostico": calcular_pronostico(bac, ev_acum, ac_acum),
         "conceptos_sin_programa": sin_programa,
     }
 
 
+# --- A-05: periodos del análisis financiero (tablero EVM y Presentación) --------------
+PERIODOS_FINANCIEROS = ("mes_actual", "ultimos_3_meses", "proyecto_completo")
+PERIODO_FINANCIERO_DEFECTO = "mes_actual"
+
+
+def resolver_rango_periodo(periodo: Optional[str], hasta: date, primer_mes: Optional[str] = None) -> Tuple[str, str]:
+    """ÚNICA función que traduce un periodo financiero a (inicio, fin) ISO. La usan el tablero
+    EVM (con `hasta` = hoy en la zona del proyecto) y la Presentación (con `hasta` = su fecha),
+    así ambos miden exactamente la misma ventana.
+
+    - mes_actual: del día 1 del mes de `hasta` a `hasta`.
+    - ultimos_3_meses: del día 1 de hace 3 meses a `hasta`.
+    - proyecto_completo: del primer mes con datos ("YYYY-MM") a `hasta`; sin datos, del 1 de enero.
+    """
+    periodo = periodo or PERIODO_FINANCIERO_DEFECTO
+    if periodo not in PERIODOS_FINANCIEROS:
+        raise ValueError(f"periodo debe ser uno de: {', '.join(PERIODOS_FINANCIEROS)}")
+    if periodo == "mes_actual":
+        inicio = hasta.replace(day=1)
+    elif periodo == "ultimos_3_meses":
+        mes_abs = hasta.year * 12 + (hasta.month - 1) - 3
+        inicio = date(mes_abs // 12, mes_abs % 12 + 1, 1)
+    else:
+        inicio = date.fromisoformat(f"{primer_mes}-01") if primer_mes else date(hasta.year, 1, 1)
+    if inicio > hasta:  # proyecto que arranca después de la fecha de corte
+        inicio = hasta
+    return inicio.isoformat(), hasta.isoformat()
+
+
+async def rango_financiero(pid: str, periodo: Optional[str], hasta: date) -> Tuple[str, str]:
+    """`resolver_rango_periodo` con el primer mes con datos del proyecto cuando hace falta."""
+    primer_mes = None
+    if (periodo or PERIODO_FINANCIERO_DEFECTO) == "proyecto_completo":
+        planeado, ganado, real = await _curva_s_por_mes(pid)
+        meses = sorted(set(planeado) | set(ganado) | set(real))
+        primer_mes = meses[0] if meses else None
+    return resolver_rango_periodo(periodo, hasta, primer_mes)
+
+
+def cifras_analisis(r: Dict[str, Any]) -> Dict[str, Any]:
+    """Cifras del análisis EVM ya redondeadas (Decimal; None si no aplica). Única traducción
+    de `calcular_analisis_evm` a lo que se muestra: el tablero (JSON) y la Presentación
+    (PPTX / vista previa) parten de aquí, así no pueden diferir."""
+    pron = r["pronostico"]
+    return {
+        "pv": round_money(r["pv"]), "ev": round_money(r["ev_total"]),
+        "ev_contractual": round_money(r["ev_contractual"]), "ev_total": round_money(r["ev_total"]),
+        "ac": round_money(r["ac"]), "spi": r["spi"], "cpi": r["cpi"],
+        "variacion_cronograma": round_money(r["variacion_cronograma"]),
+        "variacion_costo": round_money(r["variacion_costo"]) if r["variacion_costo"] is not None else None,
+        "bac": round_money(r["bac"]),
+        "ev_acumulado": round_money(r["ev_acumulado"]), "ac_acumulado": round_money(r["ac_acumulado"]),
+        "eac": round_money(pron["eac"]) if pron else None,
+        "etc": round_money(pron["etc"]) if pron else None,
+        "vac": round_money(pron["vac"]) if pron else None,
+        "conceptos_sin_programa": r["conceptos_sin_programa"],
+    }
+
+
+async def datos_financieros_presentacion(pid: str, pres: dict, project: Optional[dict] = None) -> Dict[str, Any]:
+    """Sección Financiero de una Presentación: mismo servicio (`calcular_analisis_evm`) y mismo
+    periodo que el tablero. Devuelve {periodo, start, end, cifras}. Lanza si no se puede calcular."""
+    if project is None:
+        project = await db.projects.find_one({"id": pid}) or {}
+    periodo = pres.get("periodo_financiero") or PERIODO_FINANCIERO_DEFECTO
+    if periodo not in PERIODOS_FINANCIEROS:
+        periodo = PERIODO_FINANCIERO_DEFECTO
+    start, end = await rango_financiero(pid, periodo, date.fromisoformat(pres["fecha"]))
+    r = await calcular_analisis_evm(pid, start, end, project)
+    return {"periodo": periodo, "start": start, "end": end, "cifras": cifras_analisis(r)}
+
+
 class ExcepcionEvmOut(BaseModel):
     concepto_id: str
     clave: str
     descripcion: str
-    tipo: Literal["fuera_de_ventana", "sobre_meta", "atrasado", "excedente_volumen", "sobrecosto"]
+    tipo: Literal[
+        "fuera_de_ventana", "atrasado", "excedente_volumen", "sobrecosto",
+        "ajuste_negativo", "acuerdo_vencido", "sin_avance_en_ventana",
+    ]
     detalle: str
-    # A-02: los excedentes y el sobrecosto son alertas INFORMATIVAS (nunca bloquean) y
-    # llevan la cantidad y el importe.
+    # A-02/A-03: excedentes, sobrecosto, ajustes negativos, acuerdos vencidos y conceptos
+    # sin avance son alertas INFORMATIVAS (nunca bloquean); llevan cantidad e importe
+    # cuando aplican.
     severidad: Literal["alerta", "informativa"] = "alerta"
     cantidad: Optional[str] = None
     importe: Optional[str] = None
+    # Solo `acuerdo_vencido`: días de atraso y responsable del acuerdo.
+    dias_atraso: Optional[int] = None
+    responsable: Optional[str] = None
 
 
 class CurvaSOut(BaseModel):
@@ -22563,40 +22910,54 @@ class CurvaSOut(BaseModel):
 
 
 @api.get("/projects/{pid}/analisis_periodo", response_model=AnalisisPeriodoOut)
-async def analisis_periodo(pid: str, start: str, end: str, user: dict = Depends(current_user)):
+async def analisis_periodo(
+    pid: str,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    periodo: Optional[str] = None,
+    fecha: Optional[str] = None,
+    user: dict = Depends(current_user),
+):
     """Motor EVM: PV analítico (nunca se guarda un prorrateo día por día en
     Mongo, ver _prorrateo_concepto_en_ventana), EV desde lo ya CONGELADO en
     cada RegistroAvance (nunca se recalcula con el precio de hoy — ver
     create_avance), AC desde gastos_reales (captura manual de
-    administración)."""
+    administración).
+
+    La ventana se da como `start`+`end`, o como `periodo` (mes_actual | ultimos_3_meses |
+    proyecto_completo) con `fecha` de corte opcional (por defecto, hoy en la zona del proyecto):
+    es el mismo cálculo de rango que usa la Presentación (A-05)."""
     project = await ensure_project_access(user, pid)
     try:
-        date.fromisoformat(start), date.fromisoformat(end)
-    except ValueError:
-        raise HTTPException(400, "start/end deben ser YYYY-MM-DD")
+        if periodo:
+            hasta = date.fromisoformat(fecha) if fecha else hoy_proyecto(project)
+            start, end = await rango_financiero(pid, periodo, hasta)
+        elif start and end:
+            date.fromisoformat(start), date.fromisoformat(end)
+        else:
+            raise HTTPException(400, "Indica start y end, o un periodo")
+    except ValueError as e:
+        raise HTTPException(400, str(e) if "periodo" in str(e) else "start/end/fecha deben ser YYYY-MM-DD")
     try:
         r = await calcular_analisis_evm(pid, start, end, project)
     except ValueError:
         raise HTTPException(400, "end no puede ser anterior a start")
-    pron = r["pronostico"]
+    c = cifras_analisis(r)
+
+    def _s(v):
+        return dec_to_str(v) if v is not None else None
+
     return AnalisisPeriodoOut(
         project_id=pid, start=start, end=end,
-        pv=dec_to_str(round_money(r["pv"])),
-        ev=dec_to_str(round_money(r["ev_total"])),
-        ac=dec_to_str(round_money(r["ac"])),
-        spi=dec_to_str(r["spi"]) if r["spi"] is not None else None,
-        cpi=dec_to_str(r["cpi"]) if r["cpi"] is not None else None,
-        variacion_cronograma=dec_to_str(round_money(r["variacion_cronograma"])),
-        variacion_costo=dec_to_str(round_money(r["variacion_costo"])),
-        ev_contractual=dec_to_str(round_money(r["ev_contractual"])),
-        ev_total=dec_to_str(round_money(r["ev_total"])),
-        bac=dec_to_str(round_money(r["bac"])),
-        ev_acumulado=dec_to_str(round_money(r["ev_acumulado"])),
-        ac_acumulado=dec_to_str(round_money(r["ac_acumulado"])),
-        eac=dec_to_str(round_money(pron["eac"])) if pron else None,
-        etc=dec_to_str(round_money(pron["etc"])) if pron else None,
-        vac=dec_to_str(round_money(pron["vac"])) if pron else None,
-        conceptos_sin_programa=r["conceptos_sin_programa"],
+        pv=_s(c["pv"]), ev=_s(c["ev"]), ac=_s(c["ac"]),
+        spi=_s(c["spi"]), cpi=_s(c["cpi"]),
+        variacion_cronograma=_s(c["variacion_cronograma"]),
+        variacion_costo=_s(c["variacion_costo"]),
+        ev_contractual=_s(c["ev_contractual"]), ev_total=_s(c["ev_total"]),
+        bac=_s(c["bac"]),
+        ev_acumulado=_s(c["ev_acumulado"]), ac_acumulado=_s(c["ac_acumulado"]),
+        eac=_s(c["eac"]), etc=_s(c["etc"]), vac=_s(c["vac"]),
+        conceptos_sin_programa=c["conceptos_sin_programa"],
     )
 
 
@@ -22616,13 +22977,9 @@ async def analisis_periodo_presupuesto_total(pid: str, user: dict = Depends(curr
     return {"project_id": pid, "presupuesto_total": dec_to_str(round_money(total))}
 
 
-@api.get("/projects/{pid}/analisis_periodo/curva_s", response_model=CurvaSOut)
-async def analisis_periodo_curva_s(pid: str, user: dict = Depends(current_user)):
-    """Curva S completa del proyecto (todos los meses que tocan sus
-    conceptos EVM), para el gráfico de 3 líneas del dashboard — no depende
-    de start/end porque la curva se ve completa, la ventana de
-    start/end es solo para las tarjetas de analisis_periodo."""
-    await ensure_project_access(user, pid)
+async def _curva_s_por_mes(pid: str) -> Tuple[Dict[str, Decimal], Dict[str, Decimal], Dict[str, Decimal]]:
+    """Valor planeado, ganado y real de cada mes ("YYYY-MM") del proyecto. Lo usan la Curva S
+    y el periodo "proyecto completo" (que arranca en el primer mes con datos)."""
     conceptos = await db.conceptos.find({"project_id": pid, "activo": True}).to_list(length=100000)
 
     distribuciones = await _distribuciones_vigentes(pid)
@@ -22642,6 +22999,17 @@ async def analisis_periodo_curva_s(pid: str, user: dict = Depends(current_user))
     async for g in db.gastos_reales.find({"project_id": pid}):
         mes = g["fecha"][:7]
         real_por_mes[mes] = real_por_mes.get(mes, Decimal("0")) + to_decimal(g["monto"])
+    return planeado_por_mes, ganado_por_mes, real_por_mes
+
+
+@api.get("/projects/{pid}/analisis_periodo/curva_s", response_model=CurvaSOut)
+async def analisis_periodo_curva_s(pid: str, user: dict = Depends(current_user)):
+    """Curva S completa del proyecto (todos los meses que tocan sus
+    conceptos EVM), para el gráfico de 3 líneas del dashboard — no depende
+    de start/end porque la curva se ve completa, la ventana de
+    start/end es solo para las tarjetas de analisis_periodo."""
+    await ensure_project_access(user, pid)
+    planeado_por_mes, ganado_por_mes, real_por_mes = await _curva_s_por_mes(pid)
 
     todos_los_meses = sorted(set(planeado_por_mes) | set(ganado_por_mes) | set(real_por_mes))
     planeado_acum, ganado_acum, real_acum = Decimal("0"), Decimal("0"), Decimal("0")
@@ -22657,28 +23025,161 @@ async def analisis_periodo_curva_s(pid: str, user: dict = Depends(current_user))
     return CurvaSOut(meses=todos_los_meses, planeado_acumulado=planeado_serie, ganado_acumulado=ganado_serie, real_acumulado=real_serie)
 
 
-@api.get("/projects/{pid}/analisis_periodo/excepciones", response_model=List[ExcepcionEvmOut])
-async def analisis_periodo_excepciones(pid: str, user: dict = Depends(current_user)):
-    """Lista por excepción del dashboard (Tarea 4): conceptos con avances
-    fuera de su ventana fecha_inicio/fecha_fin, cuyo acumulado ejecutado
-    superó meta_cantidad, o cuya fecha_fin YA PASÓ sin haber alcanzado la
-    meta ("atrasado") — este último es el más común en un proyecto recién
-    arrancado: un concepto sin UN SOLO avance capturado nunca puede tener
-    "avances fuera de ventana" (no hay avances que revisar), así que sin
-    este chequeo se veía como si no hubiera ninguna anomalía aunque todo el
-    catálogo estuviera vencido. Nunca bloquea nada — es solo para revisión."""
-    await ensure_project_access(user, pid)
-    project = await db.projects.find_one({"id": pid})
-    modo_avance = (project or {}).get("modo_avance", "CANTIDAD")
+# --- A-03: excepciones informativas nuevas (funciones puras, sin DB) --------
+# Precedencia entre `atrasado` y `sin_avance_en_ventana`: `atrasado` (fecha_fin ya pasó y
+# no se alcanzó la meta) gana; un concepto que ya salió como atrasado NO se repite como
+# "sin avance en su ventana", aunque la distribución mensual del programa se extienda
+# más allá de su fecha_fin.
+def _ventana_programa_concepto(concepto: dict, dist: Optional[dict]) -> Optional["tuple[date, date]"]:
+    """Ventana (inicio, fin) del programa de un concepto: de la distribución mensual vigente
+    si la tiene (primer día del primer mes al último del último), si no fecha_inicio/fecha_fin."""
+    meses = _meses_de_distribucion(dist)
+    if meses:
+        return min(m[0] for m in meses), max(m[1] for m in meses)
+    return _fechas_programa_concepto(concepto)
+
+
+def excepciones_ajustes_negativos(conceptos_por_id: Dict[str, dict], registros: List[dict]) -> List[ExcepcionEvmOut]:
+    """Un renglón por concepto con ajustes NEGATIVOS (correcciones que restan avance): cuántos,
+    cuánto restan (cantidad) y su valor (cantidad × precio efectivo). Informativo."""
+    por_concepto: Dict[str, List[dict]] = {}
+    for a in registros:
+        if a.get("tipo") != "ajuste" or a.get("concepto_id") not in conceptos_por_id:
+            continue
+        try:
+            if to_decimal(a.get("cantidad_ejecutada") or "0") >= 0:
+                continue
+        except (ValueError, TypeError, InvalidOperation):
+            continue
+        por_concepto.setdefault(a["concepto_id"], []).append(a)
+    salida: List[ExcepcionEvmOut] = []
+    for cid, lista in por_concepto.items():
+        c = conceptos_por_id[cid]
+        resta = -sum((to_decimal(a["cantidad_ejecutada"]) for a in lista), start=Decimal("0"))
+        importe = resta * _concepto_precio_efectivo(c)
+        ultimo = max(lista, key=lambda a: (a.get("fecha") or "", a.get("creado_en") or datetime.min))
+        motivo = (ultimo.get("motivo") or "").strip()
+        n = len(lista)
+        detalle = (
+            f"{n} ajuste{'s' if n != 1 else ''} negativo{'s' if n != 1 else ''}: restan "
+            f"{dec_to_str(resta)} {c.get('unidad', '')} (${dec_to_str(round_money(importe))})."
+        ).replace("  ", " ")
+        if motivo:
+            detalle += f" Último motivo: {motivo}"
+        salida.append(ExcepcionEvmOut(
+            concepto_id=cid, clave=c["clave"], descripcion=c["descripcion"], tipo="ajuste_negativo",
+            severidad="informativa", cantidad=dec_to_str(resta), importe=dec_to_str(round_money(importe)),
+            detalle=detalle,
+        ))
+    return salida
+
+
+def excepciones_acuerdos_vencidos(minutas: List[dict], hoy: date) -> List[ExcepcionEvmOut]:
+    """Acuerdos de minutas NO cumplidos cuya fecha límite ya pasó (estrictamente anterior a
+    `hoy` del proyecto: el día límite todavía no está vencido). Del más atrasado al menos."""
+    filas: List[tuple] = []
+    for m in minutas:
+        for a in (m.get("acuerdos") or []):
+            if a.get("estado"):
+                continue
+            try:
+                limite = date.fromisoformat(str(a.get("fecha_limite") or "")[:10])
+            except ValueError:
+                continue
+            if limite >= hoy:
+                continue
+            filas.append(((hoy - limite).days, limite, m, a))
+    filas.sort(key=lambda f: (-f[0], str(f[2].get("titulo") or "")))
+    salida: List[ExcepcionEvmOut] = []
+    for dias, limite, m, a in filas:
+        responsable = (a.get("responsable_name") or "").strip() or None
+        titulo = (m.get("titulo") or "").strip()
+        detalle = f"Vencido hace {dias} día{'s' if dias != 1 else ''} (límite {limite.isoformat()})."
+        if responsable:
+            detalle += f" Responsable: {responsable}."
+        if titulo:
+            detalle += f" Minuta: {titulo}."
+        salida.append(ExcepcionEvmOut(
+            concepto_id="", clave="", descripcion=((a.get("descripcion") or "").strip() or "(sin descripción)")[:160],
+            tipo="acuerdo_vencido", severidad="informativa", detalle=detalle,
+            dias_atraso=dias, responsable=responsable,
+        ))
+    return salida
+
+
+def excepciones_sin_avance_en_ventana(
+    conceptos: List[dict], distribuciones: Dict[str, dict], avances_por_concepto: Dict[str, List[dict]],
+    hoy: date, excluir_ids: set,
+) -> List[ExcepcionEvmOut]:
+    """Conceptos cuya ventana del programa incluye HOY, ya empezaron y no tienen NINGÚN avance
+    (cantidad > 0) dentro de esa ventana. `importe` = valor planeado que debió ejecutarse a la fecha."""
+    salida: List[ExcepcionEvmOut] = []
+    for c in conceptos:
+        if c["id"] in excluir_ids:
+            continue
+        dist = distribuciones.get(c["id"])
+        ventana = _ventana_programa_concepto(c, dist)
+        if ventana is None:
+            continue
+        ini, fin = ventana
+        if not (ini <= hoy <= fin):
+            continue
+        hay_avance = False
+        for a in avances_por_concepto.get(c["id"], []):
+            try:
+                if not (ini.isoformat() <= str(a.get("fecha") or "") <= fin.isoformat()):
+                    continue
+                if to_decimal(a.get("cantidad_ejecutada") or "0") > 0:
+                    hay_avance = True
+                    break
+            except (ValueError, TypeError, InvalidOperation):
+                continue
+        if hay_avance:
+            continue
+        dias = (hoy - ini).days
+        planeado = _pv_de_concepto(c, dist, ini, hoy)
+        detalle = (
+            f"Su ventana del programa ({ini.isoformat()} — {fin.isoformat()}) ya empezó hace "
+            f"{dias} día{'s' if dias != 1 else ''} y no tiene ningún avance capturado."
+        )
+        salida.append(ExcepcionEvmOut(
+            concepto_id=c["id"], clave=c["clave"], descripcion=c["descripcion"], tipo="sin_avance_en_ventana",
+            severidad="informativa", detalle=detalle,
+            importe=dec_to_str(round_money(planeado)) if planeado > 0 else None,
+        ))
+    return salida
+
+
+def _bac_y_ac(conceptos: List[dict], gastos: List[dict]) -> "tuple[Decimal, Decimal]":
+    """(presupuesto contratado, costo real acumulado): base del sobrecosto y del control de costos."""
+    bac = sum((_concepto_importe_efectivo(c) for c in conceptos), start=Decimal("0"))
+    ac = sum((to_decimal(g["monto"]) for g in gastos), start=Decimal("0"))
+    return bac, ac
+
+
+_ORDEN_TIPO_EXCEPCION = {
+    "atrasado": 0, "sin_avance_en_ventana": 1, "acuerdo_vencido": 2, "ajuste_negativo": 3,
+    "excedente_volumen": 4, "sobrecosto": 5, "fuera_de_ventana": 6,
+}
+
+
+async def calcular_excepciones_evm(pid: str, project: Optional[dict]) -> List[ExcepcionEvmOut]:
+    """Lista por excepción del proyecto. Servicio ÚNICO: lo usan el endpoint del tablero y el
+    Resumen con IA. Nunca bloquea nada — es solo para revisión (ver el endpoint)."""
+    project = project or {}
+    modo_avance = project.get("modo_avance", "CANTIDAD")
     conceptos = await db.conceptos.find({"project_id": pid, "activo": True}).to_list(length=100000)
     conceptos_por_id = {c["id"]: c for c in conceptos}
     hoy = hoy_proyecto(project)
 
+    registros = await db.registros_avance.find({"project_id": pid}).to_list(length=1000000)
+    avances_por_concepto: Dict[str, List[dict]] = {}
+    for a in registros:
+        avances_por_concepto.setdefault(a["concepto_id"], []).append(a)
+
     excepciones: List[ExcepcionEvmOut] = []
 
-    concepto_ids_fuera_de_ventana: set = set()
-    async for a in db.registros_avance.find({"project_id": pid, "fuera_de_ventana": True}):
-        concepto_ids_fuera_de_ventana.add(a["concepto_id"])
+    concepto_ids_fuera_de_ventana: set = {a["concepto_id"] for a in registros if a.get("fuera_de_ventana")}
     for cid in concepto_ids_fuera_de_ventana:
         c = conceptos_por_id.get(cid)
         if not c:
@@ -22703,10 +23204,8 @@ async def analisis_periodo_excepciones(pid: str, user: dict = Depends(current_us
         ))
 
     # A-02: sobrecosto (costo real acumulado > presupuesto contratado): informativo.
-    bac = sum((_concepto_importe_efectivo(c) for c in conceptos), start=Decimal("0"))
-    ac_total = Decimal("0")
-    async for g in db.gastos_reales.find({"project_id": pid}):
-        ac_total += to_decimal(g["monto"])
+    gastos = await db.gastos_reales.find({"project_id": pid}).to_list(length=1000000)
+    bac, ac_total = _bac_y_ac(conceptos, gastos)
     if bac > 0 and ac_total > bac:
         excepciones.append(ExcepcionEvmOut(
             concepto_id="", clave="", descripcion="Proyecto completo",
@@ -22716,32 +23215,54 @@ async def analisis_periodo_excepciones(pid: str, user: dict = Depends(current_us
 
     # El chequeo de "atrasado" es sobre cantidad física — en modo PORCENTAJE el
     # "ejecutado" ya es un 0-100 (estado reportado), no una cantidad comparable con la meta.
+    ids_atrasados: set = set()
     if modo_avance != "PORCENTAJE":
         for c in conceptos:
             if not _concepto_tiene_datos_evm(c):
                 continue
-            ejecutado = to_decimal(await _concepto_ejecutado_acumulado(c["id"], modo_avance))
+            ejecutado = to_decimal(_acumulado_desde_avances(avances_por_concepto.get(c["id"], []), modo_avance))
             meta = to_decimal(c["meta_cantidad"])
             if c.get("fecha_fin") and date.fromisoformat(c["fecha_fin"]) < hoy and ejecutado < meta:
+                ids_atrasados.add(c["id"])
                 excepciones.append(ExcepcionEvmOut(
                     concepto_id=c["id"], clave=c["clave"], descripcion=c["descripcion"],
                     tipo="atrasado",
                     detalle=f"Debía terminar el {c['fecha_fin']} y lleva {dec_to_str(ejecutado)} de {dec_to_str(meta)} {c.get('unidad', 'UNIVERSAL')}",
                 ))
 
+    # A-03: ajustes negativos, acuerdos de minutas vencidos y conceptos sin avance en su
+    # ventana del programa (todas informativas; `atrasado` tiene precedencia sobre esta última).
+    excepciones.extend(excepciones_ajustes_negativos(conceptos_por_id, registros))
+    minutas = await db.minutas.find({"project_id": pid}).to_list(length=5000)
+    excepciones.extend(excepciones_acuerdos_vencidos(minutas, hoy))
+    excepciones.extend(excepciones_sin_avance_en_ventana(
+        conceptos, await _distribuciones_vigentes(pid), avances_por_concepto, hoy, ids_atrasados,
+    ))
+
     # Sin esto, el orden salía de iterar un `set` (no determinístico) y
     # luego los conceptos en el orden que Mongo los devolviera — se veía
-    # desordenado en cada refresh. Se agrupa por tipo (atrasado primero, es
-    # el más accionable — un concepto vencido sin terminar; fuera_de_ventana
-    # al final, es solo informativo) y dentro de cada grupo por clave, con
-    # el mismo comparador numérico jerárquico que usa el resto del catálogo
-    # (ver sort_by_clave) para que "C-2" no quede después de "C-10".
-    orden_tipo = {"atrasado": 0, "sobre_meta": 1, "excedente_volumen": 2, "sobrecosto": 3, "fuera_de_ventana": 4}
-    excepciones = sorted(
+    # desordenado en cada refresh. Se agrupa por tipo (ver _ORDEN_TIPO_EXCEPCION: atrasado
+    # primero, es el más accionable; fuera_de_ventana al final, es solo informativo) y
+    # dentro de cada grupo por clave, con el mismo comparador numérico jerárquico que usa
+    # el resto del catálogo (ver sort_by_clave) para que "C-2" no quede después de "C-10".
+    # El sort es estable: los acuerdos vencidos (sin clave) conservan su orden por atraso.
+    return sorted(
         sort_by_clave(excepciones, clave_getter=lambda e: e.clave),
-        key=lambda e: orden_tipo[e.tipo],
+        key=lambda e: _ORDEN_TIPO_EXCEPCION[e.tipo],
     )
-    return excepciones
+
+
+@api.get("/projects/{pid}/analisis_periodo/excepciones", response_model=List[ExcepcionEvmOut])
+async def analisis_periodo_excepciones(pid: str, user: dict = Depends(current_user)):
+    """Lista por excepción del dashboard (Tarea 4): conceptos con avances fuera de su
+    ventana fecha_inicio/fecha_fin, cuya fecha_fin YA PASÓ sin alcanzar la meta ("atrasado"),
+    con volumen excedente o sobrecosto (A-02) y, desde A-03, con ajustes negativos, acuerdos
+    de minutas vencidos y conceptos sin avance dentro de su ventana del programa. Un concepto
+    sin UN SOLO avance nunca puede tener "avances fuera de ventana" (no hay avances que
+    revisar), por eso existen los chequeos de atraso y de ventana sin avance. Nunca bloquea
+    nada — es solo para revisión."""
+    project = await ensure_project_access(user, pid)
+    return await calcular_excepciones_evm(pid, project)
 
 
 class ActividadEvmOut(BaseModel):
