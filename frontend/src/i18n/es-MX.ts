@@ -98,6 +98,13 @@ export const esMX = {
     vacAhorro: 'Ahorro proyectado',
     sinGasto: 'Sin gasto real capturado',
   },
+  minuta: {
+    errores: {
+      fechaReunionInvalida: 'La fecha de la reunión debe ser una fecha real con el formato AAAA-MM-DD.',
+      fechaLimiteInvalida: 'La fecha límite debe ser una fecha real con el formato AAAA-MM-DD.',
+      limiteAnteriorAReunion: 'La fecha límite ({limite}) no puede ser anterior a la fecha de la reunión ({reunion}).',
+    },
+  },
   color: {
     formatoInvalido: 'El color debe tener el formato #RRGGBB (por ejemplo #1E40AF). Escribiste «{valor}».',
     placeholder: '#003366',

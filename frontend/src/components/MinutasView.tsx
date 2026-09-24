@@ -43,14 +43,16 @@ import { confirm } from '@/src/utils/confirm';
 import { dayjs } from '@/src/utils/tz';
 import { downloadBlob } from '@/src/utils/downloadBlob';
 import { a11y } from '@/src/i18n';
-import { fmtFecha } from '@/src/utils/fechas';
+import { fmtFecha, hoyProyecto } from '@/src/utils/fechas';
+import { ErroresFechasMinuta, hayErroresFechas, validarFechasMinuta } from '@/src/utils/validacionMinuta';
+import { InlineError } from '@/src/components/InlineError';
 
 // ---------- utilidades semaforo -------------------------------------------
 type Urgency = 'red' | 'yellow' | 'green' | 'gray';
 
 function todayISO(): string {
-  // [FIX 2026-07-17] Calculado en zona CDMX
-  return dayjs().tz().format('YYYY-MM-DD');
+  // Hoy en la zona del proyecto (CDMX por defecto), nunca el día UTC ni el del dispositivo.
+  return hoyProyecto();
 }
 
 /** Devuelve el estado y semaforo global de una minuta a partir de sus acuerdos. */
@@ -989,6 +991,7 @@ function CreateMinutaModal({
   const [titulo, setTitulo] = useState('');
   const [descripcion, setDescripcion] = useState('');
   const [fechaReunion, setFechaReunion] = useState(todayISO());
+  const [erroresFechas, setErroresFechas] = useState<ErroresFechasMinuta>({ acuerdos: {} });
   const [selAreas, setSelAreas] = useState<string[]>([]);
   // Ubicacion (nodo del proyecto) _ obligatorio. Un solo nodo por minuta.
   const [ubicacionId, setUbicacionId] = useState<string>('');
@@ -1061,6 +1064,10 @@ function CreateMinutaModal({
         }
       }
     }
+    // K-03: la fecha límite de cada acuerdo debe ser igual o posterior a la de la reunión.
+    const ef = validarFechasMinuta(fechaReunion, tipo === 'compromiso' ? acuerdos.map((a) => a.fecha_limite) : []);
+    setErroresFechas(ef);
+    if (hayErroresFechas(ef)) return;
     setSaving(true);
     try {
       const created = await api.createMinuta(projectId, {
@@ -1184,10 +1191,12 @@ function CreateMinutaModal({
               <TextInput
                 style={styles.input}
                 value={fechaReunion}
-                onChangeText={setFechaReunion}
-                placeholder="YYYY-MM-DD"
+                onChangeText={(v) => { setFechaReunion(v); setErroresFechas((x) => ({ ...x, reunion: undefined })); }}
+                placeholder="AAAA-MM-DD"
                 placeholderTextColor={colors.textMuted}
+                accessibilityLabel="Fecha de la reunión"
               />
+              <InlineError message={erroresFechas.reunion} />
 
               {/* Ubicacion (nodo del proyecto) _ obligatorio 2026-07 */}
               <Text style={styles.label}>Ubicacion *</Text>
@@ -1352,10 +1361,15 @@ function CreateMinutaModal({
                       <TextInput
                         style={styles.input}
                         value={a.fecha_limite}
-                        onChangeText={(v) => setAcuerdoField(i, { fecha_limite: v })}
-                        placeholder="Fecha limite (YYYY-MM-DD)"
+                        onChangeText={(v) => {
+                          setAcuerdoField(i, { fecha_limite: v });
+                          setErroresFechas((x) => { const ac = { ...x.acuerdos }; delete ac[i]; return { ...x, acuerdos: ac }; });
+                        }}
+                        placeholder="Fecha límite (AAAA-MM-DD)"
                         placeholderTextColor={colors.textMuted}
+                        accessibilityLabel={`Fecha límite del acuerdo ${i + 1}`}
                       />
+                      <InlineError message={erroresFechas.acuerdos[i]} />
                     </View>
                   ))}
                 </>
