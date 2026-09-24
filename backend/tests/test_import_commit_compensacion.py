@@ -244,10 +244,11 @@ async def test_reimportar_con_duplicados_accion_omitir_no_toca_lo_existente():
 
 
 # ============================================================================
-# Duplicado DENTRO del archivo nunca se autoresuelve, ni con "actualizar"
+# Duplicado DENTRO del archivo (C-08): se importa la primera fila válida y la
+# otra se omite, ni con "actualizar" se importan las dos
 # ============================================================================
 @run_async
-async def test_duplicado_dentro_del_archivo_se_omite_incluso_con_actualizar():
+async def test_duplicado_dentro_del_archivo_importa_la_gemela_valida_y_omite_la_otra():
     conceptos_col = _FakeCollection()
     sessions_col = _FakeCollection([{"id": "import-1"}])
 
@@ -259,9 +260,9 @@ async def test_duplicado_dentro_del_archivo_se_omite_incluso_con_actualizar():
         conceptos_col, sessions_col, _noop_bitacora,
         "proyecto-1", "import-1", "partida-1", vista, "actualizar", TEST_USER, "archivo.xlsx",
     )
-    assert resultado["creados"] == 0
-    assert resultado["omitidos"] == 2
-    assert len(conceptos_col.docs) == 0
+    assert resultado["creados"] == 1
+    assert resultado["omitidos"] == 1
+    assert [d["descripcion"] for d in conceptos_col.docs.values()] == ["Concepto A v1"]
 
 
 # ============================================================================

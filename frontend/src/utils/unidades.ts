@@ -60,3 +60,59 @@ export const PERIODICIDAD_META_LABELS: Record<PeriodicidadMeta, string> = {
   SEMANAL: 'Semanal',
   MENSUAL: 'Mensual',
 };
+
+// --- Unidades del proyecto (C-04 / C-12) ---------------------------------------
+// Las unidades que se ofrecen en filtros, importador y captura son la lista base
+// MÁS las personalizadas del proyecto, sin repetirse.
+
+/** Texto sin acentos, sin espacios sobrantes y en minúsculas, para comparar nombres. */
+export function claveComparable(texto: string | null | undefined): string {
+  return (texto ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase();
+}
+
+const NOMBRES_BASE_COMPARABLES = new Set<string>([
+  ...UNIDADES.map((u) => claveComparable(u)),
+  ...UNIDADES.map((u) => claveComparable(UNIDAD_LABELS[u])),
+]);
+
+/** Lista base + personalizadas del proyecto, sin duplicados (sin acentos ni mayúsculas); la base va primero. */
+export function unidadesDelProyecto(personalizadas?: string[] | null): string[] {
+  const vistas = new Set<string>();
+  const salida: string[] = [];
+  for (const u of [...UNIDADES, ...(personalizadas || [])]) {
+    const texto = (u ?? '').trim();
+    const clave = claveComparable(texto);
+    if (!clave || vistas.has(clave)) continue;
+    vistas.add(clave);
+    salida.push(texto);
+  }
+  return salida;
+}
+
+export type ResultadoUnidadPersonalizada =
+  | { ok: true; unidad: string }
+  | { ok: false; motivo: 'vacia' | 'repetida' };
+
+/** Valida una unidad personalizada nueva: no vacía y que no exista ya en la lista base ni entre las del proyecto. */
+export function validarUnidadPersonalizada(actuales: string[], nueva: string): ResultadoUnidadPersonalizada {
+  const unidad = (nueva ?? '').trim().toUpperCase();
+  const clave = claveComparable(unidad);
+  if (!clave) return { ok: false, motivo: 'vacia' };
+  if (NOMBRES_BASE_COMPARABLES.has(clave) || actuales.some((u) => claveComparable(u) === clave)) {
+    return { ok: false, motivo: 'repetida' };
+  }
+  return { ok: true, unidad };
+}
+
+export type ResultadoNombreNivel =
+  | { ok: true; nombre: string }
+  | { ok: false; motivo: 'vacio' | 'repetido' };
+
+/** Valida el nombre de un nivel del catálogo: no vacío y sin repetir otro nivel (sin acentos ni mayúsculas). */
+export function validarNombreNivel(actuales: string[], nuevo: string): ResultadoNombreNivel {
+  const nombre = (nuevo ?? '').trim();
+  const clave = claveComparable(nombre);
+  if (!clave) return { ok: false, motivo: 'vacio' };
+  if (actuales.some((n) => claveComparable(n) === clave)) return { ok: false, motivo: 'repetido' };
+  return { ok: true, nombre };
+}

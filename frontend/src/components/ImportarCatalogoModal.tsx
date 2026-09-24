@@ -8,9 +8,9 @@
 // volver a subirlo. La validación completa vive en el backend
 // (import_validate) — este modal solo la dispara y muestra el resultado ya
 // paginado; nunca reparsea nada del lado del cliente.
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
-  Modal, View, Text, StyleSheet, Pressable, ScrollView, ActivityIndicator, Alert, TextInput,
+  Modal, View, Text, StyleSheet, Pressable, ScrollView, ActivityIndicator, TextInput,
 } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import { Ionicons } from '@expo/vector-icons';
@@ -19,8 +19,10 @@ import {
   api, ConvencionDecimal, ImportFila, ImportHeadersResponse, ImportMapping, ImportResumen, Partida, SesionPendiente,
 } from '@/src/api';
 import { colors, radius, shadow, spacing } from '@/src/theme';
-import { UNIDADES } from '@/src/utils/unidades';
-import { formatCantidad, isValidDecimalInput } from '@/src/utils/money';
+import { unidadesDelProyecto } from '@/src/utils/unidades';
+import { formatCantidad } from '@/src/utils/money';
+import { DECIMALES_CANTIDAD, DECIMALES_IMPORTE, SeparadorDecimal, mensajeNumeroInvalido, parseNumeroEntrada } from '@/src/utils/numeros';
+import { InlineError } from '@/src/components/InlineError';
 import { confirm } from '@/src/utils/confirm';
 import { a11y, t } from '@/src/i18n';
 import {
@@ -77,6 +79,10 @@ export function ImportarCatalogoModal({ visible, projectId, partidas, onClose, o
   const [sesionPendiente, setSesionPendiente] = useState<SesionPendiente | null | undefined>(undefined);
   const [resolviendoSesion, setResolviendoSesion] = useState(false);
 
+  // C-04: unidades del proyecto (base + personalizadas) y separador decimal para corregir valores.
+  const [unidadesPersonalizadas, setUnidadesPersonalizadas] = useState<string[]>([]);
+  const [separador, setSeparador] = useState<SeparadorDecimal>('.');
+
   // Paso 1: archivo
   const [importId, setImportId] = useState<string | null>(null);
   const [sheetNames, setSheetNames] = useState<string[]>([]);
@@ -97,6 +103,8 @@ export function ImportarCatalogoModal({ visible, projectId, partidas, onClose, o
   const [duplicadosAccion, setDuplicadosAccion] = useState<'omitir' | 'actualizar'>('omitir');
   const [expandedFila, setExpandedFila] = useState<number | null>(null);
 
+  const unidadesProyecto = useMemo(() => unidadesDelProyecto(unidadesPersonalizadas), [unidadesPersonalizadas]);
+
   // Paso 4: resultado
   const [commitResult, setCommitResult] = useState<{ creados: number; actualizados: number; omitidos: number; con_error: number; descartados: number } | null>(null);
 
@@ -114,6 +122,19 @@ export function ImportarCatalogoModal({ visible, projectId, partidas, onClose, o
   }
 
   function handleClose() { resetCompleto(); onClose(); }
+
+  useEffect(() => {
+    if (!visible) return;
+    let vivo = true;
+    api.getProject(projectId)
+      .then((p) => {
+        if (!vivo) return;
+        setUnidadesPersonalizadas(p?.unidades_personalizadas || []);
+        setSeparador(p?.separador_decimal === ',' ? ',' : '.');
+      })
+      .catch(() => {});
+    return () => { vivo = false; };
+  }, [visible, projectId]);
 
   // --- Sesión sin terminar: se consulta cada vez que el modal se abre --------
   useEffect(() => {
@@ -294,7 +315,7 @@ export function ImportarCatalogoModal({ visible, projectId, partidas, onClose, o
       setFilas((cur) => cur.map((f) => (f.fila === fila ? res.fila : f)));
       setResumen(res.resumen);
     } catch (e: any) {
-      Alert.alert('No se pudo corregir', e?.message || 'Intentalo nuevamente.');
+      setError(e?.message || 'No se pudo corregir la fila. Inténtalo de nuevo.');
     }
   }
 
@@ -305,7 +326,7 @@ export function ImportarCatalogoModal({ visible, projectId, partidas, onClose, o
       setFilas((cur) => cur.map((f) => (f.fila === fila ? res.fila : f)));
       setResumen(res.resumen);
     } catch (e: any) {
-      Alert.alert('No se pudo descartar', e?.message || 'Intentalo nuevamente.');
+      setError(e?.message || 'No se pudo descartar la fila. Inténtalo de nuevo.');
     }
   }
 
@@ -316,7 +337,7 @@ export function ImportarCatalogoModal({ visible, projectId, partidas, onClose, o
       setFilas((cur) => cur.map((f) => (f.fila === fila ? res.fila : f)));
       setResumen(res.resumen);
     } catch (e: any) {
-      Alert.alert('No se pudo revertir', e?.message || 'Intentalo nuevamente.');
+      setError(e?.message || 'No se pudo revertir la fila. Inténtalo de nuevo.');
     }
   }
 
@@ -326,7 +347,7 @@ export function ImportarCatalogoModal({ visible, projectId, partidas, onClose, o
       await api.importCatalogoSetDuplicadosAccion(importId, accion);
       setDuplicadosAccion(accion);
     } catch (e: any) {
-      Alert.alert('Error', e?.message || 'No se pudo cambiar la opción');
+      setError(e?.message || 'No se pudo cambiar la opción. Inténtalo de nuevo.');
     }
   }
 
@@ -592,6 +613,8 @@ export function ImportarCatalogoModal({ visible, projectId, partidas, onClose, o
                       onCorregir={aplicarCorreccion}
                       onDescartar={descartarFila}
                       onRevertir={revertirFila}
+                      unidades={unidadesProyecto}
+                      separador={separador}
                     />
                   ))}
                 </View>
@@ -648,8 +671,8 @@ function ResumenChip({ label, n, color }: { label: string; n: number; color: str
   );
 }
 
-function FilaRevision({
-  fila, expanded, onToggle, onCorregir, onDescartar, onRevertir,
+export function FilaRevision({
+  fila, expanded, onToggle, onCorregir, onDescartar, onRevertir, unidades, separador,
 }: {
   fila: ImportFila;
   expanded: boolean;
@@ -657,9 +680,12 @@ function FilaRevision({
   onCorregir: (fila: number, payload: { cantidad?: string; precio_unitario?: string; unidad?: string }) => void;
   onDescartar: (fila: number, descartar: boolean) => void;
   onRevertir: (fila: number) => void;
+  unidades: string[];
+  separador: SeparadorDecimal;
 }) {
   const [draftCantidad, setDraftCantidad] = useState(fila.cantidad_efectiva || '');
   const [draftPu, setDraftPu] = useState(fila.precio_unitario_efectivo || '');
+  const [errorCorreccion, setErrorCorreccion] = useState<string | null>(null);
   const color = ESTADO_COLOR[fila.estado] || colors.textMuted;
 
   return (
@@ -696,29 +722,45 @@ function FilaRevision({
                 </View>
               ) : null}
               {p.tipo === 'cantidad_no_positiva' ? <Text style={styles.helpSmall}>{t('importador.cantidadNoPositivaAyuda')}</Text> : null}
-              {(p.tipo === 'numero_ilegible' || p.tipo === 'cantidad_no_positiva') && (p.campo === 'cantidad' || p.campo === 'precio_unitario') ? (
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 6 }}>
-                  <TextInput
-                    value={p.campo === 'cantidad' ? draftCantidad : draftPu}
-                    onChangeText={p.campo === 'cantidad' ? setDraftCantidad : setDraftPu}
-                    keyboardType="decimal-pad"
-                    placeholder="Valor correcto"
-                    style={styles.editInput}
-                  />
-                  <Pressable accessibilityRole="button" accessibilityLabel={a11y('confirmar')} hitSlop={8}
-                    onPress={() => {
-                      const v = p.campo === 'cantidad' ? draftCantidad : draftPu;
-                      if (!isValidDecimalInput(v)) { Alert.alert('Valor inválido', 'Ingresa un número con hasta 2 decimales.'); return; }
-                      onCorregir(fila.fila, p.campo === 'cantidad' ? { cantidad: v } : { precio_unitario: v });
-                    }}
-                  >
-                    <Ionicons name="checkmark-circle" size={22} color={colors.success} />
-                  </Pressable>
+              {p.tipo === 'precio_unitario_cero' ? <Text style={styles.helpSmall}>{t('importador.precioCeroAyuda')}</Text> : null}
+              {p.tipo === 'unidad_vacia' ? <Text style={styles.helpSmall}>{t('importador.unidadVaciaAyuda')}</Text> : null}
+              {p.tipo === 'clave_duplicada_archivo' ? <Text style={styles.helpSmall}>{t('importador.duplicadaAyuda')}</Text> : null}
+              {p.tipo === 'clave_duplicada_sin_gemela_valida' ? <Text style={styles.helpSmall}>{t('importador.sinGemelaAyuda')}</Text> : null}
+              {p.tipo === 'clave_sin_prefijo_padre' ? <Text style={styles.helpSmall}>{t('importador.sinPrefijoAyuda')}</Text> : null}
+              {(p.tipo === 'numero_ilegible' || p.tipo === 'cantidad_no_positiva' || p.tipo === 'precio_unitario_cero') && (p.campo === 'cantidad' || p.campo === 'precio_unitario') ? (
+                <View style={{ marginTop: 6 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                    <TextInput
+                      value={p.campo === 'cantidad' ? draftCantidad : draftPu}
+                      onChangeText={(v) => { setErrorCorreccion(null); (p.campo === 'cantidad' ? setDraftCantidad : setDraftPu)(v); }}
+                      keyboardType="decimal-pad"
+                      placeholder={t('importador.valorCorrecto')}
+                      placeholderTextColor={colors.textMuted}
+                      accessibilityLabel={t('importador.valorCorrecto')}
+                      style={[styles.editInput, errorCorreccion ? { borderColor: colors.error } : null]}
+                    />
+                    <Pressable accessibilityRole="button" accessibilityLabel={a11y('confirmar')} hitSlop={8}
+                      onPress={() => {
+                        const v = p.campo === 'cantidad' ? draftCantidad : draftPu;
+                        const maxDecimales = p.campo === 'cantidad' ? DECIMALES_CANTIDAD : DECIMALES_IMPORTE;
+                        const leido = parseNumeroEntrada(v, { separador, maxDecimales, permitirNegativo: true });
+                        if (!leido.ok) {
+                          setErrorCorreccion(mensajeNumeroInvalido(leido.motivo, maxDecimales, p.campo === 'cantidad' ? 'La cantidad' : 'El precio unitario'));
+                          return;
+                        }
+                        setErrorCorreccion(null);
+                        onCorregir(fila.fila, p.campo === 'cantidad' ? { cantidad: leido.valor } : { precio_unitario: leido.valor });
+                      }}
+                    >
+                      <Ionicons name="checkmark-circle" size={22} color={colors.success} />
+                    </Pressable>
+                  </View>
+                  <InlineError message={errorCorreccion} style={{ marginTop: 6 }} />
                 </View>
               ) : null}
-              {p.tipo === 'unidad_no_reconocida' ? (
+              {p.tipo === 'unidad_no_reconocida' || p.tipo === 'unidad_vacia' ? (
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6, marginTop: 6 }}>
-                  {UNIDADES.map((u) => (
+                  {unidades.map((u) => (
                     <Pressable accessibilityRole="button" key={u} style={styles.choiceBtn} onPress={() => onCorregir(fila.fila, { unidad: u })}>
                       <Text style={styles.choiceBtnTxt}>{u}</Text>
                     </Pressable>

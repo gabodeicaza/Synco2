@@ -20,14 +20,18 @@ import { useAuth } from '@/src/auth-context';
 import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
 import { confirm } from '@/src/utils/confirm';
 import { ROLE_SUB, ROLE_COORD, APP_BRAND } from '@/src/utils/roles';
-import { UNIDADES, UNIDAD_LABELS, PERIODICIDAD_META_LABELS, Unidad } from '@/src/utils/unidades';
-import { formatMoney, formatCantidad, isValidDecimalInput, sumDecimalStringsAsCents, centsToDecimalString } from '@/src/utils/money';
+import { UNIDAD_LABELS, PERIODICIDAD_META_LABELS, Unidad, unidadesDelProyecto } from '@/src/utils/unidades';
+import { formatMoney, formatCantidad, sumDecimalStringsAsCents, centsToDecimalString } from '@/src/utils/money';
+import { DECIMALES_CANTIDAD, DECIMALES_IMPORTE, SeparadorDecimal, mensajeNumeroInvalido, parseNumeroEntrada } from '@/src/utils/numeros';
+import { showToast } from '@/src/utils/toast';
 import { ImportarCatalogoModal } from '@/src/components/ImportarCatalogoModal';
 import { ImportarMaestroModal } from '@/src/components/ImportarMaestroModal';
 import { nombreNivel, nombreConcepto, tituloModuloCatalogo, pluralizar } from '@/src/utils/nombresNivel';
 import { a11y, t } from '@/src/i18n';
 import { Button } from '@/src/components/Button';
 import { InlineError } from '@/src/components/InlineError';
+import { NuevaPartidaModal } from '@/src/components/NuevaPartidaModal';
+import { NuevoConceptoModal } from '@/src/components/NuevoConceptoModal';
 
 type ViewMode = 'partidas' | 'conceptos' | 'busqueda';
 type ConceptoEditableField = 'precio_unitario' | 'meta' | 'importe_total_editable';
@@ -77,12 +81,13 @@ export default function CatalogoConceptosScreen({ projectId }: { projectId: stri
   const [tableView, setTableView] = useState(false);
 
   const [query, setQuery] = useState('');
-  const [unidadFiltro, setUnidadFiltro] = useState<Unidad | null>(null);
+  const [unidadFiltro, setUnidadFiltro] = useState<string | null>(null);
   const [searchResults, setSearchResults] = useState<ConceptoSearchResult[]>([]);
   const [searching, setSearching] = useState(false);
 
   const [importOpen, setImportOpen] = useState(false);
   const [nuevaPartidaOpen, setNuevaPartidaOpen] = useState(false);
+  const [nuevoConceptoOpen, setNuevoConceptoOpen] = useState(false);
   const [renombrando, setRenombrando] = useState<Partida | null>(null);
 
   // Importador único: para proyectos a PRECIO_ALZADO se usa el Importador
@@ -90,6 +95,10 @@ export default function CatalogoConceptosScreen({ projectId }: { projectId: stri
   // ver ImportarMaestroModal.tsx) — ya no hay un import de "Programa de
   // obra" por separado, los datos se importan una sola vez.
   const esPrecioAlzado = project?.tipo_contrato === 'PRECIO_ALZADO';
+
+  // C-04: filtros y captura ofrecen las unidades base MÁS las personalizadas del proyecto, sin repetirse.
+  const unidadesProyecto = useMemo(() => unidadesDelProyecto(project?.unidades_personalizadas), [project?.unidades_personalizadas]);
+  const separador: SeparadorDecimal = project?.separador_decimal === ',' ? ',' : '.';
 
   const headerColor = project?.color_institucional || project?.color_tema || colors.primary;
   const headerTextColor = contrastText(headerColor);
@@ -227,16 +236,19 @@ export default function CatalogoConceptosScreen({ projectId }: { projectId: stri
   );
 
   async function saveField(concepto: Concepto, field: ConceptoEditableField, value: string) {
-    if (!isValidDecimalInput(value)) {
-      Alert.alert('Valor inválido', 'Ingresa un número con hasta 2 decimales.');
-      return;
-    }
     const labels: Record<ConceptoEditableField, string> = {
       precio_unitario: 'precio unitario',
       meta: 'meta (ritmo)',
       importe_total_editable: 'importe contratado',
     };
     const label = labels[field];
+    const maxDecimales = field === 'meta' ? DECIMALES_CANTIDAD : DECIMALES_IMPORTE;
+    const leido = parseNumeroEntrada(value, { separador, maxDecimales });
+    if (!leido.ok) {
+      showToast(mensajeNumeroInvalido(leido.motivo, maxDecimales, label.charAt(0).toUpperCase() + label.slice(1)));
+      return;
+    }
+    value = leido.valor;
     const esDinero = field !== 'meta';
     const fmt = (v: string) => (esDinero ? formatMoney(v) : formatCantidad(v));
     const actual = field === 'importe_total_editable' ? (concepto.importe_total_editable || '0') : concepto[field];
@@ -251,6 +263,19 @@ export default function CatalogoConceptosScreen({ projectId }: { projectId: stri
     } catch (e: any) {
       Alert.alert('No se pudo guardar', e?.message || 'Intentalo nuevamente.');
     }
+  }
+
+  // Partida donde cae un concepto nuevo: la abierta en la lista de conceptos, o el nodo actual.
+  const partidaDestinoConcepto: Partida | null = mode === 'conceptos' ? selectedPartida : (breadcrumb[breadcrumb.length - 1] ?? null);
+
+  async function alCrearConcepto(nuevo: Concepto) {
+    setNuevoConceptoOpen(false);
+    const destinoId = partidaDestinoConcepto?.id;
+    if (destinoId) {
+      try { setConceptos(await api.listConceptos(destinoId)); } catch { /* la lista se recarga al reabrir */ }
+    }
+    setExpandedId(nuevo.id);
+    await loadPartidas();
   }
 
   async function borrarPartida(p: Partida) {
@@ -357,7 +382,7 @@ export default function CatalogoConceptosScreen({ projectId }: { projectId: stri
         ) : null}
       </View>
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.unidadFiltroRow} contentContainerStyle={{ gap: 6, paddingHorizontal: spacing.md }}>
-        {UNIDADES.map((u) => {
+        {unidadesProyecto.map((u) => {
           const active = unidadFiltro === u;
           return (
             <Pressable accessibilityRole="button"
@@ -397,6 +422,7 @@ export default function CatalogoConceptosScreen({ projectId }: { projectId: stri
           canEdit={canEdit}
           onDeletePartida={borrarPartida}
           onNuevaPartida={() => setNuevaPartidaOpen(true)}
+          onNuevoConcepto={canEdit && breadcrumb.length > 0 ? () => setNuevoConceptoOpen(true) : undefined}
           onRenombrar={setRenombrando}
           conceptosDelNodo={conceptos}
           conceptosCargando={conceptosLoading}
@@ -419,6 +445,7 @@ export default function CatalogoConceptosScreen({ projectId }: { projectId: stri
           onDeleteConcepto={borrarConcepto}
           tableView={tableView}
           onToggleTableView={() => setTableView((v) => !v)}
+          onNuevoConcepto={canEdit && selectedPartida ? () => setNuevoConceptoOpen(true) : undefined}
           headerColor={headerColor}
           subtotalCents={subtotalPartidaCents}
         />
@@ -473,8 +500,18 @@ export default function CatalogoConceptosScreen({ projectId }: { projectId: stri
         ordenSugerido={visiblePartidas.length}
         partidaPadreId={currentParentId}
         partidaPadreNombre={breadcrumb.length > 0 ? breadcrumb[breadcrumb.length - 1].nombre : null}
+        hermanas={visiblePartidas}
+        todas={partidas}
         onClose={() => setNuevaPartidaOpen(false)}
         onCreada={() => { setNuevaPartidaOpen(false); loadPartidas(); }}
+      />
+
+      <NuevoConceptoModal
+        visible={nuevoConceptoOpen}
+        project={project}
+        partida={partidaDestinoConcepto}
+        onClose={() => setNuevoConceptoOpen(false)}
+        onCreado={alCrearConcepto}
       />
 
     </View>
@@ -543,94 +580,11 @@ function RenombrarPartidaModal({
 }
 
 // ============================================================================
-// Crear partida — mínimo necesario (clave + nombre) para poder tener un
-// destino donde importar. Solo sub_coordinador (mismo gate que "Importar
-// catálogo").
-// ============================================================================
-function NuevaPartidaModal({
-  visible, project, depth, projectId, ordenSugerido, partidaPadreId, partidaPadreNombre, onClose, onCreada,
-}: {
-  visible: boolean;
-  project: Project | null;
-  depth: number;
-  projectId: string;
-  ordenSugerido: number;
-  partidaPadreId: string | null;
-  partidaPadreNombre: string | null;
-  onClose: () => void;
-  onCreada: () => void;
-}) {
-  const nivel = nombreNivel(project, depth);
-  const [clave, setClave] = useState('');
-  const [nombre, setNombre] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (visible) { setClave(''); setNombre(''); setErr(null); }
-  }, [visible]);
-
-  async function crear() {
-    if (!clave.trim() || !nombre.trim()) {
-      setErr('Clave y nombre son obligatorios');
-      return;
-    }
-    try {
-      setBusy(true); setErr(null);
-      await api.createPartida({
-        project_id: projectId, clave: clave.trim(), nombre: nombre.trim(), orden: ordenSugerido,
-        partida_padre_id: partidaPadreId || undefined,
-      });
-      onCreada();
-    } catch (e: any) {
-      setErr(e?.message || 'No se pudo crear la partida');
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    // Este título y el texto del botón que abre este modal (PartidasList,
-    // "Nueva {nivel}") usaban antes palabras distintas — commit 632f3d9
-    // los unificó bajo nombreNivel(). Ese commit es el primero de este
-    // archivo en git (nunca estuvo versionado), así que revertirlo
-    // arrastra también el resto del wiring de nombres configurables de
-    // la pantalla, no solo esta corrección — no se pudo aislar línea por
-    // línea, solo a nivel de commit.
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <View style={styles.nuevaPartidaBackdrop}>
-        <View style={styles.nuevaPartidaCard}>
-          <Text style={styles.nuevaPartidaTitle}>Nueva {nivel.toLowerCase()}</Text>
-          {partidaPadreNombre ? (
-            <Text style={styles.nuevaPartidaPadreTxt}>Se creará dentro de "{partidaPadreNombre}"</Text>
-          ) : (
-            <Text style={styles.nuevaPartidaPadreTxt}>Se creará en la raíz del catálogo</Text>
-          )}
-          <Text style={styles.detailLabel}>Clave (ej. "3.3")</Text>
-          <TextInput value={clave} onChangeText={setClave} style={styles.nuevaPartidaInput} editable={!busy} autoCapitalize="none" />
-          <Text style={[styles.detailLabel, { marginTop: 10 }]}>Nombre</Text>
-          <TextInput value={nombre} onChangeText={setNombre} style={styles.nuevaPartidaInput} editable={!busy} placeholder="Ej. Albañilerías" placeholderTextColor={colors.textMuted} />
-          {err ? <Text style={{ color: colors.error, fontSize: 12, marginTop: 8 }}>{err}</Text> : null}
-          <View style={{ flexDirection: 'row', gap: 10, marginTop: 16 }}>
-            <Pressable accessibilityRole="button" onPress={onClose} style={[styles.nuevaPartidaBtn, { backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border }]} disabled={busy}>
-              <Text style={{ color: colors.text, fontWeight: '700' }}>Cancelar</Text>
-            </Pressable>
-            <Pressable accessibilityRole="button" onPress={crear} style={[styles.nuevaPartidaBtn, { backgroundColor: colors.primary }, busy && { opacity: 0.6 }]} disabled={busy}>
-              {busy ? <ActivityIndicator color="#fff" /> : <Text style={{ color: '#fff', fontWeight: '700' }}>Crear</Text>}
-            </Pressable>
-          </View>
-        </View>
-      </View>
-    </Modal>
-  );
-}
-
-// ============================================================================
 // Nivel 1 — lista de partidas
 // ============================================================================
 function PartidasList({
   project, depth, partidas, totalCatalogoCents, esRaiz, breadcrumb, onIrABreadcrumb,
-  tienePartidasHijas, onAbrirCarpeta, onPressPartida, onVerConceptos, canImport, canEdit, onDeletePartida, onNuevaPartida,
+  tienePartidasHijas, onAbrirCarpeta, onPressPartida, onVerConceptos, canImport, canEdit, onDeletePartida, onNuevaPartida, onNuevoConcepto,
   conceptosDelNodo, conceptosCargando, expandedId, onToggleExpand, onSaveField, onDeleteConcepto, subtotalNodoCents, onRenombrar,
 }: {
   project: Project | null;
@@ -648,6 +602,8 @@ function PartidasList({
   canEdit: boolean;
   onDeletePartida: (p: Partida) => void;
   onNuevaPartida: () => void;
+  /** Crear un concepto directo en este nodo (solo dentro de un nodo y con permiso de edición). */
+  onNuevoConcepto?: () => void;
   onRenombrar: (p: Partida) => void;
   conceptosDelNodo: Concepto[];
   conceptosCargando: boolean;
@@ -754,6 +710,12 @@ function PartidasList({
         {!esRaiz ? (
           <>
             <Text style={styles.seccionNodo}>{pluralizar(nombreConcepto(project))} de este nodo ({conceptosDelNodo.length})</Text>
+            {onNuevoConcepto ? (
+              <Pressable accessibilityRole="button" onPress={onNuevoConcepto} style={styles.nuevaPartidaRow}>
+                <Ionicons name="add-circle-outline" size={20} color={colors.primary} />
+                <Text style={styles.nuevaPartidaRowTxt}>{t('catalogoForm.nuevoConcepto', { concepto: nombreConcepto(project).toLowerCase() })}</Text>
+              </Pressable>
+            ) : null}
             {conceptosCargando ? <ActivityIndicator color={colors.primary} style={{ marginVertical: 12 }} /> : null}
             {!conceptosCargando && conceptosDelNodo.length === 0 ? (
               <Text style={styles.empty}>Este nodo no tiene {pluralizar(nombreConcepto(project)).toLowerCase()} propios; su contenido está en los subniveles.</Text>
@@ -788,7 +750,7 @@ function PartidasList({
 // Nivel 2 — conceptos de una partida (acordeón + vista tabla)
 // ============================================================================
 function ConceptosList({
-  project, depth, conceptos, loading, expandedId, onToggleExpand, canEdit, onSaveField, onDeleteConcepto, tableView, onToggleTableView, headerColor, subtotalCents,
+  project, depth, conceptos, loading, expandedId, onToggleExpand, canEdit, onSaveField, onDeleteConcepto, tableView, onToggleTableView, onNuevoConcepto, headerColor, subtotalCents,
 }: {
   project: Project | null;
   depth: number;
@@ -801,6 +763,7 @@ function ConceptosList({
   onDeleteConcepto: (c: Concepto) => void;
   tableView: boolean;
   onToggleTableView: () => void;
+  onNuevoConcepto?: () => void;
   headerColor: string;
   subtotalCents: number;
 }) {
@@ -810,6 +773,12 @@ function ConceptosList({
 
   return (
     <View style={{ flex: 1 }}>
+      {onNuevoConcepto ? (
+        <Pressable accessibilityRole="button" onPress={onNuevoConcepto} style={[styles.nuevaPartidaRow, { marginHorizontal: spacing.md }]}>
+          <Ionicons name="add-circle-outline" size={20} color={colors.primary} />
+          <Text style={styles.nuevaPartidaRowTxt}>{t('catalogoForm.nuevoConcepto', { concepto: nombreConcepto(project).toLowerCase() })}</Text>
+        </Pressable>
+      ) : null}
       <View style={styles.tableToggleRow}>
         <Pressable accessibilityRole="button" onPress={onToggleTableView} style={styles.tableToggleBtn}>
           <Ionicons name={tableView ? 'list-outline' : 'grid-outline'} size={16} color={colors.primary} />
