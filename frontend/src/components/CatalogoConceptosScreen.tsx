@@ -25,7 +25,9 @@ import { formatMoney, formatCantidad, isValidDecimalInput, sumDecimalStringsAsCe
 import { ImportarCatalogoModal } from '@/src/components/ImportarCatalogoModal';
 import { ImportarMaestroModal } from '@/src/components/ImportarMaestroModal';
 import { nombreNivel, nombreConcepto, tituloModuloCatalogo, pluralizar } from '@/src/utils/nombresNivel';
-import { a11y } from '@/src/i18n';
+import { a11y, t } from '@/src/i18n';
+import { Button } from '@/src/components/Button';
+import { InlineError } from '@/src/components/InlineError';
 
 type ViewMode = 'partidas' | 'conceptos' | 'busqueda';
 type ConceptoEditableField = 'precio_unitario' | 'meta' | 'importe_total_editable';
@@ -81,6 +83,7 @@ export default function CatalogoConceptosScreen({ projectId }: { projectId: stri
 
   const [importOpen, setImportOpen] = useState(false);
   const [nuevaPartidaOpen, setNuevaPartidaOpen] = useState(false);
+  const [renombrando, setRenombrando] = useState<Partida | null>(null);
 
   // Importador único: para proyectos a PRECIO_ALZADO se usa el Importador
   // Maestro (captura fecha_inicio/fecha_fin por concepto en el mismo paso,
@@ -107,6 +110,19 @@ export default function CatalogoConceptosScreen({ projectId }: { projectId: stri
   }, [projectId]);
 
   useEffect(() => { loadPartidas(); }, [loadPartidas]);
+
+  // C-02: dentro de un nodo se ven juntos sus subniveles Y sus conceptos directos.
+  useEffect(() => {
+    if (mode !== 'partidas') return;
+    if (!currentParentId) { setConceptos([]); return; }
+    let vivo = true;
+    setConceptosLoading(true);
+    api.listConceptos(currentParentId)
+      .then((list) => { if (vivo) setConceptos(list); })
+      .catch(() => { if (vivo) setConceptos([]); })
+      .finally(() => { if (vivo) setConceptosLoading(false); });
+    return () => { vivo = false; };
+  }, [mode, currentParentId]);
 
   async function openPartida(p: Partida) {
     setSelectedPartida(p);
@@ -381,6 +397,14 @@ export default function CatalogoConceptosScreen({ projectId }: { projectId: stri
           canEdit={canEdit}
           onDeletePartida={borrarPartida}
           onNuevaPartida={() => setNuevaPartidaOpen(true)}
+          onRenombrar={setRenombrando}
+          conceptosDelNodo={conceptos}
+          conceptosCargando={conceptosLoading}
+          expandedId={expandedId}
+          onToggleExpand={(id) => setExpandedId((cur) => (cur === id ? null : id))}
+          onSaveField={saveField}
+          onDeleteConcepto={borrarConcepto}
+          subtotalNodoCents={breadcrumb.length > 0 ? sumDecimalStringsAsCents([breadcrumb[breadcrumb.length - 1].importe_contratado_partida]) : null}
         />
       ) : (
         <ConceptosList
@@ -433,6 +457,14 @@ export default function CatalogoConceptosScreen({ projectId }: { projectId: stri
         />
       )}
 
+      <RenombrarPartidaModal
+        partida={renombrando}
+        project={project}
+        depth={breadcrumb.length}
+        onClose={() => setRenombrando(null)}
+        onGuardada={() => { setRenombrando(null); loadPartidas(); }}
+      />
+
       <NuevaPartidaModal
         visible={nuevaPartidaOpen}
         project={project}
@@ -446,6 +478,67 @@ export default function CatalogoConceptosScreen({ projectId }: { projectId: stri
       />
 
     </View>
+  );
+}
+
+// ============================================================================
+// Renombrar una partida. Sobre todo para las creadas por la migración (C-01),
+// que nacen con la clave como nombre y la marca "nombre pendiente".
+// ============================================================================
+function RenombrarPartidaModal({
+  partida, project, depth, onClose, onGuardada,
+}: {
+  partida: Partida | null;
+  project: Project | null;
+  depth: number;
+  onClose: () => void;
+  onGuardada: () => void;
+}) {
+  const [nombre, setNombre] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (partida) { setNombre(partida.nombre_pendiente ? '' : partida.nombre); setErr(null); }
+  }, [partida]);
+
+  async function guardar() {
+    if (!partida || busy) return;
+    if (!nombre.trim()) { setErr(t('catalogo.nombreObligatorio')); return; }
+    try {
+      setBusy(true); setErr(null);
+      await api.updatePartida(partida.id, { nombre: nombre.trim() });
+      onGuardada();
+    } catch (e: any) {
+      setErr(e?.message || 'No se pudo guardar el nombre.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal visible={!!partida} transparent animationType="fade" onRequestClose={() => !busy && onClose()}>
+      <View style={styles.nuevaPartidaBackdrop}>
+        <View style={styles.nuevaPartidaCard}>
+          <Text style={styles.nuevaPartidaTitle}>{t('catalogo.renombrarTitulo', { nivel: nombreNivel(project, depth).toLowerCase() })}</Text>
+          <Text style={styles.nuevaPartidaPadreTxt}>{partida?.clave}</Text>
+          <TextInput
+            value={nombre}
+            onChangeText={(v) => { setNombre(v); if (err) setErr(null); }}
+            style={styles.nuevaPartidaInput}
+            editable={!busy}
+            autoFocus
+            accessibilityLabel="Nombre"
+            onSubmitEditing={guardar}
+          />
+          <InlineError message={err} style={{ marginTop: 8 }} />
+          <View style={{ flexDirection: 'row', gap: 8, marginTop: 14 }}>
+            <Button label="Cancelar" variant="secondary" onPress={onClose} disabled={busy} style={{ flex: 1 }} />
+            <Button label={t('catalogo.guardar')} onPress={guardar} loading={busy} style={{ flex: 1 }} />
+          </View>
+        </View>
+      </View>
+    </Modal>
   );
 }
 
@@ -538,6 +631,7 @@ function NuevaPartidaModal({
 function PartidasList({
   project, depth, partidas, totalCatalogoCents, esRaiz, breadcrumb, onIrABreadcrumb,
   tienePartidasHijas, onAbrirCarpeta, onPressPartida, onVerConceptos, canImport, canEdit, onDeletePartida, onNuevaPartida,
+  conceptosDelNodo, conceptosCargando, expandedId, onToggleExpand, onSaveField, onDeleteConcepto, subtotalNodoCents, onRenombrar,
 }: {
   project: Project | null;
   depth: number;
@@ -554,6 +648,15 @@ function PartidasList({
   canEdit: boolean;
   onDeletePartida: (p: Partida) => void;
   onNuevaPartida: () => void;
+  onRenombrar: (p: Partida) => void;
+  conceptosDelNodo: Concepto[];
+  conceptosCargando: boolean;
+  expandedId: string | null;
+  onToggleExpand: (id: string) => void;
+  onSaveField: (c: Concepto, field: ConceptoEditableField, value: string) => void;
+  onDeleteConcepto: (c: Concepto) => void;
+  /** Subtotal del nodo actual = TODO lo que tiene debajo (subniveles y conceptos). null en la raíz. */
+  subtotalNodoCents: number | null;
 }) {
   const nivelActual = nombreNivel(project, depth);
   const nivelPadre = depth > 0 ? nombreNivel(project, depth - 1) : nivelActual;
@@ -587,7 +690,7 @@ function PartidasList({
             </Text>
           </Pressable>
         ) : null}
-        {partidas.length === 0 ? (
+        {partidas.length === 0 && (esRaiz || (conceptosDelNodo.length === 0 && !conceptosCargando)) ? (
           <Text style={styles.empty}>
             {esRaiz
               ? `Este proyecto aún no tiene ${pluralizar(nivelActual).toLowerCase()} en su catálogo.`
@@ -602,6 +705,7 @@ function PartidasList({
                 <Ionicons name={esCarpeta ? 'folder' : 'folder-outline'} size={22} color={colors.primary} />
                 <View style={{ flex: 1, marginLeft: 10 }}>
                   <Text style={styles.partidaTitle} numberOfLines={1}>{p.clave} — {p.nombre}</Text>
+                  {p.nombre_pendiente ? <Text style={styles.nombrePendiente}>{t('catalogo.nombrePendiente')}</Text> : null}
                   <View style={styles.partidaMetaRow}>
                     <Text style={styles.partidaMetaTxt}>{p.numero_conceptos} {conceptoPlural.toLowerCase()}</Text>
                     <Text style={styles.partidaMetaTxt}>·</Text>
@@ -625,6 +729,15 @@ function PartidasList({
                   <Ionicons name={esCarpeta ? 'list-outline' : 'folder-open-outline'} size={16} color={colors.primary} />
                 </Pressable>
                 {canEdit ? (
+                  <Pressable accessibilityRole="button" accessibilityLabel={`${t('catalogo.renombrar')} ${p.clave}`}
+                    onPress={(e) => { e.stopPropagation(); onRenombrar(p); }}
+                    hitSlop={8}
+                    style={styles.verConceptosBtn}
+                  >
+                    <Ionicons name="create-outline" size={16} color={colors.primary} />
+                  </Pressable>
+                ) : null}
+                {canEdit ? (
                   <Pressable accessibilityRole="button" accessibilityLabel={a11y('eliminar')}
                     onPress={(e) => { e.stopPropagation(); onDeletePartida(p); }}
                     hitSlop={8}
@@ -638,10 +751,34 @@ function PartidasList({
             );
           })
         )}
+        {!esRaiz ? (
+          <>
+            <Text style={styles.seccionNodo}>{pluralizar(nombreConcepto(project))} de este nodo ({conceptosDelNodo.length})</Text>
+            {conceptosCargando ? <ActivityIndicator color={colors.primary} style={{ marginVertical: 12 }} /> : null}
+            {!conceptosCargando && conceptosDelNodo.length === 0 ? (
+              <Text style={styles.empty}>Este nodo no tiene {pluralizar(nombreConcepto(project)).toLowerCase()} propios; su contenido está en los subniveles.</Text>
+            ) : null}
+            {conceptosDelNodo.map((c) => (
+              <ConceptoRow
+                key={c.id}
+                concepto={c}
+                expanded={expandedId === c.id}
+                onToggle={() => onToggleExpand(c.id)}
+                canEdit={canEdit}
+                onSaveField={onSaveField}
+                onDelete={onDeleteConcepto}
+              />
+            ))}
+          </>
+        ) : null}
       </ScrollView>
       <View style={styles.footerFixed}>
-        <Text style={styles.footerLabel}>TOTAL DEL CATÁLOGO</Text>
-        <Text style={styles.footerValue}>{formatMoney(centsToDecimalString(totalCatalogoCents))}</Text>
+        <Text style={styles.footerLabel}>
+          {subtotalNodoCents !== null ? `SUBTOTAL — ${nivelPadre.toUpperCase()} (todo lo que contiene)` : 'TOTAL DEL CATÁLOGO'}
+        </Text>
+        <Text style={styles.footerValue}>
+          {formatMoney(centsToDecimalString(subtotalNodoCents !== null ? subtotalNodoCents : totalCatalogoCents))}
+        </Text>
       </View>
     </View>
   );
@@ -948,6 +1085,8 @@ const styles = StyleSheet.create({
 
   // Breadcrumb de partidas anidadas
   breadcrumbRow: { maxHeight: 32, marginTop: 8 },
+  nombrePendiente: { fontSize: 10, fontWeight: '800', color: colors.warning, textTransform: 'uppercase' },
+  seccionNodo: { fontSize: 12, fontWeight: '800', color: colors.textMuted, textTransform: 'uppercase', marginTop: spacing.md, marginBottom: 4 },
   breadcrumbItem: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 4 },
   breadcrumbTxt: { fontSize: 12, fontWeight: '700', color: colors.primary, maxWidth: 120 },
   breadcrumbTxtActive: { color: colors.text },

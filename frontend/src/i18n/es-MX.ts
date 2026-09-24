@@ -98,6 +98,13 @@ export const esMX = {
     vacAhorro: 'Ahorro proyectado',
     sinGasto: 'Sin gasto real capturado',
   },
+  catalogo: {
+    nombrePendiente: 'nombre pendiente',
+    renombrar: 'Renombrar',
+    renombrarTitulo: 'Renombrar {nivel}',
+    nombreObligatorio: 'El nombre es obligatorio.',
+    guardar: 'Guardar',
+  },
   importador: {
     destinoTitulo: 'Partida destino (opcional)',
     destinoAyuda:

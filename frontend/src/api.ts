@@ -1034,6 +1034,8 @@ export async function getWeather(lat: number, lon: number): Promise<WeatherNow |
 export interface Partida {
   id: string;
   project_id: string;
+  /** C-01: partida creada por la migración con la clave como nombre; se limpia al renombrarla. */
+  nombre_pendiente?: boolean;
   clave: string;
   nombre: string;
   orden: number;
