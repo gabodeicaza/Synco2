@@ -132,6 +132,14 @@ export function PerfilScreen({ basePath }: { basePath: BasePath }) {
             onPress={() => router.push('/(coord)/report-templates')}
           />
         )}
+        {esCoordGeneral && (
+          <ActionTile
+            icon="git-network-outline"
+            title={t('migracion.titulo')}
+            sub="Reorganiza catálogos planos por la clave de sus conceptos"
+            onPress={() => router.push('/(coord)/migracion-catalogo')}
+          />
+        )}
         <ActionTile
           icon="key"
           title={t('perfil.cambiarPassword')}

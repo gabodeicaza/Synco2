@@ -105,3 +105,12 @@ def test_project_public_expone_hoy_y_offset():
     assert p["zona_horaria"] == "America/Mexico_City"
     assert p["tz_offset_min"] == -360
     assert len(p["hoy"]) == 10 and p["hoy"][4] == "-"
+
+
+def test_zona_horaria_invalida_se_rechaza_con_400_y_no_se_sustituye():
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as e:
+        server._zona_o_400("Mordor/Barad-dur")
+    assert e.value.status_code == 400 and "Mordor/Barad-dur" in e.value.detail
+    assert server._zona_o_400(None) == "America/Mexico_City"
+    assert server._zona_o_400("America/Tijuana") == "America/Tijuana"

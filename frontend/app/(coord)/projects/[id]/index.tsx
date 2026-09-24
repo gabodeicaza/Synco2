@@ -11,6 +11,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { api, ApiError, Project, ReferenceFile, FeedItem, LocationNode } from '@/src/api';
+import { ZONAS_HORARIAS_MX } from '@/src/utils/zonasHorarias';
 import { COLOR_IDENTIDAD_DEFECTO, COLOR_TEXTO_REPORTE_DEFECTO, colors, radius, shadow, spacing } from '@/src/theme';
 import { ColorInput } from '@/src/components/ColorInput';
 import { InlineError } from '@/src/components/InlineError';
@@ -239,6 +240,7 @@ export default function ProjectDetailScreen() {
   const [tipoContratoDraft, setTipoContratoDraft] = useState<'PRECIOS_UNITARIOS' | 'PRECIO_ALZADO'>('PRECIOS_UNITARIOS');
   const [modoAvanceDraft, setModoAvanceDraft] = useState<'CANTIDAD' | 'PORCENTAJE' | 'MATRIZ'>('CANTIDAD');
   const [cadenciaDraft, setCadenciaDraft] = useState<'DIARIA' | 'SEMANAL' | 'MENSUAL'>('MENSUAL');
+  const [zonaHorariaDraft, setZonaHorariaDraft] = useState<string>('America/Mexico_City');
   const [diaInicioSemanaDraft, setDiaInicioSemanaDraft] = useState<
     'LUNES' | 'MARTES' | 'MIERCOLES' | 'JUEVES' | 'VIERNES' | 'SABADO' | 'DOMINGO'
   >('LUNES');
@@ -884,6 +886,7 @@ export default function ProjectDetailScreen() {
     setModoAvanceDraft(p.modo_avance || 'CANTIDAD');
     setCadenciaDraft(p.cadencia_reporte || 'MENSUAL');
     setDiaInicioSemanaDraft(p.dia_inicio_semana || 'LUNES');
+    setZonaHorariaDraft(p.zona_horaria || 'America/Mexico_City');
     setNombresNivelesDraft(p.nombres_niveles_partida || []);
     setNombreNivelPartidaDraft('');
     setNombreNivelConceptoDraft(p.nombre_nivel_concepto || '');
@@ -921,6 +924,7 @@ export default function ProjectDetailScreen() {
         modo_avance: modoAvanceDraft,
         cadencia_reporte: cadenciaDraft,
         dia_inicio_semana: diaInicioSemanaDraft,
+        zona_horaria: zonaHorariaDraft,
         nombres_niveles_partida: nombresNivelesDraft,
         nombre_nivel_concepto: nombreNivelConceptoDraft.trim() || null,
         unidades_personalizadas: unidadesPersonalizadasDraft,
@@ -2281,6 +2285,25 @@ export default function ProjectDetailScreen() {
                   </ScrollView>
                 </View>
               ) : null}
+
+              <View>
+                <Text style={styles.catLabel}>{t('zona.titulo')}</Text>
+                <Text style={styles.catHelper}>{t('zona.ayuda')}</Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
+                  {ZONAS_HORARIAS_MX.map((z) => {
+                    const active = zonaHorariaDraft === z.id;
+                    return (
+                      <Pressable
+                        accessibilityRole="button" accessibilityState={{ selected: active }}
+                        key={z.id} onPress={() => setZonaHorariaDraft(z.id)}
+                        style={[styles.chip, active && styles.chipActive]}
+                      >
+                        <Text style={{ color: active ? colors.textInverse : colors.text, fontWeight: '700', fontSize: 12 }}>{z.etiqueta}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </ScrollView>
+              </View>
 
               <View>
                 <Text style={styles.catLabel}>Nombres de nivel de partida (en orden)</Text>

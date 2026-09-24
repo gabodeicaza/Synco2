@@ -1084,6 +1084,24 @@ export interface Concepto {
   estatus_excedente?: EstatusAutorizacion | null;
 }
 
+export interface MigracionCatalogoItem {
+  project_id: string;
+  nombre: string;
+  /** Cablebús Línea 4: la API se niega a migrarlo. */
+  excluido: boolean;
+  partidas_a_crear: number;
+  conceptos_a_mover: number;
+  ultima_migracion: { id: string; estado: 'aplicando' | 'aplicada' | 'revertida'; aplicada_en?: string | null; revertida_en?: string | null } | null;
+}
+
+export interface MigracionCatalogoVistaPrevia {
+  project_id: string;
+  partidas_a_crear: { clave: string; padre: string | null }[];
+  conceptos_a_mover: number;
+  muestra_movimientos: { clave: string; hacia: string }[];
+  nota: string;
+}
+
 export type EstatusAutorizacion = 'pendiente_autorizacion' | 'autorizado' | 'rechazado';
 
 export interface Excedente {
@@ -2851,6 +2869,17 @@ export const api = {
     request<CurvaS>('GET', `/projects/${pid}/analisis_periodo/curva_s`),
   analisisPeriodoPresupuestoTotal: (pid: string) =>
     request<{ project_id: string; presupuesto_total: string }>('GET', `/projects/${pid}/analisis_periodo/presupuesto_total`),
+  migracionCatalogoLista: () => request<MigracionCatalogoItem[]>('GET', '/admin/migraciones/catalogo-jerarquia'),
+  migracionCatalogoVistaPrevia: (pid: string) =>
+    request<MigracionCatalogoVistaPrevia>('GET', `/admin/migraciones/catalogo-jerarquia/${pid}/vista-previa`),
+  migracionCatalogoAplicar: (pid: string) =>
+    request<{ ok: boolean; migracion_id: string | null; sin_cambios: boolean; partidas_creadas: number; conceptos_reubicados: number }>(
+      'POST', `/admin/migraciones/catalogo-jerarquia/${pid}/aplicar`, { confirm: true },
+    ),
+  migracionCatalogoRevertir: (pid: string) =>
+    request<{ ok: boolean; migracion_id: string; conceptos_restaurados: number; partidas_dadas_de_baja: number }>(
+      'POST', `/admin/migraciones/catalogo-jerarquia/${pid}/revertir`, { confirm: true },
+    ),
   listExcedentes: (pid: string) => request<Excedente[]>('GET', `/projects/${pid}/excedentes`),
   setExcedenteEstatus: (pid: string, conceptoId: string, body: { estatus: EstatusAutorizacion; referencia?: string; comentario?: string }) =>
     request<Excedente>('PATCH', `/projects/${pid}/excedentes/${conceptoId}`, body),
