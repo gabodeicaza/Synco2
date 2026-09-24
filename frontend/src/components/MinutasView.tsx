@@ -42,10 +42,16 @@ import { colors, radius, shadow, spacing } from '@/src/theme';
 import { confirm } from '@/src/utils/confirm';
 import { dayjs } from '@/src/utils/tz';
 import { downloadBlob } from '@/src/utils/downloadBlob';
-import { a11y } from '@/src/i18n';
+import { a11y, t } from '@/src/i18n';
 import { fmtFecha, hoyProyecto } from '@/src/utils/fechas';
-import { ErroresFechasMinuta, hayErroresFechas, validarFechasMinuta } from '@/src/utils/validacionMinuta';
+import {
+  claveAcuerdo, hayErroresMinuta, primerCampoConError, reindexarErroresAcuerdos, validarMinuta,
+} from '@/src/utils/validacionMinuta';
 import { InlineError } from '@/src/components/InlineError';
+import { FormField } from '@/src/components/FormField';
+import { useFormErrors } from '@/src/hooks/useFormErrors';
+import { useEnvio } from '@/src/hooks/useEnvio';
+import { showToast } from '@/src/utils/toast';
 
 // ---------- utilidades semaforo -------------------------------------------
 type Urgency = 'red' | 'yellow' | 'green' | 'gray';
@@ -969,7 +975,7 @@ const AcuerdoRow = memo(({
 // =============================================================================
 type DraftAcuerdo = { descripcion: string; responsable_id: string; fecha_limite: string };
 
-function CreateMinutaModal({
+export function CreateMinutaModal({
   visible,
   onClose,
   onCreated,
@@ -991,7 +997,14 @@ function CreateMinutaModal({
   const [titulo, setTitulo] = useState('');
   const [descripcion, setDescripcion] = useState('');
   const [fechaReunion, setFechaReunion] = useState(todayISO());
-  const [erroresFechas, setErroresFechas] = useState<ErroresFechasMinuta>({ acuerdos: {} });
+  const { errores, errorGeneral, limpiar, ponerTodos, alCambiar, errorDeGuardado, setErrorGeneral } = useFormErrors<string>();
+  const { guardando: saving, ejecutar } = useEnvio();
+  // Scroll hasta el primer campo con error: posición (y) de cada campo dentro del ScrollView.
+  const scrollRef = useRef<ScrollView>(null);
+  const posiciones = useRef<Record<string, number>>({});
+  const marcarPosicion = (clave: string) => (e: { nativeEvent: { layout: { y: number } } }) => {
+    posiciones.current[clave] = e.nativeEvent.layout.y;
+  };
   const [selAreas, setSelAreas] = useState<string[]>([]);
   // Ubicacion (nodo del proyecto) _ obligatorio. Un solo nodo por minuta.
   const [ubicacionId, setUbicacionId] = useState<string>('');
@@ -1002,7 +1015,6 @@ function CreateMinutaModal({
     { descripcion: '', responsable_id: '', fecha_limite: todayISO() },
   ]);
   const [pdfAsset, setPdfAsset] = useState<{ uri: string; name: string; mimeType?: string | null } | null>(null);
-  const [saving, setSaving] = useState(false);
   const [respPickerFor, setRespPickerFor] = useState<number | null>(null);
 
   async function pickPdf() {
@@ -1015,7 +1027,7 @@ function CreateMinutaModal({
       const asset = result.assets[0];
       setPdfAsset({ uri: asset.uri, name: asset.name || 'minuta.pdf', mimeType: asset.mimeType || 'application/pdf' });
     } catch (e: any) {
-      Alert.alert('No se pudo seleccionar el PDF', e?.message || 'Intentalo nuevamente.');
+      setErrorGeneral(e?.message || t('minuta.errores.noSePudoElegirPdf'));
     }
   }
 
@@ -1031,44 +1043,33 @@ function CreateMinutaModal({
   const addAcuerdo = () =>
     setAcuerdos((p) => [...p, { descripcion: '', responsable_id: '', fecha_limite: todayISO() }]);
 
-  const removeAcuerdo = (i: number) =>
-    setAcuerdos((p) => (p.length === 1 ? p : p.filter((_, idx) => idx !== i)));
+  const removeAcuerdo = (i: number) => {
+    if (acuerdos.length === 1) return;
+    setAcuerdos((p) => p.filter((_, idx) => idx !== i));
+    ponerTodos(reindexarErroresAcuerdos(errores, i));
+  };
 
-  const onSave = async () => {
-    if (!titulo.trim()) {
-      Alert.alert('Falta el titulo', 'La minuta requiere un titulo.');
+  // Cambiar la fecha de la reunión invalida los mensajes de "límite anterior a la reunión".
+  const alCambiarFechaReunion = (v: string) => {
+    setFechaReunion(v);
+    limpiar('reunion');
+    acuerdos.forEach((_, i) => limpiar(claveAcuerdo(i, 'fecha')));
+  };
+
+  const onSave = () => ejecutar(guardar);
+
+  async function guardar() {
+    // K-04 / K-03: se validan TODOS los campos y se resaltan junto a cada uno.
+    const ev = validarMinuta({ tipo, titulo, ubicacionId, fechaReunion, acuerdos });
+    if (hayErroresMinuta(ev)) {
+      ponerTodos(ev);
+      setErrorGeneral(t('formulario.revisaCampos'));
+      const primero = primerCampoConError(ev);
+      const y = primero ? posiciones.current[primero.startsWith('acuerdo.') ? primero.split('.').slice(0, 2).join('.') : primero] : undefined;
+      if (y !== undefined) scrollRef.current?.scrollTo({ y: Math.max(0, y - 12), animated: true });
       return;
     }
-    if (!ubicacionId) {
-      Alert.alert('Falta la ubicacion', 'Selecciona la ubicacion (nodo del proyecto).');
-      return;
-    }
-    if (tipo === 'compromiso') {
-      if (acuerdos.length === 0) {
-        Alert.alert('Sin acuerdos', 'Registra al menos un acuerdo.');
-        return;
-      }
-      for (let i = 0; i < acuerdos.length; i++) {
-        const a = acuerdos[i];
-        if (!a.descripcion.trim()) {
-          Alert.alert(`Acuerdo #${i + 1}`, 'La descripcion es obligatoria.');
-          return;
-        }
-        if (!a.responsable_id) {
-          Alert.alert(`Acuerdo #${i + 1}`, 'Selecciona un responsable.');
-          return;
-        }
-        if (!a.fecha_limite) {
-          Alert.alert(`Acuerdo #${i + 1}`, 'Selecciona la fecha limite.');
-          return;
-        }
-      }
-    }
-    // K-03: la fecha límite de cada acuerdo debe ser igual o posterior a la de la reunión.
-    const ef = validarFechasMinuta(fechaReunion, tipo === 'compromiso' ? acuerdos.map((a) => a.fecha_limite) : []);
-    setErroresFechas(ef);
-    if (hayErroresFechas(ef)) return;
-    setSaving(true);
+    ponerTodos({});
     try {
       const created = await api.createMinuta(projectId, {
         tipo,
@@ -1091,41 +1092,41 @@ function CreateMinutaModal({
       if (pdfAsset) {
         try {
           await api.uploadMinutaPdf(created.id, pdfAsset);
-        } catch (e: any) {
-          Alert.alert(
-            'Minuta creada, pero el PDF no se subio',
-            (e?.message || 'Intenta anexarlo de nuevo desde la minuta.'),
-          );
+        } catch {
+          showToast(t('minuta.form.pdfNoSubido'));
         }
       }
 
-      // [FIX 2026-07] Notificaciones locales y programadas
-      const { triggerLocalNotification, scheduleMinuteReminder } = await import('@/src/utils/pushNotifications');
-      triggerLocalNotification('__ Minuta Creada', `Se ha registrado la minuta: ${titulo.trim()}`);
+      // [FIX 2026-07] Notificaciones locales y programadas. La minuta ya existe: un fallo
+      // aquí no debe verse como "no se pudo crear" (el usuario reintentaría y la duplicaría).
+      try {
+        const { triggerLocalNotification, scheduleMinuteReminder } = await import('@/src/utils/pushNotifications');
+        triggerLocalNotification('__ Minuta Creada', `Se ha registrado la minuta: ${titulo.trim()}`);
 
-      // Programar recordatorios para cada acuerdo (24h antes) — solo aplica a compromisos.
-      if (tipo === 'compromiso') {
-        for (const a of acuerdos) {
-          if (a.descripcion && a.fecha_limite) {
-            await scheduleMinuteReminder(Math.random().toString(36).slice(2), a.descripcion, a.fecha_limite);
+        // Programar recordatorios para cada acuerdo (24h antes) — solo aplica a compromisos.
+        if (tipo === 'compromiso') {
+          for (const a of acuerdos) {
+            if (a.descripcion && a.fecha_limite) {
+              await scheduleMinuteReminder(Math.random().toString(36).slice(2), a.descripcion, a.fecha_limite);
+            }
           }
         }
+      } catch {
+        // los recordatorios locales son un extra
       }
 
       onCreated();
     } catch (e: any) {
-      Alert.alert('Error', e?.message || 'No se pudo crear la minuta');
-    } finally {
-      setSaving(false);
+      errorDeGuardado(e, t('minuta.errores.noSePudoCrear'));
     }
-  };
+  }
 
   const memberName = (uid: string) =>
     uid === 'contratista' ? 'Contratista' : members.find((m) => m.id === uid)?.name || 'Seleccionar responsable';
 
   const ubicacionLabel = ubicacionId
-    ? nodes.find((n) => n.id === ubicacionId)?.name || 'Ubicacion'
-    : 'Seleccionar ubicacion_';
+    ? nodes.find((n) => n.id === ubicacionId)?.name || t('minuta.form.ubicacion')
+    : t('minuta.form.seleccionarUbicacion');
 
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose} transparent>
@@ -1142,7 +1143,11 @@ function CreateMinutaModal({
               </Pressable>
             </View>
 
-            <ScrollView contentContainerStyle={{ padding: spacing.md, paddingBottom: 32 }}>
+            <ScrollView
+              ref={scrollRef}
+              keyboardShouldPersistTaps="handled"
+              contentContainerStyle={{ padding: spacing.md, paddingBottom: 32 }}
+            >
               <Text style={styles.label}>Tipo de minuta *</Text>
               <View style={styles.tipoRow}>
                 <Pressable accessibilityRole="button"
@@ -1166,15 +1171,17 @@ function CreateMinutaModal({
                   : 'Solo texto — avisa un cambio o acuerdo, sin generar compromisos de seguimiento.'}
               </Text>
 
-              <Text style={styles.label}>Titulo *</Text>
-              <TextInput
-                style={styles.input}
-                value={titulo}
-                onChangeText={setTitulo}
-                placeholder="Ej. Reunion de arranque de obra"
-                placeholderTextColor={colors.textMuted}
-                maxLength={200}
-              />
+              <View onLayout={marcarPosicion('titulo')}>
+                <FormField
+                  label={t('minuta.form.titulo')}
+                  obligatorio
+                  value={titulo}
+                  onChangeText={alCambiar<string>('titulo', setTitulo)}
+                  placeholder={t('minuta.form.tituloPlaceholder')}
+                  maxLength={200}
+                  error={errores.titulo}
+                />
+              </View>
 
               <Text style={styles.label}>Descripcion</Text>
               <TextInput
@@ -1187,23 +1194,29 @@ function CreateMinutaModal({
                 maxLength={4000}
               />
 
-              <Text style={styles.label}>Fecha de reunion *</Text>
-              <TextInput
-                style={styles.input}
-                value={fechaReunion}
-                onChangeText={(v) => { setFechaReunion(v); setErroresFechas((x) => ({ ...x, reunion: undefined })); }}
-                placeholder="AAAA-MM-DD"
-                placeholderTextColor={colors.textMuted}
-                accessibilityLabel="Fecha de la reunión"
-              />
-              <InlineError message={erroresFechas.reunion} />
+              <View onLayout={marcarPosicion('reunion')}>
+                <FormField
+                  label={t('minuta.form.fechaReunion')}
+                  obligatorio
+                  value={fechaReunion}
+                  onChangeText={alCambiarFechaReunion}
+                  placeholder="AAAA-MM-DD"
+                  error={errores.reunion}
+                />
+              </View>
 
               {/* Ubicacion (nodo del proyecto) _ obligatorio 2026-07 */}
-              <Text style={styles.label}>Ubicacion *</Text>
+              <View onLayout={marcarPosicion('ubicacion')}>
+              <Text style={styles.label}>
+                {t('minuta.form.ubicacion')}
+                <Text style={{ color: colors.error }}> *</Text>
+              </Text>
               <Pressable accessibilityRole="button"
+                accessibilityLabel={t('minuta.form.ubicacion')}
                 onPress={() => setUbicacionPickerOpen(true)}
                 style={[
                   styles.input,
+                  errores.ubicacion ? { borderColor: colors.error } : null,
                   {
                     flexDirection: 'row',
                     alignItems: 'center',
@@ -1230,6 +1243,8 @@ function CreateMinutaModal({
                 </View>
                 <Ionicons name="chevron-down" size={16} color={colors.textMuted} />
               </Pressable>
+              <InlineError message={errores.ubicacion} style={{ marginTop: 6 }} />
+              </View>
 
               <Text style={styles.label}>Areas involucradas</Text>
               <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
@@ -1315,16 +1330,21 @@ function CreateMinutaModal({
 
               {tipo === 'compromiso' && (
                 <>
-                  <View style={styles.sepRow}>
+                  <View style={styles.sepRow} onLayout={marcarPosicion('acuerdos')}>
                     <Text style={styles.label}>Acuerdos *</Text>
-                    <Pressable accessibilityRole="button" onPress={addAcuerdo} style={styles.addRow}>
+                    <Pressable
+                      accessibilityRole="button"
+                      onPress={() => { limpiar('acuerdos'); addAcuerdo(); }}
+                      style={styles.addRow}
+                    >
                       <Ionicons name="add" size={16} color={colors.primary} />
                       <Text style={styles.addRowTxt}>Anadir</Text>
                     </Pressable>
                   </View>
+                  <InlineError message={errores.acuerdos} style={{ marginBottom: 6 }} />
 
                   {acuerdos.map((a, i) => (
-                    <View key={i} style={styles.acuerdoDraft}>
+                    <View key={i} style={styles.acuerdoDraft} onLayout={marcarPosicion(`acuerdo.${i}`)}>
                       <View style={styles.acuerdoDraftHead}>
                         <Text style={styles.acuerdoDraftIdx}>#{i + 1}</Text>
                         {acuerdos.length > 1 && (
@@ -1333,18 +1353,25 @@ function CreateMinutaModal({
                           </Pressable>
                         )}
                       </View>
-                      <TextInput
-                        style={[styles.input, { minHeight: 60, textAlignVertical: 'top' }]}
+                      <FormField
+                        label={t('minuta.form.acuerdoLabel', { n: i + 1 })}
                         value={a.descripcion}
-                        onChangeText={(v) => setAcuerdoField(i, { descripcion: v })}
-                        placeholder="Descripcion del acuerdo_"
-                        placeholderTextColor={colors.textMuted}
+                        onChangeText={(v) => { limpiar(claveAcuerdo(i, 'descripcion')); setAcuerdoField(i, { descripcion: v }); }}
+                        placeholder={t('minuta.form.acuerdoPlaceholder')}
                         multiline
                         maxLength={1200}
+                        inputStyle={{ minHeight: 60, textAlignVertical: 'top' }}
+                        error={errores[claveAcuerdo(i, 'descripcion')]}
                       />
                       <Pressable accessibilityRole="button"
+                        accessibilityLabel={t('minuta.form.seleccionarResponsable')}
                         onPress={() => setRespPickerFor(i)}
-                        style={[styles.input, styles.selectRow]}
+                        style={[
+                          styles.input,
+                          styles.selectRow,
+                          { marginTop: 8 },
+                          errores[claveAcuerdo(i, 'responsable')] ? { borderColor: colors.error } : null,
+                        ]}
                       >
                         <Ionicons name="person-outline" size={14} color={colors.textMuted} />
                         <Text
@@ -1354,37 +1381,41 @@ function CreateMinutaModal({
                           }}
                           numberOfLines={1}
                         >
-                          {a.responsable_id ? memberName(a.responsable_id) : 'Seleccionar responsable'}
+                          {a.responsable_id ? memberName(a.responsable_id) : t('minuta.form.seleccionarResponsable')}
                         </Text>
                         <Ionicons name="chevron-down" size={14} color={colors.textMuted} />
                       </Pressable>
-                      <TextInput
-                        style={styles.input}
+                      <InlineError message={errores[claveAcuerdo(i, 'responsable')]} style={{ marginTop: 6 }} />
+                      <FormField
+                        label={t('minuta.form.fechaLimite', { n: i + 1 })}
                         value={a.fecha_limite}
-                        onChangeText={(v) => {
-                          setAcuerdoField(i, { fecha_limite: v });
-                          setErroresFechas((x) => { const ac = { ...x.acuerdos }; delete ac[i]; return { ...x, acuerdos: ac }; });
-                        }}
-                        placeholder="Fecha límite (AAAA-MM-DD)"
-                        placeholderTextColor={colors.textMuted}
-                        accessibilityLabel={`Fecha límite del acuerdo ${i + 1}`}
+                        onChangeText={(v) => { limpiar(claveAcuerdo(i, 'fecha')); setAcuerdoField(i, { fecha_limite: v }); }}
+                        placeholder={t('minuta.form.fechaLimitePlaceholder')}
+                        error={errores[claveAcuerdo(i, 'fecha')]}
                       />
-                      <InlineError message={erroresFechas.acuerdos[i]} />
                     </View>
                   ))}
                 </>
               )}
             </ScrollView>
 
+            <InlineError message={errorGeneral} style={{ marginHorizontal: spacing.md, marginBottom: 8 }} />
             <View style={styles.modalFooter}>
               <Pressable accessibilityRole="button" onPress={onClose} style={styles.btnGhost} disabled={saving}>
                 <Text style={styles.btnGhostTxt}>Cancelar</Text>
               </Pressable>
-              <Pressable accessibilityRole="button" onPress={onSave} style={styles.btnPrimary} disabled={saving}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={t('minuta.form.guardar')}
+                accessibilityState={{ disabled: saving, busy: saving }}
+                onPress={onSave}
+                style={[styles.btnPrimary, saving && { opacity: 0.6 }]}
+                disabled={saving}
+              >
                 {saving ? (
                   <ActivityIndicator color="#fff" />
                 ) : (
-                  <Text style={styles.btnPrimaryTxt}>Guardar minuta</Text>
+                  <Text style={styles.btnPrimaryTxt}>{t('minuta.form.guardar')}</Text>
                 )}
               </Pressable>
             </View>
@@ -1410,6 +1441,7 @@ function CreateMinutaModal({
                       representa a la empresa contratista del proyecto. */}
                   <Pressable accessibilityRole="button"
                     onPress={() => {
+                      limpiar(claveAcuerdo(respPickerFor!, 'responsable'));
                       setAcuerdoField(respPickerFor!, { responsable_id: 'contratista' });
                       setRespPickerFor(null);
                     }}
@@ -1430,6 +1462,7 @@ function CreateMinutaModal({
                       <Pressable accessibilityRole="button"
                         key={m.id}
                         onPress={() => {
+                          limpiar(claveAcuerdo(respPickerFor!, 'responsable'));
                           setAcuerdoField(respPickerFor!, { responsable_id: m.id });
                           setRespPickerFor(null);
                         }}
@@ -1541,6 +1574,7 @@ function CreateMinutaModal({
                           key={n.id}
                           onPress={() => {
                             setUbicacionId(n.id);
+                            limpiar('ubicacion');
                             setUbicacionPickerOpen(false);
                           }}
                           style={[styles.pickerRow, on && { backgroundColor: colors.bg }]}
