@@ -30,6 +30,7 @@ import { fmtDateTimeCDMX } from '@/src/utils/tz';
 import { moduloActivo } from '@/src/utils/modulos';
 import { getMediaLibraryPermission, requestMediaLibraryPermission } from '@/src/utils/permissions';
 import { t, a11y } from '@/src/i18n';
+import { olvidarSeparadorDecimal } from '@/src/hooks/useSeparadorDecimal';
 
 // Limite cliente coherente con backend (20 MB). Evita subidas que el servidor rechazaria.
 const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
@@ -241,6 +242,7 @@ export default function ProjectDetailScreen() {
   const [modoAvanceDraft, setModoAvanceDraft] = useState<'CANTIDAD' | 'PORCENTAJE' | 'MATRIZ'>('CANTIDAD');
   const [cadenciaDraft, setCadenciaDraft] = useState<'DIARIA' | 'SEMANAL' | 'MENSUAL'>('MENSUAL');
   const [zonaHorariaDraft, setZonaHorariaDraft] = useState<string>('America/Mexico_City');
+  const [separadorDecimalDraft, setSeparadorDecimalDraft] = useState<'.' | ','>('.');
   const [diaInicioSemanaDraft, setDiaInicioSemanaDraft] = useState<
     'LUNES' | 'MARTES' | 'MIERCOLES' | 'JUEVES' | 'VIERNES' | 'SABADO' | 'DOMINGO'
   >('LUNES');
@@ -887,6 +889,7 @@ export default function ProjectDetailScreen() {
     setCadenciaDraft(p.cadencia_reporte || 'MENSUAL');
     setDiaInicioSemanaDraft(p.dia_inicio_semana || 'LUNES');
     setZonaHorariaDraft(p.zona_horaria || 'America/Mexico_City');
+    setSeparadorDecimalDraft(p.separador_decimal === ',' ? ',' : '.');
     setNombresNivelesDraft(p.nombres_niveles_partida || []);
     setNombreNivelPartidaDraft('');
     setNombreNivelConceptoDraft(p.nombre_nivel_concepto || '');
@@ -925,6 +928,7 @@ export default function ProjectDetailScreen() {
         cadencia_reporte: cadenciaDraft,
         dia_inicio_semana: diaInicioSemanaDraft,
         zona_horaria: zonaHorariaDraft,
+        separador_decimal: separadorDecimalDraft,
         nombres_niveles_partida: nombresNivelesDraft,
         nombre_nivel_concepto: nombreNivelConceptoDraft.trim() || null,
         unidades_personalizadas: unidadesPersonalizadasDraft,
@@ -932,6 +936,7 @@ export default function ProjectDetailScreen() {
         confirmar_cambio_tipo_contrato: !!confirmar?.tipoContrato,
         confirmar_cambio_modo_avance: !!confirmar?.modoAvance,
       } as any);
+      olvidarSeparadorDecimal(pid);
       setProject((p) => ({ ...(p || ({} as any)), ...upd }));
       setCatalogoConfigModalOpen(false);
       Alert.alert('Guardado', 'La configuracion del catalogo se actualizo correctamente.');
@@ -2285,6 +2290,25 @@ export default function ProjectDetailScreen() {
                   </ScrollView>
                 </View>
               ) : null}
+
+              <View>
+                <Text style={styles.catLabel}>{t('numeros.separadorTitulo')}</Text>
+                <Text style={styles.catHelper}>{t('numeros.separadorAyuda')}</Text>
+                <View style={{ flexDirection: 'row', gap: 8 }}>
+                  {([['.', t('numeros.separadorPunto')], [',', t('numeros.separadorComa')]] as const).map(([valor, etiqueta]) => {
+                    const active = separadorDecimalDraft === valor;
+                    return (
+                      <Pressable
+                        accessibilityRole="button" accessibilityState={{ selected: active }}
+                        key={valor} onPress={() => setSeparadorDecimalDraft(valor)}
+                        style={[styles.chip, active && styles.chipActive]}
+                      >
+                        <Text style={{ color: active ? '#fff' : colors.text, fontWeight: '700', fontSize: 12 }}>{etiqueta}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              </View>
 
               <View>
                 <Text style={styles.catLabel}>{t('zona.titulo')}</Text>

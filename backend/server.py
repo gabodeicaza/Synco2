@@ -405,6 +405,9 @@ class ProjectIn(BaseModel):
     # Zona horaria IANA del proyecto (defecto America/Mexico_City). Todo "hoy" y
     # todo rango de fechas se calcula en esta zona.
     zona_horaria: Optional[str] = None
+    # Separador decimal con el que se capturan los números en este proyecto:
+    # "." (1,500.25) o "," (1.500,25). Solo afecta la captura en la app.
+    separador_decimal: Literal[".", ","] = "."
     # === Sistema Multi-Proyecto Modular (Etapa 5) ===
     # Plantillas encendidas/apagadas para este proyecto — cada una con un
     # interruptor independiente por categoría de informe (Diario/Semanal/
@@ -445,6 +448,7 @@ class ProjectPatch(BaseModel):
     cadencia_reporte: Optional[Literal["DIARIA", "SEMANAL", "MENSUAL"]] = None
     dia_inicio_semana: Optional[Literal["LUNES", "MARTES", "MIERCOLES", "JUEVES", "VIERNES", "SABADO", "DOMINGO"]] = None
     zona_horaria: Optional[str] = None
+    separador_decimal: Optional[Literal[".", ","]] = None
     # Banderas de intención explícita — mismo idioma que `quitar_padre` en
     # PartidaPatch. Dos flags independientes (no una sola) porque
     # tipo_contrato y modo_avance son ejes que no se deben conflatar: cambiar
@@ -491,6 +495,7 @@ class ProjectOut(BaseModel):
     cadencia_reporte: str = "MENSUAL"
     dia_inicio_semana: str = "LUNES"
     zona_horaria: str = "America/Mexico_City"
+    separador_decimal: str = "."
     hoy: Optional[str] = None  # fecha de hoy en la zona del proyecto (YYYY-MM-DD)
     tz_offset_min: Optional[int] = None  # desfase actual respecto a UTC, en minutos
     modulos: dict = Field(default_factory=dict)
@@ -2371,6 +2376,7 @@ async def create_project(body: ProjectIn, user: dict = Depends(require_role(ROLE
         "cadencia_reporte": body.cadencia_reporte,
         "dia_inicio_semana": body.dia_inicio_semana,
         "zona_horaria": _zona_o_400(body.zona_horaria),
+        "separador_decimal": body.separador_decimal,
         "modulos": _sanitize_modulos(body.modulos),
         "created_by": user["id"],
         "created_at": datetime.now(timezone.utc),
@@ -2417,6 +2423,7 @@ async def get_project(pid: str, user: dict = Depends(current_user)):
     p.setdefault("cadencia_reporte", "MENSUAL")
     p.setdefault("dia_inicio_semana", "LUNES")
     p["zona_horaria"] = p.get("zona_horaria") or ZONA_POR_DEFECTO
+    p.setdefault("separador_decimal", ".")
     p["hoy"] = hoy_proyecto(p).isoformat()
     p["tz_offset_min"] = offset_min_proyecto(p)
     p["modulos"] = _sanitize_modulos(p.get("modulos"))
@@ -2517,6 +2524,8 @@ async def update_project(pid: str, body: ProjectPatch, user: dict = Depends(requ
         upd["dia_inicio_semana"] = body.dia_inicio_semana
     if body.zona_horaria is not None:
         upd["zona_horaria"] = _zona_o_400(body.zona_horaria)
+    if body.separador_decimal is not None:
+        upd["separador_decimal"] = body.separador_decimal
 
     if upd:
         await db.projects.update_one({"id": pid}, {"$set": upd})
@@ -2557,6 +2566,7 @@ def _project_public(p: dict) -> dict:
     p.setdefault("cadencia_reporte", "MENSUAL")
     p.setdefault("dia_inicio_semana", "LUNES")
     p["zona_horaria"] = p.get("zona_horaria") or ZONA_POR_DEFECTO
+    p.setdefault("separador_decimal", ".")
     p["hoy"] = hoy_proyecto(p).isoformat()
     p["tz_offset_min"] = offset_min_proyecto(p)
     p["modulos"] = _sanitize_modulos(p.get("modulos"))

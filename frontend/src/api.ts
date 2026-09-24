@@ -583,6 +583,8 @@ export interface Project {
   dia_inicio_semana?: 'LUNES' | 'MARTES' | 'MIERCOLES' | 'JUEVES' | 'VIERNES' | 'SABADO' | 'DOMINGO';
   /** Zona horaria IANA del proyecto (defecto America/Mexico_City). */
   zona_horaria?: string;
+  /** Separador decimal con que se capturan los números en el proyecto (defecto "."). */
+  separador_decimal?: '.' | ',';
   /** Hoy en la zona del proyecto (YYYY-MM-DD), al momento de la consulta. */
   hoy?: string;
   /** Desfase actual respecto a UTC en minutos (CDMX = -360). Lo usa fechas.ts. */
