@@ -304,6 +304,8 @@ class TestServicioAnalisis:
         db.conceptos = _col(docs=conceptos or [dict(CONCEPTO)])
         db.registros_avance = _col(docs=avances)
         db.gastos_reales = _col(docs=gastos)
+        db.programa_versiones = _col()
+        db.programa_distribucion = _col()
         server.db = db
 
     def test_ev_dos_cifras_bac_y_pronostico(self):

@@ -31,6 +31,8 @@ import { moduloActivo } from '@/src/utils/modulos';
 import { getMediaLibraryPermission, requestMediaLibraryPermission } from '@/src/utils/permissions';
 import { t, a11y } from '@/src/i18n';
 import { olvidarSeparadorDecimal } from '@/src/hooks/useSeparadorDecimal';
+import { ProgramaObraSection } from '@/src/components/ProgramaObraSection';
+import { validarNombreNivel, validarUnidadPersonalizada } from '@/src/utils/unidades';
 
 // Limite cliente coherente con backend (20 MB). Evita subidas que el servidor rechazaria.
 const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
@@ -251,6 +253,8 @@ export default function ProjectDetailScreen() {
   const [nombreNivelConceptoDraft, setNombreNivelConceptoDraft] = useState('');
   const [unidadesPersonalizadasDraft, setUnidadesPersonalizadasDraft] = useState<string[]>([]);
   const [unidadPersonalizadaDraftTxt, setUnidadPersonalizadaDraftTxt] = useState('');
+  const [unidadPersonalizadaError, setUnidadPersonalizadaError] = useState<string | null>(null);
+  const [nombreNivelError, setNombreNivelError] = useState<string | null>(null);
   const [tituloModuloDraft, setTituloModuloDraft] = useState('');
 
   // P0 - Identidad institucional (objeto_contrato + cliente_principal + color_tema)
@@ -268,7 +272,7 @@ export default function ProjectDetailScreen() {
   const [colorDraft, setColorDraft] = useState(COLOR_IDENTIDAD_DEFECTO);
   // color_institucional: color de marca real -- banners, tablas, botones y
   // acentos de toda la app y el resto de documentos exportados.
-  const [colorInstitucionalDraft, setColorInstitucionalDraft] = useState('#003366');
+  const [colorInstitucionalDraft, setColorInstitucionalDraft] = useState(COLOR_IDENTIDAD_DEFECTO);
   // Color del texto de observaciones (pie de foto) en reportes ejecutivos.
   const [reportTextColorDraft, setReportTextColorDraft] = useState(COLOR_TEXTO_REPORTE_DEFECTO);
 
@@ -895,22 +899,32 @@ export default function ProjectDetailScreen() {
     setNombreNivelConceptoDraft(p.nombre_nivel_concepto || '');
     setUnidadesPersonalizadasDraft(p.unidades_personalizadas || []);
     setUnidadPersonalizadaDraftTxt('');
+    setUnidadPersonalizadaError(null);
+    setNombreNivelError(null);
     setTituloModuloDraft(p.titulo_modulo_catalogo || '');
     setCatalogoConfigModalOpen(true);
   }
 
   function addNombreNivel() {
-    const t = nombreNivelPartidaDraft.trim();
-    if (!t) return;
-    setNombresNivelesDraft((arr) => [...arr, t]); // orden importa (nivel 1, nivel 2...) -- no dedupe/reordena
+    const r = validarNombreNivel(nombresNivelesDraft, nombreNivelPartidaDraft);
+    if (!r.ok) {
+      setNombreNivelError(t(r.motivo === 'vacio' ? 'catalogoForm.nombreNivelVacio' : 'catalogoForm.nombreNivelRepetido'));
+      return;
+    }
+    setNombresNivelesDraft((arr) => [...arr, r.nombre]); // orden importa (nivel 1, nivel 2...) -- no reordena
     setNombreNivelPartidaDraft('');
+    setNombreNivelError(null);
   }
 
   function addUnidadPersonalizada() {
-    const t = unidadPersonalizadaDraftTxt.trim().toUpperCase();
-    if (!t) return;
-    setUnidadesPersonalizadasDraft((arr) => Array.from(new Set([...arr, t])));
+    const r = validarUnidadPersonalizada(unidadesPersonalizadasDraft, unidadPersonalizadaDraftTxt);
+    if (!r.ok) {
+      setUnidadPersonalizadaError(t(r.motivo === 'vacia' ? 'catalogoForm.unidadPersonalizadaVacia' : 'catalogoForm.unidadPersonalizadaRepetida'));
+      return;
+    }
+    setUnidadesPersonalizadasDraft((arr) => [...arr, r.unidad]);
     setUnidadPersonalizadaDraftTxt('');
+    setUnidadPersonalizadaError(null);
   }
 
   // Cambiar tipo_contrato o modo_avance con datos ya cargados exige
@@ -1689,6 +1703,7 @@ export default function ProjectDetailScreen() {
                 subtitle="Tipo de contrato, avance en %, nombres de nivel, cadencia de reporte"
                 onPress={openCatalogoConfigModal}
               />
+              <ProgramaObraSection projectId={pid} zona={project as any} />
 
               {/* ===== Actividades Generales: vista curada de las actividades ya
                   capturadas en reportes — Generales, o por Ubicacion (fusiona
@@ -2354,7 +2369,7 @@ export default function ProjectDetailScreen() {
                 <View style={styles.catInputRow}>
                   <TextInput
                     value={nombreNivelPartidaDraft}
-                    onChangeText={setNombreNivelPartidaDraft}
+                    onChangeText={(v) => { setNombreNivelPartidaDraft(v); setNombreNivelError(null); }}
                     onSubmitEditing={addNombreNivel}
                     placeholder={`Nivel ${nombresNivelesDraft.length + 1} (ej. Partida)`}
                     placeholderTextColor={colors.textMuted}
@@ -2365,6 +2380,7 @@ export default function ProjectDetailScreen() {
                     <Ionicons name="add" size={20} color="#fff" />
                   </Pressable>
                 </View>
+                <InlineError message={nombreNivelError} style={{ marginTop: 6 }} />
               </View>
 
               <View>
@@ -2416,7 +2432,7 @@ export default function ProjectDetailScreen() {
                 <View style={styles.catInputRow}>
                   <TextInput
                     value={unidadPersonalizadaDraftTxt}
-                    onChangeText={setUnidadPersonalizadaDraftTxt}
+                    onChangeText={(v) => { setUnidadPersonalizadaDraftTxt(v); setUnidadPersonalizadaError(null); }}
                     onSubmitEditing={addUnidadPersonalizada}
                     placeholder="Ej. LOTE, VIAJE..."
                     placeholderTextColor={colors.textMuted}
@@ -2428,6 +2444,7 @@ export default function ProjectDetailScreen() {
                     <Ionicons name="add" size={20} color="#fff" />
                   </Pressable>
                 </View>
+                <InlineError message={unidadPersonalizadaError} style={{ marginTop: 6 }} />
               </View>
 
               <Button

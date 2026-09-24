@@ -18,31 +18,32 @@ import {
   ProgramaImportResumen, ProgramaSesionPendiente,
 } from '@/src/api';
 import { colors, radius, spacing } from '@/src/theme';
-import { formatMoney } from '@/src/utils/money';
+import { formatMoney, sumDecimalStringsAsCents } from '@/src/utils/money';
 import { confirm } from '@/src/utils/confirm';
-import { a11y } from '@/src/i18n';
+import { a11y, t } from '@/src/i18n';
 import {
   WizardStep, quedanFueraLabel, filasFueraCount, puedeValidar as puedeValidarMapeo,
   pasoSiguienteTrasSubir, pasoAnterior, pasoInicialDeSesionPendiente,
 } from '@/src/utils/programaImportWizard';
 
 const CONVENCION_LABELS: Record<ConvencionDecimal, string> = {
-  coma: 'Coma decimal (634,00 = 634.00)',
-  punto: 'Punto decimal (634.00 = 634.00)',
+  coma: t('programa.convencionComa'),
+  punto: t('programa.convencionPunto'),
 };
 
 const ESTADO_COLOR: Record<string, string> = {
   ok: colors.success, error: colors.error, descartado: colors.textMuted, sin_distribucion: colors.textMuted,
 };
 const ESTADO_LABEL: Record<string, string> = {
-  ok: 'Lista', error: 'Error', descartado: 'Descartada', sin_distribucion: 'Sin distribución propia',
+  ok: t('programa.estadoLista'), error: t('programa.estadoError'), descartado: t('programa.estadoDescartada'),
+  sin_distribucion: t('programa.estadoSinDistribucion'),
 };
 
 const STEPS: { key: WizardStep; label: string }[] = [
-  { key: 'archivo', label: '1. Archivo' },
-  { key: 'mapeo', label: '2. Mapeo' },
-  { key: 'revision', label: '3. Revisión' },
-  { key: 'resultado', label: '4. Importar' },
+  { key: 'archivo', label: t('programa.pasoArchivo') },
+  { key: 'mapeo', label: t('programa.pasoMapeo') },
+  { key: 'revision', label: t('programa.pasoRevision') },
+  { key: 'resultado', label: t('programa.pasoImportar') },
 ];
 
 interface Props {
@@ -136,7 +137,7 @@ export function ImportarProgramaModal({ visible, projectId, onClose, onImported 
       }
       if (!ok) {
         reset();
-        setError('Tu importación anterior ya no está disponible (expiró). Empecemos de nuevo.');
+        setError(t('programa.sesionExpirada'));
       }
       setSesionPendiente(null);
     } finally {
@@ -183,7 +184,7 @@ export function ImportarProgramaModal({ visible, projectId, onClose, onImported 
         await loadHeaders(res.import_id, res.sheet_names[0]);
       }
     } catch (e: any) {
-      setError(e?.message || 'No se pudo subir el archivo');
+      setError(e?.message || t('programa.errorSubir'));
     } finally {
       setBusy(false);
     }
@@ -199,7 +200,7 @@ export function ImportarProgramaModal({ visible, projectId, onClose, onImported 
       setStep('mapeo');
       return true;
     } catch (e: any) {
-      setError(e?.message || 'No se pudo leer la hoja seleccionada');
+      setError(e?.message || t('programa.errorHoja'));
       return false;
     } finally {
       setBusy(false);
@@ -225,7 +226,7 @@ export function ImportarProgramaModal({ visible, projectId, onClose, onImported 
   async function validar(convencionForzada?: ConvencionDecimal) {
     if (!importId || !selectedSheet) return;
     if (!puedeValidarMapeo(mapping)) {
-      setError('Asigna al menos Código, Importe y una columna de mes antes de validar.');
+      setError(t('programa.errorMapeo'));
       return;
     }
     try {
@@ -239,7 +240,7 @@ export function ImportarProgramaModal({ visible, projectId, onClose, onImported 
       setStep('revision');
       await cargarPagina(1);
     } catch (e: any) {
-      setError(e?.message || 'La validación falló');
+      setError(e?.message || t('programa.errorValidar'));
     } finally {
       setBusy(false);
     }
@@ -259,7 +260,7 @@ export function ImportarProgramaModal({ visible, projectId, onClose, onImported 
       setExpandedFila(null);
       return true;
     } catch (e: any) {
-      setError(e?.message || 'No se pudo cargar la página');
+      setError(e?.message || t('programa.errorPagina'));
       return false;
     } finally {
       setBusy(false);
@@ -273,7 +274,7 @@ export function ImportarProgramaModal({ visible, projectId, onClose, onImported 
       setFilas((cur) => cur.map((f) => (f.fila === fila ? res.fila : f)));
       setResumen(res.resumen);
     } catch (e: any) {
-      setError(e?.message || 'No se pudo descartar la fila');
+      setError(e?.message || t('programa.errorDescartar'));
     }
   }
 
@@ -281,10 +282,10 @@ export function ImportarProgramaModal({ visible, projectId, onClose, onImported 
     if (!importId) return;
     const quedanFuera = filasFueraCount(resumen);
     const ok = await confirm(
-      'Importar programa',
+      t('programa.titulo'),
       quedanFuera > 0
-        ? `${quedanFuera} concepto(s) quedarán fuera (error, descartados, o sin distribución propia). El resto entrará en la nueva versión "${etiqueta}". ¿Continuar?`
-        : `Se creará la versión "${etiqueta}" con todos los conceptos listos. La versión vigente actual (si existe) se conserva en el historial, no se borra. ¿Continuar?`,
+        ? t('programa.confirmarConFuera', { n: quedanFuera, etiqueta })
+        : t('programa.confirmarTodos', { etiqueta }),
     );
     if (!ok) return;
     try {
@@ -293,7 +294,7 @@ export function ImportarProgramaModal({ visible, projectId, onClose, onImported 
       setCommitResult(res);
       setStep('resultado');
     } catch (e: any) {
-      setError(e?.message || 'La importación falló');
+      setError(e?.message || t('programa.errorImportar'));
     } finally {
       setBusy(false);
     }
@@ -314,7 +315,7 @@ export function ImportarProgramaModal({ visible, projectId, onClose, onImported 
           >
             <Ionicons name={step === 'archivo' ? 'close' : 'chevron-back'} size={24} color={colors.text} />
           </Pressable>
-          <Text style={styles.title}>Importar programa</Text>
+          <Text style={styles.title}>{t('programa.titulo')}</Text>
           <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} onPress={handleClose} hitSlop={10}>
             <Ionicons name="close" size={22} color={colors.textMuted} />
           </Pressable>
@@ -340,34 +341,36 @@ export function ImportarProgramaModal({ visible, projectId, onClose, onImported 
           {sesionPendiente ? (
             <View style={styles.stepCenter}>
               <Ionicons name="time-outline" size={44} color={colors.warning} />
-              <Text style={styles.resultTitle}>Tienes una importación sin terminar</Text>
+              <Text style={styles.resultTitle}>{t('programa.sesionPendiente')}</Text>
               <Text style={styles.help}>
-                {sesionPendiente.filename || 'Un archivo'} — {sesionPendiente.validado ? 'ya validado, listo para revisar' : 'sin validar todavía'}.
+                {t('programa.sesionArchivo', {
+                  archivo: sesionPendiente.filename || t('programa.sesionUnArchivo'),
+                  estado: sesionPendiente.validado ? t('programa.sesionValidada') : t('programa.sesionSinValidar'),
+                })}
               </Text>
               <Pressable accessibilityRole="button" style={styles.primaryBtn} onPress={continuarSesionPendiente} disabled={resolviendoSesion}>
-                {resolviendoSesion ? <ActivityIndicator color="#fff" /> : (
+                {resolviendoSesion ? <ActivityIndicator color={colors.textInverse} /> : (
                   <>
-                    <Ionicons name="play-forward-outline" size={18} color="#fff" />
-                    <Text style={styles.primaryBtnTxt}>Continuar donde quedé</Text>
+                    <Ionicons name="play-forward-outline" size={18} color={colors.textInverse} />
+                    <Text style={styles.primaryBtnTxt}>{t('programa.continuar')}</Text>
                   </>
                 )}
               </Pressable>
               <Pressable accessibilityRole="button" style={styles.smallBtn} onPress={empezarDeNuevo} disabled={resolviendoSesion}>
-                <Text style={styles.smallBtnTxt}>Empezar de nuevo (descarta la anterior)</Text>
+                <Text style={styles.smallBtnTxt}>{t('programa.empezarDeNuevo')}</Text>
               </Pressable>
             </View>
           ) : step === 'archivo' ? (
             <View style={styles.stepCenter}>
               <Ionicons name="calendar-outline" size={48} color={colors.primary} />
               <Text style={styles.help}>
-                Selecciona el archivo .xlsx del programa desglosado. Los conceptos se emparejan por Código
-                contra el catálogo ya cargado de este proyecto — impórtalo primero si aún no lo has hecho.
+                {t('programa.ayudaArchivo')}
               </Text>
               <Pressable accessibilityRole="button" style={styles.primaryBtn} onPress={pickFile} disabled={busy}>
-                {busy ? <ActivityIndicator color="#fff" /> : (
+                {busy ? <ActivityIndicator color={colors.textInverse} /> : (
                   <>
-                    <Ionicons name="folder-open-outline" size={18} color="#fff" />
-                    <Text style={styles.primaryBtnTxt}>Seleccionar archivo</Text>
+                    <Ionicons name="folder-open-outline" size={18} color={colors.textInverse} />
+                    <Text style={styles.primaryBtnTxt}>{t('programa.seleccionarArchivo')}</Text>
                   </>
                 )}
               </Pressable>
@@ -376,7 +379,7 @@ export function ImportarProgramaModal({ visible, projectId, onClose, onImported 
 
           {step === 'hoja' ? (
             <View>
-              <Text style={styles.help}>Este archivo tiene varias hojas. ¿Cuál quieres importar?</Text>
+              <Text style={styles.help}>{t('programa.variasHojas')}</Text>
               {sheetNames.map((s) => (
                 <Pressable accessibilityRole="button" key={s} style={styles.optionRow} onPress={() => loadHeaders(importId!, s)} disabled={busy}>
                   <Ionicons name="grid-outline" size={18} color={colors.primary} />
@@ -390,26 +393,24 @@ export function ImportarProgramaModal({ visible, projectId, onClose, onImported 
           {step === 'mapeo' && headersResp ? (
             <View style={{ gap: 14 }}>
               <Text style={styles.help}>
-                Se detectaron {headersResp.total_rows} filas de datos, empezando después de la fila de
-                rangos de fecha de cada mes. Asigna cada columna al campo correspondiente.
+                {t('programa.ayudaMapeo', { n: headersResp.total_rows })}
               </Text>
 
               <Pressable accessibilityRole="button" onPress={() => setMostrarFilasCrudas((v) => !v)} style={styles.linkRow}>
                 <Ionicons name={mostrarFilasCrudas ? 'chevron-up' : 'help-circle-outline'} size={14} color={colors.primary} />
                 <Text style={styles.linkRowTxt}>
-                  {mostrarFilasCrudas ? 'Ocultar' : '¿Estos no son los encabezados correctos? Elige la fila correcta'}
+                  {mostrarFilasCrudas ? t('programa.ocultar') : t('programa.encabezadosIncorrectos')}
                 </Text>
               </Pressable>
 
               {mostrarFilasCrudas ? (
                 <View style={styles.rawPreviewBox}>
                   <Text style={styles.helpSmall}>
-                    El archivo real trae el encabezado hasta la fila 19 (membrete/datos de proyecto antes) —
-                    tócala aquí abajo si la propuesta automática no es la correcta.
+                    {t('programa.ayudaFilaEncabezado')}
                   </Text>
                   {headersResp.preview_rows.map((row, idx) => {
                     const esLaActual = idx === headersResp.header_row_index;
-                    const textoFila = row.filter((c) => c !== null && c !== undefined && String(c).trim() !== '').map((c) => String(c)).join(' · ') || '(fila vacía)';
+                    const textoFila = row.filter((c) => c !== null && c !== undefined && String(c).trim() !== '').map((c) => String(c)).join(' · ') || t('programa.filaVacia');
                     return (
                       <Pressable accessibilityRole="button"
                         key={idx}
@@ -417,9 +418,9 @@ export function ImportarProgramaModal({ visible, projectId, onClose, onImported 
                         style={[styles.rawPreviewRow, esLaActual && styles.rawPreviewRowActive]}
                         disabled={busy}
                       >
-                        <Text style={[styles.rawPreviewIdx, esLaActual && { color: '#fff' }]}>{idx + 1}</Text>
-                        <Text style={[styles.rawPreviewTxt, esLaActual && { color: '#fff' }]} numberOfLines={1}>{textoFila}</Text>
-                        {esLaActual ? <Ionicons name="checkmark-circle" size={16} color="#fff" /> : null}
+                        <Text style={[styles.rawPreviewIdx, esLaActual && { color: colors.textInverse }]}>{idx + 1}</Text>
+                        <Text style={[styles.rawPreviewTxt, esLaActual && { color: colors.textInverse }]} numberOfLines={1}>{textoFila}</Text>
+                        {esLaActual ? <Ionicons name="checkmark-circle" size={16} color={colors.textInverse} /> : null}
                       </Pressable>
                     );
                   })}
@@ -427,10 +428,10 @@ export function ImportarProgramaModal({ visible, projectId, onClose, onImported 
               ) : null}
 
               {([
-                { key: 'codigo' as const, label: 'Código', required: true },
-                { key: 'importe' as const, label: 'Importe', required: true },
-                { key: 'inicio' as const, label: 'Inicio (fecha contractual)', required: false },
-                { key: 'fin' as const, label: 'Fin (fecha contractual)', required: false },
+                { key: 'codigo' as const, label: t('programa.campoCodigo'), required: true },
+                { key: 'importe' as const, label: t('programa.campoImporte'), required: true },
+                { key: 'inicio' as const, label: t('programa.campoInicio'), required: false },
+                { key: 'fin' as const, label: t('programa.campoFin'), required: false },
               ]).map((f) => (
                 <View key={f.key} style={{ gap: 6 }}>
                   <Text style={styles.fieldLabel}>{f.label}{f.required ? ' *' : ''}</Text>
@@ -452,8 +453,8 @@ export function ImportarProgramaModal({ visible, projectId, onClose, onImported 
               ))}
 
               <View style={{ gap: 6 }}>
-                <Text style={styles.fieldLabel}>Columnas de mes (Mes 1…Mes N) *</Text>
-                <Text style={styles.helpSmall}>Se propusieron automáticamente por nombre — quita o agrega columnas si hace falta.</Text>
+                <Text style={styles.fieldLabel}>{t('programa.columnasMes')} *</Text>
+                <Text style={styles.helpSmall}>{t('programa.ayudaColumnasMes')}</Text>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6 }}>
                   {headersResp.headers.filter(Boolean).map((h) => {
                     const active = mapping.meses.includes(h);
@@ -466,16 +467,17 @@ export function ImportarProgramaModal({ visible, projectId, onClose, onImported 
                 </ScrollView>
               </View>
 
-              <Text style={styles.fieldLabel}>Etiqueta de esta versión</Text>
+              <Text style={styles.fieldLabel}>{t('programa.etiquetaVersion')}</Text>
               <TextInput
                 value={etiqueta}
                 onChangeText={setEtiqueta}
-                placeholder='Ej. "Programa 27-05-26" (si lo dejas vacío, se genera una por fecha)'
+                placeholder={t('programa.etiquetaPlaceholder')}
+                accessibilityLabel={t('programa.etiquetaVersion')}
                 placeholderTextColor={colors.textMuted}
                 style={styles.etiquetaInput}
               />
 
-              <Text style={styles.fieldLabel}>Convención decimal</Text>
+              <Text style={styles.fieldLabel}>{t('programa.convencionDecimal')}</Text>
               <View style={{ gap: 6 }}>
                 {(['coma', 'punto'] as ConvencionDecimal[]).map((c) => {
                   const active = convencion === c;
@@ -483,7 +485,7 @@ export function ImportarProgramaModal({ visible, projectId, onClose, onImported 
                   return (
                     <Pressable accessibilityRole="button" key={c} onPress={() => setConvencion(c)} style={[styles.optionRow, active && styles.optionRowActive]}>
                       <Ionicons name={active ? 'radio-button-on' : 'radio-button-off'} size={18} color={colors.primary} />
-                      <Text style={styles.optionTxt}>{CONVENCION_LABELS[c]}{esDetectada ? ' (detectada)' : ''}</Text>
+                      <Text style={styles.optionTxt}>{CONVENCION_LABELS[c]}{esDetectada ? t('programa.convencionDetectada') : ''}</Text>
                     </Pressable>
                   );
                 })}
@@ -494,10 +496,10 @@ export function ImportarProgramaModal({ visible, projectId, onClose, onImported 
                 onPress={() => validar()}
                 disabled={!puedeValidarMapeo(mapping) || busy}
               >
-                {busy ? <ActivityIndicator color="#fff" /> : (
+                {busy ? <ActivityIndicator color={colors.textInverse} /> : (
                   <>
-                    <Ionicons name="checkmark-done-outline" size={18} color="#fff" />
-                    <Text style={styles.primaryBtnTxt}>Validar archivo completo</Text>
+                    <Ionicons name="checkmark-done-outline" size={18} color={colors.textInverse} />
+                    <Text style={styles.primaryBtnTxt}>{t('programa.validarArchivo')}</Text>
                   </>
                 )}
               </Pressable>
@@ -507,22 +509,21 @@ export function ImportarProgramaModal({ visible, projectId, onClose, onImported 
           {step === 'revision' && resumen ? (
             <View style={{ gap: 12 }}>
               <View style={styles.resumenRow}>
-                <ResumenChip label="Listos" n={resumen.ok} color={colors.success} />
-                <ResumenChip label="Error" n={resumen.error} color={colors.error} />
-                <ResumenChip label="Sin distribución" n={resumen.sin_distribucion} color={colors.textMuted} />
-                <ResumenChip label="Descartados" n={resumen.descartado} color={colors.textMuted} />
+                <ResumenChip label={t('programa.resumenListos')} n={resumen.ok} color={colors.success} />
+                <ResumenChip label={t('programa.resumenError')} n={resumen.error} color={colors.error} />
+                <ResumenChip label={t('programa.resumenSinDistribucion')} n={resumen.sin_distribucion} color={colors.textMuted} />
+                <ResumenChip label={t('programa.resumenDescartados')} n={resumen.descartado} color={colors.textMuted} />
               </View>
               <Text style={styles.helpSmall}>
-                "Sin distribución propia" son renglones de nivel superior (su curva se calcula sumando la de
-                sus hijos) — no es un error, solo no entra directo al commit.
+                {t('programa.ayudaSinDistribucion')}
               </Text>
 
               <View style={{ flexDirection: 'row', gap: 6 }}>
                 <Pressable accessibilityRole="button" style={styles.smallBtn} onPress={() => validar('coma')} disabled={busy}>
-                  <Text style={styles.smallBtnTxt}>Re-validar todo como coma decimal</Text>
+                  <Text style={styles.smallBtnTxt}>{t('programa.revalidarComa')}</Text>
                 </Pressable>
                 <Pressable accessibilityRole="button" style={styles.smallBtn} onPress={() => validar('punto')} disabled={busy}>
-                  <Text style={styles.smallBtnTxt}>Re-validar todo como punto decimal</Text>
+                  <Text style={styles.smallBtnTxt}>{t('programa.revalidarPunto')}</Text>
                 </Pressable>
               </View>
 
@@ -544,17 +545,17 @@ export function ImportarProgramaModal({ visible, projectId, onClose, onImported 
                 <Pressable accessibilityRole="button" accessibilityLabel={a11y('paginaAnterior')} hitSlop={8} disabled={page <= 1} onPress={() => cargarPagina(page - 1)} style={[styles.pagerBtn, page <= 1 && { opacity: 0.4 }]}>
                   <Ionicons name="chevron-back" size={16} color={colors.primary} />
                 </Pressable>
-                <Text style={styles.pagerTxt}>Página {page} de {totalPages}</Text>
+                <Text style={styles.pagerTxt}>{t('programa.pagina', { n: page, total: totalPages })}</Text>
                 <Pressable accessibilityRole="button" accessibilityLabel={a11y('paginaSiguiente')} hitSlop={8} disabled={page >= totalPages} onPress={() => cargarPagina(page + 1)} style={[styles.pagerBtn, page >= totalPages && { opacity: 0.4 }]}>
                   <Ionicons name="chevron-forward" size={16} color={colors.primary} />
                 </Pressable>
               </View>
 
               <Pressable accessibilityRole="button" style={styles.primaryBtn} onPress={commit} disabled={busy}>
-                {busy ? <ActivityIndicator color="#fff" /> : (
+                {busy ? <ActivityIndicator color={colors.textInverse} /> : (
                   <>
-                    <Ionicons name="cloud-upload-outline" size={18} color="#fff" />
-                    <Text style={styles.primaryBtnTxt}>Crear versión "{etiqueta}"{quedanFueraLabel(resumen)}</Text>
+                    <Ionicons name="cloud-upload-outline" size={18} color={colors.textInverse} />
+                    <Text style={styles.primaryBtnTxt}>{t('programa.crearVersion', { etiqueta, fuera: quedanFueraLabel(resumen) })}</Text>
                   </>
                 )}
               </Pressable>
@@ -564,13 +565,13 @@ export function ImportarProgramaModal({ visible, projectId, onClose, onImported 
           {step === 'resultado' && commitResult ? (
             <View style={styles.stepCenter}>
               <Ionicons name="checkmark-circle" size={48} color={colors.success} />
-              <Text style={styles.resultTitle}>Programa importado</Text>
-              <Text style={styles.help}>{commitResult.conceptos_importados} conceptos con distribución cargada</Text>
+              <Text style={styles.resultTitle}>{t('programa.resultadoTitulo')}</Text>
+              <Text style={styles.help}>{t('programa.resultadoConceptos', { n: commitResult.conceptos_importados })}</Text>
               {commitResult.sin_distribucion > 0 ? (
-                <Text style={styles.help}>{commitResult.sin_distribucion} renglones de nivel superior (curva calculada, no importada)</Text>
+                <Text style={styles.help}>{t('programa.resultadoSinDistribucion', { n: commitResult.sin_distribucion })}</Text>
               ) : null}
               <Pressable accessibilityRole="button" style={styles.primaryBtn} onPress={() => { resetCompleto(); onImported(); }}>
-                <Text style={styles.primaryBtnTxt}>Listo</Text>
+                <Text style={styles.primaryBtnTxt}>{t('programa.listo')}</Text>
               </Pressable>
             </View>
           ) : null}
@@ -598,7 +599,7 @@ function FilaRevision({
   onDescartar: (fila: number, descartar: boolean) => void;
 }) {
   const color = ESTADO_COLOR[fila.estado] || colors.textMuted;
-  const sumaMeses = fila.meses.reduce((acc, m) => acc + (parseFloat(m.importe) || 0), 0);
+  const sumaMesesCentavos = sumDecimalStringsAsCents(fila.meses.map((m) => m.importe));
 
   return (
     <View style={[styles.filaCard, { borderLeftColor: color, borderLeftWidth: 4 }]}>
@@ -614,7 +615,7 @@ function FilaRevision({
         <View style={styles.filaDetail}>
           {!fila.concepto_id ? (
             <View style={styles.problemaBox}>
-              <Text style={styles.problemaMotivo}>No existe ningún concepto con esta clave en el catálogo de este proyecto.</Text>
+              <Text style={styles.problemaMotivo}>{t('programa.conceptoNoExiste')}</Text>
             </View>
           ) : null}
           {fila.problemas.map((p, idx) => (
@@ -625,14 +626,14 @@ function FilaRevision({
 
           {fila.tiene_distribucion_propia ? (
             <View style={styles.filaValoresRow}>
-              <Text style={styles.filaValorTxt}>Suma mensual: {formatMoney(String(sumaMeses))}</Text>
-              <Text style={styles.filaValorTxt}>Importe del concepto: {formatMoney(fila.importe_concepto)}</Text>
+              <Text style={styles.filaValorTxt}>{t('programa.sumaMensual', { valor: formatMoney(sumaMesesCentavos) })}</Text>
+              <Text style={styles.filaValorTxt}>{t('programa.importeConcepto', { valor: formatMoney(fila.importe_concepto) })}</Text>
             </View>
           ) : null}
 
           <Pressable accessibilityRole="button" onPress={() => onDescartar(fila.fila, fila.estado !== 'descartado')} style={styles.linkBtn}>
             <Ionicons name={fila.estado === 'descartado' ? 'refresh-outline' : 'trash-outline'} size={14} color={colors.error} />
-            <Text style={[styles.linkBtnTxt, { color: colors.error }]}>{fila.estado === 'descartado' ? 'Recuperar fila' : 'Descartar fila'}</Text>
+            <Text style={[styles.linkBtnTxt, { color: colors.error }]}>{fila.estado === 'descartado' ? t('programa.recuperarFila') : t('programa.descartarFila')}</Text>
           </Pressable>
         </View>
       ) : null}
@@ -670,7 +671,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
     backgroundColor: colors.primary, borderRadius: radius.md, paddingVertical: 12, paddingHorizontal: 20,
   },
-  primaryBtnTxt: { color: '#fff', fontWeight: '700', fontSize: 14, textAlign: 'center' },
+  primaryBtnTxt: { color: colors.textInverse, fontWeight: '700', fontSize: 14, textAlign: 'center' },
 
   optionRow: {
     flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: colors.surface,
@@ -686,7 +687,7 @@ const styles = StyleSheet.create({
   },
   chipActive: { backgroundColor: colors.primary, borderColor: colors.primary },
   chipTxt: { fontSize: 12, fontWeight: '700', color: colors.textBody },
-  chipTxtActive: { color: '#fff' },
+  chipTxtActive: { color: colors.textInverse },
 
   etiquetaInput: {
     borderWidth: 1, borderColor: colors.border, borderRadius: radius.md,
