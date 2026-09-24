@@ -1,4 +1,4 @@
-import { decimalStringToCents, centsToDecimalString, formatMoney, isValidDecimalInput } from '../money';
+import { decimalStringToCents, centsToDecimalString, formatCantidad, formatMoney, isValidDecimalInput } from '../money';
 
 describe('money (enteros de centavos, sin float)', () => {
   it('convierte string decimal a centavos exactos', () => {
@@ -24,5 +24,20 @@ describe('money (enteros de centavos, sin float)', () => {
     expect(isValidDecimalInput('185.5')).toBe(true);
     expect(isValidDecimalInput('abc')).toBe(false);
     expect(isValidDecimalInput('185.555')).toBe(false);
+  });
+});
+
+describe('formatCantidad (formato es-MX)', () => {
+  it('agrupa miles con coma y quita ceros sobrantes', () => {
+    expect(formatCantidad('45000')).toBe('45,000');
+    expect(formatCantidad('1234567.5000')).toBe('1,234,567.5');
+    expect(formatCantidad('1500.00')).toBe('1,500');
+    expect(formatCantidad('-3200.25')).toBe('-3,200.25');
+  });
+
+  it('no altera cantidades pequeñas ni vacías', () => {
+    expect(formatCantidad('12.5')).toBe('12.5');
+    expect(formatCantidad('0')).toBe('0');
+    expect(formatCantidad(null)).toBe('0');
   });
 });

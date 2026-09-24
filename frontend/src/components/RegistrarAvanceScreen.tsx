@@ -11,7 +11,7 @@ import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 
-import { api, Concepto, ConceptoSearchResult, Project, LocationNodeTree } from '@/src/api';
+import { api, Concepto, Project, LocationNodeTree } from '@/src/api';
 import { colors, radius, shadow, spacing } from '@/src/theme';
 import { APP_BRAND } from '@/src/utils/roles';
 import { UNIDAD_LABELS, Unidad } from '@/src/utils/unidades';
@@ -20,10 +20,13 @@ import { centsToDecimalString, decimalStringToCents, formatCantidad, pctDeDecima
 import { esRetrocesoLocal } from '@/src/utils/avancePorcentaje';
 import { InlineError } from '@/src/components/InlineError';
 import { showToast } from '@/src/utils/toast';
-import { esErrorDeRed } from '@/src/utils/errores';
 import {
-  ErroresAvance, TipoAvance, excedenteAlCapturar, excedentePorcentajeAlCapturar, hayErrores, validarAvance,
+  TipoAvance, excedenteAlCapturar, excedentePorcentajeAlCapturar, hayErrores, validarAvance,
 } from '@/src/utils/validacionAvance';
+import { DECIMALES_IMPORTE, formatoNumero, mensajeNumeroInvalido, parseNumeroEntrada, SeparadorDecimal } from '@/src/utils/numeros';
+import { useBusquedaConceptos } from '@/src/hooks/useBusquedaConceptos';
+import { useEnvio } from '@/src/hooks/useEnvio';
+import { useFormErrors } from '@/src/hooks/useFormErrors';
 import { requestMediaLibraryPermission } from '@/src/utils/permissions';
 import { a11y, t } from '@/src/i18n';
 import { fmtFecha, hoyProyecto } from '@/src/utils/fechas';
@@ -32,9 +35,7 @@ export default function RegistrarAvanceScreen({ projectId }: { projectId: string
   const insets = useSafeAreaInsets();
   const [project, setProject] = useState<Project | null>(null);
 
-  const [query, setQuery] = useState('');
-  const [results, setResults] = useState<ConceptoSearchResult[]>([]);
-  const [searching, setSearching] = useState(false);
+  const busqueda = useBusquedaConceptos(projectId, t('busquedaConceptos.errorBusqueda'));
   const [selected, setSelected] = useState<Concepto | null>(null);
 
   // La fecha de la captura es el "hoy" de la zona del PROYECTO (no la del
@@ -44,10 +45,10 @@ export default function RegistrarAvanceScreen({ projectId }: { projectId: string
   // A-01: "avance" (incremento > 0) o "ajuste" (corrección con signo y motivo).
   const [tipo, setTipo] = useState<TipoAvance>('normal');
   const [motivo, setMotivo] = useState('');
-  const [errores, setErrores] = useState<ErroresAvance>({});
-  const [errorGeneral, setErrorGeneral] = useState<string | null>(null);
+  const { errores, errorGeneral, ponerTodos, limpiarTodo, alCambiar, errorDeGuardado } =
+    useFormErrors<'cantidad' | 'motivo' | 'fecha'>();
   const [foto, setFoto] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
+  const { guardando: saving, ejecutar } = useEnvio();
 
   // Nodo (opcional, nunca bloqueante) — si el residente sabe en qué nodo
   // ejecutó, se guarda aunque el cálculo de avance no lo use hoy (modo
@@ -59,22 +60,6 @@ export default function RegistrarAvanceScreen({ projectId }: { projectId: string
 
   useEffect(() => { api.getProject(projectId).then(setProject).catch(() => {}); }, [projectId]);
   useEffect(() => { api.getTree(projectId).then(setNodes).catch(() => setNodes([])); }, [projectId]);
-
-  useEffect(() => {
-    if (!query.trim()) { setResults([]); return; }
-    setSearching(true);
-    const t = setTimeout(async () => {
-      try {
-        const r = await api.searchConceptos(projectId, { q: query });
-        setResults(r);
-      } catch {
-        /* noop: busqueda best-effort */
-      } finally {
-        setSearching(false);
-      }
-    }, 300);
-    return () => clearTimeout(t);
-  }, [query, projectId]);
 
   async function pickPhoto() {
     const perm = await requestMediaLibraryPermission();
@@ -95,6 +80,19 @@ export default function RegistrarAvanceScreen({ projectId }: { projectId: string
 
   const esPorcentaje = project?.modo_avance === 'PORCENTAJE';
 
+  // A-07/X-05: se acepta "1,500" y "1500" según el separador del proyecto; al API siempre
+  // va el decimal con punto. La cantidad de avance se maneja en centavos (2 decimales).
+  const separador: SeparadorDecimal = project?.separador_decimal === ',' ? ',' : '.';
+  const opcionesNumero = { separador, maxDecimales: DECIMALES_IMPORTE, permitirNegativo: tipo === 'ajuste' };
+  const lectura = parseNumeroEntrada(cantidad, opcionesNumero);
+  const cantidadApi = lectura.ok ? lectura.valor : '';
+
+  function darFormatoCantidad() {
+    if (!lectura.ok) return;
+    const texto = formatoNumero(lectura.valor, { separador, maxDecimales: DECIMALES_IMPORTE });
+    if (texto && texto !== cantidad) setCantidad(texto);
+  }
+
   function limpiarFormulario() {
     setSelected(null);
     setCantidad('');
@@ -102,60 +100,57 @@ export default function RegistrarAvanceScreen({ projectId }: { projectId: string
     setTipo('normal');
     setFoto(null);
     setSelectedNodo(null);
-    setQuery('');
-    setResults([]);
-    setErrores({});
-    setErrorGeneral(null);
+    busqueda.limpiar();
+    limpiarTodo();
   }
 
   async function submit() {
-    if (!selected || saving) return;
-    const fecha = hoyProyecto(project);
-    const e = validarAvance({ cantidad, tipo, motivo, fecha, hoy: hoyProyecto(project), esPorcentaje });
-    setErrores(e);
-    setErrorGeneral(null);
-    if (hayErrores(e)) return;
-    try {
-      setSaving(true);
-      const res = await api.createAvance({
-        concepto_id: selected.id,
-        fecha,
-        cantidad_ejecutada: cantidad.trim(),
-        fotos: foto ? [foto] : [],
-        nodo_id: selectedNodo?.id,
-        tipo,
-        motivo: tipo === 'ajuste' ? motivo.trim() : undefined,
-      });
-      const resumen = esPorcentaje
-        ? `${selected.clave} · va al ${formatCantidad(cantidad)}%`
-        : `${selected.clave} · ${formatCantidad(cantidad)} ${selected.unidad}`;
-      if (res.es_retroceso) {
-        // Un retroceso se permite (nunca se rechaza) pero nunca se guarda
-        // como si nada: el aviso es distinto del de éxito normal.
-        showToast(`${t('avance.retrocesoTitulo')}. ${resumen}. ${t('avance.retrocesoDetalle')}`);
-      } else {
-        showToast(`${tipo === 'ajuste' ? t('avance.ajusteRegistrado') : t('avance.registrado')}: ${resumen}`);
+    if (!selected) return;
+    await ejecutar(async () => {
+      const fecha = hoyProyecto(project);
+      const e = validarAvance({ cantidad: cantidadApi, tipo, motivo, fecha, hoy: hoyProyecto(project), esPorcentaje });
+      if (!lectura.ok && lectura.motivo === 'decimales') {
+        e.cantidad = mensajeNumeroInvalido('decimales', DECIMALES_IMPORTE, t('capturaAvance.cantidad'));
       }
-      limpiarFormulario();
-    } catch (err: any) {
-      if (esErrorDeRed(err)) showToast(t('red.errorDeRed'));
-      else setErrorGeneral(err?.message || t('avance.noSePudoRegistrar'));
-    } finally {
-      setSaving(false);
-    }
+      if (ponerTodos(e) || hayErrores(e)) return;
+      try {
+        const res = await api.createAvance({
+          concepto_id: selected.id,
+          fecha,
+          cantidad_ejecutada: cantidadApi,
+          fotos: foto ? [foto] : [],
+          nodo_id: selectedNodo?.id,
+          tipo,
+          motivo: tipo === 'ajuste' ? motivo.trim() : undefined,
+        });
+        const resumen = esPorcentaje
+          ? `${selected.clave} · va al ${formatCantidad(cantidadApi)}%`
+          : `${selected.clave} · ${formatCantidad(cantidadApi)} ${selected.unidad}`;
+        if (res.es_retroceso) {
+          // Un retroceso se permite (nunca se rechaza) pero nunca se guarda
+          // como si nada: el aviso es distinto del de éxito normal.
+          showToast(`${t('avance.retrocesoTitulo')}. ${resumen}. ${t('avance.retrocesoDetalle')}`);
+        } else {
+          showToast(`${tipo === 'ajuste' ? t('avance.ajusteRegistrado') : t('avance.registrado')}: ${resumen}`);
+        }
+        limpiarFormulario();
+      } catch (err: any) {
+        errorDeGuardado(err, t('avance.noSePudoRegistrar'));
+      }
+    });
   }
 
   // Aviso informativo (nunca bloquea): la captura pasa de lo contratado.
   const avisoExcedente = (() => {
-    if (!selected || !cantidad || tipo === 'ajuste') return null;
+    if (!selected || !cantidadApi || tipo === 'ajuste') return null;
     if (esPorcentaje) {
-      const r = excedentePorcentajeAlCapturar(cantidad);
+      const r = excedentePorcentajeAlCapturar(cantidadApi);
       return r.excede ? t('avance.excedePorcentaje', { excedente: formatCantidad(r.excedente) }) : null;
     }
-    const r = excedenteAlCapturar(selected.cantidad_ejecutada_acumulada, cantidad, selected.cantidad);
+    const r = excedenteAlCapturar(selected.cantidad_ejecutada_acumulada, cantidadApi, selected.cantidad);
     if (!r.excede) return null;
     return t('avance.excedeVolumen', {
-      ejecutado: formatCantidad(centsToDecimalString(decimalStringToCents(selected.cantidad_ejecutada_acumulada) + decimalStringToCents(cantidad))),
+      ejecutado: formatCantidad(centsToDecimalString(decimalStringToCents(selected.cantidad_ejecutada_acumulada) + decimalStringToCents(cantidadApi))),
       contratado: formatCantidad(selected.cantidad),
       unidad: selected.unidad,
       excedente: formatCantidad(r.excedente),
@@ -181,15 +176,38 @@ export default function RegistrarAvanceScreen({ projectId }: { projectId: string
             <View style={styles.searchBar}>
               <Ionicons name="search-outline" size={18} color={colors.textMuted} />
               <TextInput
-                value={query}
-                onChangeText={setQuery}
+                value={busqueda.query}
+                onChangeText={busqueda.setQuery}
                 placeholder={`Buscar ${nombreConcepto(project).toLowerCase()} por clave o descripción…`}
                 placeholderTextColor={colors.textMuted}
                 style={styles.searchInput}
+                autoCorrect={false}
+                accessibilityLabel={`Buscar ${nombreConcepto(project).toLowerCase()}`}
               />
             </View>
-            {searching ? <ActivityIndicator color={colors.primary} style={{ marginTop: 16 }} /> : null}
-            {results.map((c) => (
+            {busqueda.cargando ? (
+              <ActivityIndicator color={colors.primary} style={{ marginTop: 16 }} accessibilityLabel={t('busquedaConceptos.cargando')} />
+            ) : null}
+            {!busqueda.cargando && busqueda.error ? (
+              <View style={styles.busquedaError}>
+                <InlineError message={busqueda.error} />
+                <Pressable accessibilityRole="button" onPress={busqueda.reintentar} style={styles.reintentarBtn}>
+                  <Ionicons name="refresh" size={14} color={colors.primary} />
+                  <Text style={styles.changeBtnTxt}>{t('busquedaConceptos.reintentar')}</Text>
+                </Pressable>
+              </View>
+            ) : null}
+            {!busqueda.cargando && !busqueda.error && busqueda.results.length === 0 ? (
+              <Text style={styles.ayudaTxt}>
+                {busqueda.buscado
+                  ? t('busquedaConceptos.sinResultados', { texto: busqueda.buscado })
+                  : t('busquedaConceptos.sinConceptos')}
+              </Text>
+            ) : null}
+            {!busqueda.cargando && !busqueda.error && !busqueda.buscado && busqueda.results.length > 0 ? (
+              <Text style={styles.ayudaTxt}>{t('busquedaConceptos.listaPorDefecto')}</Text>
+            ) : null}
+            {!busqueda.cargando && !busqueda.error ? busqueda.results.map((c) => (
               <Pressable accessibilityRole="button" key={c.id} style={styles.resultCard} onPress={() => setSelected(c)}>
                 <Text style={styles.resultPartida}>{c.partida_clave} — {c.partida_nombre}</Text>
                 <Text style={styles.resultClave}>{c.clave} · {c.descripcion}</Text>
@@ -199,7 +217,7 @@ export default function RegistrarAvanceScreen({ projectId }: { projectId: string
                     : `Meta: ${formatCantidad(c.meta)} ${c.unidad} · Ejecutado: ${formatCantidad(c.cantidad_ejecutada_acumulada)} de ${formatCantidad(c.cantidad)} ${c.unidad}`}
                 </Text>
               </Pressable>
-            ))}
+            )) : null}
           </>
         ) : (
           <View style={styles.formCard}>
@@ -245,7 +263,7 @@ export default function RegistrarAvanceScreen({ projectId }: { projectId: string
                     key={m}
                     accessibilityRole="tab"
                     accessibilityState={{ selected: tipo === m }}
-                    onPress={() => { setTipo(m); setErrores({}); setErrorGeneral(null); }}
+                    onPress={() => { setTipo(m); limpiarTodo(); }}
                     style={[styles.modeChip, tipo === m && styles.modeChipOn]}
                   >
                     <Text style={[styles.modeChipTxt, tipo === m && styles.modeChipTxtOn]}>
@@ -277,7 +295,12 @@ export default function RegistrarAvanceScreen({ projectId }: { projectId: string
             )}
             <TextInput
               value={cantidad}
-              onChangeText={(v) => { setCantidad(v); if (errores.cantidad) setErrores((x) => ({ ...x, cantidad: undefined })); }}
+              onChangeText={alCambiar('cantidad', setCantidad)}
+              onBlur={darFormatoCantidad}
+              onSubmitEditing={tipo === 'ajuste' ? undefined : submit}
+              returnKeyType={tipo === 'ajuste' ? 'next' : 'done'}
+              inputMode={tipo === 'ajuste' ? undefined : 'decimal'}
+              autoCorrect={false}
               placeholder={esPorcentaje ? '0.00' : tipo === 'ajuste' ? '-0.00' : '0.00'}
               keyboardType={tipo === 'ajuste' ? 'numbers-and-punctuation' : 'decimal-pad'}
               style={[styles.qtyInput, errores.cantidad ? styles.inputConError : null]}
@@ -292,7 +315,7 @@ export default function RegistrarAvanceScreen({ projectId }: { projectId: string
                 <Text style={styles.fieldLabel}>{t('avance.motivo')}</Text>
                 <TextInput
                   value={motivo}
-                  onChangeText={(v) => { setMotivo(v); if (errores.motivo) setErrores((x) => ({ ...x, motivo: undefined })); }}
+                  onChangeText={alCambiar('motivo', setMotivo)}
                   placeholder={t('avance.motivoPlaceholder')}
                   placeholderTextColor={colors.textMuted}
                   style={[styles.motivoInput, errores.motivo ? styles.inputConError : null]}
@@ -304,7 +327,7 @@ export default function RegistrarAvanceScreen({ projectId }: { projectId: string
               </>
             ) : null}
             <InlineError message={errores.fecha} />
-            {esPorcentaje && cantidad && esRetrocesoLocal(cantidad, selected.cantidad_ejecutada_acumulada) ? (
+            {esPorcentaje && cantidadApi && esRetrocesoLocal(cantidadApi, selected.cantidad_ejecutada_acumulada) ? (
               <Text style={styles.pctRetrocesoTxt}>
                 Este valor es menor que el {formatCantidad(selected.cantidad_ejecutada_acumulada)}% anterior — se permite, pero se marcará como retroceso.
               </Text>
@@ -457,6 +480,8 @@ const styles = StyleSheet.create({
   modeChipTxt: { fontSize: 13, fontWeight: '700', color: colors.textBody },
   modeChipTxtOn: { color: colors.textInverse },
   ayudaTxt: { fontSize: 11, color: colors.textMuted, marginTop: 4 },
+  busquedaError: { gap: 8 },
+  reintentarBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start', minHeight: 44 },
   inputConError: { borderColor: colors.error },
   avisoExcedente: {
     fontSize: 12, color: colors.textBody, backgroundColor: colors.warningBg, borderRadius: radius.md,

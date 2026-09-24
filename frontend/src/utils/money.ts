@@ -39,13 +39,17 @@ export function formatMoney(value: string | number | null | undefined): string {
   return `${negative ? '-' : ''}$${withThousands}.${fracPart}`;
 }
 
-/** Formatea una cantidad (no monetaria) para mostrar, sin separador de miles agresivo. */
+/** Formatea una cantidad (no monetaria) para mostrar en es-MX: miles con coma (45,000) y sin ceros sobrantes. */
 export function formatCantidad(value: string | null | undefined): string {
   const s = (value ?? '0').trim();
   const [intPart, fracPart] = s.split('.');
-  if (!fracPart) return intPart;
+  const negative = intPart.startsWith('-');
+  const digits = negative ? intPart.slice(1) : intPart;
+  const conMiles = /^\d+$/.test(digits) ? digits.replace(/\B(?=(\d{3})+(?!\d))/g, ',') : digits;
+  const entera = `${negative ? '-' : ''}${conMiles}`;
+  if (!fracPart) return entera;
   const trimmed = fracPart.replace(/0+$/, '');
-  return trimmed ? `${intPart}.${trimmed}` : intPart;
+  return trimmed ? `${entera}.${trimmed}` : entera;
 }
 
 /** Suma exacta de una lista de strings decimales, en centavos (para totalizar en UI). */

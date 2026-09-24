@@ -13,7 +13,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, FlatList, RefreshControl,
-  Modal, TextInput, KeyboardAvoidingView, Platform, Alert, useWindowDimensions,
+  Alert, useWindowDimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
@@ -25,13 +25,13 @@ import { api, AnalisisPeriodo, CurvaS, ExcepcionEvm, ActividadEvm, ActividadesEv
 import { colors, spacing, radius, shadow } from '@/src/theme';
 import { Button } from '@/src/components/Button';
 import { confirm } from '@/src/utils/confirm';
-import { formatMoney, isValidDecimalInput } from '@/src/utils/money';
+import { formatMoney } from '@/src/utils/money';
 import { downloadBlob } from '@/src/utils/downloadBlob';
 import { dayjs, CDMX_TZ } from '@/src/utils/tz';
 import { a11y, t } from '@/src/i18n';
 import { ExcedentesSection } from '@/src/components/ExcedentesSection';
+import { GastoRealForm } from '@/src/components/GastoRealForm';
 
-const FECHA_ISO_RE = /^\d{4}-\d{2}-\d{2}$/;
 type TabActividades = 'pendientes' | 'actuales' | 'por_venir';
 const TABS_ACTIVIDADES: { key: TabActividades; label: string }[] = [
   { key: 'pendientes', label: 'Pendientes' },
@@ -268,16 +268,7 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
   const [tabActividades, setTabActividades] = useState<TabActividades>('pendientes');
   const [gastos, setGastos] = useState<GastoReal[]>([]);
 
-  // Modal "Registrar gasto real (AC)" — fecha libre en vez de selector nativo
-  // (mismo criterio que fecha_reunion en MinutasView.tsx): así se puede
-  // capturar un gasto de un mes anterior que no se registró a tiempo, no
-  // solo el gasto de hoy.
   const [gastoFormOpen, setGastoFormOpen] = useState(false);
-  const [gastoFecha, setGastoFecha] = useState(() => dayjs().tz(CDMX_TZ).format('YYYY-MM-DD'));
-  const [gastoMonto, setGastoMonto] = useState('');
-  const [gastoDescripcion, setGastoDescripcion] = useState('');
-  const [gastoClave, setGastoClave] = useState('');
-  const [savingGasto, setSavingGasto] = useState(false);
   const [importandoGastos, setImportandoGastos] = useState(false);
   const [descargandoPlantilla, setDescargandoPlantilla] = useState(false);
   const [importandoAvances, setImportandoAvances] = useState(false);
@@ -311,39 +302,12 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
   }, [projectId]);
 
   function openGastoForm() {
-    setGastoFecha(dayjs().tz(CDMX_TZ).format('YYYY-MM-DD'));
-    setGastoMonto('');
-    setGastoDescripcion('');
-    setGastoClave('');
     setGastoFormOpen(true);
   }
 
-  async function onSaveGasto() {
-    if (!FECHA_ISO_RE.test(gastoFecha)) {
-      Alert.alert('Fecha inválida', 'Usa el formato AAAA-MM-DD, por ejemplo 2026-02-15.');
-      return;
-    }
-    if (!isValidDecimalInput(gastoMonto) || Number(gastoMonto) <= 0) {
-      Alert.alert('Monto inválido', 'Ingresa un número mayor a 0, con hasta 2 decimales.');
-      return;
-    }
-    if (!gastoDescripcion.trim()) {
-      Alert.alert('Falta información', 'Describe brevemente el gasto (ej. "Nómina semana 12").');
-      return;
-    }
-    try {
-      setSavingGasto(true);
-      await api.createGastoReal(projectId, {
-        fecha: gastoFecha, monto: gastoMonto, concepto_texto: gastoDescripcion.trim(),
-        concepto_clave: gastoClave.trim() || undefined,
-      });
-      setGastoFormOpen(false);
-      await cargar(rango, curva);
-    } catch (e: any) {
-      Alert.alert('No se pudo guardar', e?.message || 'Intentalo nuevamente.');
-    } finally {
-      setSavingGasto(false);
-    }
+  async function onGastoGuardado() {
+    setGastoFormOpen(false);
+    await cargar(rango, curva);
   }
 
   async function onDescargarPlantillaGastos() {
@@ -748,56 +712,12 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
         )}
       </ScrollView>
 
-      <Modal visible={gastoFormOpen} transparent animationType="slide" onRequestClose={() => setGastoFormOpen(false)}>
-        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
-          <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>Registrar gasto real</Text>
-
-            <Text style={styles.fieldLabel}>Fecha (AAAA-MM-DD)</Text>
-            <TextInput
-              value={gastoFecha}
-              onChangeText={setGastoFecha}
-              placeholder="2026-02-15"
-              placeholderTextColor={colors.textMuted}
-              style={styles.input}
-            />
-
-            <Text style={styles.fieldLabel}>Monto</Text>
-            <TextInput
-              value={gastoMonto}
-              onChangeText={setGastoMonto}
-              keyboardType="decimal-pad"
-              placeholder="200000.00"
-              placeholderTextColor={colors.textMuted}
-              style={styles.input}
-            />
-
-            <Text style={styles.fieldLabel}>Descripción</Text>
-            <TextInput
-              value={gastoDescripcion}
-              onChangeText={setGastoDescripcion}
-              placeholder="Ej. Nómina semana 12, Factura #445..."
-              placeholderTextColor={colors.textMuted}
-              style={styles.input}
-            />
-
-            <Text style={styles.fieldLabel}>Clave del concepto (opcional)</Text>
-            <TextInput
-              value={gastoClave}
-              onChangeText={setGastoClave}
-              placeholder="Ej. C-001 — déjalo vacío si es gasto general"
-              placeholderTextColor={colors.textMuted}
-              autoCapitalize="characters"
-              style={styles.input}
-            />
-
-            <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
-              <Button label="Cancelar" variant="secondary" onPress={() => setGastoFormOpen(false)} style={{ flex: 1 }} />
-              <Button label="Guardar" loading={savingGasto} onPress={onSaveGasto} style={{ flex: 1 }} />
-            </View>
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
+      <GastoRealForm
+        visible={gastoFormOpen}
+        projectId={projectId}
+        onClose={() => setGastoFormOpen(false)}
+        onSaved={onGastoGuardado}
+      />
     </View>
   );
 }
@@ -890,12 +810,4 @@ const styles = StyleSheet.create({
   actividadFooterRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 6 },
   actividadEjecutado: { fontSize: 12, color: colors.textBody },
   actividadPct: { fontSize: 13, fontWeight: '800' },
-  modalBackdrop: { flex: 1, backgroundColor: 'rgba(15,23,42,0.45)', justifyContent: 'flex-end' },
-  modalCard: { backgroundColor: colors.surface, borderTopLeftRadius: radius.lg, borderTopRightRadius: radius.lg, padding: spacing.lg },
-  modalTitle: { fontSize: 16, fontWeight: '800', color: colors.text, marginBottom: spacing.md },
-  fieldLabel: { fontSize: 12, fontWeight: '700', color: colors.textMuted, marginBottom: 6, marginTop: spacing.sm },
-  input: {
-    borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, paddingHorizontal: 12, paddingVertical: 10,
-    fontSize: 14, color: colors.text, backgroundColor: colors.bg,
-  },
 });
