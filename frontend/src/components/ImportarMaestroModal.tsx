@@ -280,18 +280,22 @@ export function ImportarMaestroModal({ visible, projectId, partidas, onClose, on
     <Modal visible={visible} animationType="slide" onRequestClose={handleClose}>
       <View style={styles.container}>
         <View style={styles.header}>
-          <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')}
-            onPress={() => {
-              if (step === 'archivo') handleClose();
-              else setStep(pasoAnterior(step, sheetNames.length > 1));
-            }}
-            hitSlop={10}
-          >
-            <Ionicons name={step === 'archivo' ? 'close' : 'chevron-back'} size={24} color={colors.text} />
-          </Pressable>
+          {/* C-15: un solo botón de cerrar (a la derecha). "Atrás" solo aparece en los pasos intermedios. */}
+          {step === 'archivo' || step === 'resultado' ? (
+            <View style={styles.headerEspacio} />
+          ) : (
+            <Pressable accessibilityRole="button" accessibilityLabel={t('catalogoNav.atrasPaso')}
+              onPress={() => setStep(pasoAnterior(step, sheetNames.length > 1))}
+              hitSlop={10}
+              style={styles.atrasBtn}
+            >
+              <Ionicons name="chevron-back" size={20} color={colors.primary} />
+              <Text style={styles.atrasTxt}>{t('catalogoNav.atras')}</Text>
+            </Pressable>
+          )}
           <Text style={styles.title}>Importar catálogo</Text>
-          <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} onPress={handleClose} hitSlop={10}>
-            <Ionicons name="close" size={22} color={colors.textMuted} />
+          <Pressable accessibilityRole="button" accessibilityLabel={t('catalogoNav.cerrarImportador')} onPress={handleClose} hitSlop={10} style={styles.cerrarBtn}>
+            <Ionicons name="close" size={22} color={colors.text} />
           </Pressable>
         </View>
 
@@ -669,6 +673,10 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface, borderBottomWidth: 1, borderBottomColor: colors.border,
   },
   title: { fontSize: 17, fontWeight: '800', color: colors.text },
+  headerEspacio: { width: 44, height: 44 },
+  atrasBtn: { flexDirection: 'row', alignItems: 'center', minHeight: 44, minWidth: 44, paddingRight: 8 },
+  atrasTxt: { fontSize: 14, fontWeight: '700', color: colors.primary },
+  cerrarBtn: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
   stepRow: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: spacing.md, paddingTop: spacing.sm },
   stepItem: { alignItems: 'center', gap: 4, flex: 1 },
   stepDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: colors.border },
