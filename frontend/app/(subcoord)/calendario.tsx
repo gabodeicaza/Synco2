@@ -7,12 +7,15 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useAuth } from '@/src/auth-context';
 import UniversalCalendar from '@/src/components/UniversalCalendar';
+import { useProyectoActivo } from '@/src/proyecto-activo-context';
 import { colors, radius, spacing } from '@/src/theme';
 
 export default function CalendarioSubcoordScreen() {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
-  const projectId = (user?.project_ids || [])[0] || '';
+  // P-05: mismo proyecto activo que Minutas y Noticias (con respaldo al primero del usuario).
+  const { proyectoId } = useProyectoActivo();
+  const projectId = proyectoId || (user?.project_ids || [])[0] || '';
   const isCoord = user?.role === 'coordinador_general';
 
   return (

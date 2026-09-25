@@ -10,31 +10,30 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { api, type Project } from '@/src/api';
+import { api } from '@/src/api';
+import { useProyectoActivo } from '@/src/proyecto-activo-context';
+import { t } from '@/src/i18n';
 import { colors, radius, shadow, spacing } from '@/src/theme';
 import { MensajesView } from '../(spec)/mensajes';
 
 export default function CoordMensajesScreen() {
   const insets = useSafeAreaInsets();
-  const [projects, setProjects] = useState<Project[]>([]);
+  // P-05: el proyecto activo es el mismo para Mensajes, Minutas, Noticias y Calendario.
+  const { proyectoId: selected, proyectos: projects, cargando, setProyectoId, recargar } = useProyectoActivo();
   const [unread, setUnread] = useState<Record<string, number>>({});
-  const [selected, setSelected] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [eligiendo, setEligiendo] = useState(false);
+  const [cargandoConteos, setCargandoConteos] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const loading = cargando || cargandoConteos;
 
   const load = useCallback(async () => {
     try {
-      const [data, counts] = await Promise.all([
-        api.listProjects(),
-        api.unreadCounts().catch(() => ({} as Record<string, number>)),
-      ]);
-      setProjects(data);
+      const counts = await api.unreadCounts().catch(() => ({} as Record<string, number>));
       setUnread(counts);
-      if (data.length === 1) setSelected(data[0].id);
     } catch {
       // silent
     } finally {
-      setLoading(false);
+      setCargandoConteos(false);
       setRefreshing(false);
     }
   }, []);
@@ -43,26 +42,35 @@ export default function CoordMensajesScreen() {
 
   // Marca como leidos al entrar a un proyecto y limpia el badge localmente.
   const openProject = useCallback(async (pid: string) => {
-    setSelected(pid);
+    setProyectoId(pid);
+    setEligiendo(false);
     setUnread((prev) => ({ ...prev, [pid]: 0 }));
     api.markProjectMessagesSeen(pid).catch(() => {});
-  }, []);
+  }, [setProyectoId]);
 
-  // Si hay un proyecto seleccionado, mostramos la pantalla de Mensajes con un
+  // Al abrir la pantalla con un proyecto activo se entra directo a sus mensajes (y se marcan como leídos).
+  useEffect(() => {
+    if (!selected || eligiendo) return;
+    setUnread((prev) => (prev[selected] ? { ...prev, [selected]: 0 } : prev));
+    api.markProjectMessagesSeen(selected).catch(() => {});
+  }, [selected, eligiendo]);
+
+  // Si hay un proyecto activo, mostramos la pantalla de Mensajes con un
   // header que permite volver al selector.
-  if (selected) {
+  if (selected && !eligiendo) {
     const proj = projects.find((p) => p.id === selected);
     return (
       <View style={{ flex: 1, backgroundColor: colors.bg }}>
         <View style={[styles.switcher, { paddingTop: insets.top + 8 }]}>
           <Pressable accessibilityRole="button"
-            onPress={() => { setSelected(null); load(); }}
+            onPress={() => { setEligiendo(true); load(); }}
             hitSlop={10}
             style={styles.switcherBtn}
+            accessibilityLabel={t('proyectoActivo.cambiar')}
           >
             <Ionicons name="swap-horizontal" size={16} color="#fff" />
             <Text style={styles.switcherTxt} numberOfLines={1}>
-              {proj?.name || 'Proyecto'} _ cambiar
+              {proj?.name || t('proyectoActivo.proyecto')} · {t('proyectoActivo.cambiar').toLowerCase()}
             </Text>
           </Pressable>
         </View>
@@ -103,7 +111,7 @@ export default function CoordMensajesScreen() {
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
-            onRefresh={() => { setRefreshing(true); load(); }}
+            onRefresh={() => { setRefreshing(true); void recargar(); load(); }}
             tintColor="#fff"
             colors={[colors.primary]}
           />

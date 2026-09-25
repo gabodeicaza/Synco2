@@ -18,6 +18,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Clipboard from 'expo-clipboard';
 
 import { useAuth } from '@/src/auth-context';
+import { useProyectoActivo } from '@/src/proyecto-activo-context';
 import { colors, radius, shadow, spacing } from '@/src/theme';
 import { HeaderMenu } from '@/src/components/HeaderMenu';
 import { api, FeedItem, FeedResponse, Project, ProjectEvent } from '@/src/api';
@@ -81,7 +82,9 @@ const RANGE_OPTIONS: { key: RangeKey; label: string }[] = [
 export default function SpecFeedScreen() {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
-  const projectId = (user?.project_ids || [])[0] || '';
+  // P-05: mismo proyecto activo que Minutas, Mensajes, Noticias y Calendario (con respaldo al primero del usuario).
+  const { proyectoId } = useProyectoActivo();
+  const projectId = proyectoId || (user?.project_ids || [])[0] || '';
 
   const [project, setProject] = useState<Project | null>(null);
   const [myMeetings, setMyMeetings] = useState<ProjectEvent[]>([]);

@@ -110,7 +110,7 @@ def _db_minuta():
     db.location_nodes = MagicMock()
     db.location_nodes.find_one = AsyncMock(return_value={"id": "n1", "name": "Frente 1", "parent_id": None, "project_id": "p1"})
     db.users = MagicMock()
-    db.users.find = MagicMock(return_value=MagicMock(to_list=AsyncMock(return_value=[{"id": "u1", "name": "Ana", "role": "sub_coordinador"}])))
+    db.users.find = MagicMock(return_value=MagicMock(to_list=AsyncMock(return_value=[{"id": "u1", "name": "Ana", "role": "sub_coordinador", "project_ids": ["p1"]}])))
     db.minutas = MagicMock()
     db.minutas.count_documents = AsyncMock(return_value=0)
     db.minutas.insert_one = AsyncMock()

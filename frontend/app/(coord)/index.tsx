@@ -11,6 +11,7 @@ import { colors, radius, spacing, shadow } from '@/src/theme';
 import { roleLabel } from '@/src/utils/roles';
 import { Button } from '@/src/components/Button';
 import { MyMeetingsPanel, MyMeetingItem } from '@/src/components/MyMeetingsPanel';
+import { ordenarReuniones } from '@/src/utils/reuniones';
 
 export default function CoordHome() {
   const insets = useSafeAreaInsets();
@@ -40,7 +41,7 @@ export default function CoordHome() {
               .catch(() => [] as MyMeetingItem[])
           )
         );
-        const merged = perProject.flat().sort((a, b) => (a.start_at || '').localeCompare(b.start_at || ''));
+        const merged = ordenarReuniones(perProject.flat());
         setMyMeetings(merged.slice(0, 8));
       } finally {
         setMyMeetingsLoading(false);
