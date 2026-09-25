@@ -18,6 +18,8 @@ import { colors, radius, spacing, shadow } from '@/src/theme';
 import { MEASUREMENT_LABELS, MEASUREMENT_ICONS, MeasurementType } from '@/src/utils/roles';
 import { confirm } from '@/src/utils/confirm';
 import { requestMediaLibraryPermission } from '@/src/utils/permissions';
+import { UbicacionGpsNodo } from '@/src/components/UbicacionGpsNodo';
+import { puntoGpsDeNodo } from '@/src/utils/gpsNodo';
 import { a11y } from '@/src/i18n';
 
 // =============================================================================
@@ -1033,6 +1035,15 @@ function NodeEditorModal({
                     </View>
                   ) : null}
                 </View>
+              ) : null}
+
+              {editor?.kind === 'edit' ? (
+                <UbicacionGpsNodo
+                  key={editor.node.id}
+                  nodeId={editor.node.id}
+                  punto={puntoGpsDeNodo(editor.node as any)}
+                  onChanged={onCoverChanged}
+                />
               ) : null}
 
               {err ? (
