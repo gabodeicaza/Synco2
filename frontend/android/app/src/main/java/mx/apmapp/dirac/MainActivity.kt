@@ -21,16 +21,16 @@ class MainActivity : ReactActivity() {
     SplashScreenManager.registerOnActivity(this)
     // @generated end expo-splashscreen
     super.onCreate(savedInstanceState)
-    if (BuildConfig.DEBUG) android.util.Log.i("SynCo", "MainActivity.onCreate - Splash registered")
+    if (BuildConfig.DEBUG) android.util.Log.i("Dirac", "MainActivity.onCreate - Splash registered")
 
     // [FIX 2026-07-15] Native safety timeout to unblock SplashScreen hang if JS fails.
     val handler = android.os.Handler(android.os.Looper.getMainLooper())
     handler.postDelayed({
         try {
-            if (BuildConfig.DEBUG) android.util.Log.i("SynCo", "Native safety timeout: Forcing SplashScreen hide")
+            if (BuildConfig.DEBUG) android.util.Log.i("Dirac", "Native safety timeout: Forcing SplashScreen hide")
             SplashScreenManager.hide()
         } catch (e: Exception) {
-            if (BuildConfig.DEBUG) android.util.Log.w("SynCo", "Failed to hide splash screen natively: ${e.message}")
+            if (BuildConfig.DEBUG) android.util.Log.w("Dirac", "Failed to hide splash screen natively: ${e.message}")
         }
     }, 6000)
   }
