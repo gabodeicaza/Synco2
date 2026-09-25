@@ -1,4 +1,4 @@
-// SynCo v2.0 _ Canje de invitacion in-app.
+// Dirac · Canje de invitacion in-app.
 // Permite al usuario pegar el token alfanumerico recibido por WhatsApp/correo,
 // previsualizar a que proyecto/rol esta siendo invitado y crear su contrasena,
 // todo sin salir de la app (sin abrir URLs externas).
@@ -50,7 +50,7 @@ export default function RedeemInviteScreen() {
   }
 
   async function validateToken() {
-    if (!cleanToken) { setTokenError('Pega o escribe tu codigo de invitacion.'); return; }
+    if (!cleanToken) { setTokenError('Pega o escribe tu código de invitación.'); return; }
     setTokenError(null);
     setValidating(true);
     try {
@@ -58,7 +58,7 @@ export default function RedeemInviteScreen() {
       setPreview(p);
       setStage('password');
     } catch (e: any) {
-      setTokenError(e?.message || 'Codigo no valido o expirado. Pide uno nuevo a tu Coordinador.');
+      setTokenError(e?.message || 'Código no válido o expirado. Pide uno nuevo a tu Coordinador.');
     } finally {
       setValidating(false);
     }
@@ -66,8 +66,8 @@ export default function RedeemInviteScreen() {
 
   async function submitPassword() {
     setSubmitError(null);
-    if (password.length < 6) { setSubmitError('La contrasena debe tener al menos 6 caracteres.'); return; }
-    if (password !== password2) { setSubmitError('Las contrasenas no coinciden.'); return; }
+    if (password.length < 6) { setSubmitError('La contraseña debe tener al menos 6 caracteres.'); return; }
+    if (password !== password2) { setSubmitError('Las contraseñas no coinciden.'); return; }
     setBusy(true);
     try {
       const user = await acceptInvite(cleanToken, password);
@@ -93,7 +93,7 @@ export default function RedeemInviteScreen() {
   return (
     <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
       <ScreenHeader
-        title="Unirme con codigo"
+        title="Unirme con código"
         onBack={stage === 'password' ? backToToken : backToLogin}
         fallbackHref="/(auth)/login"
       />
@@ -107,24 +107,24 @@ export default function RedeemInviteScreen() {
             <Ionicons name={stage === 'token' ? 'mail-open-outline' : 'shield-checkmark'} size={28} color={colors.primary} />
           </View>
           <Text style={styles.heroTitle}>
-            {stage === 'token' ? 'Pega tu codigo de invitacion' : '!Listo! Configura tu acceso'}
+            {stage === 'token' ? 'Pega tu código de invitación' : '¡Listo! Configura tu acceso'}
           </Text>
           <Text style={styles.heroSubtitle}>
             {stage === 'token'
-              ? 'Tu Coordinador te envio un codigo alfanumerico por WhatsApp o correo. Pegalo abajo para entrar.'
-              : 'Crea una contrasena para acceder a tu cuenta.'}
+              ? 'Tu Coordinador te envió un código alfanumérico por WhatsApp o correo. Pégalo abajo para entrar.'
+              : 'Crea una contraseña para acceder a tu cuenta.'}
           </Text>
         </View>
 
         {stage === 'token' ? (
           <View style={styles.card}>
-            <Text style={styles.label}>Codigo de invitacion</Text>
+            <Text style={styles.label}>Código de invitación</Text>
             <View style={styles.inputWrap}>
               <Ionicons name="key-outline" size={18} color={colors.textMuted} />
               <TextInput
                 value={token}
                 onChangeText={(t) => { setToken(t); setTokenError(null); }}
-                placeholder="Ej. KX9P-3M2J-7B1V_"
+                placeholder="Ej. KX9P-3M2J-7B1V…"
                 placeholderTextColor={colors.textMuted}
                 autoCapitalize="characters"
                 autoCorrect={false}
@@ -149,7 +149,7 @@ export default function RedeemInviteScreen() {
 
             <View style={{ height: spacing.md }} />
             <Button
-              label={validating ? 'Validando_' : 'Validar codigo'}
+              label={validating ? 'Validando…' : 'Validar código'}
               onPress={validateToken}
               loading={validating}
               disabled={!cleanToken || validating}
@@ -157,7 +157,7 @@ export default function RedeemInviteScreen() {
               icon={<Ionicons name="arrow-forward" size={18} color="#fff" />}
             />
             <Pressable accessibilityRole="button" onPress={backToLogin} hitSlop={8} style={styles.linkRow}>
-              <Text style={styles.linkText}>Volver a inicio de sesion</Text>
+              <Text style={styles.linkText}>Volver a inicio de sesión</Text>
             </Pressable>
           </View>
         ) : (
@@ -168,18 +168,18 @@ export default function RedeemInviteScreen() {
               <PreviewRow label="Tu correo" value={preview?.email || ''} icon="mail-outline" />
               <PreviewRow label="Tu nombre" value={preview?.name || ''} icon="person-outline" />
               {preview?.puesto ? <PreviewRow label="Puesto" value={preview.puesto} icon="hammer-outline" /> : null}
-              {preview?.area_name ? <PreviewRow label="Area / Disciplina" value={preview.area_name} icon="layers-outline" /> : null}
+              {preview?.area_name ? <PreviewRow label="Área / Disciplina" value={preview.area_name} icon="layers-outline" /> : null}
             </View>
 
             <View style={styles.card}>
-              <Text style={styles.cardTitle}>Crear contrasena</Text>
-              <Text style={styles.label}>Nueva contrasena</Text>
+              <Text style={styles.cardTitle}>Crear contraseña</Text>
+              <Text style={styles.label}>Nueva contraseña</Text>
               <View style={styles.inputWrap}>
                 <Ionicons name="lock-closed-outline" size={18} color={colors.textMuted} />
                 <TextInput
                   value={password}
                   onChangeText={setPassword}
-                  placeholder="Minimo 6 caracteres"
+                  placeholder="Mínimo 6 caracteres"
                   placeholderTextColor={colors.textMuted}
                   secureTextEntry={!showPwd}
                   style={styles.input}
@@ -190,13 +190,13 @@ export default function RedeemInviteScreen() {
                 </Pressable>
               </View>
 
-              <Text style={[styles.label, { marginTop: spacing.md }]}>Repetir contrasena</Text>
+              <Text style={[styles.label, { marginTop: spacing.md }]}>Repetir contraseña</Text>
               <View style={styles.inputWrap}>
                 <Ionicons name="lock-closed-outline" size={18} color={colors.textMuted} />
                 <TextInput
                   value={password2}
                   onChangeText={setPassword2}
-                  placeholder="Repite la contrasena"
+                  placeholder="Repite la contraseña"
                   placeholderTextColor={colors.textMuted}
                   secureTextEntry={!showPwd}
                   style={styles.input}
@@ -215,14 +215,14 @@ export default function RedeemInviteScreen() {
 
               <View style={{ height: spacing.md }} />
               <Button
-                label="Aceptar invitacion y entrar"
+                label="Aceptar invitación y entrar"
                 onPress={submitPassword}
                 loading={busy}
                 fullWidth
                 icon={<Ionicons name="checkmark" size={18} color="#fff" />}
               />
               <Pressable accessibilityRole="button" onPress={backToToken} hitSlop={8} style={styles.linkRow}>
-                <Text style={styles.linkText}>Usar otro codigo</Text>
+                <Text style={styles.linkText}>Usar otro código</Text>
               </Pressable>
             </View>
           </>

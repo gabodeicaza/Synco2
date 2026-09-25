@@ -74,7 +74,7 @@ export default function ImpactoAmbientalScreen({ projectId }: { projectId: strin
       setFormOpen(false);
       await load();
     } catch (e: any) {
-      Alert.alert('No se pudo guardar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo guardar', e?.message || 'Inténtalo nuevamente.');
     } finally {
       setSaving(false);
     }

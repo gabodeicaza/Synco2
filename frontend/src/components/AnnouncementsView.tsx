@@ -108,8 +108,8 @@ export default function AnnouncementsView({
     if (!editing) return;
     const t = editing.title.trim();
     const b = editing.body.trim();
-    if (!t) { setError('Titulo requerido'); return; }
-    if (!b) { setError('Cuerpo requerido'); return; }
+    if (!t) { setError('Título requerido'); return; }
+    if (!b) { setError('Contenido requerido'); return; }
     try {
       setSaving(true);
       setError(null);
@@ -227,7 +227,7 @@ export default function AnnouncementsView({
             const j = (a.jerarquia || '').toLowerCase();
             const jCfg = JERARQUIA_COLORS[j];
             const audName = a.audiencia && a.audiencia !== 'general'
-              ? (areas.find((ar) => ar.id === a.audiencia)?.name || 'Area especifica')
+              ? (areas.find((ar) => ar.id === a.audiencia)?.name || 'Área especifica')
               : 'Todo el proyecto';
             return (
             <View
@@ -318,11 +318,11 @@ export default function AnnouncementsView({
             </Text>
             <ScrollView contentContainerStyle={{ gap: spacing.sm, paddingBottom: spacing.sm }} keyboardShouldPersistTaps="handled">
               <View>
-                <Text style={styles.label}>Titulo</Text>
+                <Text style={styles.label}>Título</Text>
                 <TextInput
                   value={editing?.title || ''}
                   onChangeText={(t) => setEditing((e) => e ? { ...e, title: t } : e)}
-                  placeholder="Ej. Cierre Tramo 2 sabado"
+                  placeholder="Ej. Cierre Tramo 2 sábado"
                   placeholderTextColor={colors.textMuted}
                   style={styles.input}
                   maxLength={140}
@@ -334,7 +334,7 @@ export default function AnnouncementsView({
                 <TextInput
                   value={editing?.body || ''}
                   onChangeText={(t) => setEditing((e) => e ? { ...e, body: t } : e)}
-                  placeholder="Describe la noticia. Las saltos de linea se respetan."
+                  placeholder="Describe la noticia. Los saltos de línea se respetan."
                   placeholderTextColor={colors.textMuted}
                   style={[styles.input, styles.inputArea]}
                   multiline
@@ -346,7 +346,7 @@ export default function AnnouncementsView({
               <View style={styles.switchRow}>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.label}>Fijar al inicio</Text>
-                  <Text style={styles.helper}>Aparecera arriba del feed para todos los miembros del proyecto.</Text>
+                  <Text style={styles.helper}>Aparecerá arriba del feed para todos los miembros del proyecto.</Text>
                 </View>
                 <Switch
                   value={!!editing?.pinned}
@@ -364,7 +364,7 @@ export default function AnnouncementsView({
               />
 
               <View>
-                <Text style={styles.label}>Jerarquia</Text>
+                <Text style={styles.label}>Jerarquía</Text>
                 <View style={styles.chipsRow}>
                   <Pressable accessibilityRole="button"
                     onPress={() => setEditing((e) => e ? { ...e, jerarquia: null } : e)}
@@ -423,7 +423,7 @@ export default function AnnouncementsView({
               <View>
                 <Text style={styles.label}>Vincular a Nodo (opcional)</Text>
                 <Text style={styles.helper}>
-                  Si lo seleccionas, esta noticia aparecera en la seccion del nodo al exportar reportes (solo si es Importante o Urgente).
+                  Si lo seleccionas, esta noticia aparecerá en la sección del nodo al exportar reportes (solo si es Importante o Urgente).
                 </Text>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6, paddingVertical: 6 }}>
                   <Pressable accessibilityRole="button"

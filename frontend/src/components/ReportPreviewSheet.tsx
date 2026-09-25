@@ -34,6 +34,7 @@ import { fmtDateTimeCDMX } from '@/src/utils/tz';
 import { buildReportShareText, formatDynamicValue } from '@/src/utils/reportText';
 import { shareWithAutoRecover } from '@/src/utils/share';
 import { showToast } from '@/src/utils/toast';
+import { unirOVacio } from '@/src/utils/texto';
 import { a11y } from '@/src/i18n';
 
 interface ReportPreviewSheetProps {
@@ -215,13 +216,13 @@ export function ReportPreviewSheet({
       ''
     ).trim() || 'Sin Título';
 
-  const path = (source.node_path_names || []).join(' _ ') || '_';
+  const path = unirOVacio(source.node_path_names || []);
   const author =
     source.captured_by_name ||
     source.user_name ||
     source.author_name ||
     'Especialista';
-  const area = source.area_name || 'Sin area asignada';
+  const area = source.area_name || 'Sin área asignada';
   const created = fmtDateTimeCDMX(source.created_at);
   const photoUri: string | null = source.thumbnail_base64
     ? `data:image/jpeg;base64,${source.thumbnail_base64}`
@@ -314,7 +315,7 @@ export function ReportPreviewSheet({
       // resto de este flujo escribe cada foto a expo-file-system (inexistente
       // en web) antes de compartir. En vez de intentarlo y truenar, avisamos.
       if (Platform.OS === 'web') {
-        Alert.alert('No disponible en web', 'Compartir fotos individuales no esta disponible en la version web. Descarga el reporte en PDF.');
+        Alert.alert('No disponible en web', 'Compartir fotos individuales no esta disponible en la versión web. Descarga el reporte en PDF.');
         return;
       }
 
@@ -443,7 +444,7 @@ export function ReportPreviewSheet({
             {galleryLoading && galleryImages.length === 0 ? (
               <View style={[styles.image, styles.imagePlaceholder]}>
                 <ActivityIndicator color="#1E40AF" />
-                <Text style={styles.imagePlaceholderTxt}>Cargando fotos_</Text>
+                <Text style={styles.imagePlaceholderTxt}>Cargando fotos…</Text>
               </View>
             ) : galleryImages.length > 0 ? (
               <View style={{ gap: 10 }}>
@@ -492,10 +493,10 @@ export function ReportPreviewSheet({
             <Row icon="grid-outline" text={area} />
             <Row icon="location-outline" text={path} numberOfLines={3} />
 
-            {measurement ? <Block title="Medicion" body={measurement} /> : null}
+            {measurement ? <Block title="Medición" body={measurement} /> : null}
             {avance ? <Block title="Avance" body={avance} /> : null}
             {medicion && !measurement ? (
-              <Block title="Medicion" body={medicion} />
+              <Block title="Medición" body={medicion} />
             ) : null}
 
             {/* Datos especificos de la plantilla elegida al capturar (si aplica). */}
@@ -563,7 +564,7 @@ export function ReportPreviewSheet({
                   <Ionicons name="share-social-outline" size={16} color="#1E40AF" />
                 )}
                 <Text style={styles.copyTextBtnTxt}>
-                  {sharingPhotos ? 'Compartiendo_' : 'Compartir fotos'}
+                  {sharingPhotos ? 'Compartiendo…' : 'Compartir fotos'}
                 </Text>
               </Pressable>
               {onShare ? (
@@ -589,7 +590,7 @@ export function ReportPreviewSheet({
                     <Ionicons name="logo-whatsapp" size={18} color="#FFFFFF" />
                   )}
                   <Text style={styles.waTxt}>
-                    {sharing ? 'Compartiendo_' : 'Compartir'}
+                    {sharing ? 'Compartiendo…' : 'Compartir'}
                   </Text>
                 </Pressable>
               ) : null}
@@ -688,7 +689,7 @@ function EditCaptionsModal({
               <Text style={styles.editHint}>
                 Estas descripciones aparecen al pie de cada foto en el reporte
                 ejecutivo (PPTX/PDF). Max. 160 caracteres para no rebasar 4
-                lineas.
+                líneas.
               </Text>
 
               {images.map((b64, i) => (
@@ -703,13 +704,13 @@ function EditCaptionsModal({
                   />
                   <View style={{ flex: 1, gap: 4 }}>
                     <Text style={styles.editFieldLabel}>
-                      Descripcion foto {i + 1}
+                      Descripción foto {i + 1}
                     </Text>
                     <TextInput
                       placeholder={
                         i === 0
-                          ? 'Descripcion de la primera foto (max. 4 lineas)'
-                          : 'Descripcion de la segunda foto (max. 4 lineas)'
+                          ? 'Descripción de la primera foto (max. 4 líneas)'
+                          : 'Descripción de la segunda foto (max. 4 líneas)'
                       }
                       placeholderTextColor="#94A3B8"
                       style={styles.editInput}

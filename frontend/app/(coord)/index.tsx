@@ -95,9 +95,9 @@ export default function CoordHome() {
         ) : projects.length === 0 ? (
           <View style={styles.emptyBlock}>
             <Ionicons name="folder-open-outline" size={48} color={colors.textMuted} />
-            <Text style={styles.emptyTitle}>Aun no has creado proyectos</Text>
+            <Text style={styles.emptyTitle}>Aún no has creado proyectos</Text>
             <Text style={styles.emptyMsg}>
-              Crea tu primer proyecto para comenzar a configurar su arbol de nodos, areas e invitaciones.
+              Crea tu primer proyecto para comenzar a configurar su árbol de nodos, áreas e invitaciones.
             </Text>
           </View>
         ) : (
@@ -130,7 +130,7 @@ function ProjectCard({ project }: { project: Project }) {
       <View style={{ flex: 1, gap: 2 }}>
         <Text style={styles.cardTitle} numberOfLines={1}>{project.name}</Text>
         <Text style={styles.cardMeta} numberOfLines={1}>
-          {project.constructora} _ {project.contract_number}
+          {project.constructora} · {project.contract_number}
         </Text>
       </View>
       <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />

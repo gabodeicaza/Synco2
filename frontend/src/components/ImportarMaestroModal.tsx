@@ -106,7 +106,7 @@ export function ImportarMaestroModal({ visible, projectId, partidas, onClose, on
       const { blob, filename } = await api.downloadImportEvmPlantilla();
       await downloadBlob(blob, filename, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     } catch (e: any) {
-      Alert.alert('No se pudo descargar la plantilla', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo descargar la plantilla', e?.message || 'Inténtalo nuevamente.');
     } finally {
       setDescargandoPlantilla(false);
     }
@@ -227,7 +227,7 @@ export function ImportarMaestroModal({ visible, projectId, partidas, onClose, on
       setFilas((cur) => cur.map((f) => (f.fila === fila ? res.fila : f)));
       setResumen(res.resumen);
     } catch (e: any) {
-      Alert.alert('No se pudo corregir', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo corregir', e?.message || 'Inténtalo nuevamente.');
     }
   }
 
@@ -238,7 +238,7 @@ export function ImportarMaestroModal({ visible, projectId, partidas, onClose, on
       setFilas((cur) => cur.map((f) => (f.fila === fila ? res.fila : f)));
       setResumen(res.resumen);
     } catch (e: any) {
-      Alert.alert('No se pudo descartar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo descartar', e?.message || 'Inténtalo nuevamente.');
     }
   }
 

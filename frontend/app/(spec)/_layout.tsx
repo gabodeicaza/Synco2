@@ -1,4 +1,4 @@
-// SynCo v2.0 _ Layout del Especialista con Bottom Tabs.
+// Dirac · Layout del Especialista con Bottom Tabs.
 // Replica el patron de la imagen objetivo: Noticias _ Inicio _ Nuevo _ Mensajes _ Calendario.
 import React, { useEffect } from 'react';
 import { Platform, StyleSheet, View } from 'react-native';

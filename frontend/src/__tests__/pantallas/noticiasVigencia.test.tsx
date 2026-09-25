@@ -63,8 +63,8 @@ describe('Noticias: vigencia (G-05)', () => {
     render(<Noticias />);
     fireEvent.press(await screen.findByLabelText('Agregar'));
     expect(screen.getByLabelText('24 horas').props.accessibilityState.selected).toBe(true);
-    fireEvent.changeText(screen.getByPlaceholderText('Ej. Suspension de actividades 18-jul'), 'Aviso');
-    fireEvent.changeText(screen.getByPlaceholderText('Contenido completo del anuncio_'), 'Texto');
+    fireEvent.changeText(screen.getByPlaceholderText('Ej. Suspensión de actividades 18-jul'), 'Aviso');
+    fireEvent.changeText(screen.getByPlaceholderText('Contenido completo del anuncio…'), 'Texto');
     fireEvent.press(screen.getByLabelText('48 horas'));
     fireEvent.press(screen.getByText('Publicar'));
     await waitFor(() => expect(crear).toHaveBeenCalledTimes(1));

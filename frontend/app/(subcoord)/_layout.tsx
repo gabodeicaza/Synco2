@@ -1,4 +1,4 @@
-// SynCo _ Layout del Sub-coordinador con Bottom Tabs (paridad con (spec)).
+// Dirac · Layout del Sub-coordinador con Bottom Tabs (paridad con (spec)).
 // Tabs: Noticias _ Inicio _ Nuevo _ Mensajes _ Calendario.
 import React, { useEffect } from 'react';
 import { Platform, StyleSheet, View } from 'react-native';

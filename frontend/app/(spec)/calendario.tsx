@@ -1,4 +1,4 @@
-// SynCo v2.0 _ Tab "Calendario" (Especialista)
+// Dirac · Tab "Calendario" (Especialista)
 // Vista universal: usa UniversalCalendar (mismo componente para todos los roles).
 import React from 'react';
 import { StatusBar, StyleSheet, View } from 'react-native';

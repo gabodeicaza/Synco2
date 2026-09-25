@@ -1,4 +1,4 @@
-// Panel de Metas Diarias Globales (SynCo v2 _ Sprint 2).
+// Panel de Metas Diarias Globales (Dirac · Sprint 2).
 // - Coordinador general y Sub-coordinador pueden crear / marcar / borrar metas.
 // - Especialistas en modo lectura.
 // - Persistencia via API /api/projects/{pid}/daily_goals.
@@ -70,7 +70,7 @@ export function DailyGoalsPanel({ projectId }: { projectId: string }) {
 
   async function onDelete(g: DailyGoal) {
     if (!canWrite) return;
-    const ok = await confirm('Eliminar meta', `?Quitar "${g.text}"?`, { confirmText: 'Eliminar', destructive: true });
+    const ok = await confirm('Eliminar meta', `¿Quitar "${g.text}"?`, { confirmText: 'Eliminar', destructive: true });
     if (!ok) return;
     try {
       await api.deleteDailyGoal(projectId, g.id);
@@ -91,9 +91,9 @@ export function DailyGoalsPanel({ projectId }: { projectId: string }) {
           <Ionicons name="checkmark-done" size={16} color="#fff" />
         </View>
         <View style={{ flex: 1 }}>
-          <Text style={styles.title}>Metas del dia</Text>
+          <Text style={styles.title}>Metas del día</Text>
           <Text style={styles.subtitle}>
-            {total === 0 ? 'Aun no hay metas registradas' : `${done}/${total} completadas _ ${pct}%`}
+            {total === 0 ? 'Aún no hay metas registradas' : `${done}/${total} completadas · ${pct}%`}
           </Text>
         </View>
         {!canWrite ? (
@@ -126,8 +126,8 @@ export function DailyGoalsPanel({ projectId }: { projectId: string }) {
           <Ionicons name="flag-outline" size={20} color={colors.textMuted} />
           <Text style={styles.emptyTxt}>
             {canWrite
-              ? 'Agrega la primera meta del dia para tu equipo.'
-              : 'Aun no se han publicado metas para hoy.'}
+              ? 'Agrega la primera meta del día para tu equipo.'
+              : 'Aún no se han publicado metas para hoy.'}
           </Text>
         </View>
       ) : (
@@ -177,7 +177,7 @@ export function DailyGoalsPanel({ projectId }: { projectId: string }) {
           <TextInput
             value={text}
             onChangeText={setText}
-            placeholder="Nueva meta del dia_"
+            placeholder="Nueva meta del día…"
             placeholderTextColor={colors.textMuted}
             style={styles.input}
             editable={!busy}

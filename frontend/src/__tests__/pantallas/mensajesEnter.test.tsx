@@ -34,7 +34,7 @@ jest.setTimeout(30000);
 async function abrirChat() {
   render(<MensajesView projectId="p1" />);
   fireEvent.press(await screen.findByText('# General'));
-  return screen.findByPlaceholderText('Escribe un mensaje_');
+  return screen.findByPlaceholderText('Escribe un mensaje…');
 }
 
 function teclear(campo: any, nativeEvent: Record<string, unknown>) {

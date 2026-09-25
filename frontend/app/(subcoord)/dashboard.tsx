@@ -40,6 +40,7 @@ import {
 import { shareWithAutoRecover } from '@/src/utils/share';
 import { t, a11y } from '@/src/i18n';
 import { fmtFechaHora } from '@/src/utils/fechas';
+import { unirOVacio } from '@/src/utils/texto';
 
 export default function SubCoordDashboard() {
   const insets = useSafeAreaInsets();
@@ -140,7 +141,7 @@ export default function SubCoordDashboard() {
       setError(null);
       await Promise.all([loadStructure(projectId), loadFeed(projectId)]);
     } catch (e: any) {
-      setError(e?.message || 'No se pudo cargar la informacion');
+      setError(e?.message || 'No se pudo cargar la información');
     }
   }, [loadStructure, loadFeed]);
 
@@ -169,7 +170,7 @@ export default function SubCoordDashboard() {
   // del feed, no de la estructura completa del proyecto.
   useEffect(() => {
     if (!pid || loadedStructureForPid.current !== pid) return;
-    loadFeed(pid).catch((e: any) => setError(e?.message || 'No se pudo cargar la informacion'));
+    loadFeed(pid).catch((e: any) => setError(e?.message || 'No se pudo cargar la información'));
   }, [debouncedQuery, period, pid, loadFeed]);
 
   const onRefresh = useCallback(async () => {
@@ -310,7 +311,7 @@ export default function SubCoordDashboard() {
       const ts = Date.now();
       const fileUri = `${FileSystem.cacheDirectory}resumen_ejecutivo_${ts}.txt`;
       const header = `${t('marca.resumenEjecutivo')}\n${
-        aiMeta ? `${aiMeta.reports_count} reportes _ ultimas ${aiMeta.period_hours}h\n` : ''
+        aiMeta ? `${aiMeta.reports_count} reportes · últimas ${aiMeta.period_hours}h\n` : ''
       }\n`;
       await FileSystem.writeAsStringAsync(fileUri, header + aiSummary, {
         encoding: FileSystem.EncodingType.UTF8,
@@ -321,7 +322,7 @@ export default function SubCoordDashboard() {
         UTI: 'public.plain-text',
       });
     } catch (e: any) {
-      Alert.alert('No se pudo compartir', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo compartir', e?.message || 'Inténtalo nuevamente.');
     }
   }
 
@@ -336,15 +337,15 @@ export default function SubCoordDashboard() {
         return;
       }
 
-      const path = (item.node_path_names || []).join(' _ ') || '_';
+      const path = unirOVacio(item.node_path_names || []);
       const ts = item.created_at ? fmtFechaHora(item.created_at) : '';
       const captionLines = [
         `*${t('marca.reporteDeObra')}*`,
         '',
-        `__ *Ubicacion:* ${path}`,
-        `__ *Capturado por:* ${item.captured_by_name || '_'}`,
-        ts ? `__ *Fecha:* ${ts}` : '',
-        item.area_name ? `___ *Area:* ${item.area_name}` : '',
+        `*Ubicación:* ${path}`,
+        `*Capturado por:* ${item.captured_by_name || '—'}`,
+        ts ? `*Fecha:* ${ts}` : '',
+        item.area_name ? `*Área:* ${item.area_name}` : '',
         item.avance ? `\n__ *Avance:*\n${item.avance}` : '',
       ].filter(Boolean);
       const caption = captionLines.join('\n');
@@ -376,7 +377,7 @@ export default function SubCoordDashboard() {
         });
       }
     } catch (e: any) {
-      Alert.alert('No se pudo compartir', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo compartir', e?.message || 'Inténtalo nuevamente.');
     } finally {
       setSharingReportId(null);
     }
@@ -422,7 +423,7 @@ export default function SubCoordDashboard() {
     } catch (e: any) {
       Alert.alert(
         'No se pudo exportar',
-        e?.message || 'Intentalo nuevamente.',
+        e?.message || 'Inténtalo nuevamente.',
       );
     } finally {
       setExporting(false);
@@ -501,7 +502,7 @@ export default function SubCoordDashboard() {
       }
       setAdvExportOpen(false);
     } catch (e: any) {
-      Alert.alert('No se pudo exportar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo exportar', e?.message || 'Inténtalo nuevamente.');
     } finally {
       setAdvExporting(false);
     }
@@ -523,7 +524,7 @@ export default function SubCoordDashboard() {
         <View style={{ flex: 1, alignItems: 'center' }}>
           <Text style={styles.headerTitle}>{APP_BRAND}</Text>
           <Text style={styles.headerSubtitle} numberOfLines={1}>
-            Sub-coordinador _ {roleLabel(user?.role)}
+            Sub-coordinador · {roleLabel(user?.role)}
           </Text>
         </View>
         <Pressable accessibilityRole="button" accessibilityLabel={a11y('notificaciones')} hitSlop={10} style={styles.headerBtn}>
@@ -578,7 +579,7 @@ export default function SubCoordDashboard() {
             {currentProject?.contract_number ? (
               <Text style={styles.heroMeta}>
                 Contrato {currentProject.contract_number}
-                {currentProject.constructora ? `  _  ${currentProject.constructora}` : ''}
+                {currentProject.constructora ? `  ·  ${currentProject.constructora}` : ''}
               </Text>
             ) : null}
           </View>
@@ -664,7 +665,7 @@ export default function SubCoordDashboard() {
               style={[styles.timeChipTxt, !!selectedDate && styles.timeChipTxtActive]}
               numberOfLines={1}
             >
-              {selectedDate || 'Dia'}
+              {selectedDate || 'Día'}
             </Text>
             {selectedDate && (
               <Pressable accessibilityRole="button" accessibilityLabel={a11y('quitar')}
@@ -770,7 +771,7 @@ export default function SubCoordDashboard() {
             </View>
             <Text style={styles.emptyTitle}>Sin proyectos asignados</Text>
             <Text style={styles.emptyMsg}>
-              Pidele a tu Coordinador General que te asigne a un proyecto para ver el panel.
+              Pídele a tu Coordinador General que te asigne a un proyecto para ver el panel.
             </Text>
           </View>
         ) : (
@@ -801,7 +802,7 @@ export default function SubCoordDashboard() {
                 <View style={{ flex: 1 }}>
                   <Text style={styles.exportMainTitle}>Resumen Ejecutivo con IA</Text>
                   <Text style={styles.exportMainSub}>
-                    {aiBusy ? 'Analizando reportes_' : 'Analisis ejecutivo _ ultimas 24h'}
+                    {aiBusy ? 'Analizando reportes…' : 'Análisis ejecutivo · últimas 24h'}
                   </Text>
                 </View>
                 {!aiBusy && (
@@ -821,9 +822,9 @@ export default function SubCoordDashboard() {
               >
                 <Ionicons name="download-outline" size={22} color="#fff" />
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.exportMainTitle}>Exportacion Avanzada</Text>
+                  <Text style={styles.exportMainTitle}>Exportación Avanzada</Text>
                   <Text style={styles.exportMainSub}>
-                    PDF _ XLSX _ DOCX _ PPTX  _  Hoy/Ayer/Semana/Mes
+                    PDF · XLSX · DOCX · PPTX  ·  Hoy/Ayer/Semana/Mes
                   </Text>
                 </View>
                 <Ionicons name="chevron-forward" size={20} color="rgba(255,255,255,0.85)" />
@@ -837,7 +838,7 @@ export default function SubCoordDashboard() {
                 <TextInput
                   value={searchQuery}
                   onChangeText={setSearchQuery}
-                  placeholder="Buscar reporte por nombre, ubicacion o texto_"
+                  placeholder="Buscar reporte por nombre, ubicación o texto…"
                   placeholderTextColor={colors.textMuted}
                   style={styles.subSearchInput}
                   autoCorrect={false}
@@ -871,9 +872,9 @@ export default function SubCoordDashboard() {
                 {todayReports.map((r) => {
                   const tone = areaTone(r.area_color || undefined);
                   const path = r.node_path_names || [];
-                  const leafName = path[path.length - 1] || 'Sin ubicacion';
+                  const leafName = path[path.length - 1] || 'Sin ubicación';
                   const parentName = path.length >= 2 ? path[path.length - 2] : '';
-                  const subtitle = parentName ? `${parentName} _ ${leafName}` : leafName;
+                  const subtitle = parentName ? `${parentName} · ${leafName}` : leafName;
                   return (
                     <FeedCard
                       key={r.id}
@@ -917,7 +918,7 @@ export default function SubCoordDashboard() {
 
             {aiMeta && (
               <Text style={styles.aiMeta}>
-                {aiMeta.reports_count} reportes _ ultimas {aiMeta.period_hours}h
+                {aiMeta.reports_count} reportes · últimas {aiMeta.period_hours}h
               </Text>
             )}
 
@@ -925,7 +926,7 @@ export default function SubCoordDashboard() {
               {aiBusy ? (
                 <View style={styles.aiLoading}>
                   <ActivityIndicator size="small" color={colors.primary} />
-                  <Text style={styles.aiLoadingTxt}>Analizando reportes_</Text>
+                  <Text style={styles.aiLoadingTxt}>Analizando reportes…</Text>
                 </View>
               ) : aiError ? (
                 <Text style={styles.aiError}>{aiError}</Text>
@@ -1016,7 +1017,7 @@ export default function SubCoordDashboard() {
             onPress={(e) => e.stopPropagation()}
           >
             <View style={styles.previewHeader}>
-              <Text style={styles.previewTitle}>Exportacion Avanzada</Text>
+              <Text style={styles.previewTitle}>Exportación Avanzada</Text>
               <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')}
                 hitSlop={10}
                 disabled={advExporting}
@@ -1074,15 +1075,15 @@ export default function SubCoordDashboard() {
                   </Text>
                 ) : (expPeriod === 'today' || expPeriod === 'week' || expPeriod === 'month') && (
                   <Text style={styles.advHint}>
-                    {expPeriod === 'today' && 'Informe Diario: solo reportes con jerarquia "Diario".'}
-                    {expPeriod === 'week' && 'Informe Semanal: solo reportes con jerarquia "Semanal".'}
-                    {expPeriod === 'month' && 'Informe Mensual: solo reportes con jerarquia "Mensual".'}
+                    {expPeriod === 'today' && 'Informe Diario: solo reportes con jerarquía "Diario".'}
+                    {expPeriod === 'week' && 'Informe Semanal: solo reportes con jerarquía "Semanal".'}
+                    {expPeriod === 'month' && 'Informe Mensual: solo reportes con jerarquía "Mensual".'}
                   </Text>
                 )}
               </View>
               {expFormat !== 'xlsx' && expAreas.length > 0 && (
                 <View>
-                  <Text style={styles.advLabel}>Area</Text>
+                  <Text style={styles.advLabel}>Área</Text>
                   <View style={styles.advGrid}>
                     <Pressable accessibilityRole="button"
                       onPress={() => setExpAreaId(null)}
@@ -1116,7 +1117,7 @@ export default function SubCoordDashboard() {
                     })}
                   </View>
                   <Text style={styles.advHint}>
-                    Filtra los reportes por area. Solo se incluyen severidades Importante y Urgente.
+                    Filtra los reportes por área. Solo se incluyen severidades Importante y Urgente.
                   </Text>
                 </View>
               )}
@@ -1134,7 +1135,7 @@ export default function SubCoordDashboard() {
                   <Ionicons name="download-outline" size={20} color="#fff" />
                 )}
                 <Text style={styles.advExportGoTxt}>
-                  {advExporting ? 'Generando_' : 'Exportar ahora'}
+                  {advExporting ? 'Generando…' : 'Exportar ahora'}
                 </Text>
               </Pressable>
             </ScrollView>
@@ -1218,7 +1219,7 @@ const FeedCard = memo(({ r, tone, subtitle, onPreview, onShare, isSharing }: any
           {subtitle}
         </Text>
         <Text style={styles.feedMetaTxt} numberOfLines={1}>
-          __ {r.captured_by_name || '_'}
+          {r.captured_by_name || '—'}
         </Text>
         {!!r.actividades && (
           <Text style={styles.feedActividades} numberOfLines={2}>
@@ -1290,7 +1291,7 @@ const HeroCard = memo(({ user, currentProject, globalPct, scopeNodeName }: any) 
         {currentProject?.contract_number ? (
           <Text style={styles.heroMeta}>
             Contrato {currentProject.contract_number}
-            {currentProject.constructora ? `  _  ${currentProject.constructora}` : ''}
+            {currentProject.constructora ? `  ·  ${currentProject.constructora}` : ''}
           </Text>
         ) : null}
       </View>
@@ -1325,7 +1326,7 @@ const ActionTile = memo(({ icon, title, subtitle, disabled, comingSoon, onPress,
       <View style={{ flex: 1 }}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
           <Text style={styles.tileTitle}>{title}</Text>
-          {comingSoon ? <Text style={styles.soonBadge}>Proximamente</Text> : null}
+          {comingSoon ? <Text style={styles.soonBadge}>Próximamente</Text> : null}
         </View>
         <Text style={styles.tileSub}>{subtitle}</Text>
       </View>

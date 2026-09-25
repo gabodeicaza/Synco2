@@ -1,4 +1,4 @@
-// SynCo v2.0 _ Cliente HTTP generico (extraido de api.ts para que
+// Dirac · Cliente HTTP generico (extraido de api.ts para que
 // utils/offlineQueue.ts pueda reusar `request`/`ApiError` sin generar un
 // import circular con api.ts, que a su vez necesita encolar reportes).
 import { leerToken } from '@/src/utils/sessionKeys';
@@ -29,7 +29,7 @@ export const BACKEND_URL: string = BASE.replace(/\/api\/?$/, '');
 
 // [DIAG 2026-07-11] Log visible en Metro/logcat para verificar la URL final.
 try {
-  console.log(`[SynCo][BASE] BASE="${BASE}" (${ENV_API_URL ? 'EXPO_PUBLIC_API_URL' : 'hardcoded'})`);
+  console.log(`[Dirac][BASE] BASE="${BASE}" (${ENV_API_URL ? 'EXPO_PUBLIC_API_URL' : 'hardcoded'})`);
 } catch {
   /* noop */
 }

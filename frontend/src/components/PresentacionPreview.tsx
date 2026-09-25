@@ -116,7 +116,7 @@ export default function PresentacionPreview({ projectId, presentacionId }: { pro
         else Alert.alert('Exportar', 'No se pudo abrir el enlace de exportación.');
       }
     } catch (e: any) {
-      Alert.alert('No se pudo exportar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo exportar', e?.message || 'Inténtalo nuevamente.');
     } finally {
       setExporting(false);
     }

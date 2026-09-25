@@ -1,4 +1,4 @@
-// SyncSite _ Royal Blue & White design tokens.
+// Dirac · Royal Blue & White design tokens.
 export const colors = {
   primary: '#1E40AF',
   primaryDark: '#1E3A8A',

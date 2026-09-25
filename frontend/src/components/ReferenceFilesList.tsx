@@ -8,6 +8,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { api, Project, ReferenceFile } from '@/src/api';
 import { colors, radius, shadow, spacing } from '@/src/theme';
 import { downloadBlob } from '@/src/utils/downloadBlob';
+import { unir } from '@/src/utils/texto';
 
 function formatBytes(bytes?: number | null): string {
   if (!bytes || bytes <= 0) return '';
@@ -55,7 +56,7 @@ export function ReferenceFilesList({ projectId }: { projectId: string }) {
         await Linking.openURL(f.url);
       }
     } catch (e: any) {
-      setError(e?.message || 'No se pudo abrir el archivo. Revisa tu conexion.');
+      setError(e?.message || 'No se pudo abrir el archivo. Revisa tu conexión.');
     } finally {
       setOpeningId(null);
     }
@@ -96,14 +97,14 @@ export function ReferenceFilesList({ projectId }: { projectId: string }) {
       {files.length === 0 ? (
         <View style={styles.empty}>
           <Ionicons name="folder-open-outline" size={22} color={colors.textMuted} />
-          <Text style={styles.emptyTxt}>Aun no hay archivos compartidos.</Text>
+          <Text style={styles.emptyTxt}>Aún no hay archivos compartidos.</Text>
         </View>
       ) : (
         files.map((f, idx) => {
           const key = f.file_id || `${f.url}-${idx}`;
           const opening = !!(f.file_id && openingId === f.file_id);
           const subtitle = f.file_id
-            ? [f.original_name || '', formatBytes(f.size)].filter(Boolean).join(' . ')
+            ? unir([f.original_name, formatBytes(f.size)])
             : f.url;
           return (
             <Pressable accessibilityRole="button"

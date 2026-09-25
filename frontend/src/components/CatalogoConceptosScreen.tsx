@@ -289,7 +289,7 @@ export default function CatalogoConceptosScreen({ projectId }: { projectId: stri
       const updated = await api.updateConcepto(concepto.id, { [field]: value } as any);
       setConceptos((list) => list.map((c) => (c.id === concepto.id ? updated : c)));
     } catch (e: any) {
-      Alert.alert('No se pudo guardar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo guardar', e?.message || 'Inténtalo nuevamente.');
     }
   }
 
@@ -326,7 +326,7 @@ export default function CatalogoConceptosScreen({ projectId }: { projectId: stri
       await api.deletePartida(p.id);
       await loadPartidas();
     } catch (e: any) {
-      Alert.alert('No se pudo borrar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo borrar', e?.message || 'Inténtalo nuevamente.');
     }
   }
 
@@ -342,7 +342,7 @@ export default function CatalogoConceptosScreen({ projectId }: { projectId: stri
       setConceptos((list) => list.filter((x) => x.id !== c.id));
       await loadPartidas();
     } catch (e: any) {
-      Alert.alert('No se pudo borrar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo borrar', e?.message || 'Inténtalo nuevamente.');
     }
   }
 

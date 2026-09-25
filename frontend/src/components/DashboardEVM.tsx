@@ -295,7 +295,7 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
       const { blob, filename } = await api.downloadGastosRealesPlantilla();
       await downloadBlob(blob, filename, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     } catch (e: any) {
-      Alert.alert('No se pudo descargar la plantilla', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo descargar la plantilla', e?.message || 'Inténtalo nuevamente.');
     } finally {
       setDescargandoPlantilla(false);
     }
@@ -332,7 +332,7 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
       );
       if (res.creados > 0) await cargar(rango, curva);
     } catch (e: any) {
-      Alert.alert('No se pudo importar el archivo', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo importar el archivo', e?.message || 'Inténtalo nuevamente.');
     } finally {
       setImportandoGastos(false);
     }
@@ -345,7 +345,7 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
       const { blob, filename } = await api.downloadAvanceImportPlantilla(projectId);
       await downloadBlob(blob, filename, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     } catch (e: any) {
-      Alert.alert('No se pudo descargar la plantilla', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo descargar la plantilla', e?.message || 'Inténtalo nuevamente.');
     } finally {
       setDescargandoPlantillaAvance(false);
     }
@@ -382,7 +382,7 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
       );
       if (res.creados > 0) await cargar(rango, curva);
     } catch (e: any) {
-      Alert.alert('No se pudo importar el archivo', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo importar el archivo', e?.message || 'Inténtalo nuevamente.');
     } finally {
       setImportandoAvances(false);
     }
@@ -399,7 +399,7 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
       await api.deleteGastoReal(g.id);
       await cargar(rango, curva);
     } catch (e: any) {
-      Alert.alert('No se pudo borrar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo borrar', e?.message || 'Inténtalo nuevamente.');
     }
   }
 

@@ -50,7 +50,7 @@ export default function AnnouncementsHubScreen() {
         <Ionicons name="newspaper-outline" size={44} color={colors.textMuted} />
         <Text style={styles.emptyTitle}>Sin proyectos asignados</Text>
         <Text style={styles.emptySub}>
-          {error || 'Cuando tengas proyectos, aqui veras y publicaras noticias.'}
+          {error || 'Cuando tengas proyectos, aquí verás y publicarás noticias.'}
         </Text>
       </View>
     );

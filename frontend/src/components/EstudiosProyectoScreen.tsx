@@ -83,7 +83,7 @@ export default function EstudiosProyectoScreen({ projectId }: { projectId: strin
       setActNombreDraft('');
       await load();
     } catch (e: any) {
-      Alert.alert('No se pudo guardar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo guardar', e?.message || 'Inténtalo nuevamente.');
     } finally {
       setSavingAct(false);
     }
@@ -107,7 +107,7 @@ export default function EstudiosProyectoScreen({ projectId }: { projectId: strin
       setEditingAct(null);
       await load();
     } catch (e: any) {
-      Alert.alert('No se pudo guardar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo guardar', e?.message || 'Inténtalo nuevamente.');
     } finally {
       setSavingAvance(false);
     }
@@ -126,7 +126,7 @@ export default function EstudiosProyectoScreen({ projectId }: { projectId: strin
       setBitTextoDraft('');
       await load();
     } catch (e: any) {
-      Alert.alert('No se pudo guardar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo guardar', e?.message || 'Inténtalo nuevamente.');
     } finally {
       setSavingBit(false);
     }

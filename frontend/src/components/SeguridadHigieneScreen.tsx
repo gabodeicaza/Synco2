@@ -112,7 +112,7 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
       setFormOpen(false);
       await load();
     } catch (e: any) {
-      Alert.alert('No se pudo guardar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo guardar', e?.message || 'Inténtalo nuevamente.');
     } finally {
       setSaving(false);
     }
@@ -145,7 +145,7 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
       await load();
       Alert.alert('Guardado', 'El checklist del día se guardó correctamente.');
     } catch (e: any) {
-      Alert.alert('No se pudo guardar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo guardar', e?.message || 'Inténtalo nuevamente.');
     } finally {
       setChecklistSaving(false);
     }

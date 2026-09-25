@@ -1,4 +1,4 @@
-// SynCo v2.0 _ Panel "Mis reuniones" para el tab Inicio.
+// Dirac · Panel "Mis reuniones" para el tab Inicio.
 // Presentacional: recibe las reuniones ya resueltas (asignadas al usuario
 // como autor o asistente, ver `mine=1` en GET /projects/{pid}/events) y solo
 // las pinta con hora + ubicacion. `project_name` es opcional: solo lo manda

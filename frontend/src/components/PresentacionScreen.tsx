@@ -147,7 +147,7 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
       await loadList();
       setSelectedId(created.id);
     } catch (e: any) {
-      Alert.alert('No se pudo crear', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo crear', e?.message || 'Inténtalo nuevamente.');
     } finally {
       setCreating(false);
     }
@@ -175,7 +175,7 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
       await api.deletePresentacion(projectId, p.id);
       await loadList();
     } catch (e: any) {
-      Alert.alert('No se pudo eliminar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo eliminar', e?.message || 'Inténtalo nuevamente.');
     }
   }
 
@@ -216,7 +216,7 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
       setConfigTipo(null);
       await loadDetail(detail.id);
     } catch (e: any) {
-      Alert.alert('No se pudo agregar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo agregar', e?.message || 'Inténtalo nuevamente.');
     } finally {
       setSavingSeccion(false);
     }
@@ -234,7 +234,7 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
       ]);
       await loadDetail(detail.id);
     } catch (e: any) {
-      Alert.alert('No se pudo reordenar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo reordenar', e?.message || 'Inténtalo nuevamente.');
     }
   }
 
@@ -246,7 +246,7 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
       await api.deletePresentacionSeccion(projectId, detail.id, seccion.id);
       await loadDetail(detail.id);
     } catch (e: any) {
-      Alert.alert('No se pudo eliminar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo eliminar', e?.message || 'Inténtalo nuevamente.');
     }
   }
 
@@ -283,7 +283,7 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
       const nueva: InformacionParticularFoto = { photo, caption: '', destacado: false, destacado_label: null };
       setBloquesDraft((cur) => cur.map((b, i) => (i === idx ? { ...b, fotos: [...b.fotos, nueva] } : b)));
     } catch (e: any) {
-      Alert.alert('No se pudo agregar la foto', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo agregar la foto', e?.message || 'Inténtalo nuevamente.');
     }
   }
 
@@ -307,7 +307,7 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
       setBloquesSeccion(null);
       await loadDetail(detail.id);
     } catch (e: any) {
-      Alert.alert('No se pudo guardar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo guardar', e?.message || 'Inténtalo nuevamente.');
     } finally {
       setSavingBloques(false);
     }

@@ -1,4 +1,4 @@
-// SynCo v2.0 _ Placeholder reutilizable para tabs aun no implementadas.
+// Dirac · Placeholder reutilizable para tabs aun no implementadas.
 import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';

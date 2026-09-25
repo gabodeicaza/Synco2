@@ -30,12 +30,12 @@ export default function AcceptInviteScreen() {
   useEffect(() => {
     let mounted = true;
     (async () => {
-      if (!tok) { setPreviewError('Token de invitacion no valido'); setLoadingPreview(false); return; }
+      if (!tok) { setPreviewError('Token de invitación no válido'); setLoadingPreview(false); return; }
       try {
         const p = await api.invitePreview(tok);
         if (mounted) setPreview(p);
       } catch (e: any) {
-        if (mounted) setPreviewError(e?.message || 'Invitacion no valida o expirada');
+        if (mounted) setPreviewError(e?.message || 'Invitación no válida o expirada');
       } finally {
         if (mounted) setLoadingPreview(false);
       }
@@ -45,14 +45,14 @@ export default function AcceptInviteScreen() {
 
   async function onAccept() {
     setSubmitError(null);
-    if (password.length < 6) { setSubmitError('La contrasena debe tener al menos 6 caracteres'); return; }
-    if (password !== password2) { setSubmitError('Las contrasenas no coinciden'); return; }
+    if (password.length < 6) { setSubmitError('La contraseña debe tener al menos 6 caracteres'); return; }
+    if (password !== password2) { setSubmitError('Las contraseñas no coinciden'); return; }
     setBusy(true);
     try {
       const user = await acceptInvite(tok, password);
       router.replace(homeRouteForRole(user.role) as any);
     } catch (e: any) {
-      setSubmitError(e?.message || 'No se pudo aceptar la invitacion');
+      setSubmitError(e?.message || 'No se pudo aceptar la invitación');
     } finally {
       setBusy(false);
     }
@@ -62,7 +62,7 @@ export default function AcceptInviteScreen() {
     return (
       <View style={[styles.centered, { paddingTop: insets.top }]}>
         <ActivityIndicator color={colors.primary} size="large" />
-        <Text style={styles.muted}>Validando invitacion_</Text>
+        <Text style={styles.muted}>Validando invitación…</Text>
       </View>
     );
   }
@@ -71,10 +71,10 @@ export default function AcceptInviteScreen() {
     return (
       <View style={[styles.centered, { paddingTop: insets.top + 24 }]}>
         <Ionicons name="close-circle" size={56} color={colors.error} />
-        <Text style={styles.errorTitle}>Invitacion invalida</Text>
-        <Text style={styles.muted}>{previewError || 'No se pudo cargar la invitacion.'}</Text>
+        <Text style={styles.errorTitle}>Invitación inválida</Text>
+        <Text style={styles.muted}>{previewError || 'No se pudo cargar la invitación.'}</Text>
         <Pressable accessibilityRole="button" onPress={() => router.replace('/(auth)/login')} style={styles.linkBtn}>
-          <Text style={styles.linkText}>Volver a inicio de sesion</Text>
+          <Text style={styles.linkText}>Volver a inicio de sesión</Text>
         </Pressable>
       </View>
     );
@@ -101,13 +101,13 @@ export default function AcceptInviteScreen() {
         </View>
 
         <View style={styles.card}>
-          <Text style={styles.cardTitle}>Crear contrasena</Text>
-          <Text style={styles.label}>Nueva contrasena</Text>
+          <Text style={styles.cardTitle}>Crear contraseña</Text>
+          <Text style={styles.label}>Nueva contraseña</Text>
           <View style={styles.inputWrap}>
             <Ionicons name="lock-closed-outline" size={18} color={colors.textMuted} />
             <TextInput
               value={password} onChangeText={setPassword}
-              placeholder="Minimo 6 caracteres" placeholderTextColor={colors.textMuted}
+              placeholder="Mínimo 6 caracteres" placeholderTextColor={colors.textMuted}
               secureTextEntry={!showPwd} style={styles.input} editable={!busy}
             />
             <Pressable accessibilityRole="button" accessibilityLabel={a11y(showPwd ? 'ocultarPassword' : 'mostrarPassword')} onPress={() => setShowPwd((v) => !v)} hitSlop={8}>
@@ -115,12 +115,12 @@ export default function AcceptInviteScreen() {
             </Pressable>
           </View>
 
-          <Text style={[styles.label, { marginTop: spacing.md }]}>Repetir contrasena</Text>
+          <Text style={[styles.label, { marginTop: spacing.md }]}>Repetir contraseña</Text>
           <View style={styles.inputWrap}>
             <Ionicons name="lock-closed-outline" size={18} color={colors.textMuted} />
             <TextInput
               value={password2} onChangeText={setPassword2}
-              placeholder="________" placeholderTextColor={colors.textMuted}
+              placeholder="••••••••" placeholderTextColor={colors.textMuted}
               secureTextEntry={!showPwd} style={styles.input} editable={!busy}
               onSubmitEditing={onAccept} returnKeyType="go"
             />
@@ -134,7 +134,7 @@ export default function AcceptInviteScreen() {
           ) : null}
 
           <View style={{ height: spacing.md }} />
-          <Button label="Aceptar invitacion y entrar" onPress={onAccept} loading={busy} fullWidth />
+          <Button label="Aceptar invitación y entrar" onPress={onAccept} loading={busy} fullWidth />
         </View>
       </ScrollView>
     </KeyboardAvoidingView>

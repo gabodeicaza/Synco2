@@ -24,7 +24,7 @@ export function formatMeasurementValue(
   measurementType: string,
   value: Record<string, any> | null | undefined,
 ): string {
-  if (!value) return '_';
+  if (!value) return '—';
   switch (measurementType) {
     case 'coord_latlon': {
       const lat = Number(value.lat);
@@ -32,23 +32,23 @@ export function formatMeasurementValue(
       const elev = Number(value.elev);
       if (Number.isFinite(lat) && Number.isFinite(lon)) {
         const base = `${lat.toFixed(6)}, ${lon.toFixed(6)}`;
-        return Number.isFinite(elev) ? `${base} _ Z ${elev}` : base;
+        return Number.isFinite(elev) ? `${base} · Z ${elev}` : base;
       }
-      return '_';
+      return '—';
     }
     case 'cadenamiento':
-      return String(value.cadenamiento || value.value || '_');
+      return String(value.cadenamiento || value.value || '—');
     case 'eje':
-      return String(value.eje || value.value || '_');
+      return String(value.eje || value.value || '—');
     case 'nivel': {
       const v = value.nivel ?? value.value;
       if (typeof v === 'number' && Number.isFinite(v)) {
         return `${v} m`;
       }
-      return v != null ? String(v) : '_';
+      return v != null ? String(v) : '—';
     }
     default:
-      try { return JSON.stringify(value); } catch { return '_'; }
+      try { return JSON.stringify(value); } catch { return '—'; }
   }
 }
 
@@ -112,14 +112,14 @@ export function buildWhatsAppMessage(p: WhatsAppPayload): string {
   // Contratista (Constructora) _ se coloca ARRIBA del No. de contrato por
   // requerimiento ejecutivo. Aparece HASTA ARRIBA del reporte, seguido del
   // numero de contrato. Se elimina de la seccion final para evitar duplicado.
-  lines.push(`Constructora: ${(p.constructora || '').trim() || '_'}`);
+  lines.push(`Constructora: ${(p.constructora || '').trim() || '—'}`);
   lines.push(`No de contrato: ${(p.contractNumber || '').trim()}`);
   if ((p.parentNodeName || '').trim()) {
     lines.push(`${p.parentNodeName.trim()}: ${(p.leafNodeName || '').trim()}`);
   } else {
     lines.push((p.leafNodeName || '').trim());
   }
-  lines.push(`Ubicacion: ${(p.ubicacion || '').trim()}`);
+  lines.push(`Ubicación: ${(p.ubicacion || '').trim()}`);
 
   // Lecturas con unidad + Avance calculado
   const pl = fmtNum2(p.primeraLectura);
@@ -127,7 +127,7 @@ export function buildWhatsAppMessage(p: WhatsAppPayload): string {
   if (pl != null || ul != null) {
     lines.push('');
     if (pl != null) lines.push(`Primera lectura: ${pl} ${unidad}`);
-    if (ul != null) lines.push(`Ultima lectura: ${ul} ${unidad}`);
+    if (ul != null) lines.push(`Última lectura: ${ul} ${unidad}`);
     // Avance = Ultima - Primera (cuando ambas existen)
     if (
       p.primeraLectura != null && Number.isFinite(p.primeraLectura) &&
@@ -163,17 +163,17 @@ export function buildWhatsAppMessage(p: WhatsAppPayload): string {
   const personal = (p.personal || []).map((s) => s.trim()).filter(Boolean);
   lines.push('Personal:');
   if (personal.length) {
-    for (const item of personal) lines.push(`_ ${item}`);
+    for (const item of personal) lines.push(`• ${item}`);
   } else {
-    lines.push('_');
+    lines.push('—');
   }
 
   const equipo = (p.equipo || []).map((s) => s.trim()).filter(Boolean);
   lines.push('Equipo:');
   if (equipo.length) {
-    for (const item of equipo) lines.push(`_ ${item}`);
+    for (const item of equipo) lines.push(`• ${item}`);
   } else {
-    lines.push('_');
+    lines.push('—');
   }
 
   return lines.join('\n');

@@ -1,4 +1,4 @@
-// SynCo v2.0 _ Pantalla "Nuevo Reporte" (RESTAURADA - PIXEL PERFECT + CRASH FIX)
+// Dirac · Pantalla "Nuevo Reporte" (RESTAURADA - PIXEL PERFECT + CRASH FIX)
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, ActivityIndicator, Pressable, Alert,
@@ -295,7 +295,7 @@ export default function NewReportScreen() {
   // confirmacion explicita en vez de enviar el reporte directo.
   function onSavePressed() {
     if (saving) return;
-    if (!selectedLeaf) return Alert.alert('Error', 'Selecciona una ubicacion.');
+    if (!selectedLeaf) return Alert.alert('Error', 'Selecciona una ubicación.');
     // Escoger un tipo de reporte es obligatorio; en el flujo normal ya viene
     // preseleccionada la plantilla general, esto es solo un respaldo (p.ej.
     // si el catalogo de plantillas quedo vacio o fallo al cargar).
@@ -317,7 +317,7 @@ export default function NewReportScreen() {
 
   async function doSave() {
     if (saving) return;
-    if (!selectedLeaf) return Alert.alert('Error', 'Selecciona una ubicacion.');
+    if (!selectedLeaf) return Alert.alert('Error', 'Selecciona una ubicación.');
 
     setSaving(true);
     try {
@@ -434,7 +434,7 @@ export default function NewReportScreen() {
           <Text style={styles.inputLabelSmall}>NOMBRE</Text>
           <TextInput
             value={nombre} onChangeText={setNombre}
-            placeholder="Ej. Inspeccion diaria de armado _ C-15"
+            placeholder="Ej. Inspección diaria de armado · C-15"
             style={styles.inputGhost}
           />
         </View>
@@ -445,15 +445,15 @@ export default function NewReportScreen() {
             <View style={styles.cardIconBox}><Ionicons name="information-circle" size={18} color={colors.primary} /></View>
             <View style={{ flex: 1 }}>
               <Text style={styles.cardLabel}>Datos del reporte</Text>
-              <Text style={styles.cardHelp}>Informacion automatica, no editable.</Text>
+              <Text style={styles.cardHelp}>Información automática, no editable.</Text>
             </View>
           </View>
           <AutoRow icon="calendar" label="FECHA" value={dayjs().tz(CDMX_TZ).format('DD MMM YYYY')} />
-          <AutoRow icon="person" label="CAPTURADO POR" value={user?.name || '_'} />
-          <AutoRow icon="briefcase" label="ROL" value={user?.role || '_'} />
-          <AutoRow icon="ribbon" label="PUESTO" value={user?.puesto || '_'} />
+          <AutoRow icon="person" label="CAPTURADO POR" value={user?.name || '—'} />
+          <AutoRow icon="briefcase" label="ROL" value={user?.role || '—'} />
+          <AutoRow icon="ribbon" label="PUESTO" value={user?.puesto || '—'} />
           <AutoRow icon="document-text" label="NO. DE CONTRATO" value={project?.contract_number || '...'} />
-          <AutoRow icon="git-branch" label="UBICACION" value={(path.length > 0 ? path.map(n => n.name).join(' / ') : 'Sin seleccionar')} />
+          <AutoRow icon="git-branch" label="UBICACIÓN" value={(path.length > 0 ? path.map(n => n.name).join(' / ') : 'Sin seleccionar')} />
         </View>
 
         {/* BLOQUE SELECCION UBICACION (Imagen 3) */}
@@ -461,14 +461,14 @@ export default function NewReportScreen() {
           <View style={styles.cardHeader}>
             <View style={[styles.cardIconBox, { backgroundColor: colors.primaryLight }]}><Ionicons name="navigate" size={16} color={colors.primary} /></View>
             <View style={{ flex: 1 }}>
-              <Text style={styles.cardLabel}>Selecciona ubicacion</Text>
+              <Text style={styles.cardLabel}>Selecciona ubicación</Text>
               <Text style={styles.cardHelp}>Navega hasta el nodo hoja autorizado.</Text>
             </View>
           </View>
 
-          <LocationStep label="NIVEL RAIZ" value={path[0]?.name || 'Seleccionar_'} onPress={() => popPath(0)} />
-          {path.length >= 1 && <LocationStep label={`DENTRO DE "${path[0].name}"`} value={path[1]?.name || 'Seleccionar_'} onPress={() => popPath(1)} />}
-          {path.length >= 2 && <LocationStep label={`DENTRO DE "${path[1].name}"`} value={path[2]?.name || 'Seleccionar_'} onPress={() => popPath(2)} />}
+          <LocationStep label="NIVEL RAÍZ" value={path[0]?.name || 'Seleccionar…'} onPress={() => popPath(0)} />
+          {path.length >= 1 && <LocationStep label={`DENTRO DE "${path[0].name}"`} value={path[1]?.name || 'Seleccionar…'} onPress={() => popPath(1)} />}
+          {path.length >= 2 && <LocationStep label={`DENTRO DE "${path[1].name}"`} value={path[2]?.name || 'Seleccionar…'} onPress={() => popPath(2)} />}
 
           {!selectedLeaf && (
             <View style={styles.nodeGrid}>
@@ -482,7 +482,7 @@ export default function NewReportScreen() {
             </View>
           )}
 
-          {path.length > 0 && <Pressable accessibilityRole="button" onPress={() => { setPath([]); setSelectedLeaf(null); }}><Text style={styles.resetTxt}>Reiniciar seleccion</Text></Pressable>}
+          {path.length > 0 && <Pressable accessibilityRole="button" onPress={() => { setPath([]); setSelectedLeaf(null); }}><Text style={styles.resetTxt}>Reiniciar selección</Text></Pressable>}
         </View>
 
         {/* BLOQUE REPORTE ESTRUCTURADO (plantilla dinámica) */}
@@ -562,7 +562,7 @@ export default function NewReportScreen() {
               <View style={styles.cardIconBox}><Ionicons name="stats-chart" size={16} color={colors.primary} /></View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.cardLabel}>Lecturas</Text>
-                <Text style={styles.cardHelp}>Captura la primera y ultima lectura del dia.</Text>
+                <Text style={styles.cardHelp}>Captura la primera y última lectura del día.</Text>
               </View>
             </View>
 
@@ -586,10 +586,10 @@ export default function NewReportScreen() {
                 <View style={styles.historyHint}>
                   <Ionicons name="time-outline" size={12} color={colors.primary} />
                   <Text style={styles.historyHintTxt}>
-                    Ultima lectura registrada: {history?.last_report?.ultima_lectura || 0}
+                    Última lectura registrada: {history?.last_report?.ultima_lectura || 0}
                   </Text>
                 </View>
-                <Text style={styles.inputLabelSmall}>ULTIMA LECTURA</Text>
+                <Text style={styles.inputLabelSmall}>ÚLTIMA LECTURA</Text>
                 <TextInput value={ultimaLectura} onChangeText={setUltimaLectura} keyboardType="numeric" placeholder="Ej. 12.80" style={styles.input} />
                 {avanceCalculado !== '' && (
                   <View style={styles.avanceBox}>
@@ -609,13 +609,13 @@ export default function NewReportScreen() {
               <View style={styles.cardIconBox}><Ionicons name="document-text" size={16} color={colors.primary} /></View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.cardLabel}>Reporte</Text>
-                <Text style={styles.cardHelp}>Actividades y observaciones del dia.</Text>
+                <Text style={styles.cardHelp}>Actividades y observaciones del día.</Text>
               </View>
             </View>
             <Text style={styles.inputLabelSmall}>ACTIVIDADES</Text>
-            <TextInput value={actividades} onChangeText={setActividades} multiline placeholder="Describe las actividades del dia_" style={[styles.input, { minHeight: 80 }]} />
+            <TextInput value={actividades} onChangeText={setActividades} multiline placeholder="Describe las actividades del día…" style={[styles.input, { minHeight: 80 }]} />
             <Text style={styles.inputLabelSmall}>OBSERVACIONES</Text>
-            <TextInput value={observaciones} onChangeText={setObservaciones} multiline placeholder="Comentarios, retrasos, lo que ocurrio en el dia_" style={[styles.input, { minHeight: 80 }]} />
+            <TextInput value={observaciones} onChangeText={setObservaciones} multiline placeholder="Comentarios, retrasos, lo que ocurrió en el día…" style={[styles.input, { minHeight: 80 }]} />
             <Text style={styles.inputLabelSmall}>INCIDENCIAS (OPCIONAL)</Text>
             <TextInput value={incidencias} onChangeText={setIncidencias} multiline placeholder="Eventos relevantes: bloqueos, fallas, accidentes..." style={[styles.input, { minHeight: 120, textAlignVertical: 'top' }]} />
           </View>
@@ -626,10 +626,10 @@ export default function NewReportScreen() {
           <View style={styles.card}>
             <View style={styles.cardHeader}>
               <View style={styles.cardIconBox}><Ionicons name="flag" size={16} color={colors.primary} /></View>
-              <Text style={styles.cardLabel}>SEVERIDAD (SEMAFORO)</Text>
+              <Text style={styles.cardLabel}>SEVERIDAD (SEMÁFORO)</Text>
             </View>
             <Text style={styles.sevHint}>
-              Puedes elegir varias: el reporte aparecera en todos los informes que marques.
+              Puedes elegir varias: el reporte aparecerá en todos los informes que marques.
             </Text>
             <View style={styles.sevRow}>
               <TouchableOpacity accessibilityRole="button"
@@ -682,7 +682,7 @@ export default function NewReportScreen() {
               <View style={styles.cardIconBox}><Ionicons name="camera" size={18} color={colors.primary} /></View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.cardLabel}>FOTOS ({images.length})</Text>
-                <Text style={styles.cardHelp}>Maximo 2 fotos se exportaran al reporte ejecutivo.</Text>
+                <Text style={styles.cardHelp}>Máximo 2 fotos se exportarán al reporte ejecutivo.</Text>
               </View>
             </View>
             <View style={styles.row}>
@@ -709,7 +709,7 @@ export default function NewReportScreen() {
                         newC[idx] = t;
                         setCaptions(newC);
                       }}
-                      placeholder="Descripcion técnica detallada..."
+                      placeholder="Descripción técnica detallada..."
                       multiline
                       numberOfLines={3}
                       style={styles.captionInputBig}
@@ -858,13 +858,13 @@ function DynSectionRestored({ title, items, onAdd, onRemove, onUpdate, catalog, 
       <View style={styles.sectionHeader}>
         <View>
           <Text style={styles.cardLabel}>{title} ({items.length})</Text>
-          <Text style={styles.cardHelp}>{isEquipo ? 'Cantidad + descripcion (ej. 1 Excavadora).' : 'Cantidad + descripcion (ej. 3 Albañiles).'}</Text>
+          <Text style={styles.cardHelp}>{isEquipo ? 'Cantidad + descripción (ej. 1 Excavadora).' : 'Cantidad + descripción (ej. 3 Albañiles).'}</Text>
         </View>
         <Pressable accessibilityRole="button" onPress={onAdd} style={styles.addSmallBtn}><Text style={styles.addSmallTxt}>+ Agregar</Text></Pressable>
       </View>
       {items.length === 0 ? (
         <View style={styles.emptyItems}>
-          <Text style={styles.emptyItemsTxt}>Aun no agregaste items. Toca "Agregar" para iniciar.</Text>
+          <Text style={styles.emptyItemsTxt}>Aún no agregaste items. Toca "Agregar" para iniciar.</Text>
         </View>
       ) : (
         <FlatList
@@ -946,8 +946,8 @@ function DynRow({ item, onRemove, onUpdate, catalog, isEquipo }: any) {
 function ConfirmWarningModal({ warning, onCancel, onConfirm }: { warning: 'no-photos' | 'no-captions' | null; onCancel: () => void; onConfirm: () => void }) {
   if (!warning) return null;
   const message = warning === 'no-photos'
-    ? 'Estas seguro de que no quieres añadir fotos a tu reporte? Lo ideal es que lleve al menos 2.'
-    : 'Estas seguro de que no quieres añadir una descripcion a las fotos de tu reporte?';
+    ? '¿Estás seguro de que no quieres añadir fotos a tu reporte? Lo ideal es que lleve al menos 2.'
+    : '¿Estás seguro de que no quieres añadir una descripción a las fotos de tu reporte?';
 
   return (
     <Modal visible={!!warning} animationType="fade" transparent>
@@ -1012,7 +1012,7 @@ function SuccessModal({ visible, report, project, user, reportTemplates, onClose
             <Text style={styles.successSub}>
               {queued
                 ? 'Tu reporte y fotos se guardaron en este dispositivo. Se enviarán solos en cuanto tengas conexión. Revisa el indicador de pendientes en la parte superior.'
-                : 'Tus datos y fotos se guardaron en la base. Copia el texto o abrelo directo en WhatsApp.'}
+                : 'Tus datos y fotos se guardaron en la base. Copia el texto o ábrelo directo en WhatsApp.'}
             </Text>
           </View>
           <ScrollView style={styles.sharePreview} contentContainerStyle={{ padding: 16 }}>

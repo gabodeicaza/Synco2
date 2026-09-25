@@ -1,4 +1,4 @@
-// SynCo v2.0 _ UniversalCalendar
+// Dirac · UniversalCalendar
 // Componente universal de calendario (Especialista / Sub-coordinador / Coordinador General).
 // - Calendario visual mensual (react-native-calendars) con LocaleConfig en espanol.
 // - Multi-dot por disciplina/area usando areaTone() para reflejar la jerarquia de colores.
@@ -31,8 +31,8 @@ LocaleConfig.locales['es'] = {
     'Jul.', 'Ago.', 'Sep.', 'Oct.', 'Nov.', 'Dic.',
   ],
   dayNames: [
-    'Domingo', 'Lunes', 'Martes', 'Miercoles',
-    'Jueves', 'Viernes', 'Sabado',
+    'Domingo', 'Lunes', 'Martes', 'Miércoles',
+    'Jueves', 'Viernes', 'Sábado',
   ],
   dayNamesShort: ['D', 'L', 'M', 'M', 'J', 'V', 'S'],
   today: 'Hoy',
@@ -162,9 +162,9 @@ export default function UniversalCalendar({ projectId, userId, isCoord }: Props)
     };
     if (Platform.OS === 'web') {
       // eslint-disable-next-line no-alert
-      if (typeof window !== 'undefined' && window.confirm('?Eliminar este evento?')) exec();
+      if (typeof window !== 'undefined' && window.confirm('¿Eliminar este evento?')) exec();
     } else {
-      Alert.alert('Eliminar evento', '?Seguro que deseas eliminarlo?', [
+      Alert.alert('Eliminar evento', '¿Seguro que deseas eliminarlo?', [
         { text: 'Cancelar', style: 'cancel' },
         { text: 'Eliminar', style: 'destructive', onPress: exec },
       ]);
@@ -251,8 +251,8 @@ export default function UniversalCalendar({ projectId, userId, isCoord }: Props)
                 <View style={styles.emptyIcon}>
                   <Ionicons name="calendar-outline" size={24} color={colors.primary} />
                 </View>
-                <Text style={styles.emptyTitle}>Sin eventos en este dia</Text>
-                <Text style={styles.emptyMsg}>Pulsa el boton + para programar uno.</Text>
+                <Text style={styles.emptyTitle}>Sin eventos en este día</Text>
+                <Text style={styles.emptyMsg}>Pulsa el botón + para programar uno.</Text>
               </View>
             ) : (
               dayEvents.map((e) => (

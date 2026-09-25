@@ -16,8 +16,8 @@ LocaleConfig.locales['es'] = {
     'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre',
   ],
   monthNamesShort: ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'],
-  dayNames: ['Domingo', 'Lunes', 'Martes', 'Miercoles', 'Jueves', 'Viernes', 'Sabado'],
-  dayNamesShort: ['Dom', 'Lun', 'Mar', 'Mie', 'Jue', 'Vie', 'Sab'],
+  dayNames: ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'],
+  dayNamesShort: ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'],
   today: 'Hoy',
 };
 LocaleConfig.defaultLocale = 'es';
@@ -64,7 +64,7 @@ export function HistoryCalendarModal({
             <View style={{ flex: 1 }}>
               <Text style={styles.title}>Historial por fecha</Text>
               <Text style={styles.subtitle}>
-                {selectedDate ? `Filtrando: ${formatDate(selectedDate)}` : 'Toca un dia para filtrar reportes'}
+                {selectedDate ? `Filtrando: ${formatDate(selectedDate)}` : 'Toca un día para filtrar reportes'}
               </Text>
             </View>
             <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} onPress={onClose} hitSlop={10} style={styles.closeBtn}>

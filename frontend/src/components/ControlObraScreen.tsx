@@ -3,7 +3,7 @@
 // herramienta HTML externa que el usuario ya usaba para seguir avance de
 // Postes/Cimentación/Perforadoras. DECISIÓN DE DISEÑO: en vez de hardcodear
 // la paleta institucional de esa herramienta (ámbar/vino fijos), se usa el
-// sistema de temas YA EXISTENTE en SynCo (`colors`/`radius`/`spacing`/
+// sistema de temas YA EXISTENTE en Dirac (`colors`/`radius`/`spacing`/
 // `shadow` de `@/src/theme`, y `project.color_institucional` como acento) — así esta
 // pantalla se ve como el resto de la app (cada proyecto con su color), pero
 // conserva la MISMA estructura visual (tarjetas de intertramo/estación con
@@ -143,7 +143,7 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
       const { blob, filename } = await api.downloadControlObraXlsx(projectId);
       await downloadBlob(blob, filename, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     } catch (e: any) {
-      Alert.alert('No se pudo exportar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo exportar', e?.message || 'Inténtalo nuevamente.');
     } finally {
       setExporting(false);
     }
@@ -287,7 +287,7 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
       setProject(updated);
       setEtapasEditorOpen(false);
     } catch (e: any) {
-      Alert.alert('No se pudo guardar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo guardar', e?.message || 'Inténtalo nuevamente.');
     } finally {
       setSavingEtapas(false);
     }
@@ -304,7 +304,7 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
       setElementoDraft('');
       setAddElementoOpen(false);
     } catch (e: any) {
-      Alert.alert('No se pudo agregar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo agregar', e?.message || 'Inténtalo nuevamente.');
     }
   }
 
@@ -328,7 +328,7 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
       });
       setCimentacion((list) => list.map((e) => (e.id === el.id ? updated : e)));
     } catch (e: any) {
-      Alert.alert('No se pudo guardar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo guardar', e?.message || 'Inténtalo nuevamente.');
     } finally {
       setBusyKeys((b) => ({ ...b, [key]: false }));
     }
@@ -339,7 +339,7 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
       await api.deleteCimentacionElemento(projectId, el.id);
       setCimentacion((list) => list.filter((e) => e.id !== el.id));
     } catch (e: any) {
-      Alert.alert('No se pudo eliminar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo eliminar', e?.message || 'Inténtalo nuevamente.');
     }
   }
 
@@ -363,7 +363,7 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
       }
       setPerfModal(null);
     } catch (e: any) {
-      Alert.alert('No se pudo guardar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo guardar', e?.message || 'Inténtalo nuevamente.');
     } finally {
       setPerfSaving(false);
     }
@@ -374,7 +374,7 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
       await api.deletePerforadora(projectId, p.id);
       setPerforadoras((list) => list.filter((x) => x.id !== p.id));
     } catch (e: any) {
-      Alert.alert('No se pudo eliminar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo eliminar', e?.message || 'Inténtalo nuevamente.');
     }
   }
 

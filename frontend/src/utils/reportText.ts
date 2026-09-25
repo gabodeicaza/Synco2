@@ -50,7 +50,7 @@ export function buildReportShareText(report: ReportTextSource, opts: ReportTextO
   const pathPart = pathNames.slice(0, -1).join(' / ');
   const leafPart = pathNames[pathNames.length - 1] || '';
   const loc = report.location;
-  const locStr = `Ubicacion: ${loc?.lat ?? '0'}, ${loc?.lon ?? '0'} _ Z ${loc?.elev ?? '0'}`;
+  const locStr = `Ubicación: ${loc?.lat ?? '0'}, ${loc?.lon ?? '0'} · Z ${loc?.elev ?? '0'}`;
 
   const activitiesText = report.actividades || report.activities || '';
 

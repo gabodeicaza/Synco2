@@ -1,4 +1,4 @@
-// SynCo v2.0 _ Gestion de Plantillas de Reporte (solo coordinador_general)
+// Dirac · Gestion de Plantillas de Reporte (solo coordinador_general)
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, Pressable, TextInput, ActivityIndicator,

@@ -44,6 +44,7 @@ import { dayjs } from '@/src/utils/tz';
 import { downloadBlob } from '@/src/utils/downloadBlob';
 import { a11y, t } from '@/src/i18n';
 import { fmtFecha, hoyProyecto } from '@/src/utils/fechas';
+import { unir } from '@/src/utils/texto';
 import {
   claveAcuerdo, hayErroresMinuta, primerCampoConError, reindexarErroresAcuerdos, validarMinuta,
 } from '@/src/utils/validacionMinuta';
@@ -98,7 +99,7 @@ function urgencyMeta(u: Urgency) {
     case 'red':
       return { color: '#DC2626', label: 'Urgente', icon: 'alert-circle' as const };
     case 'yellow':
-      return { color: '#D97706', label: 'Proximo', icon: 'time-outline' as const };
+      return { color: '#D97706', label: 'Próximo', icon: 'time-outline' as const };
     case 'green':
       return { color: '#059669', label: 'En plazo', icon: 'checkmark-circle-outline' as const };
     case 'gray':
@@ -159,7 +160,7 @@ export default function MinutasView({
       setProject((p) => (p ? { ...p, ...upd } : upd));
       setPrefixEditing(false);
     } catch (e: any) {
-      Alert.alert('No se pudo guardar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo guardar', e?.message || 'Inténtalo nuevamente.');
     } finally {
       setPrefixSaving(false);
     }
@@ -223,7 +224,7 @@ export default function MinutasView({
         if (!members.length) setMembers(mbs);
         if (!nodes.length) setNodes(nds);
       } catch (e: any) {
-        Alert.alert('Error', e?.message || 'No se pudo cargar el modulo de minutas');
+        Alert.alert('Error', e?.message || 'No se pudo cargar el módulo de minutas');
       } finally {
         setLoading(false);
         setRefreshing(false);
@@ -309,7 +310,7 @@ export default function MinutasView({
   const onDelete = async (m: Minuta) => {
     const ok = await confirm(
       'Eliminar minuta',
-      `?Eliminar "${m.titulo}"? Esta accion no se puede deshacer.`,
+      `¿Eliminar "${m.titulo}"? Esta acción no se puede deshacer.`,
       { confirmText: 'Eliminar', destructive: true },
     );
     if (!ok) return;
@@ -385,7 +386,7 @@ export default function MinutasView({
         ) : (
           <>
             <Text style={styles.codePrefixTxt} numberOfLines={1}>
-              Codigo de minutas: <Text style={styles.codePrefixVal}>{project?.minuta_code_prefix || 'Sin definir'}</Text>
+              Código de minutas: <Text style={styles.codePrefixVal}>{project?.minuta_code_prefix || 'Sin definir'}</Text>
             </Text>
             {canEditCodigoPrefix ? (
               <Pressable accessibilityRole="button" accessibilityLabel={a11y('editar')}
@@ -427,7 +428,7 @@ export default function MinutasView({
             <TextInput
               value={q}
               onChangeText={setQ}
-              placeholder="Buscar por titulo, acuerdo o responsable_"
+              placeholder="Buscar por título, acuerdo o responsable…"
               placeholderTextColor={colors.textMuted}
               style={styles.searchInput}
               returnKeyType="search"
@@ -596,8 +597,8 @@ export default function MinutasView({
               <Text style={styles.emptyTitle}>Sin minutas {tab === 'pending' ? 'pendientes' : 'concluidas'}</Text>
               <Text style={styles.emptySub}>
                 {canCreate
-                  ? 'Crea la primera minuta con el boton "Nueva".'
-                  : 'Aun no hay minutas registradas en este proyecto.'}
+                  ? 'Crea la primera minuta con el botón "Nueva".'
+                  : 'Aún no hay minutas registradas en este proyecto.'}
               </Text>
             </View>
           }
@@ -714,7 +715,7 @@ const MinutaCard = memo(({
               style={{ color: colors.text, fontSize: 12, fontWeight: '600' }}
             >
               {minuta.ubicacion_path_names && minuta.ubicacion_path_names.length > 0
-                ? minuta.ubicacion_path_names.join(' _ ')
+                ? unir(minuta.ubicacion_path_names)
                 : minuta.ubicacion_name}
             </Text>
           </View>
@@ -833,7 +834,7 @@ const MinutaPdfBlock = memo(({ minuta, onChanged }: { minuta: Minuta; onChanged:
       });
       onChanged(updated);
     } catch (e: any) {
-      Alert.alert('No se pudo subir el PDF', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo subir el PDF', e?.message || 'Inténtalo nuevamente.');
     } finally {
       setBusy(false);
     }
@@ -848,7 +849,7 @@ const MinutaPdfBlock = memo(({ minuta, onChanged }: { minuta: Minuta; onChanged:
       );
       await downloadBlob(blob, filename, mime || 'application/pdf');
     } catch (e: any) {
-      Alert.alert('No se pudo abrir el PDF', e?.message || 'Revisa tu conexion.');
+      Alert.alert('No se pudo abrir el PDF', e?.message || 'Revisa tu conexión.');
     } finally {
       setOpening(false);
     }
@@ -857,7 +858,7 @@ const MinutaPdfBlock = memo(({ minuta, onChanged }: { minuta: Minuta; onChanged:
   async function removePdf() {
     const ok = await confirm(
       'Quitar PDF',
-      'Se eliminara el PDF escaneado de esta minuta.',
+      'Se eliminará el PDF escaneado de esta minuta.',
       { confirmText: 'Quitar', destructive: true },
     );
     if (!ok) return;
@@ -866,7 +867,7 @@ const MinutaPdfBlock = memo(({ minuta, onChanged }: { minuta: Minuta; onChanged:
       const updated = await api.deleteMinutaPdf(minuta.id);
       onChanged(updated);
     } catch (e: any) {
-      Alert.alert('No se pudo quitar el PDF', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo quitar el PDF', e?.message || 'Inténtalo nuevamente.');
     } finally {
       setBusy(false);
     }
@@ -1117,7 +1118,7 @@ export function CreateMinutaModal({
       // aquí no debe verse como "no se pudo crear" (el usuario reintentaría y la duplicaría).
       try {
         const { triggerLocalNotification, scheduleMinuteReminder } = await import('@/src/utils/pushNotifications');
-        triggerLocalNotification('__ Minuta Creada', `Se ha registrado la minuta: ${titulo.trim()}`);
+        triggerLocalNotification('Minuta Creada', `Se ha registrado la minuta: ${titulo.trim()}`);
 
         // Programar recordatorios para cada acuerdo (24h antes) — solo aplica a compromisos.
         if (tipo === 'compromiso') {
@@ -1199,12 +1200,12 @@ export function CreateMinutaModal({
                 />
               </View>
 
-              <Text style={styles.label}>Descripcion</Text>
+              <Text style={styles.label}>Descripción</Text>
               <TextInput
                 style={[styles.input, { minHeight: 70, textAlignVertical: 'top' }]}
                 value={descripcion}
                 onChangeText={setDescripcion}
-                placeholder="Contexto y notas de la reunion (opcional)"
+                placeholder="Contexto y notas de la reunión (opcional)"
                 placeholderTextColor={colors.textMuted}
                 multiline
                 maxLength={4000}
@@ -1262,7 +1263,7 @@ export function CreateMinutaModal({
               <InlineError message={errores.ubicacion} style={{ marginTop: 6 }} />
               </View>
 
-              <Text style={styles.label}>Areas involucradas</Text>
+              <Text style={styles.label}>Áreas involucradas</Text>
               <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
                 {areas.map((a) => {
                   const on = selAreas.includes(a.id);
@@ -1298,7 +1299,7 @@ export function CreateMinutaModal({
                 >
                   <Ionicons name="person-add-outline" size={16} color={colors.primary} />
                   <Text style={styles.addRowTxt}>
-                    {involvedIds.length > 0 ? `Editar (${involvedIds.length})` : 'Anadir personas'}
+                    {involvedIds.length > 0 ? `Editar (${involvedIds.length})` : 'Añadir personas'}
                   </Text>
                 </Pressable>
               </View>
@@ -1355,7 +1356,7 @@ export function CreateMinutaModal({
                       style={styles.addRow}
                     >
                       <Ionicons name="add" size={16} color={colors.primary} />
-                      <Text style={styles.addRowTxt}>Anadir</Text>
+                      <Text style={styles.addRowTxt}>Añadir</Text>
                     </Pressable>
                   </View>
                   <InlineError message={errores.acuerdos} style={{ marginBottom: 6 }} />
@@ -1612,7 +1613,7 @@ export function CreateMinutaModal({
                 <ScrollView style={{ maxHeight: 420 }}>
                   {nodes.length === 0 ? (
                     <Text style={{ padding: 16, color: colors.textMuted }}>
-                      El proyecto aun no tiene ubicaciones. Pidele al coordinador que las cree.
+                      El proyecto aún no tiene ubicaciones. Pídele al coordinador que las cree.
                     </Text>
                   ) : (
                     [...nodes]

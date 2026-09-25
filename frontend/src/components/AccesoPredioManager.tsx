@@ -118,7 +118,7 @@ export function AccesoPredioManager({ projectId }: { projectId: string }) {
       setSituDrafts(drafts);
       setUbicacionDrafts(ubicDrafts);
     } catch (e: any) {
-      Alert.alert('Error', e?.message || 'No se pudo cargar el arbol de nodos');
+      Alert.alert('Error', e?.message || 'No se pudo cargar el árbol de nodos');
     } finally {
       setLoading(false);
     }
@@ -152,7 +152,7 @@ export function AccesoPredioManager({ projectId }: { projectId: string }) {
       const updated = await api.updateNode(nodeId, { situacion_social: draft || null });
       setAllNodes((list) => list.map((s) => (s.id === nodeId ? { ...s, situacion_social: updated.situacion_social } : s)));
     } catch (e: any) {
-      Alert.alert('Error', e?.message || 'No se pudo guardar la situacion social');
+      Alert.alert('Error', e?.message || 'No se pudo guardar la situación social');
     } finally {
       setSituBusy((b) => ({ ...b, [nodeId]: false }));
     }
@@ -229,7 +229,7 @@ export function AccesoPredioManager({ projectId }: { projectId: string }) {
     <View style={{ flex: 1 }}>
       <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
         <Text style={styles.help}>
-          Estatus de acceso y situacion social de cada nodo habilitado. Se muestran en la pagina de resumen exportada (PDF/PPT).
+          Estatus de acceso y situación social de cada nodo habilitado. Se muestran en la página de resumen exportada (PDF/PPT).
         </Text>
 
         <Pressable accessibilityRole="button" onPress={() => setSelectorOpen(true)} style={styles.configRow}>
@@ -239,13 +239,13 @@ export function AccesoPredioManager({ projectId }: { projectId: string }) {
         </Pressable>
 
         {nodosHabilitados.length === 0 ? (
-          <Text style={styles.empty}>Ningun nodo esta habilitado para Acceso al Predio todavia.</Text>
+          <Text style={styles.empty}>Ningún nodo esta habilitado para Acceso al Predio todavía.</Text>
         ) : (
           nodosHabilitados.map((s) => {
             const acceso = (s.acceso_predio as AccesoValue) || null;
             const dirty = (situDrafts[s.id] || '') !== (s.situacion_social || '');
             const path = nodePathNames(s.id, byId);
-            const breadcrumb = path.slice(0, -1).join(' › ') || 'Raiz';
+            const breadcrumb = path.slice(0, -1).join(' › ') || 'Raíz';
             return (
               <View key={s.id} style={styles.card}>
                 <Text style={styles.tramoLabel} numberOfLines={1}>{breadcrumb}</Text>
@@ -295,13 +295,13 @@ export function AccesoPredioManager({ projectId }: { projectId: string }) {
 
                 <Text style={styles.fieldLabel}>
                   {(s.tipo_nodo || 'estacion') === 'intertramo'
-                    ? 'Situacion Social - Liberacion Fisica de Predios'
-                    : 'Situacion Social - Liberacion Fisica del Predio'}
+                    ? 'Situación Social - Liberación Física de Predios'
+                    : 'Situación Social - Liberación Física del Predio'}
                 </Text>
                 <TextInput
                   value={situDrafts[s.id] || ''}
                   onChangeText={(t) => setSituDrafts((d) => ({ ...d, [s.id]: t }))}
-                  placeholder={'Una linea por punto, ej.:\nPredio liberado en su totalidad\nPendiente firma de convenio'}
+                  placeholder={'Una línea por punto, ej.:\nPredio liberado en su totalidad\nPendiente firma de convenio'}
                   placeholderTextColor={colors.textMuted}
                   style={styles.situInput}
                   multiline
@@ -431,7 +431,7 @@ export function AccesoPredioManager({ projectId }: { projectId: string }) {
             </Pressable>
           </View>
           <Text style={styles.selectorHelp}>
-            Activa los nodos que deben mostrar estatus de acceso y situacion social. Por defecto solo los Subtramos vienen activados.
+            Activa los nodos que deben mostrar estatus de acceso y situación social. Por defecto solo los Subtramos vienen activados.
           </Text>
           <ScrollView contentContainerStyle={{ padding: spacing.md, gap: 4 }}>
             {nodesEnOrdenDeArbol(allNodes).map((n) => {

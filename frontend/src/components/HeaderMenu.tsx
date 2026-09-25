@@ -65,8 +65,8 @@ export function HeaderMenu({ basePath, projectId }: HeaderMenuProps) {
 
   async function onLogout() {
     setOpen(false);
-    const ok = await confirm('Cerrar sesion', '¿Seguro que deseas salir?', {
-      confirmText: 'Salir',
+    const ok = await confirm(t('perfil.cerrarSesion'), t('perfil.cerrarSesionPregunta'), {
+      confirmText: t('perfil.salir'),
       destructive: true,
     });
     if (!ok) return;
@@ -76,7 +76,7 @@ export function HeaderMenu({ basePath, projectId }: HeaderMenuProps) {
 
   return (
     <>
-      <Pressable accessibilityRole="button" hitSlop={10} style={styles.headerBtn} onPress={() => setOpen(true)} accessibilityLabel="Abrir menu">
+      <Pressable accessibilityRole="button" hitSlop={10} style={styles.headerBtn} onPress={() => setOpen(true)} accessibilityLabel="Abrir menú">
         <Ionicons name="menu" size={22} color="#fff" />
       </Pressable>
 
@@ -149,7 +149,7 @@ export function HeaderMenu({ basePath, projectId }: HeaderMenuProps) {
               label="Cambiar mi contraseña"
               onPress={() => { setOpen(false); router.push(`${basePath}/cambiar-password` as any); }}
             />
-            <MenuItem icon="log-out-outline" label="Cerrar sesion" onPress={onLogout} destructive />
+            <MenuItem icon="log-out-outline" label={t('perfil.cerrarSesion')} onPress={onLogout} destructive />
           </View>
         </Pressable>
       </Modal>

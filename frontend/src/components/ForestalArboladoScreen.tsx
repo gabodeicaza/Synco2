@@ -190,7 +190,7 @@ export default function ForestalArboladoScreen({ projectId }: { projectId: strin
       setFormOpen(false);
       await Promise.all([load(), loadSemanal()]);
     } catch (e: any) {
-      Alert.alert('No se pudo guardar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo guardar', e?.message || 'Inténtalo nuevamente.');
     } finally {
       setSaving(false);
     }
@@ -229,7 +229,7 @@ export default function ForestalArboladoScreen({ projectId }: { projectId: strin
       setRowFormOpen(false);
       await load();
     } catch (e: any) {
-      Alert.alert('No se pudo guardar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo guardar', e?.message || 'Inténtalo nuevamente.');
     } finally {
       setRowSaving(false);
     }
@@ -247,7 +247,7 @@ export default function ForestalArboladoScreen({ projectId }: { projectId: strin
             setRowFormOpen(false);
             await load();
           } catch (e: any) {
-            Alert.alert('No se pudo eliminar', e?.message || 'Intentalo nuevamente.');
+            Alert.alert('No se pudo eliminar', e?.message || 'Inténtalo nuevamente.');
           } finally {
             setRowSaving(false);
           }

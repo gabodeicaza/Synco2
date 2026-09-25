@@ -1,4 +1,4 @@
-// SynCo v2.0 _ Tab "Noticias" del Especialista / Sub-Coord.
+// Dirac · Tab "Noticias" del Especialista / Sub-Coord.
 // Cualquier miembro del proyecto puede crear noticias. El autor o el Coord
 // pueden editar/eliminar/fijar. Toda noticia (fijada o no) desaparece sola al
 // cumplirse su vigencia (6 h, 24 h por defecto, 48 h o 7 dias) _ el backend deja de listarla.
@@ -85,9 +85,9 @@ export default function NoticiasScreen() {
       });
     };
     if (Platform.OS === 'web') {
-      if (typeof window !== 'undefined' && window.confirm('?Eliminar esta noticia? Esta accion no se puede deshacer.')) confirm();
+      if (typeof window !== 'undefined' && window.confirm('¿Eliminar esta noticia? Esta acción no se puede deshacer.')) confirm();
     } else {
-      Alert.alert('Eliminar noticia', '?Seguro que deseas eliminarla?', [
+      Alert.alert('Eliminar noticia', '¿Seguro que deseas eliminarla?', [
         { text: 'Cancelar', style: 'cancel' },
         { text: 'Eliminar', style: 'destructive', onPress: confirm },
       ]);
@@ -139,9 +139,9 @@ export default function NoticiasScreen() {
             <View style={styles.emptyIcon}>
               <Ionicons name="newspaper-outline" size={28} color={colors.primary} />
             </View>
-            <Text style={styles.emptyTitle}>Aun no hay noticias</Text>
+            <Text style={styles.emptyTitle}>Aún no hay noticias</Text>
             <Text style={styles.emptyMsg}>
-              Toca el boton "+" para publicar el primer anuncio del proyecto.
+              Toca el botón "+" para publicar el primer anuncio del proyecto.
             </Text>
           </View>
         ) : (
@@ -241,7 +241,7 @@ function AnnouncementCard({
       <View style={styles.cardMeta}>
         <Ionicons name="person-circle-outline" size={13} color={colors.textMuted} />
         <Text style={styles.cardMetaTxt}>{item.author_name}</Text>
-        <Text style={styles.cardMetaDot}>_</Text>
+        <Text style={styles.cardMetaDot}>—</Text>
         <Ionicons name="time-outline" size={12} color={colors.textMuted} />
         <Text style={styles.cardMetaTxt}>{formatDate(item.created_at)}</Text>
         <View style={{ flex: 1 }} />
@@ -309,8 +309,8 @@ function AnnouncementEditor({
     setErr(null);
     const t = title.trim();
     const b = body.trim();
-    if (!t) { setErr('Titulo obligatorio'); return; }
-    if (!b) { setErr('Cuerpo obligatorio'); return; }
+    if (!t) { setErr('Título obligatorio'); return; }
+    if (!b) { setErr('Contenido obligatorio'); return; }
     setBusy(true);
     try {
       const payload: any = { title: t, body: b, jerarquia, audiencia, node_id: nodeId };
@@ -326,7 +326,7 @@ function AnnouncementEditor({
       }
       // [FIX 2026-07] Notificacion local inmediata
       const { triggerLocalNotification } = await import('@/src/utils/pushNotifications');
-      triggerLocalNotification('__ Nueva Noticia', `Se ha publicado: ${t.trim()}`);
+      triggerLocalNotification('Nueva Noticia', `Se ha publicado: ${t.trim()}`);
       onSaved();
     } catch (e: any) {
       setErr(e?.message || 'No se pudo guardar');
@@ -349,22 +349,22 @@ function AnnouncementEditor({
               </Pressable>
             </View>
             <ScrollView style={{ maxHeight: 460 }} contentContainerStyle={{ gap: spacing.sm }}>
-              <Text style={styles.modalLabel}>Titulo</Text>
+              <Text style={styles.modalLabel}>Título</Text>
               <TextInput
                 value={title} onChangeText={setTitle}
-                placeholder="Ej. Suspension de actividades 18-jul"
+                placeholder="Ej. Suspensión de actividades 18-jul"
                 placeholderTextColor={colors.textMuted}
                 style={styles.modalInput} editable={!busy} maxLength={140}
               />
               <Text style={styles.modalLabel}>Cuerpo</Text>
               <TextInput
                 value={body} onChangeText={setBody}
-                placeholder="Contenido completo del anuncio_"
+                placeholder="Contenido completo del anuncio…"
                 placeholderTextColor={colors.textMuted}
                 style={[styles.modalInput, { minHeight: 120, textAlignVertical: 'top' }]}
                 multiline editable={!busy} maxLength={4000}
               />
-              <Text style={styles.modalLabel}>Jerarquia (opcional)</Text>
+              <Text style={styles.modalLabel}>Jerarquía (opcional)</Text>
               <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
                 {[
                   { key: null, label: 'Ninguna', bd: colors.textMuted },
@@ -431,9 +431,9 @@ function AnnouncementEditor({
                 </View>
               ) : null}
               <VigenciaSelector value={vigencia} onChange={setVigencia} disabled={busy} edicion={editor?.kind === 'edit'} />
-              <Text style={styles.modalLabel}>Vincular a Nodo / Ubicacion (opcional)</Text>
+              <Text style={styles.modalLabel}>Vincular a Nodo / Ubicación (opcional)</Text>
               <Text style={{ fontSize: 11, color: colors.textMuted, marginTop: -4 }}>
-                Si la noticia es <Text style={{ fontWeight: '800' }}>Importante</Text> o <Text style={{ fontWeight: '800' }}>Urgente</Text>, aparecera como nota dentro de la seccion del nodo en las exportaciones.
+                Si la noticia es <Text style={{ fontWeight: '800' }}>Importante</Text> o <Text style={{ fontWeight: '800' }}>Urgente</Text>, aparecerá como nota dentro de la sección del nodo en las exportaciones.
               </Text>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingVertical: 6 }}>
                 <Pressable accessibilityRole="button"
@@ -494,7 +494,7 @@ function AnnouncementEditor({
 
 function formatDate(iso: string): string {
   const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '_';
+  if (Number.isNaN(d.getTime())) return '—';
   const now = Date.now();
   const diff = now - d.getTime();
   const m = Math.floor(diff / 60000);

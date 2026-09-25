@@ -288,7 +288,7 @@ export function WorkforceTracker({ projectId }: { projectId: string }) {
       setEditRow(null);
       await load();
     } catch (e: any) {
-      Alert.alert('No se pudo guardar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo guardar', e?.message || 'Inténtalo nuevamente.');
     } finally {
       setSaving(false);
     }
@@ -302,7 +302,7 @@ export function WorkforceTracker({ projectId }: { projectId: string }) {
       setEditRow(null);
       await load();
     } catch (e: any) {
-      Alert.alert('No se pudo eliminar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo eliminar', e?.message || 'Inténtalo nuevamente.');
     } finally {
       setSaving(false);
     }
@@ -316,7 +316,7 @@ export function WorkforceTracker({ projectId }: { projectId: string }) {
       await api.updateWorkforceEntry(row.reportId, row.field, row.index, null);
       await load();
     } catch (e: any) {
-      Alert.alert('No se pudo eliminar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo eliminar', e?.message || 'Inténtalo nuevamente.');
     } finally {
       setDeletingId(null);
     }

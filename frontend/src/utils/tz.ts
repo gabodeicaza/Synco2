@@ -10,7 +10,7 @@ dayjs.extend(isSameOrAfter);
 dayjs.locale('es');
 
 /**
- * Helpers de zona horaria _ SynCo opera SIEMPRE en `America/Mexico_City` (CDMX).
+ * Helpers de zona horaria _ Dirac opera SIEMPRE en `America/Mexico_City` (CDMX).
  *
  * El backend almacena/expone timestamps en UTC. El frontend debe convertirlos
  * a CDMX para display coherente, sin que el sistema operativo del dispositivo
@@ -58,7 +58,7 @@ export { dayjs };
 
 /** `06 jul 2026, 17:42` _ para tarjetas y modales. */
 export function fmtDateTimeCDMX(input: string | number | Date | null | undefined): string {
-  if (!input) return '_';
+  if (!input) return '—';
   try {
     // [FIX] Forzar parseo UTC antes de convertir a la zona horaria CDMX
     return dayjs.utc(input).tz(CDMX_TZ).format('DD MMM YYYY, HH:mm');
@@ -68,7 +68,7 @@ export function fmtDateTimeCDMX(input: string | number | Date | null | undefined
 }
 
 export function timeAgoCDMX(iso?: string | null): string {
-  if (!iso) return '_';
+  if (!iso) return '—';
   try {
     // [FIX] Forzar parseo UTC para evitar el offset de +6h
     const created = dayjs.utc(iso).tz(CDMX_TZ);
@@ -82,14 +82,14 @@ export function timeAgoCDMX(iso?: string | null): string {
 
     return created.format('DD MMM');
   } catch {
-    return '_';
+    return '—';
   }
 }
 
 /** `06 jul 2026` _ solo fecha. Un texto YYYY-MM-DD (sin hora) es un dia de calendario:
  * NO se convierte de zona (convertirlo lo movia al dia anterior). */
 export function fmtDateCDMX(input: string | number | Date | null | undefined): string {
-  if (!input) return '_';
+  if (!input) return '—';
   try {
     if (typeof input === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(input)) return dayjs.utc(input).format('DD MMM YYYY');
     return dayjs.utc(input).tz(CDMX_TZ).format('DD MMM YYYY');
@@ -100,7 +100,7 @@ export function fmtDateCDMX(input: string | number | Date | null | undefined): s
 
 /** `17:42` _ solo hora local. */
 export function fmtTimeCDMX(input: string | number | Date | null | undefined): string {
-  if (!input) return '_';
+  if (!input) return '—';
   try {
     return dayjs.utc(input).tz(CDMX_TZ).format('HH:mm');
   } catch {

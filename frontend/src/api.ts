@@ -1,4 +1,4 @@
-// SynCo v2.0 REST client.
+// Dirac v2.0 REST client.
 // Reads JWT from secure storage on every call.
 import { Alert, Platform } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -125,7 +125,7 @@ async function nativeMultipartUpload<T>(
     );
   } catch (err: any) {
     if (err instanceof ApiError) throw err;
-    throw new ApiError(0, `Fallo la preparacion del archivo: ${err?.message || err}`);
+    throw new ApiError(0, `Fallo la preparación del archivo: ${err?.message || err}`);
   }
 
   if (!url || url === '/api' || url.startsWith('/api/')) {
@@ -1837,7 +1837,7 @@ export const api = {
     file: { uri: string; name: string; mimeType?: string | null },
   ): Promise<any> => {
     if (!file || !file.uri) {
-      Alert.alert('Error de Subida', 'No se ha seleccionado ningun archivo para la carga masiva.');
+      Alert.alert('Error de Subida', 'No se ha seleccionado ningún archivo para la carga masiva.');
       throw new ApiError(0, 'Archivo o URI no proporcionado');
     }
     const isWeb = Platform.OS === 'web';
@@ -1876,7 +1876,7 @@ export const api = {
     file: { uri: string; name: string; mimeType?: string | null },
   ): Promise<any> => {
     if (!file || !file.uri) {
-      Alert.alert('Error de Subida', 'No se ha seleccionado ningun archivo para subir al proyecto.');
+      Alert.alert('Error de Subida', 'No se ha seleccionado ningún archivo para subir al proyecto.');
       throw new ApiError(0, 'Archivo o URI no proporcionado');
     }
     const isWeb = Platform.OS === 'web';

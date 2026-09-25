@@ -17,13 +17,13 @@ const PERSONAL_CATEGORIES: { label: string; keywords: string[] }[] = [
   { label: 'Ingenieros', keywords: ['ingenier'] },
   { label: 'Residentes', keywords: ['residente'] },
   { label: 'Supervisores', keywords: ['supervisor'] },
-  { label: 'Topografos', keywords: ['topograf'] },
+  { label: 'Topógrafos', keywords: ['topograf'] },
   { label: 'Maestros', keywords: ['maestro'] },
   { label: 'Oficiales', keywords: ['oficial'] },
   { label: 'Ayudantes', keywords: ['ayudante'] },
   { label: 'Operadores', keywords: ['operador'] },
   { label: 'Electricistas', keywords: ['electricista'] },
-  { label: 'Albaniles', keywords: ['albanil'] },
+  { label: 'Albañiles', keywords: ['albanil'] },
   { label: 'Soldadores', keywords: ['soldador'] },
   { label: 'Choferes', keywords: ['chofer', 'conductor'] },
   { label: 'Almacenistas', keywords: ['almacenista'] },
@@ -142,14 +142,14 @@ export default function PersonalManagementScreen() {
       const newItems = mapPersonalRows(rawRows);
 
       if (newItems.length === 0) {
-        Alert.alert('Importacion vacia', 'No se encontraron registros validos en el Excel.');
+        Alert.alert('Importación vacia', 'No se encontraron registros válidos en el Excel.');
         return;
       }
 
       // Merge avoiding duplicates
       const merged = Array.from(new Set([...list, ...newItems]));
       await save(merged);
-      Alert.alert('Exito', `Se importaron ${newItems.length} registros de personal.`);
+      Alert.alert('Éxito', `Se importaron ${newItems.length} registros de personal.`);
     } catch (e: any) {
       console.error('[ExcelImport] Personal Error:', e);
       Alert.alert('Error', `No se pudo procesar el archivo Excel: ${e?.message || String(e)}`);
@@ -173,12 +173,12 @@ export default function PersonalManagementScreen() {
 
       <ScrollView contentContainerStyle={styles.scroll}>
         <View style={styles.inputCard}>
-          <Text style={styles.label}>Nueva categoria / rol</Text>
+          <Text style={styles.label}>Nueva categoría / rol</Text>
           <View style={styles.inputRow}>
             <TextInput
               value={draft}
               onChangeText={setDraft}
-              placeholder="Ej. Topografo, Residente..."
+              placeholder="Ej. Topógrafo, Residente..."
               style={styles.input}
               onSubmitEditing={onAdd}
             />
@@ -214,7 +214,7 @@ export default function PersonalManagementScreen() {
               </View>
             ))}
             {list.length === 0 && (
-              <Text style={styles.empty}>Aun no hay categorias de personal.</Text>
+              <Text style={styles.empty}>Aún no hay categorías de personal.</Text>
             )}
           </View>
         )}

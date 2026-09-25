@@ -1,4 +1,4 @@
-// SynCo v2.0 _ Tab "Calendario" (Coordinador General)
+// Dirac · Tab "Calendario" (Coordinador General)
 // Vista universal con selector de proyecto cuando el coordinador maneja varios.
 import React, { useCallback } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StatusBar, StyleSheet, Text, View } from 'react-native';
@@ -77,7 +77,7 @@ export default function CalendarioCoordScreen() {
       ) : !selected ? (
         <View style={styles.empty}>
           <Ionicons name="folder-open-outline" size={32} color={colors.textMuted} />
-          <Text style={styles.emptyTitle}>Aun no tienes proyectos</Text>
+          <Text style={styles.emptyTitle}>Aún no tienes proyectos</Text>
           <Text style={styles.emptyMsg}>Crea un proyecto para comenzar a programar eventos.</Text>
         </View>
       ) : (

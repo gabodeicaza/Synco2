@@ -21,6 +21,7 @@ import { confirm } from '@/src/utils/confirm';
 import { requestMediaLibraryPermission } from '@/src/utils/permissions';
 import { UbicacionGpsNodo } from '@/src/components/UbicacionGpsNodo';
 import { puntoGpsDeNodo } from '@/src/utils/gpsNodo';
+import { unir } from '@/src/utils/texto';
 import { a11y } from '@/src/i18n';
 
 // =============================================================================
@@ -69,7 +70,7 @@ export default function TreeBuilderScreen() {
         return init;
       });
     } catch (e: any) {
-      setError(e?.message || 'Error al cargar el arbol');
+      setError(e?.message || 'Error al cargar el árbol');
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -103,8 +104,8 @@ export default function TreeBuilderScreen() {
   async function onDelete(node: LocationNodeTree) {
     const childrenCount = countNodes(node.children);
     const msg = childrenCount === 0
-      ? `?Eliminar el nodo "${node.name}"?`
-      : `?Eliminar "${node.name}" y sus ${childrenCount} descendiente(s)? Esta accion no se puede deshacer.`;
+      ? `¿Eliminar el nodo "${node.name}"?`
+      : `¿Eliminar "${node.name}" y sus ${childrenCount} descendiente(s)? Esta acción no se puede deshacer.`;
     const ok = await confirm('Eliminar nodo', msg, { confirmText: 'Eliminar', destructive: true });
     if (!ok) return;
     try {
@@ -228,10 +229,10 @@ export default function TreeBuilderScreen() {
         lines.push('');
         lines.push(`Errores: ${res.errors.length}`);
         for (const e of res.errors.slice(0, 5)) {
-          lines.push(`_ Fila ${e.row}: ${e.error}`);
+          lines.push(`• Fila ${e.row}: ${e.error}`);
         }
       }
-      Alert.alert('Importacion completada', lines.join('\n'));
+      Alert.alert('Importación completada', lines.join('\n'));
       await load();
     } catch (e: any) {
       // [DEBUG UI] Mostramos el mensaje ENRIQUECIDO desde api.ts que
@@ -289,8 +290,8 @@ export default function TreeBuilderScreen() {
   return (
     <View style={[styles.flex, { paddingTop: insets.top }]}>
       <ScreenHeader
-        title="Arbol de nodos"
-        subtitle={`${totalCount} nodo${totalCount === 1 ? '' : 's'} _ ${leafCount} hoja${leafCount === 1 ? '' : 's'}`}
+        title="Árbol de nodos"
+        subtitle={unir([`${totalCount} nodo${totalCount === 1 ? '' : 's'}`, `${leafCount} hoja${leafCount === 1 ? '' : 's'}`])}
         fallbackHref={{ pathname: '/(coord)/projects/[id]', params: { id: pid } }}
         safeArea={false}
         right={(
@@ -341,7 +342,7 @@ export default function TreeBuilderScreen() {
         ) : tree.length === 0 ? (
           <View style={styles.emptyBlock}>
             <Ionicons name="git-network-outline" size={56} color={colors.textMuted} />
-            <Text style={styles.emptyTitle}>El arbol esta vacio</Text>
+            <Text style={styles.emptyTitle}>El árbol esta vacio</Text>
             <Text style={styles.emptyMsg}>
               Define la estructura espacial de tu proyecto. Puedes anidar tantos niveles como necesites. Los nodos hoja son los puntos donde el Especialista captura mediciones.
             </Text>
@@ -386,7 +387,7 @@ export default function TreeBuilderScreen() {
 
       <Pressable accessibilityRole="button" style={[styles.fab, { bottom: insets.bottom + 20 }]} onPress={() => setEditor({ kind: 'create_root' })}>
         <Ionicons name="add" size={26} color={colors.textInverse} />
-        <Text style={styles.fabText}>Agregar nodo raiz</Text>
+        <Text style={styles.fabText}>Agregar nodo raíz</Text>
       </Pressable>
 
       <NodeEditorModal
@@ -512,7 +513,7 @@ function NodeBranch({
               onPress={() => {
                 setMenuOpen(false);
                 const entries = Object.entries(node.metadata || {});
-                const body = entries.map(([k, v]) => `_ ${k}: ${formatMetaValue(v)}`).join('\n');
+                const body = entries.map(([k, v]) => `• ${k}: ${formatMetaValue(v)}`).join('\n');
                 Alert.alert(node.name, body || 'Sin metadatos');
               }}
             >
@@ -606,7 +607,7 @@ function NodeEditorModal({
     if (!editor) return '';
     if (editor.kind === 'edit') return `Editar: ${editor.node.name}`;
     if (editor.kind === 'create_child') return `Hijo de "${editor.parent.name}"`;
-    return 'Nuevo nodo raiz';
+    return 'Nuevo nodo raíz';
   }, [editor]);
 
   // Acceso al Predio / Situacion Social son campos de estatus de Subtramo
@@ -639,7 +640,7 @@ function NodeEditorModal({
     setErr(null);
     const n = name.trim();
     if (!n) { setErr('El nombre es obligatorio'); return; }
-    if (isLeaf && !mtype) { setErr('Selecciona el tipo de medicion para el nodo hoja'); return; }
+    if (isLeaf && !mtype) { setErr('Selecciona el tipo de medición para el nodo hoja'); return; }
     let parsedLat: number | null = null;
     let parsedLon: number | null = null;
     let parsedElev: number | null = null;
@@ -647,9 +648,9 @@ function NodeEditorModal({
       parsedLat = parseCoord(tLat);
       parsedLon = parseCoord(tLon);
       parsedElev = parseCoord(tElev);
-      if (Number.isNaN(parsedLat as any)) { setErr('Coordenada X (Este) invalida'); return; }
-      if (Number.isNaN(parsedLon as any)) { setErr('Coordenada Y (Norte) invalida'); return; }
-      if (Number.isNaN(parsedElev as any)) { setErr('Elevacion invalida'); return; }
+      if (Number.isNaN(parsedLat as any)) { setErr('Coordenada X (Este) inválida'); return; }
+      if (Number.isNaN(parsedLon as any)) { setErr('Coordenada Y (Norte) inválida'); return; }
+      if (Number.isNaN(parsedElev as any)) { setErr('Elevación inválida'); return; }
       // Nota: en obra civil se usan coordenadas UTM (cientos de miles / millones).
       // No se aplica restriccion de rango geografico (-90/90, -180/180).
     }
@@ -679,7 +680,7 @@ function NodeEditorModal({
       if (Platform.OS !== 'web') {
         const perm = await requestMediaLibraryPermission();
         if (!perm.granted) {
-          setCoverErr('Sin permiso para acceder a la galeria.');
+          setCoverErr('Sin permiso para acceder a la galería.');
           return;
         }
       }
@@ -750,7 +751,7 @@ function NodeEditorModal({
     if (!editor || editor.kind !== 'edit') return;
     const ok = await confirm(
       'Eliminar portada',
-      '?Eliminar la foto de portada de este nodo? Volvera a usarse la portadilla generica del proyecto.',
+      '¿Eliminar la foto de portada de este nodo? Volverá a usarse la portadilla genérica del proyecto.',
       { confirmText: 'Eliminar', destructive: true },
     );
     if (!ok) return;
@@ -787,7 +788,7 @@ function NodeEditorModal({
                   <TextInput
                     value={name}
                     onChangeText={setName}
-                    placeholder="Ej. Tramo 1, Estacion 02+450, Eje A"
+                    placeholder="Ej. Tramo 1, Estación 02+450, Eje A"
                     placeholderTextColor={colors.textMuted}
                     style={styles.input}
                     autoFocus
@@ -827,18 +828,18 @@ function NodeEditorModal({
                       ))}
                     </View>
                     <Text style={styles.metaHelp}>
-                      Estatus vigente del acceso a este subtramo. Se muestra como insignia de color en la pagina de resumen del PDF/PPT exportado.
+                      Estatus vigente del acceso a este subtramo. Se muestra como insignia de color en la página de resumen del PDF/PPT exportado.
                     </Text>
                   </View>
 
                   <View>
-                    <Text style={styles.label}>Situacion Social - Liberacion Fisica del Predio (opcional)</Text>
+                    <Text style={styles.label}>Situación Social - Liberación Física del Predio (opcional)</Text>
                     <View style={[styles.inputWrap, { alignItems: 'flex-start', minHeight: 88 }]}>
                       <Ionicons name="people-outline" size={18} color={colors.textMuted} style={{ marginTop: 2 }} />
                       <TextInput
                         value={situacionSocial}
                         onChangeText={setSituacionSocial}
-                        placeholder={'Una linea por punto, ej.:\nPredio liberado en su totalidad\nPendiente firma de convenio con propietario'}
+                        placeholder={'Una línea por punto, ej.:\nPredio liberado en su totalidad\nPendiente firma de convenio con propietario'}
                         placeholderTextColor={colors.textMuted}
                         style={[styles.input, { minHeight: 80, textAlignVertical: 'top' }]}
                         multiline
@@ -846,7 +847,7 @@ function NodeEditorModal({
                       />
                     </View>
                     <Text style={styles.metaHelp}>
-                      Cada linea se muestra como una vineta independiente en la pagina de resumen exportada.
+                      Cada línea se muestra como una viñeta independiente en la página de resumen exportada.
                     </Text>
                   </View>
                 </>
@@ -860,7 +861,7 @@ function NodeEditorModal({
                     <Text style={styles.coverTitle}>Foto de portada del nodo</Text>
                   </View>
                   <Text style={styles.coverHelp}>
-                    Aparecera como portadilla institucional (capitulo) en el PDF exportado, antes de todos los reportes de este nodo y sus descendientes.
+                    Aparecerá como portadilla institucional (capítulo) en el PDF exportado, antes de todos los reportes de este nodo y sus descendientes.
                   </Text>
 
                   {coverUri ? (
@@ -925,7 +926,7 @@ function NodeEditorModal({
                 <View style={styles.coverHint}>
                   <Ionicons name="information-circle-outline" size={16} color={colors.textMuted} />
                   <Text style={styles.coverHintText}>
-                    Podras subir una foto de portada del nodo despues de crearlo.
+                    Podrás subir una foto de portada del nodo después de crearlo.
                   </Text>
                 </View>
               )}
@@ -954,7 +955,7 @@ function NodeEditorModal({
 
               {isLeaf ? (
                 <View>
-                  <Text style={styles.label}>Tipo de medicion</Text>
+                  <Text style={styles.label}>Tipo de medición</Text>
                   <View style={{ gap: 8 }}>
                     {(Object.keys(MEASUREMENT_LABELS) as MeasurementType[]).map((k) => (
                       <Pressable accessibilityRole="button"
@@ -982,7 +983,7 @@ function NodeEditorModal({
                         <Text style={styles.coordHeaderText}>Coordenadas objetivo (oficina)</Text>
                       </View>
                       <Text style={styles.coordHelp}>
-                        Valores dictados por el Coordinador. El Especialista los vera en modo solo-lectura al capturar este nodo.
+                        Valores dictados por el Coordinador. El Especialista los verá en modo solo-lectura al capturar este nodo.
                       </Text>
                       <View style={styles.coordRow}>
                         <View style={styles.coordField}>
@@ -1019,7 +1020,7 @@ function NodeEditorModal({
                         </View>
                       </View>
                       <View style={styles.coordField}>
-                        <Text style={styles.coordLabel}>Elevacion / Cota (Z)</Text>
+                        <Text style={styles.coordLabel}>Elevación / Cota (Z)</Text>
                         <View style={styles.inputWrap}>
                           <Ionicons name="trending-up-outline" size={16} color={colors.textMuted} />
                           <TextInput

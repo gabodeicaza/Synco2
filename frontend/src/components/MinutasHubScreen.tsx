@@ -53,7 +53,7 @@ export default function MinutasHubScreen() {
         <Ionicons name="clipboard-outline" size={44} color={colors.textMuted} />
         <Text style={styles.emptyTitle}>Sin proyectos asignados</Text>
         <Text style={styles.emptySub}>
-          {error || 'Cuando tengas proyectos, aqui veras las minutas y acuerdos.'}
+          {error || 'Cuando tengas proyectos, aquí verás las minutas y acuerdos.'}
         </Text>
       </View>
     );

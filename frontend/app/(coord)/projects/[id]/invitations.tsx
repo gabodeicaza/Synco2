@@ -96,7 +96,7 @@ export default function InvitationsScreen() {
       let group = map.get(key);
       if (!group) {
         const areaName = inv.area_id
-          ? areas.find((a) => a.id === inv.area_id)?.name || 'Area desconocida'
+          ? areas.find((a) => a.id === inv.area_id)?.name || 'Área desconocida'
           : NO_AREA_LABEL;
         group = { areaName, items: [] };
         map.set(key, group);

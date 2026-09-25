@@ -1,4 +1,4 @@
-// SynCo v2.0 _ Tab "Inicio" / Feed del Especialista.
+// Dirac · Tab "Inicio" / Feed del Especialista.
 // Cumple con la descripcion exacta solicitada por el usuario:
 //   _ Fondo azul corporativo en la mitad superior.
 //   _ Hero Card "MI AREA ASIGNADA" en blanco con datos del especialista.
@@ -43,16 +43,16 @@ type ExportStep = 'period' | 'scope' | 'format';
 type ExportScope = 'mine' | 'area';
 
 const PERIOD_OPTIONS: { value: ReportPeriod; label: string; sub: string; icon: keyof typeof Ionicons.glyphMap }[] = [
-  { value: 'today',     label: 'Hoy',         sub: 'Informe Diario · solo jerarquia "Diario"',  icon: 'today-outline' },
-  { value: 'yesterday', label: 'Ayer',        sub: 'Reportes del dia anterior', icon: 'calendar-clear-outline' },
-  { value: 'week',      label: 'Esta semana', sub: 'Informe Semanal · solo jerarquia "Semanal"',            icon: 'calendar-outline' },
-  { value: 'month',     label: 'Este mes',    sub: 'Informe Mensual · solo jerarquia "Mensual"',           icon: 'calendar-number-outline' },
+  { value: 'today',     label: 'Hoy',         sub: 'Informe Diario · solo jerarquía "Diario"',  icon: 'today-outline' },
+  { value: 'yesterday', label: 'Ayer',        sub: 'Reportes del día anterior', icon: 'calendar-clear-outline' },
+  { value: 'week',      label: 'Esta semana', sub: 'Informe Semanal · solo jerarquía "Semanal"',            icon: 'calendar-outline' },
+  { value: 'month',     label: 'Este mes',    sub: 'Informe Mensual · solo jerarquía "Mensual"',           icon: 'calendar-number-outline' },
 ];
 
 const FORMAT_OPTIONS: { value: ExportFormat; label: string; sub: string; icon: keyof typeof Ionicons.glyphMap; tint: string }[] = [
   { value: 'pdf',  label: 'PDF',        sub: 'Documento horizontal listo para imprimir', icon: 'document-text', tint: '#DC2626' },
   { value: 'docx', label: 'Word',       sub: 'Editable en Microsoft Word',                icon: 'document',      tint: '#1D4ED8' },
-  { value: 'pptx', label: 'PowerPoint', sub: 'Presentacion institucional 16:9',            icon: 'easel',         tint: '#B45309' },
+  { value: 'pptx', label: 'PowerPoint', sub: 'Presentación institucional 16:9',            icon: 'easel',         tint: '#B45309' },
 ];
 
 // Campos que realmente se pintan en una `FeedCard`. Se usan para decidir si
@@ -170,7 +170,7 @@ export default function SpecFeedScreen() {
   const loadFeed = useCallback(async (nextRange: RangeKey = range, silent = false, q = debouncedQuery) => {
     if (!projectId) {
       setLoading(false);
-      setError('Tu cuenta no esta asociada a ningun proyecto.');
+      setError('Tu cuenta no esta asociada a ningún proyecto.');
       return;
     }
     try {
@@ -292,7 +292,7 @@ export default function SpecFeedScreen() {
       setExportOpen(false);
       setTimeout(() => setExportStep('period'), 200);
     } catch (e: any) {
-      Alert.alert(`No se pudo generar el ${fmt.toUpperCase()}`, e?.message || 'Intentalo nuevamente.');
+      Alert.alert(`No se pudo generar el ${fmt.toUpperCase()}`, e?.message || 'Inténtalo nuevamente.');
     } finally {
       setExportBusy(false);
     }
@@ -478,7 +478,7 @@ export default function SpecFeedScreen() {
               {exportStep === 'scope' && (
                 <>
                   <Pressable accessibilityRole="button" onPress={() => onPickScope('mine')} style={styles.exportItem}><View style={styles.exportItemIcon}><Ionicons name="person-outline" size={20} color={colors.primary} /></View><View style={{ flex: 1 }}><Text style={styles.exportItemTitle}>Mis reportes</Text><Text style={styles.exportItemSub}>Solo lo que yo capture</Text></View></Pressable>
-                  <Pressable accessibilityRole="button" onPress={() => onPickScope('area')} style={styles.exportItem}><View style={styles.exportItemIcon}><Ionicons name="grid-outline" size={20} color={colors.primary} /></View><View style={{ flex: 1 }}><Text style={styles.exportItemTitle}>Mi area</Text><Text style={styles.exportItemSub}>Reportes de toda mi area</Text></View></Pressable>
+                  <Pressable accessibilityRole="button" onPress={() => onPickScope('area')} style={styles.exportItem}><View style={styles.exportItemIcon}><Ionicons name="grid-outline" size={20} color={colors.primary} /></View><View style={{ flex: 1 }}><Text style={styles.exportItemTitle}>Mi área</Text><Text style={styles.exportItemSub}>Reportes de toda mi área</Text></View></Pressable>
                 </>
               )}
               {exportStep === 'format' && exportSinReportes ? (
@@ -519,8 +519,8 @@ const HeroCard = memo(({ user, project }: any) => {
         <View style={styles.heroHeaderRow}>
           <View style={styles.heroIcon}><Ionicons name="location" size={18} color="#fff" /></View>
           <View style={{ flex: 1 }}>
-            <Text style={styles.heroLabel}>MI AREA ASIGNADA</Text>
-            <Text style={styles.heroTitle} numberOfLines={1}>{user?.area || 'Sin area asignada'}</Text>
+            <Text style={styles.heroLabel}>MI ÁREA ASIGNADA</Text>
+            <Text style={styles.heroTitle} numberOfLines={1}>{user?.area || 'Sin área asignada'}</Text>
           </View>
           <View style={styles.heroLeavesPill}>
             <Ionicons name="flag" size={11} color={colors.primary} />
@@ -533,7 +533,7 @@ const HeroCard = memo(({ user, project }: any) => {
         {project?.contract_number ? (
           <Text style={styles.heroMeta}>
             Contrato {project.contract_number}
-            {project.constructora ? `  _  ${project.constructora}` : ''}
+            {project.constructora ? `  ·  ${project.constructora}` : ''}
           </Text>
         ) : null}
       </View>
@@ -548,7 +548,7 @@ const ExportRow = memo(({ busy, onPress }: any) => {
         {busy ? <ActivityIndicator color="#fff" size="small" /> : <Ionicons name="download-outline" size={22} color="#fff" />}
         <View style={{ flex: 1 }}>
           <Text style={styles.exportMainTitle}>Exportar Reportes</Text>
-          <Text style={styles.exportMainSub}>{busy ? 'Generando archivo...' : 'PDF . Word . PowerPoint'}</Text>
+          <Text style={styles.exportMainSub}>{busy ? 'Generando archivo...' : 'PDF · Word · PowerPoint'}</Text>
         </View>
         <Ionicons name="chevron-forward" size={20} color="rgba(255,255,255,0.85)" />
       </Pressable>
@@ -562,8 +562,8 @@ const AiSummaryRow = memo(({ busy, onPress }: any) => {
       <Pressable accessibilityRole="button" onPress={onPress} disabled={busy} style={styles.aiBtn}>
         {busy ? <ActivityIndicator color="#fff" size="small" /> : <Ionicons name="sparkles" size={22} color="#fff" />}
         <View style={{ flex: 1 }}>
-          <Text style={styles.aiBtnTitle}>_ Generar Resumen Ejecutivo con IA</Text>
-          <Text style={styles.aiBtnSub}>{busy ? 'Analizando reportes del dia...' : 'Avances, equipo y personal en 3 vinetas'}</Text>
+          <Text style={styles.aiBtnTitle}>Generar resumen ejecutivo con IA</Text>
+          <Text style={styles.aiBtnSub}>{busy ? 'Analizando reportes del día...' : 'Avances, equipo y personal en 3 viñetas'}</Text>
         </View>
         <Ionicons name="chevron-forward" size={20} color="rgba(255,255,255,0.85)" />
       </Pressable>
@@ -687,7 +687,7 @@ function areFeedCardPropsEqual(prev: FeedCardProps, next: FeedCardProps): boolea
 // demas (fotos, texto completo, jerarquia, actividades, observaciones) vive
 // en el detalle (`ReportPreviewSheet`) que se abre al tocarla.
 const FeedCard = memo(function FeedCard({ item, onPreview }: FeedCardProps) {
-  const leafName = (item.node_path_names || [])[(item.node_path_names || []).length - 1] || 'Sin ubicacion';
+  const leafName = (item.node_path_names || [])[(item.node_path_names || []).length - 1] || 'Sin ubicación';
   const handlePreview = useCallback(() => onPreview(item), [onPreview, item]);
 
   return (
@@ -701,7 +701,7 @@ const FeedCard = memo(function FeedCard({ item, onPreview }: FeedCardProps) {
         </View>
         <View style={styles.feedCompactRow}>
           <Ionicons name="person-outline" size={12} color={colors.textMuted} />
-          <Text style={styles.feedCardSub} numberOfLines={1}>{item.captured_by_name || '_'}</Text>
+          <Text style={styles.feedCardSub} numberOfLines={1}>{item.captured_by_name || '—'}</Text>
         </View>
       </View>
       <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />

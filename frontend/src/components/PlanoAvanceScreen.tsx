@@ -175,7 +175,7 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
       setAddMode('none');
       await loadDetail(detail.id);
     } catch (e: any) {
-      Alert.alert('No se pudo guardar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo guardar', e?.message || 'Inténtalo nuevamente.');
     } finally {
       setSavingMarker(false);
     }
@@ -213,7 +213,7 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
       await Promise.all(patches);
       await loadDetail(detail.id);
     } catch (e: any) {
-      Alert.alert('No se pudo mover', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo mover', e?.message || 'Inténtalo nuevamente.');
       await loadDetail(detail.id); // recarga por si algún PATCH sí aplicó antes de fallar
     } finally {
       setMovingMarkerId(null);
@@ -227,7 +227,7 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
       cerrarMarcador();
       await loadDetail(detail.id);
     } catch (e: any) {
-      Alert.alert('No se pudo actualizar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo actualizar', e?.message || 'Inténtalo nuevamente.');
     }
   }
 
@@ -240,7 +240,7 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
       cerrarMarcador();
       await loadDetail(detail.id);
     } catch (e: any) {
-      Alert.alert('No se pudo renombrar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo renombrar', e?.message || 'Inténtalo nuevamente.');
     }
   }
 
@@ -253,7 +253,7 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
       cerrarMarcador();
       await loadDetail(detail.id);
     } catch (e: any) {
-      Alert.alert('No se pudo eliminar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo eliminar', e?.message || 'Inténtalo nuevamente.');
     }
   }
 
@@ -264,7 +264,7 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
       await api.deletePlanoAvance(projectId, p.id);
       await loadList();
     } catch (e: any) {
-      Alert.alert('No se pudo eliminar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo eliminar', e?.message || 'Inténtalo nuevamente.');
     }
   }
 
@@ -317,7 +317,7 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
       await loadList();
       setSelectedId(created.id);
     } catch (e: any) {
-      Alert.alert('No se pudo crear el plano', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo crear el plano', e?.message || 'Inténtalo nuevamente.');
     } finally {
       setUploading(false);
     }

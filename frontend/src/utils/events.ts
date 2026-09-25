@@ -39,7 +39,7 @@ export function groupEvents(items: ProjectEvent[], range: 'upcoming' | 'past', z
     }
     const out: EventSection[] = [];
     if (buckets.today.length) out.push({ key: 'today', title: 'Hoy', items: buckets.today });
-    if (buckets.tomorrow.length) out.push({ key: 'tomorrow', title: 'Manana', items: buckets.tomorrow });
+    if (buckets.tomorrow.length) out.push({ key: 'tomorrow', title: 'Mañana', items: buckets.tomorrow });
     if (buckets.week.length) out.push({ key: 'week', title: 'Esta semana', items: buckets.week });
     if (buckets.later.length) out.push({ key: 'later', title: 'Mas adelante', items: buckets.later });
     return out;
@@ -64,13 +64,13 @@ export function formatEventTime(e: ProjectEvent): string {
   if (!e.end_at) return time;
   const end = dayjs.utc(e.end_at).tz(CDMX_TZ);
   const endTime = end.format('HH:mm');
-  if (start.isSame(end, 'day')) return `${time} _ ${endTime}`;
+  if (start.isSame(end, 'day')) return `${time} · ${endTime}`;
   const endDate = end.format('DD MMM');
-  return `${time} _ ${endDate} ${endTime}`;
+  return `${time} · ${endDate} ${endTime}`;
 }
 
 export function formatEventDate(iso: string): string {
   const d = esSoloFecha(iso) ? dayjs.utc(iso) : dayjs.utc(iso).tz(CDMX_TZ);
-  if (!d.isValid()) return '_';
+  if (!d.isValid()) return '—';
   return d.format('ddd DD MMM YYYY');
 }

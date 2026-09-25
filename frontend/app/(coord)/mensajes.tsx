@@ -1,4 +1,4 @@
-// SynCo v2.0 _ Tab "Mensajes" para Coordinador General y Jefe de Proyecto.
+// Dirac · Tab "Mensajes" para Coordinador General y Jefe de Proyecto.
 // El Coord General tiene acceso a todos los proyectos, por lo que primero debe
 // elegir un proyecto antes de ver los canales. El componente `MensajesView` se
 // reutiliza desde la version del Especialista.
@@ -95,7 +95,7 @@ export default function CoordMensajesScreen() {
           <Text style={styles.headerTitle}>Mensajes</Text>
           <Text style={styles.headerSubtitle}>
             {totalUnread > 0
-              ? `${totalUnread} mensaje${totalUnread === 1 ? '' : 's'} sin leer _ elige un proyecto`
+              ? `${totalUnread} mensaje${totalUnread === 1 ? '' : 's'} sin leer · elige un proyecto`
               : 'Elige un proyecto para ver sus canales'}
           </Text>
         </View>

@@ -64,7 +64,7 @@ export default function CoordEventsScreen() {
   }
 
   async function onDelete(e: ProjectEvent) {
-    const ok = await confirm('Eliminar evento', `?Eliminar "${e.title}"?`, { confirmText: 'Eliminar', destructive: true });
+    const ok = await confirm('Eliminar evento', `¿Eliminar "${e.title}"?`, { confirmText: 'Eliminar', destructive: true });
     if (!ok) return;
     try {
       await api.deleteEvent(e.id);
@@ -97,7 +97,7 @@ export default function CoordEventsScreen() {
             style={[styles.tabBtn, tab === k && styles.tabBtnActive]}
           >
             <Text style={[styles.tabTxt, tab === k && styles.tabTxtActive]}>
-              {k === 'upcoming' ? 'Proximos' : 'Pasados'}
+              {k === 'upcoming' ? 'Próximos' : 'Pasados'}
             </Text>
           </Pressable>
         ))}
@@ -127,7 +127,7 @@ export default function CoordEventsScreen() {
               {tab === 'upcoming' ? 'Sin eventos programados' : 'Sin eventos pasados'}
             </Text>
             <Text style={styles.emptyMsg}>
-              Programa actividades clave del proyecto. Todos los miembros podran verlas en su tab &ldquo;Calendario&rdquo;.
+              Programa actividades clave del proyecto. Todos los miembros podrán verlas en su tab &ldquo;Calendario&rdquo;.
             </Text>
             {tab === 'upcoming' ? (
               <Pressable accessibilityRole="button" style={styles.emptyBtn} onPress={newEvent}>

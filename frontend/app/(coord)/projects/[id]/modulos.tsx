@@ -66,7 +66,7 @@ export default function ModulosConfigScreen() {
       setDraft({ ...vacio(), ...(upd.modulos || {}) });
     } catch (e: any) {
       setDraft(previous);
-      Alert.alert('No se pudo guardar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo guardar', e?.message || 'Inténtalo nuevamente.');
     } finally {
       setSaving(null);
     }

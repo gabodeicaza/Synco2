@@ -1,4 +1,4 @@
-// SynCo v2.0 _ Tab "Mensajes" con canales tipo Slack/WhatsApp.
+// Dirac · Tab "Mensajes" con canales tipo Slack/WhatsApp.
 // Vista 1 (Lista): canales del proyecto agrupados (General _ Areas _ Directos).
 // Vista 2 (Chat): mensajes del canal seleccionado con polling 6s.
 // Single-file state machine para evitar restructurar el routing del tab.
@@ -139,7 +139,7 @@ export function MensajesView({ projectId, conRegreso = false }: { projectId: str
             <View style={styles.empty}>
               <View style={styles.emptyIcon}><Ionicons name="chatbubbles-outline" size={28} color={colors.primary} /></View>
               <Text style={styles.emptyTitle}>Sin canales aun</Text>
-              <Text style={styles.emptyMsg}>El canal General se crea automaticamente al primer ingreso.</Text>
+              <Text style={styles.emptyMsg}>El canal General se crea automáticamente al primer ingreso.</Text>
             </View>
           }
           renderItem={({ item }) => {
@@ -193,7 +193,7 @@ function channelsWithSeparators(items: Channel[]): ChannelListItem[] {
     general.forEach((c) => result.push({ kind: 'channel', channel: c }));
   }
   if (areas.length) {
-    result.push({ kind: 'sep', label: 'POR AREA' });
+    result.push({ kind: 'sep', label: 'POR ÁREA' });
     areas.forEach((c) => result.push({ kind: 'channel', channel: c }));
   }
   if (direct.length) {
@@ -335,7 +335,7 @@ function ChatView({
       }).catch((e) => Alert.alert('Error', e?.message || 'No se pudo eliminar'));
     };
     if (Platform.OS === 'web') {
-      if (typeof window !== 'undefined' && window.confirm('?Eliminar este mensaje?')) confirm();
+      if (typeof window !== 'undefined' && window.confirm('¿Eliminar este mensaje?')) confirm();
     } else {
       Alert.alert('Eliminar mensaje', '?Seguro?', [
         { text: 'Cancelar', style: 'cancel' },
@@ -353,7 +353,7 @@ function ChatView({
     ? 'Visible para todo el equipo del proyecto'
     : channel.type === 'area'
       ? 'Solo asignados a esta disciplina'
-      : 'Conversacion privada 1 a 1';
+      : 'Conversación privada 1 a 1';
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
@@ -385,8 +385,8 @@ function ChatView({
             ListEmptyComponent={
               <View style={styles.empty}>
                 <View style={styles.emptyIcon}><Ionicons name="chatbubble-ellipses-outline" size={28} color={colors.primary} /></View>
-                <Text style={styles.emptyTitle}>Aun no hay mensajes</Text>
-                <Text style={styles.emptyMsg}>Se el primero en escribir.</Text>
+                <Text style={styles.emptyTitle}>Aún no hay mensajes</Text>
+                <Text style={styles.emptyMsg}>Sé el primero en escribir.</Text>
               </View>
             }
             renderItem={({ item }) => (
@@ -402,7 +402,7 @@ function ChatView({
         <View style={[styles.composer, { paddingBottom: insets.bottom + 6 }]}>
           <TextInput
             value={text} onChangeText={setText}
-            placeholder="Escribe un mensaje_"
+            placeholder="Escribe un mensaje…"
             placeholderTextColor={colors.textMuted}
             style={styles.composerInput}
             multiline
@@ -512,7 +512,7 @@ function DMPicker({
                     </View>
                     <View style={{ flex: 1 }}>
                       <Text style={styles.memberName}>{item.name}</Text>
-                      <Text style={styles.memberRole}>{prettyRole(item.role)}{item.area ? ` _ ${item.area}` : ''}</Text>
+                      <Text style={styles.memberRole}>{prettyRole(item.role)}{item.area ? ` · ${item.area}` : ''}</Text>
                     </View>
                     {busyId === item.id ? (
                       <ActivityIndicator color={colors.primary} />

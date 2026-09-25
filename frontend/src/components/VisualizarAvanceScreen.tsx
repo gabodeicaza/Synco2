@@ -112,7 +112,7 @@ export default function VisualizarAvanceScreen({ projectId }: { projectId: strin
       });
       await downloadBlob(blob, filename, 'application/pdf');
     } catch (e: any) {
-      Alert.alert('No se pudo generar el PDF', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo generar el PDF', e?.message || 'Inténtalo nuevamente.');
     } finally {
       setExportando(false);
     }
@@ -129,7 +129,7 @@ export default function VisualizarAvanceScreen({ projectId }: { projectId: strin
       });
       await downloadBlob(blob, filename, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     } catch (e: any) {
-      Alert.alert('No se pudo generar el Excel', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo generar el Excel', e?.message || 'Inténtalo nuevamente.');
     } finally {
       setExportandoXlsx(false);
     }
@@ -147,7 +147,7 @@ export default function VisualizarAvanceScreen({ projectId }: { projectId: strin
       await api.deleteAvance(a.id);
       await load();
     } catch (e: any) {
-      Alert.alert('No se pudo borrar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo borrar', e?.message || 'Inténtalo nuevamente.');
     }
   }, [conceptosById, load]);
 

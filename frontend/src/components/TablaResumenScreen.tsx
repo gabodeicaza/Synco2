@@ -135,7 +135,7 @@ export default function TablaResumenScreen({ projectId }: { projectId: string })
       setActForm((s) => ({ ...s, open: false }));
       await load();
     } catch (e: any) {
-      Alert.alert('No se pudo guardar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo guardar', e?.message || 'Inténtalo nuevamente.');
     } finally {
       setActForm((s) => ({ ...s, saving: false }));
     }
@@ -153,7 +153,7 @@ export default function TablaResumenScreen({ projectId }: { projectId: string })
             setActForm((s) => ({ ...s, open: false }));
             await load();
           } catch (e: any) {
-            Alert.alert('No se pudo eliminar', e?.message || 'Intentalo nuevamente.');
+            Alert.alert('No se pudo eliminar', e?.message || 'Inténtalo nuevamente.');
           } finally {
             setActForm((s) => ({ ...s, saving: false }));
           }
@@ -182,7 +182,7 @@ export default function TablaResumenScreen({ projectId }: { projectId: string })
       setColForm((s) => ({ ...s, open: false }));
       await load();
     } catch (e: any) {
-      Alert.alert('No se pudo guardar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo guardar', e?.message || 'Inténtalo nuevamente.');
     } finally {
       setColForm((s) => ({ ...s, saving: false }));
     }
@@ -200,7 +200,7 @@ export default function TablaResumenScreen({ projectId }: { projectId: string })
             setColForm((s) => ({ ...s, open: false }));
             await load();
           } catch (e: any) {
-            Alert.alert('No se pudo eliminar', e?.message || 'Intentalo nuevamente.');
+            Alert.alert('No se pudo eliminar', e?.message || 'Inténtalo nuevamente.');
           } finally {
             setColForm((s) => ({ ...s, saving: false }));
           }
@@ -244,7 +244,7 @@ export default function TablaResumenScreen({ projectId }: { projectId: string })
       setCeldaForm((s) => ({ ...s, open: false }));
       await load();
     } catch (e: any) {
-      Alert.alert('No se pudo guardar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo guardar', e?.message || 'Inténtalo nuevamente.');
     } finally {
       setCeldaForm((s) => ({ ...s, saving: false }));
     }

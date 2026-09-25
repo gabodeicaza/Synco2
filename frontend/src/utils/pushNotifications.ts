@@ -79,7 +79,7 @@ export async function registerForPushNotificationsAsync(
   // 2) Solo dispositivos fisicos pueden obtener push tokens.
   if (!Device.isDevice) {
     if (__DEV__) {
-      console.log('[push] Saltado: no es dispositivo fisico (simulador).');
+      console.log('[push] Saltado: no es dispositivo físico (simulador).');
     }
     return null;
   }
@@ -173,8 +173,8 @@ export async function scheduleMinuteReminder(id: string, title: string, dueDate:
     await Notifications.scheduleNotificationAsync({
       identifier: `reminder_${id}`,
       content: {
-        title: '_ Recordatorio de Minuta',
-        body: `El acuerdo "${title}" vence manana.`,
+        title: 'Recordatorio de minuta',
+        body: `El acuerdo "${title}" vence mañana.`,
         data: { minuteId: id },
       },
       trigger: {

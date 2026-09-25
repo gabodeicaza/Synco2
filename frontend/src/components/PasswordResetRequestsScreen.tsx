@@ -24,7 +24,7 @@ export default function PasswordResetRequestsScreen() {
       const data = await api.listPasswordResetRequests();
       setItems(data);
     } catch (e: any) {
-      Alert.alert('No se pudo cargar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo cargar', e?.message || 'Inténtalo nuevamente.');
     }
   }, []);
 
@@ -51,7 +51,7 @@ export default function PasswordResetRequestsScreen() {
       setResolved({ id: req.id, name: res.user_name, temp_password: res.temp_password });
       setItems((prev) => prev.filter((it) => it.id !== req.id));
     } catch (e: any) {
-      Alert.alert('No se pudo restablecer', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo restablecer', e?.message || 'Inténtalo nuevamente.');
     } finally {
       setBusyId(null);
     }
@@ -66,7 +66,7 @@ export default function PasswordResetRequestsScreen() {
       await api.dismissPasswordResetRequest(req.id);
       setItems((prev) => prev.filter((it) => it.id !== req.id));
     } catch (e: any) {
-      Alert.alert('No se pudo descartar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo descartar', e?.message || 'Inténtalo nuevamente.');
     } finally {
       setBusyId(null);
     }
