@@ -5,13 +5,12 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, StatusBar, Alert,
 } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 
 import { api, AvancesResumen, Concepto, Partida, Project, RegistroAvance } from '@/src/api';
 import { colors, radius, shadow, spacing } from '@/src/theme';
 import { APP_BRAND } from '@/src/utils/roles';
+import { ScreenHeader } from '@/src/components/ScreenHeader';
 import { formatCantidad, formatMoney } from '@/src/utils/money';
 import { downloadBlob } from '@/src/utils/downloadBlob';
 import { confirm } from '@/src/utils/confirm';
@@ -30,7 +29,6 @@ const ATAJO_LABELS: Record<AtajoRango, string> = {
 };
 
 export default function VisualizarAvanceScreen({ projectId }: { projectId: string }) {
-  const insets = useSafeAreaInsets();
   const [project, setProject] = useState<Project | null>(null);
   const [partidas, setPartidas] = useState<Partida[]>([]);
   const [conceptosById, setConceptosById] = useState<Record<string, Concepto>>({});
@@ -156,13 +154,7 @@ export default function VisualizarAvanceScreen({ projectId }: { projectId: strin
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <StatusBar barStyle="light-content" />
-      <View style={[styles.header, { paddingTop: insets.top + spacing.xs }]}>
-        <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
-          <Ionicons name="chevron-back" size={22} color="#fff" />
-        </Pressable>
-        <Text style={styles.brand}>{APP_BRAND}</Text>
-        <View style={{ width: 32 }} />
-      </View>
+      <ScreenHeader title={APP_BRAND} backgroundColor={colors.primary} />
       <Text style={styles.titleBar}>VISUALIZAR AVANCE — {(project?.name || '').toUpperCase()}</Text>
       <View style={styles.rangoRow}>
         <Text style={styles.rangoTxt}>
@@ -319,9 +311,6 @@ export default function VisualizarAvanceScreen({ projectId }: { projectId: strin
 }
 
 const styles = StyleSheet.create({
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: spacing.md, backgroundColor: colors.primary, paddingBottom: spacing.sm },
-  iconBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
-  brand: { color: '#fff', fontWeight: '800', fontSize: 15 },
   titleBar: { fontSize: 14, fontWeight: '800', color: colors.text, paddingHorizontal: spacing.md, paddingTop: spacing.sm },
   rangoRow: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',

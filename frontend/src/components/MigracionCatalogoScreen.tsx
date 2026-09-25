@@ -2,14 +2,13 @@
 // Un proyecto a la vez, con vista previa y confirmación; se puede deshacer. Cablebús
 // Línea 4 aparece marcado y el servidor se niega a tocarlo.
 import React, { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { router } from 'expo-router';
-import { Ionicons } from '@expo/vector-icons';
+import { ActivityIndicator, Modal, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { api, MigracionCatalogoItem, MigracionCatalogoVistaPrevia } from '@/src/api';
 import { Button } from '@/src/components/Button';
 import { InlineError } from '@/src/components/InlineError';
-import { a11y, t } from '@/src/i18n';
+import { ScreenHeader } from '@/src/components/ScreenHeader';
+import { t } from '@/src/i18n';
 import { colors, radius, spacing } from '@/src/theme';
 import { confirm } from '@/src/utils/confirm';
 import { esErrorDeRed } from '@/src/utils/errores';
@@ -84,14 +83,8 @@ export default function MigracionCatalogoScreen() {
   }
 
   return (
-    <View style={[styles.flex, { paddingTop: insets.top }]}>
-      <View style={styles.header}>
-        <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
-          <Ionicons name="chevron-back" size={24} color={colors.text} />
-        </Pressable>
-        <Text style={styles.title} accessibilityRole="header">{t('migracion.titulo')}</Text>
-        <View style={{ width: 44 }} />
-      </View>
+    <View style={styles.flex}>
+      <ScreenHeader title={t('migracion.titulo')} />
       <ScrollView contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + 24 }]}>
         <Text style={styles.intro}>{t('migracion.intro')}</Text>
         <InlineError message={error} />
@@ -158,9 +151,6 @@ export default function MigracionCatalogoScreen() {
 
 const styles = StyleSheet.create({
   flex: { flex: 1, backgroundColor: colors.bg },
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
-  iconBtn: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
-  title: { fontSize: 16, fontWeight: '800', color: colors.text, flex: 1, textAlign: 'center' },
   scroll: { paddingHorizontal: spacing.lg, gap: spacing.md },
   intro: { fontSize: 12, color: colors.textMuted, lineHeight: 18 },
   card: { backgroundColor: colors.surface, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, padding: spacing.md, gap: 6 },

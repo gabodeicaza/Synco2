@@ -32,7 +32,7 @@ import {
   FlatList,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { router, useFocusEffect } from 'expo-router';
+import { useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as DocumentPicker from 'expo-document-picker';
 import { api, Area, LocationNode, Minuta, Project, User } from '@/src/api';
@@ -49,6 +49,7 @@ import {
 } from '@/src/utils/validacionMinuta';
 import { InlineError } from '@/src/components/InlineError';
 import { FormField } from '@/src/components/FormField';
+import { ScreenHeader } from '@/src/components/ScreenHeader';
 import { useFormErrors } from '@/src/hooks/useFormErrors';
 import { useEnvio } from '@/src/hooks/useEnvio';
 import { useModalUnico } from '@/src/hooks/useModalUnico';
@@ -324,26 +325,29 @@ export default function MinutasView({
     setMinutas((prev) => prev.map((x) => (x.id === updated.id ? updated : x)));
   }, []);
 
+  const tituloVista = headerTitle || 'Minutas';
+  const subtituloVista = headerSubtitle || 'Acuerdos y seguimiento de obra';
+  const botonNueva = canCreate ? (
+    <Pressable accessibilityRole="button" onPress={() => setCreateOpen(true)} style={styles.newBtn}>
+      <Ionicons name="add" size={18} color="#fff" />
+      <Text style={styles.newBtnTxt}>Nueva</Text>
+    </Pressable>
+  ) : null;
+
   return (
-    <View style={[styles.flex, { paddingTop: topPadding !== undefined ? topPadding : insets.top }]}>
+    <View style={[styles.flex, { paddingTop: embedded ? (topPadding !== undefined ? topPadding : insets.top) : (topPadding ?? 0) }]}>
       {/* Header */}
-      <View style={styles.header}>
-        {!embedded && (
-          <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={12} style={styles.iconBtn}>
-            <Ionicons name="chevron-back" size={22} color={colors.text} />
-          </Pressable>
-        )}
-        <View style={{ flex: 1 }}>
-          <Text style={styles.hTitle}>{headerTitle || 'Minutas'}</Text>
-          <Text style={styles.hSub}>{headerSubtitle || 'Acuerdos y seguimiento de obra'}</Text>
+      {embedded ? (
+        <View style={styles.header}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.hTitle}>{tituloVista}</Text>
+            <Text style={styles.hSub}>{subtituloVista}</Text>
+          </View>
+          {botonNueva}
         </View>
-        {canCreate && (
-          <Pressable accessibilityRole="button" onPress={() => setCreateOpen(true)} style={styles.newBtn}>
-            <Ionicons name="add" size={18} color="#fff" />
-            <Text style={styles.newBtnTxt}>Nueva</Text>
-          </Pressable>
-        )}
-      </View>
+      ) : (
+        <ScreenHeader title={tituloVista} subtitle={subtituloVista} safeArea={topPadding === undefined} right={botonNueva} />
+      )}
 
       {/* Codigo institucional de minutas (prefijo) */}
       <View style={styles.codePrefixRow}>

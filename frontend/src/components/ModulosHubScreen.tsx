@@ -13,9 +13,9 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { api, Project } from '@/src/api';
-import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
+import { ScreenHeader } from '@/src/components/ScreenHeader';
+import { colors, radius, shadow, spacing } from '@/src/theme';
 import { modulosActivos } from '@/src/utils/modulos';
-import { a11y } from '@/src/i18n';
 
 export default function ModulosHubScreen({
   projectId, basePath,
@@ -44,19 +44,10 @@ export default function ModulosHubScreen({
 
   const activos = modulosActivos(project?.modulos || null);
   const headerColor = project?.color_institucional || project?.color_tema || colors.primary;
-  const headerTextColor = contrastText(headerColor);
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <View style={[styles.headerWrap, { backgroundColor: headerColor, paddingTop: insets.top + spacing.xs }]}>
-        <View style={styles.headerTopRow}>
-          <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
-            <Ionicons name="chevron-back" size={22} color={headerTextColor} />
-          </Pressable>
-          <Text style={[styles.titleBar, { color: headerTextColor }]} numberOfLines={1}>Módulos</Text>
-          <View style={{ width: 32 }} />
-        </View>
-      </View>
+      <ScreenHeader title="Módulos" backgroundColor={headerColor} fallbackHref={basePath} />
 
       {loading ? (
         <View style={styles.center}><ActivityIndicator color={colors.primary} /></View>
@@ -89,10 +80,6 @@ export default function ModulosHubScreen({
 }
 
 const styles = StyleSheet.create({
-  headerWrap: { paddingHorizontal: spacing.md, paddingBottom: spacing.sm },
-  headerTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  iconBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
-  titleBar: { flex: 1, textAlign: 'center', fontWeight: '800', fontSize: 16, letterSpacing: 0.3 },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   scroll: { padding: spacing.md, gap: spacing.sm },
   empty: { textAlign: 'center', color: colors.textMuted, marginTop: 40, fontStyle: 'italic' },

@@ -3,7 +3,10 @@ import { act, configure, fireEvent, render, screen, waitFor } from '@testing-lib
 import RegistrarAvanceScreen from '../RegistrarAvanceScreen';
 
 jest.mock('@expo/vector-icons', () => ({ Ionicons: 'Ionicons' }));
-jest.mock('expo-router', () => ({ router: { back: jest.fn() } }));
+jest.mock('expo-router', () => {
+  const mockRouter = { back: jest.fn(), replace: jest.fn(), canGoBack: () => true };
+  return { router: mockRouter, useRouter: () => mockRouter };
+});
 jest.mock('expo-image-picker', () => ({
   MediaTypeOptions: { Images: 'Images' }, launchImageLibraryAsync: jest.fn(), launchCameraAsync: jest.fn(),
 }));
@@ -41,6 +44,16 @@ beforeEach(() => {
   (api.getTree as jest.Mock).mockResolvedValue([]);
 });
 afterEach(() => { jest.useRealTimers(); });
+
+describe('Registrar avance: encabezado estándar (K-01)', () => {
+  it('tiene el botón "Volver" del encabezado común y regresa en el historial', async () => {
+    buscar.mockResolvedValue([]);
+    render(<RegistrarAvanceScreen projectId="p1" />);
+    await avanzar(0);
+    fireEvent.press(screen.getByRole('button', { name: 'Volver' }));
+    expect(require('expo-router').router.back).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe('Registrar avance: lista y búsqueda (A-10)', () => {
   it('muestra la lista de conceptos por defecto sin escribir nada', async () => {

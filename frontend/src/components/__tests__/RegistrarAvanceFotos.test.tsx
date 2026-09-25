@@ -3,7 +3,10 @@ import { act, configure, fireEvent, render, screen } from '@testing-library/reac
 import RegistrarAvanceScreen from '../RegistrarAvanceScreen';
 
 jest.mock('@expo/vector-icons', () => ({ Ionicons: 'Ionicons' }));
-jest.mock('expo-router', () => ({ router: { back: jest.fn() } }));
+jest.mock('expo-router', () => {
+  const mockRouter = { back: jest.fn(), replace: jest.fn(), canGoBack: () => true };
+  return { router: mockRouter, useRouter: () => mockRouter };
+});
 jest.mock('expo-image-picker', () => ({
   MediaTypeOptions: { Images: 'Images' }, launchImageLibraryAsync: jest.fn(), launchCameraAsync: jest.fn(),
 }));

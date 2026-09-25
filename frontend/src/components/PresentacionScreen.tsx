@@ -19,6 +19,7 @@ import {
 } from '@/src/api';
 import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
 import { Button } from '@/src/components/Button';
+import { ScreenHeader } from '@/src/components/ScreenHeader';
 import { confirm } from '@/src/utils/confirm';
 import { useAuth } from '@/src/auth-context';
 import { ROLE_COORD, ROLE_JEFE, ROLE_SUB } from '@/src/utils/roles';
@@ -343,17 +344,16 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
   if (selectedId) {
     return (
       <View style={{ flex: 1, backgroundColor: colors.bg }}>
-        <View style={[styles.headerWrap, { backgroundColor: headerColor, paddingTop: insets.top + spacing.xs }]}>
-          <View style={styles.headerTopRow}>
-            <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => setSelectedId(null)} hitSlop={10} style={styles.iconBtn}>
-              <Ionicons name="chevron-back" size={22} color={headerTextColor} />
-            </Pressable>
-            <Text style={[styles.titleBar, { color: headerTextColor }]} numberOfLines={1}>{detail?.titulo || 'Presentación'}</Text>
-            <Pressable accessibilityRole="button" accessibilityLabel={a11y('vistaPrevia')} hitSlop={10} style={styles.iconBtn} onPress={goToPreview}>
+        <ScreenHeader
+          title={detail?.titulo || 'Presentación'}
+          backgroundColor={headerColor}
+          onBack={() => setSelectedId(null)}
+          right={(
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y('vistaPrevia')} hitSlop={10} style={styles.accionEncabezado} onPress={goToPreview}>
               <Ionicons name="eye-outline" size={20} color={headerTextColor} />
             </Pressable>
-          </View>
-        </View>
+          )}
+        />
 
         {detailLoading || !detail ? (
           <View style={styles.center}><ActivityIndicator color={colors.primary} /></View>
@@ -590,15 +590,7 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
   // ======================= Vista de LISTA de presentaciones =======================
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <View style={[styles.headerWrap, { backgroundColor: headerColor, paddingTop: insets.top + spacing.xs }]}>
-        <View style={styles.headerTopRow}>
-          <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
-            <Ionicons name="chevron-back" size={22} color={headerTextColor} />
-          </Pressable>
-          <Text style={[styles.titleBar, { color: headerTextColor }]} numberOfLines={1}>Presentación</Text>
-          <View style={{ width: 32 }} />
-        </View>
-      </View>
+      <ScreenHeader title="Presentación" backgroundColor={headerColor} />
 
       <ScrollView contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + spacing.xl }]}>
         <View style={styles.sectionHeaderRow}>
@@ -664,6 +656,7 @@ const styles = StyleSheet.create({
   headerWrap: { paddingHorizontal: spacing.md, paddingBottom: spacing.sm },
   headerTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   iconBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
+  accionEncabezado: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
   titleBar: { flex: 1, textAlign: 'center', fontWeight: '800', fontSize: 16, letterSpacing: 0.3 },
   scroll: { padding: spacing.md },
   sectionHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: spacing.xs },

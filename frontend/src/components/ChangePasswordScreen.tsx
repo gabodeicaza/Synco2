@@ -9,6 +9,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { Button } from '@/src/components/Button';
+import { ScreenHeader } from '@/src/components/ScreenHeader';
 import { api } from '@/src/api';
 import { colors, radius, spacing } from '@/src/theme';
 import { a11y } from '@/src/i18n';
@@ -50,13 +51,7 @@ export default function ChangePasswordScreen() {
 
   return (
     <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
-      <View style={[styles.header, { paddingTop: insets.top + spacing.sm }]}>
-        <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
-          <Ionicons name="chevron-back" size={24} color={colors.text} />
-        </Pressable>
-        <Text style={styles.title}>Cambiar contraseña</Text>
-        <View style={{ width: 32 }} />
-      </View>
+      <ScreenHeader title="Cambiar contraseña" />
 
       <ScrollView
         keyboardShouldPersistTaps="handled"
@@ -115,12 +110,6 @@ export default function ChangePasswordScreen() {
 
 const styles = StyleSheet.create({
   flex: { flex: 1, backgroundColor: colors.bg },
-  header: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: spacing.md, paddingBottom: spacing.sm,
-  },
-  iconBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
-  title: { fontSize: 17, fontWeight: '800', color: colors.text },
   scroll: { paddingHorizontal: spacing.lg, flexGrow: 1 },
   card: { backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.lg, borderWidth: 1, borderColor: colors.border },
   label: { fontSize: 12, fontWeight: '700', color: colors.textBody, marginBottom: 6 },

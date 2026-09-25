@@ -8,7 +8,10 @@ jest.mock('@expo/vector-icons', () => ({ Ionicons: 'Ionicons' }));
 jest.mock('react-native-safe-area-context', () => ({
   useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
 }));
-jest.mock('expo-router', () => ({ router: { back: jest.fn() } }));
+jest.mock('expo-router', () => {
+  const mockRouter = { back: jest.fn(), replace: jest.fn(), canGoBack: () => true };
+  return { router: mockRouter, useRouter: () => mockRouter };
+});
 jest.mock('expo-image-picker', () => ({}));
 jest.mock('expo-image-manipulator', () => ({}));
 jest.mock('@/src/auth-context', () => ({ useAuth: () => ({ user: { role: 'coordinador_general' } }) }));

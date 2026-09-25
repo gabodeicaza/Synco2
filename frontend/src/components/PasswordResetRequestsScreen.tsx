@@ -4,13 +4,12 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, RefreshControl, Alert } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { api, PasswordResetRequest } from '@/src/api';
 import { colors, radius, spacing } from '@/src/theme';
 import { roleLabel } from '@/src/utils/roles';
 import { confirm } from '@/src/utils/confirm';
-import { a11y } from '@/src/i18n';
+import { ScreenHeader } from '@/src/components/ScreenHeader';
 
 export default function PasswordResetRequestsScreen() {
   const insets = useSafeAreaInsets();
@@ -74,14 +73,8 @@ export default function PasswordResetRequestsScreen() {
   }
 
   return (
-    <View style={[styles.flex, { paddingTop: insets.top }]}>
-      <View style={styles.header}>
-        <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
-          <Ionicons name="chevron-back" size={24} color={colors.text} />
-        </Pressable>
-        <Text style={styles.title}>Solicitudes de contraseña</Text>
-        <View style={{ width: 32 }} />
-      </View>
+    <View style={styles.flex}>
+      <ScreenHeader title="Solicitudes de contraseña" fallbackHref="/(coord)" />
 
       {loading ? (
         <View style={styles.center}><ActivityIndicator color={colors.primary} /></View>
@@ -156,12 +149,6 @@ export default function PasswordResetRequestsScreen() {
 
 const styles = StyleSheet.create({
   flex: { flex: 1, backgroundColor: colors.bg },
-  header: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
-  },
-  iconBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
-  title: { fontSize: 17, fontWeight: '800', color: colors.text },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   scroll: { paddingHorizontal: spacing.lg, gap: spacing.md },
 

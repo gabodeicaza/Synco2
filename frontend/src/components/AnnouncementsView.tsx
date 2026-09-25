@@ -21,7 +21,7 @@ import {
   RefreshControl, ScrollView, StyleSheet, Switch, Text, TextInput, View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { router, useFocusEffect } from 'expo-router';
+import { useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { api, Announcement, Area, LocationNode } from '@/src/api';
@@ -30,6 +30,7 @@ import { confirm } from '@/src/utils/confirm';
 import { fmtDateTimeCDMX } from '@/src/utils/tz';
 import { a11y, t as tr } from '@/src/i18n';
 import { VigenciaSelector } from '@/src/components/VigenciaSelector';
+import { ScreenHeader } from '@/src/components/ScreenHeader';
 import {
   etiquetaVigencia, textoTiempoRestante, VigenciaHoras, vigenciaParaGuardar, vigenciaValida, VIGENCIA_POR_DEFECTO,
 } from '@/src/utils/vigenciaNoticias';
@@ -166,26 +167,31 @@ export default function AnnouncementsView({
     }
   }
 
+  const tituloVista = headerTitle || 'Noticias';
+  const subtituloVista = headerSubtitle || 'Anuncios visibles para todo el proyecto';
+  const botonNueva = (
+    <Pressable accessibilityRole="button"
+      onPress={() => setEditing({ title: '', body: '', pinned: false, jerarquia: null, audiencia: 'general', node_id: null, vigencia: VIGENCIA_POR_DEFECTO, vigenciaOriginal: null })}
+      style={styles.newBtn}
+    >
+      <Ionicons name="add" size={18} color="#fff" />
+      <Text style={styles.newBtnTxt}>Nueva</Text>
+    </Pressable>
+  );
+
   return (
-    <View style={[styles.flex, { paddingTop: topPadding !== undefined ? topPadding : insets.top }]}>
-      <View style={styles.header}>
-        {!embedded && (
-          <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
-            <Ionicons name="chevron-back" size={24} color={colors.text} />
-          </Pressable>
-        )}
-        <View style={{ flex: 1 }}>
-          <Text style={styles.title} numberOfLines={1}>{headerTitle || 'Noticias'}</Text>
-          <Text style={styles.subtitle}>{headerSubtitle || 'Anuncios visibles para todo el proyecto'}</Text>
+    <View style={[styles.flex, { paddingTop: embedded ? (topPadding !== undefined ? topPadding : insets.top) : (topPadding ?? 0) }]}>
+      {embedded ? (
+        <View style={styles.header}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.title} numberOfLines={1}>{tituloVista}</Text>
+            <Text style={styles.subtitle}>{subtituloVista}</Text>
+          </View>
+          {botonNueva}
         </View>
-        <Pressable accessibilityRole="button"
-          onPress={() => setEditing({ title: '', body: '', pinned: false, jerarquia: null, audiencia: 'general', node_id: null, vigencia: VIGENCIA_POR_DEFECTO, vigenciaOriginal: null })}
-          style={styles.newBtn}
-        >
-          <Ionicons name="add" size={18} color="#fff" />
-          <Text style={styles.newBtnTxt}>Nueva</Text>
-        </Pressable>
-      </View>
+      ) : (
+        <ScreenHeader title={tituloVista} subtitle={subtituloVista} safeArea={topPadding === undefined} right={botonNueva} />
+      )}
 
       <ScrollView
         contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + 32 }]}
@@ -467,7 +473,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row', alignItems: 'center', gap: spacing.sm,
     paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
   },
-  iconBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
   title: { fontSize: 17, fontWeight: '800', color: colors.text },
   subtitle: { fontSize: 11, color: colors.textMuted, marginTop: 1 },
   newBtn: {

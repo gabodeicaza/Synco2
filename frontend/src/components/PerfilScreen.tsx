@@ -9,6 +9,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '@/src/auth-context';
 import { Button } from '@/src/components/Button';
 import { EliminarCuentaModal } from '@/src/components/EliminarCuentaModal';
+import { ScreenHeader } from '@/src/components/ScreenHeader';
 import { t } from '@/src/i18n';
 import { colors, radius, spacing } from '@/src/theme';
 import { SOPORTE_EMAIL, urlLegal, versionApp, PaginaLegal } from '@/src/utils/appInfo';
@@ -69,20 +70,8 @@ export function PerfilScreen({ basePath }: { basePath: BasePath }) {
     : t('acercaDe.notificacionesDesconocidas');
 
   return (
-    <View style={[styles.flex, { paddingTop: insets.top }]}>
-      <View style={styles.header}>
-        <Pressable
-          onPress={() => router.back()}
-          hitSlop={8}
-          style={styles.iconBtn}
-          accessibilityRole="button"
-          accessibilityLabel={t('perfil.volver')}
-        >
-          <Ionicons name="chevron-back" size={24} color={colors.text} />
-        </Pressable>
-        <Text style={styles.title} accessibilityRole="header">{t('perfil.titulo')}</Text>
-        <View style={{ width: 44 }} />
-      </View>
+    <View style={styles.flex}>
+      <ScreenHeader title={t('perfil.titulo')} fallbackHref={basePath} />
 
       <ScrollView contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + 24 }]}>
         <View style={styles.profileCard}>
@@ -255,12 +244,6 @@ function ActionTile({ icon, title, sub, onPress }: { icon: any; title: string; s
 
 const styles = StyleSheet.create({
   flex: { flex: 1, backgroundColor: colors.bg },
-  header: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
-  },
-  iconBtn: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
-  title: { fontSize: 17, fontWeight: '800', color: colors.text },
   scroll: { paddingHorizontal: spacing.lg, gap: spacing.md },
   profileCard: { alignItems: 'center', backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.lg, gap: 6, borderWidth: 1, borderColor: colors.border },
   bigAvatar: { width: 80, height: 80, borderRadius: 40, backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center' },

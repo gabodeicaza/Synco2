@@ -7,12 +7,12 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { View, Text, StyleSheet, ActivityIndicator, Pressable, FlatList, Alert, useWindowDimensions, Linking, Platform } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import {
   api, AnalisisPeriodo, EstudioDisciplinaAvance, LocationNode, PlanoAvance, Presentacion, Project,
 } from '@/src/api';
 import { colors, radius, spacing, contrastText } from '@/src/theme';
+import { ScreenHeader } from '@/src/components/ScreenHeader';
 import { SlidePortada } from '@/src/components/presentacion/SlidePortada';
 import { SlideMapaGeneral } from '@/src/components/presentacion/SlideMapaGeneral';
 import { SlideDivisor } from '@/src/components/presentacion/SlideDivisor';
@@ -132,17 +132,15 @@ export default function PresentacionPreview({ projectId, presentacionId }: { pro
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <View style={[styles.headerWrap, { backgroundColor: headerColor, paddingTop: insets.top + spacing.xs }]}>
-        <View style={styles.headerTopRow}>
-          <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
-            <Ionicons name="chevron-back" size={22} color={headerTextColor} />
-          </Pressable>
-          <Text style={[styles.titleBar, { color: headerTextColor }]} numberOfLines={1}>{presentacion.titulo}</Text>
+      <ScreenHeader
+        title={presentacion.titulo}
+        backgroundColor={headerColor}
+        right={(
           <Pressable accessibilityRole="button" accessibilityLabel={a11y('compartir')} onPress={onExport} hitSlop={10} style={styles.iconBtn} disabled={exporting}>
             {exporting ? <ActivityIndicator size="small" color={headerTextColor} /> : <Ionicons name="share-outline" size={20} color={headerTextColor} />}
           </Pressable>
-        </View>
-      </View>
+        )}
+      />
 
       {secciones.length === 0 ? (
         <View style={styles.center}>
@@ -191,10 +189,7 @@ export default function PresentacionPreview({ projectId, presentacionId }: { pro
 const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg },
   emptyTxt: { color: colors.textMuted, fontSize: 13, textAlign: 'center', padding: spacing.lg },
-  headerWrap: { paddingHorizontal: spacing.md, paddingBottom: spacing.sm },
-  headerTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  iconBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
-  titleBar: { flex: 1, fontWeight: '800', fontSize: 15, letterSpacing: 0.3, textAlign: 'center' },
+  iconBtn: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
   slideFrame: { flex: 1, borderRadius: radius.lg, overflow: 'hidden', borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface },
   footer: { alignItems: 'center', paddingTop: spacing.xs, backgroundColor: colors.surface, borderTopWidth: 1, borderTopColor: colors.border },
   footerTxt: { fontSize: 11, color: colors.textMuted, fontWeight: '600' },

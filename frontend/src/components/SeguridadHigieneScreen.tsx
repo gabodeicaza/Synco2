@@ -9,11 +9,11 @@ import {
 import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { api, SeguridadReporte, SeguridadChecklist, SeguridadChecklistItem, Project } from '@/src/api';
 import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
 import { Button } from '@/src/components/Button';
+import { ScreenHeader } from '@/src/components/ScreenHeader';
 import { requestMediaLibraryPermission } from '@/src/utils/permissions';
 import { a11y } from '@/src/i18n';
 
@@ -161,14 +161,8 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <View style={[styles.headerWrap, { backgroundColor: headerColor, paddingTop: insets.top + spacing.xs }]}>
-        <View style={styles.headerTopRow}>
-          <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
-            <Ionicons name="chevron-back" size={22} color={headerTextColor} />
-          </Pressable>
-          <Text style={[styles.titleBar, { color: headerTextColor }]} numberOfLines={1}>Seguridad e Higiene</Text>
-          <View style={{ width: 32 }} />
-        </View>
+      <View style={{ backgroundColor: headerColor }}>
+        <ScreenHeader title="Seguridad e Higiene" backgroundColor={headerColor} />
         <View style={styles.tabRow}>
           <Pressable accessibilityRole="button" onPress={() => setTab('reportes')} style={[styles.tabBtn, tab === 'reportes' && styles.tabBtnActive]}>
             <Text style={[styles.tabTxt, { color: tab === 'reportes' ? headerColor : headerTextColor }]}>Reportes</Text>
@@ -363,11 +357,7 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
 
 const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg },
-  headerWrap: { paddingHorizontal: spacing.md, paddingBottom: spacing.sm },
-  headerTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  iconBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
-  titleBar: { fontWeight: '800', fontSize: 16, letterSpacing: 0.3 },
-  tabRow: { flexDirection: 'row', gap: 8, marginTop: spacing.sm },
+  tabRow: { flexDirection: 'row', gap: 8, paddingHorizontal: spacing.md, paddingBottom: spacing.sm },
   tabBtn: { flex: 1, paddingVertical: 8, borderRadius: radius.md, alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.15)' },
   tabBtnActive: { backgroundColor: '#fff' },
   tabTxt: { fontSize: 13, fontWeight: '700' },
