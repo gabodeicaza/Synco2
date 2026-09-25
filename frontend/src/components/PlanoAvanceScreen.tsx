@@ -28,6 +28,8 @@ import { ROLE_COORD, ROLE_SUB } from '@/src/utils/roles';
 import { PlanoMarkerOverlay, PLANO_MARKER_ESTADO_COLOR, PLANO_MARKER_ESTADO_LABEL } from '@/src/components/PlanoMarkerOverlay';
 import { requestMediaLibraryPermission } from '@/src/utils/permissions';
 import { a11y } from '@/src/i18n';
+import { useModalUnico } from '@/src/hooks/useModalUnico';
+import { ESTILO_CAPA_CONTROLES, ESTILO_CAPA_MODAL, ESTILO_CAPA_PLANO } from '@/src/utils/capasPlano';
 
 type AddMode = 'none' | 'punto' | 'segmento' | 'dado';
 type LabelPromptDraft = { tipo: 'punto' | 'segmento' | 'dado'; x: number; y: number; x2?: number; y2?: number };
@@ -60,10 +62,23 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
   const [movingMarkerId, setMovingMarkerId] = useState<string | null>(null);
 
   const [markerModal, setMarkerModal] = useState<PlanoMarker | null>(null);
-  const [renamePrompt, setRenamePrompt] = useState(false);
   const [renameDraft, setRenameDraft] = useState('');
 
-  const [newPlanoOpen, setNewPlanoOpen] = useState(false);
+  // K-06: un solo modal a la vez. Los datos (marcador, borrador de etiqueta) viven en su
+  // estado; qué modal se ve lo decide este hook, así abrir "renombrar" oculta el del
+  // marcador en vez de apilarse encima.
+  const modal = useModalUnico<'etiqueta' | 'marcador' | 'renombrar' | 'nuevoPlano'>();
+  const renamePrompt = modal.esta('renombrar');
+  const newPlanoOpen = modal.esta('nuevoPlano');
+  const etiquetaVisible = !!labelPrompt && modal.esta('etiqueta');
+  const marcadorVisible = !!markerModal && modal.esta('marcador');
+
+  function abrirEtiqueta(borrador: LabelPromptDraft) { setLabelPrompt(borrador); modal.abrir('etiqueta'); }
+  function cerrarEtiqueta() { setLabelPrompt(null); modal.cerrar('etiqueta'); }
+  function abrirMarcador(m: PlanoMarker) { setMarkerModal(m); modal.abrir('marcador'); }
+  function cerrarMarcador() { setMarkerModal(null); modal.cerrar(); }
+  function abrirRenombrar() { setRenameDraft(markerModal?.label || ''); modal.abrir('renombrar'); }
+  function cancelarRenombrar() { modal.abrir('marcador'); }
   const [nombreDraft, setNombreDraft] = useState('');
   const [uploading, setUploading] = useState(false);
 
@@ -124,7 +139,7 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
 
   function handleOverlayTap(hit: PlanoMarker | null, xFrac: number, yFrac: number) {
     if (addMode === 'punto' || addMode === 'dado') {
-      setLabelPrompt({ tipo: addMode, x: xFrac, y: yFrac });
+      abrirEtiqueta({ tipo: addMode, x: xFrac, y: yFrac });
       setLabelDraft('');
       return;
     }
@@ -132,13 +147,13 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
       if (!segmentDraft) {
         setSegmentDraft({ x: xFrac, y: yFrac });
       } else {
-        setLabelPrompt({ tipo: 'segmento', x: segmentDraft.x, y: segmentDraft.y, x2: xFrac, y2: yFrac });
+        abrirEtiqueta({ tipo: 'segmento', x: segmentDraft.x, y: segmentDraft.y, x2: xFrac, y2: yFrac });
         setLabelDraft('');
         setSegmentDraft(null);
       }
       return;
     }
-    if (hit) setMarkerModal(hit);
+    if (hit) abrirMarcador(hit);
   }
 
   async function onSaveNewMarker() {
@@ -157,7 +172,7 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
         x2: labelPrompt.x2, y2: labelPrompt.y2,
         estatus: 'sin_iniciar',
       });
-      setLabelPrompt(null);
+      cerrarEtiqueta();
       setAddMode('none');
       await loadDetail(detail.id);
     } catch (e: any) {
@@ -210,7 +225,7 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
     if (!detail || !markerModal) return;
     try {
       await api.updatePlanoMarker(projectId, detail.id, markerModal.id, { estatus });
-      setMarkerModal(null);
+      cerrarMarcador();
       await loadDetail(detail.id);
     } catch (e: any) {
       Alert.alert('No se pudo actualizar', e?.message || 'Intentalo nuevamente.');
@@ -223,8 +238,7 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
     if (!label) return;
     try {
       await api.updatePlanoMarker(projectId, detail.id, markerModal.id, { label });
-      setRenamePrompt(false);
-      setMarkerModal(null);
+      cerrarMarcador();
       await loadDetail(detail.id);
     } catch (e: any) {
       Alert.alert('No se pudo renombrar', e?.message || 'Intentalo nuevamente.');
@@ -237,7 +251,7 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
     if (!ok) return;
     try {
       await api.deletePlanoMarker(projectId, detail.id, markerModal.id);
-      setMarkerModal(null);
+      cerrarMarcador();
       await loadDetail(detail.id);
     } catch (e: any) {
       Alert.alert('No se pudo eliminar', e?.message || 'Intentalo nuevamente.');
@@ -299,7 +313,7 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
 
       setUploading(true);
       const created = await api.uploadPlanoAvance(projectId, nombre, { uri, name, mimeType: mime });
-      setNewPlanoOpen(false);
+      modal.cerrar('nuevoPlano');
       setNombreDraft('');
       await loadList();
       setSelectedId(created.id);
@@ -414,7 +428,7 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
         )}
 
         {/* Modal: etiqueta del nuevo marcador */}
-        <Modal visible={!!labelPrompt} transparent animationType="slide" onRequestClose={() => setLabelPrompt(null)}>
+        <Modal visible={etiquetaVisible} transparent animationType="slide" onRequestClose={cerrarEtiqueta}>
           <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
             <View style={styles.modalCard}>
               <Text style={styles.modalTitle}>
@@ -430,7 +444,7 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
                 autoFocus
               />
               <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
-                <Button label="Cancelar" variant="secondary" onPress={() => setLabelPrompt(null)} style={{ flex: 1 }} />
+                <Button label="Cancelar" variant="secondary" onPress={cerrarEtiqueta} style={{ flex: 1 }} />
                 <Button label="Guardar" loading={savingMarker} onPress={onSaveNewMarker} style={{ flex: 1 }} />
               </View>
             </View>
@@ -438,8 +452,8 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
         </Modal>
 
         {/* Modal: acciones sobre un marcador existente */}
-        <Modal visible={!!markerModal} transparent animationType="fade" onRequestClose={() => setMarkerModal(null)}>
-          <Pressable style={styles.modalBackdropCenter} onPress={() => setMarkerModal(null)}>
+        <Modal visible={marcadorVisible} transparent animationType="fade" onRequestClose={cerrarMarcador}>
+          <Pressable style={styles.modalBackdropCenter} onPress={cerrarMarcador}>
             <Pressable accessibilityRole="button" style={styles.modalCard} onPress={() => {}}>
               <Text style={styles.modalTitle}>{markerModal?.label}</Text>
               <Text style={styles.fieldLabel}>Estado</Text>
@@ -464,7 +478,7 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
                 <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
                   <Button
                     label="Renombrar" variant="secondary" style={{ flex: 1 }}
-                    onPress={() => { setRenameDraft(markerModal?.label || ''); setRenamePrompt(true); }}
+                    onPress={abrirRenombrar}
                   />
                   <Button label="Eliminar" variant="danger" style={{ flex: 1 }} onPress={onDeleteMarker} />
                 </View>
@@ -474,13 +488,13 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
         </Modal>
 
         {/* Modal: renombrar marcador */}
-        <Modal visible={renamePrompt} transparent animationType="slide" onRequestClose={() => setRenamePrompt(false)}>
+        <Modal visible={renamePrompt} transparent animationType="slide" onRequestClose={cancelarRenombrar}>
           <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
             <View style={styles.modalCard}>
               <Text style={styles.modalTitle}>Renombrar marcador</Text>
               <TextInput value={renameDraft} onChangeText={setRenameDraft} style={styles.input} autoFocus />
               <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
-                <Button label="Cancelar" variant="secondary" onPress={() => setRenamePrompt(false)} style={{ flex: 1 }} />
+                <Button label="Cancelar" variant="secondary" onPress={cancelarRenombrar} style={{ flex: 1 }} />
                 <Button label="Guardar" onPress={onRenameMarker} style={{ flex: 1 }} />
               </View>
             </View>
@@ -507,7 +521,7 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
         <View style={styles.sectionHeaderRow}>
           <Text style={styles.sectionTitle}>Planos</Text>
           {canEditEstructura ? (
-            <Pressable accessibilityRole="button" onPress={() => setNewPlanoOpen(true)} style={styles.addBtn}>
+            <Pressable accessibilityRole="button" onPress={() => modal.abrir('nuevoPlano')} style={styles.addBtn}>
               <Ionicons name="add" size={16} color={colors.primary} />
               <Text style={styles.addBtnTxt}>Nuevo plano</Text>
             </Pressable>
@@ -543,7 +557,7 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
       </ScrollView>
 
       {/* Modal: nuevo plano */}
-      <Modal visible={newPlanoOpen} transparent animationType="slide" onRequestClose={() => setNewPlanoOpen(false)}>
+      <Modal visible={newPlanoOpen} transparent animationType="slide" onRequestClose={() => modal.cerrar('nuevoPlano')}>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
             <Text style={styles.modalTitle}>Nuevo plano</Text>
@@ -556,7 +570,7 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
               style={styles.input}
             />
             <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
-              <Button label="Cancelar" variant="secondary" onPress={() => setNewPlanoOpen(false)} style={{ flex: 1 }} />
+              <Button label="Cancelar" variant="secondary" onPress={() => modal.cerrar('nuevoPlano')} style={{ flex: 1 }} />
               <Button label="Elegir imagen" loading={uploading} onPress={pickAndCreatePlano} style={{ flex: 1 }} />
             </View>
           </View>
@@ -595,18 +609,18 @@ const styles = StyleSheet.create({
   toolBtnActive: { backgroundColor: colors.primary },
   toolBtnTxt: { fontSize: 12, fontWeight: '700', color: colors.primary },
   hintTxt: { fontSize: 12, color: colors.textMuted, marginBottom: spacing.sm, textAlign: 'center' },
-  planoFrame: { backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, overflow: 'hidden' },
+  planoFrame: { backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, overflow: 'hidden', ...ESTILO_CAPA_PLANO },
   movingOverlay: {
     ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(255,255,255,0.5)',
-    alignItems: 'center', justifyContent: 'center',
+    alignItems: 'center', justifyContent: 'center', ...ESTILO_CAPA_CONTROLES,
   },
   legendRow: { flexDirection: 'row', gap: spacing.md, marginTop: spacing.md, flexWrap: 'wrap', justifyContent: 'center' },
   legendItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   legendDot: { width: 10, height: 10, borderRadius: 5 },
   legendTxt: { fontSize: 12, color: colors.textBody, fontWeight: '600' },
-  modalBackdrop: { flex: 1, backgroundColor: 'rgba(15,23,42,0.45)', justifyContent: 'flex-end' },
-  modalBackdropCenter: { flex: 1, backgroundColor: 'rgba(15,23,42,0.45)', alignItems: 'center', justifyContent: 'center', padding: spacing.lg },
-  modalCard: { backgroundColor: colors.surface, borderTopLeftRadius: radius.lg, borderTopRightRadius: radius.lg, padding: spacing.lg, width: '100%' },
+  modalBackdrop: { flex: 1, backgroundColor: 'rgba(15,23,42,0.45)', justifyContent: 'flex-end', ...ESTILO_CAPA_MODAL },
+  modalBackdropCenter: { flex: 1, backgroundColor: 'rgba(15,23,42,0.45)', alignItems: 'center', justifyContent: 'center', padding: spacing.lg, ...ESTILO_CAPA_MODAL },
+  modalCard: { backgroundColor: colors.surface, borderTopLeftRadius: radius.lg, borderTopRightRadius: radius.lg, padding: spacing.lg, width: '100%', ...ESTILO_CAPA_MODAL },
   modalTitle: { fontSize: 16, fontWeight: '800', color: colors.text, marginBottom: spacing.md },
   fieldLabel: { fontSize: 12, fontWeight: '700', color: colors.textMuted, marginBottom: 6, marginTop: spacing.sm },
   input: {

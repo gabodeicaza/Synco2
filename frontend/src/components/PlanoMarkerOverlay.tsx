@@ -10,6 +10,7 @@ import { Image, PanResponder, StyleSheet, View } from 'react-native';
 import Svg, { Circle, Line, Rect, Text as SvgText } from 'react-native-svg';
 import { colors } from '@/src/theme';
 import type { PlanoMarker, PlanoMarkerEstatus } from '@/src/api';
+import { ESTILO_CAPA_OVERLAY } from '@/src/utils/capasPlano';
 
 export const PLANO_MARKER_ESTADO_COLOR: Record<PlanoMarkerEstatus, string> = {
   sin_iniciar: '#DC2626',
@@ -172,7 +173,7 @@ export function PlanoMarkerOverlay({
     : { onStartShouldSetResponder: () => !!onTap, onResponderRelease: handleTouch };
 
   return (
-    <View style={{ width, height }} {...responderProps}>
+    <View style={[{ width, height }, ESTILO_CAPA_OVERLAY]} {...responderProps}>
       <Image source={{ uri: imageUri }} style={{ width, height }} resizeMode="contain" />
       <Svg width={width} height={height} style={StyleSheet.absoluteFillObject} pointerEvents="none">
         {markers.map((m) => {
