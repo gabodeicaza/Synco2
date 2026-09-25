@@ -5,7 +5,8 @@ import {
   useWindowDimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
+import { useFocusEffect, useLocalSearchParams } from 'expo-router';
+import { ScreenHeader } from '@/src/components/ScreenHeader';
 import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import { Button } from '@/src/components/Button';
@@ -289,19 +290,18 @@ export default function InvitationsScreen() {
   return (
     <View style={styles.root}>
       <View style={[styles.flex1, { paddingTop: insets.top }]}>
-        <View style={styles.header}>
-          <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
-            <Ionicons name="chevron-back" size={24} color={colors.text} />
-          </Pressable>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.title}>{t('invitaciones.titulo')}</Text>
-            <Text style={styles.subtitle}>{t('invitaciones.enTotal', { n: invitations.length })}</Text>
-          </View>
-          <Pressable accessibilityRole="button" onPress={() => setBulkImportOpen(true)} hitSlop={8} style={styles.importHeaderBtn}>
-            <Ionicons name="document-attach-outline" size={16} color={colors.primary} />
-            <Text style={styles.importHeaderBtnTxt}>{t('invitaciones.importarExcel')}</Text>
-          </Pressable>
-        </View>
+        <ScreenHeader
+          title={t('invitaciones.titulo')}
+          subtitle={t('invitaciones.enTotal', { n: invitations.length })}
+          fallbackHref={{ pathname: '/(coord)/projects/[id]', params: { id: pid } }}
+          safeArea={false}
+          right={(
+            <Pressable accessibilityRole="button" onPress={() => setBulkImportOpen(true)} hitSlop={8} style={styles.importHeaderBtn}>
+              <Ionicons name="document-attach-outline" size={16} color={colors.primary} />
+              <Text style={styles.importHeaderBtnTxt}>{t('invitaciones.importarExcel')}</Text>
+            </Pressable>
+          )}
+        />
 
         <View style={styles.searchBar}>
           <Ionicons name="search" size={18} color={colors.textMuted} />
@@ -664,10 +664,6 @@ function InviteCard({ inv, onCopyToken, onCopyLink, onShare, onRevoke, onEdit, o
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: 'white' },
   flex1: { flex: 1 },
-  header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 15, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: colors.border },
-  title: { fontSize: 18, fontWeight: '900' },
-  subtitle: { fontSize: 12, color: colors.textMuted },
-  iconBtn: { padding: 5, marginRight: 10 },
   importHeaderBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, borderWidth: 1, borderColor: colors.primary, borderRadius: 20, paddingHorizontal: 10, paddingVertical: 6 },
   importHeaderBtnTxt: { fontSize: 11, fontWeight: '800', color: colors.primary },
 

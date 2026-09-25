@@ -15,7 +15,8 @@ import { Button } from '@/src/components/Button';
 import { api } from '@/src/api';
 import { colors, radius, spacing } from '@/src/theme';
 import { InlineError } from '@/src/components/InlineError';
-import { t, a11y } from '@/src/i18n';
+import { ScreenHeader } from '@/src/components/ScreenHeader';
+import { t } from '@/src/i18n';
 import { esErrorDeRed } from '@/src/utils/errores';
 import { showToast } from '@/src/utils/toast';
 
@@ -47,18 +48,11 @@ export default function ForgotPasswordScreen() {
 
   return (
     <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+      <ScreenHeader title="Olvidé mi contraseña" onBack={() => router.replace('/(auth)/login')} fallbackHref="/(auth)/login" />
       <ScrollView
         keyboardShouldPersistTaps="handled"
-        contentContainerStyle={[styles.scroll, { paddingTop: insets.top + 16, paddingBottom: insets.bottom + 24 }]}
+        contentContainerStyle={[styles.scroll, { paddingTop: 16, paddingBottom: insets.bottom + 24 }]}
       >
-        <View style={styles.topBar}>
-          <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.replace('/(auth)/login')} hitSlop={10} style={styles.backIconBtn}>
-            <Ionicons name="chevron-back" size={22} color={colors.text} />
-          </Pressable>
-          <Text style={styles.topTitle}>Olvidé mi contraseña</Text>
-          <View style={{ width: 32 }} />
-        </View>
-
         {sent !== null ? (
           <View style={styles.card}>
             <View style={styles.sentIcon}>
@@ -107,10 +101,6 @@ export default function ForgotPasswordScreen() {
 const styles = StyleSheet.create({
   flex: { flex: 1, backgroundColor: colors.bg },
   scroll: { paddingHorizontal: spacing.lg, gap: spacing.md, flexGrow: 1 },
-  topBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: spacing.sm },
-  backIconBtn: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.surface },
-  topTitle: { fontSize: 15, fontWeight: '800', color: colors.text },
-
   card: { backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.lg, borderWidth: 1, borderColor: colors.border },
   heroSubtitle: { fontSize: 13, color: colors.textMuted, lineHeight: 19 },
 

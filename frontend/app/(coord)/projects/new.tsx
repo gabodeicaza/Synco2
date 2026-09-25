@@ -1,14 +1,14 @@
 import React, { useRef, useState } from 'react';
 import {
-  View, Text, StyleSheet, ScrollView, KeyboardAvoidingView, Platform, Pressable,
+  View, StyleSheet, ScrollView, KeyboardAvoidingView, Platform,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
-import { Ionicons } from '@expo/vector-icons';
 import { Button } from '@/src/components/Button';
+import { ScreenHeader } from '@/src/components/ScreenHeader';
 import { api } from '@/src/api';
 import { COLOR_IDENTIDAD_DEFECTO, colors, spacing } from '@/src/theme';
-import { a11y, t } from '@/src/i18n';
+import { t } from '@/src/i18n';
 import { ColorInput } from '@/src/components/ColorInput';
 import { FormField } from '@/src/components/FormField';
 import { InlineError } from '@/src/components/InlineError';
@@ -85,13 +85,7 @@ export default function NewProjectScreen() {
 
   return (
     <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
-      <View style={[styles.header, { paddingTop: insets.top + 4 }]}>
-        <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
-          <Ionicons name="close" size={26} color={colors.text} />
-        </Pressable>
-        <Text style={styles.title}>{t('proyectoForm.titulo')}</Text>
-        <View style={{ width: 32 }} />
-      </View>
+      <ScreenHeader title={t('proyectoForm.titulo')} fallbackHref="/(coord)" />
 
       <ScrollView
         ref={scrollRef}
@@ -167,13 +161,6 @@ export default function NewProjectScreen() {
 
 const styles = StyleSheet.create({
   flex: { flex: 1, backgroundColor: colors.bg },
-  header: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: spacing.md, paddingBottom: spacing.sm,
-    borderBottomWidth: 1, borderBottomColor: colors.border, backgroundColor: colors.surface,
-  },
-  iconBtn: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
-  title: { fontSize: 17, fontWeight: '800', color: colors.text },
   scroll: { paddingHorizontal: spacing.lg, paddingTop: spacing.md, gap: spacing.xs },
   multilinea: { minHeight: 80 },
 });

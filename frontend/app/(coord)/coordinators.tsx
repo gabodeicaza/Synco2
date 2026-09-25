@@ -5,8 +5,8 @@ import {
   KeyboardAvoidingView, Platform, RefreshControl, Alert,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { ScreenHeader } from '@/src/components/ScreenHeader';
 import { api, ApiError, type User } from '@/src/api';
 import { useAuth } from '@/src/auth-context';
 import { colors, radius, spacing, shadow } from '@/src/theme';
@@ -84,13 +84,7 @@ export default function CoordinatorsScreen() {
   if (user?.role !== 'coordinador_general') {
     return (
       <View style={[styles.flex, { paddingTop: insets.top }]}>
-        <View style={styles.header}>
-          <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
-            <Ionicons name="chevron-back" size={24} color={colors.text} />
-          </Pressable>
-          <Text style={styles.title}>Coordinadores</Text>
-          <View style={{ width: 32 }} />
-        </View>
+        <ScreenHeader title="Coordinadores" fallbackHref="/(coord)" safeArea={false} />
         <View style={styles.emptyCenter}>
           <Ionicons name="lock-closed-outline" size={42} color={colors.textMuted} />
           <Text style={styles.emptyTxt}>Solo un Coordinador General puede acceder a esta seccion.</Text>
@@ -104,13 +98,7 @@ export default function CoordinatorsScreen() {
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       style={[styles.flex, { paddingTop: insets.top }]}
     >
-      <View style={styles.header}>
-        <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
-          <Ionicons name="chevron-back" size={24} color={colors.text} />
-        </Pressable>
-        <Text style={styles.title}>Coordinadores Generales</Text>
-        <View style={{ width: 32 }} />
-      </View>
+      <ScreenHeader title="Coordinadores Generales" fallbackHref="/(coord)" safeArea={false} />
 
       <ScrollView
         contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + 24 }]}
@@ -240,12 +228,6 @@ export default function CoordinatorsScreen() {
 
 const styles = StyleSheet.create({
   flex: { flex: 1, backgroundColor: colors.bg },
-  header: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
-  },
-  iconBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
-  title: { fontSize: 17, fontWeight: '800', color: colors.text },
   scroll: { paddingHorizontal: spacing.lg, gap: spacing.md },
 
   infoCard: {

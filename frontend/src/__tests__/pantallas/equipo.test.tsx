@@ -2,10 +2,13 @@ import React from 'react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 
 jest.mock('@expo/vector-icons', () => ({ Ionicons: 'Ionicons' }));
-jest.mock('expo-router', () => ({
-  router: { back: jest.fn() },
-  useLocalSearchParams: () => ({ id: 'p1' }),
+jest.mock('react-native-safe-area-context', () => ({
+  useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
 }));
+jest.mock('expo-router', () => {
+  const router = { back: jest.fn(), replace: jest.fn(), canGoBack: jest.fn(() => true) };
+  return { router, useRouter: () => router, useLocalSearchParams: () => ({ id: 'p1' }) };
+});
 jest.mock('expo-document-picker', () => ({ getDocumentAsync: jest.fn() }));
 jest.mock('expo-file-system/legacy', () => ({ readAsStringAsync: jest.fn() }));
 jest.mock('@/src/utils/excel', () => ({ parseExcel: jest.fn(), mapEquipoRows: jest.fn() }));

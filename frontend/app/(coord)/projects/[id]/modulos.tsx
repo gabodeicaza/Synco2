@@ -10,14 +10,14 @@
 // encendido en cualquiera de las 3 categorías; el backend rechaza
 // escrituras si ninguno lo está (ver _ensure_modulo_activo en server.py).
 import React, { useCallback, useEffect, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, ActivityIndicator, Pressable, Alert, Switch } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, ActivityIndicator, Alert, Switch } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { router, useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { ScreenHeader } from '@/src/components/ScreenHeader';
 import { api, ModulosConfig, ModuloCategoria, Project } from '@/src/api';
-import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
+import { colors, radius, shadow, spacing } from '@/src/theme';
 import { MODULOS, CATEGORIA_LABEL, CATEGORIA_ORDEN } from '@/src/utils/modulos';
-import { a11y } from '@/src/i18n';
 
 function vacio(): ModulosConfig {
   return { reportes_diarios: {}, reportes_semanales: {}, reportes_mensuales: {} };
@@ -54,7 +54,6 @@ export default function ModulosConfigScreen() {
   useEffect(() => { load(); }, [load]);
 
   const headerColor = project?.color_institucional || project?.color_tema || colors.primary;
-  const headerTextColor = contrastText(headerColor);
 
   async function onToggle(categoria: ModuloCategoria, key: string, value: boolean) {
     const previous = draft;
@@ -83,15 +82,11 @@ export default function ModulosConfigScreen() {
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <View style={[styles.headerWrap, { backgroundColor: headerColor, paddingTop: insets.top + spacing.xs }]}>
-        <View style={styles.headerTopRow}>
-          <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
-            <Ionicons name="chevron-back" size={22} color={headerTextColor} />
-          </Pressable>
-          <Text style={[styles.titleBar, { color: headerTextColor }]} numberOfLines={1}>Módulos del proyecto</Text>
-          <View style={{ width: 32 }} />
-        </View>
-      </View>
+      <ScreenHeader
+        title="Módulos del proyecto"
+        backgroundColor={headerColor}
+        fallbackHref={{ pathname: '/(coord)/projects/[id]', params: { id: pid } }}
+      />
 
       <ScrollView contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + spacing.xl }]}>
         <Text style={styles.helpTxt}>
@@ -137,10 +132,6 @@ export default function ModulosConfigScreen() {
 
 const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg },
-  headerWrap: { paddingHorizontal: spacing.md, paddingBottom: spacing.sm },
-  headerTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  iconBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
-  titleBar: { fontWeight: '800', fontSize: 16, letterSpacing: 0.3 },
   scroll: { padding: spacing.md },
   helpTxt: { color: colors.textMuted, fontSize: 13, marginBottom: spacing.lg, lineHeight: 18 },
   sectionTitle: { fontSize: 13, fontWeight: '800', color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: spacing.xs },

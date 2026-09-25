@@ -2,13 +2,14 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   View, Text, StyleSheet, ScrollView, ActivityIndicator, Pressable, TextInput,
 } from 'react-native';
-import { useLocalSearchParams, router } from 'expo-router';
+import { useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import { api, Project } from '@/src/api';
 import { FormField } from '@/src/components/FormField';
 import { InlineError } from '@/src/components/InlineError';
+import { ScreenHeader } from '@/src/components/ScreenHeader';
 import { useColaDeEnvios } from '@/src/hooks/useEnvio';
 import { useFormErrors } from '@/src/hooks/useFormErrors';
 import { colors, radius, shadow, spacing } from '@/src/theme';
@@ -16,7 +17,7 @@ import { parseExcel, mapEquipoRows, EquipoRow } from '@/src/utils/excel';
 import { esErrorDeRed } from '@/src/utils/errores';
 import { normalizarNombre } from '@/src/utils/nombres';
 import { showToast } from '@/src/utils/toast';
-import { a11y, t } from '@/src/i18n';
+import { t } from '@/src/i18n';
 
 /**
  * Delimitador para empaquetar datos estructurados en una sola cadena.
@@ -255,16 +256,16 @@ export default function EquipmentManagementScreen() {
 
   return (
     <View style={styles.flex}>
-      <View style={styles.header}>
-        <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={10} style={styles.backBtn}>
-          <Ionicons name="chevron-back" size={24} color={colors.text} />
-        </Pressable>
-        <Text style={styles.title}>{t('equipo.titulo')}</Text>
-        <Pressable accessibilityRole="button" onPress={onImport} disabled={importando} style={styles.importBtn}>
-          <Ionicons name="download-outline" size={18} color={colors.primary} />
-          <Text style={styles.importBtnTxt}>{t('equipo.importar')}</Text>
-        </Pressable>
-      </View>
+      <ScreenHeader
+        title={t('equipo.titulo')}
+        fallbackHref={{ pathname: '/(coord)/projects/[id]', params: { id: pid } }}
+        right={(
+          <Pressable accessibilityRole="button" onPress={onImport} disabled={importando} style={styles.importBtn}>
+            <Ionicons name="download-outline" size={18} color={colors.primary} />
+            <Text style={styles.importBtnTxt}>{t('equipo.importar')}</Text>
+          </Pressable>
+        )}
+      />
 
       <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
         <View style={styles.inputCard}>
@@ -363,9 +364,6 @@ export default function EquipmentManagementScreen() {
 
 const styles = StyleSheet.create({
   flex: { flex: 1, backgroundColor: colors.bg },
-  header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.md, paddingVertical: spacing.sm, backgroundColor: colors.surface, borderBottomWidth: 1, borderBottomColor: colors.border, gap: 12 },
-  backBtn: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
-  title: { flex: 1, fontSize: 18, fontWeight: '800', color: colors.text },
   importBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 8, borderRadius: radius.md, backgroundColor: colors.primaryLight },
   importBtnTxt: { color: colors.primary, fontWeight: '700', fontSize: 13 },
   scroll: { padding: spacing.md, paddingBottom: 40 },

@@ -2,8 +2,9 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, ActivityIndicator, Pressable, Alert, TextInput,
 } from 'react-native';
-import { useLocalSearchParams, router } from 'expo-router';
+import { useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { ScreenHeader } from '@/src/components/ScreenHeader';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import { api, Project } from '@/src/api';
@@ -159,16 +160,16 @@ export default function PersonalManagementScreen() {
 
   return (
     <View style={styles.flex}>
-      <View style={styles.header}>
-        <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={10} style={styles.backBtn}>
-          <Ionicons name="chevron-back" size={24} color={colors.text} />
-        </Pressable>
-        <Text style={styles.title}>Personal</Text>
-        <Pressable accessibilityRole="button" onPress={onImport} disabled={busy} style={styles.importBtn}>
-          <Ionicons name="download-outline" size={18} color={colors.primary} />
-          <Text style={styles.importBtnTxt}>Importar</Text>
-        </Pressable>
-      </View>
+      <ScreenHeader
+        title="Personal"
+        fallbackHref={{ pathname: '/(coord)/projects/[id]', params: { id: pid } }}
+        right={(
+          <Pressable accessibilityRole="button" onPress={onImport} disabled={busy} style={styles.importBtn}>
+            <Ionicons name="download-outline" size={18} color={colors.primary} />
+            <Text style={styles.importBtnTxt}>Importar</Text>
+          </Pressable>
+        )}
+      />
 
       <ScrollView contentContainerStyle={styles.scroll}>
         <View style={styles.inputCard}>
@@ -224,9 +225,6 @@ export default function PersonalManagementScreen() {
 
 const styles = StyleSheet.create({
   flex: { flex: 1, backgroundColor: colors.bg },
-  header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.md, paddingVertical: spacing.sm, backgroundColor: colors.surface, borderBottomWidth: 1, borderBottomColor: colors.border, gap: 12 },
-  backBtn: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
-  title: { flex: 1, fontSize: 18, fontWeight: '800', color: colors.text },
   importBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 8, borderRadius: radius.md, backgroundColor: colors.primaryLight },
   importBtnTxt: { color: colors.primary, fontWeight: '700', fontSize: 13 },
   scroll: { padding: spacing.md, paddingBottom: 40 },

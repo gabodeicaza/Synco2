@@ -4,9 +4,10 @@ import {
   Modal, KeyboardAvoidingView, Platform, RefreshControl,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
+import { useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { Button } from '@/src/components/Button';
+import { ScreenHeader } from '@/src/components/ScreenHeader';
 import { FormField } from '@/src/components/FormField';
 import { InlineError } from '@/src/components/InlineError';
 import { api, ApiError, Area } from '@/src/api';
@@ -104,15 +105,12 @@ export default function AreasScreen() {
 
   return (
     <View style={[styles.flex, { paddingTop: insets.top }]}>
-      <View style={styles.header}>
-        <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
-          <Ionicons name="chevron-back" size={24} color={colors.text} />
-        </Pressable>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.title}>{t('areas.titulo')}</Text>
-          <Text style={styles.subtitle}>{areas.length === 1 ? t('areas.cuantasUna') : t('areas.cuantas', { n: areas.length })}</Text>
-        </View>
-      </View>
+      <ScreenHeader
+        title={t('areas.titulo')}
+        subtitle={areas.length === 1 ? t('areas.cuantasUna') : t('areas.cuantas', { n: areas.length })}
+        fallbackHref={{ pathname: '/(coord)/projects/[id]', params: { id: pid } }}
+        safeArea={false}
+      />
 
       <ScrollView
         contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + 110 }]}
@@ -206,10 +204,6 @@ export default function AreasScreen() {
 
 const styles = StyleSheet.create({
   flex: { flex: 1, backgroundColor: colors.bg },
-  header: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, borderBottomWidth: 1, borderBottomColor: colors.border, backgroundColor: colors.surface },
-  iconBtn: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center' },
-  title: { fontSize: 17, fontWeight: '800', color: colors.text },
-  subtitle: { fontSize: 11, color: colors.textMuted, fontWeight: '700', marginTop: 1 },
   scroll: { padding: spacing.md, gap: spacing.md },
   center: { paddingVertical: spacing.xl, alignItems: 'center' },
   errorBox: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: colors.errorBg, padding: 10, borderRadius: radius.md },

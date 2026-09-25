@@ -5,7 +5,7 @@ import {
 } from 'react-native';
 import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
+import { useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
@@ -13,6 +13,7 @@ import * as ImageManipulator from 'expo-image-manipulator';
 import * as Sharing from 'expo-sharing';
 import * as FileSystem from 'expo-file-system/legacy';
 import { Button } from '@/src/components/Button';
+import { ScreenHeader } from '@/src/components/ScreenHeader';
 import { api, LocationNodeTree } from '@/src/api';
 import { colors, radius, spacing, shadow } from '@/src/theme';
 import { MEASUREMENT_LABELS, MEASUREMENT_ICONS, MeasurementType } from '@/src/utils/roles';
@@ -287,43 +288,44 @@ export default function TreeBuilderScreen() {
 
   return (
     <View style={[styles.flex, { paddingTop: insets.top }]}>
-      <View style={styles.header}>
-        <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
-          <Ionicons name="chevron-back" size={24} color={colors.text} />
-        </Pressable>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.title}>Arbol de nodos</Text>
-          <Text style={styles.subtitle}>{totalCount} nodo{totalCount === 1 ? '' : 's'} _ {leafCount} hoja{leafCount === 1 ? '' : 's'}</Text>
-        </View>
-        <Pressable accessibilityRole="button" accessibilityLabel={a11y('expandirTodo')} onPress={tree.length === 0 ? undefined : expandAll} hitSlop={8} style={styles.iconBtn}>
-          <Ionicons name="expand" size={20} color={tree.length === 0 ? colors.textMuted : colors.text} />
-        </Pressable>
-        <Pressable accessibilityRole="button" accessibilityLabel={a11y('contraerTodo')} onPress={tree.length === 0 ? undefined : collapseAll} hitSlop={8} style={styles.iconBtn}>
-          <Ionicons name="contract" size={20} color={tree.length === 0 ? colors.textMuted : colors.text} />
-        </Pressable>
-        <Pressable
-          onPress={onDownloadTemplate}
-          hitSlop={8}
-          style={styles.iconBtn}
-          accessibilityRole="button"
-          accessibilityLabel="Descargar plantilla Excel"
-        >
-          <Ionicons name="document-text-outline" size={20} color={colors.primary} />
-        </Pressable>
-        <Pressable
-          onPress={uploading ? undefined : onImportExcel}
-          hitSlop={8}
-          style={styles.iconBtn}
-          disabled={uploading}
-          accessibilityRole="button"
-          accessibilityLabel="Importar nodos desde Excel"
-        >
-          {uploading
-            ? <ActivityIndicator size="small" color={colors.primary} />
-            : <Ionicons name="cloud-upload-outline" size={20} color={colors.primary} />
-          }
-        </Pressable>
-      </View>
+      <ScreenHeader
+        title="Arbol de nodos"
+        subtitle={`${totalCount} nodo${totalCount === 1 ? '' : 's'} _ ${leafCount} hoja${leafCount === 1 ? '' : 's'}`}
+        fallbackHref={{ pathname: '/(coord)/projects/[id]', params: { id: pid } }}
+        safeArea={false}
+        right={(
+          <>
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y('expandirTodo')} onPress={tree.length === 0 ? undefined : expandAll} hitSlop={8} style={styles.iconBtn}>
+              <Ionicons name="expand" size={20} color={tree.length === 0 ? colors.textMuted : colors.text} />
+            </Pressable>
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y('contraerTodo')} onPress={tree.length === 0 ? undefined : collapseAll} hitSlop={8} style={styles.iconBtn}>
+              <Ionicons name="contract" size={20} color={tree.length === 0 ? colors.textMuted : colors.text} />
+            </Pressable>
+            <Pressable
+              onPress={onDownloadTemplate}
+              hitSlop={8}
+              style={styles.iconBtn}
+              accessibilityRole="button"
+              accessibilityLabel="Descargar plantilla Excel"
+            >
+              <Ionicons name="document-text-outline" size={20} color={colors.primary} />
+            </Pressable>
+            <Pressable
+              onPress={uploading ? undefined : onImportExcel}
+              hitSlop={8}
+              style={styles.iconBtn}
+              disabled={uploading}
+              accessibilityRole="button"
+              accessibilityLabel="Importar nodos desde Excel"
+            >
+              {uploading
+                ? <ActivityIndicator size="small" color={colors.primary} />
+                : <Ionicons name="cloud-upload-outline" size={20} color={colors.primary} />
+              }
+            </Pressable>
+          </>
+        )}
+      />
 
       <ScrollView
         contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + 110 }]}
@@ -1096,14 +1098,7 @@ function formatMetaValue(v: any): string {
 
 const styles = StyleSheet.create({
   flex: { flex: 1, backgroundColor: colors.bg },
-  header: {
-    flexDirection: 'row', alignItems: 'center', gap: 4,
-    paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
-    borderBottomWidth: 1, borderBottomColor: colors.border, backgroundColor: colors.surface,
-  },
   iconBtn: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center' },
-  title: { fontSize: 17, fontWeight: '800', color: colors.text },
-  subtitle: { fontSize: 11, color: colors.textMuted, fontWeight: '700', marginTop: 1 },
   scroll: { paddingHorizontal: spacing.md, paddingTop: spacing.sm, gap: spacing.sm },
   center: { paddingVertical: spacing.xl, alignItems: 'center' },
   errorBox: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: colors.errorBg, padding: 10, borderRadius: radius.md },

@@ -32,6 +32,7 @@ import { getMediaLibraryPermission, requestMediaLibraryPermission } from '@/src/
 import { t, a11y } from '@/src/i18n';
 import { olvidarSeparadorDecimal } from '@/src/hooks/useSeparadorDecimal';
 import { ProgramaObraSection } from '@/src/components/ProgramaObraSection';
+import { ScreenHeader } from '@/src/components/ScreenHeader';
 import { useModalUnico } from '@/src/hooks/useModalUnico';
 import { usePestanaProyecto } from '@/src/hooks/usePestanaProyecto';
 import { SinReportesAviso } from '@/src/components/SinReportesAviso';
@@ -1125,13 +1126,7 @@ export default function ProjectDetailScreen() {
 
   return (
     <View style={[styles.flex, { paddingTop: insets.top }]}>
-      <View style={styles.header}>
-        <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
-          <Ionicons name="chevron-back" size={24} color={colors.text} />
-        </Pressable>
-        <Text style={styles.title} numberOfLines={1}>{project?.name || 'Proyecto'}</Text>
-        <View style={{ width: 32 }} />
-      </View>
+      <ScreenHeader title={project?.name || 'Proyecto'} fallbackHref="/(coord)" safeArea={false} />
 
       {loading ? (
         <View style={styles.center}><ActivityIndicator color={colors.primary} /></View>
@@ -3068,12 +3063,6 @@ const styles = StyleSheet.create({
   tabTxtActive: {
     color: '#fff',
   },
-  header: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: spacing.md, paddingVertical: spacing.sm, gap: spacing.md,
-  },
-  iconBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
-  title: { flex: 1, textAlign: 'center', fontSize: 17, fontWeight: '800', color: colors.text },
   scroll: { paddingHorizontal: spacing.lg, gap: spacing.md },
   center: { paddingVertical: spacing.xl, alignItems: 'center' },
   errorBox: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: colors.errorBg, padding: 10, borderRadius: radius.md },

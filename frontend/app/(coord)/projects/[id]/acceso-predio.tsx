@@ -1,10 +1,9 @@
 import React from 'react';
-import { View, Text, StyleSheet, Pressable, KeyboardAvoidingView, Platform } from 'react-native';
-import { useLocalSearchParams, router } from 'expo-router';
-import { Ionicons } from '@expo/vector-icons';
-import { colors, spacing } from '@/src/theme';
+import { StyleSheet, KeyboardAvoidingView, Platform } from 'react-native';
+import { useLocalSearchParams } from 'expo-router';
+import { colors } from '@/src/theme';
 import { AccesoPredioManager } from '@/src/components/AccesoPredioManager';
-import { a11y } from '@/src/i18n';
+import { ScreenHeader } from '@/src/components/ScreenHeader';
 
 export default function AccesoPredioScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -12,13 +11,10 @@ export default function AccesoPredioScreen() {
 
   return (
     <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-      <View style={styles.header}>
-        <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={10} style={styles.backBtn}>
-          <Ionicons name="chevron-back" size={24} color={colors.text} />
-        </Pressable>
-        <Text style={styles.title} numberOfLines={1}>Acceso al Predio</Text>
-        <View style={{ width: 40 }} />
-      </View>
+      <ScreenHeader
+        title="Acceso al Predio"
+        fallbackHref={{ pathname: '/(coord)/projects/[id]', params: { id: pid } }}
+      />
       <AccesoPredioManager projectId={pid} />
     </KeyboardAvoidingView>
   );
@@ -26,7 +22,4 @@ export default function AccesoPredioScreen() {
 
 const styles = StyleSheet.create({
   flex: { flex: 1, backgroundColor: colors.bg },
-  header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.md, paddingVertical: spacing.sm, backgroundColor: colors.surface, borderBottomWidth: 1, borderBottomColor: colors.border, gap: 12 },
-  backBtn: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
-  title: { flex: 1, fontSize: 18, fontWeight: '800', color: colors.text, textAlign: 'center' },
 });

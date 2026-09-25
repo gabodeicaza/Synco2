@@ -5,16 +5,16 @@ import {
   ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
+import { useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { api, Area, ProjectEvent, User } from '@/src/api';
 import { EventoForm } from '@/src/components/EventoForm';
+import { ScreenHeader } from '@/src/components/ScreenHeader';
 import { colors, radius, shadow, spacing } from '@/src/theme';
 import { confirm } from '@/src/utils/confirm';
 import { formatEventTime } from '@/src/utils/events';
 import { dayjs, CDMX_TZ } from '@/src/utils/tz';
-import { a11y } from '@/src/i18n';
 
 export default function CoordEventsScreen() {
   const insets = useSafeAreaInsets();
@@ -76,19 +76,18 @@ export default function CoordEventsScreen() {
 
   return (
     <View style={[styles.flex, { paddingTop: insets.top }]}>
-      <View style={styles.header}>
-        <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
-          <Ionicons name="chevron-back" size={24} color={colors.text} />
-        </Pressable>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.title} numberOfLines={1}>Calendario</Text>
-          <Text style={styles.subtitle}>Eventos visibles para todo el proyecto</Text>
-        </View>
-        <Pressable accessibilityRole="button" onPress={newEvent} style={styles.newBtn}>
-          <Ionicons name="add" size={18} color="#fff" />
-          <Text style={styles.newBtnTxt}>Nuevo</Text>
-        </Pressable>
-      </View>
+      <ScreenHeader
+        title="Calendario"
+        subtitle="Eventos visibles para todo el proyecto"
+        fallbackHref={{ pathname: '/(coord)/projects/[id]', params: { id: pid } }}
+        safeArea={false}
+        right={(
+          <Pressable accessibilityRole="button" onPress={newEvent} style={styles.newBtn}>
+            <Ionicons name="add" size={18} color="#fff" />
+            <Text style={styles.newBtnTxt}>Nuevo</Text>
+          </Pressable>
+        )}
+      />
 
       <View style={styles.tabsRow}>
         {(['upcoming', 'past'] as const).map((k) => (
@@ -205,13 +204,6 @@ export default function CoordEventsScreen() {
 
 const styles = StyleSheet.create({
   flex: { flex: 1, backgroundColor: colors.bg },
-  header: {
-    flexDirection: 'row', alignItems: 'center', gap: spacing.sm,
-    paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
-  },
-  iconBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
-  title: { fontSize: 17, fontWeight: '800', color: colors.text },
-  subtitle: { fontSize: 11, color: colors.textMuted, marginTop: 1 },
   newBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
     backgroundColor: colors.primary, paddingHorizontal: 12, paddingVertical: 8,

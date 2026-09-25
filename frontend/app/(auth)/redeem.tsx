@@ -13,6 +13,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 
 import { Button } from '@/src/components/Button';
+import { ScreenHeader } from '@/src/components/ScreenHeader';
 import { useAuth } from '@/src/auth-context';
 import { api } from '@/src/api';
 import { homeRouteForRole, roleLabel } from '@/src/utils/roles';
@@ -91,19 +92,15 @@ export default function RedeemInviteScreen() {
 
   return (
     <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+      <ScreenHeader
+        title="Unirme con codigo"
+        onBack={stage === 'password' ? backToToken : backToLogin}
+        fallbackHref="/(auth)/login"
+      />
       <ScrollView
         keyboardShouldPersistTaps="handled"
-        contentContainerStyle={[styles.scroll, { paddingTop: insets.top + 16, paddingBottom: insets.bottom + 24 }]}
+        contentContainerStyle={[styles.scroll, { paddingTop: 16, paddingBottom: insets.bottom + 24 }]}
       >
-        {/* Top bar */}
-        <View style={styles.topBar}>
-          <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={stage === 'password' ? backToToken : backToLogin} hitSlop={10} style={styles.backIconBtn}>
-            <Ionicons name="chevron-back" size={22} color={colors.text} />
-          </Pressable>
-          <Text style={styles.topTitle}>Unirme con codigo</Text>
-          <View style={{ width: 32 }} />
-        </View>
-
         {/* Hero */}
         <View style={styles.hero}>
           <View style={styles.heroIcon}>
@@ -250,9 +247,6 @@ function PreviewRow({ label, value, icon }: { label: string; value: string; icon
 const styles = StyleSheet.create({
   flex: { flex: 1, backgroundColor: colors.bg },
   scroll: { paddingHorizontal: spacing.lg, gap: spacing.md, flexGrow: 1 },
-  topBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: spacing.sm },
-  backIconBtn: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.surface },
-  topTitle: { fontSize: 15, fontWeight: '800', color: colors.text },
 
   hero: { alignItems: 'center', gap: 6, paddingVertical: spacing.md },
   heroIcon: {
