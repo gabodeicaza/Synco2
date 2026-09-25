@@ -5,12 +5,13 @@
 import React, { useState } from 'react';
 import { ScrollView, StyleSheet, Text, View, Pressable } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { router, useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, spacing } from '@/src/theme';
 import { WorkforceTracker } from '@/src/components/WorkforceTracker';
 import { FuerzaTrabajoCapturaRapida } from '@/src/components/FuerzaTrabajoCapturaRapida';
-import { a11y, t } from '@/src/i18n';
+import { ScreenHeader } from '@/src/components/ScreenHeader';
+import { t } from '@/src/i18n';
 
 export default function FuerzaDeTrabajoScreen() {
   const insets = useSafeAreaInsets();
@@ -20,14 +21,8 @@ export default function FuerzaDeTrabajoScreen() {
   const pid = (Array.isArray(project_id) ? project_id[0] : project_id) || '';
 
   return (
-    <View style={[styles.flex, { paddingTop: insets.top }]}>
-      <View style={styles.header}>
-        <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
-          <Ionicons name="chevron-back" size={24} color={colors.text} />
-        </Pressable>
-        <Text style={styles.title} numberOfLines={1}>Fuerza de Trabajo</Text>
-        <View style={{ width: 32 }} />
-      </View>
+    <View style={styles.flex}>
+      <ScreenHeader title="Fuerza de Trabajo" fallbackHref="/(subcoord)" />
 
       {!pid ? (
         <View style={styles.errorBox}>
@@ -58,12 +53,6 @@ export default function FuerzaDeTrabajoScreen() {
 
 const styles = StyleSheet.create({
   flex: { flex: 1, backgroundColor: colors.bg },
-  header: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: spacing.md, paddingVertical: spacing.sm, gap: spacing.md,
-  },
-  iconBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
-  title: { flex: 1, textAlign: 'center', fontSize: 17, fontWeight: '800', color: colors.text },
   scroll: { paddingHorizontal: spacing.lg, gap: spacing.md },
   errorBox: {
     flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: colors.errorBg,

@@ -7,6 +7,9 @@ jest.mock('react-native-safe-area-context', () => ({
   useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
 }));
 jest.mock('@react-navigation/native', () => ({ useIsFocused: () => true }));
+jest.mock('expo-router', () => ({
+  useRouter: () => ({ back: jest.fn(), replace: jest.fn(), canGoBack: () => true }),
+}));
 jest.mock('@/src/auth-context', () => ({
   useAuth: () => ({ user: { id: 'u1', role: 'especialista', name: 'Ana', project_ids: ['p1'] } }),
 }));

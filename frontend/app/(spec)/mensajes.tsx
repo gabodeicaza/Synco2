@@ -19,6 +19,8 @@ import { api, Channel, Message, User } from '@/src/api';
 import { colors, radius, shadow, spacing } from '@/src/theme';
 import { dayjs, CDMX_TZ, fmtTimeCDMX } from '@/src/utils/tz';
 import { a11y } from '@/src/i18n';
+import { ScreenHeader } from '@/src/components/ScreenHeader';
+import { homeRouteForRole } from '@/src/utils/roles';
 
 const POLL_MS = 6000;
 
@@ -29,10 +31,12 @@ export default function MensajesScreen() {
   // P-05: mismo proyecto activo que Minutas, Noticias y Calendario (con respaldo al primero del usuario).
   const { proyectoId } = useProyectoActivo();
   const projectId = proyectoId || (user?.project_ids || [])[0] || '';
-  return <MensajesView projectId={projectId} />;
+  return <MensajesView projectId={projectId} conRegreso />;
 }
 
-export function MensajesView({ projectId }: { projectId: string }) {
+/** `conRegreso`: la lista lleva el encabezado estándar con botón de regreso (rutas alcanzadas por
+ * menú). El Coordinador la incrusta en una pestaña raíz con su propio encabezado y no lo pide. */
+export function MensajesView({ projectId, conRegreso = false }: { projectId: string; conRegreso?: boolean }) {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
 
@@ -81,18 +85,32 @@ export function MensajesView({ projectId }: { projectId: string }) {
       <StatusBar barStyle="light-content" />
       <View style={[styles.blueTop, { height: 140 + insets.top }]} />
 
-      <View style={[styles.header, { paddingTop: insets.top + spacing.xs }]}>
-        <View style={styles.headerIcon}>
-          <Ionicons name="chatbubbles" size={18} color="#fff" />
+      {conRegreso ? (
+        <ScreenHeader
+          title="Mensajes"
+          subtitle="Canales del proyecto"
+          backgroundColor={colors.primary}
+          fallbackHref={homeRouteForRole(user?.role) as any}
+          right={(
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y('actualizar')} onPress={() => loadChannels(false)} hitSlop={10} style={[styles.refreshBtn, { width: 44, height: 44, borderRadius: 22 }]}>
+              <Ionicons name="refresh" size={18} color="#fff" />
+            </Pressable>
+          )}
+        />
+      ) : (
+        <View style={[styles.header, { paddingTop: insets.top + spacing.xs }]}>
+          <View style={styles.headerIcon}>
+            <Ionicons name="chatbubbles" size={18} color="#fff" />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.headerTitle}>Mensajes</Text>
+            <Text style={styles.headerSubtitle}>Canales del proyecto</Text>
+          </View>
+          <Pressable accessibilityRole="button" accessibilityLabel={a11y('actualizar')} onPress={() => loadChannels(false)} hitSlop={10} style={styles.refreshBtn}>
+            <Ionicons name="refresh" size={18} color="#fff" />
+          </Pressable>
         </View>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.headerTitle}>Mensajes</Text>
-          <Text style={styles.headerSubtitle}>Canales del proyecto</Text>
-        </View>
-        <Pressable accessibilityRole="button" accessibilityLabel={a11y('actualizar')} onPress={() => loadChannels(false)} hitSlop={10} style={styles.refreshBtn}>
-          <Ionicons name="refresh" size={18} color="#fff" />
-        </Pressable>
-      </View>
+      )}
 
       {loadingList ? (
         <View style={styles.center}><ActivityIndicator color={colors.primary} /></View>
@@ -341,15 +359,7 @@ function ChatView({
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <StatusBar barStyle="light-content" />
       <View style={[styles.blueTop, { height: 130 + insets.top }]} />
-      <View style={[styles.header, { paddingTop: insets.top + spacing.xs }]}>
-        <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={onBack} hitSlop={10} style={styles.refreshBtn}>
-          <Ionicons name="chevron-back" size={22} color="#fff" />
-        </Pressable>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.headerTitle} numberOfLines={1}>{headerTitle}</Text>
-          <Text style={styles.headerSubtitle} numberOfLines={1}>{headerSub}</Text>
-        </View>
-      </View>
+      <ScreenHeader title={headerTitle} subtitle={headerSub} backgroundColor={colors.primary} onBack={onBack} />
 
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}

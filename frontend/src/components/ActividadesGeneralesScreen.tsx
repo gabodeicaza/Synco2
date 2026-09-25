@@ -22,7 +22,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useAuth } from '@/src/auth-context';
 import { colors, radius, shadow, spacing, contrastText, readableAccent } from '@/src/theme';
-import { ROLE_COORD, ROLE_ESP, ROLE_JEFE, ROLE_SUB } from '@/src/utils/roles';
+import { ROLE_COORD, ROLE_ESP, ROLE_JEFE, ROLE_SUB, homeRouteForRole } from '@/src/utils/roles';
+import { ScreenHeader } from '@/src/components/ScreenHeader';
 import { api, ActividadCurada, Area, LocationNode, NivelActividad } from '@/src/api';
 import { RangoFechasPicker } from '@/src/components/RangoFechasPicker';
 import { formatearRangoLegible, rangoHoy, rangoAyer, rangoEstaSemana, rangoEsteMes, RangoFechas } from '@/src/utils/rangoFechas';
@@ -59,9 +60,11 @@ type Props = {
   projectId: string;
   projectColor?: string | null;
   initialNivel?: NivelActividad;
+  /** A dónde ir si no hay historial (por defecto, el inicio del rol del usuario). */
+  fallbackHref?: string;
 };
 
-export function ActividadesGeneralesScreen({ projectId, projectColor: projectColorProp, initialNivel }: Props) {
+export function ActividadesGeneralesScreen({ projectId, projectColor: projectColorProp, initialNivel, fallbackHref }: Props) {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const role = user?.role;
@@ -74,7 +77,6 @@ export function ActividadesGeneralesScreen({ projectId, projectColor: projectCol
   const headerTextColor = contrastText(acento);
   const headerIsLight = headerTextColor !== '#FFFFFF';
   const chipBg = headerIsLight ? 'rgba(15,23,42,0.10)' : 'rgba(255,255,255,0.18)';
-  const headerSubColor = headerIsLight ? 'rgba(15,23,42,0.75)' : 'rgba(255,255,255,0.85)';
   // Para el indicador de pestaña activa (texto/borde de color sobre fondo
   // BLANCO de la barra de tabs) — problema inverso al del header: acá
   // hace falta una versión del acento suficientemente OSCURA para leerse
@@ -245,10 +247,13 @@ export function ActividadesGeneralesScreen({ projectId, projectColor: projectCol
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <View style={[styles.header, { paddingTop: insets.top + spacing.sm, backgroundColor: acento }]}>
-        <Text style={[styles.headerTitle, { color: headerTextColor }]}>ACTIVIDADES GENERALES</Text>
-        {misActividadesLabel ? <Text style={[styles.headerSub, { color: headerSubColor }]}>{misActividadesLabel}</Text> : null}
-
+      <ScreenHeader
+        title="ACTIVIDADES GENERALES"
+        subtitle={misActividadesLabel || undefined}
+        backgroundColor={acento}
+        fallbackHref={(fallbackHref || homeRouteForRole(role)) as any}
+      />
+      <View style={[styles.header, { paddingTop: spacing.xs, backgroundColor: acento }]}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.filtrosRapidosRow}>
           {FILTROS_RAPIDOS.map((f) => (
             <Pressable accessibilityRole="button"
@@ -773,8 +778,6 @@ function PreviewModal({
 
 const styles = StyleSheet.create({
   header: { paddingHorizontal: spacing.md, paddingBottom: spacing.sm },
-  headerTitle: { color: '#fff', fontSize: 18, fontWeight: '800', letterSpacing: 0.3 },
-  headerSub: { color: 'rgba(255,255,255,0.85)', fontSize: 12, fontWeight: '600', marginTop: 2 },
   headerRow: { flexDirection: 'row', gap: spacing.xs, marginTop: spacing.sm, flexWrap: 'wrap' },
   filtrosRapidosRow: { flexDirection: 'row', marginTop: spacing.sm },
   filtroChip: {
