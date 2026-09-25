@@ -1,4 +1,4 @@
-"""SynCo v2.0 — SaaS Multiproyecto para reportes de obra.
+"""Dirac v2.0 — SaaS Multiproyecto para reportes de obra.
 
 Arquitectura:
 - Coordinador General (god mode): único que crea proyectos, árbol de nodos,
@@ -15,6 +15,7 @@ import math
 import uuid
 import shutil
 import logging
+import hmac
 import secrets
 import hashlib
 import smtplib
@@ -51,7 +52,9 @@ DB_NAME = os.environ["DB_NAME"]
 JWT_SECRET = os.environ["JWT_SECRET"]
 JWT_ALGORITHM = os.environ.get("JWT_ALGORITHM", "HS256")
 JWT_EXPIRE_MINUTES = int(os.environ.get("JWT_EXPIRE_MINUTES", "10080"))
-BOOTSTRAP_SECRET = os.environ.get("BOOTSTRAP_SECRET", "synco_bootstrap_2026_change_me")
+# Sin valor por defecto: si la variable no está definida, /admin/bootstrap queda desactivado
+# (un secreto por defecto escrito en el repositorio permitiría crear un Coordinador General).
+BOOTSTRAP_SECRET = os.environ.get("BOOTSTRAP_SECRET", "")
 EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
 # Resumen Ejecutivo con IA: llamada directa a Gemini desde el BACKEND (nunca
 # desde el cliente — la key nunca se expone en el app). Modelo configurable
@@ -71,7 +74,7 @@ api = APIRouter(prefix="/api")
 bearer = HTTPBearer(auto_error=False)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-log = logging.getLogger("synco")
+log = logging.getLogger("dirac")
 
 
 # Handler temporal para diagnosticar 422 (validation errors). Registra el
@@ -316,17 +319,37 @@ class EtapaPosteElemento(BaseModel):
         return limpio
 
 
-# Plantilla con la que arranca todo proyecto nuevo (y cualquier proyecto
-# viejo que nunca haya guardado la suya, ver _project_public/get_project) —
-# el caso Cablebús: Pilas -> Cabezal -> Fuste -> Poste, cada uno con sus
-# actividades de construcción en orden. Totalmente editable después desde
-# la herramienta de Control de Obra; esto es solo el punto de partida.
-_ETAPAS_POSTE_DEFAULT = [
+# Plantilla OPCIONAL de etapas de Control de Obra para cimentaciones con
+# postes (Pilas -> Cabezal -> Fuste -> Poste, cada elemento con sus
+# actividades de construcción en orden). Ningún proyecto nuevo la recibe por
+# defecto: el Coordinador General la aplica cuando la necesita
+# (POST /projects/{pid}/etapas_poste/aplicar-plantilla) y después es
+# totalmente editable desde Control de Obra.
+PLANTILLA_ETAPAS_CIMENTACION_POSTES = [
     {"nombre": "Pilas", "actividades": ["Perforaciones", "Hincado de Acero", "Colado"]},
     {"nombre": "Cabezal", "actividades": ["Excavación", "Plantilla", "Descabece", "Armado de acero", "Cimbrado", "Colado", "Relleno"]},
     {"nombre": "Fuste", "actividades": ["Armado de Acero", "Cimbrado", "Colado"]},
     {"nombre": "Poste", "actividades": ["Montaje"]},
 ]
+# Alias histórico: los proyectos anteriores a `tipo_obra` (tipo interno
+# "legado") que nunca guardaron su propia plantilla siguen usándola, para no
+# cambiarles el comportamiento (ver `etapas_poste_de`).
+_ETAPAS_POSTE_DEFAULT = PLANTILLA_ETAPAS_CIMENTACION_POSTES
+
+# Catálogo de plantillas de etapas que un proyecto puede aplicar a demanda.
+PLANTILLAS_ETAPAS_POSTE = {
+    "cimentacion_postes": {
+        "nombre": "Cimentación de postes",
+        "descripcion": "Pilas, cabezal, fuste y poste con sus actividades de construcción.",
+        "etapas": PLANTILLA_ETAPAS_CIMENTACION_POSTES,
+    },
+}
+
+# Tipo de obra del proyecto. Los proyectos nuevos son "generica" salvo que se
+# elija otro; los proyectos anteriores (sin el campo) se leen como "legado" y
+# conservan exactamente su comportamiento (ver `tipo_obra_de`).
+TipoObra = Literal["generica", "carretera", "edificacion", "hidraulica", "puente"]
+TIPO_OBRA_LEGADO = "legado"
 
 
 class ProjectIn(BaseModel):
@@ -381,9 +404,12 @@ class ProjectIn(BaseModel):
     # resto del módulo de catálogo), propias de este proyecto — la captura
     # sigue siendo de lista cerrada, nunca texto libre.
     unidades_personalizadas: List[str] = Field(default_factory=list)
+    # Tipo de obra: decide qué módulos y plantillas de reporte se activan/ofrecen
+    # por defecto al crear el proyecto (ver TIPOS_OBRA).
+    tipo_obra: TipoObra = "generica"
     # Plantilla de elementos/actividades de Poste del módulo Control de
-    # Obra (ver EtapaPosteElemento) — [] deja que el backend aplique
-    # _ETAPAS_POSTE_DEFAULT en vez de forzar el caso Cablebús aquí.
+    # Obra (ver EtapaPosteElemento). [] en un proyecto nuevo = sin etapas
+    # (la plantilla de cimentación de postes se aplica a demanda).
     etapas_poste: List[EtapaPosteElemento] = Field(default_factory=list)
     # Título visible del módulo de catálogo (pantalla, encabezado del PDF y
     # nombre del archivo exportado). NO se deriva pluralizando
@@ -443,6 +469,7 @@ class ProjectPatch(BaseModel):
     nombres_niveles_partida: Optional[List[str]] = None
     nombre_nivel_concepto: Optional[str] = None
     unidades_personalizadas: Optional[List[str]] = None
+    tipo_obra: Optional[TipoObra] = None
     etapas_poste: Optional[List[EtapaPosteElemento]] = None
     titulo_modulo_catalogo: Optional[str] = None
     cadencia_reporte: Optional[Literal["DIARIA", "SEMANAL", "MENSUAL"]] = None
@@ -490,6 +517,7 @@ class ProjectOut(BaseModel):
     nombres_niveles_partida: List[str] = Field(default_factory=list)
     nombre_nivel_concepto: str = ""
     unidades_personalizadas: List[str] = Field(default_factory=list)
+    tipo_obra: str = TIPO_OBRA_LEGADO  # "legado" = proyecto anterior al campo (comportamiento sin cambios)
     etapas_poste: List[EtapaPosteElemento] = Field(default_factory=list)
     titulo_modulo_catalogo: str = ""
     cadencia_reporte: str = "MENSUAL"
@@ -918,6 +946,158 @@ SEED_REPORT_TEMPLATES: List[dict] = [
         ],
     },
 ]
+
+
+# === Tipos de obra (K-13 / T-10) ============================================
+# El tipo de obra decide qué módulos quedan ENCENDIDOS al crear el proyecto y qué
+# plantillas de reporte se recomiendan. Nunca reescribe lo ya configurado: cambiar
+# el tipo de un proyecto solo cambia lo que se ofrece a futuro.
+#
+# Plantillas de reporte: cada plantilla sembrada declara `tipos_obra`. "*" = sirve
+# para cualquier tipo. Las plantillas que ya existen en la base de datos (sembradas
+# antes de este campo) o creadas por el usuario y sin el campo se leen con este
+# mismo mapa (o "*" si no aparecen), sin migrar datos.
+PLANTILLAS_TIPOS_OBRA: dict = {
+    "calidad_colados": ["*"],
+    "calidad_acero": ["*"],
+    "calidad_revision_acero": ["*"],
+    # Prueba de integridad de pilas: solo tiene sentido en cimentaciones profundas.
+    "calidad_pit_concreto": ["edificacion", "puente"],
+    "topografia_cimbrado": ["*"],
+    "hse": ["*"],
+    "gestion_social": ["*"],
+    "medio_ambiente": ["*"],
+    "obra_civil": ["*"],
+    "reporte_libre": ["*"],
+}
+for _plantilla_semilla in SEED_REPORT_TEMPLATES:
+    _plantilla_semilla.setdefault("tipos_obra", PLANTILLAS_TIPOS_OBRA.get(_plantilla_semilla["code"], ["*"]))
+
+_CAT_D, _CAT_S, _CAT_M = "reportes_diarios", "reportes_semanales", "reportes_mensuales"
+_EN_DSM = (_CAT_D, _CAT_S, _CAT_M)   # diario, semanal y mensual
+_EN_SM = (_CAT_S, _CAT_M)            # semanal y mensual
+_EN_M = (_CAT_M,)                    # solo mensual
+
+# `modulos`: módulo -> categorías de informe en las que queda encendido. El
+# módulo de Control de Obra (avance por elemento de cimentación) NO se enciende
+# por defecto en ningún tipo: es específico de ciertas obras y el Coordinador lo
+# activa a mano. Los módulos no listados quedan apagados.
+TIPOS_OBRA: dict = {
+    "generica": {
+        "nombre": "Genérica",
+        "descripcion": "Punto de partida neutro: seguridad, riesgos, estado del tiempo y tabla resumen.",
+        "modulos": {
+            "seguridad_higiene": _EN_DSM, "gestion_riesgos": _EN_SM,
+            "estado_tiempo": _EN_DSM, "tabla_resumen": _EN_SM,
+        },
+        "plantillas": ["reporte_libre", "obra_civil", "hse", "calidad_colados", "calidad_acero"],
+    },
+    "carretera": {
+        "nombre": "Carretera",
+        "descripcion": "Terracerías y pavimentos: suma impacto ambiental y estudios del proyecto.",
+        "modulos": {
+            "seguridad_higiene": _EN_DSM, "gestion_riesgos": _EN_SM, "estado_tiempo": _EN_DSM,
+            "tabla_resumen": _EN_SM, "impacto_ambiental": _EN_SM, "estudios_proyecto": _EN_M,
+        },
+        "plantillas": [
+            "obra_civil", "calidad_colados", "calidad_acero", "hse", "medio_ambiente", "gestion_social", "reporte_libre",
+        ],
+    },
+    "edificacion": {
+        "nombre": "Edificación",
+        "descripcion": "Estructura y acabados: control de acero, colados y cimbrado.",
+        "modulos": {
+            "seguridad_higiene": _EN_DSM, "gestion_riesgos": _EN_SM, "estado_tiempo": _EN_DSM,
+            "tabla_resumen": _EN_SM, "estudios_proyecto": _EN_M,
+        },
+        "plantillas": [
+            "obra_civil", "calidad_colados", "calidad_acero", "calidad_revision_acero",
+            "topografia_cimbrado", "hse", "reporte_libre",
+        ],
+    },
+    "hidraulica": {
+        "nombre": "Hidráulica",
+        "descripcion": "Redes, canales y presas: suma impacto ambiental, gestión social y estudios.",
+        "modulos": {
+            "seguridad_higiene": _EN_DSM, "gestion_riesgos": _EN_SM, "estado_tiempo": _EN_DSM,
+            "tabla_resumen": _EN_SM, "impacto_ambiental": _EN_SM, "estudios_proyecto": _EN_M,
+        },
+        "plantillas": [
+            "obra_civil", "calidad_colados", "calidad_acero", "hse", "medio_ambiente", "gestion_social", "reporte_libre",
+        ],
+    },
+    "puente": {
+        "nombre": "Puente",
+        "descripcion": "Cimentación profunda, subestructura y superestructura: incluye la prueba de integridad de pilas.",
+        "modulos": {
+            "seguridad_higiene": _EN_DSM, "gestion_riesgos": _EN_SM, "estado_tiempo": _EN_DSM,
+            "tabla_resumen": _EN_SM, "impacto_ambiental": _EN_SM, "estudios_proyecto": _EN_M,
+        },
+        "plantillas": [
+            "obra_civil", "calidad_colados", "calidad_acero", "calidad_revision_acero", "calidad_pit_concreto",
+            "topografia_cimbrado", "hse", "medio_ambiente", "reporte_libre",
+        ],
+    },
+}
+TIPOS_OBRA_IDS = tuple(TIPOS_OBRA.keys())
+
+
+def tipo_obra_de(project: Optional[dict]) -> str:
+    """Tipo de obra del proyecto. Un proyecto anterior al campo se lee como
+    "legado" (sin escribir nada en la base de datos)."""
+    return ((project or {}).get("tipo_obra") or "").strip() or TIPO_OBRA_LEGADO
+
+
+def modulos_por_defecto_de_tipo(tipo: Optional[str]) -> dict:
+    """`modulos` (estructura de MODULOS_CATALOG) con lo que el tipo enciende por
+    defecto. Un tipo desconocido o "legado" deja todo apagado (como siempre)."""
+    definicion = TIPOS_OBRA.get(tipo or "")
+    crudo: dict = {categoria: {} for categoria in MODULOS_CATALOG}
+    if definicion:
+        for clave, categorias in definicion["modulos"].items():
+            for categoria in categorias:
+                crudo[categoria][clave] = True
+    return _sanitize_modulos(crudo)
+
+
+def catalogo_tipos_obra() -> list:
+    """Catálogo público de tipos (sin "legado", que es interno)."""
+    salida = []
+    for tid, d in TIPOS_OBRA.items():
+        salida.append({
+            "id": tid,
+            "nombre": d["nombre"],
+            "descripcion": d["descripcion"],
+            "modulos_por_defecto": modulos_por_defecto_de_tipo(tid),
+            "plantillas_recomendadas": list(d["plantillas"]),
+        })
+    return salida
+
+
+def tipos_de_plantilla(tpl: dict) -> list:
+    """Tipos de obra para los que sirve una plantilla: el campo propio, si lo
+    tiene; si no, el mapa de plantillas sembradas; si no, cualquiera ("*")."""
+    return list(tpl.get("tipos_obra") or PLANTILLAS_TIPOS_OBRA.get(tpl.get("code"), ["*"]))
+
+
+def plantilla_visible_para_tipo(tpl: dict, tipo: Optional[str]) -> bool:
+    """Sin tipo, o con "legado", se ven todas (comportamiento de siempre)."""
+    if not tipo or tipo == TIPO_OBRA_LEGADO:
+        return True
+    tipos = tipos_de_plantilla(tpl)
+    return "*" in tipos or tipo in tipos
+
+
+def etapas_poste_de(project: Optional[dict]) -> list:
+    """Etapas de Control de Obra efectivas del proyecto. Un proyecto anterior a
+    `tipo_obra` sin plantilla propia usa la de cimentación de postes (como
+    siempre); un proyecto con tipo de obra no recibe ninguna por defecto."""
+    etapas = (project or {}).get("etapas_poste")
+    if etapas:
+        return etapas
+    if tipo_obra_de(project) == TIPO_OBRA_LEGADO:
+        return PLANTILLA_ETAPAS_CIMENTACION_POSTES
+    return []
 
 
 # === Helpers ================================================================
@@ -1773,7 +1953,7 @@ async def reset_password_page():
 # === BOOTSTRAP (idempotente) ================================================
 @api.post("/admin/bootstrap")
 async def bootstrap(body: BootstrapIn):
-    if body.secret != BOOTSTRAP_SECRET:
+    if not BOOTSTRAP_SECRET or not hmac.compare_digest(str(body.secret or "").encode(), BOOTSTRAP_SECRET.encode()):
         raise HTTPException(403, "Secret inválido")
     existing = await db.users.find_one({"email": body.email.lower()})
     if existing:
@@ -2361,6 +2541,7 @@ async def list_projects(user: dict = Depends(current_user)):
         it.setdefault("contratistas_list", [])
         it.setdefault("contratos_list", [])
         it.setdefault("minuta_code_prefix", None)
+        it["tipo_obra"] = tipo_obra_de(it)
         it["modulos"] = _sanitize_modulos(it.get("modulos"))
     return items
 
@@ -2391,13 +2572,15 @@ async def create_project(body: ProjectIn, user: dict = Depends(require_role(ROLE
         "nombres_niveles_partida": _sanitize_str_list(body.nombres_niveles_partida),
         "nombre_nivel_concepto": (body.nombre_nivel_concepto or "").strip(),
         "unidades_personalizadas": _sanitize_str_list(body.unidades_personalizadas),
-        "etapas_poste": [e.model_dump() for e in body.etapas_poste] if body.etapas_poste else _ETAPAS_POSTE_DEFAULT,
+        "tipo_obra": body.tipo_obra,
+        "etapas_poste": [e.model_dump() for e in body.etapas_poste],
         "titulo_modulo_catalogo": (body.titulo_modulo_catalogo or "").strip(),
         "cadencia_reporte": body.cadencia_reporte,
         "dia_inicio_semana": body.dia_inicio_semana,
         "zona_horaria": _zona_o_400(body.zona_horaria),
         "separador_decimal": body.separador_decimal,
-        "modulos": _sanitize_modulos(body.modulos),
+        # Sin `modulos` explícitos, el tipo de obra decide cuáles quedan encendidos.
+        "modulos": _sanitize_modulos(body.modulos) if body.modulos is not None else modulos_por_defecto_de_tipo(body.tipo_obra),
         "created_by": user["id"],
         "created_at": datetime.now(timezone.utc),
         "archived": False,
@@ -2438,7 +2621,9 @@ async def get_project(pid: str, user: dict = Depends(current_user)):
     p.setdefault("nombres_niveles_partida", [])
     p.setdefault("nombre_nivel_concepto", "")
     p.setdefault("unidades_personalizadas", [])
-    p.setdefault("etapas_poste", _ETAPAS_POSTE_DEFAULT)
+    if "etapas_poste" not in p:
+        p["etapas_poste"] = list(etapas_poste_de(p))
+    p["tipo_obra"] = tipo_obra_de(p)
     p.setdefault("titulo_modulo_catalogo", "")
     p.setdefault("cadencia_reporte", "MENSUAL")
     p.setdefault("dia_inicio_semana", "LUNES")
@@ -2536,6 +2721,14 @@ async def update_project(pid: str, body: ProjectPatch, user: dict = Depends(requ
         upd["unidades_personalizadas"] = _sanitize_str_list(body.unidades_personalizadas)
     if body.etapas_poste is not None:
         upd["etapas_poste"] = [e.model_dump() for e in body.etapas_poste]
+    if body.tipo_obra is not None and body.tipo_obra != existing.get("tipo_obra"):
+        # Cambiar el tipo solo cambia lo que se ofrece a futuro: NO reescribe módulos
+        # ni etapas ya configurados. Un proyecto anterior al campo que nunca guardó sus
+        # etapas conserva las que usaba implícitamente (para no perderlas al dejar de
+        # ser "legado").
+        if not existing.get("tipo_obra") and "etapas_poste" not in existing and "etapas_poste" not in upd:
+            upd["etapas_poste"] = [dict(e) for e in PLANTILLA_ETAPAS_CIMENTACION_POSTES]
+        upd["tipo_obra"] = body.tipo_obra
     if body.titulo_modulo_catalogo is not None:
         upd["titulo_modulo_catalogo"] = body.titulo_modulo_catalogo.strip()
     if body.cadencia_reporte is not None:
@@ -2581,7 +2774,9 @@ def _project_public(p: dict) -> dict:
     p.setdefault("nombres_niveles_partida", [])
     p.setdefault("nombre_nivel_concepto", "")
     p.setdefault("unidades_personalizadas", [])
-    p.setdefault("etapas_poste", _ETAPAS_POSTE_DEFAULT)
+    if "etapas_poste" not in p:
+        p["etapas_poste"] = list(etapas_poste_de(p))
+    p["tipo_obra"] = tipo_obra_de(p)
     p.setdefault("titulo_modulo_catalogo", "")
     p.setdefault("cadencia_reporte", "MENSUAL")
     p.setdefault("dia_inicio_semana", "LUNES")
@@ -2648,6 +2843,48 @@ async def set_project_modulos(
             if clave in claves_validas and isinstance(valor, bool):
                 merged[categoria][clave] = valor
     await db.projects.update_one({"id": pid}, {"$set": {"modulos": merged}})
+    p = await db.projects.find_one({"id": pid})
+    return _project_public(p)
+
+
+@api.get("/tipos_obra")
+async def list_tipos_obra(user: dict = Depends(current_user)):
+    """Catálogo de tipos de obra para el selector: nombre, descripción, módulos que
+    enciende por defecto y plantillas de reporte recomendadas. "legado" (proyectos
+    anteriores al campo) es interno y no aparece."""
+    return catalogo_tipos_obra()
+
+
+@api.get("/etapas_poste/plantillas")
+async def list_plantillas_etapas_poste(user: dict = Depends(current_user)):
+    """Plantillas opcionales de etapas de Control de Obra que se pueden aplicar a un proyecto."""
+    return [
+        {"id": pid_, "nombre": d["nombre"], "descripcion": d["descripcion"], "etapas": [dict(e) for e in d["etapas"]]}
+        for pid_, d in PLANTILLAS_ETAPAS_POSTE.items()
+    ]
+
+
+class AplicarPlantillaEtapasIn(BaseModel):
+    plantilla: str
+
+
+@api.post("/projects/{pid}/etapas_poste/aplicar-plantilla")
+async def aplicar_plantilla_etapas_poste(
+    pid: str,
+    body: AplicarPlantillaEtapasIn,
+    user: dict = Depends(require_role(ROLE_COORD)),
+):
+    """Copia al proyecto una plantilla opcional de etapas (reemplaza las que tenga).
+    Solo Coordinador General."""
+    definicion = PLANTILLAS_ETAPAS_POSTE.get((body.plantilla or "").strip())
+    if not definicion:
+        raise HTTPException(400, f"Plantilla de etapas desconocida: {body.plantilla}")
+    existing = await db.projects.find_one({"id": pid})
+    if not existing:
+        raise HTTPException(404, "Proyecto no existe")
+    # Pasa por el mismo modelo que valida las etapas al guardarlas a mano.
+    etapas = [EtapaPosteElemento(**e).model_dump() for e in definicion["etapas"]]
+    await db.projects.update_one({"id": pid}, {"$set": {"etapas_poste": etapas}})
     p = await db.projects.find_one({"id": pid})
     return _project_public(p)
 
@@ -2865,7 +3102,7 @@ async def create_forestal_autorizado(
     await ensure_project_access(user, pid)
     estacion = body.estacion.strip()
     if not estacion:
-        raise HTTPException(400, "estacion es requerida")
+        raise HTTPException(400, "La estación es requerida")
     doc = {
         "id": str(uuid.uuid4()),
         "project_id": pid,
@@ -2896,7 +3133,7 @@ async def update_forestal_autorizado(
     if "estacion" in upd:
         upd["estacion"] = upd["estacion"].strip()
         if not upd["estacion"]:
-            raise HTTPException(400, "estacion no puede quedar vacía")
+            raise HTTPException(400, "La estación no puede quedar vacía")
     upd["updated_by"] = user["id"]
     upd["updated_by_name"] = user["name"]
     upd["updated_at"] = datetime.now(timezone.utc)
@@ -4248,7 +4485,7 @@ async def update_poste_actividad_estatus(nid: str, body: PosteActividadEstatusPa
     project = await ensure_project_access(user, node["project_id"])
     _ensure_modulo_activo(project, "control_obra")
 
-    etapas = project.get("etapas_poste") or _ETAPAS_POSTE_DEFAULT
+    etapas = etapas_poste_de(project)
     claves_validas = {f"{el['nombre']}::{act}" for el in etapas for act in el.get("actividades", [])}
     if body.actividad_key not in claves_validas:
         raise HTTPException(400, f"'{body.actividad_key}' no es una actividad configurada en la plantilla de este proyecto")
@@ -4795,7 +5032,7 @@ async def create_presentacion_seccion(
         raise HTTPException(404, "Presentación no existe")
     await _validate_presentacion_seccion_refs(pid, body)
     if body.tipo == "divisor" and not (body.titulo or "").strip():
-        raise HTTPException(400, "Sección 'divisor' requiere titulo")
+        raise HTTPException(400, "Sección 'divisor' requiere título")
     if body.tipo == "croquis_estacion" and not body.node_id:
         raise HTTPException(400, "Sección 'croquis_estacion' requiere node_id")
     if body.tipo == "avance_grafico" and not body.plano_id:
@@ -6376,9 +6613,20 @@ def validate_measurement_value(mtype: str, value: dict):
 
 
 @api.get("/report-templates")
-async def list_report_templates(user: dict = Depends(current_user)):
+async def list_report_templates(tipo_obra: Optional[str] = None, user: dict = Depends(current_user)):
+    """Plantillas de reporte. Sin `tipo_obra` (o con "legado") devuelve todas, como
+    siempre; con un tipo de obra devuelve las que sirven para ese tipo. Cada
+    plantilla incluye `tipos_obra` ("*" = cualquier tipo)."""
+    if tipo_obra and tipo_obra != TIPO_OBRA_LEGADO and tipo_obra not in TIPOS_OBRA_IDS:
+        raise HTTPException(400, f"Tipo de obra inválido: {tipo_obra}")
     cursor = db.report_templates.find({}, {"_id": 0}).sort("name", 1)
-    return await cursor.to_list(length=None)
+    plantillas = await cursor.to_list(length=None)
+    salida = []
+    for tpl in plantillas:
+        tpl["tipos_obra"] = tipos_de_plantilla(tpl)
+        if plantilla_visible_para_tipo(tpl, tipo_obra):
+            salida.append(tpl)
+    return salida
 
 
 def _normalize_template_code(raw: str) -> str:
@@ -7630,11 +7878,11 @@ async def create_announcement(
     if not title:
         raise HTTPException(400, "Título requerido")
     if not text:
-        raise HTTPException(400, "Cuerpo requerido")
+        raise HTTPException(400, "Contenido requerido")
     if len(title) > 140:
         raise HTTPException(400, "Título máximo 140 caracteres")
     if len(text) > 4000:
-        raise HTTPException(400, "Cuerpo máximo 4000 caracteres")
+        raise HTTPException(400, "Contenido máximo 4000 caracteres")
     try:
         vigencia = validar_vigencia_horas(body.vigencia_horas) if body.vigencia_horas is not None else ANNOUNCEMENT_TTL_HOURS
     except ValueError as e:
@@ -7720,9 +7968,9 @@ async def update_announcement(
     if body.body is not None:
         b = body.body.strip()
         if not b:
-            raise HTTPException(400, "Cuerpo no puede estar vacío")
+            raise HTTPException(400, "Contenido no puede estar vacío")
         if len(b) > 4000:
-            raise HTTPException(400, "Cuerpo máximo 4000 caracteres")
+            raise HTTPException(400, "Contenido máximo 4000 caracteres")
         update["body"] = b
     if body.pinned is not None:
         # El autor puede fijar/desfijar su propia noticia; un Coordinador
@@ -8918,11 +9166,11 @@ def _parse_qty_desc(s: str) -> tuple:
 
 
 _DIAS_ES = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
-_MESES_ES = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"]
+_MESES_ES_ABREV = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"]
 
 
 def _fmt_day_label_es(dt: datetime) -> str:
-    return f"{_DIAS_ES[dt.weekday()]} {dt.day:02d} {_MESES_ES[dt.month - 1]}"
+    return f"{_DIAS_ES[dt.weekday()]} {dt.day:02d} {_MESES_ES_ABREV[dt.month - 1]}"
 
 
 def _week_bounds_for(d) -> tuple:
@@ -8935,8 +9183,8 @@ def _week_bounds_for(d) -> tuple:
 
 def _fmt_week_label_es(start, end) -> str:
     if start.month == end.month:
-        return f"Semana del {start.day:02d} al {end.day:02d} {_MESES_ES[end.month - 1]}"
-    return f"Semana del {start.day:02d} {_MESES_ES[start.month - 1]} al {end.day:02d} {_MESES_ES[end.month - 1]}"
+        return f"Semana del {start.day:02d} al {end.day:02d} {_MESES_ES_ABREV[end.month - 1]}"
+    return f"Semana del {start.day:02d} {_MESES_ES_ABREV[start.month - 1]} al {end.day:02d} {_MESES_ES_ABREV[end.month - 1]}"
 
 
 def _workforce_rows_by_root(reports_by_node: dict, nodes_by_id: dict) -> dict:
@@ -9698,10 +9946,30 @@ async def export_reports_xlsx(pid: str, user: dict = Depends(current_user)):
 
 LOGO_PATH = Path(__file__).resolve().parent / "assets" / "logo_dirac.png"
 
-_MESES_ES = [
-    "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
-    "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre",
+# Meses en minúscula: en español el mes va en minúscula dentro de una fecha
+# ("16 de junio de 2026"). Para un encabezado suelto usa `mes_capitalizado`.
+_MESES_ES_COMPLETO = [
+    "enero", "febrero", "marzo", "abril", "mayo", "junio",
+    "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
 ]
+
+
+def mes_capitalizado(numero: int) -> str:
+    """Nombre del mes (1-12) con inicial mayúscula, para encabezados sueltos ('Junio')."""
+    return _MESES_ES_COMPLETO[numero - 1].capitalize()
+
+
+def fmt_fecha_corta_es(d) -> str:
+    """'23 sep 2026' (un solo estilo, igual que la app). Acepta date o datetime."""
+    return f"{d.day} {_MESES_ES_ABREV[d.month - 1]} {d.year}"
+
+
+def fmt_fecha_hora_corta_es(dt: datetime) -> str:
+    """'23 sep 2026, 08:47' en la zona del proyecto por defecto (America/Mexico_City)."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    dt = dt.astimezone(MX_TZ)
+    return f"{fmt_fecha_corta_es(dt)}, {dt:%H:%M}"
 
 _MEASUREMENT_LABELS_ES = {
     "coord_latlon": "Coordenadas (Lat/Lon)",
@@ -9716,14 +9984,14 @@ def _measurement_label(mtype: str) -> str:
 
 
 def _fmt_fecha_es(dt: datetime) -> str:
-    """Formato ej. '16 de Junio del 2026' en zona horaria America/Mexico_City."""
+    """Formato ej. '16 de junio de 2026' en zona horaria America/Mexico_City."""
     try:
         if not isinstance(dt, datetime):
             return "—"
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         dt = dt.astimezone(MX_TZ)
-        return f"{dt.day} de {_MESES_ES[dt.month - 1]} del {dt.year}"
+        return f"{dt.day} de {_MESES_ES_COMPLETO[dt.month - 1]} de {dt.year}"
     except Exception:
         return dt.strftime("%Y-%m-%d") if isinstance(dt, datetime) else "—"
 
@@ -9733,7 +10001,7 @@ def _fmt_dia_corto_es(fecha_iso: str) -> str:
     YYYY-MM-DD) — para renglones de tabla día-por-día (hoja de Forestal)."""
     try:
         d = date.fromisoformat(fecha_iso)
-        return f"{d.day} de {_MESES_ES[d.month - 1].lower()} de {d.year}"
+        return f"{d.day} de {_MESES_ES_COMPLETO[d.month - 1]} de {d.year}"
     except Exception:
         return fecha_iso
 
@@ -9748,10 +10016,10 @@ def _fmt_rango_dias_es(desde_iso: str, hasta_iso: str) -> str:
     except Exception:
         return f"DEL {desde_iso} AL {hasta_iso}"
     if d1.month == d2.month and d1.year == d2.year:
-        return f"DEL {d1.day} AL {d2.day} DE {_MESES_ES[d2.month - 1].upper()} DE {d2.year}"
+        return f"DEL {d1.day} AL {d2.day} DE {_MESES_ES_COMPLETO[d2.month - 1].upper()} DE {d2.year}"
     return (
-        f"DEL {d1.day} DE {_MESES_ES[d1.month - 1].upper()} "
-        f"AL {d2.day} DE {_MESES_ES[d2.month - 1].upper()} DE {d2.year}"
+        f"DEL {d1.day} DE {_MESES_ES_COMPLETO[d1.month - 1].upper()} "
+        f"AL {d2.day} DE {_MESES_ES_COMPLETO[d2.month - 1].upper()} DE {d2.year}"
     )
 
 
@@ -10029,6 +10297,236 @@ def _strip_b64_prefix(s: str) -> str:
     return s
 
 
+# ----------------------------------------------------------------------------
+# Utilidades de español (Fase 5): capitalización, género, artículos y plurales.
+# Puras y sin estado, para textos que se arman con nombres configurados por el
+# usuario (áreas, niveles del catálogo) y no se pueden escribir a mano.
+# ----------------------------------------------------------------------------
+_PALABRAS_MENORES_ES = frozenset({
+    "de", "del", "la", "las", "el", "los", "y", "e", "o", "u", "a", "al", "en", "con", "por", "para",
+})
+_SIGLAS_CONOCIDAS = frozenset({"HSE", "SST", "IA", "TI", "QA", "QC", "EPP", "SIG", "BIM", "CFE", "SCT"})
+
+
+def _capitalizar_palabra_es(token: str) -> str:
+    return token[:1].upper() + token[1:].lower()
+
+
+def capitalizar_es(texto: Optional[str]) -> str:
+    """Capitalización del español para nombres: 'topografía y geotecnia' → 'Topografía y Geotecnia'.
+
+    Artículos, preposiciones y conjunciones van en minúscula salvo al inicio; se
+    conservan acentos y ñ; las siglas de 2-4 letras en mayúsculas (HSE, SST, IA) se
+    respetan cuando el resto del texto no está todo en mayúsculas. Un texto entero en
+    MAYÚSCULAS se normaliza ('OBRA CIVIL' → 'Obra Civil') salvo las siglas conocidas."""
+    if not texto:
+        return ""
+    partes = str(texto).split()
+    todo_mayusculas = not any(ch.islower() for ch in texto)
+    salida: List[str] = []
+    for i, token in enumerate(partes):
+        subs = token.split("-")
+        nuevos = []
+        for j, sub in enumerate(subs):
+            if not sub:
+                nuevos.append(sub)
+                continue
+            alfabetico = "".join(ch for ch in sub if ch.isalpha())
+            es_sigla = (
+                sub.isupper() and 2 <= len(alfabetico) <= 4
+                and (not todo_mayusculas or alfabetico in _SIGLAS_CONOCIDAS)
+                and alfabetico.lower() not in _PALABRAS_MENORES_ES
+            )
+            # 'Zona A': una letra mayúscula suelta se respeta, salvo las conjunciones y, e, o, u.
+            es_letra_suelta = (
+                sub.isupper() and len(alfabetico) == 1 and not todo_mayusculas
+                and alfabetico.lower() not in ("y", "e", "o", "u")
+            )
+            if es_sigla or es_letra_suelta:
+                nuevos.append(sub)
+            elif i > 0 and j == 0 and sub.lower() in _PALABRAS_MENORES_ES:
+                nuevos.append(sub.lower())
+            else:
+                nuevos.append(_capitalizar_palabra_es(sub))
+        salida.append("-".join(nuevos))
+    return " ".join(salida)
+
+
+_MASCULINOS_EN_A = frozenset({
+    "día", "dia", "mapa", "planeta", "sistema", "programa", "problema", "tema", "clima", "idioma",
+    "poema", "esquema", "diagrama", "emblema", "teorema", "síntoma", "sintoma", "cometa", "pijama",
+})
+_FEMENINOS_ESPECIALES = frozenset({
+    "mano", "serie", "especie", "superficie", "calle", "base", "clase", "fase", "parte", "torre",
+    "tesis", "crisis", "noche", "tarde", "sede", "red", "pared", "sal", "luz", "cruz", "voz",
+})
+_A_TONICA = frozenset({"área", "area", "agua", "aula", "arma", "alma", "hacha", "águila", "aguila", "ancla", "arca"})
+
+
+def _sin_acentos_es(palabra: str) -> str:
+    import unicodedata as _u
+    return "".join(c for c in _u.normalize("NFD", palabra) if _u.category(c) != "Mn")
+
+
+def _palabra_nucleo_es(nombre: str) -> str:
+    """Palabra que decide el género de un nombre: la primera ('Obra civil' → 'obra'); en un
+    compuesto con guion, la última ('Sub-partida' → 'partida')."""
+    primera = (nombre or "").strip().split()[0] if (nombre or "").strip() else ""
+    return primera.split("-")[-1].lower()
+
+
+def _override_genero(override, nombre: str, profundidad: Optional[int]) -> Optional[str]:
+    """Género forzado por el proyecto (`genero_niveles`): dict por nombre (o 'concepto') o
+    lista alineada con `nombres_niveles_partida`. Valores 'm' | 'f'."""
+    if isinstance(override, dict):
+        v = override.get((nombre or "").strip().lower()) or override.get(nombre)
+        return v if v in ("m", "f") else None
+    if isinstance(override, (list, tuple)) and profundidad is not None and 0 <= profundidad < len(override):
+        v = override[profundidad]
+        return v if v in ("m", "f") else None
+    return None
+
+
+def genero_nombre_es(nombre: Optional[str], override=None, profundidad: Optional[int] = None) -> str:
+    """'m' o 'f' para un nombre de nivel. Heurística por terminación con excepciones; el
+    proyecto puede forzarlo con `override` (ver `_override_genero`)."""
+    forzado = _override_genero(override, nombre or "", profundidad)
+    if forzado:
+        return forzado
+    p = _palabra_nucleo_es(nombre or "")
+    if not p:
+        return "m"
+    if p in _FEMENINOS_ESPECIALES:
+        return "f"
+    if p in _MASCULINOS_EN_A:
+        return "m"
+    sin = _sin_acentos_es(p)
+    if sin.endswith(("a", "cion", "sion", "xion", "dad", "tad", "tud", "umbre", "ie")):
+        return "f"
+    return "m"
+
+
+def pluralizar_es(palabra: Optional[str]) -> str:
+    """Plural regular del español para un nombre: 'nivel' → 'niveles', 'estación' →
+    'estaciones', 'luz' → 'luces', 'crisis' → 'crisis'. En una frase con 'de/del/en' se
+    pluraliza el primer nombre ('etapa de obra' → 'etapas de obra'); si no, la última palabra."""
+    texto = (palabra or "").strip()
+    if not texto:
+        return ""
+    tokens = texto.split()
+    idx = len(tokens) - 1
+    for k, t in enumerate(tokens[1:], start=1):
+        if t.lower() in ("de", "del", "en", "con", "para", "por"):
+            idx = k - 1
+            break
+    tokens[idx] = _pluralizar_palabra_es(tokens[idx])
+    return " ".join(tokens)
+
+
+def _pluralizar_palabra_es(w: str) -> str:
+    if not w:
+        return w
+    partes = w.split("-")
+    ult = partes[-1]
+    partes[-1] = _plural_simple_es(ult)
+    return "-".join(partes)
+
+
+def _plural_simple_es(w: str) -> str:
+    import re as _re
+    low = w.lower()
+    if not low:
+        return w
+    if low.endswith("z"):
+        return w[:-1] + "ces"
+    if low[-1] in "aeiouáéó":
+        return w + "s"
+    if low[-1] in "íú":
+        return w + "es"
+    if low.endswith("s"):
+        grupos_vocales = _re.findall(r"[aeiouáéíóúü]+", low)
+        acentuada_final = len(low) >= 2 and low[-2] in "áéíóú"
+        if len(grupos_vocales) <= 1:
+            return w + "es"
+        if acentuada_final:
+            # 'país' → 'países' (hiato: conserva la í); 'autobús' → 'autobuses', 'inglés' → 'ingleses'.
+            base = w if low[-2] == "í" else w[:-2] + _sin_acentos_es(w[-2]) + "s"
+            return base + "es"
+        return w
+    if low.endswith("n") and len(low) >= 2 and low[-2] in "áéíóú":
+        return w[:-2] + _sin_acentos_es(w[-2]) + "nes"
+    return w + "es"
+
+
+def articulo_es(nombre: Optional[str], definido: bool = True, plural: bool = False, override=None,
+                profundidad: Optional[int] = None) -> str:
+    """Artículo que concuerda con el nombre: el/la/los/las (definido) o un/una/unos/unas.
+    'el área' / 'un área' (a tónica) aunque el género sea femenino."""
+    g = genero_nombre_es(nombre, override, profundidad)
+    if plural:
+        return ("los" if g == "m" else "las") if definido else ("unos" if g == "m" else "unas")
+    if g == "f" and _palabra_nucleo_es(nombre or "") in _A_TONICA:
+        return "el" if definido else "un"
+    return ("el" if g == "m" else "la") if definido else ("un" if g == "m" else "una")
+
+
+def nombres_nivel_proyecto(project: Optional[dict], profundidad: int = 0) -> dict:
+    """Nombres configurados de los niveles del catálogo de un proyecto, listos para armar
+    mensajes con el artículo correcto (C-14). Si el proyecto no los configuró se usan los
+    históricos 'partida' y 'concepto'. `genero_niveles` (opcional en el proyecto, dict por
+    nombre o lista alineada con `nombres_niveles_partida`) fuerza el género.
+    Devuelve {'partida': {...}, 'concepto': {...}} con nombre, minúscula, plural, género,
+    artículo definido, artículo indefinido y artículo plural."""
+    p = project or {}
+    niveles = [n for n in (p.get("nombres_niveles_partida") or []) if isinstance(n, str) and n.strip()]
+    nombre_partida = niveles[profundidad] if 0 <= profundidad < len(niveles) else "Partida"
+    nombre_concepto = (p.get("nombre_nivel_concepto") or "").strip() or "Concepto"
+    override = p.get("genero_niveles")
+
+    def _ficha(nombre: str, prof: Optional[int]) -> dict:
+        return {
+            "nombre": nombre,
+            "minuscula": nombre.lower(),
+            "plural": pluralizar_es(nombre.lower()),
+            "genero": genero_nombre_es(nombre, override, prof),
+            "articulo": articulo_es(nombre, True, False, override, prof),
+            "indefinido": articulo_es(nombre, False, False, override, prof),
+            "articulo_plural": articulo_es(nombre, True, True, override, prof),
+        }
+
+    return {"partida": _ficha(nombre_partida, profundidad), "concepto": _ficha(nombre_concepto, None)}
+
+
+async def _niveles_de_proyecto(project_id: Optional[str], profundidad: int = 0) -> dict:
+    """`nombres_nivel_proyecto` del proyecto `project_id`. Solo se usa en el camino de error
+    (armar un mensaje para el usuario); si el proyecto no se puede leer, caen los nombres
+    históricos 'partida' y 'concepto'."""
+    proj = None
+    if project_id:
+        try:
+            proj = await db.projects.find_one({"id": project_id})
+        except Exception:
+            proj = None
+    return nombres_nivel_proyecto(proj if isinstance(proj, dict) else None, profundidad)
+
+
+async def _profundidad_partida(project_id: Optional[str], partida_id: Optional[str]) -> int:
+    """Nivel que ocupa una partida (0 = raíz): cuántos ancestros tiene. Solo para mensajes."""
+    prof = 0
+    actual = partida_id
+    vistos: set = set()
+    try:
+        while actual and actual not in vistos and prof < 20:
+            vistos.add(actual)
+            doc = await db.partidas.find_one({"id": actual, "project_id": project_id})
+            actual = (doc or {}).get("partida_padre_id") if isinstance(doc, dict) else None
+            if actual:
+                prof += 1
+    except Exception:
+        return 0
+    return prof
+
+
 # ============================================================================
 # Regla de negocio: los reportes de "Sub supervisores" se agrupan bajo la
 # disciplina "Obra Civil" en las exportaciones ejecutivas. Cualquier variante
@@ -10072,7 +10570,7 @@ def _normalize_area_name(
     # de imprimir dos portadillas de Área consecutivas con el mismo título.
     canon = raw.replace("-", " ").replace("_", " ")
     canon = " ".join(canon.split())
-    return canon.title()
+    return capitalizar_es(canon)
 
 
 
@@ -11231,7 +11729,7 @@ async def export_reports_pdf(
         #   • Fallback obligatorio de título → "REPORTE" si `period_type` viene vacío.
         #   • Los textos se dibujan AL FINAL del canvas actual, DESPUÉS del
         #     `setFillColor(WHITE)`, y con showPage al terminar. Como el
-        #     `merge_page` en la etapa de fusión pinta el contenido SynCo
+        #     `merge_page` en la etapa de fusión pinta el contenido Dirac
         #     ENCIMA del template (foreground), quedan visibles sobre el
         #     fondo magenta.
         page_num = 1
@@ -13228,7 +13726,7 @@ async def export_reports_pdf(
     # Modo Superposición:
     #   - Página 0 del template = fondo de la portada.
     #   - Página 1 del template (si existe) = "Sección de Nodo": REEMPLAZA
-    #     por completo cada página separadora de nodo del reporte SynCo.
+    #     por completo cada página separadora de nodo del reporte Dirac.
     #   - Página 2+ del template (si existe) = base para las páginas de datos.
     #     Si no hay página 2, se recicla la última página del template.
     # Nota: `tpl_pdf_path` ya fue calculado arriba para dimensionar el canvas
@@ -13258,13 +13756,13 @@ def _overlay_pdf_on_template(
     cover_bg_page_indices: Optional[List[int]] = None,  # portadillas de Área
     general_data_page_count: int = 1,  # nº de páginas de Datos Generales
 ) -> bytes:
-    """Modo Superposición: fusiona el PDF generado por SynCo sobre la plantilla PDF.
+    """Modo Superposición: fusiona el PDF generado por Dirac sobre la plantilla PDF.
 
     Convención de páginas del template (3 páginas base):
       • Página 0 → 'Portada'. Se usa una única vez como fondo de la portada
-        institucional del reporte SynCo (índice 0 del contenido).
+        institucional del reporte Dirac (índice 0 del contenido).
       • Página 1 → 'Mapa'. Se usa una única vez como fondo de la página
-        MAPA del reporte SynCo (índice 1 del contenido, con el
+        MAPA del reporte Dirac (índice 1 del contenido, con el
         `template_map` incrustado).
       • Página 2..N-1 → 'Lienzo recurrente'. Se cicla como fondo para el
         resto de páginas de contenido del reporte (portadillas de nodo +
@@ -13571,7 +14069,7 @@ async def _gather_export_data(
 def _safe_export_filename(name: str, period: str, ext: str) -> str:
     safe = re.sub(r"[^A-Za-z0-9_-]+", "_", name or "proyecto")[:60] or "proyecto"
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
-    # Sin prefijo "synco_": el archivo debe ser 100% institucional.
+    # Sin prefijo de marca: el archivo debe ser 100% institucional.
     return f"reporte_{safe}_{period}_{ts}.{ext}"
 
 
@@ -19666,7 +20164,9 @@ async def create_partida(body: PartidaIn, user: dict = Depends(require_role(ROLE
     await ensure_project_access(user, body.project_id)
     existing = await db.partidas.find_one({"project_id": body.project_id, "clave": body.clave.strip()})
     if existing:
-        raise HTTPException(400, f"Ya existe una partida con clave {body.clave}")
+        prof = (await _profundidad_partida(body.project_id, body.partida_padre_id) + 1) if body.partida_padre_id else 0
+        n = (await _niveles_de_proyecto(body.project_id, prof))["partida"]
+        raise HTTPException(400, f"Ya existe {n['indefinido']} {n['minuscula']} con clave {body.clave}")
     partida_padre_id = body.partida_padre_id
     if partida_padre_id:
         padre = await db.partidas.find_one({"id": partida_padre_id, "project_id": body.project_id})
@@ -19709,7 +20209,13 @@ async def update_partida(partida_id: str, body: PartidaPatch, user: dict = Depen
         upd["partida_padre_id"] = None
     elif body.partida_padre_id is not None:
         if body.partida_padre_id == partida_id:
-            raise HTTPException(400, "Una partida no puede ser su propia partida padre")
+            n = (await _niveles_de_proyecto(
+                partida["project_id"], await _profundidad_partida(partida["project_id"], partida_id),
+            ))["partida"]
+            propia = "propia" if n["genero"] == "f" else "propio"
+            raise HTTPException(
+                400, f"{n['indefinido'].capitalize()} {n['minuscula']} no puede ser su {propia} {n['minuscula']} padre",
+            )
         nuevo_padre = await db.partidas.find_one({"id": body.partida_padre_id, "project_id": partida["project_id"]})
         if not nuevo_padre:
             raise HTTPException(404, "La partida padre no existe en este proyecto")
@@ -19717,7 +20223,12 @@ async def update_partida(partida_id: str, body: PartidaPatch, user: dict = Depen
         # El nuevo padre no puede ser la propia partida ni ninguna de sus
         # descendientes (a cualquier profundidad) — eso crearía un ciclo.
         if body.partida_padre_id in _partida_subtree_ids(partida_id, _partida_children_by_parent(todas)):
-            raise HTTPException(400, "No se puede mover una partida dentro de su propia subpartida")
+            n = (await _niveles_de_proyecto(
+                partida["project_id"], await _profundidad_partida(partida["project_id"], partida_id),
+            ))["partida"]
+            raise HTTPException(
+                400, f"No se puede mover {n['indefinido']} {n['minuscula']} dentro de su propia jerarquía",
+            )
         upd["partida_padre_id"] = body.partida_padre_id
     # Peso-por-rama: quitar_peso_manual explícito vuelve a calculado (mismo
     # criterio que quitar_padre) — peso_manual=None en el body NUNCA se lee
@@ -19777,7 +20288,10 @@ async def create_concepto(body: ConceptoIn, user: dict = Depends(require_role(RO
     if not clave_nueva or not body.descripcion.strip():
         raise HTTPException(400, "La clave y la descripción son obligatorias")
     if await db.conceptos.find_one({"project_id": partida["project_id"], "activo": True, "clave": clave_nueva}):
-        raise HTTPException(409, f"Ya existe un concepto con la clave '{clave_nueva}' en este proyecto")
+        c = nombres_nivel_proyecto(project)["concepto"]
+        raise HTTPException(
+            409, f"Ya existe {c['indefinido']} {c['minuscula']} con la clave '{clave_nueva}' en este proyecto",
+        )
     # C-06: sin meta capturada, se calcula con la duración programada y la cadencia del
     # proyecto; sin programa (sin fechas) queda vacía.
     periodicidad_meta = body.periodicidad_meta or cadencia_de_proyecto(project)
@@ -22620,7 +23134,9 @@ async def set_excedente_estatus(
     excedentes = {e.concepto_id: e for e in await _excedentes_del_proyecto(pid, project)}
     actual = excedentes.get(concepto_id)
     if not actual:
-        raise HTTPException(404, "Este concepto no tiene volumen excedente")
+        c = nombres_nivel_proyecto(project)["concepto"]
+        este = "Esta" if c["genero"] == "f" else "Este"
+        raise HTTPException(404, f"{este} {c['minuscula']} no tiene volumen excedente")
     referencia = (body.referencia or "").strip() or None
     if body.estatus == "autorizado" and not referencia:
         raise HTTPException(400, "Para autorizar indica el convenio modificatorio u orden de cambio.")
@@ -22663,7 +23179,11 @@ async def set_pu_extraordinario(
         raise HTTPException(404, "Concepto no existe")
     await ensure_project_access(user, concepto["project_id"])
     if not concepto.get("extraordinario"):
-        raise HTTPException(400, "Solo los conceptos extraordinarios tienen P.U. por autorizar")
+        c = (await _niveles_de_proyecto(concepto["project_id"]))["concepto"]
+        extra = "extraordinarias" if c["genero"] == "f" else "extraordinarios"
+        raise HTTPException(
+            400, f"Solo {c['articulo_plural']} {c['plural']} {extra} tienen P.U. por autorizar",
+        )
     referencia = (body.referencia or "").strip() or None
     if body.pu_estatus == "autorizado" and not referencia:
         raise HTTPException(400, "Para autorizar indica el convenio modificatorio u orden de cambio.")
