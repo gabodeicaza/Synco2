@@ -12,7 +12,6 @@ import {
   View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, TextInput, StatusBar, Alert, Modal,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 
 import { api, Concepto, ConceptoSearchResult, Partida, Project } from '@/src/api';
@@ -34,6 +33,7 @@ import { InlineError } from '@/src/components/InlineError';
 import { NuevaPartidaModal } from '@/src/components/NuevaPartidaModal';
 import { NuevoConceptoModal } from '@/src/components/NuevoConceptoModal';
 import { NodoTabs } from '@/src/components/NodoTabs';
+import { ScreenHeader } from '@/src/components/ScreenHeader';
 import {
   MargenesCatalogo, NodoTab, conteoDePestana, margenesCatalogo, resolverPestana, rutaDePartida,
 } from '@/src/utils/navegacionCatalogo';
@@ -364,34 +364,15 @@ export default function CatalogoConceptosScreen({ projectId }: { projectId: stri
           headerColor (color_tema del proyecto) — antes era blanco fijo, y
           si el proyecto tenía un color_tema claro el botón de "atrás"
           quedaba invisible. */}
-      <View style={[styles.headerWrap, { backgroundColor: headerColor, paddingTop: insets.top + spacing.xs }]}>
-        <View style={styles.headerTopRow}>
-          <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')}
-            onPress={() => {
-              if (mode === 'partidas' && breadcrumb.length > 0) subirUnNivel();
-              else router.back();
-            }}
-            hitSlop={10}
-            style={styles.iconBtn}
-          >
-            <Ionicons
-              name={mode === 'partidas' && breadcrumb.length > 0 ? 'arrow-back' : 'chevron-back'}
-              size={22}
-              color={headerTextColor}
-            />
-          </Pressable>
-          <Text style={[styles.brand, { color: headerTextColor }]}>{APP_BRAND}</Text>
-          <View style={{ width: 32 }} />
-        </View>
-        <Text style={[styles.titleBar, { color: headerTextColor }]} numberOfLines={1}>
-          {tituloModuloCatalogo(project).toUpperCase()} — {(project?.name || '').toUpperCase()}
-        </Text>
-        {(project?.start_date || project?.end_date) ? (
-          <Text style={[styles.periodo, { color: headerTextColor, opacity: 0.85 }]} numberOfLines={1}>
-            Periodo: {project?.start_date || '—'} a {project?.end_date || '—'}
-          </Text>
-        ) : null}
-      </View>
+      <ScreenHeader
+        title={`${tituloModuloCatalogo(project).toUpperCase()} — ${(project?.name || '').toUpperCase()}`}
+        subtitle={(project?.start_date || project?.end_date)
+          ? `Periodo: ${project?.start_date || '—'} a ${project?.end_date || '—'}`
+          : undefined}
+        backgroundColor={headerColor}
+        onBack={mode === 'partidas' && breadcrumb.length > 0 ? subirUnNivel : undefined}
+        right={<Text style={[styles.brand, { color: headerTextColor }]}>{APP_BRAND}</Text>}
+      />
 
       {/* Búsqueda global + filtro por unidad */}
       <View style={styles.searchBar}>
@@ -1069,12 +1050,7 @@ function SearchResultsList({
 
 const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg },
-  headerWrap: { paddingHorizontal: spacing.md, paddingBottom: spacing.sm },
-  headerTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  iconBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
-  brand: { color: '#fff', fontWeight: '800', fontSize: 15 },
-  titleBar: { color: '#fff', fontWeight: '800', fontSize: 15, marginTop: 6, letterSpacing: 0.3 },
-  periodo: { color: 'rgba(255,255,255,0.85)', fontSize: 11, marginTop: 2 },
+  brand: { fontWeight: '800', fontSize: 15 },
   partidaCrumb: { color: 'rgba(255,255,255,0.9)', fontSize: 12, marginTop: 4, fontWeight: '600' },
 
   searchBar: {

@@ -9,14 +9,13 @@ import {
   View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, TextInput, Alert, Modal, KeyboardAvoidingView, Platform,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import {
   api, EstudioActividad, EstudioBitacoraEntry, EstudioDisciplina, ESTUDIO_DISCIPLINA_LABEL, Project,
 } from '@/src/api';
-import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
+import { colors, radius, shadow, spacing } from '@/src/theme';
 import { Button } from '@/src/components/Button';
-import { a11y } from '@/src/i18n';
+import { ScreenHeader } from '@/src/components/ScreenHeader';
 
 const DISCIPLINAS: EstudioDisciplina[] = ['mecanica_suelos', 'topografia', 'hidrologico', 'instalaciones'];
 
@@ -65,7 +64,6 @@ export default function EstudiosProyectoScreen({ projectId }: { projectId: strin
   useEffect(() => { load(); }, [load]);
 
   const headerColor = project?.color_institucional || project?.color_tema || colors.primary;
-  const headerTextColor = contrastText(headerColor);
 
   const bitacoraFiltrada = useMemo(
     () => bitacora.filter((b) => b.disciplina === disciplinaTab),
@@ -144,15 +142,7 @@ export default function EstudiosProyectoScreen({ projectId }: { projectId: strin
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <View style={[styles.headerWrap, { backgroundColor: headerColor, paddingTop: insets.top + spacing.xs }]}>
-        <View style={styles.headerTopRow}>
-          <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
-            <Ionicons name="chevron-back" size={22} color={headerTextColor} />
-          </Pressable>
-          <Text style={[styles.titleBar, { color: headerTextColor }]} numberOfLines={1}>Estudios y Proyecto Ejecutivo</Text>
-          <View style={{ width: 32 }} />
-        </View>
-      </View>
+      <ScreenHeader title="Estudios y Proyecto Ejecutivo" backgroundColor={headerColor} />
 
       <ScrollView contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + spacing.xl }]}>
         {/* === Panel superior: avance por actividad === */}
@@ -300,10 +290,6 @@ export default function EstudiosProyectoScreen({ projectId }: { projectId: strin
 
 const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg },
-  headerWrap: { paddingHorizontal: spacing.md, paddingBottom: spacing.sm },
-  headerTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  iconBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
-  titleBar: { fontWeight: '800', fontSize: 16, letterSpacing: 0.3 },
   scroll: { padding: spacing.md },
   sectionHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: spacing.xs },
   sectionTitle: { fontSize: 13, fontWeight: '800', color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.5 },

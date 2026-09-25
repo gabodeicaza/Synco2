@@ -10,11 +10,11 @@ import {
   View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, TextInput, Alert, Modal, KeyboardAvoidingView, Platform,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { api, RiesgoRegistro, Project } from '@/src/api';
-import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
+import { colors, radius, shadow, spacing } from '@/src/theme';
 import { Button } from '@/src/components/Button';
+import { ScreenHeader } from '@/src/components/ScreenHeader';
 import { a11y } from '@/src/i18n';
 
 const AVANCE_ATAJOS = [0, 25, 50, 75, 100];
@@ -63,7 +63,6 @@ export default function GestionRiesgosScreen({ projectId }: { projectId: string 
   useEffect(() => { load(); }, [load]);
 
   const headerColor = project?.color_institucional || project?.color_tema || colors.primary;
-  const headerTextColor = contrastText(headerColor);
 
   function openForm() {
     setEstacionDraft('');
@@ -134,15 +133,7 @@ export default function GestionRiesgosScreen({ projectId }: { projectId: string 
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <View style={[styles.headerWrap, { backgroundColor: headerColor, paddingTop: insets.top + spacing.xs }]}>
-        <View style={styles.headerTopRow}>
-          <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
-            <Ionicons name="chevron-back" size={22} color={headerTextColor} />
-          </Pressable>
-          <Text style={[styles.titleBar, { color: headerTextColor }]} numberOfLines={1}>Gestión de Riesgos</Text>
-          <View style={{ width: 32 }} />
-        </View>
-      </View>
+      <ScreenHeader title="Gestión de Riesgos" backgroundColor={headerColor} />
 
       <ScrollView contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + spacing.xl }]}>
         <Text style={styles.helpTxt}>
@@ -262,10 +253,6 @@ export default function GestionRiesgosScreen({ projectId }: { projectId: string 
 
 const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg },
-  headerWrap: { paddingHorizontal: spacing.md, paddingBottom: spacing.sm },
-  headerTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  iconBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
-  titleBar: { fontWeight: '800', fontSize: 16, letterSpacing: 0.3 },
   scroll: { padding: spacing.md },
   helpTxt: { color: colors.textMuted, fontSize: 12, marginBottom: spacing.md, lineHeight: 17 },
   empty: { alignItems: 'center', gap: 8, padding: spacing.lg },

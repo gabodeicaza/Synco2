@@ -15,8 +15,6 @@ import {
   View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, FlatList, RefreshControl,
   Alert, useWindowDimensions,
 } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import Svg, { Polyline, Line as SvgLine, Text as SvgText, Circle } from 'react-native-svg';
 import * as DocumentPicker from 'expo-document-picker';
@@ -32,6 +30,7 @@ import { variacionCostoUI } from '@/src/utils/finanzas';
 import { a11y, t } from '@/src/i18n';
 import { ExcedentesSection } from '@/src/components/ExcedentesSection';
 import { GastoRealForm } from '@/src/components/GastoRealForm';
+import { ScreenHeader } from '@/src/components/ScreenHeader';
 
 type TabActividades = 'pendientes' | 'actuales' | 'por_venir';
 const TABS_ACTIVIDADES: { key: TabActividades; label: string }[] = [
@@ -236,7 +235,6 @@ function ActividadCard({ item, tab }: { item: ActividadEvm; tab: TabActividades 
 }
 
 export default function DashboardEVM({ projectId }: { projectId: string }) {
-  const insets = useSafeAreaInsets();
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -456,14 +454,7 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <View style={[styles.headerWrap, { paddingTop: insets.top + spacing.xs, backgroundColor: colors.primary }]}>
-        <View style={styles.headerTopRow}>
-          <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={10} style={styles.headerBackBtn}>
-            <Ionicons name="chevron-back" size={22} color="#fff" />
-          </Pressable>
-          <Text style={styles.headerTitle}>Control de Obra — Valor Ganado</Text>
-        </View>
-      </View>
+      <ScreenHeader title="Control de Obra — Valor Ganado" backgroundColor={colors.primary} />
 
       <ScrollView
         contentContainerStyle={{ padding: spacing.md, paddingBottom: 40 }}
@@ -709,10 +700,6 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
 
 const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  headerWrap: { paddingHorizontal: spacing.md, paddingBottom: spacing.md },
-  headerTopRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  headerBackBtn: { width: 28, height: 28, alignItems: 'center', justifyContent: 'center', marginLeft: -6 },
-  headerTitle: { fontSize: 18, fontWeight: '700', color: '#fff', flex: 1 },
   rangoRow: { flexDirection: 'row', gap: 8, marginBottom: spacing.md },
   rangoChip: {
     paddingHorizontal: 12, paddingVertical: 6, borderRadius: radius.full,

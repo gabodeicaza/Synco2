@@ -26,7 +26,6 @@ import {
   KeyboardAvoidingView, Platform,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import {
   api, LocationNode, Project, PosteEstatus, EtapaPosteElemento, CimentacionElemento, Perforadora,
@@ -35,6 +34,7 @@ import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
 import { ESTATUS_LABEL, ESTATUS_COLOR } from '@/src/components/AccesoPredioManager';
 import { downloadBlob } from '@/src/utils/downloadBlob';
 import { a11y } from '@/src/i18n';
+import { ScreenHeader } from '@/src/components/ScreenHeader';
 
 type Tab = 'postes' | 'cimentacion' | 'perforadoras';
 
@@ -387,12 +387,10 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <View style={[styles.headerWrap, { backgroundColor: headerColor, paddingTop: insets.top + spacing.xs }]}>
-        <View style={styles.headerTopRow}>
-          <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
-            <Ionicons name="chevron-back" size={22} color={headerTextColor} />
-          </Pressable>
-          <Text style={[styles.titleBar, { color: headerTextColor }]} numberOfLines={1}>Control de Obra</Text>
+      <ScreenHeader
+        title="Control de Obra"
+        backgroundColor={headerColor}
+        right={
           <Pressable accessibilityRole="button" accessibilityLabel={a11y('descargar')} onPress={exportXlsx} disabled={exporting} hitSlop={10} style={styles.iconBtn}>
             {exporting ? (
               <ActivityIndicator size="small" color={headerTextColor} />
@@ -400,8 +398,8 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
               <Ionicons name="download-outline" size={22} color={headerTextColor} />
             )}
           </Pressable>
-        </View>
-      </View>
+        }
+      />
 
       <View style={styles.tabRow}>
         {([
@@ -788,10 +786,7 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
 
 const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg },
-  headerWrap: { paddingHorizontal: spacing.md, paddingBottom: spacing.sm },
-  headerTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  iconBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
-  titleBar: { flex: 1, textAlign: 'center', fontWeight: '800', fontSize: 16, letterSpacing: 0.3 },
+  iconBtn: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
 
   tabRow: { flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: colors.border, backgroundColor: colors.surface },
   tabBtn: {

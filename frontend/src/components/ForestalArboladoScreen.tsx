@@ -12,13 +12,13 @@ import {
   View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, TextInput, Alert, Modal, KeyboardAvoidingView, Platform,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import {
   api, ForestalRegistro, ForestalResumen, ForestalAutorizadoRow, ForestalSemanal, Project,
 } from '@/src/api';
-import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
+import { colors, radius, shadow, spacing } from '@/src/theme';
 import { Button } from '@/src/components/Button';
+import { ScreenHeader } from '@/src/components/ScreenHeader';
 import { useAuth } from '@/src/auth-context';
 import { ROLE_COORD, ROLE_SUB } from '@/src/utils/roles';
 import { a11y } from '@/src/i18n';
@@ -156,7 +156,6 @@ export default function ForestalArboladoScreen({ projectId }: { projectId: strin
   useEffect(() => { loadSemanal(); }, [loadSemanal]);
 
   const headerColor = project?.color_institucional || project?.color_tema || colors.primary;
-  const headerTextColor = contrastText(headerColor);
 
   const contadores = resumen?.contadores || { poda: 0, trasplante: 0, derribo: 0 };
   const totalAutorizado = useMemo(() => autorizado.reduce((acc, r) => ({
@@ -267,15 +266,7 @@ export default function ForestalArboladoScreen({ projectId }: { projectId: strin
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <View style={[styles.headerWrap, { backgroundColor: headerColor, paddingTop: insets.top + spacing.xs }]}>
-        <View style={styles.headerTopRow}>
-          <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
-            <Ionicons name="chevron-back" size={22} color={headerTextColor} />
-          </Pressable>
-          <Text style={[styles.titleBar, { color: headerTextColor }]} numberOfLines={1}>Forestal y Arbolado</Text>
-          <View style={{ width: 32 }} />
-        </View>
-      </View>
+      <ScreenHeader title="Forestal y Arbolado" backgroundColor={headerColor} />
 
       <ScrollView contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + spacing.xl }]}>
         <Text style={styles.sheetTitle}>TRATAMIENTO DE ARBOLADO</Text>
@@ -512,10 +503,6 @@ export default function ForestalArboladoScreen({ projectId }: { projectId: strin
 
 const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg },
-  headerWrap: { paddingHorizontal: spacing.md, paddingBottom: spacing.sm },
-  headerTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  iconBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
-  titleBar: { fontWeight: '800', fontSize: 16, letterSpacing: 0.3 },
   scroll: { padding: spacing.md },
   sheetTitle: { fontSize: 16, fontWeight: '800', color: SHEET.title, marginBottom: spacing.sm, letterSpacing: 0.3 },
   sectionTitle: { fontSize: 13, fontWeight: '800', color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: spacing.xs, marginTop: spacing.sm },

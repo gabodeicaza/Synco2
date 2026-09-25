@@ -15,11 +15,10 @@ import {
   View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, TextInput, Alert,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { api, LocationNode, Project, WeatherLog } from '@/src/api';
-import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
-import { a11y } from '@/src/i18n';
+import { colors, radius, shadow, spacing } from '@/src/theme';
+import { ScreenHeader } from '@/src/components/ScreenHeader';
 
 function nodePathNames(nodeId: string, byId: Record<string, LocationNode>): string[] {
   const names: string[] = [];
@@ -134,7 +133,6 @@ export default function EstadoTiempoScreen({ projectId }: { projectId: string })
   }
 
   const headerColor = project?.color_institucional || project?.color_tema || colors.primary;
-  const headerTextColor = contrastText(headerColor);
 
   if (loading) {
     return (
@@ -146,15 +144,7 @@ export default function EstadoTiempoScreen({ projectId }: { projectId: string })
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <View style={[styles.headerWrap, { backgroundColor: headerColor, paddingTop: insets.top + spacing.xs }]}>
-        <View style={styles.headerTopRow}>
-          <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')} onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
-            <Ionicons name="chevron-back" size={22} color={headerTextColor} />
-          </Pressable>
-          <Text style={[styles.titleBar, { color: headerTextColor }]} numberOfLines={1}>Estado del Tiempo</Text>
-          <View style={{ width: 32 }} />
-        </View>
-      </View>
+      <ScreenHeader title="Estado del Tiempo" backgroundColor={headerColor} />
 
       <ScrollView contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + spacing.xl }]}>
         <Text style={styles.help}>
@@ -221,10 +211,6 @@ export default function EstadoTiempoScreen({ projectId }: { projectId: string })
 
 const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg },
-  headerWrap: { paddingHorizontal: spacing.md, paddingBottom: spacing.sm },
-  headerTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  iconBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
-  titleBar: { flex: 1, textAlign: 'center', fontWeight: '800', fontSize: 16, letterSpacing: 0.3 },
   scroll: { padding: spacing.md, gap: spacing.md },
   help: { fontSize: 12, color: colors.textMuted, marginBottom: spacing.xs },
   empty: { textAlign: 'center', color: colors.textMuted, marginTop: 40, fontStyle: 'italic' },

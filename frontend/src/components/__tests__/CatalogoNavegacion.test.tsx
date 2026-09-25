@@ -6,7 +6,10 @@ jest.setTimeout(30000);
 configure({ asyncUtilTimeout: 8000 });
 
 jest.mock('@expo/vector-icons', () => ({ Ionicons: 'Ionicons' }));
-jest.mock('expo-router', () => ({ router: { back: jest.fn(), push: jest.fn() } }));
+jest.mock('expo-router', () => {
+  const router = { back: jest.fn(), push: jest.fn(), replace: jest.fn(), canGoBack: jest.fn(() => true) };
+  return { router, useRouter: () => router };
+});
 jest.mock('react-native-safe-area-context', () => ({
   useSafeAreaInsets: () => ({ top: 0, bottom: 20, left: 0, right: 0 }),
 }));
