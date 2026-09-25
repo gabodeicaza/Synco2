@@ -1,10 +1,10 @@
 // SynCo v2.0 _ Tab "Noticias" del Especialista / Sub-Coord.
 // Cualquier miembro del proyecto puede crear noticias. El autor o el Coord
-// pueden editar/eliminar/fijar. Toda noticia (fijada o no) desaparece sola
-// 24h despues de publicada _ el backend deja de listarla pasado ese plazo.
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+// pueden editar/eliminar/fijar. Toda noticia (fijada o no) desaparece sola al
+// cumplirse su vigencia (6 h, 24 h por defecto, 48 h o 7 dias) _ el backend deja de listarla.
+import React, { useCallback, useEffect, useState } from 'react';
 import {
-  ActivityIndicator, Alert, AppState, AppStateStatus, KeyboardAvoidingView,
+  ActivityIndicator, Alert, KeyboardAvoidingView,
   Modal, Platform, Pressable, RefreshControl, ScrollView, StatusBar,
   StyleSheet, Switch, Text, TextInput, View,
 } from 'react-native';
@@ -12,10 +12,16 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useAuth } from '@/src/auth-context';
+import { useProyectoActivo } from '@/src/proyecto-activo-context';
 import { api, Announcement, Area, LocationNode } from '@/src/api';
 import { colors, radius, shadow, spacing } from '@/src/theme';
-import { a11y } from '@/src/i18n';
+import { a11y, t } from '@/src/i18n';
 import { fmtFecha } from '@/src/utils/fechas';
+import { usePollingConFoco } from '@/src/hooks/usePollingConFoco';
+import { VigenciaSelector } from '@/src/components/VigenciaSelector';
+import {
+  etiquetaVigencia, textoTiempoRestante, VigenciaHoras, vigenciaParaGuardar, vigenciaValida, VIGENCIA_POR_DEFECTO,
+} from '@/src/utils/vigenciaNoticias';
 
 const POLL_MS = 60000;
 
@@ -33,7 +39,9 @@ type EditorState =
 export default function NoticiasScreen() {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
-  const projectId = (user?.project_ids || [])[0] || '';
+  // P-05: mismo proyecto activo que Minutas, Mensajes y Calendario (con respaldo al primero del usuario).
+  const { proyectoId } = useProyectoActivo();
+  const projectId = proyectoId || (user?.project_ids || [])[0] || '';
   const isCoord = user?.role === 'coordinador_general';
 
   const [items, setItems] = useState<Announcement[]>([]);
@@ -43,7 +51,6 @@ export default function NoticiasScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [editor, setEditor] = useState<EditorState>(null);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const load = useCallback(async (silent = false) => {
     if (!projectId) { setLoading(false); setError('Sin proyecto asignado'); return; }
@@ -68,20 +75,8 @@ export default function NoticiasScreen() {
     api.listNodes(projectId).then(setNodes).catch(() => setNodes([]));
   }, [projectId]);
 
-  useEffect(() => {
-    function start() {
-      if (pollRef.current) return;
-      pollRef.current = setInterval(() => { load(true); }, POLL_MS);
-    }
-    function stop() {
-      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
-    }
-    start();
-    const sub = AppState.addEventListener('change', (s: AppStateStatus) => {
-      if (s === 'active') { load(true); start(); } else { stop(); }
-    });
-    return () => { stop(); sub.remove(); };
-  }, [load]);
+  // G-07: solo consulta con la pestaña enfocada y la app activa.
+  usePollingConFoco(() => { load(true); }, POLL_MS);
 
   const onDelete = useCallback((it: Announcement) => {
     const confirm = () => {
@@ -222,7 +217,11 @@ function AnnouncementCard({
           </View>
         ) : null}
         {item.expires_at ? (
-          <Text style={styles.expiresTxt}>{formatExpiry(item.expires_at)}</Text>
+          <Text style={styles.expiresTxt}>
+            {t('noticiasVigencia.vigenciaCorta', { vigencia: etiquetaVigencia(vigenciaValida(item.vigencia_horas)) })}
+            {' · '}
+            {textoTiempoRestante(item.expires_at)}
+          </Text>
         ) : null}
         {jStyle ? (
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: jStyle.bd, paddingHorizontal: 8, paddingVertical: 2, borderRadius: 999 }}>
@@ -285,11 +284,13 @@ function AnnouncementEditor({
   const [jerarquia, setJerarquia] = useState<'urgente' | 'importante' | 'informativo' | null>(null);
   const [audiencia, setAudiencia] = useState<string | null>(null);
   const [nodeId, setNodeId] = useState<string | null>(null);
+  const [vigencia, setVigencia] = useState<VigenciaHoras>(VIGENCIA_POR_DEFECTO);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
     if (!visible) return;
+    setVigencia(editor?.kind === 'edit' ? vigenciaValida(editor.item.vigencia_horas) : VIGENCIA_POR_DEFECTO);
     if (editor?.kind === 'edit') {
       setTitle(editor.item.title);
       setBody(editor.item.body);
@@ -316,8 +317,11 @@ function AnnouncementEditor({
       if (canPin) payload.pinned = pinned;
 
       if (editor?.kind === 'edit') {
+        // La vigencia solo se manda si cambió: cambiarla reinicia el plazo desde este momento.
+        Object.assign(payload, vigenciaParaGuardar(vigencia, vigenciaValida(editor.item.vigencia_horas)));
         await api.updateAnnouncement(editor.item.id, payload);
       } else {
+        payload.vigencia_horas = vigencia;
         await api.createAnnouncement(projectId, payload);
       }
       // [FIX 2026-07] Notificacion local inmediata
@@ -421,11 +425,12 @@ function AnnouncementEditor({
                   <Ionicons name="pin" size={14} color={colors.primary} />
                   <View style={{ flex: 1 }}>
                     <Text style={styles.pinLabel}>Fijar al inicio del feed</Text>
-                    <Text style={styles.pinHint}>La noticia dura maximo 24h, fijada o no</Text>
+                    <Text style={styles.pinHint}>{t('noticiasVigencia.ayudaFijado')}</Text>
                   </View>
                   <Switch value={pinned} onValueChange={setPinned} disabled={busy} />
                 </View>
               ) : null}
+              <VigenciaSelector value={vigencia} onChange={setVigencia} disabled={busy} edicion={editor?.kind === 'edit'} />
               <Text style={styles.modalLabel}>Vincular a Nodo / Ubicacion (opcional)</Text>
               <Text style={{ fontSize: 11, color: colors.textMuted, marginTop: -4 }}>
                 Si la noticia es <Text style={{ fontWeight: '800' }}>Importante</Text> o <Text style={{ fontWeight: '800' }}>Urgente</Text>, aparecera como nota dentro de la seccion del nodo en las exportaciones.
@@ -485,17 +490,6 @@ function AnnouncementEditor({
       </View>
     </Modal>
   );
-}
-
-function formatExpiry(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '';
-  const diff = d.getTime() - Date.now();
-  if (diff <= 0) return 'Por expirar';
-  const m = Math.round(diff / 60000);
-  if (m < 60) return `Vence en ${m} min`;
-  const h = Math.round(m / 60);
-  return `Vence en ${h} h`;
 }
 
 function formatDate(iso: string): string {

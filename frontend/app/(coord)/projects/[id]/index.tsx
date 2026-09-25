@@ -32,6 +32,8 @@ import { getMediaLibraryPermission, requestMediaLibraryPermission } from '@/src/
 import { t, a11y } from '@/src/i18n';
 import { olvidarSeparadorDecimal } from '@/src/hooks/useSeparadorDecimal';
 import { ProgramaObraSection } from '@/src/components/ProgramaObraSection';
+import { useModalUnico } from '@/src/hooks/useModalUnico';
+import { usePestanaProyecto } from '@/src/hooks/usePestanaProyecto';
 import { SinReportesAviso } from '@/src/components/SinReportesAviso';
 import { ReportesVacio } from '@/src/components/ReportesVacio';
 import { verificarConteoExportacion } from '@/src/utils/conteoExportacion';
@@ -175,7 +177,11 @@ export default function ProjectDetailScreen() {
 
   // Reports para alimentar HistoryCalendarModal
   const [reports, setReports] = useState<FeedItem[]>([]);
-  const [calendarOpen, setCalendarOpen] = useState(false);
+  // K-06: un solo modal a la vez. Abrir uno cierra el anterior; las banderas de abajo
+  // conservan su nombre pero salen de este único estado.
+  const modal = useModalUnico<'calendario' | 'ia' | 'exportar' | 'catalogos' | 'catalogoConfig' | 'objeto' | 'plantillas' | 'generales'>();
+  const calendarOpen = modal.visible('calendario');
+  const setCalendarOpen = modal.ponerVisible('calendario');
 
   // Badge del Hub de Minutas (acuerdos asignados / urgentes al usuario).
   const [minutasBadge, setMinutasBadge] = useState<{ assigned_pending: number; urgent: number } | null>(null);
@@ -201,18 +207,20 @@ export default function ProjectDetailScreen() {
   }, [searchQuery]);
 
   // Resumen Ejecutivo con IA
-  const [aiOpen, setAiOpen] = useState(false);
+  const aiOpen = modal.visible('ia');
+  const setAiOpen = modal.ponerVisible('ia');
   const [aiBusy, setAiBusy] = useState(false);
   const [aiSummary, setAiSummary] = useState<string | null>(null);
   const [aiError, setAiError] = useState<string | null>(null);
   const [aiMeta, setAiMeta] = useState<{ reports_count: number; period_hours: number } | null>(null);
   const [aiCopied, setAiCopied] = useState(false);
 
-  // Tabs: Reportes / Operacion / Configuracion
-  const [activeTab, setActiveTab] = useState<'reportes' | 'operacion' | 'configuracion'>('reportes');
+  // Tabs: Reportes / Operacion / Configuracion. P-04: la pestaña activa se recuerda por proyecto.
+  const [activeTab, setActiveTab] = usePestanaProyecto(pid);
 
   // Exportacion unificada (3 pasos: periodo -> area -> formato)
-  const [exportOpen, setExportOpen] = useState(false);
+  const exportOpen = modal.visible('exportar');
+  const setExportOpen = modal.ponerVisible('exportar');
   const [exportStep, setExportStep] = useState<ExportStep>('period');
   const [exportPeriod, setExportPeriod] = useState<ReportPeriod>('today');
   const [exportBusy, setExportBusy] = useState(false);
@@ -223,7 +231,8 @@ export default function ProjectDetailScreen() {
 
   // Preview de reporte (tap en feed)
   const [previewItem, setPreviewItem] = useState<FeedItem | null>(null);
-  const handleFeedItemPress = useCallback((r: FeedItem) => setPreviewItem(r), []);
+  const cerrarModales = modal.cerrar;
+  const handleFeedItemPress = useCallback((r: FeedItem) => { cerrarModales(); setPreviewItem(r); }, [cerrarModales]);
 
   // Archivos de Consulta (Reference Files) - ahora via expo-document-picker.
   const [refBusy, setRefBusy] = useState(false);
@@ -231,7 +240,8 @@ export default function ProjectDetailScreen() {
   const [refOpeningId, setRefOpeningId] = useState<string | null>(null);   // file_id en descarga
 
   // P0 Mega-Feature: configuracion de Catalogos dinamicos (personal/equipo)
-  const [catModalOpen, setCatModalOpen] = useState(false);
+  const catModalOpen = modal.visible('catalogos');
+  const setCatModalOpen = modal.ponerVisible('catalogos');
   const [catSaving, setCatSaving] = useState(false);
   const [catPersonalList, setCatPersonalList] = useState<string[]>([]);
   const [catEquipoList, setCatEquipoList] = useState<{ nombre: string; marca?: string; modelo?: string; serie?: string }[]>([]);
@@ -242,7 +252,8 @@ export default function ProjectDetailScreen() {
   // modo_avance, nombres de nivel, unidades, titulo, cadencia) — Etapas 1 y
   // 4. Un solo modal, mismo criterio que el resto de esta pantalla: drafts
   // locales que solo se confirman al guardar.
-  const [catalogoConfigModalOpen, setCatalogoConfigModalOpen] = useState(false);
+  const catalogoConfigModalOpen = modal.visible('catalogoConfig');
+  const setCatalogoConfigModalOpen = modal.ponerVisible('catalogoConfig');
   const [catalogoConfigSaving, setCatalogoConfigSaving] = useState(false);
   const [tipoContratoDraft, setTipoContratoDraft] = useState<'PRECIOS_UNITARIOS' | 'PRECIO_ALZADO'>('PRECIOS_UNITARIOS');
   const [modoAvanceDraft, setModoAvanceDraft] = useState<'CANTIDAD' | 'PORCENTAJE' | 'MATRIZ'>('CANTIDAD');
@@ -262,12 +273,15 @@ export default function ProjectDetailScreen() {
   const [tituloModuloDraft, setTituloModuloDraft] = useState('');
 
   // P0 - Identidad institucional (objeto_contrato + cliente_principal + color_tema)
-  const [objetoModalOpen, setObjetoModalOpen] = useState(false);
+  const objetoModalOpen = modal.visible('objeto');
+  const setObjetoModalOpen = modal.ponerVisible('objeto');
 
   // P0 Mega-Feature: Plantillas de exportacion (PDF/DOCX/PPTX)
-  const [tplModalOpen, setTplModalOpen] = useState(false);
+  const tplModalOpen = modal.visible('plantillas');
+  const setTplModalOpen = modal.ponerVisible('plantillas');
   const [tplBusyKind, setTplBusyKind] = useState<'pdf' | 'docx' | 'pptx' | null>(null);
-  const [gdModalOpen, setGdModalOpen] = useState(false);
+  const gdModalOpen = modal.visible('generales');
+  const setGdModalOpen = modal.ponerVisible('generales');
   const [objetoSaving, setObjetoSaving] = useState(false);
   const [objetoError, setObjetoError] = useState<string | null>(null);
   const [objetoDraft, setObjetoDraft] = useState('');

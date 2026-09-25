@@ -51,6 +51,7 @@ import { InlineError } from '@/src/components/InlineError';
 import { FormField } from '@/src/components/FormField';
 import { useFormErrors } from '@/src/hooks/useFormErrors';
 import { useEnvio } from '@/src/hooks/useEnvio';
+import { useModalUnico } from '@/src/hooks/useModalUnico';
 import { showToast } from '@/src/utils/toast';
 
 // ---------- utilidades semaforo -------------------------------------------
@@ -213,7 +214,7 @@ export default function MinutasView({
             tipo: tipoFilter,
           }),
           areas.length ? Promise.resolve(areas) : api.listAreas(pid),
-          members.length ? Promise.resolve(members) : api.listProjectMembers(pid),
+          members.length ? Promise.resolve(members) : api.listProjectMembers(pid, { soloMiembros: true }),
           nodes.length ? Promise.resolve(nodes) : api.listNodes(pid),
         ]);
         setMinutas(ms);
@@ -1008,14 +1009,25 @@ export function CreateMinutaModal({
   const [selAreas, setSelAreas] = useState<string[]>([]);
   // Ubicacion (nodo del proyecto) _ obligatorio. Un solo nodo por minuta.
   const [ubicacionId, setUbicacionId] = useState<string>('');
-  const [ubicacionPickerOpen, setUbicacionPickerOpen] = useState(false);
+  // K-06: los selectores son hojas DENTRO de este mismo modal (no Modals anidados) y solo
+  // puede haber una abierta a la vez.
+  const hoja = useModalUnico<'ubicacion' | 'involucrados' | 'responsable'>();
+  const ubicacionPickerOpen = hoja.esta('ubicacion');
+  const setUbicacionPickerOpen = hoja.ponerVisible('ubicacion');
   const [involvedIds, setInvolvedIds] = useState<string[]>([]);
-  const [involvedPickerOpen, setInvolvedPickerOpen] = useState(false);
+  const involvedPickerOpen = hoja.esta('involucrados');
+  const setInvolvedPickerOpen = hoja.ponerVisible('involucrados');
   const [acuerdos, setAcuerdos] = useState<DraftAcuerdo[]>([
     { descripcion: '', responsable_id: '', fecha_limite: todayISO() },
   ]);
   const [pdfAsset, setPdfAsset] = useState<{ uri: string; name: string; mimeType?: string | null } | null>(null);
-  const [respPickerFor, setRespPickerFor] = useState<number | null>(null);
+  const [respIndice, setRespIndice] = useState<number | null>(null);
+  const respPickerFor = hoja.esta('responsable') ? respIndice : null;
+  const setRespPickerFor = (i: number | null) => {
+    setRespIndice(i);
+    if (i === null) hoja.cerrar('responsable');
+    else hoja.abrir('responsable');
+  };
 
   async function pickPdf() {
     try {
@@ -1276,6 +1288,7 @@ export function CreateMinutaModal({
               <View style={styles.sepRow}>
                 <Text style={styles.label}>Involucrados</Text>
                 <Pressable accessibilityRole="button"
+                  accessibilityLabel={t('hojaSeleccion.abrirInvolucrados')}
                   onPress={() => setInvolvedPickerOpen(true)}
                   style={styles.addRow}
                 >
@@ -1424,18 +1437,31 @@ export function CreateMinutaModal({
 
         {/* Picker de responsable */}
         {respPickerFor !== null && (
-          <Modal
-            transparent
-            animationType="fade"
-            visible={respPickerFor !== null}
-            onRequestClose={() => setRespPickerFor(null)}
+          <View
+            style={styles.pickerBackdrop}
+            accessibilityViewIsModal
+            accessibilityLabel={t('hojaSeleccion.responsable')}
+            onAccessibilityEscape={() => setRespPickerFor(null)}
           >
             <Pressable
-              style={styles.pickerBackdrop}
+              accessibilityRole="button"
+              accessibilityLabel={t('hojaSeleccion.cerrarA11y')}
+              style={StyleSheet.absoluteFillObject}
               onPress={() => setRespPickerFor(null)}
-            >
-              <View style={styles.pickerSheet}>
-                <Text style={styles.pickerTitle}>Selecciona responsable</Text>
+            />
+            <View style={styles.pickerSheet}>
+              <View style={styles.pickerHeader}>
+                <Text style={styles.pickerTitle}>{t('hojaSeleccion.responsable')}</Text>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={t('hojaSeleccion.cerrarA11y')}
+                  onPress={() => setRespPickerFor(null)}
+                  hitSlop={8}
+                  style={styles.pickerCerrar}
+                >
+                  <Text style={styles.pickerCerrarTxt}>{t('hojaSeleccion.cerrar')}</Text>
+                </Pressable>
+              </View>
                 <ScrollView style={{ maxHeight: 380 }}>
                   {/* "Contratista" siempre disponible: no es una cuenta de usuario,
                       representa a la empresa contratista del proyecto. */}
@@ -1480,27 +1506,37 @@ export function CreateMinutaModal({
                   )}
                 </ScrollView>
               </View>
-            </Pressable>
-          </Modal>
+          </View>
         )}
 
         {/* Picker de involucrados (multi-seleccion) */}
         {involvedPickerOpen && (
-          <Modal
-            transparent
-            animationType="fade"
-            visible={involvedPickerOpen}
-            onRequestClose={() => setInvolvedPickerOpen(false)}
+          <View
+            style={styles.pickerBackdrop}
+            accessibilityViewIsModal
+            accessibilityLabel={t('hojaSeleccion.involucrados')}
+            onAccessibilityEscape={() => setInvolvedPickerOpen(false)}
           >
-            <View style={styles.pickerBackdrop}>
-              <View style={styles.pickerSheet}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={t('hojaSeleccion.cerrarA11y')}
+              style={StyleSheet.absoluteFillObject}
+              onPress={() => setInvolvedPickerOpen(false)}
+            />
+            <View style={styles.pickerSheet}>
                 <View style={{
                   flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
                   padding: 8, borderBottomWidth: 1, borderBottomColor: colors.border,
                 }}>
                   <Text style={styles.pickerTitle}>Involucrados ({involvedIds.length})</Text>
-                  <Pressable accessibilityRole="button" onPress={() => setInvolvedPickerOpen(false)} hitSlop={8}>
-                    <Text style={{ color: colors.primary, fontWeight: '800' }}>Listo</Text>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={t('hojaSeleccion.cerrarA11y')}
+                    onPress={() => setInvolvedPickerOpen(false)}
+                    hitSlop={8}
+                    style={styles.pickerCerrar}
+                  >
+                    <Text style={styles.pickerCerrarTxt}>{t('hojaSeleccion.listo')}</Text>
                   </Pressable>
                 </View>
                 <ScrollView style={{ maxHeight: 420 }}>
@@ -1536,27 +1572,37 @@ export function CreateMinutaModal({
                   )}
                 </ScrollView>
               </View>
-            </View>
-          </Modal>
+          </View>
         )}
 
         {/* Picker de Ubicacion (seleccion unica entre nodos del proyecto) */}
         {ubicacionPickerOpen && (
-          <Modal
-            transparent
-            animationType="fade"
-            visible={ubicacionPickerOpen}
-            onRequestClose={() => setUbicacionPickerOpen(false)}
+          <View
+            style={styles.pickerBackdrop}
+            accessibilityViewIsModal
+            accessibilityLabel={t('hojaSeleccion.ubicacion')}
+            onAccessibilityEscape={() => setUbicacionPickerOpen(false)}
           >
-            <View style={styles.pickerBackdrop}>
-              <View style={styles.pickerSheet}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={t('hojaSeleccion.cerrarA11y')}
+              style={StyleSheet.absoluteFillObject}
+              onPress={() => setUbicacionPickerOpen(false)}
+            />
+            <View style={styles.pickerSheet}>
                 <View style={{
                   flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
                   padding: 8, borderBottomWidth: 1, borderBottomColor: colors.border,
                 }}>
-                  <Text style={styles.pickerTitle}>Ubicacion</Text>
-                  <Pressable accessibilityRole="button" onPress={() => setUbicacionPickerOpen(false)} hitSlop={8}>
-                    <Text style={{ color: colors.primary, fontWeight: '800' }}>Cerrar</Text>
+                  <Text style={styles.pickerTitle}>{t('hojaSeleccion.ubicacion')}</Text>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={t('hojaSeleccion.cerrarA11y')}
+                    onPress={() => setUbicacionPickerOpen(false)}
+                    hitSlop={8}
+                    style={styles.pickerCerrar}
+                  >
+                    <Text style={styles.pickerCerrarTxt}>{t('hojaSeleccion.cerrar')}</Text>
                   </Pressable>
                 </View>
                 <ScrollView style={{ maxHeight: 420 }}>
@@ -1595,8 +1641,7 @@ export function CreateMinutaModal({
                   )}
                 </ScrollView>
               </View>
-            </View>
-          </Modal>
+          </View>
         )}
       </View>
     </Modal>
@@ -1968,7 +2013,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     padding: 20,
+    zIndex: 10,
+    elevation: 10,
   },
+  pickerHeader: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    padding: 8, borderBottomWidth: 1, borderBottomColor: colors.border,
+  },
+  pickerCerrar: { minHeight: 44, minWidth: 44, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 8 },
+  pickerCerrarTxt: { color: colors.primary, fontWeight: '800' },
   pickerSheet: {
     width: '100%',
     maxWidth: 420,

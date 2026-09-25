@@ -517,6 +517,11 @@ class LocationNodeIn(BaseModel):
     target_lat: Optional[float] = None
     target_lon: Optional[float] = None
     target_elev: Optional[float] = None
+    # Ubicación GPS real del nodo (grados decimales WGS84), tomada con el
+    # dispositivo. Independiente de target_* (que en la práctica guardan UTM).
+    # Ambos o ninguno; ver `validar_gps_nodo`.
+    gps_lat: Optional[float] = None
+    gps_lon: Optional[float] = None
     # Estatus de acceso al predio y situación social/liberación física, capturados
     # a nivel de nodo (vigentes al momento de consulta, no por reporte/período).
     # Usados en la página de resumen por subtramo del export PDF/PPTX.
@@ -554,6 +559,8 @@ class LocationNodeOut(BaseModel):
     target_lat: Optional[float] = None
     target_lon: Optional[float] = None
     target_elev: Optional[float] = None
+    gps_lat: Optional[float] = None
+    gps_lon: Optional[float] = None
     meta: Optional[float] = None
     acceso_predio: Optional[str] = None
     situacion_social: Optional[str] = None
@@ -1172,6 +1179,15 @@ async def startup_event():
     await db.partidas.create_index("id")
     await db.conceptos.create_index("id")
     await db.registros_avance.create_index("id")
+    # Idempotencia de la cola offline de avances. Índice parcial: solo aplica a los
+    # registros con client_id de texto (los viejos guardan null). Si ya hubiera
+    # duplicados legados, no se tumba el arranque: queda la revisión por consulta.
+    try:
+        await db.registros_avance.create_index(
+            "client_id", unique=True, partialFilterExpression={"client_id": {"$type": "string"}},
+        )
+    except Exception as e:
+        log.warning(f"[avance] no se pudo crear el índice único de client_id: {e}")
     await db.catalogo_import_sessions.create_index("id")
     await db.programa_import_sessions.create_index("id")
     # Etapa EVM: mismo criterio de TTL 24h que catalogo/programa (sesiones
@@ -4002,10 +4018,30 @@ async def get_tree(pid: str, user: dict = Depends(current_user)):
     return roots
 
 
+def validar_gps_nodo(lat: Optional[float], lon: Optional[float]) -> Tuple[Optional[float], Optional[float]]:
+    """Valida la ubicación GPS de un nodo: ambos o ninguno, dentro de rango y finitos.
+    Devuelve (lat, lon) o lanza ValueError con un mensaje legible en es-MX."""
+    if lat is None and lon is None:
+        return None, None
+    if lat is None or lon is None:
+        raise ValueError("La ubicación GPS necesita latitud y longitud juntas.")
+    if not (math.isfinite(lat) and math.isfinite(lon)):
+        raise ValueError("La ubicación GPS no es válida.")
+    if not -90 <= lat <= 90:
+        raise ValueError("La latitud debe estar entre -90 y 90 grados.")
+    if not -180 <= lon <= 180:
+        raise ValueError("La longitud debe estar entre -180 y 180 grados.")
+    return float(lat), float(lon)
+
+
 @api.post("/projects/{pid}/nodes")
 async def create_node(pid: str, body: LocationNodeIn, user: dict = Depends(require_role(ROLE_COORD))):
     if body.project_id != pid:
         raise HTTPException(400, "project_id mismatch")
+    try:
+        gps_lat, gps_lon = validar_gps_nodo(body.gps_lat, body.gps_lon)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     await ensure_project_access(user, pid)
     parent = None
     depth = 0
@@ -4037,6 +4073,8 @@ async def create_node(pid: str, body: LocationNodeIn, user: dict = Depends(requi
         "target_lat": body.target_lat if is_coord_leaf else None,
         "target_lon": body.target_lon if is_coord_leaf else None,
         "target_elev": body.target_elev if is_coord_leaf else None,
+        "gps_lat": gps_lat,
+        "gps_lon": gps_lon,
         "acceso_predio": body.acceso_predio,
         "situacion_social": body.situacion_social,
         "tipo_nodo": body.tipo_nodo,
@@ -4060,6 +4098,10 @@ class NodePatch(BaseModel):
     target_lat: Optional[float] = None
     target_lon: Optional[float] = None
     target_elev: Optional[float] = None
+    # Ubicación GPS real (ver LocationNodeIn). `quitar_gps=True` la borra (None = no tocar).
+    gps_lat: Optional[float] = None
+    gps_lon: Optional[float] = None
+    quitar_gps: Optional[bool] = None
     acceso_predio: Optional[str] = None
     situacion_social: Optional[str] = None
     # None = no tocar (deja el default: antes fijo a "solo Subtramo,
@@ -4120,6 +4162,15 @@ async def update_node(nid: str, body: NodePatch, user: dict = Depends(require_ro
     for fld, val in (("target_lat", body.target_lat), ("target_lon", body.target_lon), ("target_elev", body.target_elev)):
         if val is not None and is_coord_leaf:
             upd[fld] = val
+    # Ubicación GPS: aplica a cualquier nodo y es independiente de target_*.
+    if body.quitar_gps:
+        upd["gps_lat"] = None
+        upd["gps_lon"] = None
+    elif body.gps_lat is not None or body.gps_lon is not None:
+        try:
+            upd["gps_lat"], upd["gps_lon"] = validar_gps_nodo(body.gps_lat, body.gps_lon)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
     if body.acceso_predio is not None:
         upd["acceso_predio"] = body.acceso_predio.strip()
     if body.situacion_social is not None:
@@ -5967,6 +6018,7 @@ async def create_invite(pid: str, body: InvitationIn, user: dict = Depends(requi
         email=body.email, name=body.name, role=body.role,
         area_id=body.area_id, puesto=body.puesto, no_control=body.no_control,
     )
+    doc["creado_por"] = user["id"]
     await db.invitations.insert_one(doc)
     doc.pop("_id", None)
     return doc
@@ -6051,6 +6103,7 @@ async def accept_invite(body: AcceptInviteIn):
     await db.invitations.update_one(
         {"id": inv["id"]}, {"$set": {"status": "accepted", "accepted_at": datetime.now(timezone.utc), "accepted_user_id": uid}}
     )
+    asyncio.create_task(_notify_invitation_accepted(inv, user_doc["name"]))
     return {"token": make_token(uid), "user": user_to_out(user_doc)}
 
 
@@ -6279,6 +6332,7 @@ async def invitations_bulk_commit(
                 email=validado["email"], name=validado["name"], role=validado["role"],
                 area_id=validado["area_id"], puesto=validado["puesto"], no_control=validado["no_control"],
             )
+            doc["creado_por"] = user["id"]
             await db.invitations.insert_one(doc)
             doc.pop("_id", None)
             creados.append(doc)
@@ -7227,16 +7281,33 @@ async def list_project_users(pid: str, user: dict = Depends(current_user)):
     return [user_to_out(u) for u in items]
 
 
+def filtro_miembros_proyecto(pid: str, solo_miembros: bool = False) -> dict:
+    """Filtro Mongo de la lista de miembros. Con `solo_miembros` (K-02, selector de
+    responsables de minutas) entra únicamente quien tiene el proyecto en `project_ids`;
+    sin él se conserva la lista amplia (asistentes de eventos y mensajes directos),
+    que además incluye a todos los coordinadores y jefes de proyecto."""
+    base: dict = {"deleted_at": {"$exists": False}}
+    if solo_miembros:
+        base["project_ids"] = pid
+    else:
+        base["$or"] = [{"project_ids": pid}, {"role": {"$in": [ROLE_COORD, ROLE_JEFE]}}]
+    return base
+
+
+def es_miembro_de_proyecto(u: Optional[dict], pid: str) -> bool:
+    return bool(u) and pid in (u.get("project_ids") or [])
+
+
 @api.get("/projects/{pid}/members")
-async def list_project_members(pid: str, user: dict = Depends(current_user)):
-    """Alias semántico de /users — lista miembros del proyecto."""
+async def list_project_members(
+    pid: str,
+    solo_miembros: bool = Query(False),
+    user: dict = Depends(current_user),
+):
+    """Alias semántico de /users — lista miembros del proyecto. `?solo_miembros=1`
+    excluye a los coordinadores/jefes que no pertenecen al proyecto (K-02)."""
     await ensure_project_access(user, pid)
-    items = await db.users.find(
-        {"deleted_at": {"$exists": False}, "$or": [
-            {"project_ids": pid},
-            {"role": {"$in": [ROLE_COORD, ROLE_JEFE]}},
-        ]}
-    ).to_list(length=1000)
+    items = await db.users.find(filtro_miembros_proyecto(pid, solo_miembros)).to_list(length=1000)
     if user.get("role") == ROLE_ESPECIALISTA:
         items = [u for u in items if u.get("role") != ROLE_COORD]
     return [user_to_out(u) for u in items]
@@ -7478,12 +7549,34 @@ async def remove_team_member(pid: str, uid: str, user: dict = Depends(require_ro
 # Toda noticia (fijada o no) vence 24h después de creada. El fijado solo
 # controla el orden mientras está vigente; no extiende su vida.
 ANNOUNCEMENT_TTL_HOURS = 24
+# G-05: la vigencia es elegible al crear y al editar. Solo estos valores (tope 7 días).
+ANNOUNCEMENT_VIGENCIAS_HORAS = (6, 24, 48, 168)
+
+
+def validar_vigencia_horas(valor: Any) -> int:
+    """Valida la vigencia de una noticia (6, 24, 48 o 168 horas). Lanza ValueError con
+    un mensaje es-MX legible (el handler lo vuelve 400)."""
+    if isinstance(valor, bool) or not isinstance(valor, int) or valor not in ANNOUNCEMENT_VIGENCIAS_HORAS:
+        opciones = ", ".join(str(h) for h in ANNOUNCEMENT_VIGENCIAS_HORAS)
+        raise ValueError(f"La vigencia de la noticia debe ser de {opciones} horas (máximo 7 días).")
+    return valor
+
+
+def vigencia_de_noticia(doc: dict) -> int:
+    """Vigencia en horas de una noticia; las anteriores a G-05 no guardan el campo y duran 24 h."""
+    v = doc.get("vigencia_horas")
+    return v if isinstance(v, int) and not isinstance(v, bool) and v in ANNOUNCEMENT_VIGENCIAS_HORAS else ANNOUNCEMENT_TTL_HOURS
+
+
+def expira_en(ahora: datetime, vigencia_horas: int) -> datetime:
+    return ahora + timedelta(hours=vigencia_horas)
 
 
 class AnnouncementIn(BaseModel):
     title: str
     body: str
     pinned: bool = False
+    vigencia_horas: Optional[int] = None  # 6 | 24 | 48 | 168 (por defecto 24)
     jerarquia: Optional[str] = None  # 'urgente' | 'importante' | 'informativo' | None
     severidad: Optional[str] = None  # alias front-end de jerarquia
     audiencia: Optional[str] = None  # 'general' o area_id
@@ -7498,10 +7591,14 @@ class AnnouncementPatch(BaseModel):
     severidad: Optional[str] = None
     audiencia: Optional[str] = None
     node_id: Optional[str] = None  # "" o null para desvincular
+    # Cambia la vigencia: la noticia vence `vigencia_horas` después de ESTA edición
+    # (el reloj se reinicia desde el momento de editar).
+    vigencia_horas: Optional[int] = None
 
 
 def _announcement_out(doc: dict) -> dict:
     doc.pop("_id", None)
+    doc["vigencia_horas"] = vigencia_de_noticia(doc)
     return doc
 
 
@@ -7538,6 +7635,10 @@ async def create_announcement(
         raise HTTPException(400, "Título máximo 140 caracteres")
     if len(text) > 4000:
         raise HTTPException(400, "Cuerpo máximo 4000 caracteres")
+    try:
+        vigencia = validar_vigencia_horas(body.vigencia_horas) if body.vigencia_horas is not None else ANNOUNCEMENT_TTL_HOURS
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     # Normaliza severidad/jerarquía (acepta ambos nombres).
     sev_raw = (body.severidad or body.jerarquia or "").strip().lower() or None
     if sev_raw and sev_raw not in ("urgente", "importante", "informativo"):
@@ -7579,13 +7680,16 @@ async def create_announcement(
         "author_role": user["role"],
         "created_at": now,
         "updated_at": now,
-        # Toda noticia vence 24h después de publicada, fijada o no (índice TTL
-        # la purga físicamente; el listado también filtra por si el barrido
-        # de Mongo aún no corrió).
-        "expires_at": now + timedelta(hours=ANNOUNCEMENT_TTL_HOURS),
+        # Toda noticia vence `vigencia_horas` después de publicada (24 h por defecto),
+        # fijada o no (índice TTL la purga físicamente; el listado también filtra
+        # por si el barrido de Mongo aún no corrió).
+        "vigencia_horas": vigencia,
+        "expires_at": expira_en(now, vigencia),
         "intranet": False,
     }
     await db.announcements.insert_one(doc)
+    if jerarquia == "urgente":
+        asyncio.create_task(_notify_urgent_announcement(pid, doc["id"], title, user["id"]))
     return _announcement_out(doc)
 
 
@@ -7624,7 +7728,7 @@ async def update_announcement(
         # El autor puede fijar/desfijar su propia noticia; un Coordinador
         # puede hacerlo sobre cualquiera. El fijado nunca extiende
         # `expires_at`: como máximo dura lo que le quede de vida a la noticia
-        # (máx. 24h desde su creación).
+        # (su vigencia: 6 h, 24 h, 48 h o 7 días según `vigencia_horas`).
         if not (is_author or is_coord):
             raise HTTPException(403, "Sólo el autor o un Coordinador puede fijar esta noticia")
         update["pinned"] = bool(body.pinned)
@@ -7660,6 +7764,20 @@ async def update_announcement(
             update["node_id"] = nid
             update["node_path_ids"] = path_ids
             update["node_name"] = node.get("name")
+    if body.vigencia_horas is not None:
+        try:
+            nueva_vigencia = validar_vigencia_horas(body.vigencia_horas)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        ahora_v = datetime.now(timezone.utc)
+        vence = a.get("expires_at")
+        if isinstance(vence, datetime):
+            if vence.tzinfo is None:
+                vence = vence.replace(tzinfo=timezone.utc)
+            if vence <= ahora_v:
+                raise HTTPException(400, "La noticia ya expiró: no se puede cambiar su vigencia.")
+        update["vigencia_horas"] = nueva_vigencia
+        update["expires_at"] = expira_en(ahora_v, nueva_vigencia)
     if not update:
         return _announcement_out(a)
     update["updated_at"] = datetime.now(timezone.utc)
@@ -8495,6 +8613,175 @@ async def delete_event(eid: str, user: dict = Depends(current_user)):
     return {"ok": True}
 
 
+# === PUSH EXTRA (T-05c): acuerdos por vencer, noticia urgente, invitación aceptada ===
+# Todas comparten reglas: nunca rompen la operación principal (try/except + log), no
+# envían a quien no tiene token, y el cuerpo no lleva datos sensibles (solo el título
+# de la minuta/noticia o el nombre de quien aceptó, según el caso).
+HORA_AVISO_ACUERDOS_DESDE = 8   # hora local del proyecto: no avisar de madrugada
+HORA_AVISO_ACUERDOS_HASTA = 21
+
+
+def _recortar_push(texto: Any, largo: int = 80) -> str:
+    s = " ".join(str(texto or "").split())
+    return s if len(s) <= largo else s[: largo - 1].rstrip() + "…"
+
+
+def destinatarios_push(usuarios: List[dict], excluir_id: Optional[str] = None) -> List[str]:
+    """Ids de usuarios con al menos un token de Expo, sin repetir y sin `excluir_id` (el autor)."""
+    salida: List[str] = []
+    for u in usuarios or []:
+        uid = u.get("id")
+        if not uid or uid == excluir_id or uid in salida:
+            continue
+        if not (u.get("expo_push_tokens") or []):
+            continue
+        salida.append(uid)
+    return salida
+
+
+def acuerdos_por_vencer(minutas: List[dict], hoy: date) -> List[dict]:
+    """Acuerdos SIN cumplir cuya fecha límite es hoy o mañana (día del proyecto) y que
+    aún no avisaron ese vencimiento (`vencimiento_push_enviado` guarda la fecha avisada:
+    si la fecha límite cambia, se vuelve a avisar)."""
+    hoy_s = hoy.isoformat()
+    manana_s = (hoy + timedelta(days=1)).isoformat()
+    salida: List[dict] = []
+    for m in minutas or []:
+        for a in m.get("acuerdos") or []:
+            if a.get("estado"):
+                continue
+            fl = str(a.get("fecha_limite") or "")[:10]
+            if fl not in (hoy_s, manana_s) or a.get("vencimiento_push_enviado") == fl:
+                continue
+            if not a.get("responsable_id"):
+                continue
+            salida.append({
+                "minuta_id": m.get("id"),
+                "titulo": m.get("titulo"),
+                "acuerdo_id": a.get("id"),
+                "responsable_id": a["responsable_id"],
+                "fecha_limite": fl,
+                "dias": 0 if fl == hoy_s else 1,
+            })
+    return salida
+
+
+def es_hora_de_aviso(ahora_utc: datetime, project: Optional[dict] = None) -> bool:
+    """¿Es una hora razonable (en la zona del proyecto) para mandar avisos que no son urgentes?"""
+    hora = ahora_utc.astimezone(zona_proyecto(project)).hour
+    return HORA_AVISO_ACUERDOS_DESDE <= hora < HORA_AVISO_ACUERDOS_HASTA
+
+
+async def _avisar_acuerdos_por_vencer(ahora_utc: Optional[datetime] = None) -> int:
+    """Un push por responsable y día de vencimiento (agrupa sus acuerdos). Marca cada acuerdo
+    avisado; si el envío lanza una excepción no se marca y se reintenta en la siguiente vuelta.
+    Devuelve cuántos acuerdos quedaron marcados."""
+    ahora_utc = ahora_utc or datetime.now(timezone.utc)
+    marcados = 0
+    proyectos = await db.projects.find(
+        {"archived": {"$ne": True}}, {"_id": 0, "id": 1, "name": 1, "zona_horaria": 1}
+    ).to_list(length=2000)
+    for p in proyectos:
+        if not es_hora_de_aviso(ahora_utc, p):
+            continue
+        hoy = hoy_proyecto(p, ahora_utc)
+        fechas = [hoy.isoformat(), (hoy + timedelta(days=1)).isoformat()]
+        minutas = await db.minutas.find({
+            "project_id": p["id"],
+            "acuerdos": {"$elemMatch": {"estado": {"$ne": True}, "fecha_limite": {"$in": fechas}}},
+        }).to_list(length=500)
+        pendientes = acuerdos_por_vencer(minutas, hoy)
+        grupos: Dict[Tuple[str, int], List[dict]] = {}
+        for it in pendientes:
+            grupos.setdefault((it["responsable_id"], it["dias"]), []).append(it)
+        for (rid, dias), items in grupos.items():
+            n = len(items)
+            cuando = "hoy" if dias == 0 else "mañana"
+            titulo_push = "Acuerdo por vencer" if n == 1 else "Acuerdos por vencer"
+            if n == 1:
+                cuerpo = f"Tu acuerdo de «{_recortar_push(items[0].get('titulo'), 60)}» vence {cuando}."
+            else:
+                cuerpo = f"Tienes {n} acuerdos que vencen {cuando}."
+            try:
+                await send_push_notification(
+                    user_id=rid,
+                    title=titulo_push,
+                    body=cuerpo,
+                    data={
+                        "type": "agreement_due",
+                        "project_id": p["id"],
+                        "minuta_id": items[0].get("minuta_id") if n == 1 else None,
+                        "count": n,
+                    },
+                )
+            except Exception:
+                log.exception("[push] agreement_due falló user=%s proyecto=%s", rid, p["id"])
+                continue
+            for it in items:
+                await db.minutas.update_one(
+                    {"id": it["minuta_id"], "acuerdos.id": it["acuerdo_id"]},
+                    {"$set": {"acuerdos.$.vencimiento_push_enviado": it["fecha_limite"]}},
+                )
+                marcados += 1
+    return marcados
+
+
+async def _notify_urgent_announcement(
+    project_id: str, announcement_id: str, title: str, author_id: Optional[str],
+) -> int:
+    """Push a los miembros del proyecto (menos el autor) cuando se publica una noticia urgente.
+    Devuelve a cuántos usuarios se les intentó enviar."""
+    enviados = 0
+    try:
+        usuarios = await db.users.find(
+            {"project_ids": project_id, "deleted_at": {"$exists": False}},
+            {"_id": 0, "id": 1, "expo_push_tokens": 1},
+        ).to_list(length=1000)
+        for uid in destinatarios_push(usuarios, excluir_id=author_id):
+            try:
+                await send_push_notification(
+                    user_id=uid,
+                    title="Noticia urgente",
+                    body=_recortar_push(title, 100),
+                    data={"type": "urgent_announcement", "project_id": project_id, "announcement_id": announcement_id},
+                )
+                enviados += 1
+            except Exception:
+                log.exception("[push] urgent_announcement falló user=%s", uid)
+    except Exception:
+        log.exception("[push] no se pudo avisar la noticia urgente %s", announcement_id)
+    return enviados
+
+
+async def _notify_invitation_accepted(inv: dict, nombre_nuevo: str) -> int:
+    """Avisa a quien creó la invitación (o, si es una invitación vieja sin `creado_por`, a los
+    coordinadores del proyecto) que ya fue aceptada. El invitado aún no tiene token, por eso el
+    aviso va al Coordinador."""
+    enviados = 0
+    try:
+        if inv.get("creado_por"):
+            filtro: dict = {"id": inv["creado_por"]}
+        else:
+            filtro = {"project_ids": inv.get("project_id"), "role": ROLE_COORD}
+        usuarios = await db.users.find(
+            {**filtro, "deleted_at": {"$exists": False}}, {"_id": 0, "id": 1, "expo_push_tokens": 1},
+        ).to_list(length=200)
+        for uid in destinatarios_push(usuarios):
+            try:
+                await send_push_notification(
+                    user_id=uid,
+                    title="Invitación aceptada",
+                    body=f"{_recortar_push(nombre_nuevo, 60)} aceptó la invitación a {_recortar_push(inv.get('project_name'), 60)}.",
+                    data={"type": "invitation_accepted", "project_id": inv.get("project_id"), "invitation_id": inv.get("id")},
+                )
+                enviados += 1
+            except Exception:
+                log.exception("[push] invitation_accepted falló user=%s", uid)
+    except Exception:
+        log.exception("[push] no se pudo avisar la invitación aceptada %s", inv.get("id"))
+    return enviados
+
+
 async def _meeting_reminder_loop() -> None:
     """
     Loop en segundo plano (fire-and-forget, arrancado en startup_event) que
@@ -8546,6 +8833,10 @@ async def _meeting_reminder_loop() -> None:
                 await db.events.update_one({"id": e["id"]}, {"$set": {"reminder_sent": True}})
         except Exception:
             log.exception("[push] _meeting_reminder_loop: error en la iteración")
+        try:
+            await _avisar_acuerdos_por_vencer()
+        except Exception:
+            log.exception("[push] _avisar_acuerdos_por_vencer: error en la iteración")
         await asyncio.sleep(300)
 
 
@@ -16569,6 +16860,24 @@ async def _resolve_areas_for_minuta(pid: str, area_ids: List[str]) -> tuple[List
     return clean, [found_map[a]["name"] for a in clean]
 
 
+def resolver_responsable_acuerdo(rid: str, users_map: dict, pid: str, num: int) -> Tuple[str, str]:
+    """(nombre, rol) del responsable de un acuerdo. K-02: solo un miembro del proyecto o el
+    contratista; solo se valida al crear (las minutas ya guardadas no se tocan). Lanza
+    HTTPException 400 con un mensaje es-MX legible."""
+    # "Contratista" es un pseudo-responsable reservado (no es una cuenta de usuario real):
+    # siempre disponible en el selector; representa a la empresa contratista del proyecto.
+    if rid == "contratista":
+        return "Contratista", "contratista"
+    u = users_map.get(rid)
+    if not u:
+        raise HTTPException(400, f"Acuerdo #{num}: responsable inválido")
+    if not es_miembro_de_proyecto(u, pid):
+        raise HTTPException(
+            400, f"Acuerdo #{num}: el responsable debe ser miembro del proyecto o el contratista.",
+        )
+    return u.get("name") or "Sin nombre", u.get("role")
+
+
 @api.post("/projects/{pid}/minutas")
 async def create_minuta(pid: str, body: MinutaIn, user: dict = Depends(current_user)):
     proj = await ensure_project_access(user, pid)
@@ -16651,19 +16960,7 @@ async def create_minuta(pid: str, body: MinutaIn, user: dict = Depends(current_u
         # "Contratista" es un pseudo-responsable reservado (no es una cuenta
         # de usuario real) — siempre disponible como opción en el picker del
         # frontend, representa a la empresa contratista del proyecto.
-        if rid == "contratista":
-            resp_name = "Contratista"
-            resp_role = "contratista"
-        elif rid in users_map:
-            u = users_map[rid]
-            resp_name = u.get("name") or "Sin nombre"
-            resp_role = u.get("role")
-        else:
-            raise HTTPException(400, f"Acuerdo #{i+1}: responsable inválido")
-        # Nota: no forzamos que `project_ids` incluya `pid` porque los coords
-        # generales tienen acceso implícito global y algunos usuarios legacy
-        # pueden faltarlo. La verificación real de acceso al proyecto se hace
-        # arriba en `ensure_project_access`.
+        resp_name, resp_role = resolver_responsable_acuerdo(rid, users_map, pid, i + 1)
         fl = (a.fecha_limite or "").strip()
         if not fl:
             raise HTTPException(400, f"Acuerdo #{i+1}: fecha límite requerida")
@@ -21513,6 +21810,17 @@ async def create_avance(body: RegistroAvanceIn, user: dict = Depends(current_use
     project = await db.projects.find_one({"id": concepto["project_id"]})
     modo_avance = (project or {}).get("modo_avance", "CANTIDAD")
 
+    # Idempotencia offline: si ya existe un registro con el mismo client_id (de este
+    # proyecto y de este usuario), se devuelve el existente en vez de duplicar. Va
+    # ANTES de validar: un reintento de un ajuste ya guardado no debe fallar por
+    # "dejaría el acumulado en negativo" con su propio efecto ya aplicado.
+    if body.client_id:
+        dup = await db.registros_avance.find_one({
+            "client_id": body.client_id, "project_id": concepto["project_id"], "capturado_por": user["id"],
+        })
+        if dup:
+            return await _registro_avance_out(dup)
+
     # TODO(migración estacion_id→nodo_id): resuelve el campo legado antes de
     # cualquier validación de nodo_id — ver el TODO completo en
     # RegistroAvanceIn.estacion_id. Retirar este bloque junto con ese campo.
@@ -21559,13 +21867,6 @@ async def create_avance(body: RegistroAvanceIn, user: dict = Depends(current_use
         acumulado = to_decimal(await _concepto_ejecutado_acumulado(body.concepto_id, modo_avance))
         if acumulado + cantidad_dec < 0:
             raise HTTPException(400, "El ajuste dejaría el acumulado del concepto en negativo.")
-
-    # Idempotencia offline: si ya existe un registro con el mismo client_id,
-    # se devuelve el existente en vez de duplicar (mismo criterio que reports).
-    if body.client_id:
-        dup = await db.registros_avance.find_one({"client_id": body.client_id})
-        if dup:
-            return await _registro_avance_out(dup)
 
     # --- Congelación histórica EVM (aditivo) ----------------------------
     # El precio SIEMPRE se calcula en el servidor, nunca se acepta del
@@ -21620,7 +21921,15 @@ async def create_avance(body: RegistroAvanceIn, user: dict = Depends(current_use
         "importe_ganado_congelado": dec_to_str(importe_congelado),
         "fuera_de_ventana": fuera_de_ventana,
     }
-    await db.registros_avance.insert_one(doc)
+    try:
+        await db.registros_avance.insert_one(doc)
+    except DuplicateKeyError:
+        # Dos envíos casi simultáneos con el mismo client_id (reintento de la cola
+        # mientras el POST original seguía en vuelo): gana el primero.
+        existente = await db.registros_avance.find_one({"client_id": body.client_id})
+        if existente:
+            return await _registro_avance_out(existente)
+        raise
     if body.tipo == "ajuste":
         await _log_bitacora(
             concepto["project_id"], "ajuste_avance", "registro_avance", aid,

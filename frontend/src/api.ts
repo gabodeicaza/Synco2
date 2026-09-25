@@ -616,6 +616,9 @@ export interface LocationNode {
   target_lat?: number | null;
   target_lon?: number | null;
   target_elev?: number | null;
+  /** Ubicación GPS real (grados decimales), independiente de target_* (que en la práctica son UTM). */
+  gps_lat?: number | null;
+  gps_lon?: number | null;
   avance_actual?: number | null;
   metadata?: Record<string, any> | null;
   cover_image?: string | null;
@@ -854,9 +857,11 @@ export interface Announcement {
   author_role?: string;
   created_at: string;
   updated_at: string;
-  // Toda noticia vence 24h después de creada (fijada o no); el backend la
-  // deja de listar (y Mongo la purga vía TTL index) al llegar esta fecha.
+  // Toda noticia vence `vigencia_horas` después de creada o de su última edición de vigencia
+  // (fijada o no); el backend la deja de listar (y Mongo la purga vía TTL index) al llegar esta fecha.
   expires_at?: string;
+  /** Vigencia en horas: 6, 24 (por defecto), 48 o 168 (7 días). */
+  vigencia_horas?: 6 | 24 | 48 | 168;
 }
 
 export interface Acuerdo {
@@ -2388,7 +2393,9 @@ export const api = {
   },
   sendChannelMessage: (cid: string, text: string) => request<Message>('POST', `/channels/${cid}/messages`, { text }),
   createDirectChannel: (pid: string, target_user_id: string) => request<Channel>('POST', `/projects/${pid}/channels/direct`, { target_user_id }),
-  listProjectMembers: (pid: string) => request<User[]>('GET', `/projects/${pid}/members`),
+  /** `soloMiembros`: solo quien pertenece al proyecto (selector de responsables de minutas). */
+  listProjectMembers: (pid: string, opts?: { soloMiembros?: boolean }) =>
+    request<User[]>('GET', `/projects/${pid}/members${opts?.soloMiembros ? '?solo_miembros=1' : ''}`),
 
   /** Cuántos reportes exportaría un PDF/Word/PPTX con estos filtros (R-03). */
   countExportReports: (pid: string, period: string, opts?: { area_id?: string; scope?: string; period_type?: string }) => {

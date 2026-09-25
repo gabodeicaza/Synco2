@@ -3,8 +3,10 @@
 // Vista 2 (Chat): mensajes del canal seleccionado con polling 6s.
 // Single-file state machine para evitar restructurar el routing del tab.
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { usePollingConFoco } from '@/src/hooks/usePollingConFoco';
+import { decisionEnter } from '@/src/utils/enviarConEnter';
 import {
-  ActivityIndicator, Alert, AppState, AppStateStatus, FlatList,
+  ActivityIndicator, Alert, FlatList,
   KeyboardAvoidingView, Modal, Platform, Pressable, RefreshControl,
   StatusBar, StyleSheet, Text, TextInput, View,
 } from 'react-native';
@@ -12,6 +14,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useAuth } from '@/src/auth-context';
+import { useProyectoActivo } from '@/src/proyecto-activo-context';
 import { api, Channel, Message, User } from '@/src/api';
 import { colors, radius, shadow, spacing } from '@/src/theme';
 import { dayjs, CDMX_TZ, fmtTimeCDMX } from '@/src/utils/tz';
@@ -23,7 +26,9 @@ type ScreenView = { kind: 'list' } | { kind: 'chat'; channel: Channel };
 
 export default function MensajesScreen() {
   const { user } = useAuth();
-  const projectId = (user?.project_ids || [])[0] || '';
+  // P-05: mismo proyecto activo que Minutas, Noticias y Calendario (con respaldo al primero del usuario).
+  const { proyectoId } = useProyectoActivo();
+  const projectId = proyectoId || (user?.project_ids || [])[0] || '';
   return <MensajesView projectId={projectId} />;
 }
 
@@ -39,7 +44,6 @@ export function MensajesView({ projectId }: { projectId: string }) {
   const [errorList, setErrorList] = useState<string | null>(null);
   const [refreshingList, setRefreshingList] = useState(false);
   const [showDmPicker, setShowDmPicker] = useState(false);
-  const listPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const loadChannels = useCallback(async (silent = false) => {
     if (!projectId) { setLoadingList(false); setErrorList('Sin proyecto asignado'); return; }
@@ -58,21 +62,8 @@ export function MensajesView({ projectId }: { projectId: string }) {
 
   useEffect(() => { loadChannels(false); }, [loadChannels]);
 
-  // Polling de la lista de canales solo cuando estamos en vista de lista
-  useEffect(() => {
-    function start() {
-      if (listPollRef.current) return;
-      listPollRef.current = setInterval(() => { loadChannels(true); }, 30000);
-    }
-    function stop() {
-      if (listPollRef.current) { clearInterval(listPollRef.current); listPollRef.current = null; }
-    }
-    if (view.kind === 'list') start(); else stop();
-    const sub = AppState.addEventListener('change', (s: AppStateStatus) => {
-      if (s === 'active' && view.kind === 'list') { loadChannels(true); start(); } else { stop(); }
-    });
-    return () => { stop(); sub.remove(); };
-  }, [loadChannels, view.kind]);
+  // Polling de la lista de canales: solo en vista de lista y solo con la pestaña enfocada (G-07).
+  usePollingConFoco(() => { loadChannels(true); }, 30000, view.kind === 'list');
 
   if (view.kind === 'chat') {
     return (
@@ -244,7 +235,6 @@ function ChatView({
   const [error, setError] = useState<string | null>(null);
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastSinceRef = useRef<string | null>(null);
   const listRef = useRef<FlatList<Message>>(null);
 
@@ -277,20 +267,8 @@ function ChatView({
 
   useEffect(() => { initialLoad(); }, [initialLoad]);
 
-  useEffect(() => {
-    function start() {
-      if (pollRef.current) return;
-      pollRef.current = setInterval(fetchDelta, POLL_MS);
-    }
-    function stop() {
-      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
-    }
-    start();
-    const sub = AppState.addEventListener('change', (s) => {
-      if (s === 'active') { fetchDelta(); start(); } else { stop(); }
-    });
-    return () => { stop(); sub.remove(); };
-  }, [fetchDelta]);
+  // Polling del chat: solo con la pestaña enfocada y la app activa (G-07).
+  usePollingConFoco(fetchDelta, POLL_MS);
 
   // Auto-scroll al final cuando cambia items
   useEffect(() => {
@@ -315,6 +293,21 @@ function ChatView({
     } finally {
       setSending(false);
     }
+  }
+
+  function alTeclear(e: any) {
+    const ne = e?.nativeEvent ?? {};
+    const decision = decisionEnter({
+      key: ne.key ?? e?.key ?? '',
+      shiftKey: !!(ne.shiftKey ?? e?.shiftKey),
+      componiendo: !!ne.isComposing,
+      plataforma: Platform.OS,
+      enviando: sending,
+      texto: text,
+    });
+    if (decision === 'salto') return;
+    e?.preventDefault?.();
+    if (decision === 'enviar') send();
   }
 
   function onDeleteMessage(m: Message) {
@@ -405,6 +398,8 @@ function ChatView({
             multiline
             editable={!sending}
             maxLength={2000}
+            // G-06: solo en web, Enter envía y Mayús+Enter hace salto de línea.
+            onKeyPress={Platform.OS === 'web' ? alTeclear : undefined}
           />
           <Pressable accessibilityRole="button" accessibilityLabel={a11y('enviar')} hitSlop={8} onPress={send} disabled={sending || !text.trim()} style={[styles.sendBtn, (sending || !text.trim()) && { opacity: 0.5 }]}>
             {sending ? <ActivityIndicator color="#fff" /> : <Ionicons name="send" size={18} color="#fff" />}

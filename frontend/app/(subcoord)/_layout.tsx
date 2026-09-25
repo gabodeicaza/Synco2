@@ -32,6 +32,9 @@ export default function SubCoordLayout() {
       <Tabs
         screenOptions={{
           headerShown: false,
+          // G-07: pestañas perezosas y las inactivas congeladas; los polls corren solo con foco.
+          lazy: true,
+          freezeOnBlur: true,
           tabBarActiveTintColor: colors.primary,
           tabBarInactiveTintColor: colors.textMuted,
           tabBarStyle: [
