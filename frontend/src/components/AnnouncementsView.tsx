@@ -28,7 +28,11 @@ import { api, Announcement, Area, LocationNode } from '@/src/api';
 import { colors, radius, shadow, spacing } from '@/src/theme';
 import { confirm } from '@/src/utils/confirm';
 import { fmtDateTimeCDMX } from '@/src/utils/tz';
-import { a11y } from '@/src/i18n';
+import { a11y, t as tr } from '@/src/i18n';
+import { VigenciaSelector } from '@/src/components/VigenciaSelector';
+import {
+  etiquetaVigencia, textoTiempoRestante, VigenciaHoras, vigenciaParaGuardar, vigenciaValida, VIGENCIA_POR_DEFECTO,
+} from '@/src/utils/vigenciaNoticias';
 
 type Jerarquia = 'urgente' | 'importante' | 'informativo' | null;
 type Editing = {
@@ -39,6 +43,9 @@ type Editing = {
   jerarquia: Jerarquia;
   audiencia: string; // 'general' o area_id
   node_id: string | null; // Vincula la noticia a un nodo especifico
+  vigencia: VigenciaHoras;
+  /** Vigencia con la que se abrió la edición (null al crear): solo se envía si cambia. */
+  vigenciaOriginal: VigenciaHoras | null;
 } | null;
 
 const JERARQUIA_COLORS: Record<string, { bg: string; bd: string; fg: string; label: string; icon: any }> = {
@@ -113,6 +120,8 @@ export default function AnnouncementsView({
           severidad: editing.jerarquia,
           audiencia: aud,
           node_id: editing.node_id,
+          // Cambiar la vigencia reinicia el plazo desde este momento; si no cambió, no se envía.
+          ...vigenciaParaGuardar(editing.vigencia, editing.vigenciaOriginal),
         });
       } else {
         await api.createAnnouncement(pid, {
@@ -121,6 +130,7 @@ export default function AnnouncementsView({
           severidad: editing.jerarquia,
           audiencia: aud,
           node_id: editing.node_id,
+          vigencia_horas: editing.vigencia,
         });
       }
       setEditing(null);
@@ -169,7 +179,7 @@ export default function AnnouncementsView({
           <Text style={styles.subtitle}>{headerSubtitle || 'Anuncios visibles para todo el proyecto'}</Text>
         </View>
         <Pressable accessibilityRole="button"
-          onPress={() => setEditing({ title: '', body: '', pinned: false, jerarquia: null, audiencia: 'general', node_id: null })}
+          onPress={() => setEditing({ title: '', body: '', pinned: false, jerarquia: null, audiencia: 'general', node_id: null, vigencia: VIGENCIA_POR_DEFECTO, vigenciaOriginal: null })}
           style={styles.newBtn}
         >
           <Ionicons name="add" size={18} color="#fff" />
@@ -201,7 +211,7 @@ export default function AnnouncementsView({
             <Text style={styles.emptyMsg}>
               Publica anuncios visibles para Sub-Coordinadores y Especialistas del proyecto.
             </Text>
-            <Pressable accessibilityRole="button" style={styles.emptyBtn} onPress={() => setEditing({ title: '', body: '', pinned: false, jerarquia: null, audiencia: 'general', node_id: null })}>
+            <Pressable accessibilityRole="button" style={styles.emptyBtn} onPress={() => setEditing({ title: '', body: '', pinned: false, jerarquia: null, audiencia: 'general', node_id: null, vigencia: VIGENCIA_POR_DEFECTO, vigenciaOriginal: null })}>
               <Ionicons name="add" size={16} color="#fff" />
               <Text style={styles.emptyBtnTxt}>Publicar primera</Text>
             </Pressable>
@@ -251,6 +261,8 @@ export default function AnnouncementsView({
                       jerarquia: (j === 'urgente' || j === 'importante' || j === 'informativo') ? (j as Jerarquia) : null,
                       audiencia: a.audiencia || 'general',
                       node_id: (a as any).node_id || null,
+                      vigencia: vigenciaValida(a.vigencia_horas),
+                      vigenciaOriginal: vigenciaValida(a.vigencia_horas),
                     })}
                     style={styles.iconAction}
                   >
@@ -275,7 +287,9 @@ export default function AnnouncementsView({
                 {a.expires_at ? (
                   <>
                     <Text style={styles.cardMetaDot}>·</Text>
-                    <Text style={[styles.cardMetaTxt, { color: colors.textMuted }]}>{formatExpiry(a.expires_at)}</Text>
+                    <Text style={[styles.cardMetaTxt, { color: colors.textMuted }]}>
+                      {`${tr('noticiasVigencia.vigenciaCorta', { vigencia: etiquetaVigencia(vigenciaValida(a.vigencia_horas)) })} · ${textoTiempoRestante(a.expires_at)}`}
+                    </Text>
                   </>
                 ) : null}
               </View>
@@ -335,6 +349,13 @@ export default function AnnouncementsView({
                   thumbColor="#fff"
                 />
               </View>
+
+              <VigenciaSelector
+                value={editing?.vigencia ?? VIGENCIA_POR_DEFECTO}
+                onChange={(v) => setEditing((e) => e ? { ...e, vigencia: v } : e)}
+                disabled={saving}
+                edicion={!!editing?.id}
+              />
 
               <View>
                 <Text style={styles.label}>Jerarquia</Text>
@@ -438,17 +459,6 @@ export default function AnnouncementsView({
       </Modal>
     </View>
   );
-}
-
-function formatExpiry(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '';
-  const diff = d.getTime() - Date.now();
-  if (diff <= 0) return 'Por expirar';
-  const m = Math.round(diff / 60000);
-  if (m < 60) return `Vence en ${m} min`;
-  const h = Math.round(m / 60);
-  return `Vence en ${h} h`;
 }
 
 const styles = StyleSheet.create({

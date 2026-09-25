@@ -13,7 +13,7 @@ import { Calendar, LocaleConfig } from 'react-native-calendars';
 
 import { api, Area, ProjectEvent, User } from '@/src/api';
 import { EventoForm } from '@/src/components/EventoForm';
-import { colors, radius, shadow, spacing, areaTone } from '@/src/theme';
+import { colors, radius, shadow, spacing, areaTone, calendarioColores } from '@/src/theme';
 import { dayjs, CDMX_TZ, fmtTimeCDMX } from '@/src/utils/tz';
 import { diaDelEvento, esDiaCompleto } from '@/src/utils/fechas';
 import { a11y } from '@/src/i18n';
@@ -206,17 +206,17 @@ export default function UniversalCalendar({ projectId, userId, isCoord }: Props)
                 firstDay={0}
                 enableSwipeMonths
                 theme={{
-                  backgroundColor: '#ffffff',
-                  calendarBackground: '#ffffff',
-                  textSectionTitleColor: '#1e293b',
-                  selectedDayBackgroundColor: '#2563eb',
-                  selectedDayTextColor: '#ffffff',
-                  todayTextColor: '#2563eb',
-                  dayTextColor: '#1e293b',
-                  textDisabledColor: '#cbd5e1',
-                  monthTextColor: '#1e293b',
-                  arrowColor: '#2563eb',
-                  indicatorColor: '#2563eb',
+                  backgroundColor: calendarioColores.fondoCalendario,
+                  calendarBackground: calendarioColores.fondoCalendario,
+                  textSectionTitleColor: calendarioColores.textoSeccion,
+                  selectedDayBackgroundColor: calendarioColores.seleccionadoFondo,
+                  selectedDayTextColor: calendarioColores.seleccionadoTexto,
+                  todayTextColor: calendarioColores.hoy,
+                  dayTextColor: calendarioColores.textoDia,
+                  textDisabledColor: calendarioColores.deshabilitado,
+                  monthTextColor: calendarioColores.textoMes,
+                  arrowColor: calendarioColores.flecha,
+                  indicatorColor: calendarioColores.hoy,
                   textDayFontWeight: '600',
                   textMonthFontWeight: '800',
                   textDayHeaderFontWeight: '700',
@@ -386,7 +386,7 @@ const styles = StyleSheet.create({
   legendTxt: { fontSize: 11, fontWeight: '700' },
 
   dayHeader: {
-    fontSize: 13, fontWeight: '800', color: '#fff',
+    fontSize: 13, fontWeight: '800', color: calendarioColores.tituloDia,
     textTransform: 'capitalize', marginTop: spacing.sm, paddingHorizontal: 4,
   },
 
