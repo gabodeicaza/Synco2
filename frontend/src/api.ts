@@ -590,6 +590,10 @@ export interface Project {
   zona_horaria?: string;
   /** Separador decimal con que se capturan los números en el proyecto (defecto "."). */
   separador_decimal?: '.' | ',';
+  /** Tipo de obra (decide módulos y plantillas por defecto). "legado" = proyecto anterior sin el campo. */
+  tipo_obra?: TipoObra;
+  /** Género gramatical de los nombres de nivel configurados (clave = nombre del nivel). Sin clave = automático. */
+  genero_niveles?: Record<string, 'm' | 'f'>;
   /** Hoy en la zona del proyecto (YYYY-MM-DD), al momento de la consulta. */
   hoy?: string;
   /** Desfase actual respecto a UTC en minutos (CDMX = -360). Lo usa fechas.ts. */
@@ -789,6 +793,28 @@ export interface ReportTemplate {
   name: string;
   category: string;
   fields: ReportTemplateField[];
+  /** Tipos de obra a los que sirve la plantilla; ["*"] = cualquiera. */
+  tipos_obra?: string[];
+}
+
+/** Tipo de obra del proyecto. "legado" solo se LEE (proyectos anteriores sin el campo); no se puede elegir. */
+export type TipoObra = 'generica' | 'carretera' | 'edificacion' | 'hidraulica' | 'puente' | 'legado';
+
+export interface TipoObraInfo {
+  id: Exclude<TipoObra, 'legado'>;
+  nombre: string;
+  descripcion: string;
+  /** Módulos activos por defecto para el tipo, con la misma forma que Project.modulos. */
+  modulos_por_defecto: ModulosConfig;
+  /** Códigos de plantillas de reporte recomendadas para el tipo. */
+  plantillas_recomendadas: string[];
+}
+
+export interface PlantillaEtapasPoste {
+  id: string;
+  nombre: string;
+  descripcion: string;
+  etapas: EtapaPosteElemento[];
 }
 
 export interface FeedItem {
@@ -2291,7 +2317,12 @@ export const api = {
   invitationsBulkCommit: (pid: string, rows: InvitationBulkRow[]) =>
     request<InvitationBulkCommitResult>('POST', `/projects/${pid}/invitations/bulk_import/commit`, { rows }),
 
-  getReportTemplates: () => request<ReportTemplate[]>('GET', '/report-templates'),
+  getReportTemplates: (tipoObra?: Exclude<TipoObra, 'legado'>) =>
+    request<ReportTemplate[]>('GET', `/report-templates${tipoObra ? `?tipo_obra=${encodeURIComponent(tipoObra)}` : ''}`),
+  listTiposObra: () => request<TipoObraInfo[]>('GET', '/tipos_obra'),
+  listPlantillasEtapasPoste: () => request<PlantillaEtapasPoste[]>('GET', '/etapas_poste/plantillas'),
+  aplicarPlantillaEtapasPoste: (pid: string, plantilla: string) =>
+    request<Project>('POST', `/projects/${pid}/etapas_poste/aplicar-plantilla`, { plantilla }),
   createReportTemplate: (body: { code: string; name: string; category: string; fields: ReportTemplateField[] }) =>
     request<ReportTemplate>('POST', '/report-templates', body),
   updateReportTemplate: (tid: string, body: { name?: string; category?: string; fields?: ReportTemplateField[] }) =>
