@@ -4,9 +4,13 @@ import RegistrarAvanceScreen from '../RegistrarAvanceScreen';
 
 jest.mock('@expo/vector-icons', () => ({ Ionicons: 'Ionicons' }));
 jest.mock('expo-router', () => ({ router: { back: jest.fn() } }));
-jest.mock('expo-image-picker', () => ({ MediaTypeOptions: { Images: 'Images' }, launchImageLibraryAsync: jest.fn() }));
+jest.mock('expo-image-picker', () => ({
+  MediaTypeOptions: { Images: 'Images' }, launchImageLibraryAsync: jest.fn(), launchCameraAsync: jest.fn(),
+}));
 jest.mock('react-native-safe-area-context', () => ({ useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) }));
-jest.mock('@/src/utils/permissions', () => ({ requestMediaLibraryPermission: jest.fn() }));
+jest.mock('@/src/utils/permissions', () => ({ requestMediaLibraryPermission: jest.fn(), requestCameraPermission: jest.fn() }));
+jest.mock('@/src/utils/comprimirFoto', () => ({ prepararFotoEvidencia: jest.fn() }));
+jest.mock('@/src/utils/confirm', () => ({ confirm: jest.fn() }));
 jest.mock('@/src/utils/toast', () => ({ showToast: jest.fn() }));
 jest.mock('@/src/api', () => ({
   api: { getProject: jest.fn(), getTree: jest.fn(), searchConceptos: jest.fn(), createAvance: jest.fn() },

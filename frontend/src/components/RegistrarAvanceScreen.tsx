@@ -4,7 +4,7 @@
 // (mismo criterio que "Nuevo Reporte" — ver src/api.ts createAvance).
 import React, { useEffect, useState } from 'react';
 import {
-  View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, TextInput, StatusBar, Alert, Image, Modal,
+  View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, TextInput, StatusBar, Image, Modal, Linking,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
@@ -27,7 +27,9 @@ import { DECIMALES_CANTIDAD, formatoNumero, mensajeNumeroInvalido, parseNumeroEn
 import { useBusquedaConceptos } from '@/src/hooks/useBusquedaConceptos';
 import { useEnvio } from '@/src/hooks/useEnvio';
 import { useFormErrors } from '@/src/hooks/useFormErrors';
-import { requestMediaLibraryPermission } from '@/src/utils/permissions';
+import { requestCameraPermission, requestMediaLibraryPermission } from '@/src/utils/permissions';
+import { prepararFotoEvidencia } from '@/src/utils/comprimirFoto';
+import { confirm } from '@/src/utils/confirm';
 import { a11y, t } from '@/src/i18n';
 import { fmtFecha, hoyProyecto } from '@/src/utils/fechas';
 
@@ -48,6 +50,9 @@ export default function RegistrarAvanceScreen({ projectId }: { projectId: string
   const { errores, errorGeneral, ponerTodos, limpiarTodo, alCambiar, errorDeGuardado } =
     useFormErrors<'cantidad' | 'motivo' | 'fecha'>();
   const [foto, setFoto] = useState<string | null>(null);
+  const [errorFoto, setErrorFoto] = useState<string | null>(null);
+  const [avisoFoto, setAvisoFoto] = useState<string | null>(null);
+  const [preparandoFoto, setPreparandoFoto] = useState(false);
   const { guardando: saving, ejecutar } = useEnvio();
 
   // Nodo (opcional, nunca bloqueante) — si el residente sabe en qué nodo
@@ -61,21 +66,48 @@ export default function RegistrarAvanceScreen({ projectId }: { projectId: string
   useEffect(() => { api.getProject(projectId).then(setProject).catch(() => {}); }, [projectId]);
   useEffect(() => { api.getTree(projectId).then(setNodes).catch(() => setNodes([])); }, [projectId]);
 
-  async function pickPhoto() {
-    const perm = await requestMediaLibraryPermission();
-    if (!perm.granted) {
-      Alert.alert('Permiso requerido', 'Habilita el acceso a fotos para adjuntar evidencia.');
+  // T-05a: la evidencia entra por la cámara o por la galería y SIEMPRE se comprime
+  // (1600 px, JPEG 0.7) antes de adjuntarse: pesa menos en la cola sin conexión.
+  // El permiso se pide justo al tocar el botón, con la explicación de Fase 0.
+  async function elegirFoto(origen: 'camara' | 'galeria') {
+    setErrorFoto(null);
+    setAvisoFoto(null);
+    const permiso = origen === 'camara' ? await requestCameraPermission() : await requestMediaLibraryPermission();
+    if (!permiso.granted) {
+      if (origen === 'camara' && !permiso.canAskAgain) {
+        const abrir = await confirm(t('permisos.camaraTitulo'), t('permisos.camaraMensaje'), { confirmText: t('permisos.abrirAjustes') });
+        if (abrir) Linking.openSettings();
+      }
+      setErrorFoto(t(origen === 'camara' ? 'camaraEvidencia.permisoCamara' : 'camaraEvidencia.permisoGaleria'));
       return;
     }
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      base64: true,
-      quality: 0.5,
-    });
-    if (result.canceled || !result.assets?.[0]?.base64) return;
-    const asset = result.assets[0];
-    const mime = asset.mimeType || 'image/jpeg';
-    setFoto(`data:${mime};base64,${asset.base64}`);
+    const opciones = { mediaTypes: ImagePicker.MediaTypeOptions.Images, base64: true, quality: 0.8 };
+    let resultado;
+    try {
+      resultado = origen === 'camara'
+        ? await ImagePicker.launchCameraAsync(opciones)
+        : await ImagePicker.launchImageLibraryAsync(opciones);
+    } catch {
+      setErrorFoto(t('camaraEvidencia.noSePudoLeer'));
+      return;
+    }
+    if (resultado.canceled || !resultado.assets?.[0]) return;
+    setPreparandoFoto(true);
+    try {
+      const r = await prepararFotoEvidencia(resultado.assets[0]);
+      if (!r.ok) {
+        setErrorFoto(
+          r.motivo === 'demasiado_grande'
+            ? t('camaraEvidencia.demasiadaGrande', { mb: ((r.bytes ?? 0) / (1024 * 1024)).toFixed(1) })
+            : t('camaraEvidencia.noSePudoLeer'),
+        );
+        return;
+      }
+      setFoto(r.dataUri);
+      if (!r.comprimida) setAvisoFoto(t('camaraEvidencia.sinCompresion'));
+    } finally {
+      setPreparandoFoto(false);
+    }
   }
 
   const esPorcentaje = project?.modo_avance === 'PORCENTAJE';
@@ -99,6 +131,8 @@ export default function RegistrarAvanceScreen({ projectId }: { projectId: string
     setMotivo('');
     setTipo('normal');
     setFoto(null);
+    setErrorFoto(null);
+    setAvisoFoto(null);
     setSelectedNodo(null);
     busqueda.limpiar();
     limpiarTodo();
@@ -352,11 +386,46 @@ export default function RegistrarAvanceScreen({ projectId }: { projectId: string
               </>
             ) : null}
 
-            <Pressable accessibilityRole="button" style={styles.photoBtn} onPress={pickPhoto}>
-              <Ionicons name="camera-outline" size={18} color={colors.primary} />
-              <Text style={styles.photoBtnTxt}>{foto ? 'Cambiar foto de evidencia' : 'Adjuntar foto de evidencia (opcional)'}</Text>
-            </Pressable>
-            {foto ? <Image source={{ uri: foto }} style={styles.photoPreview} /> : null}
+            <Text style={styles.photoBtnTxt}>{foto ? t('camaraEvidencia.cambiar') : t('camaraEvidencia.adjuntar')}</Text>
+            <View style={styles.photoRow}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={t('camaraEvidencia.tomarFoto')}
+                style={[styles.photoBtn, (preparandoFoto || saving) && { opacity: 0.5 }]}
+                disabled={preparandoFoto || saving}
+                onPress={() => elegirFoto('camara')}
+              >
+                <Ionicons name="camera-outline" size={18} color={colors.primary} />
+                <Text style={styles.photoBtnTxt}>{t('camaraEvidencia.tomarFoto')}</Text>
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={t('camaraEvidencia.elegirGaleria')}
+                style={[styles.photoBtn, (preparandoFoto || saving) && { opacity: 0.5 }]}
+                disabled={preparandoFoto || saving}
+                onPress={() => elegirFoto('galeria')}
+              >
+                <Ionicons name="images-outline" size={18} color={colors.primary} />
+                <Text style={styles.photoBtnTxt}>{t('camaraEvidencia.elegirGaleria')}</Text>
+              </Pressable>
+            </View>
+            {preparandoFoto ? <ActivityIndicator color={colors.primary} style={{ marginTop: 6 }} /> : null}
+            <InlineError message={errorFoto} style={{ marginTop: 6 }} />
+            {avisoFoto ? <Text style={styles.avisoExcedente}>{avisoFoto}</Text> : null}
+            {foto ? (
+              <View>
+                <Image source={{ uri: foto }} style={styles.photoPreview} accessibilityLabel={t('camaraEvidencia.vistaPrevia')} />
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={t('camaraEvidencia.quitar')}
+                  style={styles.photoQuitar}
+                  onPress={() => { setFoto(null); setAvisoFoto(null); }}
+                >
+                  <Ionicons name="close-circle" size={22} color={colors.error} />
+                  <Text style={styles.photoQuitarTxt}>{t('camaraEvidencia.quitar')}</Text>
+                </Pressable>
+              </View>
+            ) : null}
 
             <InlineError message={errorGeneral} />
 
@@ -505,8 +574,14 @@ const styles = StyleSheet.create({
   pickerRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: colors.border },
   pickerRowTxt: { flex: 1, fontSize: 13, color: colors.text },
 
-  photoBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 6 },
+  photoRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 6 },
+  photoBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 8, minHeight: 44, paddingHorizontal: 12,
+    borderWidth: 1, borderColor: colors.primary, borderRadius: radius.md,
+  },
   photoBtnTxt: { color: colors.primary, fontSize: 13, fontWeight: '600' },
+  photoQuitar: { flexDirection: 'row', alignItems: 'center', gap: 6, minHeight: 44 },
+  photoQuitarTxt: { color: colors.error, fontSize: 13, fontWeight: '600' },
   photoPreview: { width: '100%', height: 160, borderRadius: radius.md, marginTop: 6 },
 
   submitBtn: {
