@@ -3138,22 +3138,7 @@ async def list_nodes(pid: str, user: dict = Depends(current_user)):
     avances_dict = {doc["_id"]: float(doc.get("total_avance") or 0.0) for doc in aggr}
     # -------------------------------------------------------------------------------------
 
-    # Filtrado por scope (Sub-coordinador AHORA tiene scope GLOBAL, igual que Coordinador).
-    role = user.get("role")
-    if role == ROLE_ESPECIALISTA and (user.get("scope_node_ids") or []):
-        allowed_leaves = set(user.get("scope_node_ids") or [])
-        # incluir ancestros para que el árbol sea navegable
-        ancestors: set = set()
-        # construir mapa id->parent
-        all_nodes = await db.location_nodes.find({"project_id": pid}).to_list(length=10000)
-        parent_of = {n["id"]: n.get("parent_id") for n in all_nodes}
-        for leaf in allowed_leaves:
-            cur = leaf
-            while cur:
-                ancestors.add(cur)
-                cur = parent_of.get(cur)
-        items = [it for it in items if it["id"] in ancestors]
-        
+    # Sin filtro por scope: todos los roles ven el árbol completo del proyecto.
     for it in items:
         it.pop("_id", None)
         # Inyectamos el acumulado al nodo
@@ -3178,19 +3163,7 @@ async def get_tree(pid: str, user: dict = Depends(current_user)):
     avances_dict = {doc["_id"]: float(doc.get("total_avance") or 0.0) for doc in aggr}
     # -------------------------------------------------------------------------------------
 
-    # Filtrado por scope (Sub-coordinador AHORA tiene scope GLOBAL, igual que Coordinador).
-    role = user.get("role")
-    if role == ROLE_ESPECIALISTA and (user.get("scope_node_ids") or []):
-        allowed_leaves = set(user.get("scope_node_ids") or [])
-        ancestors: set = set()
-        parent_of = {n["id"]: n.get("parent_id") for n in items}
-        for leaf in allowed_leaves:
-            cur = leaf
-            while cur:
-                ancestors.add(cur)
-                cur = parent_of.get(cur)
-        items = [it for it in items if it["id"] in ancestors]
-        
+    # Sin filtro por scope: todos los roles ven el árbol completo del proyecto.
     by_id = {}
     for it in items:
         it.pop("_id", None)
@@ -5600,9 +5573,6 @@ async def create_report(body: ReportIn, user: dict = Depends(current_user)):
         raise HTTPException(404, "Nodo no existe en este proyecto")
     if not node.get("is_leaf"):
         raise HTTPException(400, "Solo se puede capturar en nodos hoja")
-    if user["role"] == ROLE_ESPECIALISTA and (user.get("scope_node_ids") or []):
-        if body.node_id not in user["scope_node_ids"]:
-            raise HTTPException(403, "Nodo no está en tu scope autorizado")
     # Sub-coordinador: scope GLOBAL (puede capturar en cualquier hoja del proyecto).
     # Especialista sin scope_node_ids asignado: acceso GLOBAL (igual que sub-coordinador).
     # ====================================================================
@@ -5862,9 +5832,6 @@ async def node_history(pid: str, nid: str, user: dict = Depends(current_user)):
     node = await db.location_nodes.find_one({"id": nid, "project_id": pid})
     if not node:
         raise HTTPException(404, "Nodo no existe en este proyecto")
-    if user["role"] == ROLE_ESPECIALISTA and (user.get("scope_node_ids") or []):
-        if nid not in user["scope_node_ids"]:
-            raise HTTPException(403, "Nodo no está en tu scope autorizado")
     # Sub-coordinador / Especialista sin scope: acceso GLOBAL (sin restricción).
 
     last = await db.reports.find_one(
@@ -5901,8 +5868,6 @@ async def node_history(pid: str, nid: str, user: dict = Depends(current_user)):
 async def list_reports(pid: str, user: dict = Depends(current_user)):
     await ensure_project_access(user, pid)
     q: dict = {"project_id": pid}
-    if user["role"] == ROLE_ESPECIALISTA and (user.get("scope_node_ids") or []):
-        q["node_id"] = {"$in": user["scope_node_ids"]}
     # Sub-coordinador / Especialista sin scope: acceso GLOBAL al listado (sin filtro).
     items = await db.reports.find(q).sort("created_at", -1).to_list(length=2000)
     for it in items:
@@ -6028,8 +5993,6 @@ async def reports_feed(
     """
     await ensure_project_access(user, pid)
     query: dict = {"project_id": pid}
-    if user["role"] == ROLE_ESPECIALISTA and (user.get("scope_node_ids") or []):
-        query["node_id"] = {"$in": user["scope_node_ids"]}
     # Sub-coordinador/Coordinador/Especialista sin scope: feed GLOBAL (sin restricción).
 
     since_dt: Optional[datetime] = None
@@ -6173,9 +6136,6 @@ async def get_report(rid: str, user: dict = Depends(current_user)):
         raise HTTPException(404, "Reporte no existe")
     await ensure_project_access(user, r["project_id"])
     # Scope check
-    if user["role"] == ROLE_ESPECIALISTA and (user.get("scope_node_ids") or []):
-        if r["node_id"] not in user["scope_node_ids"]:
-            raise HTTPException(403, "Sin acceso a este reporte")
     # Sub-coordinador / Especialista sin scope: acceso GLOBAL (sin filtro).
     r.pop("_id", None)
     r["severidad"] = _normalize_severidad_list(r.get("severidad"))
@@ -6195,9 +6155,6 @@ async def get_report_collage(rid: str, user: dict = Depends(current_user)):
     if not r:
         raise HTTPException(404, "Reporte no existe")
     await ensure_project_access(user, r["project_id"])
-    if user["role"] == ROLE_ESPECIALISTA and (user.get("scope_node_ids") or []):
-        if r["node_id"] not in user["scope_node_ids"]:
-            raise HTTPException(403, "Sin acceso a este reporte")
     imgs = (r.get("images") or [])[:4]
     if not imgs:
         raise HTTPException(404, "El reporte no tiene fotografías")
@@ -15327,8 +15284,6 @@ async def project_ai_summary(pid: str, user: dict = Depends(current_user)):
 
     q: dict = {"project_id": pid, "created_at": {"$gte": since}}
     # Aplica el mismo scope RBAC que el feed.
-    if user["role"] == ROLE_ESPECIALISTA and (user.get("scope_node_ids") or []):
-        q["node_id"] = {"$in": user["scope_node_ids"]}
     # Sub-coordinador / Especialista sin scope: acceso GLOBAL (sin restricción).
 
     raw = await db.reports.find(q).sort("created_at", -1).to_list(length=500)
