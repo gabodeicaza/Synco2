@@ -215,6 +215,54 @@ def _sanitize_datos_contrato(value) -> dict:
     return out
 
 
+def _contrato_bloques(proj: dict) -> list:
+    """Bloques de la hoja "DATOS DE CONTRATO" de los informes (PPTX/PDF/DOCX):
+    OBRA y, si tiene algún dato, SUPERVISIÓN. Cada bloque:
+    {"etiqueta", "lineas": [(rótulo, valor)], "filas": [(rótulo, valor1,
+    valor2, unida)]} — `filas` es la tabla Periodo/Monto/IVA/Monto con IVA/
+    Anticipo (`unida`=True: el valor ocupa las dos columnas Inicio+Fin).
+    Lo que falte en OBRA cae a los datos base del proyecto (objeto,
+    constructora, número de contrato, fechas). [] si no hay nada que imprimir."""
+    dc = _sanitize_datos_contrato((proj or {}).get("datos_contrato"))
+    obra = dict(dc.get("obra") or {})
+    sup = dict(dc.get("supervision") or {})
+    obra.setdefault("objeto", ((proj or {}).get("objeto_contrato") or (proj or {}).get("name") or "").strip())
+    if not obra.get("empresa") and (proj or {}).get("constructora"):
+        obra["empresa"] = proj["constructora"]
+    if not obra.get("contrato") and (proj or {}).get("contract_number"):
+        obra["contrato"] = proj["contract_number"]
+    if not obra.get("inicio") and (proj or {}).get("start_date"):
+        obra["inicio"] = _fmt_iso_dmy(proj["start_date"])
+    if not obra.get("fin") and (proj or {}).get("end_date"):
+        obra["fin"] = _fmt_iso_dmy(proj["end_date"])
+    bloques = []
+    for etq, d in (("OBRA", obra), ("SUPERVISIÓN", sup)):
+        if not any(d.values()):
+            continue
+        lineas = []
+        if d.get("objeto"):
+            lineas.append((etq + ":", f"\u201c{d['objeto']}\u201d."))
+        if d.get("empresa"):
+            lineas.append(("EMPRESA:", d["empresa"].upper()))
+        if d.get("contrato"):
+            lineas.append(("CONTRATO:", d["contrato"]))
+        if d.get("ubicacion"):
+            lineas.append(("UBICACIÓN:", d["ubicacion"].upper()))
+        filas = []
+        if d.get("inicio") or d.get("fin"):
+            filas.append(("Periodo de ejecución", d.get("inicio") or "", d.get("fin") or "", False))
+        if d.get("monto"):
+            filas.append(("Monto", d["monto"], "", True))
+        if d.get("iva"):
+            filas.append(("IVA", d["iva"], "", True))
+        if d.get("monto_con_iva"):
+            filas.append(("Monto con IVA", d["monto_con_iva"], "", True))
+        if d.get("anticipo"):
+            filas.append((d.get("anticipo_label") or "Anticipo", d["anticipo"], "", True))
+        bloques.append({"etiqueta": etq, "lineas": lineas, "filas": filas})
+    return bloques
+
+
 def _sanitize_reference_files(items) -> list:
     """Valida y limpia la lista de archivos de referencia.
     Espera una lista de dicts con 'name' y 'url'.
@@ -11210,6 +11258,57 @@ async def export_reports_pdf(
         # actividades GENERALES añadidas a mano sin reportes de campo).
         _draw_actividades_por_area_section()
 
+        # --- PÁGINA DATOS DE CONTRATO (OBRA / SUPERVISIÓN) ---------------
+        # Va DESPUÉS de Datos Generales (no antes, como en el PPTX): en modo
+        # Superposición sobre plantilla PDF las páginas 1..N de Datos
+        # Generales usan el fondo "Mapa" del template (ver
+        # `_overlay_pdf_on_template`) y esta página debe quedar en el lienzo
+        # recurrente.
+        _contrato_blq = _contrato_bloques(proj)
+        if _contrato_blq:
+            _indice_mark("contrato", "Datos de contrato")
+            _ct_margin = 1.5 * cm
+            _ct_gap = 1.2 * cm
+            _ct_w = (PW - 2 * _ct_margin - _ct_gap * (len(_contrato_blq) - 1)) / len(_contrato_blq)
+            _ct_lbl = ParagraphStyle("ctLbl", fontName="Helvetica", fontSize=11, leading=15, textColor=TEXT, spaceAfter=6)
+            _ct_cell = ParagraphStyle("ctCell", fontName="Helvetica", fontSize=10, leading=12, textColor=TEXT, alignment=1)
+            _ct_cell_w = ParagraphStyle("ctCellW", parent=_ct_cell, fontName="Helvetica-Bold", textColor=WHITE)
+            for _ci, _blq in enumerate(_contrato_blq):
+                _cx = _ct_margin + _ci * (_ct_w + _ct_gap)
+                _cy = PH - TOP_MARGIN_PDF
+                c.setFillColor(BRAND)
+                c.setFont("Helvetica-Bold", 18)
+                c.drawString(_cx, _cy, "DATOS DE CONTRATO")
+                _cy -= 0.8 * cm
+                for _lbl, _val in _blq["lineas"]:
+                    _p = Paragraph(f"<b>{_xml_escape(_lbl)}</b> {_xml_escape(_val)}", _ct_lbl)
+                    _pw, _ph = _p.wrapOn(c, _ct_w, PH)
+                    _p.drawOn(c, _cx, _cy - _ph)
+                    _cy -= _ph + 6
+                if _blq["filas"]:
+                    _cy -= 0.6 * cm
+                    _rows = [[Paragraph("", _ct_cell), Paragraph("Inicio", _ct_cell_w), Paragraph("Fin", _ct_cell_w)]]
+                    _spans = []
+                    for _ri, (_l, _v1, _v2, _unida) in enumerate(_blq["filas"], start=1):
+                        _rows.append([Paragraph(_xml_escape(_l), _ct_cell_w),
+                                      Paragraph(_xml_escape(_v1), _ct_cell),
+                                      Paragraph(_xml_escape(_v2), _ct_cell) if not _unida else ""])
+                        if _unida:
+                            _spans.append(("SPAN", (1, _ri), (2, _ri)))
+                    _tbl = Table(_rows, colWidths=[_ct_w * 0.42, _ct_w * 0.29, _ct_w * 0.29])
+                    _tbl.setStyle(TableStyle([
+                        ("BACKGROUND", (0, 0), (-1, 0), BRAND),
+                        ("BACKGROUND", (0, 1), (0, -1), BRAND),
+                        ("GRID", (0, 0), (-1, -1), 0.5, BRAND),
+                        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                        ("TOPPADDING", (0, 0), (-1, -1), 6),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                    ] + _spans))
+                    _tw, _th = _tbl.wrapOn(c, _ct_w, _cy - BOTTOM_MARGIN_PDF)
+                    _tbl.drawOn(c, _cx, _cy - _th)
+            c.showPage()
+            page_num += 1
+
         if total_reportes == 0:
             # FIX (2026-09): esto antes CORTABA el documento aquí mismo (return
             # inmediato) — el loop por nodo, los resúmenes por Subtramo/
@@ -13845,6 +13944,46 @@ async def export_reports_docx(
         # Un solo reporte por página → salto de página tras portada.
         doc.add_page_break()
 
+        # ---- Página DATOS DE CONTRATO (OBRA / SUPERVISIÓN) -------------
+        _contrato_blq = _contrato_bloques(proj)
+        if _contrato_blq:
+            for _blq in _contrato_blq:
+                _hp = doc.add_paragraph()
+                _hr = _hp.add_run("DATOS DE CONTRATO — " + _blq["etiqueta"])
+                _hr.bold = True
+                _hr.font.size = Pt(15)
+                _hr.font.color.rgb = BRAND_RGB
+                for _lbl, _val in _blq["lineas"]:
+                    _lp = doc.add_paragraph()
+                    _l1 = _lp.add_run(_lbl + " ")
+                    _l1.bold = True
+                    _l1.font.size = Pt(11)
+                    _l1.font.color.rgb = TEXT_RGB
+                    _l2 = _lp.add_run(_val)
+                    _l2.font.size = Pt(11)
+                    _l2.font.color.rgb = TEXT_RGB
+                if _blq["filas"]:
+                    _ct = doc.add_table(rows=1 + len(_blq["filas"]), cols=3)
+                    _ct.style = "Table Grid"
+                    for _j, _h in enumerate(("", "Inicio", "Fin")):
+                        _c0 = _ct.rows[0].cells[_j]
+                        _r0 = _c0.paragraphs[0].add_run(_h)
+                        _r0.bold = True
+                        _r0.font.size = Pt(10)
+                    for _ri, (_l, _v1, _v2, _unida) in enumerate(_blq["filas"], start=1):
+                        _cells = _ct.rows[_ri].cells
+                        _rl = _cells[0].paragraphs[0].add_run(_l)
+                        _rl.bold = True
+                        _rl.font.size = Pt(10)
+                        if _unida:
+                            _m = _cells[1].merge(_cells[2])
+                            _m.paragraphs[0].add_run(_v1).font.size = Pt(10)
+                        else:
+                            _cells[1].paragraphs[0].add_run(_v1).font.size = Pt(10)
+                            _cells[2].paragraphs[0].add_run(_v2).font.size = Pt(10)
+                doc.add_paragraph()
+            doc.add_page_break()
+
         # ---- Iteración de reportes ------------------------------------
         any_data = False
         reports_flat = []  # lista lineal en orden de árbol
@@ -16121,22 +16260,8 @@ async def export_reports_pptx(
         # como fallback); sin datos de supervisión, la obra ocupa todo el
         # ancho.
         def _emit_contrato_slide() -> None:
-            dc = _sanitize_datos_contrato(proj.get("datos_contrato"))
-            obra = dict(dc.get("obra") or {})
-            sup = dict(dc.get("supervision") or {})
-            obra.setdefault("objeto", (proj.get("objeto_contrato") or proj.get("name") or "").strip())
-            if not obra.get("empresa") and proj.get("constructora"):
-                obra["empresa"] = proj["constructora"]
-            if not obra.get("contrato") and proj.get("contract_number"):
-                obra["contrato"] = proj["contract_number"]
-            if not obra.get("inicio") and proj.get("start_date"):
-                obra["inicio"] = _fmt_iso_dmy(proj["start_date"])
-            if not obra.get("fin") and proj.get("end_date"):
-                obra["fin"] = _fmt_iso_dmy(proj["end_date"])
-            bloques = [("OBRA", obra)]
-            if sup:
-                bloques.append(("SUPERVISIÓN", sup))
-            if not any(v for _, d in bloques for v in d.values()):
+            bloques = _contrato_bloques(proj)
+            if not bloques:
                 return
 
             _indice_mark("contrato", "Datos de contrato")
@@ -16148,7 +16273,7 @@ async def export_reports_pptx(
             margin = Cm(1.5)
             gap = Cm(1.6)
             col_w = int((SW - 2 * margin - gap * (len(bloques) - 1)) / len(bloques))
-            for bi, (etq, d) in enumerate(bloques):
+            for bi, blq in enumerate(bloques):
                 x = margin + bi * (col_w + gap)
                 y = TOP_MARGIN
                 add_text(sl, x, y, col_w, Cm(1.0), "DATOS DE CONTRATO", size=f_head, bold=True,
@@ -16157,15 +16282,7 @@ async def export_reports_pptx(
                 tb = sl.shapes.add_textbox(x, y, col_w, Cm(6.0))
                 tf = tb.text_frame
                 tf.word_wrap = True
-                lineas = []
-                if d.get("objeto"):
-                    lineas.append((etq + ":", f"\u201c{d['objeto']}\u201d."))
-                if d.get("empresa"):
-                    lineas.append(("EMPRESA:", d["empresa"].upper()))
-                if d.get("contrato"):
-                    lineas.append(("CONTRATO:", d["contrato"]))
-                if d.get("ubicacion"):
-                    lineas.append(("UBICACIÓN:", d["ubicacion"].upper()))
+                lineas = blq["lineas"]
                 for li, (lbl, val) in enumerate(lineas):
                     par = tf.paragraphs[0] if li == 0 else tf.add_paragraph()
                     par.space_after = Pt(6)
@@ -16178,18 +16295,7 @@ async def export_reports_pptx(
                     r2.text = val
                     r2.font.size = Pt(f_body)
                     r2.font.color.rgb = PRGBColor(*WF_TEXT_RGB)
-                # Tabla de montos — solo filas con dato.
-                filas = []
-                if d.get("inicio") or d.get("fin"):
-                    filas.append(("Periodo de ejecución", d.get("inicio") or "", d.get("fin") or "", False))
-                if d.get("monto"):
-                    filas.append(("Monto", d["monto"], "", True))
-                if d.get("iva"):
-                    filas.append(("IVA", d["iva"], "", True))
-                if d.get("monto_con_iva"):
-                    filas.append(("Monto con IVA", d["monto_con_iva"], "", True))
-                if d.get("anticipo"):
-                    filas.append((d.get("anticipo_label") or "Anticipo", d["anticipo"], "", True))
+                filas = blq["filas"]
                 if filas:
                     ty = y + Cm(6.6)
                     row_h = Cm(0.95)
