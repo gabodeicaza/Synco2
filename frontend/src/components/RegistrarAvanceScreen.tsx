@@ -14,7 +14,7 @@ import { colors, radius, shadow, spacing } from '@/src/theme';
 import { APP_BRAND } from '@/src/utils/roles';
 import { ScreenHeader } from '@/src/components/ScreenHeader';
 import { UNIDAD_LABELS, Unidad } from '@/src/utils/unidades';
-import { nombreConcepto } from '@/src/utils/nombresNivel';
+import { concordanciaConcepto } from '@/src/utils/nombresNivel';
 import { decimalStringToScaled, formatCantidad, pctDeDecimales } from '@/src/utils/money';
 import { esRetrocesoLocal } from '@/src/utils/avancePorcentaje';
 import { InlineError } from '@/src/components/InlineError';
@@ -34,6 +34,7 @@ import { fmtFecha, hoyProyecto } from '@/src/utils/fechas';
 
 export default function RegistrarAvanceScreen({ projectId }: { projectId: string }) {
   const [project, setProject] = useState<Project | null>(null);
+  const conc = concordanciaConcepto(project);
 
   const busqueda = useBusquedaConceptos(projectId, t('busquedaConceptos.errorBusqueda'));
   const [selected, setSelected] = useState<Concepto | null>(null);
@@ -193,7 +194,7 @@ export default function RegistrarAvanceScreen({ projectId }: { projectId: string
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <StatusBar barStyle="light-content" />
       <ScreenHeader title={APP_BRAND} backgroundColor={colors.primary} />
-      <Text style={styles.titleBar}>REGISTRAR AVANCE — {(project?.name || '').toUpperCase()}</Text>
+      <Text style={styles.titleBar}>{t('avanceNiveles.tituloRegistrar', { proyecto: (project?.name || '').toUpperCase() })}</Text>
       <Text style={styles.subtitle}>{fmtFecha(hoyProyecto())}</Text>
 
       <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
@@ -204,11 +205,11 @@ export default function RegistrarAvanceScreen({ projectId }: { projectId: string
               <TextInput
                 value={busqueda.query}
                 onChangeText={busqueda.setQuery}
-                placeholder={`Buscar ${nombreConcepto(project).toLowerCase()} por clave o descripción…`}
+                placeholder={t('avanceNiveles.buscarConcepto', { concepto: conc.minuscula })}
                 placeholderTextColor={colors.textMuted}
                 style={styles.searchInput}
                 autoCorrect={false}
-                accessibilityLabel={`Buscar ${nombreConcepto(project).toLowerCase()}`}
+                accessibilityLabel={t('avanceNiveles.buscarConceptoLabel', { concepto: conc.minuscula })}
               />
             </View>
             {busqueda.cargando ? (
@@ -239,8 +240,10 @@ export default function RegistrarAvanceScreen({ projectId }: { projectId: string
                 <Text style={styles.resultClave}>{c.clave} · {c.descripcion}</Text>
                 <Text style={styles.resultMeta}>
                   {project?.modo_avance === 'PORCENTAJE'
-                    ? `Va al ${formatCantidad(c.cantidad_ejecutada_acumulada)}%`
-                    : `${c.meta ? `Meta: ${formatCantidad(c.meta)} ${c.unidad} · ` : ''}Ejecutado: ${formatCantidad(c.cantidad_ejecutada_acumulada)} de ${formatCantidad(c.cantidad)} ${c.unidad}`}
+                    ? t('avanceNiveles.vaAlPorcentaje', { valor: formatCantidad(c.cantidad_ejecutada_acumulada) })
+                    : `${c.meta ? t('avanceNiveles.metaPrefijo', { meta: formatCantidad(c.meta), unidad: c.unidad }) : ''}${t('avanceNiveles.ejecutadoDe', {
+                      ejecutado: formatCantidad(c.cantidad_ejecutada_acumulada), contratado: formatCantidad(c.cantidad), unidad: c.unidad,
+                    })}`}
                 </Text>
               </Pressable>
             )) : null}
@@ -249,12 +252,14 @@ export default function RegistrarAvanceScreen({ projectId }: { projectId: string
           <View style={styles.formCard}>
             <Pressable accessibilityRole="button" onPress={() => setSelected(null)} style={styles.changeBtn}>
               <Ionicons name="chevron-back" size={14} color={colors.primary} />
-              <Text style={styles.changeBtnTxt}>Cambiar concepto</Text>
+              <Text style={styles.changeBtnTxt}>{t('avanceNiveles.cambiarConcepto', { concepto: conc.minuscula })}</Text>
             </Pressable>
             <Text style={styles.selectedClave}>{selected.clave}</Text>
             <Text style={styles.selectedDesc}>{selected.descripcion}</Text>
             <Text style={styles.selectedMeta}>
-              Unidad: {UNIDAD_LABELS[selected.unidad as Unidad] || selected.unidad} · Contratado: {formatCantidad(selected.cantidad)}
+              {t('avanceNiveles.unidadContratado', {
+                unidad: UNIDAD_LABELS[selected.unidad as Unidad] || selected.unidad, contratado: formatCantidad(selected.cantidad),
+              })}
             </Text>
 
             {/* Avance acumulado a la fecha — fracción + porcentaje. Antes solo
@@ -304,9 +309,9 @@ export default function RegistrarAvanceScreen({ projectId }: { projectId: string
             {esPorcentaje ? (
               <>
                 <View style={styles.pctLabelRow}>
-                  <Text style={styles.fieldLabel}>El concepto va al ___%</Text>
+                  <Text style={styles.fieldLabel}>{t('avanceNiveles.conceptoVaAl', { El: conc.El, concepto: conc.minuscula })}</Text>
                   <Text style={styles.pctAnteriorTxt}>
-                    Anterior: {formatCantidad(selected.cantidad_ejecutada_acumulada)}%
+                    {t('avanceNiveles.anterior', { valor: formatCantidad(selected.cantidad_ejecutada_acumulada) })}
                   </Text>
                 </View>
                 {/* Acumulativo, no incremental — el residente escribe el
@@ -316,7 +321,7 @@ export default function RegistrarAvanceScreen({ projectId }: { projectId: string
               </>
             ) : (
               <Text style={styles.fieldLabel}>
-                {tipo === 'ajuste' ? t('avance.cantidadAjuste', { unidad: selected.unidad }) : `Cantidad ejecutada hoy (${selected.unidad})`}
+                {tipo === 'ajuste' ? t('avance.cantidadAjuste', { unidad: selected.unidad }) : t('avanceNiveles.cantidadHoy', { unidad: selected.unidad })}
               </Text>
             )}
             <TextInput
@@ -332,7 +337,9 @@ export default function RegistrarAvanceScreen({ projectId }: { projectId: string
               style={[styles.qtyInput, errores.cantidad ? styles.inputConError : null]}
               autoFocus
               editable={!saving}
-              accessibilityLabel={esPorcentaje ? 'Porcentaje al que va el concepto' : 'Cantidad ejecutada'}
+              accessibilityLabel={esPorcentaje
+                ? t('avanceNiveles.etiquetaPorcentaje', { el: conc.el, concepto: conc.minuscula })
+                : t('avanceNiveles.etiquetaCantidad')}
             />
             <InlineError message={errores.cantidad} />
             {avisoExcedente ? <Text style={styles.avisoExcedente}>{avisoExcedente}</Text> : null}
@@ -355,17 +362,17 @@ export default function RegistrarAvanceScreen({ projectId }: { projectId: string
             <InlineError message={errores.fecha} />
             {esPorcentaje && cantidadApi && esRetrocesoLocal(cantidadApi, selected.cantidad_ejecutada_acumulada) ? (
               <Text style={styles.pctRetrocesoTxt}>
-                Este valor es menor que el {formatCantidad(selected.cantidad_ejecutada_acumulada)}% anterior — se permite, pero se marcará como retroceso.
+                {t('avanceNiveles.retroceso', { valor: formatCantidad(selected.cantidad_ejecutada_acumulada) })}
               </Text>
             ) : null}
 
             {nodes.length > 0 ? (
               <>
-                <Text style={styles.fieldLabel}>Nodo (opcional)</Text>
+                <Text style={styles.fieldLabel}>{t('avanceNiveles.nodoOpcional')}</Text>
                 <Pressable accessibilityRole="button" style={styles.nodoBtn} onPress={() => setNodoPickerOpen(true)}>
                   <Ionicons name="location-outline" size={16} color={colors.primary} />
                   <Text style={styles.nodoBtnTxt} numberOfLines={1}>
-                    {selectedNodo ? selectedNodo.name : 'Sin especificar'}
+                    {selectedNodo ? selectedNodo.name : t('avanceNiveles.sinEspecificar')}
                   </Text>
                   {selectedNodo ? (
                     <Pressable accessibilityRole="button" accessibilityLabel={a11y('quitar')} onPress={() => setSelectedNodo(null)} hitSlop={8}>
@@ -425,7 +432,7 @@ export default function RegistrarAvanceScreen({ projectId }: { projectId: string
               {saving ? <ActivityIndicator color="#fff" /> : (
                 <>
                   <Ionicons name="checkmark-circle-outline" size={18} color="#fff" />
-                  <Text style={styles.submitBtnTxt}>{tipo === 'ajuste' ? 'Registrar ajuste' : 'Registrar avance'}</Text>
+                  <Text style={styles.submitBtnTxt}>{tipo === 'ajuste' ? t('avanceNiveles.registrarAjuste') : t('avanceNiveles.registrarAvance')}</Text>
                 </>
               )}
             </Pressable>
@@ -472,7 +479,7 @@ function NodoPickerModal({
       <View style={styles.pickerBackdrop}>
         <View style={styles.pickerCard}>
           <View style={styles.pickerHeader}>
-            <Text style={styles.pickerTitle}>Elegir nodo</Text>
+            <Text style={styles.pickerTitle}>{t('avanceNiveles.elegirNodo')}</Text>
             <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} onPress={onClose} hitSlop={8}>
               <Ionicons name="close" size={22} color={colors.textMuted} />
             </Pressable>

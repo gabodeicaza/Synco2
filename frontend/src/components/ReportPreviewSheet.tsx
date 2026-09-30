@@ -35,7 +35,7 @@ import { buildReportShareText, formatDynamicValue } from '@/src/utils/reportText
 import { shareWithAutoRecover } from '@/src/utils/share';
 import { showToast } from '@/src/utils/toast';
 import { unirOVacio } from '@/src/utils/texto';
-import { a11y } from '@/src/i18n';
+import { a11y, t } from '@/src/i18n';
 
 interface ReportPreviewSheetProps {
   visible: boolean;
@@ -134,7 +134,7 @@ export function ReportPreviewSheet({
       const seed = [caps[0] || '', caps[1] || ''];
       setDraftCaps(seed);
     } catch (e: any) {
-      Alert.alert('No se pudo cargar', e?.message || 'Intenta de nuevo.');
+      Alert.alert(t('vistaPreviaReporte.noSeCargo'), e?.message || t('vistaPreviaReporte.reintentar'));
       setEditOpen(false);
     } finally {
       setLoadingFull(false);
@@ -150,10 +150,10 @@ export function ReportPreviewSheet({
       const send = draftCaps.slice(0, Math.min(2, totalImgs)).map((c) => (c || '').trim());
       const updated = await api.updateReportCaptions(reportId, send);
       setFullReport(updated);
-      Alert.alert('Descripciones guardadas', 'Se actualizaron las descripciones de las fotos.');
+      Alert.alert(t('vistaPreviaReporte.descripcionesGuardadas'), t('vistaPreviaReporte.descripcionesActualizadas'));
       setEditOpen(false);
     } catch (e: any) {
-      Alert.alert('Error al guardar', e?.message || 'No se pudo actualizar.');
+      Alert.alert(t('vistaPreviaReporte.errorGuardar'), e?.message || t('vistaPreviaReporte.noSeActualizo'));
     } finally {
       setSavingCaps(false);
     }
@@ -168,7 +168,7 @@ export function ReportPreviewSheet({
       const updated = await api.updateReportSeverity(reportId, next);
       setFullReport(updated);
     } catch (e: any) {
-      Alert.alert('Error', e?.message || 'No se pudo actualizar la severidad.');
+      Alert.alert(t('vistaPreviaReporte.error'), e?.message || t('vistaPreviaReporte.noSeActualizoSeveridad'));
     } finally {
       setSavingSev(false);
     }
@@ -214,15 +214,15 @@ export function ReportPreviewSheet({
       source.titulo ||
       source.name ||
       ''
-    ).trim() || 'Sin Título';
+    ).trim() || t('vistaPreviaReporte.sinTitulo');
 
   const path = unirOVacio(source.node_path_names || []);
   const author =
     source.captured_by_name ||
     source.user_name ||
     source.author_name ||
-    'Especialista';
-  const area = source.area_name || 'Sin área asignada';
+    t('vistaPreviaReporte.autorPorDefecto');
+  const area = source.area_name || t('vistaPreviaReporte.sinArea');
   const created = fmtDateTimeCDMX(source.created_at);
   const photoUri: string | null = source.thumbnail_base64
     ? `data:image/jpeg;base64,${source.thumbnail_base64}`
@@ -241,7 +241,7 @@ export function ReportPreviewSheet({
   // usando la plantilla (`template_id`) cuando esta disponible.
   const dynamicData: Record<string, any> = fullReport?.dynamic_data || {};
   const usedTemplate = reportTemplates.find(
-    (t) => t.id === (fullReport?.template_id || (source as any).template_id),
+    (pl) => pl.id === (fullReport?.template_id || (source as any).template_id),
   ) || null;
   const dynamicEntries = Object.entries(dynamicData).filter(
     ([, v]) => v !== undefined && v !== null && v !== '',
@@ -303,7 +303,7 @@ export function ReportPreviewSheet({
 
   const onCopyText = React.useCallback(async () => {
     await Clipboard.setStringAsync(shareText);
-    showToast('Texto copiado al portapapeles');
+    showToast(t('vistaPreviaReporte.textoCopiado'));
   }, [shareText]);
 
   const onSharePhotos = React.useCallback(async () => {
@@ -315,12 +315,12 @@ export function ReportPreviewSheet({
       // resto de este flujo escribe cada foto a expo-file-system (inexistente
       // en web) antes de compartir. En vez de intentarlo y truenar, avisamos.
       if (Platform.OS === 'web') {
-        Alert.alert('No disponible en web', 'Compartir fotos individuales no esta disponible en la versión web. Descarga el reporte en PDF.');
+        Alert.alert(t('vistaPreviaReporte.noDisponibleWeb'), t('vistaPreviaReporte.compartirFotosWeb'));
         return;
       }
 
       const available = await Sharing.isAvailableAsync();
-      if (!available) { Alert.alert('No disponible', 'Compartir no esta disponible en este dispositivo.'); return; }
+      if (!available) { Alert.alert(t('vistaPreviaReporte.noDisponible'), t('vistaPreviaReporte.compartirNoDisponible')); return; }
 
       let imgs = galleryImages;
       if (imgs.length === 0 && reportId) {
@@ -330,7 +330,7 @@ export function ReportPreviewSheet({
         } catch { /* usa lo que haya */ }
       }
       if (imgs.length === 0 && photoUri) imgs = [photoUri];
-      if (imgs.length === 0) { Alert.alert('Sin fotos', 'Este reporte no tiene fotos adjuntas.'); return; }
+      if (imgs.length === 0) { Alert.alert(t('vistaPreviaReporte.sinFotos'), t('vistaPreviaReporte.sinFotosDetalle')); return; }
 
       // expo-sharing solo admite una URI por invocacion: si hay varias fotos,
       // se comparten en secuencia (una hoja de compartir por foto).
@@ -340,12 +340,12 @@ export function ReportPreviewSheet({
         await FileSystem.writeAsStringAsync(fileUri, raw, { encoding: FileSystem.EncodingType.Base64 });
         await shareWithAutoRecover(fileUri, {
           mimeType: 'image/jpeg',
-          dialogTitle: imgs.length > 1 ? `Compartir foto ${i + 1} de ${imgs.length}` : 'Compartir foto',
+          dialogTitle: imgs.length > 1 ? t('vistaPreviaReporte.compartirFotoDe', { i: i + 1, n: imgs.length }) : t('vistaPreviaReporte.compartirFoto'),
           UTI: 'public.jpeg',
         });
       }
     } catch (e: any) {
-      Alert.alert('Error', e?.message || 'No se pudo compartir.');
+      Alert.alert(t('vistaPreviaReporte.error'), e?.message || t('vistaPreviaReporte.noSeComparti'));
     } finally {
       setSharingPhotos(false);
     }
@@ -373,7 +373,7 @@ export function ReportPreviewSheet({
           style={StyleSheet.absoluteFill}
           onPress={onClose}
           accessibilityRole="button"
-          accessibilityLabel="Cerrar vista previa"
+          accessibilityLabel={t('vistaPreviaReporte.cerrarVistaPrevia')}
         />
         <View style={styles.card} pointerEvents="box-none">
           <View style={styles.cardInner}>
@@ -413,28 +413,28 @@ export function ReportPreviewSheet({
                   onPress={() => toggleSeverity('informativo')}
                   style={[styles.sevBtnSmall, { borderColor: '#1E40AF' }, currentSeveridad.includes('informativo') && { backgroundColor: '#1E40AF' }, !canEditSeverity && { opacity: 0.6 }]}
                 >
-                  <Text style={[styles.sevBtnTxt, currentSeveridad.includes('informativo') ? { color: '#fff' } : { color: '#1E40AF' }]}>Inf.</Text>
+                  <Text style={[styles.sevBtnTxt, currentSeveridad.includes('informativo') ? { color: '#fff' } : { color: '#1E40AF' }]}>{t('vistaPreviaReporte.sevInformativo')}</Text>
                 </TouchableOpacity>
                 <TouchableOpacity accessibilityRole="button"
                   disabled={!canEditSeverity}
                   onPress={() => toggleSeverity('diario')}
                   style={[styles.sevBtnSmall, { borderColor: '#10B981' }, currentSeveridad.includes('diario') && { backgroundColor: '#10B981' }, !canEditSeverity && { opacity: 0.6 }]}
                 >
-                  <Text style={[styles.sevBtnTxt, currentSeveridad.includes('diario') ? { color: '#fff' } : { color: '#10B981' }]}>Diario</Text>
+                  <Text style={[styles.sevBtnTxt, currentSeveridad.includes('diario') ? { color: '#fff' } : { color: '#10B981' }]}>{t('vistaPreviaReporte.sevDiario')}</Text>
                 </TouchableOpacity>
                 <TouchableOpacity accessibilityRole="button"
                   disabled={!canEditSeverity}
                   onPress={() => toggleSeverity('importante')}
                   style={[styles.sevBtnSmall, { borderColor: '#D97706' }, currentSeveridad.includes('importante') && { backgroundColor: '#D97706' }, !canEditSeverity && { opacity: 0.6 }]}
                 >
-                  <Text style={[styles.sevBtnTxt, currentSeveridad.includes('importante') ? { color: '#fff' } : { color: '#D97706' }]}>Sem.</Text>
+                  <Text style={[styles.sevBtnTxt, currentSeveridad.includes('importante') ? { color: '#fff' } : { color: '#D97706' }]}>{t('vistaPreviaReporte.sevSemanal')}</Text>
                 </TouchableOpacity>
                 <TouchableOpacity accessibilityRole="button"
                   disabled={!canEditSeverity}
                   onPress={() => toggleSeverity('urgente')}
                   style={[styles.sevBtnSmall, { borderColor: '#DC2626' }, currentSeveridad.includes('urgente') && { backgroundColor: '#DC2626' }, !canEditSeverity && { opacity: 0.6 }]}
                 >
-                  <Text style={[styles.sevBtnTxt, currentSeveridad.includes('urgente') ? { color: '#fff' } : { color: '#DC2626' }]}>Mensual</Text>
+                  <Text style={[styles.sevBtnTxt, currentSeveridad.includes('urgente') ? { color: '#fff' } : { color: '#DC2626' }]}>{t('vistaPreviaReporte.sevMensual')}</Text>
                 </TouchableOpacity>
                 {savingSev && <ActivityIndicator size="small" color="#1E40AF" />}
               </View>
@@ -444,7 +444,7 @@ export function ReportPreviewSheet({
             {galleryLoading && galleryImages.length === 0 ? (
               <View style={[styles.image, styles.imagePlaceholder]}>
                 <ActivityIndicator color="#1E40AF" />
-                <Text style={styles.imagePlaceholderTxt}>Cargando fotos…</Text>
+                <Text style={styles.imagePlaceholderTxt}>{t('vistaPreviaReporte.cargandoFotos')}</Text>
               </View>
             ) : galleryImages.length > 0 ? (
               <View style={{ gap: 10 }}>
@@ -485,7 +485,7 @@ export function ReportPreviewSheet({
             ) : (
               <View style={[styles.image, styles.imagePlaceholder]}>
                 <Ionicons name="image-outline" size={40} color="#94A3B8" />
-                <Text style={styles.imagePlaceholderTxt}>Sin foto adjunta</Text>
+                <Text style={styles.imagePlaceholderTxt}>{t('vistaPreviaReporte.sinFotoAdjunta')}</Text>
               </View>
             )}
 
@@ -493,35 +493,35 @@ export function ReportPreviewSheet({
             <Row icon="grid-outline" text={area} />
             <Row icon="location-outline" text={path} numberOfLines={3} />
 
-            {measurement ? <Block title="Medición" body={measurement} /> : null}
-            {avance ? <Block title="Avance" body={avance} /> : null}
+            {measurement ? <Block title={t('vistaPreviaReporte.medicion')} body={measurement} /> : null}
+            {avance ? <Block title={t('vistaPreviaReporte.avance')} body={avance} /> : null}
             {medicion && !measurement ? (
-              <Block title="Medición" body={medicion} />
+              <Block title={t('vistaPreviaReporte.medicion')} body={medicion} />
             ) : null}
 
             {/* Datos especificos de la plantilla elegida al capturar (si aplica). */}
             {dynamicEntries.length > 0 ? (
               <Block
-                title={usedTemplate ? `Datos - ${usedTemplate.name}` : 'Datos del reporte'}
+                title={usedTemplate ? t('vistaPreviaReporte.datosPlantilla', { plantilla: usedTemplate.name }) : t('vistaPreviaReporte.datosReporte')}
                 body={dynamicDataText}
               />
             ) : null}
 
             {/* Actividades & Observaciones: vital blocks for the field crew. */}
             <Block
-              title="Actividades"
-              body={hasActividades ? actividades : 'Sin actividades registradas'}
+              title={t('vistaPreviaReporte.actividades')}
+              body={hasActividades ? actividades : t('vistaPreviaReporte.sinActividades')}
               muted={!hasActividades}
             />
 
             <Block
-              title="Observaciones"
-              body={hasObservaciones ? observaciones : 'Sin observaciones'}
+              title={t('vistaPreviaReporte.observaciones')}
+              body={hasObservaciones ? observaciones : t('vistaPreviaReporte.sinObservaciones')}
               muted={!hasObservaciones}
             />
 
             {/* Texto completo (el mismo que se copia / comparte abajo) ------ */}
-            <Block title="Texto del reporte" body={shareText} />
+            <Block title={t('vistaPreviaReporte.textoReporte')} body={shareText} />
 
             {/* CTA para editar descripciones individuales por foto ---------- */}
             {imagesCount > 0 && reportId ? (
@@ -534,7 +534,7 @@ export function ReportPreviewSheet({
               >
                 <Ionicons name="create-outline" size={16} color="#1E40AF" />
                 <Text style={styles.editCaptionsBtnTxt}>
-                  Editar descripciones de fotos
+                  {t('vistaPreviaReporte.editarDescripciones')}
                 </Text>
               </Pressable>
             ) : null}
@@ -547,7 +547,7 @@ export function ReportPreviewSheet({
                 style={({ pressed }) => [styles.copyTextBtn, pressed && { opacity: 0.85 }]}
               >
                 <Ionicons name="copy-outline" size={16} color="#1E40AF" />
-                <Text style={styles.copyTextBtnTxt}>Copiar texto</Text>
+                <Text style={styles.copyTextBtnTxt}>{t('vistaPreviaReporte.copiarTexto')}</Text>
               </Pressable>
               <Pressable accessibilityRole="button"
                 onPress={onSharePhotos}
@@ -564,7 +564,7 @@ export function ReportPreviewSheet({
                   <Ionicons name="share-social-outline" size={16} color="#1E40AF" />
                 )}
                 <Text style={styles.copyTextBtnTxt}>
-                  {sharingPhotos ? 'Compartiendo…' : 'Compartir fotos'}
+                  {sharingPhotos ? t('vistaPreviaReporte.compartiendo') : t('vistaPreviaReporte.compartirFotos')}
                 </Text>
               </Pressable>
               {onShare ? (
@@ -581,7 +581,7 @@ export function ReportPreviewSheet({
                     sharing && { opacity: 0.6 },
                     pressed && !sharing && { opacity: 0.85 },
                   ]}
-                  accessibilityLabel="Compartir por WhatsApp"
+                  accessibilityLabel={t('vistaPreviaReporte.compartirWhatsapp')}
                   accessibilityState={{ disabled: sharing }}
                 >
                   {sharing ? (
@@ -590,7 +590,7 @@ export function ReportPreviewSheet({
                     <Ionicons name="logo-whatsapp" size={18} color="#FFFFFF" />
                   )}
                   <Text style={styles.waTxt}>
-                    {sharing ? 'Compartiendo…' : 'Compartir'}
+                    {sharing ? t('vistaPreviaReporte.compartiendo') : t('vistaPreviaReporte.compartir')}
                   </Text>
                 </Pressable>
               ) : null}
@@ -601,7 +601,7 @@ export function ReportPreviewSheet({
                   pressed && { opacity: 0.85 },
                 ]}
               >
-                <Text style={styles.closeTxt}>Cerrar</Text>
+                <Text style={styles.closeTxt}>{t('vistaPreviaReporte.cerrar')}</Text>
               </Pressable>
             </View>
           </View>
@@ -659,7 +659,7 @@ function EditCaptionsModal({
         <Pressable accessibilityRole="button" style={styles.editCard} onPress={(e) => e.stopPropagation()}>
           <View style={styles.header}>
             <Text style={styles.title} numberOfLines={1}>
-              Descripciones de fotos
+              {t('vistaPreviaReporte.descripcionesFotos')}
             </Text>
             <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} hitSlop={10} onPress={onClose}>
               <Ionicons name="close" size={22} color="#0F172A" />
@@ -670,14 +670,14 @@ function EditCaptionsModal({
             <View style={{ paddingVertical: 40, alignItems: 'center' }}>
               <ActivityIndicator color="#1E40AF" />
               <Text style={{ marginTop: 8, fontSize: 12, color: '#64748B' }}>
-                Cargando reporte_
+                {t('vistaPreviaReporte.cargandoReporte')}
               </Text>
             </View>
           ) : !report || images.length === 0 ? (
             <View style={{ paddingVertical: 40, alignItems: 'center', gap: 8 }}>
               <Ionicons name="image-outline" size={32} color="#94A3B8" />
               <Text style={{ fontSize: 13, color: '#64748B' }}>
-                Este reporte no tiene fotos.
+                {t('vistaPreviaReporte.sinFotosReporte')}
               </Text>
             </View>
           ) : (
@@ -686,11 +686,7 @@ function EditCaptionsModal({
               contentContainerStyle={styles.scrollContent}
               keyboardShouldPersistTaps="handled"
             >
-              <Text style={styles.editHint}>
-                Estas descripciones aparecen al pie de cada foto en el reporte
-                ejecutivo (PPTX/PDF). Max. 160 caracteres para no rebasar 4
-                líneas.
-              </Text>
+              <Text style={styles.editHint}>{t('vistaPreviaReporte.ayudaDescripciones')}</Text>
 
               {images.map((b64, i) => (
                 <View key={`edit-${i}`} style={styles.editPhotoRow}>
@@ -704,13 +700,13 @@ function EditCaptionsModal({
                   />
                   <View style={{ flex: 1, gap: 4 }}>
                     <Text style={styles.editFieldLabel}>
-                      Descripción foto {i + 1}
+                      {t('vistaPreviaReporte.descripcionFoto', { n: i + 1 })}
                     </Text>
                     <TextInput
                       placeholder={
                         i === 0
-                          ? 'Descripción de la primera foto (max. 4 líneas)'
-                          : 'Descripción de la segunda foto (max. 4 líneas)'
+                          ? t('vistaPreviaReporte.descripcionPrimera')
+                          : t('vistaPreviaReporte.descripcionSegunda')
                       }
                       placeholderTextColor="#94A3B8"
                       style={styles.editInput}
@@ -718,10 +714,10 @@ function EditCaptionsModal({
                       numberOfLines={4}
                       maxLength={160}
                       value={draft[i] || ''}
-                      onChangeText={(t) => {
+                      onChangeText={(v) => {
                         const next = [...draft];
                         while (next.length <= i) next.push('');
-                        next[i] = t;
+                        next[i] = v;
                         onChangeDraft(next);
                       }}
                     />
@@ -745,7 +741,7 @@ function EditCaptionsModal({
               ]}
             >
               <Text style={[styles.closeTxt, { color: '#0F172A' }]}>
-                Cancelar
+                {t('vistaPreviaReporte.cancelar')}
               </Text>
             </Pressable>
             <Pressable accessibilityRole="button"
@@ -760,7 +756,7 @@ function EditCaptionsModal({
               {saving ? (
                 <ActivityIndicator color="#FFFFFF" />
               ) : (
-                <Text style={styles.closeTxt}>Guardar</Text>
+                <Text style={styles.closeTxt}>{t('vistaPreviaReporte.guardar')}</Text>
               )}
             </Pressable>
           </View>

@@ -13,7 +13,7 @@ import { useEnvio } from '@/src/hooks/useEnvio';
 import { useFormErrors } from '@/src/hooks/useFormErrors';
 import { t } from '@/src/i18n';
 import { colors, radius, shadow, spacing } from '@/src/theme';
-import { nombreConcepto } from '@/src/utils/nombresNivel';
+import { concordanciaConcepto } from '@/src/utils/nombresNivel';
 import { cadenciaDeProyecto, metaPorDefecto } from '@/src/utils/metaPorDefecto';
 import { DECIMALES_CANTIDAD, DECIMALES_IMPORTE, SeparadorDecimal, formatoNumero, parseNumeroEntrada } from '@/src/utils/numeros';
 import { showToast } from '@/src/utils/toast';
@@ -32,7 +32,8 @@ interface Props {
 export function NuevoConceptoModal({ visible, project, partida, onClose, onCreado }: Props) {
   const separador: SeparadorDecimal = project?.separador_decimal === ',' ? ',' : '.';
   const unidades = useMemo(() => unidadesDelProyecto(project?.unidades_personalizadas), [project?.unidades_personalizadas]);
-  const nombre = nombreConcepto(project);
+  const conc = concordanciaConcepto(project);
+  const nombre = conc.nombre;
 
   const [clave, setClave] = useState('');
   const [descripcion, setDescripcion] = useState('');
@@ -72,7 +73,7 @@ export function NuevoConceptoModal({ visible, project, partida, onClose, onCread
       if (ponerTodos(r.errores) || !r.valores) return;
       try {
         const creado = await api.createConcepto({ partida_id: partida.id, ...r.valores });
-        showToast(t('catalogoForm.conceptoCreado', { concepto: nombre }));
+        showToast(t('catalogoForm.conceptoCreado', { concepto: nombre, creado: conc.creado }));
         onCreado(creado);
       } catch (e) {
         if ((e as any)?.status === 409) poner('clave', t('catalogoForm.claveEnUso', { clave: clave.trim() }));
@@ -88,7 +89,7 @@ export function NuevoConceptoModal({ visible, project, partida, onClose, onCread
       <View style={styles.backdrop}>
         <View style={styles.card}>
           <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-            <Text style={styles.title} accessibilityRole="header">{t('catalogoForm.nuevoConcepto', { concepto: nombre.toLowerCase() })}</Text>
+            <Text style={styles.title} accessibilityRole="header">{t('catalogoForm.nuevoConcepto', { nuevo: conc.nuevo, concepto: conc.minuscula })}</Text>
             {partida ? (
               <Text style={styles.padre}>{t('catalogoForm.seCreaEn', { partida: `${partida.clave} — ${partida.nombre}` })}</Text>
             ) : null}

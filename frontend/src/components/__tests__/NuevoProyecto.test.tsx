@@ -11,13 +11,19 @@ jest.mock('expo-router', () => {
   return { router, useRouter: () => router };
 });
 jest.mock('@/src/utils/toast', () => ({ showToast: jest.fn() }));
-jest.mock('@/src/api', () => ({ api: { createProject: jest.fn() } }));
+jest.mock('@/src/api', () => ({ api: { createProject: jest.fn(), listTiposObra: jest.fn() } }));
 
 import { router } from 'expo-router';
 import { api } from '@/src/api';
 import { showToast } from '@/src/utils/toast';
 
 const crearProyecto = api.createProject as jest.Mock;
+const listarTipos = api.listTiposObra as jest.Mock;
+
+const CATALOGO = [
+  { id: 'generica', nombre: 'Genérica', descripcion: 'Cualquier obra', modulos_por_defecto: {}, plantillas_recomendadas: [] },
+  { id: 'carretera', nombre: 'Carretera', descripcion: 'Terracerías y pavimentos', modulos_por_defecto: {}, plantillas_recomendadas: [] },
+];
 
 function llenarObligatorios() {
   fireEvent.changeText(screen.getByLabelText('Nombre del proyecto'), 'Libramiento Norte');
@@ -25,7 +31,10 @@ function llenarObligatorios() {
   fireEvent.changeText(screen.getByLabelText('Número de contrato'), 'SCT-1');
 }
 
-beforeEach(() => jest.clearAllMocks());
+beforeEach(() => {
+  jest.clearAllMocks();
+  listarTipos.mockResolvedValue(CATALOGO);
+});
 
 describe('Nuevo proyecto', () => {
   it('marca cada campo obligatorio faltante junto a su campo y no crea nada', async () => {
@@ -95,6 +104,55 @@ describe('Nuevo proyecto', () => {
     crearProyecto.mockRejectedValueOnce(Object.assign(new Error('Ese número de contrato ya existe'), { status: 409 }));
     await act(async () => { fireEvent.press(screen.getByText('Crear proyecto')); });
     expect(screen.getByText('Ese número de contrato ya existe')).toBeTruthy();
+  });
+
+  describe('tipo de obra (K-13)', () => {
+    it('muestra los tipos del catálogo con «Genérica» elegida y la envía por defecto', async () => {
+      crearProyecto.mockResolvedValue({ id: 'n1' });
+      render(<NewProjectScreen />);
+      const generica = await screen.findByRole('radio', { name: /Genérica/ });
+      expect(generica.props.accessibilityState.selected).toBe(true);
+      expect(screen.getByRole('radio', { name: /Carretera/ }).props.accessibilityState.selected).toBe(false);
+      expect(screen.getByText('El tipo de obra decide qué módulos se activan por defecto; puedes cambiarlo después.')).toBeTruthy();
+
+      llenarObligatorios();
+      await act(async () => { fireEvent.press(screen.getByText('Crear proyecto')); });
+      expect(crearProyecto).toHaveBeenCalledWith(expect.objectContaining({ tipo_obra: 'generica' }));
+    });
+
+    it('envía el tipo elegido', async () => {
+      crearProyecto.mockResolvedValue({ id: 'n1' });
+      render(<NewProjectScreen />);
+      fireEvent.press(await screen.findByRole('radio', { name: /Carretera/ }));
+      expect(screen.getByRole('radio', { name: /Carretera/ }).props.accessibilityState.selected).toBe(true);
+      llenarObligatorios();
+      await act(async () => { fireEvent.press(screen.getByText('Crear proyecto')); });
+      expect(crearProyecto).toHaveBeenCalledWith(expect.objectContaining({ tipo_obra: 'carretera' }));
+    });
+
+    it('si el catálogo falla avisa en línea, ofrece reintentar y se puede crear igual como «generica»', async () => {
+      listarTipos.mockRejectedValueOnce(new Error('sin red'));
+      crearProyecto.mockResolvedValue({ id: 'n1' });
+      render(<NewProjectScreen />);
+      expect(await screen.findByText(/No se pudieron cargar los tipos de obra/)).toBeTruthy();
+      llenarObligatorios();
+      await act(async () => { fireEvent.press(screen.getByText('Crear proyecto')); });
+      expect(crearProyecto).toHaveBeenCalledWith(expect.objectContaining({ tipo_obra: 'generica' }));
+
+      await act(async () => { fireEvent.press(screen.getByRole('button', { name: 'Reintentar' })); });
+      expect(await screen.findByRole('radio', { name: /Genérica/ })).toBeTruthy();
+      expect(screen.queryByText(/No se pudieron cargar los tipos de obra/)).toBeNull();
+    });
+
+    it('tras crear con éxito el tipo vuelve a «Genérica»', async () => {
+      crearProyecto.mockResolvedValue({ id: 'n1' });
+      render(<NewProjectScreen />);
+      fireEvent.press(await screen.findByRole('radio', { name: /Carretera/ }));
+      llenarObligatorios();
+      await act(async () => { fireEvent.press(screen.getByText('Crear proyecto')); });
+      await waitFor(() => expect(router.replace).toHaveBeenCalled());
+      expect(screen.getByRole('radio', { name: /Genérica/ }).props.accessibilityState.selected).toBe(true);
+    });
   });
 
   it('un doble toque mientras crea no manda dos proyectos', async () => {

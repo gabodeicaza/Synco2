@@ -26,7 +26,9 @@ import { DECIMALES_CANTIDAD, DECIMALES_IMPORTE, SeparadorDecimal, mensajeNumeroI
 import { showToast } from '@/src/utils/toast';
 import { ImportarCatalogoModal } from '@/src/components/ImportarCatalogoModal';
 import { ImportarMaestroModal } from '@/src/components/ImportarMaestroModal';
-import { nombreNivel, nombreConcepto, tituloModuloCatalogo, pluralizar } from '@/src/utils/nombresNivel';
+import {
+  concordanciaConcepto, concordanciaNivel, nombreNivel, nombreConcepto, tituloModuloCatalogo, pluralizar,
+} from '@/src/utils/nombresNivel';
 import { a11y, t } from '@/src/i18n';
 import { Button } from '@/src/components/Button';
 import { InlineError } from '@/src/components/InlineError';
@@ -125,7 +127,7 @@ export default function CatalogoConceptosScreen({ projectId }: { projectId: stri
       setProject(proj);
       setPartidas(parts);
     } catch (e: any) {
-      setError(e?.message || 'No se pudo cargar el catálogo');
+      setError(e?.message || t('nivelesGenero.noSePudoCargarCatalogo'));
     } finally {
       setLoading(false);
     }
@@ -227,17 +229,17 @@ export default function CatalogoConceptosScreen({ projectId }: { projectId: stri
     }
     setMode('busqueda');
     setSearching(true);
-    const t = setTimeout(async () => {
+    const temporizador = setTimeout(async () => {
       try {
         const results = await api.searchConceptos(projectId, { q: query, unidad: unidadFiltro || undefined });
         setSearchResults(results);
       } catch (e: any) {
-        Alert.alert('Error', e?.message || 'La búsqueda falló');
+        Alert.alert(t('nivelesGenero.errorTitulo'), e?.message || t('nivelesGenero.busquedaFallo'));
       } finally {
         setSearching(false);
       }
     }, 300);
-    return () => clearTimeout(t);
+    return () => clearTimeout(temporizador);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query, unidadFiltro, projectId]);
 
@@ -265,9 +267,9 @@ export default function CatalogoConceptosScreen({ projectId }: { projectId: stri
 
   async function saveField(concepto: Concepto, field: ConceptoEditableField, value: string) {
     const labels: Record<ConceptoEditableField, string> = {
-      precio_unitario: 'precio unitario',
-      meta: 'meta (ritmo)',
-      importe_total_editable: 'importe contratado',
+      precio_unitario: t('nivelesGenero.campoPrecioUnitario'),
+      meta: t('nivelesGenero.campoMeta'),
+      importe_total_editable: t('nivelesGenero.campoImporte'),
     };
     const label = labels[field];
     const maxDecimales = field === 'meta' ? DECIMALES_CANTIDAD : DECIMALES_IMPORTE;
@@ -281,15 +283,17 @@ export default function CatalogoConceptosScreen({ projectId }: { projectId: stri
     const fmt = (v: string) => (esDinero ? formatMoney(v) : v ? formatCantidad(v) : t('meta.sinMeta').toLowerCase());
     const actual = field === 'importe_total_editable' ? (concepto.importe_total_editable || '0') : concepto[field];
     const ok = await confirm(
-      `Actualizar ${label}`,
-      `${nombreConcepto(project)} ${concepto.clave}: cambiar ${label} de ${fmt(actual)} a ${fmt(value)}.`,
+      t('nivelesGenero.actualizarCampo', { campo: label }),
+      t('nivelesGenero.cambiarCampo', {
+        concepto: nombreConcepto(project), clave: concepto.clave, campo: label, actual: fmt(actual), nuevo: fmt(value),
+      }),
     );
     if (!ok) return;
     try {
       const updated = await api.updateConcepto(concepto.id, { [field]: value } as any);
       setConceptos((list) => list.map((c) => (c.id === concepto.id ? updated : c)));
     } catch (e: any) {
-      Alert.alert('No se pudo guardar', e?.message || 'Inténtalo nuevamente.');
+      Alert.alert(t('nivelesGenero.noSePudoGuardar'), e?.message || t('nivelesGenero.reintentar'));
     }
   }
 
@@ -315,26 +319,26 @@ export default function CatalogoConceptosScreen({ projectId }: { projectId: stri
   async function borrarPartida(p: Partida) {
     const esCarpeta = tienePartidasHijas(p);
     const ok = await confirm(
-      `Borrar ${nombreNivel(project, breadcrumb.length).toLowerCase()}`,
-      esCarpeta
-        ? `Se borrará "${p.clave} — ${p.nombre}" y TODO lo que contiene (subcarpetas y ${pluralizar(nombreConcepto(project)).toLowerCase()}). Esta acción no se puede deshacer desde la app.`
-        : `Se borrará "${p.clave} — ${p.nombre}" y sus ${pluralizar(nombreConcepto(project)).toLowerCase()}. Esta acción no se puede deshacer desde la app.`,
-      { confirmText: 'Borrar', destructive: true },
+      t('nivelesGenero.borrarNivel', { nivel: nombreNivel(project, breadcrumb.length).toLowerCase() }),
+      t(esCarpeta ? 'nivelesGenero.borrarNivelConSubniveles' : 'nivelesGenero.borrarNivelConConceptos', {
+        clave: p.clave, nombre: p.nombre, conceptos: pluralizar(nombreConcepto(project)).toLowerCase(),
+      }),
+      { confirmText: t('nivelesGenero.borrar'), destructive: true },
     );
     if (!ok) return;
     try {
       await api.deletePartida(p.id);
       await loadPartidas();
     } catch (e: any) {
-      Alert.alert('No se pudo borrar', e?.message || 'Inténtalo nuevamente.');
+      Alert.alert(t('nivelesGenero.noSePudoBorrar'), e?.message || t('nivelesGenero.reintentar'));
     }
   }
 
   async function borrarConcepto(c: Concepto) {
     const ok = await confirm(
-      `Borrar ${nombreConcepto(project).toLowerCase()}`,
-      `Se borrará "${c.clave} — ${c.descripcion}". Esta acción no se puede deshacer desde la app.`,
-      { confirmText: 'Borrar', destructive: true },
+      t('nivelesGenero.borrarConcepto', { concepto: nombreConcepto(project).toLowerCase() }),
+      t('nivelesGenero.borrarConceptoCuerpo', { clave: c.clave, descripcion: c.descripcion }),
+      { confirmText: t('nivelesGenero.borrar'), destructive: true },
     );
     if (!ok) return;
     try {
@@ -342,7 +346,7 @@ export default function CatalogoConceptosScreen({ projectId }: { projectId: stri
       setConceptos((list) => list.filter((x) => x.id !== c.id));
       await loadPartidas();
     } catch (e: any) {
-      Alert.alert('No se pudo borrar', e?.message || 'Inténtalo nuevamente.');
+      Alert.alert(t('nivelesGenero.noSePudoBorrar'), e?.message || t('nivelesGenero.reintentar'));
     }
   }
 
@@ -367,7 +371,7 @@ export default function CatalogoConceptosScreen({ projectId }: { projectId: stri
       <ScreenHeader
         title={`${tituloModuloCatalogo(project).toUpperCase()} — ${(project?.name || '').toUpperCase()}`}
         subtitle={(project?.start_date || project?.end_date)
-          ? `Periodo: ${project?.start_date || '—'} a ${project?.end_date || '—'}`
+          ? t('nivelesGenero.periodo', { inicio: project?.start_date || '—', fin: project?.end_date || '—' })
           : undefined}
         backgroundColor={headerColor}
         onBack={mode === 'partidas' && breadcrumb.length > 0 ? subirUnNivel : undefined}
@@ -380,7 +384,7 @@ export default function CatalogoConceptosScreen({ projectId }: { projectId: stri
         <TextInput
           value={query}
           onChangeText={setQuery}
-          placeholder="Buscar por clave o descripción en todo el catálogo…"
+          placeholder={t('nivelesGenero.buscarPlaceholder')}
           placeholderTextColor={colors.textMuted}
           style={styles.searchInput}
         />
@@ -476,7 +480,7 @@ export default function CatalogoConceptosScreen({ projectId }: { projectId: stri
       {canImport && mode !== 'busqueda' ? (
         <Pressable accessibilityRole="button" style={[styles.importFab, { bottom: margenes.botonBottom }]} onPress={() => setImportOpen(true)}>
           <Ionicons name="cloud-upload-outline" size={18} color="#fff" />
-          <Text style={styles.importFabTxt}>Importar catálogo</Text>
+          <Text style={styles.importFabTxt}>{t('nivelesGenero.importarCatalogo')}</Text>
         </Pressable>
       ) : null}
 
@@ -485,6 +489,7 @@ export default function CatalogoConceptosScreen({ projectId }: { projectId: stri
           visible={importOpen}
           projectId={projectId}
           partidas={partidas}
+          project={project}
           onClose={() => setImportOpen(false)}
           onImported={() => {
             setImportOpen(false);
@@ -497,6 +502,7 @@ export default function CatalogoConceptosScreen({ projectId }: { projectId: stri
           visible={importOpen}
           projectId={projectId}
           partidas={partidas}
+          project={project}
           onClose={() => setImportOpen(false)}
           onImported={() => {
             setImportOpen(false);
@@ -569,7 +575,7 @@ function RenombrarPartidaModal({
       await api.updatePartida(partida.id, { nombre: nombre.trim() });
       onGuardada();
     } catch (e: any) {
-      setErr(e?.message || 'No se pudo guardar el nombre.');
+      setErr(e?.message || t('nivelesGenero.noSePudoGuardarNombre'));
     } finally {
       setBusy(false);
     }
@@ -587,12 +593,12 @@ function RenombrarPartidaModal({
             style={styles.nuevaPartidaInput}
             editable={!busy}
             autoFocus
-            accessibilityLabel="Nombre"
+            accessibilityLabel={t('catalogoForm.nombre')}
             onSubmitEditing={guardar}
           />
           <InlineError message={err} style={{ marginTop: 8 }} />
           <View style={{ flexDirection: 'row', gap: 8, marginTop: 14 }}>
-            <Button label="Cancelar" variant="secondary" onPress={onClose} disabled={busy} style={{ flex: 1 }} />
+            <Button label={t('catalogoForm.cancelar')} variant="secondary" onPress={onClose} disabled={busy} style={{ flex: 1 }} />
             <Button label={t('catalogo.guardar')} onPress={guardar} loading={busy} style={{ flex: 1 }} />
           </View>
         </View>
@@ -635,8 +641,10 @@ function PartidasList({
   /** Subtotal del nodo actual = TODO lo que tiene debajo (subniveles y conceptos). null en la raíz. */
   subtotalNodoCents: number | null;
 }) {
-  const nivelActual = nombreNivel(project, depth);
-  const nivelPadre = depth > 0 ? nombreNivel(project, depth - 1) : nivelActual;
+  const cNivel = concordanciaNivel(project, depth);
+  const cPadre = concordanciaNivel(project, depth > 0 ? depth - 1 : depth);
+  const nivelActual = cNivel.nombre;
+  const nivelPadre = cPadre.nombre;
   const conceptoPlural = pluralizar(nombreConcepto(project));
   return (
     <View style={{ flex: 1 }}>
@@ -644,7 +652,7 @@ function PartidasList({
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.breadcrumbRow} contentContainerStyle={{ paddingHorizontal: spacing.md, alignItems: 'center' }}>
           <Pressable accessibilityRole="button" onPress={() => onIrABreadcrumb(-1)} style={styles.breadcrumbItem}>
             <Ionicons name="albums-outline" size={13} color={colors.primary} />
-            <Text style={styles.breadcrumbTxt}>Catálogo</Text>
+            <Text style={styles.breadcrumbTxt}>{t('nivelesGenero.catalogoRaiz')}</Text>
           </Pressable>
           {breadcrumb.map((p, idx) => (
             <React.Fragment key={p.id}>
@@ -666,15 +674,19 @@ function PartidasList({
           <Pressable accessibilityRole="button" onPress={onNuevaPartida} style={styles.nuevaPartidaRow}>
             <Ionicons name="add-circle-outline" size={20} color={colors.primary} />
             <Text style={styles.nuevaPartidaRowTxt}>
-              {esRaiz ? `Nueva ${nivelActual.toLowerCase()}` : `Nueva ${nivelActual.toLowerCase()} aquí`}
+              {esRaiz
+                ? t('catalogoForm.nuevaPartida', { nuevo: cNivel.nuevo, nivel: cNivel.minuscula })
+                : t('nivelesGenero.nuevoAqui', { nuevo: cNivel.nuevo, nivel: cNivel.minuscula })}
             </Text>
           </Pressable>
         ) : null}
         {partidas.length === 0 ? (
           <Text style={styles.empty}>
             {esRaiz
-              ? `Este proyecto aún no tiene ${pluralizar(nivelActual).toLowerCase()} en su catálogo.`
-              : `Esta ${nivelPadre.toLowerCase()} aún no tiene ${pluralizar(nivelActual).toLowerCase()}.`}
+              ? t('nivelesGenero.sinNivelesEnProyecto', { niveles: pluralizar(nivelActual).toLowerCase() })
+              : t('nivelesGenero.sinSubniveles', {
+                Este: cPadre.Este, padre: cPadre.minuscula, niveles: pluralizar(nivelActual).toLowerCase(),
+              })}
           </Text>
         ) : (
           partidas.map((p) => {
@@ -734,7 +746,9 @@ function PartidasList({
       </ScrollView>
       <View style={[styles.footerFixed, { paddingBottom: margenes.piePaddingBottom }]}>
         <Text style={styles.footerLabel}>
-          {subtotalNodoCents !== null ? `SUBTOTAL — ${nivelPadre.toUpperCase()} (todo lo que contiene)` : 'TOTAL DEL CATÁLOGO'}
+          {subtotalNodoCents !== null
+            ? t('nivelesGenero.subtotalNodo', { nivel: nivelPadre.toUpperCase() })
+            : t('nivelesGenero.totalCatalogo')}
         </Text>
         <Text style={styles.footerValue}>
           {formatMoney(centsToDecimalString(subtotalNodoCents !== null ? subtotalNodoCents : totalCatalogoCents))}
@@ -773,7 +787,9 @@ function ConceptosList({
   scrollRef: React.RefObject<ScrollView | null>;
 }) {
   if (loading) return <ActivityIndicator color={colors.primary} style={{ marginTop: 40 }} />;
-  const nivelActual = nombreNivel(project, depth);
+  // `depth` es la profundidad de los hijos del nodo abierto; el nodo mismo es del nivel anterior.
+  const cNivel = concordanciaNivel(project, Math.max(0, depth - 1));
+  const cConcepto = concordanciaConcepto(project);
   const conceptoPlural = pluralizar(nombreConcepto(project));
 
   return (
@@ -781,18 +797,20 @@ function ConceptosList({
       {onNuevoConcepto ? (
         <Pressable accessibilityRole="button" onPress={onNuevoConcepto} style={[styles.nuevaPartidaRow, { marginHorizontal: spacing.md }]}>
           <Ionicons name="add-circle-outline" size={20} color={colors.primary} />
-          <Text style={styles.nuevaPartidaRowTxt}>{t('catalogoForm.nuevoConcepto', { concepto: nombreConcepto(project).toLowerCase() })}</Text>
+          <Text style={styles.nuevaPartidaRowTxt}>{t('catalogoForm.nuevoConcepto', { nuevo: cConcepto.nuevo, concepto: cConcepto.minuscula })}</Text>
         </Pressable>
       ) : null}
       <View style={styles.tableToggleRow}>
         <Pressable accessibilityRole="button" onPress={onToggleTableView} style={styles.tableToggleBtn}>
           <Ionicons name={tableView ? 'list-outline' : 'grid-outline'} size={16} color={colors.primary} />
-          <Text style={styles.tableToggleTxt}>{tableView ? 'Vista lista' : 'Vista tabla completa'}</Text>
+          <Text style={styles.tableToggleTxt}>{tableView ? t('nivelesGenero.vistaLista') : t('nivelesGenero.vistaTabla')}</Text>
         </Pressable>
       </View>
 
       {conceptos.length === 0 ? (
-        <Text style={styles.empty}>Esta {nivelActual.toLowerCase()} aún no tiene {conceptoPlural.toLowerCase()}.</Text>
+        <Text style={styles.empty}>
+          {t('nivelesGenero.sinConceptosEnNivel', { Este: cNivel.Este, nivel: cNivel.minuscula, conceptos: conceptoPlural.toLowerCase() })}
+        </Text>
       ) : tableView ? (
         <ConceptosTable conceptos={conceptos} headerColor={headerColor} paddingBottom={margenes.listaPaddingBottom} />
       ) : (
@@ -813,6 +831,7 @@ function ConceptosList({
                 canEdit={canEdit}
                 onSaveField={onSaveField}
                 onDelete={onDeleteConcepto}
+                nombreConcepto={nombreConcepto(project)}
               />
             </View>
           ))}
@@ -830,8 +849,9 @@ function ConceptosList({
 }
 
 function ConceptoRow({
-  concepto, expanded, resaltado, onToggle, canEdit, onSaveField, onDelete,
+  concepto, expanded, resaltado, onToggle, canEdit, onSaveField, onDelete, nombreConcepto: nombreDelConcepto,
 }: {
+  nombreConcepto: string;
   concepto: Concepto;
   expanded: boolean;
   resaltado?: boolean;
@@ -851,7 +871,9 @@ function ConceptoRow({
             {concepto.descripcion}
           </Text>
           <Text style={styles.conceptoMetaCollapsed} numberOfLines={1}>
-            {concepto.meta ? `Meta: ${textoDeMeta(concepto.meta, concepto.unidad, concepto.periodicidad_meta)}` : textoDeMeta('', concepto.unidad)}
+            {concepto.meta
+              ? t('nivelesGenero.meta', { meta: textoDeMeta(concepto.meta, concepto.unidad, concepto.periodicidad_meta) })
+              : textoDeMeta('', concepto.unidad)}
           </Text>
         </View>
         <Ionicons name={expanded ? 'chevron-up' : 'chevron-down'} size={18} color={colors.textMuted} />
@@ -861,14 +883,14 @@ function ConceptoRow({
         <View style={styles.conceptoDetail}>
           <Text style={styles.detailDescFull}>{concepto.descripcion}</Text>
           <DetailField
-            label="Cantidad contratada"
+            label={t('catalogoForm.cantidad')}
             value={`${formatCantidad(concepto.cantidad)} ${UNIDAD_LABELS[concepto.unidad as Unidad] || concepto.unidad}`}
           />
           {conceptoTieneEvm(concepto) ? (
             <>
-              <DetailField label="Precio unitario (calculado)" value={formatMoney(concepto.precio_unitario_dinamico || '0')} />
+              <DetailField label={t('nivelesGenero.precioUnitarioCalculado')} value={formatMoney(concepto.precio_unitario_dinamico || '0')} />
               <EditableDetailField
-                label="Importe contratado"
+                label={t('nivelesGenero.importeContratado')}
                 value={formatMoney(concepto.importe_total_editable || '0')}
                 rawValue={concepto.importe_total_editable || '0'}
                 canEdit={canEdit}
@@ -878,30 +900,34 @@ function ConceptoRow({
           ) : (
             <>
               <EditableDetailField
-                label="Precio unitario"
+                label={t('catalogoForm.precioUnitario')}
                 value={formatMoney(concepto.precio_unitario)}
                 rawValue={concepto.precio_unitario}
                 canEdit={canEdit}
                 onSave={(v) => onSaveField(concepto, 'precio_unitario', v)}
               />
-              <DetailField label="Importe contratado" value={formatMoney(concepto.importe_contratado)} bold />
+              <DetailField label={t('nivelesGenero.importeContratado')} value={formatMoney(concepto.importe_contratado)} bold />
             </>
           )}
           <EditableDetailField
-            label="Meta (ritmo)"
+            label={t('nivelesGenero.metaRitmo')}
             value={textoDeMeta(concepto.meta, concepto.unidad, concepto.periodicidad_meta)}
             rawValue={concepto.meta}
             canEdit={canEdit}
             onSave={(v) => onSaveField(concepto, 'meta', v)}
           />
           <DetailField
-            label="Ejecutado acumulado"
-            value={`${formatCantidad(concepto.cantidad_ejecutada_acumulada)} de ${formatCantidad(concepto.cantidad)} ${concepto.unidad}`}
+            label={t('nivelesGenero.ejecutadoAcumulado')}
+            value={t('nivelesGenero.ejecutadoDe', {
+              ejecutado: formatCantidad(concepto.cantidad_ejecutada_acumulada),
+              contratado: formatCantidad(concepto.cantidad),
+              unidad: concepto.unidad,
+            })}
           />
           {canEdit ? (
             <Pressable accessibilityRole="button" onPress={() => onDelete(concepto)} style={styles.deleteConceptoBtn} hitSlop={8}>
               <Ionicons name="trash-outline" size={14} color={colors.error} />
-              <Text style={styles.deleteConceptoTxt}>Borrar concepto</Text>
+              <Text style={styles.deleteConceptoTxt}>{t('nivelesGenero.borrarConcepto', { concepto: nombreDelConcepto.toLowerCase() })}</Text>
             </Pressable>
           ) : null}
         </View>
@@ -985,12 +1011,12 @@ function ConceptosTable({ conceptos, headerColor, paddingBottom }: { conceptos: 
     <ScrollView horizontal contentContainerStyle={{ paddingHorizontal: spacing.md }}>
       <View>
         <View style={[styles.tableHeaderRow, { backgroundColor: headerColor }]}>
-          <Text style={[styles.tableHeaderCell, { width: 90 }]}>CLAVE</Text>
-          <Text style={[styles.tableHeaderCell, { width: 320 }]}>DESCRIPCIÓN</Text>
-          <Text style={[styles.tableHeaderCell, { width: 80 }]}>UNIDAD</Text>
-          <Text style={[styles.tableHeaderCell, { width: 100 }]}>CANTIDAD</Text>
-          <Text style={[styles.tableHeaderCell, { width: 110 }]}>PU</Text>
-          <Text style={[styles.tableHeaderCell, { width: 130 }]}>IMPORTE</Text>
+          <Text style={[styles.tableHeaderCell, { width: 90 }]}>{t('nivelesGenero.colClave')}</Text>
+          <Text style={[styles.tableHeaderCell, { width: 320 }]}>{t('nivelesGenero.colDescripcion')}</Text>
+          <Text style={[styles.tableHeaderCell, { width: 80 }]}>{t('nivelesGenero.colUnidad')}</Text>
+          <Text style={[styles.tableHeaderCell, { width: 100 }]}>{t('nivelesGenero.colCantidad')}</Text>
+          <Text style={[styles.tableHeaderCell, { width: 110 }]}>{t('nivelesGenero.colPrecioUnitario')}</Text>
+          <Text style={[styles.tableHeaderCell, { width: 130 }]}>{t('nivelesGenero.colImporte')}</Text>
         </View>
         <ScrollView contentContainerStyle={{ paddingBottom }}>
           {conceptos.map((c, idx) => (
@@ -1024,7 +1050,7 @@ function SearchResultsList({
   return (
     <ScrollView contentContainerStyle={[styles.listScroll, { paddingBottom: margenes.listaPaddingBottom }]}>
       {results.length === 0 ? (
-        <Text style={styles.empty}>Sin resultados.</Text>
+        <Text style={styles.empty}>{t('nivelesGenero.sinResultados')}</Text>
       ) : (
         results.map((c) => (
           <Pressable

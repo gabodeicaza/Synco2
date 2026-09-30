@@ -31,6 +31,41 @@ function partidaModal(extra: Partial<React.ComponentProps<typeof NuevaPartidaMod
   return props;
 }
 
+describe('NuevaPartidaModal: concordancia con el nombre de nivel configurado (C-14)', () => {
+  const niveles = ['Frente', 'Tramo', 'Estructura', 'Zona'];
+  it.each([
+    [0, 'Nuevo frente'], [1, 'Nuevo tramo'], [2, 'Nueva estructura'], [3, 'Nueva zona'],
+  ])('en la profundidad %s el título es "%s"', (depth, titulo) => {
+    partidaModal({ project: { nombres_niveles_partida: niveles } as any, depth });
+    expect(screen.getByText(titulo)).toBeTruthy();
+  });
+
+  it('sin nombres configurados conserva "Nueva partida" y nunca dice "nivel 3s"', () => {
+    partidaModal({ project: null, depth: 0 });
+    expect(screen.getByText('Nueva partida')).toBeTruthy();
+  });
+
+  it('un nivel más profundo que los configurados es masculino ("Nuevo nivel 5")', () => {
+    partidaModal({ project: { nombres_niveles_partida: ['Frente'] } as any, depth: 4 });
+    expect(screen.getByText('Nuevo nivel 5')).toBeTruthy();
+  });
+
+  it('el género forzado del proyecto cambia el artículo ("Nueva frente")', () => {
+    partidaModal({ project: { nombres_niveles_partida: ['Frente'], genero_niveles: { Frente: 'f' } } as any, depth: 0 });
+    expect(screen.getByText('Nueva frente')).toBeTruthy();
+  });
+
+  it('el aviso de éxito concuerda ("Tramo creado", "Estructura creada")', async () => {
+    const props = partidaModal({ project: { nombres_niveles_partida: ['Frente', 'Tramo', 'Estructura'] } as any, depth: 2 });
+    crearPartida.mockResolvedValue({});
+    fireEvent.changeText(screen.getByLabelText('Clave'), '9');
+    fireEvent.changeText(screen.getByLabelText('Nombre'), 'Cimentación');
+    fireEvent.press(screen.getByText('Crear'));
+    await waitFor(() => expect(props.onCreada).toHaveBeenCalled());
+    expect(showToast).toHaveBeenCalledWith('Estructura creada');
+  });
+});
+
 describe('NuevaPartidaModal (X-03, K-07, K-08, K-09)', () => {
   it('con campos vacíos muestra el error junto a cada campo y no llama al servidor', async () => {
     partidaModal();
@@ -120,8 +155,14 @@ function llenarConcepto(valores: { clave?: string; descripcion?: string; cantida
 describe('NuevoConceptoModal (C-05, C-04)', () => {
   it('usa el nombre de nivel configurado por el proyecto', () => {
     conceptoModal();
-    expect(screen.getByText('Nuevo actividad')).toBeTruthy();
+    expect(screen.getByText('Nueva actividad')).toBeTruthy(); // C-14: "actividad" es femenino
+    expect(screen.queryByText('Nuevo actividad')).toBeNull();
     expect(screen.getByText('Se creará en «1 — Obra civil»')).toBeTruthy();
+  });
+
+  it('el género forzado por el proyecto manda sobre la palabra (C-14)', () => {
+    conceptoModal({ project: { ...proyecto, genero_niveles: { actividad: 'm' } } });
+    expect(screen.getByText('Nuevo actividad')).toBeTruthy();
   });
 
   it('ofrece unidades base y personalizadas sin repetir la que ya existe en la base (C-04 / C-12)', () => {

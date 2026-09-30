@@ -131,15 +131,15 @@ export default function MigracionCatalogoScreen() {
             <ScrollView style={{ maxHeight: 280 }}>
               {vista?.datos.partidas_a_crear.map((n) => (
                 <Text key={n.clave} style={styles.fila}>
-                  + {n.clave}{n.padre ? `  (dentro de ${n.padre})` : ''}
+                  + {n.clave}{n.padre ? `  ${t('migracion.dentroDe', { padre: n.padre })}` : ''}
                 </Text>
               ))}
               <Text style={[styles.detalle, { marginTop: spacing.sm }]}>
-                {vista?.datos.conceptos_a_mover} conceptos se moverán a su partida.
+                {t('migracion.conceptosSeMoveran', { n: vista?.datos.conceptos_a_mover ?? 0 })}
               </Text>
             </ScrollView>
             <View style={styles.acciones}>
-              <Button label="Cerrar" variant="secondary" onPress={() => setVista(null)} style={{ flex: 1 }} />
+              <Button label={t('migracion.cerrar')} variant="secondary" onPress={() => setVista(null)} style={{ flex: 1 }} />
               <Button label={t('migracion.aplicar')} onPress={() => vista && aplicar(vista.item)} loading={!!vista && ocupado === vista.item.project_id} style={{ flex: 1 }} />
             </View>
           </View>

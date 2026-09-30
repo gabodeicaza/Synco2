@@ -47,7 +47,8 @@ describe('ortografía del texto visible', () => {
     expect(personal).toContain("'Albañiles'");
     expect(personal).toContain("'Topógrafos'");
     expect(leer('app/(spec)/mensajes.tsx')).toContain('Sé el primero en escribir.');
-    expect(leer('src/components/AnnouncementsView.tsx')).toContain('Los saltos de línea se respetan.');
+    // El texto vive en i18n (noticias.contenidoAyuda), no en el componente.
+    expect(leer('src/i18n/es-MX.ts')).toContain('Los saltos de línea se respetan.');
     expect(leer('src/components/HistoryCalendarModal.tsx')).toContain("'Mié'");
   });
 });

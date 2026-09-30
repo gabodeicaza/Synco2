@@ -29,6 +29,7 @@ import { RangoFechasPicker } from '@/src/components/RangoFechasPicker';
 import { formatearRangoLegible, rangoHoy, rangoAyer, rangoEstaSemana, rangoEsteMes, RangoFechas } from '@/src/utils/rangoFechas';
 import { confirm } from '@/src/utils/confirm';
 import { fmtFecha } from '@/src/utils/fechas';
+import { t } from '@/src/i18n';
 
 // Antes había 3 pestañas (Generales / Por Estación / Por Poste) — "Por
 // Estación" (nivel SUBTRAMO) generaba confusión sin aportar nada que "Por
@@ -190,7 +191,7 @@ export function ActividadesGeneralesScreen({ projectId, projectColor: projectCol
       const updated = await api.updateActividadGeneral(projectId, item.id, { texto_editado: texto });
       setItems((prev) => prev.map((it) => (it.id === item.id ? updated : it)));
     } catch (e: any) {
-      Alert.alert('No se pudo guardar', e?.message || 'Intenta de nuevo');
+      Alert.alert(t('nivelesGenero.noSePudoGuardar'), e?.message || 'Intenta de nuevo');
     }
   }
 
@@ -199,14 +200,14 @@ export function ActividadesGeneralesScreen({ projectId, projectColor: projectCol
       const updated = await api.revertActividadGeneral(projectId, item.id);
       setItems((prev) => prev.map((it) => (it.id === item.id ? updated : it)));
     } catch (e: any) {
-      Alert.alert('No se pudo revertir', e?.message || 'Intenta de nuevo');
+      Alert.alert(t('actividadesGenerales.noSePudoRevertir'), e?.message || 'Intenta de nuevo');
     }
   }
 
   async function alternarOculta(item: ActividadCurada) {
     const ocultar = !item.oculta;
     if (ocultar) {
-      const ok = await confirm('Ocultar actividad', 'No aparecerá en el impreso. Podrás restaurarla cuando quieras.', { confirmText: 'Ocultar' });
+      const ok = await confirm(t('actividadesGenerales.ocultarActividad'), t('actividadesGenerales.noApareceraEnEl'), { confirmText: 'Ocultar' });
       if (!ok) return;
     }
     try {
@@ -217,7 +218,7 @@ export function ActividadesGeneralesScreen({ projectId, projectColor: projectCol
         setItems((prev) => prev.map((it) => (it.id === item.id ? updated : it)));
       }
     } catch (e: any) {
-      Alert.alert('No se pudo actualizar', e?.message || 'Intenta de nuevo');
+      Alert.alert(t('noticias.noSeActualizo'), e?.message || 'Intenta de nuevo');
     }
   }
 
@@ -228,7 +229,7 @@ export function ActividadesGeneralesScreen({ projectId, projectColor: projectCol
       setMoveTargetId(null);
       setNivel(destino === 'GENERAL' ? 'GENERAL' : 'UBICACION');
     } catch (e: any) {
-      Alert.alert('No se pudo mover', e?.message || 'Intenta de nuevo');
+      Alert.alert(t('actividadesGenerales.noSePudoMover'), e?.message || 'Intenta de nuevo');
     }
   }
 
@@ -238,7 +239,7 @@ export function ActividadesGeneralesScreen({ projectId, projectColor: projectCol
       setItems((prev) => [...prev, created]);
       setAddOpen(false);
     } catch (e: any) {
-      Alert.alert('No se pudo añadir', e?.message || 'Intenta de nuevo');
+      Alert.alert(t('actividadesGenerales.noSePudoAnadir'), e?.message || 'Intenta de nuevo');
     }
   }
 
@@ -248,7 +249,7 @@ export function ActividadesGeneralesScreen({ projectId, projectColor: projectCol
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <ScreenHeader
-        title="ACTIVIDADES GENERALES"
+        title={t('actividadesGenerales.actividadesGenerales')}
         subtitle={misActividadesLabel || undefined}
         backgroundColor={acento}
         fallbackHref={(fallbackHref || homeRouteForRole(role)) as any}
@@ -269,7 +270,7 @@ export function ActividadesGeneralesScreen({ projectId, projectColor: projectCol
           {desde || hasta ? (
             <Pressable accessibilityRole="button" onPress={limpiarFiltroFecha} style={[styles.filtroChip, { backgroundColor: chipBg }]}>
               <Ionicons name="close" size={13} color={headerTextColor} />
-              <Text style={[styles.filtroChipTxt, { color: headerTextColor }]}>Quitar</Text>
+              <Text style={[styles.filtroChipTxt, { color: headerTextColor }]}>{t('a11y.quitar')}</Text>
             </Pressable>
           ) : null}
         </ScrollView>
@@ -284,7 +285,7 @@ export function ActividadesGeneralesScreen({ projectId, projectColor: projectCol
           ) : null}
           <Pressable accessibilityRole="button" style={[styles.chipBtn, { backgroundColor: chipBg }]} onPress={() => setPreviewOpen(true)}>
             <Ionicons name="eye-outline" size={14} color={headerTextColor} />
-            <Text style={[styles.chipBtnTxt, { color: headerTextColor }]}>Previsualizar</Text>
+            <Text style={[styles.chipBtnTxt, { color: headerTextColor }]}>{t('actividadesGenerales.previsualizar')}</Text>
           </Pressable>
         </View>
       </View>
@@ -307,7 +308,7 @@ export function ActividadesGeneralesScreen({ projectId, projectColor: projectCol
         <View style={styles.center}>
           <Text style={styles.errorTxt}>{error}</Text>
           <Pressable accessibilityRole="button" onPress={() => load()} style={[styles.retryBtn, { backgroundColor: acento }]}>
-            <Text style={[styles.retryBtnTxt, { color: headerTextColor }]}>Reintentar</Text>
+            <Text style={[styles.retryBtnTxt, { color: headerTextColor }]}>{t('red.reintentar')}</Text>
           </Pressable>
         </View>
       ) : (
@@ -317,14 +318,14 @@ export function ActividadesGeneralesScreen({ projectId, projectColor: projectCol
         >
           <Pressable accessibilityRole="button" style={styles.toggleOcultas} onPress={() => setIncluirOcultas((v) => !v)}>
             <Ionicons name={incluirOcultas ? 'eye' : 'eye-off-outline'} size={14} color={colors.textMuted} />
-            <Text style={styles.toggleOcultasTxt}>{incluirOcultas ? 'Viendo ocultas también' : 'Ver actividades ocultas'}</Text>
+            <Text style={styles.toggleOcultasTxt}>{incluirOcultas ? t('actividadesGenerales.viendoOcultasTambien') : t('actividadesGenerales.verActividadesOcultas')}</Text>
           </Pressable>
 
           {itemsDelNivel.length === 0 ? (
             <View style={styles.emptyBox}>
               <Ionicons name="document-text-outline" size={26} color={colors.textMuted} />
               <Text style={styles.emptyTxt}>
-                Sin actividades registradas en este periodo para esta área.
+                {t('actividadesGenerales.sinActividadesRegistradasEn')}
               </Text>
             </View>
           ) : (
@@ -360,7 +361,7 @@ export function ActividadesGeneralesScreen({ projectId, projectColor: projectCol
           onPress={() => setAddOpen(true)}
         >
           <Ionicons name="add" size={22} color={headerTextColor} />
-          <Text style={[styles.fabTxt, { color: headerTextColor }]}>Añadir</Text>
+          <Text style={[styles.fabTxt, { color: headerTextColor }]}>{t('actividadesGenerales.anadir')}</Text>
         </Pressable>
       ) : null}
 
@@ -417,7 +418,7 @@ function AreaSelector({
         <Pressable style={styles.backdrop} onPress={() => setOpen(false)}>
           <View style={styles.pickerCard}>
             <Pressable accessibilityRole="button" style={styles.pickerRow} onPress={() => { onChange(null); setOpen(false); }}>
-              <Text style={styles.pickerRowTxt}>Todas las áreas</Text>
+              <Text style={styles.pickerRowTxt}>{t('proyectoPantalla.todasLasAreas2')}</Text>
               {!value ? <Ionicons name="checkmark" size={16} color={colors.primary} /> : null}
             </Pressable>
             {areas.map((a) => (
@@ -468,9 +469,9 @@ function ActividadRow({
       <Pressable accessibilityRole="button" onPress={onToggle} style={styles.rowCollapsed}>
         <Ionicons name={origenIcon as any} size={16} color={colors.textMuted} />
         <Text style={styles.rowTxt} numberOfLines={expanded ? undefined : 2}>{item.texto}</Text>
-        {item.editada ? <Badge label="editada" color={accentOnWhite} /> : null}
+        {item.editada ? <Badge label={t('actividadesGenerales.editada')} color={accentOnWhite} /> : null}
         {item.dedup_count > 1 ? <Badge label={`×${item.dedup_count}`} color={colors.textMuted} /> : null}
-        {item.oculta ? <Badge label="oculta" color={colors.error} /> : null}
+        {item.oculta ? <Badge label={t('actividadesGenerales.oculta')} color={colors.error} /> : null}
         {!item.puede_editar ? <Ionicons name="lock-closed-outline" size={13} color={colors.textMuted} /> : null}
         <Ionicons name={expanded ? 'chevron-up' : 'chevron-down'} size={16} color={colors.textMuted} />
       </Pressable>
@@ -485,20 +486,20 @@ function ActividadRow({
           {item.origen_eliminado ? (
             <View style={styles.warnBox}>
               <Ionicons name="warning-outline" size={13} color={colors.error} />
-              <Text style={styles.warnTxt}>El reporte de origen ya no existe.</Text>
+              <Text style={styles.warnTxt}>{t('actividadesGenerales.elReporteDeOrigen')}</Text>
             </View>
           ) : item.origen_estructura_cambio ? (
             <View style={styles.warnBox}>
               <Ionicons name="warning-outline" size={13} color={colors.error} />
               <Text style={styles.warnTxt}>
-                El reporte de origen cambió de estructura (ya no tiene esta línea) — revisá el reporte original.
+                {t('actividadesGenerales.elReporteDeOrigen2')}
               </Text>
             </View>
           ) : item.origen_cambio ? (
             <View style={styles.warnBox}>
               <Ionicons name="warning-outline" size={13} color={colors.error} />
               <Text style={styles.warnTxt}>
-                El reporte de origen cambió — texto actual: “{item.texto_actual_reporte}”
+                {t('actividadesGenerales.elReporteDeOrigen3', { texto: item.texto_actual_reporte ?? '' })}
               </Text>
             </View>
           ) : null}
@@ -506,7 +507,7 @@ function ActividadRow({
           {item.editada ? (
             <Pressable accessibilityRole="button" onPress={onRevertir} style={styles.linkBtn}>
               <Ionicons name="arrow-undo-outline" size={13} color={accentOnWhite} />
-              <Text style={[styles.linkBtnTxt, { color: accentOnWhite }]}>Ver original / revertir</Text>
+              <Text style={[styles.linkBtnTxt, { color: accentOnWhite }]}>{t('actividadesGenerales.verOriginalRevertir')}</Text>
             </Pressable>
           ) : null}
 
@@ -520,13 +521,13 @@ function ActividadRow({
               />
               <View style={styles.editActions}>
                 <Pressable accessibilityRole="button" style={styles.smallBtnGhost} onPress={() => { setDraft(item.texto); setEditing(false); }}>
-                  <Text style={styles.smallBtnGhostTxt}>Cancelar</Text>
+                  <Text style={styles.smallBtnGhostTxt}>{t('cuenta.cancelar')}</Text>
                 </Pressable>
                 <Pressable accessibilityRole="button"
                   style={[styles.smallBtn, { backgroundColor: acento }]}
                   onPress={() => { onGuardar(draft); setEditing(false); }}
                 >
-                  <Text style={[styles.smallBtnTxt, { color: contrastText(acento) }]}>Guardar</Text>
+                  <Text style={[styles.smallBtnTxt, { color: contrastText(acento) }]}>{t('catalogo.guardar')}</Text>
                 </Pressable>
               </View>
             </View>
@@ -534,19 +535,19 @@ function ActividadRow({
             <View style={styles.rowActions}>
               <Pressable accessibilityRole="button" style={styles.iconBtn} onPress={() => setEditing(true)}>
                 <Ionicons name="pencil-outline" size={16} color={colors.text} />
-                <Text style={styles.iconBtnTxt}>Editar</Text>
+                <Text style={styles.iconBtnTxt}>{t('a11y.editar')}</Text>
               </Pressable>
               <Pressable accessibilityRole="button" style={styles.iconBtn} onPress={onMover}>
                 <Ionicons name="swap-horizontal-outline" size={16} color={colors.text} />
-                <Text style={styles.iconBtnTxt}>Mover</Text>
+                <Text style={styles.iconBtnTxt}>{t('a11y.herramientaMover')}</Text>
               </Pressable>
               <Pressable accessibilityRole="button" style={styles.iconBtn} onPress={onOcultar}>
                 <Ionicons name={item.oculta ? 'eye-outline' : 'eye-off-outline'} size={16} color={item.oculta ? accentOnWhite : colors.error} />
-                <Text style={[styles.iconBtnTxt, { color: item.oculta ? accentOnWhite : colors.error }]}>{item.oculta ? 'Restaurar' : 'Ocultar'}</Text>
+                <Text style={[styles.iconBtnTxt, { color: item.oculta ? accentOnWhite : colors.error }]}>{item.oculta ? t('actividadesGenerales.restaurar') : t('importadorUI.ocultar')}</Text>
               </Pressable>
             </View>
           ) : !item.puede_editar ? (
-            <Text style={styles.lockedNote}>Actividad de otra área — solo lectura.</Text>
+            <Text style={styles.lockedNote}>{t('actividadesGenerales.actividadDeOtraArea')}</Text>
           ) : null}
         </View>
       ) : null}
@@ -604,9 +605,9 @@ function AddActividadModal({
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onCancelar}>
       <View style={styles.backdrop}>
         <View style={styles.card}>
-          <Text style={styles.title}>Añadir actividad</Text>
+          <Text style={styles.title}>{t('actividadesGenerales.anadirActividad')}</Text>
 
-          <Text style={styles.fieldLabel}>Nivel</Text>
+          <Text style={styles.fieldLabel}>{t('actividadesGenerales.nivel')}</Text>
           <View style={styles.segmented}>
             {TAB_ORDER_UI.map((t) => (
               <Pressable accessibilityRole="button"
@@ -621,7 +622,7 @@ function AddActividadModal({
 
           {nivel !== 'GENERAL' ? (
             <>
-              <Text style={styles.fieldLabel}>Ubicación</Text>
+              <Text style={styles.fieldLabel}>{t('minuta.form.ubicacion')}</Text>
               <ScrollView style={{ maxHeight: 140 }} nestedScrollEnabled>
                 {opciones.map((n) => (
                   <Pressable accessibilityRole="button" key={n.id} style={styles.pickerRow} onPress={() => setNodeId(n.id)}>
@@ -629,14 +630,14 @@ function AddActividadModal({
                     {nodeId === n.id ? <Ionicons name="checkmark" size={16} color={readableAccent(acento)} /> : null}
                   </Pressable>
                 ))}
-                {opciones.length === 0 ? <Text style={styles.emptyMini}>No hay nodos disponibles.</Text> : null}
+                {opciones.length === 0 ? <Text style={styles.emptyMini}>{t('actividadesGenerales.noHayNodosDisponibles')}</Text> : null}
               </ScrollView>
             </>
           ) : null}
 
           {canSelectArea ? (
             <>
-              <Text style={styles.fieldLabel}>Área</Text>
+              <Text style={styles.fieldLabel}>{t('proyectoPantalla.areaSola')}</Text>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: spacing.sm }}>
                 {areas.map((a) => (
                   <Pressable accessibilityRole="button"
@@ -651,25 +652,25 @@ function AddActividadModal({
             </>
           ) : null}
 
-          <Text style={styles.fieldLabel}>Texto</Text>
+          <Text style={styles.fieldLabel}>{t('a11y.herramientaTexto')}</Text>
           <TextInput
             value={texto}
             onChangeText={setTexto}
             multiline
-            placeholder="Describe la actividad..."
+            placeholder={t('actividadesGenerales.describeLaActividad')}
             style={styles.editInput}
           />
 
           <View style={styles.actions}>
             <Pressable accessibilityRole="button" onPress={onCancelar} style={[styles.btn, styles.btnGhost]}>
-              <Text style={styles.btnGhostTxt}>Cancelar</Text>
+              <Text style={styles.btnGhostTxt}>{t('cuenta.cancelar')}</Text>
             </Pressable>
             <Pressable accessibilityRole="button"
               disabled={!puedeConfirmar}
               onPress={confirmar}
               style={[styles.btn, { backgroundColor: acento }, !puedeConfirmar && { opacity: 0.5 }]}
             >
-              <Text style={[styles.btnPrimaryTxt, { color: contrastText(acento) }]}>Añadir</Text>
+              <Text style={[styles.btnPrimaryTxt, { color: contrastText(acento) }]}>{t('actividadesGenerales.anadir')}</Text>
             </Pressable>
           </View>
         </View>
@@ -701,22 +702,22 @@ function MoverModal({
         <View style={styles.pickerCard}>
           {paso === 'destino' ? (
             <>
-              <Text style={styles.title}>Mover a...</Text>
+              <Text style={styles.title}>{t('actividadesGenerales.moverA')}</Text>
               {actualEsGeneral ? (
                 <Pressable accessibilityRole="button" style={styles.pickerRow} onPress={() => setPaso('nodo')}>
-                  <Text style={styles.pickerRowTxt}>Por Ubicación</Text>
+                  <Text style={styles.pickerRowTxt}>{t('proyectoPantalla.porUbicacion')}</Text>
                   <Ionicons name="chevron-forward" size={14} color={colors.textMuted} />
                 </Pressable>
               ) : (
                 <Pressable accessibilityRole="button" style={styles.pickerRow} onPress={() => onSeleccionar('GENERAL', null)}>
-                  <Text style={styles.pickerRowTxt}>Generales</Text>
+                  <Text style={styles.pickerRowTxt}>{t('proyectoPantalla.generales')}</Text>
                   <Ionicons name="chevron-forward" size={14} color={colors.textMuted} />
                 </Pressable>
               )}
             </>
           ) : (
             <>
-              <Text style={styles.title}>Elige la ubicación</Text>
+              <Text style={styles.title}>{t('actividadesGenerales.eligeLaUbicacion')}</Text>
               <ScrollView style={{ maxHeight: 260 }} nestedScrollEnabled>
                 {opciones.map((n) => (
                   <Pressable accessibilityRole="button" key={n.id} style={styles.pickerRow} onPress={() => onSeleccionar(nivelParaNodo(n), n.id)}>
@@ -724,7 +725,7 @@ function MoverModal({
                     <Ionicons name="chevron-forward" size={14} color={colors.textMuted} />
                   </Pressable>
                 ))}
-                {opciones.length === 0 ? <Text style={styles.emptyMini}>No hay nodos disponibles.</Text> : null}
+                {opciones.length === 0 ? <Text style={styles.emptyMini}>{t('actividadesGenerales.noHayNodosDisponibles')}</Text> : null}
               </ScrollView>
             </>
           )}
@@ -750,13 +751,13 @@ function PreviewModal({
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onCerrar}>
       <View style={styles.backdrop}>
         <View style={[styles.card, { maxHeight: '80%' }]}>
-          <Text style={styles.title}>Previsualización — {TAB_LABEL_UI[nivel]}</Text>
+          <Text style={styles.title}>{t('actividadesGenerales.previsualizacion', { nivel: TAB_LABEL_UI[nivel] })}</Text>
           <Text style={styles.previewNote}>
-            Aproximación de texto: el impreso real usa el formato con tabla y colores de marca.
+            {t('actividadesGenerales.aproximacionDeTextoEl')}
           </Text>
           <ScrollView style={{ marginTop: spacing.sm }}>
             <View style={[styles.previewHeader, { backgroundColor: acento }]}>
-              <Text style={[styles.previewHeaderTxt, { color: contrastText(acento) }]}>ACTIVIDADES GENERALES</Text>
+              <Text style={[styles.previewHeaderTxt, { color: contrastText(acento) }]}>{t('actividadesGenerales.actividadesGenerales')}</Text>
             </View>
             {grupos.filter((g) => g.items.length > 0).map((g) => (
               <View key={g.key} style={{ marginTop: spacing.sm }}>
@@ -768,7 +769,7 @@ function PreviewModal({
             ))}
           </ScrollView>
           <Pressable accessibilityRole="button" onPress={onCerrar} style={[styles.btn, styles.btnGhost, { marginTop: spacing.md }]}>
-            <Text style={styles.btnGhostTxt}>Cerrar</Text>
+            <Text style={styles.btnGhostTxt}>{t('migracion.cerrar')}</Text>
           </Pressable>
         </View>
       </View>

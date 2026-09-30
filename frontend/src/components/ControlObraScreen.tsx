@@ -28,12 +28,18 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import {
-  api, LocationNode, Project, PosteEstatus, EtapaPosteElemento, CimentacionElemento, Perforadora,
+  api, LocationNode, Project, PosteEstatus, EtapaPosteElemento, CimentacionElemento, Perforadora, PlantillaEtapasPoste,
 } from '@/src/api';
 import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
 import { ESTATUS_LABEL, ESTATUS_COLOR } from '@/src/components/AccesoPredioManager';
 import { downloadBlob } from '@/src/utils/downloadBlob';
-import { a11y } from '@/src/i18n';
+import { a11y, t } from '@/src/i18n';
+import { useAuth } from '@/src/auth-context';
+import { InlineError } from '@/src/components/InlineError';
+import { confirm } from '@/src/utils/confirm';
+import { showToast } from '@/src/utils/toast';
+import { unir } from '@/src/utils/texto';
+import { esErrorDeRed } from '@/src/utils/errores';
 import { ScreenHeader } from '@/src/components/ScreenHeader';
 
 type Tab = 'postes' | 'cimentacion' | 'perforadoras';
@@ -129,6 +135,15 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
   const [perfSaving, setPerfSaving] = useState(false);
   const [exporting, setExporting] = useState(false);
 
+  // Etapas de poste opcionales: un proyecto nuevo nace sin ellas y el Coordinador General puede partir
+  // de una plantilla preparada (los proyectos anteriores conservan las suyas).
+  const { user } = useAuth();
+  const esCoordinador = user?.role === 'coordinador_general';
+  const [plantillasEtapas, setPlantillasEtapas] = useState<PlantillaEtapasPoste[] | null>(null);
+  const [errorPlantillas, setErrorPlantillas] = useState<string | null>(null);
+  const [aplicandoPlantilla, setAplicandoPlantilla] = useState(false);
+  const [errorAplicar, setErrorAplicar] = useState<string | null>(null);
+
   const headerColor = project?.color_institucional || project?.color_tema || colors.primary;
   const headerTextColor = contrastText(headerColor);
 
@@ -143,7 +158,7 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
       const { blob, filename } = await api.downloadControlObraXlsx(projectId);
       await downloadBlob(blob, filename, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     } catch (e: any) {
-      Alert.alert('No se pudo exportar', e?.message || 'Inténtalo nuevamente.');
+      Alert.alert(t('controlObra.noSePudoExportar'), e?.message || t('controlObra.intentaNuevamente'));
     } finally {
       setExporting(false);
     }
@@ -167,13 +182,24 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
       });
       setElementoFieldDrafts(fd);
     } catch (e: any) {
-      Alert.alert('Error', e?.message || 'No se pudo cargar Control de Obra.');
+      Alert.alert(t('controlObra.errorTitulo'), e?.message || t('controlObra.noSePudoCargar'));
     } finally {
       setLoading(false);
     }
   }, [projectId]);
 
   useEffect(() => { load(); }, [load]);
+
+  const sinEtapas = !!project && !(project.etapas_poste && project.etapas_poste.length);
+
+  useEffect(() => {
+    if (!sinEtapas || !esCoordinador || plantillasEtapas) return;
+    let vivo = true;
+    api.listPlantillasEtapasPoste()
+      .then((lista) => { if (vivo) setPlantillasEtapas(lista); })
+      .catch(() => { if (vivo) setErrorPlantillas(t('controlObra.plantillasNoCargaron')); });
+    return () => { vivo = false; };
+  }, [sinEtapas, esCoordinador, plantillasEtapas]);
 
   const byId = useMemo(() => {
     const m: Record<string, LocationNode> = {};
@@ -241,9 +267,31 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
       const updated = await api.updatePosteActividadEstatus(node.id, actividadKey, next);
       setAllNodes((list) => list.map((n) => (n.id === node.id ? { ...n, estatus_actividades: (updated as any).estatus_actividades } : n)));
     } catch (e: any) {
-      Alert.alert('Error', e?.message || 'No se pudo actualizar el estatus');
+      Alert.alert(t('controlObra.errorTitulo'), e?.message || t('controlObra.noSePudoActualizarEstatus'));
     } finally {
       setBusyKeys((b) => ({ ...b, [key]: false }));
+    }
+  }
+
+  async function aplicarPlantilla(plantilla: PlantillaEtapasPoste) {
+    if (aplicandoPlantilla) return;
+    const ok = await confirm(
+      t('controlObra.plantillaTitulo'),
+      t('controlObra.plantillaMensaje', { nombre: plantilla.nombre, n: plantilla.etapas.length }),
+      { confirmText: t('controlObra.plantillaConfirmar') },
+    );
+    if (!ok) return;
+    setAplicandoPlantilla(true);
+    setErrorAplicar(null);
+    try {
+      const actualizado = await api.aplicarPlantillaEtapasPoste(projectId, plantilla.id);
+      setProject(actualizado);
+      showToast(t('controlObra.plantillaAplicada'));
+    } catch (e: any) {
+      if (esErrorDeRed(e)) showToast(t('red.errorDeRed'));
+      else setErrorAplicar(e?.message || t('controlObra.noSePudoAplicarPlantilla'));
+    } finally {
+      setAplicandoPlantilla(false);
     }
   }
 
@@ -278,7 +326,7 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
       .map((el) => ({ nombre: el.nombre.trim(), actividades: el.actividades.map((a) => a.trim()).filter(Boolean) }))
       .filter((el) => el.nombre && el.actividades.length > 0);
     if (!limpio.length) {
-      Alert.alert('Falta información', 'Agrega al menos un elemento (ej. "Pilas") con al menos una actividad.');
+      Alert.alert(t('controlObra.falloTitulo'), t('controlObra.faltaAlMenosUnElemento'));
       return;
     }
     setSavingEtapas(true);
@@ -287,7 +335,7 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
       setProject(updated);
       setEtapasEditorOpen(false);
     } catch (e: any) {
-      Alert.alert('No se pudo guardar', e?.message || 'Inténtalo nuevamente.');
+      Alert.alert(t('controlObra.noSePudoGuardar'), e?.message || t('controlObra.intentaNuevamente'));
     } finally {
       setSavingEtapas(false);
     }
@@ -296,7 +344,7 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
   async function addElemento() {
     if (!activeEstacionId) return;
     const nombre = elementoDraft.trim();
-    if (!nombre) { Alert.alert('Falta información', 'Escribe el nombre del elemento.'); return; }
+    if (!nombre) { Alert.alert(t('controlObra.falloTitulo'), t('controlObra.faltaNombreElemento')); return; }
     try {
       const created = await api.createCimentacionElemento(projectId, { node_id: activeEstacionId, elemento: nombre });
       setCimentacion((list) => [...list, created]);
@@ -304,7 +352,7 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
       setElementoDraft('');
       setAddElementoOpen(false);
     } catch (e: any) {
-      Alert.alert('No se pudo agregar', e?.message || 'Inténtalo nuevamente.');
+      Alert.alert(t('controlObra.noSePudoAgregar'), e?.message || t('controlObra.intentaNuevamente'));
     }
   }
 
@@ -328,7 +376,7 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
       });
       setCimentacion((list) => list.map((e) => (e.id === el.id ? updated : e)));
     } catch (e: any) {
-      Alert.alert('No se pudo guardar', e?.message || 'Inténtalo nuevamente.');
+      Alert.alert(t('controlObra.noSePudoGuardar'), e?.message || t('controlObra.intentaNuevamente'));
     } finally {
       setBusyKeys((b) => ({ ...b, [key]: false }));
     }
@@ -339,7 +387,7 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
       await api.deleteCimentacionElemento(projectId, el.id);
       setCimentacion((list) => list.filter((e) => e.id !== el.id));
     } catch (e: any) {
-      Alert.alert('No se pudo eliminar', e?.message || 'Inténtalo nuevamente.');
+      Alert.alert(t('controlObra.noSePudoEliminar'), e?.message || t('controlObra.intentaNuevamente'));
     }
   }
 
@@ -351,7 +399,7 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
 
   async function savePerforadora() {
     const nombre = perfDraft.nombre.trim();
-    if (!nombre) { Alert.alert('Falta información', 'Escribe el nombre de la perforadora.'); return; }
+    if (!nombre) { Alert.alert(t('controlObra.falloTitulo'), t('controlObra.faltaNombrePerforadora')); return; }
     setPerfSaving(true);
     try {
       if (perfModal === 'nueva') {
@@ -363,7 +411,7 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
       }
       setPerfModal(null);
     } catch (e: any) {
-      Alert.alert('No se pudo guardar', e?.message || 'Inténtalo nuevamente.');
+      Alert.alert(t('controlObra.noSePudoGuardar'), e?.message || t('controlObra.intentaNuevamente'));
     } finally {
       setPerfSaving(false);
     }
@@ -374,7 +422,7 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
       await api.deletePerforadora(projectId, p.id);
       setPerforadoras((list) => list.filter((x) => x.id !== p.id));
     } catch (e: any) {
-      Alert.alert('No se pudo eliminar', e?.message || 'Inténtalo nuevamente.');
+      Alert.alert(t('controlObra.noSePudoEliminar'), e?.message || t('controlObra.intentaNuevamente'));
     }
   }
 
@@ -388,7 +436,7 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <ScreenHeader
-        title="Control de Obra"
+        title={t('modulosObra.modulos.controlObra.titulo')}
         backgroundColor={headerColor}
         right={
           <Pressable accessibilityRole="button" accessibilityLabel={a11y('descargar')} onPress={exportXlsx} disabled={exporting} hitSlop={10} style={styles.iconBtn}>
@@ -403,13 +451,13 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
 
       <View style={styles.tabRow}>
         {([
-          { key: 'postes', label: 'Postes', icon: 'git-network-outline' },
-          { key: 'cimentacion', label: 'Cimentación', icon: 'layers-outline' },
-          { key: 'perforadoras', label: 'Perforadoras', icon: 'construct-outline' },
-        ] as { key: Tab; label: string; icon: keyof typeof Ionicons.glyphMap }[]).map((t) => (
-          <Pressable accessibilityRole="button" key={t.key} onPress={() => setTab(t.key)} style={[styles.tabBtn, tab === t.key && { borderBottomColor: headerColor }]}>
-            <Ionicons name={t.icon} size={15} color={tab === t.key ? headerColor : colors.textMuted} />
-            <Text style={[styles.tabTxt, tab === t.key && { color: headerColor }]}>{t.label}</Text>
+          { key: 'postes', label: t('controlObra.tabPostes'), icon: 'git-network-outline' },
+          { key: 'cimentacion', label: t('controlObra.tabCimentacion'), icon: 'layers-outline' },
+          { key: 'perforadoras', label: t('controlObra.tabPerforadoras'), icon: 'construct-outline' },
+        ] as { key: Tab; label: string; icon: keyof typeof Ionicons.glyphMap }[]).map((tb) => (
+          <Pressable accessibilityRole="button" accessibilityState={{ selected: tab === tb.key }} key={tb.key} onPress={() => setTab(tb.key)} style={[styles.tabBtn, tab === tb.key && { borderBottomColor: headerColor }]}>
+            <Ionicons name={tb.icon} size={15} color={tab === tb.key ? headerColor : colors.textMuted} />
+            <Text style={[styles.tabTxt, tab === tb.key && { color: headerColor }]}>{tb.label}</Text>
           </Pressable>
         ))}
       </View>
@@ -422,23 +470,73 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
               <Text style={[styles.heroPctSign, { color: headerColor }]}>%</Text>
             </View>
             <View style={{ flex: 1 }}>
-              <Text style={styles.heroLabel}>Avance físico general de postes</Text>
+              <Text style={styles.heroLabel}>{t('controlObra.avanceGeneral')}</Text>
               <View style={styles.progressTrack}>
                 <View style={[styles.progressFill, { width: `${fmtPct(overallStats.pct)}%`, backgroundColor: headerColor }]} />
               </View>
-              <Text style={styles.kpiTxt}>{overallStats.total} postes registrados{overallStats.alertCount > 0 ? ` · ${overallStats.alertCount} con cambio de trayectoria` : ''}</Text>
+              <Text style={styles.kpiTxt}>
+                {unir([
+                  overallStats.total === 1 ? t('controlObra.postesRegistradosUno') : t('controlObra.postesRegistrados', { n: overallStats.total }),
+                  overallStats.alertCount > 0 ? t('controlObra.conCambioTrayectoria', { n: overallStats.alertCount }) : null,
+                ])}
+              </Text>
             </View>
           </View>
 
+          {sinEtapas ? (
+            <View style={styles.detailCard}>
+              <Text style={styles.detailTitle}>{t('controlObra.etapasVacioTitulo')}</Text>
+              <Text style={styles.etapasHint}>{t('controlObra.etapasVacioTexto')}</Text>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={t('controlObra.configurarEtapas')}
+                onPress={openEtapasEditor}
+                style={styles.configBtn}
+                hitSlop={8}
+              >
+                <Ionicons name="settings-outline" size={14} color={headerColor} />
+                <Text style={[styles.configBtnTxt, { color: headerColor }]}>{t('controlObra.configurarEtapas')}</Text>
+              </Pressable>
+              {esCoordinador ? (
+                <>
+                  {plantillasEtapas === null && !errorPlantillas ? (
+                    <Text style={styles.etapasHint}>{t('controlObra.cargandoPlantillas')}</Text>
+                  ) : null}
+                  <InlineError message={errorPlantillas} />
+                  {(plantillasEtapas ?? []).map((plantilla) => (
+                    <Pressable
+                      key={plantilla.id}
+                      accessibilityRole="button"
+                      accessibilityLabel={t('controlObra.usarPlantilla', { nombre: plantilla.nombre })}
+                      accessibilityState={{ busy: aplicandoPlantilla, disabled: aplicandoPlantilla }}
+                      disabled={aplicandoPlantilla}
+                      onPress={() => aplicarPlantilla(plantilla)}
+                      style={[styles.modalBtn, { backgroundColor: headerColor }]}
+                    >
+                      {aplicandoPlantilla ? (
+                        <ActivityIndicator size="small" color={colors.textInverse} />
+                      ) : (
+                        <Text style={styles.modalBtnTxt}>{t('controlObra.usarPlantilla', { nombre: plantilla.nombre })}</Text>
+                      )}
+                    </Pressable>
+                  ))}
+                  <InlineError message={errorAplicar} />
+                </>
+              ) : (
+                <Text style={styles.etapasHint}>{t('controlObra.etapasVacioSoloCoord')}</Text>
+              )}
+            </View>
+          ) : null}
+
           {intertramos.length === 0 ? (
-            <Text style={styles.empty}>No hay nodos tipo Intertramo habilitados en Acceso al Predio todavía.</Text>
+            <Text style={styles.empty}>{t('controlObra.sinIntertramos')}</Text>
           ) : (
             <>
               <View style={styles.sectionLabelRow}>
-                <Text style={styles.sectionLabel}>Avance por intertramo</Text>
+                <Text style={styles.sectionLabel}>{t('controlObra.avancePorIntertramo')}</Text>
                 <Pressable accessibilityRole="button" onPress={openEtapasEditor} style={styles.configBtn} hitSlop={8}>
                   <Ionicons name="settings-outline" size={14} color={headerColor} />
-                  <Text style={[styles.configBtnTxt, { color: headerColor }]}>Configurar etapas</Text>
+                  <Text style={[styles.configBtnTxt, { color: headerColor }]}>{t('controlObra.configurarEtapas')}</Text>
                 </Pressable>
               </View>
               <View style={styles.cardsGrid}>
@@ -452,7 +550,12 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
                       style={[styles.stationCard, active && { borderColor: headerColor, backgroundColor: `${headerColor}0D` }]}
                     >
                       <Text style={styles.stationName} numberOfLines={2}>{it.name}</Text>
-                      <Text style={styles.stationCount}>{s.total} poste{s.total === 1 ? '' : 's'}{s.alertCount > 0 ? ` · ${s.alertCount} alerta${s.alertCount === 1 ? '' : 's'}` : ''}</Text>
+                      <Text style={styles.stationCount}>
+                        {unir([
+                          s.total === 1 ? t('controlObra.postesConteoUno') : t('controlObra.postesConteo', { n: s.total }),
+                          s.alertCount > 0 ? (s.alertCount === 1 ? t('controlObra.alertasConteoUno') : t('controlObra.alertasConteo', { n: s.alertCount })) : null,
+                        ])}
+                      </Text>
                       <View style={styles.progressTrackSm}>
                         <View style={[styles.progressFill, { width: `${fmtPct(s.pct)}%`, backgroundColor: headerColor }]} />
                       </View>
@@ -466,17 +569,14 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
                 <View style={styles.detailCard}>
                   <Text style={styles.detailTitle}>{activeIntertramo.name}</Text>
                   {postesOf(activeIntertramo.id).length === 0 ? (
-                    <Text style={styles.empty}>Este intertramo todavía no tiene postes (hijos) en el árbol.</Text>
+                    <Text style={styles.empty}>{t('controlObra.intertramoSinPostes')}</Text>
                   ) : actividadCols.length === 0 ? (
-                    <Text style={styles.empty}>
-                      Este proyecto todavía no tiene etapas de Poste configuradas — toca "Configurar etapas" arriba
-                      para definir los elementos (ej. Pilas, Cabezal) y sus actividades.
-                    </Text>
+                    <Text style={styles.empty}>{t('controlObra.sinEtapasConfiguradas')}</Text>
                   ) : (
                     <ScrollView horizontal showsHorizontalScrollIndicator>
                       <View style={styles.posteTable}>
                         <View style={styles.posteHeaderRow}>
-                          <Text style={[styles.posteGroupCell, styles.posteIdCol, { backgroundColor: `${headerColor}1A` }]}>Poste</Text>
+                          <Text style={[styles.posteGroupCell, styles.posteIdCol, { backgroundColor: `${headerColor}1A` }]}>{t('controlObra.columnaPoste')}</Text>
                           {(project?.etapas_poste && project.etapas_poste.length ? project.etapas_poste : []).map((el, i) => (
                             <Text
                               key={`${el.nombre}-${i}`}
@@ -489,7 +589,7 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
                               {el.nombre}
                             </Text>
                           ))}
-                          <Text style={[styles.posteGroupCell, { width: POSTE_PCT_COL_WIDTH, backgroundColor: colors.border }]}>% Avance</Text>
+                          <Text style={[styles.posteGroupCell, { width: POSTE_PCT_COL_WIDTH, backgroundColor: colors.border }]}>{t('controlObra.columnaAvance')}</Text>
                         </View>
                         <View style={styles.posteHeaderRow}>
                           <View style={[styles.posteIdCol, styles.posteSubHeaderCell]} />
@@ -540,7 +640,7 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
                       </View>
                     ))}
                   </View>
-                  <Text style={styles.hintTxt}>Toca una celda para cambiar su estatus.</Text>
+                  <Text style={styles.hintTxt}>{t('controlObra.tocaCelda')}</Text>
                 </View>
               ) : null}
             </>
@@ -549,10 +649,10 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
       ) : tab === 'cimentacion' ? (
         <ScrollView contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + spacing.xl }]}>
           {estaciones.length === 0 ? (
-            <Text style={styles.empty}>No hay nodos tipo Estación habilitados en Acceso al Predio todavía.</Text>
+            <Text style={styles.empty}>{t('controlObra.sinEstaciones')}</Text>
           ) : (
             <>
-              <Text style={styles.sectionLabel}>Avance de cimentación por estación</Text>
+              <Text style={styles.sectionLabel}>{t('controlObra.avanceCimentacion')}</Text>
               <View style={styles.cardsGrid}>
                 {estaciones.map((est) => {
                   const pct = estacionPct(est.id);
@@ -570,10 +670,10 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
                           <View style={styles.progressTrackSm}>
                             <View style={[styles.progressFill, { width: `${fmtPct(pct)}%`, backgroundColor: headerColor }]} />
                           </View>
-                          <Text style={[styles.stationPct, { color: headerColor }]}>{fmtPct(pct)}% colado</Text>
+                          <Text style={[styles.stationPct, { color: headerColor }]}>{t('controlObra.colado', { n: fmtPct(pct) })}</Text>
                         </>
                       ) : (
-                        <Text style={styles.stationCount}>Sin elementos capturados</Text>
+                        <Text style={styles.stationCount}>{t('controlObra.sinElementosCapturados')}</Text>
                       )}
                     </Pressable>
                   );
@@ -586,11 +686,11 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
                     <Text style={styles.detailTitle}>{activeEstacion.name}</Text>
                     <Pressable accessibilityRole="button" onPress={() => setAddElementoOpen(true)} style={styles.addBtn}>
                       <Ionicons name="add" size={16} color={headerColor} />
-                      <Text style={[styles.addBtnTxt, { color: headerColor }]}>Agregar elemento</Text>
+                      <Text style={[styles.addBtnTxt, { color: headerColor }]}>{t('controlObra.agregarElemento')}</Text>
                     </Pressable>
                   </View>
                   {cimentacion.filter((e) => e.node_id === activeEstacion.id).length === 0 ? (
-                    <Text style={styles.empty}>Sin elementos de cimentación capturados para esta estación.</Text>
+                    <Text style={styles.empty}>{t('controlObra.sinElementosEstacion')}</Text>
                   ) : (
                     cimentacion.filter((e) => e.node_id === activeEstacion.id).map((el) => {
                       const d = elementoFieldDrafts[el.id] || { total: '0', acumulado_total: '0', en_proceso: '0' };
@@ -603,16 +703,16 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
                         <View key={el.id} style={styles.elementoCard}>
                           <View style={styles.elementoHeadRow}>
                             <Text style={styles.elementoName}>{el.elemento}</Text>
-                            <Text style={[styles.elementoPct, { color: headerColor }]}>{fmtPct(pctColado)}% colado</Text>
+                            <Text style={[styles.elementoPct, { color: headerColor }]}>{t('controlObra.colado', { n: fmtPct(pctColado) })}</Text>
                             <Pressable accessibilityRole="button" accessibilityLabel={a11y('eliminar')} onPress={() => deleteElemento(el)} hitSlop={8}>
                               <Ionicons name="trash-outline" size={16} color={colors.error} />
                             </Pressable>
                           </View>
                           <View style={styles.elementoFieldsRow}>
                             {([
-                              { key: 'total', label: 'Total' },
-                              { key: 'acumulado_total', label: 'Acumulado' },
-                              { key: 'en_proceso', label: 'En proceso' },
+                              { key: 'total', label: t('controlObra.campoTotal') },
+                              { key: 'acumulado_total', label: t('controlObra.campoAcumulado') },
+                              { key: 'en_proceso', label: t('controlObra.campoEnProceso') },
                             ] as const).map(({ key, label }) => (
                               <View key={key} style={{ flex: 1 }}>
                                 <Text style={styles.elementoFieldLabel}>{label}</Text>
@@ -627,7 +727,7 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
                           </View>
                           {dirty ? (
                             <Pressable accessibilityRole="button" onPress={() => saveElemento(el)} disabled={!!busyKeys[busyKey]} style={[styles.saveBtn, { backgroundColor: headerColor }]}>
-                              {busyKeys[busyKey] ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.saveBtnTxt}>Guardar</Text>}
+                              {busyKeys[busyKey] ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.saveBtnTxt}>{t('controlObra.guardar')}</Text>}
                             </Pressable>
                           ) : null}
                         </View>
@@ -642,20 +742,20 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
       ) : (
         <ScrollView contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + spacing.xl }]}>
           <View style={styles.detailHeadRow}>
-            <Text style={styles.sectionLabel}>Relación de perforadoras</Text>
+            <Text style={styles.sectionLabel}>{t('controlObra.relacionPerforadoras')}</Text>
             <Pressable accessibilityRole="button" onPress={() => openPerfModal('nueva')} style={styles.addBtn}>
               <Ionicons name="add" size={16} color={headerColor} />
-              <Text style={[styles.addBtnTxt, { color: headerColor }]}>Agregar perforadora</Text>
+              <Text style={[styles.addBtnTxt, { color: headerColor }]}>{t('controlObra.agregarPerforadora')}</Text>
             </Pressable>
           </View>
           {perforadoras.length === 0 ? (
-            <Text style={styles.empty}>Sin perforadoras registradas todavía.</Text>
+            <Text style={styles.empty}>{t('controlObra.sinPerforadoras')}</Text>
           ) : (
             perforadoras.map((p) => (
               <Pressable accessibilityRole="button" key={p.id} onPress={() => openPerfModal(p)} style={styles.perfCard}>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.perfName}>{p.nombre}</Text>
-                  <Text style={styles.perfMeta}>{p.serie || '—'} · {p.ubicacion || 'Sin ubicación'}</Text>
+                  <Text style={styles.perfMeta}>{unir([p.serie || '—', p.ubicacion || t('controlObra.sinUbicacion')])}</Text>
                   {p.estatus ? <Text style={[styles.perfEstatus, { color: headerColor }]}>{p.estatus}</Text> : null}
                 </View>
                 <Pressable accessibilityRole="button" accessibilityLabel={a11y('eliminar')} onPress={() => deletePerforadora(p)} hitSlop={8}>
@@ -673,11 +773,8 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
       <Modal visible={etapasEditorOpen} transparent animationType="slide" onRequestClose={() => setEtapasEditorOpen(false)}>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
           <View style={[styles.modalCard, { maxHeight: '85%' }]}>
-            <Text style={styles.modalTitle}>Configurar etapas de Poste</Text>
-            <Text style={styles.etapasHint}>
-              Elementos (ej. Pilas, Cabezal) y sus actividades de construcción, en el orden en que quieres que
-              aparezcan como columnas de la tabla "Postes". Se guarda solo para este proyecto.
-            </Text>
+            <Text style={styles.modalTitle}>{t('controlObra.editorEtapasTitulo')}</Text>
+            <Text style={styles.etapasHint}>{t('controlObra.editorEtapasAyuda')}</Text>
             <ScrollView style={{ maxHeight: 380 }}>
               {etapasDraft.map((el, idx) => (
                 <View key={idx} style={styles.etapaElementoCard}>
@@ -685,7 +782,7 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
                     <TextInput
                       value={el.nombre}
                       onChangeText={(t) => renameEtapaElemento(idx, t)}
-                      placeholder="Nombre del elemento (ej. Pilas)"
+                      placeholder={t('controlObra.nombreElementoPlaceholder')}
                       placeholderTextColor={colors.textMuted}
                       style={[styles.input, { flex: 1 }]}
                     />
@@ -698,7 +795,7 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
                       <TextInput
                         value={act}
                         onChangeText={(t) => renameEtapaActividad(idx, actIdx, t)}
-                        placeholder={`Actividad ${actIdx + 1}`}
+                        placeholder={t('controlObra.actividadN', { n: actIdx + 1 })}
                         placeholderTextColor={colors.textMuted}
                         style={[styles.input, styles.etapaActividadInput]}
                       />
@@ -709,20 +806,20 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
                   ))}
                   <Pressable accessibilityRole="button" onPress={() => addEtapaActividad(idx)} style={styles.etapaAddActividadBtn}>
                     <Ionicons name="add" size={14} color={headerColor} />
-                    <Text style={[styles.configBtnTxt, { color: headerColor }]}>Agregar actividad</Text>
+                    <Text style={[styles.configBtnTxt, { color: headerColor }]}>{t('controlObra.agregarActividad')}</Text>
                   </Pressable>
                 </View>
               ))}
               <Pressable accessibilityRole="button" onPress={addEtapaElemento} style={[styles.modalBtn, styles.modalBtnGhost, { marginTop: 4 }]}>
-                <Text style={styles.modalBtnGhostTxt}>+ Agregar elemento</Text>
+                <Text style={styles.modalBtnGhostTxt}>{t('controlObra.agregarElementoEtapa')}</Text>
               </Pressable>
             </ScrollView>
             <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
               <Pressable accessibilityRole="button" onPress={() => setEtapasEditorOpen(false)} disabled={savingEtapas} style={[styles.modalBtn, styles.modalBtnGhost]}>
-                <Text style={styles.modalBtnGhostTxt}>Cancelar</Text>
+                <Text style={styles.modalBtnGhostTxt}>{t('controlObra.cancelar')}</Text>
               </Pressable>
               <Pressable accessibilityRole="button" onPress={guardarEtapas} disabled={savingEtapas} style={[styles.modalBtn, { backgroundColor: headerColor }]}>
-                {savingEtapas ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.modalBtnTxt}>Guardar</Text>}
+                {savingEtapas ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.modalBtnTxt}>{t('controlObra.guardar')}</Text>}
               </Pressable>
             </View>
           </View>
@@ -732,18 +829,18 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
       <Modal visible={addElementoOpen} transparent animationType="slide" onRequestClose={() => setAddElementoOpen(false)}>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>Nuevo elemento</Text>
+            <Text style={styles.modalTitle}>{t('controlObra.nuevoElemento')}</Text>
             <TextInput
               value={elementoDraft} onChangeText={setElementoDraft}
-              placeholder="Ej. Zapata, Dado..." placeholderTextColor={colors.textMuted}
+              placeholder={t('controlObra.nuevoElementoPlaceholder')} placeholderTextColor={colors.textMuted}
               style={styles.input} autoFocus
             />
             <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
               <Pressable accessibilityRole="button" onPress={() => setAddElementoOpen(false)} style={[styles.modalBtn, styles.modalBtnGhost]}>
-                <Text style={styles.modalBtnGhostTxt}>Cancelar</Text>
+                <Text style={styles.modalBtnGhostTxt}>{t('controlObra.cancelar')}</Text>
               </Pressable>
               <Pressable accessibilityRole="button" onPress={addElemento} style={[styles.modalBtn, { backgroundColor: headerColor }]}>
-                <Text style={styles.modalBtnTxt}>Agregar</Text>
+                <Text style={styles.modalBtnTxt}>{t('controlObra.agregar')}</Text>
               </Pressable>
             </View>
           </View>
@@ -754,27 +851,27 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
       <Modal visible={!!perfModal} transparent animationType="slide" onRequestClose={() => setPerfModal(null)}>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>{perfModal === 'nueva' ? 'Nueva perforadora' : 'Editar perforadora'}</Text>
-            <Text style={styles.fieldLabel}>Nombre</Text>
+            <Text style={styles.modalTitle}>{perfModal === 'nueva' ? t('controlObra.nuevaPerforadora') : t('controlObra.editarPerforadora')}</Text>
+            <Text style={styles.fieldLabel}>{t('controlObra.campoNombre')}</Text>
             <TextInput value={perfDraft.nombre} onChangeText={(t) => setPerfDraft((d) => ({ ...d, nombre: t }))} style={styles.input} />
-            <Text style={styles.fieldLabel}>Serie</Text>
+            <Text style={styles.fieldLabel}>{t('controlObra.campoSerie')}</Text>
             <TextInput value={perfDraft.serie} onChangeText={(t) => setPerfDraft((d) => ({ ...d, serie: t }))} style={styles.input} />
-            <Text style={styles.fieldLabel}>Ubicación</Text>
+            <Text style={styles.fieldLabel}>{t('controlObra.campoUbicacion')}</Text>
             <TextInput
               value={perfDraft.ubicacion} onChangeText={(t) => setPerfDraft((d) => ({ ...d, ubicacion: t }))}
-              placeholder="Ej. Cerca del poste C1" placeholderTextColor={colors.textMuted} style={styles.input}
+              placeholder={t('controlObra.ubicacionPlaceholder')} placeholderTextColor={colors.textMuted} style={styles.input}
             />
-            <Text style={styles.fieldLabel}>Estatus</Text>
+            <Text style={styles.fieldLabel}>{t('controlObra.campoEstatus')}</Text>
             <TextInput
               value={perfDraft.estatus} onChangeText={(t) => setPerfDraft((d) => ({ ...d, estatus: t }))}
-              placeholder="Ej. Activa, Mantenimiento" placeholderTextColor={colors.textMuted} style={styles.input}
+              placeholder={t('controlObra.estatusPlaceholder')} placeholderTextColor={colors.textMuted} style={styles.input}
             />
             <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
               <Pressable accessibilityRole="button" onPress={() => setPerfModal(null)} disabled={perfSaving} style={[styles.modalBtn, styles.modalBtnGhost]}>
-                <Text style={styles.modalBtnGhostTxt}>Cancelar</Text>
+                <Text style={styles.modalBtnGhostTxt}>{t('controlObra.cancelar')}</Text>
               </Pressable>
               <Pressable accessibilityRole="button" onPress={savePerforadora} disabled={perfSaving} style={[styles.modalBtn, { backgroundColor: headerColor }]}>
-                {perfSaving ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.modalBtnTxt}>Guardar</Text>}
+                {perfSaving ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.modalBtnTxt}>{t('controlObra.guardar')}</Text>}
               </Pressable>
             </View>
           </View>

@@ -32,7 +32,7 @@ import { DailyGoalsPanel } from '@/src/components/DailyGoalsPanel';
 import { MyMeetingsPanel } from '@/src/components/MyMeetingsPanel';
 import { ReportPreviewSheet } from '@/src/components/ReportPreviewSheet';
 import { HistoryCalendarModal } from '@/src/components/HistoryCalendarModal';
-import { a11y } from '@/src/i18n';
+import { a11y, t } from '@/src/i18n';
 import {
   dayjs, toISODateCDMX, CDMX_TZ,
 } from '@/src/utils/tz';
@@ -170,7 +170,7 @@ export default function SpecFeedScreen() {
   const loadFeed = useCallback(async (nextRange: RangeKey = range, silent = false, q = debouncedQuery) => {
     if (!projectId) {
       setLoading(false);
-      setError('Tu cuenta no esta asociada a ningún proyecto.');
+      setError(t('inicioEspecialista.tuCuentaNoEsta'));
       return;
     }
     try {
@@ -254,7 +254,7 @@ export default function SpecFeedScreen() {
       setAiCopied(true);
       setTimeout(() => setAiCopied(false), 1800);
     } catch {
-      Alert.alert('No se pudo copiar', 'Intenta seleccionar el texto manualmente.');
+      Alert.alert(t('proyectoPantalla.noSePudoCopiar'), t('proyectoPantalla.intentaSeleccionarElTextoManualmente'));
     }
   }
 
@@ -292,7 +292,7 @@ export default function SpecFeedScreen() {
       setExportOpen(false);
       setTimeout(() => setExportStep('period'), 200);
     } catch (e: any) {
-      Alert.alert(`No se pudo generar el ${fmt.toUpperCase()}`, e?.message || 'Inténtalo nuevamente.');
+      Alert.alert(t('inicioEspecialista.noSePudoGenerar', { formato: fmt.toUpperCase() }), e?.message || t('inicioEspecialista.intentaNuevamente'));
     } finally {
       setExportBusy(false);
     }
@@ -336,9 +336,9 @@ export default function SpecFeedScreen() {
     <>
       <HeroCard user={user} project={project} globalPct={0} />
       <View style={styles.statsRow}>
-        <StatCard label="TOTAL" value={stats.total} icon="albums-outline" tint={colors.primary} />
-        <StatCard label="MÍOS" value={stats.mine} icon="person" tint="#0EA5E9" />
-        <StatCard label="COMPAÑEROS" value={stats.others} icon="people-outline" tint="#10B981" />
+        <StatCard label={t('inicioEspecialista.total')} value={stats.total} icon="albums-outline" tint={colors.primary} />
+        <StatCard label={t('inicioEspecialista.mios')} value={stats.mine} icon="person" tint="#0EA5E9" />
+        <StatCard label={t('inicioEspecialista.companeros')} value={stats.others} icon="people-outline" tint="#10B981" />
       </View>
 
       {projectId ? (
@@ -353,7 +353,7 @@ export default function SpecFeedScreen() {
 
 
       <View style={styles.timeFiltersWrap}>
-        <Text style={styles.sectionLabel}>Filtrar actividad</Text>
+        <Text style={styles.sectionLabel}>{t('proyectoPantalla.filtrarActividad')}</Text>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: spacing.md, gap: spacing.sm }}>
           {RANGE_OPTIONS.map((opt) => {
             const active = range === opt.key && !selectedDate;
@@ -381,7 +381,7 @@ export default function SpecFeedScreen() {
           <TextInput
             value={searchQuery}
             onChangeText={setSearchQuery}
-            placeholder="Buscar reporte..."
+            placeholder={t('inicioEspecialista.buscarReporte')}
             placeholderTextColor={colors.textMuted}
             style={styles.searchInput}
             autoCorrect={false}
@@ -391,7 +391,7 @@ export default function SpecFeedScreen() {
       </View>
 
       <View style={styles.feedHeaderRow}>
-        <Text style={styles.feedTitle}>{debouncedQuery ? 'Resultados' : 'Actividad reciente'}</Text>
+        <Text style={styles.feedTitle}>{debouncedQuery ? t('inicioEspecialista.resultados') : t('inicioEspecialista.actividadReciente')}</Text>
         {reports.length > 0 && <Text style={styles.feedCount}>{reports.length}</Text>}
       </View>
 
@@ -409,7 +409,7 @@ export default function SpecFeedScreen() {
       <View style={[styles.header, { paddingTop: insets.top + spacing.xs }]}>
         <HeaderMenu basePath="/(spec)" projectId={projectId} />
         <View style={{ flex: 1, alignItems: 'center' }}>
-          <Text style={styles.headerTitle}>Dirac</Text>
+          <Text style={styles.headerTitle}>{t('marca.nombre')}</Text>
           <Text style={styles.headerSubtitle} numberOfLines={1}>{project?.name || 'Cargando...'}</Text>
         </View>
         <Pressable accessibilityRole="button" accessibilityLabel={a11y('notificaciones')} hitSlop={10} style={styles.headerBtn}>
@@ -463,8 +463,8 @@ export default function SpecFeedScreen() {
             <View style={styles.exportHandle} />
             <View style={styles.exportHeader}>
               <View style={{ flex: 1 }}>
-                <Text style={styles.exportTitle}>Exportar Reportes</Text>
-                <Text style={styles.exportSubtitle}>Paso {exportStep === 'period' ? 1 : exportStep === 'scope' ? 2 : 3} de 3</Text>
+                <Text style={styles.exportTitle}>{t('proyectoPantalla.exportarReportes')}</Text>
+                <Text style={styles.exportSubtitle}>{t('inicioEspecialista.pasoDe3', { n: exportStep === 'period' ? 1 : exportStep === 'scope' ? 2 : 3 })}</Text>
               </View>
               <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} onPress={closeExportFlow} hitSlop={10} style={styles.headerBtn}><Ionicons name="close" size={22} color={colors.text} /></Pressable>
             </View>
@@ -477,8 +477,8 @@ export default function SpecFeedScreen() {
               ))}
               {exportStep === 'scope' && (
                 <>
-                  <Pressable accessibilityRole="button" onPress={() => onPickScope('mine')} style={styles.exportItem}><View style={styles.exportItemIcon}><Ionicons name="person-outline" size={20} color={colors.primary} /></View><View style={{ flex: 1 }}><Text style={styles.exportItemTitle}>Mis reportes</Text><Text style={styles.exportItemSub}>Solo lo que yo capture</Text></View></Pressable>
-                  <Pressable accessibilityRole="button" onPress={() => onPickScope('area')} style={styles.exportItem}><View style={styles.exportItemIcon}><Ionicons name="grid-outline" size={20} color={colors.primary} /></View><View style={{ flex: 1 }}><Text style={styles.exportItemTitle}>Mi área</Text><Text style={styles.exportItemSub}>Reportes de toda mi área</Text></View></Pressable>
+                  <Pressable accessibilityRole="button" onPress={() => onPickScope('mine')} style={styles.exportItem}><View style={styles.exportItemIcon}><Ionicons name="person-outline" size={20} color={colors.primary} /></View><View style={{ flex: 1 }}><Text style={styles.exportItemTitle}>{t('inicioEspecialista.misReportes')}</Text><Text style={styles.exportItemSub}>{t('inicioEspecialista.soloLoQueYo')}</Text></View></Pressable>
+                  <Pressable accessibilityRole="button" onPress={() => onPickScope('area')} style={styles.exportItem}><View style={styles.exportItemIcon}><Ionicons name="grid-outline" size={20} color={colors.primary} /></View><View style={{ flex: 1 }}><Text style={styles.exportItemTitle}>{t('inicioEspecialista.miArea')}</Text><Text style={styles.exportItemSub}>{t('inicioEspecialista.reportesDeTodaMi')}</Text></View></Pressable>
                 </>
               )}
               {exportStep === 'format' && exportSinReportes ? (
@@ -519,20 +519,20 @@ const HeroCard = memo(({ user, project }: any) => {
         <View style={styles.heroHeaderRow}>
           <View style={styles.heroIcon}><Ionicons name="location" size={18} color="#fff" /></View>
           <View style={{ flex: 1 }}>
-            <Text style={styles.heroLabel}>MI ÁREA ASIGNADA</Text>
+            <Text style={styles.heroLabel}>{t('inicioEspecialista.miAreaAsignada')}</Text>
             <Text style={styles.heroTitle} numberOfLines={1}>{user?.area || 'Sin área asignada'}</Text>
           </View>
           <View style={styles.heroLeavesPill}>
             <Ionicons name="flag" size={11} color={colors.primary} />
             <Text style={styles.heroLeavesTxt}>
-              {(user?.scope_node_ids || []).length > 0 ? `${user.scope_node_ids.length} hojas` : 'Todo el proyecto'}
+              {(user?.scope_node_ids || []).length > 0 ? (user.scope_node_ids.length === 1 ? t('inicioEspecialista.hojasUna') : t('inicioEspecialista.hojas', { n: user.scope_node_ids.length })) : t('avanceNiveles.todoElProyecto')}
             </Text>
           </View>
         </View>
         {user?.puesto ? <Text style={styles.heroPuesto}>{user.puesto}</Text> : null}
         {project?.contract_number ? (
           <Text style={styles.heroMeta}>
-            Contrato {project.contract_number}
+            {t('proyectoPantalla.contrato')} {project.contract_number}
             {project.constructora ? `  ·  ${project.constructora}` : ''}
           </Text>
         ) : null}
@@ -547,8 +547,8 @@ const ExportRow = memo(({ busy, onPress }: any) => {
       <Pressable accessibilityRole="button" onPress={onPress} disabled={busy} style={styles.exportMainBtn}>
         {busy ? <ActivityIndicator color="#fff" size="small" /> : <Ionicons name="download-outline" size={22} color="#fff" />}
         <View style={{ flex: 1 }}>
-          <Text style={styles.exportMainTitle}>Exportar Reportes</Text>
-          <Text style={styles.exportMainSub}>{busy ? 'Generando archivo...' : 'PDF · Word · PowerPoint'}</Text>
+          <Text style={styles.exportMainTitle}>{t('proyectoPantalla.exportarReportes')}</Text>
+          <Text style={styles.exportMainSub}>{busy ? t('proyectoPantalla.generandoArchivo') : t('inicioEspecialista.pdfWordPowerpoint')}</Text>
         </View>
         <Ionicons name="chevron-forward" size={20} color="rgba(255,255,255,0.85)" />
       </Pressable>
@@ -562,8 +562,8 @@ const AiSummaryRow = memo(({ busy, onPress }: any) => {
       <Pressable accessibilityRole="button" onPress={onPress} disabled={busy} style={styles.aiBtn}>
         {busy ? <ActivityIndicator color="#fff" size="small" /> : <Ionicons name="sparkles" size={22} color="#fff" />}
         <View style={{ flex: 1 }}>
-          <Text style={styles.aiBtnTitle}>Generar resumen ejecutivo con IA</Text>
-          <Text style={styles.aiBtnSub}>{busy ? 'Analizando reportes del día...' : 'Avances, equipo y personal en 3 viñetas'}</Text>
+          <Text style={styles.aiBtnTitle}>{t('proyectoPantalla.generarResumenEjecutivoConIa')}</Text>
+          <Text style={styles.aiBtnSub}>{busy ? t('proyectoPantalla.analizandoReportesDelDia') : t('inicioEspecialista.avancesEquipoYPersonal')}</Text>
         </View>
         <Ionicons name="chevron-forward" size={20} color="rgba(255,255,255,0.85)" />
       </Pressable>
@@ -593,8 +593,8 @@ function AiSummaryModal({
           <View style={styles.exportHandle} />
           <View style={styles.exportHeader}>
             <View style={{ flex: 1 }}>
-              <Text style={styles.exportTitle}>Resumen Ejecutivo con IA</Text>
-              <Text style={styles.exportSubtitle}>Generado a partir de los reportes de hoy</Text>
+              <Text style={styles.exportTitle}>{t('proyectoPantalla.resumenEjecutivoConIa')}</Text>
+              <Text style={styles.exportSubtitle}>{t('proyectoPantalla.generadoAPartirDeLos')}</Text>
             </View>
             <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} onPress={onClose} hitSlop={10} style={{ width: 36, height: 36, alignItems: 'center', justifyContent: 'center' }}>
               <Ionicons name="close" size={22} color={colors.text} />
@@ -605,14 +605,14 @@ function AiSummaryModal({
             {busy ? (
               <View style={{ paddingVertical: 40, alignItems: 'center', gap: 12 }}>
                 <ActivityIndicator color={colors.primary} size="large" />
-                <Text style={{ color: colors.textMuted, fontWeight: '600' }}>Analizando reportes de hoy...</Text>
+                <Text style={{ color: colors.textMuted, fontWeight: '600' }}>{t('proyectoPantalla.analizandoReportesDeHoy')}</Text>
               </View>
             ) : error ? (
               <View style={{ paddingVertical: 20, alignItems: 'center', gap: 8 }}>
                 <Ionicons name="alert-circle-outline" size={40} color={colors.error} />
                 <Text style={{ color: colors.error, textAlign: 'center', fontWeight: '700' }}>{error}</Text>
                 <Pressable accessibilityRole="button" onPress={onRegenerate} style={{ marginTop: 12, padding: 10 }}>
-                  <Text style={{ color: colors.primary, fontWeight: '800' }}>Reintentar</Text>
+                  <Text style={{ color: colors.primary, fontWeight: '800' }}>{t('red.reintentar')}</Text>
                 </Pressable>
               </View>
             ) : summary ? (
@@ -620,7 +620,7 @@ function AiSummaryModal({
                 {meta && (
                   <View style={{ flexDirection: 'row', gap: 8, marginBottom: 4 }}>
                     <View style={{ backgroundColor: '#F0F9FF', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, borderWidth: 1, borderColor: '#BAE6FD' }}>
-                      <Text style={{ fontSize: 10, color: '#0369A1', fontWeight: '800' }}>{meta.reports_count} REPORTES HOY</Text>
+                      <Text style={{ fontSize: 10, color: '#0369A1', fontWeight: '800' }}>{meta.reports_count} {t('inicioEspecialista.reportesHoy')}</Text>
                     </View>
                   </View>
                 )}
@@ -637,7 +637,7 @@ function AiSummaryModal({
                     ]}
                   >
                     <Ionicons name={copied ? 'checkmark-circle' : 'copy-outline'} size={18} color="#fff" />
-                    <Text style={{ color: '#fff', fontWeight: '800' }}>{copied ? 'Copiado' : 'Copiar resumen'}</Text>
+                    <Text style={{ color: '#fff', fontWeight: '800' }}>{copied ? t('proyectoPantalla.copiado') : t('proyectoPantalla.copiarResumen')}</Text>
                   </Pressable>
                   <Pressable accessibilityRole="button" accessibilityLabel={a11y('actualizar')} hitSlop={8}
                     onPress={onRegenerate}
@@ -661,7 +661,7 @@ function AiSummaryModal({
                 pressed && { backgroundColor: colors.bg },
               ]}
             >
-              <Text style={{ color: colors.text, fontWeight: '800' }}>Cerrar</Text>
+              <Text style={{ color: colors.text, fontWeight: '800' }}>{t('a11y.cerrar')}</Text>
             </Pressable>
           </View>
         </View>

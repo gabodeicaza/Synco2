@@ -22,6 +22,7 @@ import { Button } from '@/src/components/Button';
 import { ScreenHeader } from '@/src/components/ScreenHeader';
 import { useAuth } from '@/src/auth-context';
 import { ROLE_COORD, ROLE_SUB } from '@/src/utils/roles';
+import { t } from '@/src/i18n';
 
 const ACT_COL_W = 150;
 const VAL_COL_W = 68;
@@ -88,7 +89,7 @@ export default function TablaResumenScreen({ projectId }: { projectId: string })
       setColumnas(data.columnas);
       setCeldas(data.celdas);
     } catch (e: any) {
-      Alert.alert('Error', e?.message || 'No se pudo cargar la Tabla Resumen.');
+      Alert.alert(t('nivelesGenero.errorTitulo'), e?.message || 'No se pudo cargar la Tabla Resumen.');
     } finally {
       setLoading(false);
     }
@@ -122,7 +123,7 @@ export default function TablaResumenScreen({ projectId }: { projectId: string })
   async function saveActividad() {
     const nombre = actForm.nombre.trim();
     if (!nombre) {
-      Alert.alert('Falta el nombre', 'Ingresa el nombre de la actividad.');
+      Alert.alert(t('tablaResumen.faltaElNombre'), t('tablaResumen.ingresaNombreActividad'));
       return;
     }
     try {
@@ -135,7 +136,7 @@ export default function TablaResumenScreen({ projectId }: { projectId: string })
       setActForm((s) => ({ ...s, open: false }));
       await load();
     } catch (e: any) {
-      Alert.alert('No se pudo guardar', e?.message || 'Inténtalo nuevamente.');
+      Alert.alert(t('nivelesGenero.noSePudoGuardar'), e?.message || 'Inténtalo nuevamente.');
     } finally {
       setActForm((s) => ({ ...s, saving: false }));
     }
@@ -143,7 +144,7 @@ export default function TablaResumenScreen({ projectId }: { projectId: string })
   function deleteActividad() {
     if (!actForm.editing) return;
     const act = actForm.editing;
-    Alert.alert('Eliminar actividad', `¿Eliminar "${act.nombre}" y todos sus valores capturados?`, [
+    Alert.alert(t('tablaResumen.eliminarActividad'), t('tablaResumen.confirmaEliminarActividad', { nombre: act.nombre }), [
       { text: 'Cancelar', style: 'cancel' },
       {
         text: 'Eliminar', style: 'destructive', onPress: async () => {
@@ -153,7 +154,7 @@ export default function TablaResumenScreen({ projectId }: { projectId: string })
             setActForm((s) => ({ ...s, open: false }));
             await load();
           } catch (e: any) {
-            Alert.alert('No se pudo eliminar', e?.message || 'Inténtalo nuevamente.');
+            Alert.alert(t('proyectoPantalla.noSePudoEliminar'), e?.message || 'Inténtalo nuevamente.');
           } finally {
             setActForm((s) => ({ ...s, saving: false }));
           }
@@ -169,7 +170,7 @@ export default function TablaResumenScreen({ projectId }: { projectId: string })
   async function saveColumna() {
     const label = colForm.label.trim();
     if (!label) {
-      Alert.alert('Falta el nombre', 'Ingresa el nombre de la columna (ej. "EST 1" o "01-feb").');
+      Alert.alert(t('tablaResumen.faltaElNombre'), t('tablaResumen.ingresaNombreColumna'));
       return;
     }
     try {
@@ -182,7 +183,7 @@ export default function TablaResumenScreen({ projectId }: { projectId: string })
       setColForm((s) => ({ ...s, open: false }));
       await load();
     } catch (e: any) {
-      Alert.alert('No se pudo guardar', e?.message || 'Inténtalo nuevamente.');
+      Alert.alert(t('nivelesGenero.noSePudoGuardar'), e?.message || 'Inténtalo nuevamente.');
     } finally {
       setColForm((s) => ({ ...s, saving: false }));
     }
@@ -190,7 +191,7 @@ export default function TablaResumenScreen({ projectId }: { projectId: string })
   function deleteColumna() {
     if (!colForm.editing) return;
     const col = colForm.editing;
-    Alert.alert('Eliminar columna', `¿Eliminar "${col.label}" y todos sus valores capturados?`, [
+    Alert.alert(t('tablaResumen.eliminarColumna'), t('tablaResumen.confirmaEliminarColumna', { label: col.label }), [
       { text: 'Cancelar', style: 'cancel' },
       {
         text: 'Eliminar', style: 'destructive', onPress: async () => {
@@ -200,7 +201,7 @@ export default function TablaResumenScreen({ projectId }: { projectId: string })
             setColForm((s) => ({ ...s, open: false }));
             await load();
           } catch (e: any) {
-            Alert.alert('No se pudo eliminar', e?.message || 'Inténtalo nuevamente.');
+            Alert.alert(t('proyectoPantalla.noSePudoEliminar'), e?.message || 'Inténtalo nuevamente.');
           } finally {
             setColForm((s) => ({ ...s, saving: false }));
           }
@@ -227,7 +228,7 @@ export default function TablaResumenScreen({ projectId }: { projectId: string })
       if (trimmed) {
         const n = Number(trimmed);
         if (Number.isNaN(n) || n < 0 || n > 100) {
-          Alert.alert('Valor inválido', 'Ingresa un porcentaje entre 0 y 100, o marca "No aplica".');
+          Alert.alert(t('importadorUI.valorInvalido'), t('tablaResumen.ingresaUnPorcentajeEntre'));
           return;
         }
         valor = n;
@@ -244,7 +245,7 @@ export default function TablaResumenScreen({ projectId }: { projectId: string })
       setCeldaForm((s) => ({ ...s, open: false }));
       await load();
     } catch (e: any) {
-      Alert.alert('No se pudo guardar', e?.message || 'Inténtalo nuevamente.');
+      Alert.alert(t('nivelesGenero.noSePudoGuardar'), e?.message || 'Inténtalo nuevamente.');
     } finally {
       setCeldaForm((s) => ({ ...s, saving: false }));
     }
@@ -260,17 +261,17 @@ export default function TablaResumenScreen({ projectId }: { projectId: string })
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <ScreenHeader title="Tabla Resumen" backgroundColor={headerColor} />
+      <ScreenHeader title={t('modulosObra.modulos.tablaResumen.titulo')} backgroundColor={headerColor} />
 
       {canEditEstructura && (
         <View style={styles.toolbar}>
           <Pressable accessibilityRole="button" style={styles.toolBtn} onPress={() => openActForm(null)}>
             <Ionicons name="add-circle-outline" size={16} color={colors.primary} />
-            <Text style={styles.toolBtnTxt}>Actividad</Text>
+            <Text style={styles.toolBtnTxt}>{t('tablaResumen.actividad')}</Text>
           </Pressable>
           <Pressable accessibilityRole="button" style={styles.toolBtn} onPress={() => openColForm(null)}>
             <Ionicons name="add-circle-outline" size={16} color={colors.primary} />
-            <Text style={styles.toolBtnTxt}>Columna</Text>
+            <Text style={styles.toolBtnTxt}>{t('tablaResumen.columna')}</Text>
           </Pressable>
         </View>
       )}
@@ -280,8 +281,8 @@ export default function TablaResumenScreen({ projectId }: { projectId: string })
           <Ionicons name="grid-outline" size={28} color={colors.textMuted} />
           <Text style={styles.emptyTxt}>
             {canEditEstructura
-              ? 'Agrega al menos una actividad y una columna para empezar a construir la tabla.'
-              : 'Aún no hay tabla armada para este proyecto.'}
+              ? t('tablaResumen.agregaAlMenosUna')
+              : t('tablaResumen.aunNoHayTabla')}
           </Text>
         </View>
       ) : (
@@ -290,7 +291,7 @@ export default function TablaResumenScreen({ projectId }: { projectId: string })
             <View style={{ flex: 1 }}>
               <View style={styles.rowHeader}>
                 <View style={[styles.cell, styles.cellActividad, styles.cellHeader]}>
-                  <Text style={styles.headerTxt}>Actividad</Text>
+                  <Text style={styles.headerTxt}>{t('tablaResumen.actividad')}</Text>
                 </View>
                 {columnas.map((col) => (
                   <Pressable accessibilityRole="button"
@@ -305,7 +306,7 @@ export default function TablaResumenScreen({ projectId }: { projectId: string })
                   </Pressable>
                 ))}
                 <View style={[styles.cell, styles.cellTotal, styles.cellHeader]}>
-                  <Text style={styles.headerTxt}>Total</Text>
+                  <Text style={styles.headerTxt}>{t('controlObra.campoTotal')}</Text>
                 </View>
               </View>
 
@@ -343,15 +344,15 @@ export default function TablaResumenScreen({ projectId }: { projectId: string })
           <View style={styles.legendRow}>
             <View style={styles.legendItem}>
               <View style={[styles.legendDot, { backgroundColor: CELL.concluido }]} />
-              <Text style={styles.legendTxt}>Concluido</Text>
+              <Text style={styles.legendTxt}>{t('tablaResumen.concluido')}</Text>
             </View>
             <View style={styles.legendItem}>
               <View style={[styles.legendDot, { backgroundColor: CELL.proceso }]} />
-              <Text style={styles.legendTxt}>En proceso</Text>
+              <Text style={styles.legendTxt}>{t('controlObra.campoEnProceso')}</Text>
             </View>
             <View style={styles.legendItem}>
               <View style={[styles.legendDot, { backgroundColor: CELL.sinIniciar }]} />
-              <Text style={styles.legendTxt}>Sin iniciar</Text>
+              <Text style={styles.legendTxt}>{t('tablaResumen.sinIniciar')}</Text>
             </View>
           </View>
         </View>
@@ -361,21 +362,21 @@ export default function TablaResumenScreen({ projectId }: { projectId: string })
       <Modal visible={actForm.open} transparent animationType="slide" onRequestClose={() => setActForm((s) => ({ ...s, open: false }))}>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>{actForm.editing ? 'Editar actividad' : 'Nueva actividad'}</Text>
-            <Text style={styles.fieldLabel}>Nombre</Text>
+            <Text style={styles.modalTitle}>{actForm.editing ? t('tablaResumen.editarActividad') : t('tablaResumen.nuevaActividad')}</Text>
+            <Text style={styles.fieldLabel}>{t('catalogoForm.nombre')}</Text>
             <TextInput
               value={actForm.nombre}
               onChangeText={(v) => setActForm((s) => ({ ...s, nombre: v }))}
-              placeholder="Ej. Vuelo Lidar"
+              placeholder={t('tablaResumen.ejVueloLidar')}
               placeholderTextColor={colors.textMuted}
               style={styles.input}
             />
             <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
               {actForm.editing && (
-                <Button label="Eliminar" variant="danger" onPress={deleteActividad} loading={actForm.saving} style={{ flex: 1 }} />
+                <Button label={t('a11y.eliminar')} variant="danger" onPress={deleteActividad} loading={actForm.saving} style={{ flex: 1 }} />
               )}
-              <Button label="Cancelar" variant="secondary" onPress={() => setActForm((s) => ({ ...s, open: false }))} style={{ flex: 1 }} />
-              <Button label="Guardar" loading={actForm.saving} onPress={saveActividad} style={{ flex: 1 }} />
+              <Button label={t('cuenta.cancelar')} variant="secondary" onPress={() => setActForm((s) => ({ ...s, open: false }))} style={{ flex: 1 }} />
+              <Button label={t('catalogo.guardar')} loading={actForm.saving} onPress={saveActividad} style={{ flex: 1 }} />
             </View>
           </View>
         </KeyboardAvoidingView>
@@ -385,23 +386,23 @@ export default function TablaResumenScreen({ projectId }: { projectId: string })
       <Modal visible={colForm.open} transparent animationType="slide" onRequestClose={() => setColForm((s) => ({ ...s, open: false }))}>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>{colForm.editing ? 'Editar columna' : 'Nueva columna'}</Text>
-            <Text style={styles.fieldLabel}>Tipo</Text>
+            <Text style={styles.modalTitle}>{colForm.editing ? t('tablaResumen.editarColumna') : t('tablaResumen.nuevaColumna')}</Text>
+            <Text style={styles.fieldLabel}>{t('tablaResumen.tipo')}</Text>
             <View style={styles.segmentRow}>
               <Pressable accessibilityRole="button"
                 onPress={() => setColForm((s) => ({ ...s, tipo: 'estacion' }))}
                 style={[styles.segmentBtn, colForm.tipo === 'estacion' && styles.segmentBtnActive]}
               >
-                <Text style={[styles.segmentTxt, colForm.tipo === 'estacion' && styles.segmentTxtActive]}>Estación</Text>
+                <Text style={[styles.segmentTxt, colForm.tipo === 'estacion' && styles.segmentTxtActive]}>{t('tablaResumen.estacion')}</Text>
               </Pressable>
               <Pressable accessibilityRole="button"
                 onPress={() => setColForm((s) => ({ ...s, tipo: 'intertramo' }))}
                 style={[styles.segmentBtn, colForm.tipo === 'intertramo' && styles.segmentBtnActive]}
               >
-                <Text style={[styles.segmentTxt, colForm.tipo === 'intertramo' && styles.segmentTxtActive]}>Inter-tramo</Text>
+                <Text style={[styles.segmentTxt, colForm.tipo === 'intertramo' && styles.segmentTxtActive]}>{t('tablaResumen.interTramo')}</Text>
               </Pressable>
             </View>
-            <Text style={styles.fieldLabel}>Nombre</Text>
+            <Text style={styles.fieldLabel}>{t('catalogoForm.nombre')}</Text>
             <TextInput
               value={colForm.label}
               onChangeText={(v) => setColForm((s) => ({ ...s, label: v }))}
@@ -411,10 +412,10 @@ export default function TablaResumenScreen({ projectId }: { projectId: string })
             />
             <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
               {colForm.editing && (
-                <Button label="Eliminar" variant="danger" onPress={deleteColumna} loading={colForm.saving} style={{ flex: 1 }} />
+                <Button label={t('a11y.eliminar')} variant="danger" onPress={deleteColumna} loading={colForm.saving} style={{ flex: 1 }} />
               )}
-              <Button label="Cancelar" variant="secondary" onPress={() => setColForm((s) => ({ ...s, open: false }))} style={{ flex: 1 }} />
-              <Button label="Guardar" loading={colForm.saving} onPress={saveColumna} style={{ flex: 1 }} />
+              <Button label={t('cuenta.cancelar')} variant="secondary" onPress={() => setColForm((s) => ({ ...s, open: false }))} style={{ flex: 1 }} />
+              <Button label={t('catalogo.guardar')} loading={colForm.saving} onPress={saveColumna} style={{ flex: 1 }} />
             </View>
           </View>
         </KeyboardAvoidingView>
@@ -428,7 +429,7 @@ export default function TablaResumenScreen({ projectId }: { projectId: string })
               {celdaForm.actividad?.nombre} · {celdaForm.columna?.label}
             </Text>
             <View style={styles.noAplicaRow}>
-              <Text style={styles.fieldLabel}>No aplica</Text>
+              <Text style={styles.fieldLabel}>{t('tablaResumen.noAplica')}</Text>
               <Switch
                 value={celdaForm.noAplica}
                 onValueChange={(v) => setCeldaForm((s) => ({ ...s, noAplica: v }))}
@@ -437,11 +438,11 @@ export default function TablaResumenScreen({ projectId }: { projectId: string })
             </View>
             {!celdaForm.noAplica && (
               <>
-                <Text style={styles.fieldLabel}>Porcentaje de avance (0-100)</Text>
+                <Text style={styles.fieldLabel}>{t('tablaResumen.porcentajeDeAvance0')}</Text>
                 <TextInput
                   value={celdaForm.valor}
                   onChangeText={(v) => setCeldaForm((s) => ({ ...s, valor: v }))}
-                  placeholder="Ej. 85"
+                  placeholder={t('tablaResumen.ej85')}
                   placeholderTextColor={colors.textMuted}
                   keyboardType="numeric"
                   style={styles.input}
@@ -450,13 +451,13 @@ export default function TablaResumenScreen({ projectId }: { projectId: string })
             )}
             <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
               <Button
-                label="Borrar valor"
+                label={t('tablaResumen.borrarValor')}
                 variant="secondary"
                 onPress={() => setCeldaForm((s) => ({ ...s, valor: '', noAplica: false }))}
                 style={{ flex: 1 }}
               />
-              <Button label="Cancelar" variant="secondary" onPress={() => setCeldaForm((s) => ({ ...s, open: false }))} style={{ flex: 1 }} />
-              <Button label="Guardar" loading={celdaForm.saving} onPress={saveCelda} style={{ flex: 1 }} />
+              <Button label={t('cuenta.cancelar')} variant="secondary" onPress={() => setCeldaForm((s) => ({ ...s, open: false }))} style={{ flex: 1 }} />
+              <Button label={t('catalogo.guardar')} loading={celdaForm.saving} onPress={saveCelda} style={{ flex: 1 }} />
             </View>
           </View>
         </KeyboardAvoidingView>

@@ -11,15 +11,19 @@ import { api, ApiError, ReportTemplate, ReportTemplateField } from '@/src/api';
 import { useAuth } from '@/src/auth-context';
 import { colors, radius, spacing, shadow } from '@/src/theme';
 import { confirm } from '@/src/utils/confirm';
-import { a11y } from '@/src/i18n';
+import { a11y, t } from '@/src/i18n';
 
-const FIELD_TYPES: { value: ReportTemplateField['type']; label: string }[] = [
-  { value: 'string', label: 'Texto' },
-  { value: 'number', label: 'Número' },
-  { value: 'boolean', label: 'Sí/No' },
-  { value: 'select', label: 'Selección única' },
-  { value: 'multiselect', label: 'Selección múltiple' },
-];
+const FIELD_TYPE_VALUES: ReportTemplateField['type'][] = ['string', 'number', 'boolean', 'select', 'multiselect'];
+
+function tipoCampoLabel(value: ReportTemplateField['type']): string {
+  switch (value) {
+    case 'string': return t('plantillasReporte.tipoTexto');
+    case 'number': return t('plantillasReporte.tipoNumero');
+    case 'boolean': return t('plantillasReporte.tipoSiNo');
+    case 'select': return t('plantillasReporte.tipoSeleccionUnica');
+    default: return t('plantillasReporte.tipoSeleccionMultiple');
+  }
+}
 
 function slugify(s: string): string {
   return s
@@ -55,7 +59,7 @@ export default function ReportTemplatesScreen() {
       const data = await api.getReportTemplates();
       setList(data);
     } catch (e: any) {
-      Alert.alert('Error', e?.message ?? 'No se pudo cargar la lista');
+      Alert.alert(t('plantillasReporte.error'), e?.message ?? t('plantillasReporte.noSeCargo'));
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -79,12 +83,12 @@ export default function ReportTemplatesScreen() {
     setShowForm(true);
   }
 
-  function startEdit(t: ReportTemplate) {
-    setEditingId(t.id);
-    setCode(t.code);
-    setName(t.name);
-    setCategory(t.category);
-    setFields(t.fields.map((f) => ({ ...f })));
+  function startEdit(tpl: ReportTemplate) {
+    setEditingId(tpl.id);
+    setCode(tpl.code);
+    setName(tpl.name);
+    setCategory(tpl.category);
+    setFields(tpl.fields.map((f) => ({ ...f })));
     setFieldDraft(emptyField());
     setOptionsText('');
     setShowForm(true);
@@ -92,14 +96,14 @@ export default function ReportTemplatesScreen() {
 
   function addField() {
     const label = fieldDraft.label.trim();
-    if (!label) return Alert.alert('Campo requerido', 'Ingresa la etiqueta del campo');
+    if (!label) return Alert.alert(t('plantillasReporte.campoRequerido'), t('plantillasReporte.ingresaEtiqueta'));
     const key = slugify(fieldDraft.key || label);
-    if (!key) return Alert.alert('Clave inválida', 'La clave del campo no puede quedar vacía');
-    if (fields.some((f) => f.key === key)) return Alert.alert('Clave duplicada', 'Ya existe un campo con esa clave');
+    if (!key) return Alert.alert(t('plantillasReporte.claveInvalida'), t('plantillasReporte.claveVacia'));
+    if (fields.some((f) => f.key === key)) return Alert.alert(t('plantillasReporte.claveDuplicada'), t('plantillasReporte.claveDuplicadaDetalle'));
     const needsOptions = fieldDraft.type === 'select' || fieldDraft.type === 'multiselect';
     const options = needsOptions ? optionsText.split(',').map((o) => o.trim()).filter(Boolean) : [];
     if (needsOptions && options.length === 0) {
-      return Alert.alert('Opciones requeridas', 'Ingresa al menos una opción separada por comas');
+      return Alert.alert(t('plantillasReporte.opcionesRequeridas'), t('plantillasReporte.opcionesDetalle'));
     }
     setFields([...fields, { key, label, type: fieldDraft.type, required: fieldDraft.required, options }]);
     setFieldDraft(emptyField());
@@ -113,16 +117,16 @@ export default function ReportTemplatesScreen() {
   async function onSave() {
     const n = name.trim();
     const c = category.trim();
-    if (!n) return Alert.alert('Campo requerido', 'Ingresa el nombre de la plantilla');
-    if (!c) return Alert.alert('Campo requerido', 'Ingresa la categoría');
-    if (fields.length === 0) return Alert.alert('Agrega campos', 'La plantilla necesita al menos un campo');
+    if (!n) return Alert.alert(t('plantillasReporte.campoRequerido'), t('plantillasReporte.ingresaNombre'));
+    if (!c) return Alert.alert(t('plantillasReporte.campoRequerido'), t('plantillasReporte.ingresaCategoria'));
+    if (fields.length === 0) return Alert.alert(t('plantillasReporte.agregaCampos'), t('plantillasReporte.necesitaCampo'));
     setSaving(true);
     try {
       if (editingId) {
         await api.updateReportTemplate(editingId, { name: n, category: c, fields });
       } else {
         const cd = slugify(code || n);
-        if (!cd) { Alert.alert('Código inválido', 'Ingresa un código válido'); setSaving(false); return; }
+        if (!cd) { Alert.alert(t('plantillasReporte.codigoInvalido'), t('plantillasReporte.ingresaCodigo')); setSaving(false); return; }
         await api.createReportTemplate({ code: cd, name: n, category: c, fields });
       }
       resetForm();
@@ -130,37 +134,37 @@ export default function ReportTemplatesScreen() {
       await load();
     } catch (err: any) {
       if (err instanceof ApiError && err.status === 409) {
-        Alert.alert('Código duplicado', 'Ya existe una plantilla con ese código.');
+        Alert.alert(t('plantillasReporte.codigoDuplicado'), t('plantillasReporte.codigoDuplicadoDetalle'));
       } else {
-        Alert.alert('Error', err?.message ?? 'No se pudo guardar la plantilla');
+        Alert.alert(t('plantillasReporte.error'), err?.message ?? t('plantillasReporte.noSeGuardo'));
       }
     } finally {
       setSaving(false);
     }
   }
 
-  async function onDelete(t: ReportTemplate) {
+  async function onDelete(tpl: ReportTemplate) {
     const ok = await confirm(
-      'Eliminar plantilla',
-      `¿Seguro que deseas eliminar "${t.name}"? Los reportes ya capturados con esta plantilla no se ven afectados; solo deja de estar disponible para nuevas capturas.`,
-      { confirmText: 'Eliminar', destructive: true },
+      t('plantillasReporte.eliminarTitulo'),
+      t('plantillasReporte.eliminarPregunta', { nombre: tpl.name }),
+      { confirmText: t('plantillasReporte.eliminar'), destructive: true },
     );
     if (!ok) return;
     try {
-      await api.deleteReportTemplate(t.id);
+      await api.deleteReportTemplate(tpl.id);
       await load();
     } catch (err: any) {
-      Alert.alert('Error', err?.message ?? 'No se pudo eliminar la plantilla');
+      Alert.alert(t('plantillasReporte.error'), err?.message ?? t('plantillasReporte.noSeElimino'));
     }
   }
 
   if (user?.role !== 'coordinador_general') {
     return (
       <View style={[styles.flex, { paddingTop: insets.top }]}>
-        <ScreenHeader title="Plantillas de reporte" fallbackHref="/(coord)" safeArea={false} />
+        <ScreenHeader title={t('plantillasReporte.titulo')} fallbackHref="/(coord)" safeArea={false} />
         <View style={styles.emptyCenter}>
           <Ionicons name="lock-closed-outline" size={42} color={colors.textMuted} />
-          <Text style={styles.emptyTxt}>Solo un Coordinador General puede acceder a esta sección.</Text>
+          <Text style={styles.emptyTxt}>{t('plantillasReporte.soloCoordinador')}</Text>
         </View>
       </View>
     );
@@ -171,7 +175,7 @@ export default function ReportTemplatesScreen() {
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       style={[styles.flex, { paddingTop: insets.top }]}
     >
-      <ScreenHeader title="Plantillas de reporte" fallbackHref="/(coord)" safeArea={false} />
+      <ScreenHeader title={t('plantillasReporte.titulo')} fallbackHref="/(coord)" safeArea={false} />
 
       <ScrollView
         contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + 24 }]}
@@ -182,52 +186,49 @@ export default function ReportTemplatesScreen() {
         <View style={styles.infoCard}>
           <Ionicons name="information-circle" size={20} color={colors.primary} />
           <View style={{ flex: 1 }}>
-            <Text style={styles.infoTitle}>Formularios dinámicos</Text>
-            <Text style={styles.infoTxt}>
-              Estas plantillas aparecen como "Tipo de reporte" al capturar un reporte nuevo (Especialista y
-              Sub-coordinador). Los campos que definas aquí son los que ellos llenan.
-            </Text>
+            <Text style={styles.infoTitle}>{t('plantillasReporte.formulariosDinamicos')}</Text>
+            <Text style={styles.infoTxt}>{t('plantillasReporte.ayuda')}</Text>
           </View>
         </View>
 
         {!showForm && (
           <Pressable accessibilityRole="button" onPress={startCreate} style={({ pressed }) => [styles.addBtn, pressed && { opacity: 0.85 }]}>
             <Ionicons name="add-circle" size={18} color="#fff" />
-            <Text style={styles.addBtnTxt}>Nueva plantilla</Text>
+            <Text style={styles.addBtnTxt}>{t('plantillasReporte.nueva')}</Text>
           </Pressable>
         )}
 
         {showForm && (
           <View style={styles.formCard}>
             <View style={styles.formHeader}>
-              <Text style={styles.formTitle}>{editingId ? 'Editar plantilla' : 'Nueva plantilla'}</Text>
+              <Text style={styles.formTitle}>{editingId ? t('plantillasReporte.editar') : t('plantillasReporte.nueva')}</Text>
               <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} onPress={() => { resetForm(); setShowForm(false); }} hitSlop={8}>
                 <Ionicons name="close" size={22} color={colors.text} />
               </Pressable>
             </View>
 
-            <Text style={styles.label}>Nombre</Text>
+            <Text style={styles.label}>{t('plantillasReporte.nombre')}</Text>
             <TextInput
               value={name} onChangeText={setName}
-              placeholder="Ej. Calidad - Colados"
+              placeholder={t('plantillasReporte.nombreEjemplo')}
               placeholderTextColor={colors.textMuted}
               style={styles.input}
             />
 
-            <Text style={styles.label}>Categoría</Text>
+            <Text style={styles.label}>{t('plantillasReporte.categoria')}</Text>
             <TextInput
               value={category} onChangeText={setCategory}
-              placeholder="Ej. Calidad"
+              placeholder={t('plantillasReporte.categoriaEjemplo')}
               placeholderTextColor={colors.textMuted}
               style={styles.input}
             />
 
             {!editingId && (
               <>
-                <Text style={styles.label}>Código (opcional, se genera del nombre)</Text>
+                <Text style={styles.label}>{t('plantillasReporte.codigoEtiqueta')}</Text>
                 <TextInput
                   value={code} onChangeText={setCode}
-                  placeholder="Ej. calidad_colados"
+                  placeholder={t('plantillasReporte.codigoEjemplo')}
                   placeholderTextColor={colors.textMuted}
                   autoCapitalize="none"
                   style={styles.input}
@@ -235,16 +236,16 @@ export default function ReportTemplatesScreen() {
               </>
             )}
 
-            <Text style={[styles.sectionTitle, { marginTop: 14 }]}>Campos ({fields.length})</Text>
+            <Text style={[styles.sectionTitle, { marginTop: 14 }]}>{t('plantillasReporte.campos', { n: fields.length })}</Text>
             {fields.length === 0 ? (
-              <Text style={styles.helper}>Aún no agregas campos.</Text>
+              <Text style={styles.helper}>{t('plantillasReporte.sinCampos')}</Text>
             ) : (
               fields.map((f) => (
                 <View key={f.key} style={styles.fieldRow}>
                   <View style={{ flex: 1 }}>
                     <Text style={styles.fieldLabel}>{f.label}{f.required ? ' *' : ''}</Text>
                     <Text style={styles.fieldMeta}>
-                      {FIELD_TYPES.find((t) => t.value === f.type)?.label} · {f.key}
+                      {tipoCampoLabel(f.type)} · {f.key}
                       {f.options?.length ? ` · ${f.options.join(', ')}` : ''}
                     </Text>
                   </View>
@@ -256,29 +257,29 @@ export default function ReportTemplatesScreen() {
             )}
 
             <View style={styles.fieldBuilder}>
-              <Text style={styles.label}>Agregar campo</Text>
+              <Text style={styles.label}>{t('plantillasReporte.agregarCampo')}</Text>
               <TextInput
                 value={fieldDraft.label}
-                onChangeText={(t) => setFieldDraft({ ...fieldDraft, label: t })}
-                placeholder="Etiqueta (ej. Revenimiento cm)"
+                onChangeText={(v) => setFieldDraft({ ...fieldDraft, label: v })}
+                placeholder={t('plantillasReporte.etiquetaEjemplo')}
                 placeholderTextColor={colors.textMuted}
                 style={styles.input}
               />
               <View style={styles.chipRow}>
-                {FIELD_TYPES.map((t) => (
+                {FIELD_TYPE_VALUES.map((tipo) => (
                   <Pressable accessibilityRole="button"
-                    key={t.value}
-                    onPress={() => setFieldDraft({ ...fieldDraft, type: t.value })}
-                    style={[styles.chip, fieldDraft.type === t.value && styles.chipActive]}
+                    key={tipo}
+                    onPress={() => setFieldDraft({ ...fieldDraft, type: tipo })}
+                    style={[styles.chip, fieldDraft.type === tipo && styles.chipActive]}
                   >
-                    <Text style={[styles.chipTxt, fieldDraft.type === t.value && styles.chipTxtActive]}>{t.label}</Text>
+                    <Text style={[styles.chipTxt, fieldDraft.type === tipo && styles.chipTxtActive]}>{tipoCampoLabel(tipo)}</Text>
                   </Pressable>
                 ))}
               </View>
               {(fieldDraft.type === 'select' || fieldDraft.type === 'multiselect') && (
                 <TextInput
                   value={optionsText} onChangeText={setOptionsText}
-                  placeholder="Opciones separadas por coma (ej. Bajo, Medio, Alto)"
+                  placeholder={t('plantillasReporte.opcionesEjemplo')}
                   placeholderTextColor={colors.textMuted}
                   style={styles.input}
                 />
@@ -287,11 +288,11 @@ export default function ReportTemplatesScreen() {
                 onPress={() => setFieldDraft({ ...fieldDraft, required: !fieldDraft.required })}
                 style={[styles.chip, fieldDraft.required && styles.chipActive, { alignSelf: 'flex-start' }]}
               >
-                <Text style={[styles.chipTxt, fieldDraft.required && styles.chipTxtActive]}>Obligatorio</Text>
+                <Text style={[styles.chipTxt, fieldDraft.required && styles.chipTxtActive]}>{t('plantillasReporte.obligatorio')}</Text>
               </Pressable>
               <Pressable accessibilityRole="button" onPress={addField} style={({ pressed }) => [styles.addFieldBtn, pressed && { opacity: 0.85 }]}>
                 <Ionicons name="add" size={16} color={colors.primary} />
-                <Text style={styles.addFieldBtnTxt}>Agregar campo</Text>
+                <Text style={styles.addFieldBtnTxt}>{t('plantillasReporte.agregarCampo')}</Text>
               </Pressable>
             </View>
 
@@ -305,28 +306,32 @@ export default function ReportTemplatesScreen() {
               ) : (
                 <>
                   <Ionicons name="checkmark-circle" size={18} color="#fff" />
-                  <Text style={styles.saveBtnTxt}>{editingId ? 'Guardar cambios' : 'Crear plantilla'}</Text>
+                  <Text style={styles.saveBtnTxt}>{editingId ? t('plantillasReporte.guardarCambios') : t('plantillasReporte.crear')}</Text>
                 </>
               )}
             </Pressable>
           </View>
         )}
 
-        <Text style={styles.sectionTitle}>Plantillas actuales ({list.length})</Text>
+        <Text style={styles.sectionTitle}>{t('plantillasReporte.actuales', { n: list.length })}</Text>
 
         {loading ? (
           <View style={styles.centerLoader}><ActivityIndicator color={colors.primary} /></View>
         ) : (
-          list.map((t) => (
-            <View key={t.id} style={styles.tplCard}>
+          list.map((tpl) => (
+            <View key={tpl.id} style={styles.tplCard}>
               <View style={{ flex: 1 }}>
-                <Text style={styles.tplName}>{t.name}</Text>
-                <Text style={styles.tplMeta}>{t.category} · {t.fields.length} campo{t.fields.length === 1 ? '' : 's'} · {t.code}</Text>
+                <Text style={styles.tplName}>{tpl.name}</Text>
+                <Text style={styles.tplMeta}>
+                  {tpl.fields.length === 1
+                    ? t('plantillasReporte.metaUnCampo', { categoria: tpl.category, codigo: tpl.code })
+                    : t('plantillasReporte.metaCampos', { categoria: tpl.category, n: tpl.fields.length, codigo: tpl.code })}
+                </Text>
               </View>
-              <Pressable accessibilityRole="button" accessibilityLabel={a11y('editar')} onPress={() => startEdit(t)} hitSlop={8} style={{ padding: 6 }}>
+              <Pressable accessibilityRole="button" accessibilityLabel={a11y('editar')} onPress={() => startEdit(tpl)} hitSlop={8} style={{ padding: 6 }}>
                 <Ionicons name="create-outline" size={20} color={colors.primary} />
               </Pressable>
-              <Pressable accessibilityRole="button" accessibilityLabel={a11y('eliminar')} onPress={() => onDelete(t)} hitSlop={8} style={{ padding: 6 }}>
+              <Pressable accessibilityRole="button" accessibilityLabel={a11y('eliminar')} onPress={() => onDelete(tpl)} hitSlop={8} style={{ padding: 6 }}>
                 <Ionicons name="trash-outline" size={20} color={colors.error} />
               </Pressable>
             </View>

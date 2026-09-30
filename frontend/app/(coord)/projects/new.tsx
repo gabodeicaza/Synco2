@@ -12,6 +12,8 @@ import { t } from '@/src/i18n';
 import { ColorInput } from '@/src/components/ColorInput';
 import { FormField } from '@/src/components/FormField';
 import { InlineError } from '@/src/components/InlineError';
+import { SelectorTipoObra } from '@/src/components/SelectorTipoObra';
+import { TIPO_OBRA_DEFECTO, TipoObraElegible } from '@/src/utils/tipoObraModulos';
 import { useEnvio } from '@/src/hooks/useEnvio';
 import { useFormErrors } from '@/src/hooks/useFormErrors';
 import { errorDeColor, normalizarColorHex } from '@/src/utils/color';
@@ -34,11 +36,13 @@ export default function NewProjectScreen() {
   const { errores, errorGeneral, ponerTodos, limpiarTodo, alCambiar, errorDeGuardado } = useFormErrors<Campo>();
   const { guardando, ejecutar } = useEnvio();
   const [f, setF] = useState(FORMULARIO_VACIO);
+  const [tipoObra, setTipoObra] = useState<TipoObraElegible>(TIPO_OBRA_DEFECTO);
 
   const poner = <K extends keyof typeof FORMULARIO_VACIO>(k: K) => (v: string) => setF((prev) => ({ ...prev, [k]: v }));
 
   function reiniciar() {
     setF(FORMULARIO_VACIO);
+    setTipoObra(TIPO_OBRA_DEFECTO);
     limpiarTodo();
     scrollRef.current?.scrollTo?.({ y: 0, animated: false });
   }
@@ -73,6 +77,7 @@ export default function NewProjectScreen() {
           start_date: f.fechaInicio.trim() || null,
           end_date: f.fechaTermino.trim() || null,
           description: f.descripcion.trim() || null,
+          tipo_obra: tipoObra,
         });
         showToast(t('proyectoForm.creado'));
         reiniciar();
@@ -149,6 +154,7 @@ export default function NewProjectScreen() {
           placeholder={t('proyectoForm.descripcionPlaceholder')} multiline inputStyle={styles.multilinea}
           textAlignVertical="top" editable={!guardando}
         />
+        <SelectorTipoObra value={tipoObra} onChange={setTipoObra} disabled={guardando} />
 
         <InlineError message={errorGeneral} />
 

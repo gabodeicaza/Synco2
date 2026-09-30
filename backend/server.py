@@ -400,6 +400,9 @@ class ProjectIn(BaseModel):
     # fallback genérico ("Nivel N"), nunca se trunca ni se repite el último.
     nombres_niveles_partida: List[str] = Field(default_factory=list)
     nombre_nivel_concepto: str = ""  # fallback "Concepto" si vacío
+    # Género gramatical forzado de un nombre de nivel (clave = el nombre, valor 'm' | 'f'):
+    # sin clave, el género se deduce de la palabra ("Nuevo tramo", "Nueva partida").
+    genero_niveles: Dict[str, Literal["m", "f"]] = Field(default_factory=dict)
     # Unidades adicionales a UNIDADES (constante base, definida junto al
     # resto del módulo de catálogo), propias de este proyecto — la captura
     # sigue siendo de lista cerrada, nunca texto libre.
@@ -468,6 +471,7 @@ class ProjectPatch(BaseModel):
     modo_avance: Optional[Literal["CANTIDAD", "PORCENTAJE", "MATRIZ"]] = None
     nombres_niveles_partida: Optional[List[str]] = None
     nombre_nivel_concepto: Optional[str] = None
+    genero_niveles: Optional[Dict[str, Literal["m", "f"]]] = None
     unidades_personalizadas: Optional[List[str]] = None
     tipo_obra: Optional[TipoObra] = None
     etapas_poste: Optional[List[EtapaPosteElemento]] = None
@@ -516,6 +520,7 @@ class ProjectOut(BaseModel):
     modo_avance: str = "CANTIDAD"
     nombres_niveles_partida: List[str] = Field(default_factory=list)
     nombre_nivel_concepto: str = ""
+    genero_niveles: Dict[str, str] = Field(default_factory=dict)
     unidades_personalizadas: List[str] = Field(default_factory=list)
     tipo_obra: str = TIPO_OBRA_LEGADO  # "legado" = proyecto anterior al campo (comportamiento sin cambios)
     etapas_poste: List[EtapaPosteElemento] = Field(default_factory=list)
@@ -2461,6 +2466,32 @@ async def send_push_notification(
 
 
 # === PROJECTS ===============================================================
+GENERO_NIVELES_MAX = 20
+GENERO_NIVELES_CLAVE_MAX = 60
+
+
+def sanitizar_genero_niveles(valor) -> dict:
+    """Valida `genero_niveles` (nombre de nivel → 'm' | 'f'): claves de texto no vacías de hasta
+    60 caracteres, máximo 20 entradas. Devuelve un dict limpio; lanza 400 con mensaje es-MX."""
+    if not valor:
+        return {}
+    if not isinstance(valor, dict):
+        raise HTTPException(400, "El género de los niveles debe ser una lista de pares nombre y género.")
+    if len(valor) > GENERO_NIVELES_MAX:
+        raise HTTPException(400, f"Solo se puede indicar el género de hasta {GENERO_NIVELES_MAX} niveles.")
+    limpio: dict = {}
+    for clave, genero in valor.items():
+        nombre = clave.strip() if isinstance(clave, str) else ""
+        if not nombre:
+            raise HTTPException(400, "El nombre de un nivel con género indicado no puede estar vacío.")
+        if len(nombre) > GENERO_NIVELES_CLAVE_MAX:
+            raise HTTPException(400, f"El nombre de un nivel admite hasta {GENERO_NIVELES_CLAVE_MAX} caracteres.")
+        if genero not in ("m", "f"):
+            raise HTTPException(400, "El género de un nivel debe ser masculino o femenino.")
+        limpio[nombre] = genero
+    return limpio
+
+
 def _sanitize_str_list(items, max_items: int = 200, max_len: int = 200) -> list:
     """Limpia listas de strings (contratistas / contratos). Dedup case-insensitive."""
     if not items or not isinstance(items, list):
@@ -2571,6 +2602,7 @@ async def create_project(body: ProjectIn, user: dict = Depends(require_role(ROLE
         "modo_avance": body.modo_avance,
         "nombres_niveles_partida": _sanitize_str_list(body.nombres_niveles_partida),
         "nombre_nivel_concepto": (body.nombre_nivel_concepto or "").strip(),
+        "genero_niveles": sanitizar_genero_niveles(body.genero_niveles),
         "unidades_personalizadas": _sanitize_str_list(body.unidades_personalizadas),
         "tipo_obra": body.tipo_obra,
         "etapas_poste": [e.model_dump() for e in body.etapas_poste],
@@ -2620,6 +2652,7 @@ async def get_project(pid: str, user: dict = Depends(current_user)):
     p.setdefault("modo_avance", "CANTIDAD")
     p.setdefault("nombres_niveles_partida", [])
     p.setdefault("nombre_nivel_concepto", "")
+    p.setdefault("genero_niveles", {})
     p.setdefault("unidades_personalizadas", [])
     if "etapas_poste" not in p:
         p["etapas_poste"] = list(etapas_poste_de(p))
@@ -2717,6 +2750,8 @@ async def update_project(pid: str, body: ProjectPatch, user: dict = Depends(requ
         upd["nombres_niveles_partida"] = _sanitize_str_list(body.nombres_niveles_partida)
     if body.nombre_nivel_concepto is not None:
         upd["nombre_nivel_concepto"] = body.nombre_nivel_concepto.strip()
+    if body.genero_niveles is not None:
+        upd["genero_niveles"] = sanitizar_genero_niveles(body.genero_niveles)
     if body.unidades_personalizadas is not None:
         upd["unidades_personalizadas"] = _sanitize_str_list(body.unidades_personalizadas)
     if body.etapas_poste is not None:
@@ -2773,6 +2808,7 @@ def _project_public(p: dict) -> dict:
     p.setdefault("modo_avance", "CANTIDAD")
     p.setdefault("nombres_niveles_partida", [])
     p.setdefault("nombre_nivel_concepto", "")
+    p.setdefault("genero_niveles", {})
     p.setdefault("unidades_personalizadas", [])
     if "etapas_poste" not in p:
         p["etapas_poste"] = list(etapas_poste_de(p))
@@ -10379,7 +10415,8 @@ def _override_genero(override, nombre: str, profundidad: Optional[int]) -> Optio
     """Género forzado por el proyecto (`genero_niveles`): dict por nombre (o 'concepto') o
     lista alineada con `nombres_niveles_partida`. Valores 'm' | 'f'."""
     if isinstance(override, dict):
-        v = override.get((nombre or "").strip().lower()) or override.get(nombre)
+        buscado = (nombre or "").strip().lower()
+        v = next((g for k, g in override.items() if isinstance(k, str) and k.strip().lower() == buscado), None)
         return v if v in ("m", "f") else None
     if isinstance(override, (list, tuple)) and profundidad is not None and 0 <= profundidad < len(override):
         v = override[profundidad]
@@ -10414,6 +10451,9 @@ def pluralizar_es(palabra: Optional[str]) -> str:
     if not texto:
         return ""
     tokens = texto.split()
+    # Nombre genérico con número ("Nivel 3"): el plural es el del sustantivo, sin el número.
+    while len(tokens) > 1 and tokens[-1].isdigit():
+        tokens.pop()
     idx = len(tokens) - 1
     for k, t in enumerate(tokens[1:], start=1):
         if t.lower() in ("de", "del", "en", "con", "para", "por"):
@@ -10470,13 +10510,22 @@ def articulo_es(nombre: Optional[str], definido: bool = True, plural: bool = Fal
     return ("el" if g == "m" else "la") if definido else ("un" if g == "m" else "una")
 
 
+def demostrativo_es(nombre: Optional[str], plural: bool = False, override=None,
+                    profundidad: Optional[int] = None) -> str:
+    """Demostrativo que concuerda con el nombre: este/esta (estos/estas)."""
+    g = genero_nombre_es(nombre, override, profundidad)
+    if plural:
+        return "estos" if g == "m" else "estas"
+    return "este" if g == "m" else "esta"
+
+
 def nombres_nivel_proyecto(project: Optional[dict], profundidad: int = 0) -> dict:
     """Nombres configurados de los niveles del catálogo de un proyecto, listos para armar
     mensajes con el artículo correcto (C-14). Si el proyecto no los configuró se usan los
     históricos 'partida' y 'concepto'. `genero_niveles` (opcional en el proyecto, dict por
     nombre o lista alineada con `nombres_niveles_partida`) fuerza el género.
     Devuelve {'partida': {...}, 'concepto': {...}} con nombre, minúscula, plural, género,
-    artículo definido, artículo indefinido y artículo plural."""
+    artículo definido, artículo indefinido, artículo plural y demostrativo (este/esta)."""
     p = project or {}
     niveles = [n for n in (p.get("nombres_niveles_partida") or []) if isinstance(n, str) and n.strip()]
     nombre_partida = niveles[profundidad] if 0 <= profundidad < len(niveles) else "Partida"
@@ -10492,9 +10541,18 @@ def nombres_nivel_proyecto(project: Optional[dict], profundidad: int = 0) -> dic
             "articulo": articulo_es(nombre, True, False, override, prof),
             "indefinido": articulo_es(nombre, False, False, override, prof),
             "articulo_plural": articulo_es(nombre, True, True, override, prof),
+            "demostrativo": demostrativo_es(nombre, False, override, prof),
         }
 
     return {"partida": _ficha(nombre_partida, profundidad), "concepto": _ficha(nombre_concepto, None)}
+
+
+def mensaje_concepto_no_existe(clave: str, project: Optional[dict], ambito: str = "en este proyecto") -> str:
+    """"No existe ningún concepto con clave 'X' en este proyecto" con el nombre y el género del
+    nivel de concepto configurados por el proyecto ("No existe ninguna actividad con clave…")."""
+    c = nombres_nivel_proyecto(project if isinstance(project, dict) else None)["concepto"]
+    ninguno = "ningún" if c["genero"] == "m" else "ninguna"
+    return f"No existe {ninguno} {c['minuscula']} con clave '{clave}' {ambito}"
 
 
 async def _niveles_de_proyecto(project_id: Optional[str], profundidad: int = 0) -> dict:
@@ -20697,6 +20755,7 @@ def _validar_archivo_completo(
     existing_by_clave: dict,
     unidades_personalizadas: Optional[List[str]] = None,
     partidas_existentes: Optional[Dict[str, str]] = None,
+    niveles: Optional[dict] = None,
 ) -> List[dict]:
     """Procesa TODAS las filas de datos de la hoja UNA vez (3.a) — no una
     muestra. Cada fila queda con su interpretación (clave/descripción/
@@ -20710,6 +20769,7 @@ def _validar_archivo_completo(
     momento, así que se recalcula dinámicamente en `_calcular_vista_filas`."""
     if len(rows) <= header_row_index:
         raise HTTPException(400, "header_row_index fuera de rango")
+    nom_concepto = (niveles or nombres_nivel_proyecto(None))["concepto"]  # C-14: nombre y género configurados
     headers = [str(c) if c is not None else "" for c in rows[header_row_index]]
     data_rows = rows[header_row_index + 1:]
 
@@ -20803,7 +20863,7 @@ def _validar_archivo_completo(
             # C-07: un P.U. en 0 deja el importe del concepto en 0; se avisa sin bloquear.
             problemas.append({
                 "tipo": "precio_unitario_cero", "campo": "precio_unitario",
-                "motivo": "El precio unitario es 0; el importe de este concepto quedará en 0",
+                "motivo": f"El precio unitario es 0; el importe de {nom_concepto['demostrativo']} {nom_concepto['minuscula']} quedará en 0",
             })
 
         importe_archivo_raw = celda(row, "importe")
@@ -20830,7 +20890,7 @@ def _validar_archivo_completo(
             concepto_existente_id = existing_by_clave[clave]["id"]
             problemas.append({
                 "tipo": "clave_existente_proyecto", "campo": None,
-                "motivo": f"Ya existe un concepto con clave '{clave}' en este proyecto",
+                "motivo": f"Ya existe {nom_concepto['indefinido']} {nom_concepto['minuscula']} con clave '{clave}' en este proyecto",
             })
 
         filas.append({
@@ -21184,6 +21244,7 @@ async def import_validate(pid: str, import_id: str, body: ImportValidateIn, user
         session["sheets"][body.sheet], body.header_row_index, body.mapping, convencion, existing_by_clave,
         unidades_personalizadas=(project or {}).get("unidades_personalizadas") or [],
         partidas_existentes=partidas_proyecto,
+        niveles=nombres_nivel_proyecto(project),
     )
     contexto = {
         "tiene_destino": bool(body.partida_id),
@@ -21695,6 +21756,7 @@ def _validar_archivo_completo_evm(
     convencion: Optional[ConvencionDecimal],
     existing_by_clave: dict,
     partidas_existentes: Optional[Dict[str, str]] = None,
+    niveles: Optional[dict] = None,
 ) -> List[dict]:
     """Mismo contrato que _validar_archivo_completo (catálogo legado):
     procesa TODAS las filas una vez, resultado inmutable, correcciones
@@ -21706,6 +21768,7 @@ def _validar_archivo_completo_evm(
     importador no trae columna de unidad, tal como se pidió."""
     if len(rows) <= header_row_index:
         raise HTTPException(400, "header_row_index fuera de rango")
+    nom_concepto = (niveles or nombres_nivel_proyecto(None))["concepto"]  # C-14
     headers = [str(c) if c is not None else "" for c in rows[header_row_index]]
     data_rows = rows[header_row_index + 1:]
 
@@ -21802,7 +21865,7 @@ def _validar_archivo_completo_evm(
             concepto_existente_id = existing_by_clave[clave]["id"]
             problemas.append({
                 "tipo": "clave_existente_proyecto", "campo": None,
-                "motivo": f"Ya existe un concepto con clave '{clave}' en este proyecto",
+                "motivo": f"Ya existe {nom_concepto['indefinido']} {nom_concepto['minuscula']} con clave '{clave}' en este proyecto",
             })
 
         filas.append({
@@ -22146,7 +22209,7 @@ async def import_evm_headers(
 
 @api.post("/projects/{pid}/conceptos/import_evm/{import_id}/validate")
 async def import_evm_validate(pid: str, import_id: str, body: ImportValidateEvmIn, user: dict = Depends(require_role(ROLE_SUB, ROLE_COORD))):
-    await ensure_project_access(user, pid)
+    proyecto_evm = await ensure_project_access(user, pid)
     if body.partida_id:
         partida = await db.partidas.find_one({"id": body.partida_id, "project_id": pid})
         if not partida:
@@ -22166,6 +22229,7 @@ async def import_evm_validate(pid: str, import_id: str, body: ImportValidateEvmI
     filas = _validar_archivo_completo_evm(
         session["sheets"][body.sheet], body.header_row_index, body.mapping, convencion, existing_by_clave,
         partidas_existentes=partidas_proyecto,
+        niveles=nombres_nivel_proyecto(proyecto_evm if isinstance(proyecto_evm, dict) else None),
     )
     contexto = {"tiene_destino": bool(body.partida_id), "claves_partida_existentes": sorted(partidas_proyecto)}
 
@@ -22850,7 +22914,7 @@ async def import_avances(
         clave = str(clave_raw).strip()
         concepto = conceptos_por_clave.get(clave)
         if not concepto:
-            errores.append({"fila": fila_num, "motivo": f"No existe ningún concepto con clave '{clave}' en este proyecto"})
+            errores.append({"fila": fila_num, "motivo": mensaje_concepto_no_existe(clave, project)})
             continue
 
         fecha_raw = row[idx_fecha] if idx_fecha < len(row) else None
@@ -24206,14 +24270,14 @@ async def create_gasto_real(pid: str, body: GastoRealIn, user: dict = Depends(re
     """AC (Costo Real) del motor EVM: captura simple y manual — no intenta
     reconciliar facturas/nómina automáticamente, solo registra el monto que
     administración ya calculó fuera del sistema."""
-    await ensure_project_access(user, pid)
+    proyecto_gasto = await ensure_project_access(user, pid)
     concepto_id = None
     concepto_clave = None
     if body.concepto_clave:
         clave = body.concepto_clave.strip()
         concepto = await db.conceptos.find_one({"project_id": pid, "clave": clave})
         if not concepto:
-            raise HTTPException(404, f"No existe ningún concepto con clave '{clave}' en este proyecto")
+            raise HTTPException(404, mensaje_concepto_no_existe(clave, proyecto_gasto))
         concepto_id = concepto["id"]
         concepto_clave = concepto["clave"]
     gid = str(uuid.uuid4())
@@ -24339,7 +24403,7 @@ async def import_gastos_reales(
     aquí CADA fila debe ligar a un concepto ya existente en el proyecto:
     si vas a importar miles de gastos históricos es para poder comparar
     EV vs AC por concepto, no para acumular un bulto agregado."""
-    await ensure_project_access(user, pid)
+    proyecto_gastos = await ensure_project_access(user, pid)
     content = await file.read()
     sheets = _read_workbook_sheets(file.filename or "archivo.xlsx", content)
     if not sheets:
@@ -24387,7 +24451,7 @@ async def import_gastos_reales(
         clave = str(clave_raw).strip()
         concepto = conceptos_por_clave.get(clave)
         if not concepto:
-            errores.append({"fila": fila_num, "motivo": f"No existe ningún concepto con clave '{clave}' en este proyecto"})
+            errores.append({"fila": fila_num, "motivo": mensaje_concepto_no_existe(clave, proyecto_gastos)})
             continue
 
         fecha_raw = row[idx_fecha] if idx_fecha < len(row) else None

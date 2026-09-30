@@ -11,7 +11,7 @@ import { useEnvio } from '@/src/hooks/useEnvio';
 import { useFormErrors } from '@/src/hooks/useFormErrors';
 import { t } from '@/src/i18n';
 import { colors, radius, shadow, spacing } from '@/src/theme';
-import { nombreNivel } from '@/src/utils/nombresNivel';
+import { concordanciaNivel } from '@/src/utils/nombresNivel';
 import { showToast } from '@/src/utils/toast';
 import { CampoPartida, validarNuevaPartida } from '@/src/utils/validacionCatalogo';
 
@@ -34,7 +34,8 @@ interface Props {
 export function NuevaPartidaModal({
   visible, project, depth, projectId, ordenSugerido, partidaPadreId, partidaPadreNombre, hermanas, todas, onClose, onCreada,
 }: Props) {
-  const nivel = nombreNivel(project, depth);
+  const conc = concordanciaNivel(project, depth);
+  const nivel = conc.nombre;
   const [clave, setClave] = useState('');
   const [nombre, setNombre] = useState('');
   const { errores, errorGeneral, ponerTodos, alCambiar, errorDeGuardado, limpiarTodo } = useFormErrors<CampoPartida>();
@@ -52,7 +53,7 @@ export function NuevaPartidaModal({
           project_id: projectId, clave: clave.trim(), nombre: nombre.trim(), orden: ordenSugerido,
           partida_padre_id: partidaPadreId || undefined,
         });
-        showToast(t('catalogoForm.partidaCreada', { nivel }));
+        showToast(t('catalogoForm.partidaCreada', { nivel, creado: conc.creado }));
         onCreada();
       } catch (e) {
         errorDeGuardado(e);
@@ -64,7 +65,7 @@ export function NuevaPartidaModal({
     <Modal visible={visible} transparent animationType="fade" onRequestClose={() => !guardando && onClose()}>
       <View style={styles.backdrop}>
         <View style={styles.card}>
-          <Text style={styles.title} accessibilityRole="header">{t('catalogoForm.nuevaPartida', { nivel: nivel.toLowerCase() })}</Text>
+          <Text style={styles.title} accessibilityRole="header">{t('catalogoForm.nuevaPartida', { nuevo: conc.nuevo, nivel: conc.minuscula })}</Text>
           <Text style={styles.padre}>
             {partidaPadreNombre
               ? t('catalogoForm.seCreaDentroDe', { padre: partidaPadreNombre })

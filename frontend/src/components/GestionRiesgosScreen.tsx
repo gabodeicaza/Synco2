@@ -15,7 +15,7 @@ import { api, RiesgoRegistro, Project } from '@/src/api';
 import { colors, radius, shadow, spacing } from '@/src/theme';
 import { Button } from '@/src/components/Button';
 import { ScreenHeader } from '@/src/components/ScreenHeader';
-import { a11y } from '@/src/i18n';
+import { a11y, t } from '@/src/i18n';
 
 const AVANCE_ATAJOS = [0, 25, 50, 75, 100];
 
@@ -54,7 +54,7 @@ export default function GestionRiesgosScreen({ projectId }: { projectId: string 
       setProject(proj);
       setRegistros(list);
     } catch (e: any) {
-      Alert.alert('Error', e?.message || 'No se pudo cargar el módulo Gestión de Riesgos.');
+      Alert.alert(t('gestionRiesgos.error'), e?.message || t('gestionRiesgos.noSeCargo'));
     } finally {
       setLoading(false);
     }
@@ -75,11 +75,11 @@ export default function GestionRiesgosScreen({ projectId }: { projectId: string 
     const descripcion = descripcionDraft.trim();
     const propuesta = propuestaDraft.trim();
     if (!descripcion) {
-      Alert.alert('Falta información', 'Describe el riesgo identificado.');
+      Alert.alert(t('gestionRiesgos.faltaInformacion'), t('gestionRiesgos.faltaRiesgo'));
       return;
     }
     if (!propuesta) {
-      Alert.alert('Falta información', 'Indica la propuesta de control.');
+      Alert.alert(t('gestionRiesgos.faltaInformacion'), t('gestionRiesgos.faltaControl'));
       return;
     }
     try {
@@ -93,7 +93,7 @@ export default function GestionRiesgosScreen({ projectId }: { projectId: string 
       setFormOpen(false);
       await load();
     } catch (e: any) {
-      Alert.alert('No se pudo guardar', e?.message || 'Inténtalo nuevamente.');
+      Alert.alert(t('gestionRiesgos.noSeGuardo'), e?.message || t('gestionRiesgos.reintentar'));
     } finally {
       setSaving(false);
     }
@@ -108,7 +108,7 @@ export default function GestionRiesgosScreen({ projectId }: { projectId: string 
     if (!editing) return;
     const pct = parseInt(avanceDraft, 10);
     if (Number.isNaN(pct) || pct < 0 || pct > 100) {
-      Alert.alert('Valor inválido', 'El avance debe ser un número entre 0 y 100.');
+      Alert.alert(t('gestionRiesgos.valorInvalido'), t('gestionRiesgos.avanceRango'));
       return;
     }
     try {
@@ -117,7 +117,7 @@ export default function GestionRiesgosScreen({ projectId }: { projectId: string 
       setEditing(null);
       await load();
     } catch (e: any) {
-      Alert.alert('No se pudo guardar', e?.message || 'Inténtalo nuevamente.');
+      Alert.alert(t('gestionRiesgos.noSeGuardo'), e?.message || t('gestionRiesgos.reintentar'));
     } finally {
       setSavingAvance(false);
     }
@@ -133,30 +133,28 @@ export default function GestionRiesgosScreen({ projectId }: { projectId: string 
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <ScreenHeader title="Gestión de Riesgos" backgroundColor={headerColor} />
+      <ScreenHeader title={t('gestionRiesgos.titulo')} backgroundColor={headerColor} />
 
       <ScrollView contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + spacing.xl }]}>
-        <Text style={styles.helpTxt}>
-          Toca el % de avance de un riesgo para actualizarlo conforme se ejecuta su propuesta de control.
-        </Text>
+        <Text style={styles.helpTxt}>{t('gestionRiesgos.ayuda')}</Text>
 
         {registros.length === 0 ? (
           <View style={styles.empty}>
             <Ionicons name="warning-outline" size={22} color={colors.textMuted} />
-            <Text style={styles.emptyTxt}>Aún no hay riesgos registrados.</Text>
+            <Text style={styles.emptyTxt}>{t('gestionRiesgos.vacio')}</Text>
           </View>
         ) : (
           registros.map((r) => (
             <View key={r.id} style={styles.riskCard}>
               <View style={styles.riskHeaderRow}>
                 <Ionicons name="location-outline" size={16} color={colors.textMuted} />
-                <Text style={styles.riskEstacion} numberOfLines={1}>{r.estacion_nombre || 'Sin estación/poste'}</Text>
+                <Text style={styles.riskEstacion} numberOfLines={1}>{r.estacion_nombre || t('gestionRiesgos.sinUbicacion')}</Text>
               </View>
 
-              <Text style={styles.fieldLabelSmall}>Descripción del riesgo</Text>
+              <Text style={styles.fieldLabelSmall}>{t('gestionRiesgos.descripcionRiesgo')}</Text>
               <Text style={styles.riskTxt}>{r.descripcion_riesgo}</Text>
 
-              <Text style={styles.fieldLabelSmall}>Propuesta de control</Text>
+              <Text style={styles.fieldLabelSmall}>{t('gestionRiesgos.propuestaControl')}</Text>
               <Text style={styles.riskTxt}>{r.propuesta_control}</Text>
 
               <Pressable accessibilityRole="button" onPress={() => openEditAvance(r)} style={styles.avanceRow}>
@@ -179,40 +177,40 @@ export default function GestionRiesgosScreen({ projectId }: { projectId: string 
       <Modal visible={formOpen} transparent animationType="slide" onRequestClose={() => setFormOpen(false)}>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>Registrar riesgo</Text>
+            <Text style={styles.modalTitle}>{t('gestionRiesgos.registrarRiesgo')}</Text>
 
-            <Text style={styles.fieldLabel}>Estación / poste</Text>
+            <Text style={styles.fieldLabel}>{t('gestionRiesgos.ubicacionEtiqueta')}</Text>
             <TextInput
               value={estacionDraft}
               onChangeText={setEstacionDraft}
-              placeholder="Ej. Poste 12, Estación 3+400"
+              placeholder={t('gestionRiesgos.ubicacionEjemplo')}
               placeholderTextColor={colors.textMuted}
               style={styles.input}
             />
 
-            <Text style={styles.fieldLabel}>Descripción del riesgo</Text>
+            <Text style={styles.fieldLabel}>{t('gestionRiesgos.descripcionRiesgo')}</Text>
             <TextInput
               value={descripcionDraft}
               onChangeText={setDescripcionDraft}
-              placeholder="Ej. Talud inestable por lluvias recientes"
+              placeholder={t('gestionRiesgos.descripcionEjemplo')}
               placeholderTextColor={colors.textMuted}
               style={[styles.input, { minHeight: 70, textAlignVertical: 'top' }]}
               multiline
             />
 
-            <Text style={styles.fieldLabel}>Propuesta de control</Text>
+            <Text style={styles.fieldLabel}>{t('gestionRiesgos.propuestaControl')}</Text>
             <TextInput
               value={propuestaDraft}
               onChangeText={setPropuestaDraft}
-              placeholder="Ej. Colocar malla de contención y señalización"
+              placeholder={t('gestionRiesgos.controlEjemplo')}
               placeholderTextColor={colors.textMuted}
               style={[styles.input, { minHeight: 70, textAlignVertical: 'top' }]}
               multiline
             />
 
             <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
-              <Button label="Cancelar" variant="secondary" onPress={() => setFormOpen(false)} style={{ flex: 1 }} />
-              <Button label="Guardar" loading={saving} onPress={onSave} style={{ flex: 1 }} />
+              <Button label={t('gestionRiesgos.cancelar')} variant="secondary" onPress={() => setFormOpen(false)} style={{ flex: 1 }} />
+              <Button label={t('gestionRiesgos.guardar')} loading={saving} onPress={onSave} style={{ flex: 1 }} />
             </View>
           </View>
         </KeyboardAvoidingView>
@@ -222,10 +220,10 @@ export default function GestionRiesgosScreen({ projectId }: { projectId: string 
       <Modal visible={!!editing} transparent animationType="fade" onRequestClose={() => setEditing(null)}>
         <View style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>Actualizar avance</Text>
+            <Text style={styles.modalTitle}>{t('gestionRiesgos.actualizarAvance')}</Text>
             <Text style={styles.riskTxt} numberOfLines={2}>{editing?.descripcion_riesgo}</Text>
 
-            <Text style={styles.fieldLabel}>% de avance</Text>
+            <Text style={styles.fieldLabel}>{t('gestionRiesgos.porcentajeAvance')}</Text>
             <TextInput
               value={avanceDraft}
               onChangeText={setAvanceDraft}
@@ -241,8 +239,8 @@ export default function GestionRiesgosScreen({ projectId }: { projectId: string 
             </View>
 
             <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
-              <Button label="Cancelar" variant="secondary" onPress={() => setEditing(null)} style={{ flex: 1 }} />
-              <Button label="Guardar" loading={savingAvance} onPress={onSaveAvance} style={{ flex: 1 }} />
+              <Button label={t('gestionRiesgos.cancelar')} variant="secondary" onPress={() => setEditing(null)} style={{ flex: 1 }} />
+              <Button label={t('gestionRiesgos.guardar')} loading={savingAvance} onPress={onSaveAvance} style={{ flex: 1 }} />
             </View>
           </View>
         </View>

@@ -54,7 +54,7 @@ export function HeaderMenu({ basePath, projectId }: HeaderMenuProps) {
     // y antes se navegaba igual a una pantalla rota. Mejor avisar y no
     // navegar, que dejar al usuario en una pantalla sin logo ni datos.
     if (!projectId) {
-      Alert.alert('Un momento', 'El proyecto todavía se está cargando. Intenta de nuevo en unos segundos.');
+      Alert.alert(t('menuCabecera.unMomento'), t('menuCabecera.proyectoCargando'));
       return;
     }
     router.push({
@@ -76,7 +76,7 @@ export function HeaderMenu({ basePath, projectId }: HeaderMenuProps) {
 
   return (
     <>
-      <Pressable accessibilityRole="button" hitSlop={10} style={styles.headerBtn} onPress={() => setOpen(true)} accessibilityLabel="Abrir menú">
+      <Pressable accessibilityRole="button" hitSlop={10} style={styles.headerBtn} onPress={() => setOpen(true)} accessibilityLabel={t('menuCabecera.abrirMenu')}>
         <Ionicons name="menu" size={22} color="#fff" />
       </Pressable>
 
@@ -85,17 +85,17 @@ export function HeaderMenu({ basePath, projectId }: HeaderMenuProps) {
           <View style={[styles.menuCard, { top: insets.top + 56 }]}>
             {/* Mensajes y Calendario vivian como tabs de la barra inferior
                 (subcoord y spec); se movieron aqui para liberar espacio. */}
-            <MenuItem icon="chatbubbles-outline" label="Mensajes" onPress={() => goTo('mensajes')} />
-            <MenuItem icon="calendar-outline" label="Calendario" onPress={() => goTo('calendario')} />
-            <MenuItem icon="folder-open-outline" label="Archivos de consulta" onPress={() => goTo('archivos-consulta')} />
-            <MenuItem icon="people-outline" label="Fuerza de trabajo" onPress={() => goTo('fuerza-de-trabajo')} />
+            <MenuItem icon="chatbubbles-outline" label={t('menuCabecera.mensajes')} onPress={() => goTo('mensajes')} />
+            <MenuItem icon="calendar-outline" label={t('menuCabecera.calendario')} onPress={() => goTo('calendario')} />
+            <MenuItem icon="folder-open-outline" label={t('menuCabecera.archivosConsulta')} onPress={() => goTo('archivos-consulta')} />
+            <MenuItem icon="people-outline" label={t('menuCabecera.fuerzaTrabajo')} onPress={() => goTo('fuerza-de-trabajo')} />
 
             {/* Catálogo de Conceptos: antes un acordeón con 3 sub-opciones
                 aquí mismo (registrar avance, catálogo, visualizar avance);
                 mismo motivo que Módulos/Actividades Generales — un botón
                 único que lleva a su propio hub (ver
                 CatalogoConceptosHubScreen.tsx). */}
-            <MenuItem icon="albums-outline" label="Catálogo de Conceptos" onPress={() => goTo('catalogo-conceptos-hub')} />
+            <MenuItem icon="albums-outline" label={t('menuCabecera.catalogoConceptos')} onPress={() => goTo('catalogo-conceptos-hub')} />
 
             {/* Actividades Generales: vista curada de las actividades ya
                 capturadas en reportes — Generales, o por Ubicación (fusiona
@@ -104,24 +104,24 @@ export function HeaderMenu({ basePath, projectId }: HeaderMenuProps) {
                 sus propios tabs para cambiar entre ambas
                 (ActividadesGeneralesScreen.tsx), así que un solo botón
                 basta — entra directo a "Generales". */}
-            <MenuItem icon="reader-outline" label="Actividades Generales" onPress={() => goTo('actividades-generales', { nivel: 'GENERAL' })} />
+            <MenuItem icon="reader-outline" label={t('menuCabecera.actividadesGenerales')} onPress={() => goTo('actividades-generales', { nivel: 'GENERAL' })} />
 
             {/* Vista ejecutiva de costo/tiempo (Valor Ganado) — no es una
                 captura de campo, por eso vive suelto y no dentro del grupo
                 "Catálogo de Conceptos". Ver src/components/DashboardEVM.tsx. */}
-            <MenuItem icon="stats-chart-outline" label="Dashboard EVM" onPress={() => goTo('dashboard-evm')} />
+            <MenuItem icon="stats-chart-outline" label={t('menuCabecera.dashboardEvm')} onPress={() => goTo('dashboard-evm')} />
 
             {/* Plano de Avance y Presentación — siempre visibles (como
                 Dashboard EVM), no pasan por el toggle de módulos por
                 proyecto (ver PlanoAvanceScreen.tsx / PresentacionScreen.tsx). */}
-            <MenuItem icon="map-outline" label="Plano de Avance" onPress={() => goTo('plano-avance')} />
-            <MenuItem icon="easel-outline" label="Presentación" onPress={() => goTo('presentacion')} />
+            <MenuItem icon="map-outline" label={t('menuCabecera.planoAvance')} onPress={() => goTo('plano-avance')} />
+            <MenuItem icon="easel-outline" label={t('menuCabecera.presentacion')} onPress={() => goTo('presentacion')} />
 
             {basePath === '/(subcoord)' ? (
               // Edita acceso_predio/situacion_social por Subtramo — el backend
               // (PATCH /nodes) solo permite escribir estos campos a Coordinador
               // y Sub-Coordinador, por eso no se ofrece a Especialista.
-              <MenuItem icon="shield-checkmark-outline" label="Acceso al Predio" onPress={() => goTo('acceso-predio')} />
+              <MenuItem icon="shield-checkmark-outline" label={t('menuCabecera.accesoPredio')} onPress={() => goTo('acceso-predio')} />
             ) : null}
 
             {/* Sistema Multi-Proyecto Modular: con varios módulos encendidos
@@ -133,7 +133,7 @@ export function HeaderMenu({ basePath, projectId }: HeaderMenuProps) {
                 (ver `modulos` en GET /projects/{pid} y src/utils/modulos.ts)
                 — nunca se asume "encendido" por default. */}
             {modulosActivos(modulos).length > 0 ? (
-              <MenuItem icon="apps-outline" label="Módulos" onPress={() => goTo('modulos')} />
+              <MenuItem icon="apps-outline" label={t('menuCabecera.modulos')} onPress={() => goTo('modulos')} />
             ) : null}
 
             <View style={styles.divider} />
@@ -146,7 +146,7 @@ export function HeaderMenu({ basePath, projectId }: HeaderMenuProps) {
             />
             <MenuItem
               icon="key-outline"
-              label="Cambiar mi contraseña"
+              label={t('menuCabecera.cambiarPassword')}
               onPress={() => { setOpen(false); router.push(`${basePath}/cambiar-password` as any); }}
             />
             <MenuItem icon="log-out-outline" label={t('perfil.cerrarSesion')} onPress={onLogout} destructive />
