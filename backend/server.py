@@ -15181,6 +15181,107 @@ async def export_reports_pptx(
 
                     idx = chunk_end
 
+        def _emit_resumen_frentes_slides() -> None:
+            """Slides "RESUMEN POR FRENTE" (formato del informe diario de
+            referencia, últimas diapositivas): a la izquierda FRENTE /
+            CANTIDAD (personas) y a la derecha ESTACIÓN / MAQUINARIA Y
+            EQUIPO / CANTIDAD, con una fila por Estación e Intertramo en el
+            orden del árbol (incluidos los frentes sin actividad: "0
+            Personas" / "Sin equipo") y el TOTAL general en la última
+            diapositiva. Sale del mismo consolidado por Subtramo que las
+            páginas de resumen (`resource_consolidated_by_subtramo`)."""
+            frentes_nodes = sorted(
+                (n for n in nodes_by_id.values() if n.get("depth") == 1),
+                key=lambda n: (n.get("order", 0), n.get("name", "")),
+            )
+            if not frentes_nodes:
+                return
+            filas = []
+            n_est = 0
+            for n in frentes_nodes:
+                es_inter = n.get("tipo_nodo") == "intertramo"
+                if es_inter:
+                    etiqueta = re.sub(r"(?i)^\s*inter\s*-?\s*tramo\s*", "", n.get("name") or "").strip() or (n.get("name") or "—")
+                    etiqueta = etiqueta.upper()
+                else:
+                    n_est += 1
+                    etiqueta = str(n_est)
+                cons = resource_consolidated_by_subtramo.get(n["id"]) or {}
+                personas = sum(r["qty"] for r in (cons.get("personal") or []))
+                equipos_rows = cons.get("maquinaria") or []
+                equipos_qty = sum(r["qty"] for r in equipos_rows)
+                nombres: list = []
+                for r in equipos_rows:
+                    main, _ = _format_workforce_desc(r["desc"])
+                    main = (main or r["desc"] or "").strip()
+                    if main and main not in nombres:
+                        nombres.append(main)
+                texto = ", ".join(nombres) if nombres else "Sin equipo"
+                if len(texto) > 120:
+                    texto = texto[:117].rstrip(", ") + "…"
+                filas.append({
+                    "etiqueta": etiqueta, "personas": personas, "equipos": texto, "equipos_qty": equipos_qty,
+                })
+            if not any(f["personas"] or f["equipos_qty"] for f in filas):
+                return  # sin actividad en ningún frente: no se imprime una hoja en blanco
+            _indice_mark("resumen_frentes", "Resumen por frente")
+
+            MARGIN_X = Cm(1.5)
+            content_w = SW - 2 * MARGIN_X
+            gutter = Cm(0.8)
+            left_w = int((content_w - gutter) * 0.36)
+            right_w = content_w - gutter - left_w
+            HEADER_H = Cm(1.0)
+            ROW_H = Cm(1.0)
+            TOTAL_H = Cm(1.0)
+            title_h = Cm(1.6)
+            avail_h = (SH - BOTTOM_MARGIN) - TOP_MARGIN - title_h - HEADER_H - TOTAL_H
+            rows_per_slide = max(1, int(avail_h / ROW_H))
+            total_personas = sum(f["personas"] for f in filas)
+            total_equipos = sum(f["equipos_qty"] for f in filas)
+
+            def _cell(slide, x, y, w, h, text, *, bold=False, fill=None, color=None, size=11, align=PP_ALIGN.CENTER):
+                _wf_rect(slide, x, y, w, h, fill_rgb=fill or WF_WHITE_RGB, line_rgb=WF_BORDER_RGB, line_pt=0.75)
+                add_text(slide, x, y, w, h, text, size=size, bold=bold, color=color or WF_TEXT_RGB, align=align)
+
+            paginas = [filas[i:i + rows_per_slide] for i in range(0, len(filas), rows_per_slide)]
+            for pi, pagina in enumerate(paginas):
+                is_last = pi == len(paginas) - 1
+                slide = _clone_membrete()
+                y0 = TOP_MARGIN
+                add_text(slide, MARGIN_X, y0, content_w, Cm(1.3),
+                         "RESUMEN POR FRENTE" + ("" if pi == 0 else " (continúa)"),
+                         size=28, bold=True, color=READABLE_BRAND_RGB, align=PP_ALIGN.CENTER)
+                y = y0 + title_h
+                lx, rx = MARGIN_X, MARGIN_X + left_w + gutter
+                e_w, m_w, q_w = int(right_w * 0.14), int(right_w * 0.72), right_w - int(right_w * 0.14) - int(right_w * 0.72)
+                _cell(slide, lx, y, int(left_w * 0.45), HEADER_H, "FRENTE", bold=True, fill=BRAND_RGB, color=HEADER_TEXT_RGB, size=12)
+                _cell(slide, lx + int(left_w * 0.45), y, left_w - int(left_w * 0.45), HEADER_H, "CANTIDAD",
+                      bold=True, fill=BRAND_RGB, color=HEADER_TEXT_RGB, size=12)
+                _cell(slide, rx, y, e_w, HEADER_H, "ESTACIÓN", bold=True, fill=BRAND_RGB, color=HEADER_TEXT_RGB, size=10)
+                _cell(slide, rx + e_w, y, m_w, HEADER_H, "MAQUINARIA Y EQUIPO", bold=True, fill=BRAND_RGB,
+                      color=HEADER_TEXT_RGB, size=12)
+                _cell(slide, rx + e_w + m_w, y, q_w, HEADER_H, "CANTIDAD", bold=True, fill=BRAND_RGB,
+                      color=HEADER_TEXT_RGB, size=12)
+                y += HEADER_H
+                for f in pagina:
+                    lw1 = int(left_w * 0.45)
+                    _cell(slide, lx, y, lw1, ROW_H, f["etiqueta"], size=11)
+                    _cell(slide, lx + lw1, y, left_w - lw1, ROW_H,
+                          f"{f['personas']} Persona" + ("" if f["personas"] == 1 else "s"), size=11)
+                    _cell(slide, rx, y, e_w, ROW_H, f["etiqueta"], size=11)
+                    _cell(slide, rx + e_w, y, m_w, ROW_H, f["equipos"], size=9, align=PP_ALIGN.LEFT)
+                    _cell(slide, rx + e_w + m_w, y, q_w, ROW_H, str(f["equipos_qty"]), size=11)
+                    y += ROW_H
+                if is_last:
+                    lw1 = int(left_w * 0.45)
+                    _cell(slide, lx, y, lw1, TOTAL_H, "TOTAL", bold=True, fill=WF_TOTAL_TINT_RGB, size=12)
+                    _cell(slide, lx + lw1, y, left_w - lw1, TOTAL_H, str(total_personas), bold=True,
+                          fill=WF_TOTAL_TINT_RGB, size=12)
+                    _cell(slide, rx, y, e_w + m_w, TOTAL_H, "TOTAL", bold=True, fill=WF_TOTAL_TINT_RGB, size=12)
+                    _cell(slide, rx + e_w + m_w, y, q_w, TOTAL_H, str(total_equipos), bold=True,
+                          fill=WF_TOTAL_TINT_RGB, size=12)
+
         def _emit_modulos_closing_slides() -> None:
             """Slides de cierre GENÉRICAS del sistema Multi-Proyecto Modular:
             recorre `modulos_data` (ver `_gather_modulos_export_data`) y
@@ -16354,6 +16455,7 @@ async def export_reports_pptx(
         # Slide(s) de cierre: RECUENTO GENERAL del período completo,
         # desglosado por Tramo y por puesto/descripción.
         _emit_recuento_general_slides()
+        _emit_resumen_frentes_slides()
 
         # Sistema Multi-Proyecto Modular: Forestal y Arbolado / Seguridad e
         # Higiene, al final de todo — solo si están encendidos.
