@@ -214,6 +214,28 @@ export const MODULOS_VACIOS: ModulosConfig = {
 
 export type ModuloCategoria = keyof ModulosConfig;
 
+// === Índice editable de los informes PDF/PPTX (uno por periodo) ===
+export type IndicePeriodo = 'diario' | 'semanal' | 'mensual';
+
+export interface IndiceConfig {
+  enabled: boolean;
+  titulo: string;
+  order: string[];               // claves de sección en el orden deseado
+  titles: Record<string, string>; // título personalizado por clave
+  hidden: string[];              // claves que no aparecen en el índice
+}
+
+export interface IndiceSeccion {
+  key: string;
+  title: string;                 // título por defecto, calculado por el servidor
+}
+
+export interface IndiceResponse {
+  periodo: IndicePeriodo;
+  config: IndiceConfig;
+  estructura: IndiceSeccion[];   // ultima estructura conocida del informe
+}
+
 export interface ForestalRegistro {
   id: string;
   project_id: string;
@@ -1958,6 +1980,19 @@ export const api = {
   // categoria(s) que cambiaron (ver server.py set_project_modulos).
   setProjectModulos: (pid: string, body: Partial<ModulosConfig>) =>
     request<Project>('PUT', `/projects/${pid}/modulos`, body),
+
+  // Indice editable de PDF/PPTX: una config independiente por periodo.
+  getIndiceConfig: (pid: string, periodo: IndicePeriodo) =>
+    request<IndiceResponse>('GET', `/projects/${pid}/indice/${periodo}`),
+  putIndiceConfig: (pid: string, periodo: IndicePeriodo, config: IndiceConfig) =>
+    request<{ periodo: IndicePeriodo; config: IndiceConfig }>('PUT', `/projects/${pid}/indice/${periodo}`, config),
+  // Recalcula la estructura de secciones con datos actuales (el servidor
+  // arma el informe completo y solo devuelve la lista de secciones).
+  refreshIndiceEstructura: (pid: string, periodo: IndicePeriodo) =>
+    request<{ periodo: IndicePeriodo; estructura: IndiceSeccion[] }>(
+      'GET',
+      `/projects/${pid}/export/reports.pdf?period=today&period_type=${periodo}&estructura_solo=true`,
+    ),
 
   // === Módulo piloto: Forestal y Arbolado ===
   listForestalRegistros: (pid: string) => request<ForestalRegistro[]>('GET', `/projects/${pid}/forestal-registros`),

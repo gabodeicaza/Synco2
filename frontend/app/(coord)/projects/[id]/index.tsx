@@ -1622,6 +1622,12 @@ export default function ProjectDetailScreen() {
                 onPress={() => setTplModalOpen(true)}
               />
               <ActionTile
+                icon="list-outline"
+                title="Indice de informes"
+                subtitle="Orden y titulos de las secciones del PDF/PPTX . Diario, Semanal y Mensual"
+                onPress={() => router.push({ pathname: '/(coord)/projects/[id]/indice' as any, params: { id: pid } })}
+              />
+              <ActionTile
                 icon="images-outline"
                 title="Datos Generales"
                 subtitle={

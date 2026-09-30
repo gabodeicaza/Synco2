@@ -1755,6 +1755,9 @@ def _project_public(p: dict) -> dict:
         return p
     p = dict(p)  # copia superficial para no mutar el original
     p.pop("_id", None)
+    # Config/estructura del índice editable: se sirven por /indice/{periodo}.
+    p.pop("indice_config", None)
+    p.pop("indice_estructura", None)
     p.setdefault("reference_files", [])
     p.setdefault("contratistas_list", [])
     p.setdefault("contratos_list", [])
@@ -9269,6 +9272,394 @@ async def delete_general_data_image(
 
 
 
+# === ÍNDICE EDITABLE (PDF / PPTX) ==========================================
+# Cada motor registra "marcas" de sección mientras dibuja (clave estable,
+# título por defecto, posición de inicio). Al terminar, `_indice_ranges` las
+# convierte en rangos contiguos de páginas/diapositivas y `_indice_plan`
+# aplica la configuración del Coordinador (orden, títulos, ocultos) — así el
+# índice se calcula SIEMPRE sobre el orden final real, nunca sobre una lista
+# escrita a mano que pueda desfasarse.
+#
+# Configuración por categoría de informe (diario/semanal/mensual), guardada
+# en `projects.indice_config.<periodo>`; la última estructura conocida de
+# secciones (para poblar el editor) en `projects.indice_estructura.<periodo>`.
+INDICE_PERIODOS = ("diario", "semanal", "mensual")
+INDICE_TITULO_DEFAULT = "ÍNDICE"
+_INDICE_MAX_CLAVES = 1000
+
+# Geometría del índice en PDF (puntos). La altura del encabezado cuenta solo
+# en la primera página; las de continuación aprovechan el alto completo.
+_INDICE_PDF_ROW_H = 24.0
+_INDICE_PDF_HEAD_H = 62.0
+
+
+def _indice_periodo_key(period_type: Optional[str], period: str) -> str:
+    """diario/semanal/mensual al que pertenece este export (mismo criterio
+    que `_modulos_categoria_para_export`)."""
+    cat = _modulos_categoria_para_export(period_type, period)
+    return {"reportes_semanales": "semanal", "reportes_mensuales": "mensual"}.get(cat, "diario")
+
+
+def _sanitize_indice_config(raw) -> dict:
+    """Normaliza la configuración de UN período. Tolera basura (payload del
+    cliente o documentos viejos): nunca lanza, siempre devuelve la forma
+    completa {enabled, titulo, order, titles, hidden}."""
+    raw = raw if isinstance(raw, dict) else {}
+
+    def _claves(value) -> List[str]:
+        out: List[str] = []
+        seen: set = set()
+        if isinstance(value, list):
+            for k in value:
+                if isinstance(k, str) and k and len(k) <= 200 and k not in seen:
+                    seen.add(k)
+                    out.append(k)
+                    if len(out) >= _INDICE_MAX_CLAVES:
+                        break
+        return out
+
+    enabled = raw.get("enabled")
+    titles: Dict[str, str] = {}
+    raw_titles = raw.get("titles")
+    if isinstance(raw_titles, dict):
+        for k, v in raw_titles.items():
+            if isinstance(k, str) and k and len(k) <= 200 and isinstance(v, str):
+                v = " ".join(v.split())[:200]
+                if v:
+                    titles[k] = v
+                    if len(titles) >= _INDICE_MAX_CLAVES:
+                        break
+    titulo = " ".join(str(raw.get("titulo") or "").split())[:80] or INDICE_TITULO_DEFAULT
+    return {
+        "enabled": enabled if isinstance(enabled, bool) else True,
+        "titulo": titulo,
+        "order": _claves(raw.get("order")),
+        "titles": titles,
+        "hidden": _claves(raw.get("hidden")),
+    }
+
+
+def _indice_apply_order(default_keys: List[str], saved_order: List[str]) -> List[str]:
+    """Reordena `default_keys` según `saved_order` sin perder estabilidad:
+    las claves guardadas (que aún existen) se reparten, en el orden guardado,
+    entre las posiciones que ocupaban en el orden natural; una sección nueva
+    (nodo creado después de guardar) conserva su posición natural."""
+    known = set(default_keys)
+    saved = [k for k in saved_order if k in known]
+    saved_set = set(saved)
+    it = iter(saved)
+    return [next(it) if k in saved_set else k for k in default_keys]
+
+
+def _indice_ranges(marks: List[tuple], total: int) -> List[dict]:
+    """Marcas (clave, título, inicio) en orden de aparición → rangos
+    [{key, title, start, n}]. Descarta secciones vacías (marca sin páginas
+    propias) y desambigua claves repetidas."""
+    ranges: List[dict] = []
+    seen: Dict[str, int] = {}
+    for i, (key, title, start) in enumerate(marks):
+        end = marks[i + 1][2] if i + 1 < len(marks) else total
+        n = min(end, total) - start
+        if n <= 0 or start < 0:
+            continue
+        seen[key] = seen.get(key, 0) + 1
+        if seen[key] > 1:
+            key = f"{key}#{seen[key]}"
+        ranges.append({"key": key, "title": title, "start": start, "n": n})
+    return ranges
+
+
+def _indice_page_counts(n_entries: int, first_cap: int, next_cap: int) -> List[int]:
+    """Cuántas entradas caben por cada página/diapositiva del índice."""
+    counts: List[int] = []
+    left = max(0, n_entries)
+    cap = max(1, first_cap)
+    while left > 0:
+        take = min(left, cap)
+        counts.append(take)
+        left -= take
+        cap = max(1, next_cap)
+    return counts
+
+
+def _indice_plan(ranges: List[dict], cfg: dict, pre_count: int, first_cap: int, next_cap: int) -> dict:
+    """Aplica la configuración a los rangos.
+
+    Devuelve {ordered, counts, entries}:
+      ordered — rangos en el orden FINAL del documento;
+      counts  — entradas por página de índice ([] si el índice no se emite);
+      entries — [(título, nº de página/diapositiva 1-based)] de las visibles.
+    `pre_count` = páginas previas a la primera sección (portada), que van
+    antes del índice."""
+    by_key = {r["key"]: r for r in ranges}
+    ordered = [by_key[k] for k in _indice_apply_order([r["key"] for r in ranges], cfg["order"])]
+    hidden = set(cfg["hidden"])
+    n_visibles = sum(1 for r in ordered if r["key"] not in hidden)
+    counts = _indice_page_counts(n_visibles, first_cap, next_cap) if cfg["enabled"] else []
+    page = pre_count + len(counts) + 1
+    entries: List[tuple] = []
+    for r in ordered:
+        if cfg["enabled"] and r["key"] not in hidden:
+            entries.append((cfg["titles"].get(r["key"]) or r["title"], page))
+        page += r["n"]
+    return {"ordered": ordered, "counts": counts, "entries": entries}
+
+
+def _indice_truncate(text: str, fits) -> str:
+    """Recorta `text` con "…" hasta que `fits(candidato)` sea verdadero."""
+    if fits(text):
+        return text
+    lo, hi = 0, len(text)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if fits(text[:mid].rstrip() + "…"):
+            lo = mid
+        else:
+            hi = mid - 1
+    return text[:lo].rstrip() + "…"
+
+
+def _indice_pdf_caps(page_h: float, top_margin: float, bottom_margin: float) -> tuple:
+    usable = page_h - top_margin - bottom_margin
+    return (
+        max(1, int((usable - _INDICE_PDF_HEAD_H) // _INDICE_PDF_ROW_H)),
+        max(1, int(usable // _INDICE_PDF_ROW_H)),
+    )
+
+
+def _render_indice_pdf(entries: List[tuple], counts: List[int], titulo: str, subtitulo: str,
+                       page_size: tuple, brand_hex: str, top_margin: float, margin_x: float) -> bytes:
+    """Dibuja las páginas del índice (sin fondo de plantilla — lo pone
+    `_pdf_apply_indice`). `counts` define cuántas entradas lleva cada página."""
+    from reportlab.lib.colors import HexColor
+    from reportlab.pdfgen import canvas as _canvas
+
+    PW, PH = page_size
+    buf = io.BytesIO()
+    c = _canvas.Canvas(buf, pagesize=page_size)
+    left, right = margin_x, PW - margin_x
+    top_y = PH - top_margin
+    TEXT, MUTED, LINE = HexColor("#0F172A"), HexColor("#64748B"), HexColor("#94A3B8")
+    FONT, SIZE = "Helvetica", 13
+
+    idx = 0
+    for pi, cnt in enumerate(counts):
+        y = top_y
+        if pi == 0:
+            c.setFillColor(HexColor(_readable_dark_hex(brand_hex)))
+            c.setFont("Helvetica-Bold", 26)
+            c.drawCentredString(PW / 2, y, titulo)
+            y -= 26 * 1.4
+            if subtitulo:
+                c.setFillColor(MUTED)
+                c.setFont("Helvetica", 11)
+                c.drawCentredString(PW / 2, y, subtitulo)
+            y -= _INDICE_PDF_HEAD_H - 26 * 1.4
+        for text, page_no in entries[idx: idx + cnt]:
+            num = str(page_no)
+            num_w = c.stringWidth(num, FONT, SIZE)
+            max_w = (right - left) - num_w - 28
+            text = _indice_truncate(text, lambda t: c.stringWidth(t, FONT, SIZE) <= max_w)
+            base = y - 15
+            c.setFillColor(TEXT)
+            c.setFont(FONT, SIZE)
+            c.drawString(left, base, text)
+            c.drawRightString(right, base, num)
+            lead_x0 = left + c.stringWidth(text, FONT, SIZE) + 6
+            lead_x1 = right - num_w - 6
+            if lead_x1 > lead_x0:
+                c.setStrokeColor(LINE)
+                c.setLineWidth(0.8)
+                c.setDash(1, 3)
+                c.line(lead_x0, base + 2, lead_x1, base + 2)
+                c.setDash()
+            y -= _INDICE_PDF_ROW_H
+        idx += cnt
+        c.showPage()
+    c.save()
+    return buf.getvalue()
+
+
+def _pdf_apply_indice(pdf_bytes: bytes, marks: List[tuple], cfg: dict, *, template_path: Optional[str],
+                      brand_hex: str, subtitulo: str, top_margin: float, bottom_margin: float,
+                      margin_x: float) -> tuple:
+    """Reordena las secciones del PDF según `cfg`, inserta el índice justo
+    después de la portada y agrega marcadores (outline) del PDF.
+
+    Se ejecuta DESPUÉS de fusionar con la plantilla: los fondos ya vienen
+    pegados a cada página, así que mover páginas no los descuadra.
+    Devuelve (bytes, estructura) — `estructura` = [{key, title}] en el orden
+    natural, para poblar el editor."""
+    from pypdf import PdfReader, PdfWriter
+
+    reader = PdfReader(io.BytesIO(pdf_bytes))
+    total = len(reader.pages)
+    ranges = _indice_ranges(marks, total)
+    estructura = [{"key": r["key"], "title": r["title"]} for r in ranges]
+    if not ranges:
+        return pdf_bytes, estructura
+
+    page_w = float(reader.pages[0].mediabox.width)
+    page_h = float(reader.pages[0].mediabox.height)
+    first_cap, next_cap = _indice_pdf_caps(page_h, top_margin, bottom_margin)
+    pre_count = ranges[0]["start"]
+    plan = _indice_plan(ranges, cfg, pre_count, first_cap, next_cap)
+
+    index_pages: list = []
+    if plan["counts"]:
+        idx_bytes = _render_indice_pdf(
+            plan["entries"], plan["counts"], cfg["titulo"], subtitulo,
+            (page_w, page_h), brand_hex, top_margin, margin_x,
+        )
+        idx_reader = PdfReader(io.BytesIO(idx_bytes))
+        index_pages = list(idx_reader.pages)
+        if template_path:
+            # Fondo = lienzo recurrente de la plantilla (página 2+, o la
+            # última disponible) — mismo criterio que el contenido normal.
+            tpl_bytes = Path(template_path).read_bytes()
+            tpl_count = len(PdfReader(io.BytesIO(tpl_bytes)).pages)
+            if tpl_count:
+                base_idx = 2 if tpl_count >= 3 else (1 if tpl_count == 2 else 0)
+                merged: list = []
+                for ip in index_pages:
+                    base = PdfReader(io.BytesIO(tpl_bytes)).pages[base_idx]
+                    try:
+                        base.merge_page(ip)
+                        merged.append(base)
+                    except Exception:
+                        merged.append(ip)
+                index_pages = merged
+
+    writer = PdfWriter()
+    for i in range(pre_count):
+        writer.add_page(reader.pages[i])
+    for p in index_pages:
+        writer.add_page(p)
+    if index_pages:
+        writer.add_outline_item(cfg["titulo"], pre_count)
+    cursor = pre_count + len(index_pages)
+    hidden = set(cfg["hidden"])
+    for r in plan["ordered"]:
+        for i in range(r["start"], r["start"] + r["n"]):
+            writer.add_page(reader.pages[i])
+        if r["key"] not in hidden:
+            writer.add_outline_item(cfg["titles"].get(r["key"]) or r["title"], cursor)
+        cursor += r["n"]
+    # Páginas posteriores a la última marca no existen (la última sección
+    # llega hasta `total`), y las previas a la primera ya se copiaron arriba.
+    out = io.BytesIO()
+    writer.write(out)
+    return out.getvalue(), estructura
+
+
+def _pptx_apply_indice(prs, marks: List[tuple], cfg: dict, *, master_separate: bool,
+                       clone_membrete, fill_index_slide, first_cap: int, next_cap: int) -> List[dict]:
+    """Reordena las secciones del PPTX según `cfg`, inserta la(s)
+    diapositiva(s) de índice justo después de la portada y elimina el
+    membrete maestro (índice 1) cuando existe como diapositiva aparte.
+
+    `marks` = (clave, título, posición en sldIdLst) en orden de aparición.
+    `fill_index_slide(slide, [(título, nº)], es_primera)` dibuja una
+    diapositiva de índice; `clone_membrete()` crea una (al final de la lista).
+    Devuelve la estructura [{key, title}] en orden natural.
+
+    Si algo falla ANTES de reescribir la lista, deshace lo hecho (sin
+    diapositivas de índice a medias) pero igual retira el membrete maestro,
+    como hacía el motor antes del índice, y relanza el error."""
+    lst = prs.slides._sldIdLst
+    els = list(lst)
+    master_el = els[1] if (master_separate and len(els) > 1) else None
+
+    ranges = _indice_ranges(marks, len(els))
+    estructura = [{"key": r["key"], "title": r["title"]} for r in ranges]
+    try:
+        if not ranges:
+            raise LookupError("sin secciones")
+        pre = ranges[0]["start"]
+        pre_count = pre - (1 if master_el is not None else 0)
+        plan = _indice_plan(ranges, cfg, pre_count, first_cap, next_cap)
+
+        for _ in plan["counts"]:
+            clone_membrete()
+        shell_els = list(lst)[len(els):]
+        cursor = 0
+        for si, (shell_el, cnt) in enumerate(zip(shell_els, plan["counts"])):
+            fill_index_slide(prs.part.related_part(shell_el.rId).slide,
+                             plan["entries"][cursor:cursor + cnt], si == 0)
+            cursor += cnt
+
+        final = (
+            [e for e in els[:pre] if e is not master_el]
+            + shell_els
+            + [e for r in plan["ordered"] for e in els[r["start"]: r["start"] + r["n"]]]
+        )
+        if len(final) != len(els) - (1 if master_el is not None else 0) + len(shell_els):
+            raise RuntimeError("el reordenamiento perdería diapositivas")
+    except Exception as exc:
+        for e in list(lst)[len(els):]:
+            lst.remove(e)
+            prs.part.drop_rel(e.rId)
+        if master_el is not None:
+            lst.remove(master_el)
+            prs.part.drop_rel(master_el.rId)
+        if isinstance(exc, LookupError):
+            return estructura
+        raise
+
+    for e in list(lst):
+        lst.remove(e)
+    for e in final:
+        lst.append(e)
+    if master_el is not None:
+        prs.part.drop_rel(master_el.rId)
+    return estructura
+
+
+async def _indice_guardar_estructura(pid: str, periodo: str, estructura: List[dict]) -> None:
+    """Persiste la última estructura conocida de secciones — el editor del
+    índice la usa para listar las entradas sin tener que regenerar el informe."""
+    await db.projects.update_one(
+        {"id": pid}, {"$set": {f"indice_estructura.{periodo}": estructura}},
+    )
+
+
+async def _indice_load_config(pid: str, periodo: str) -> dict:
+    proj = await db.projects.find_one({"id": pid}, {"indice_config": 1}) or {}
+    return _sanitize_indice_config((proj.get("indice_config") or {}).get(periodo))
+
+
+@api.get("/projects/{pid}/indice/{periodo}")
+async def get_indice_config(pid: str, periodo: str, user: dict = Depends(require_role(ROLE_COORD))):
+    """Configuración del índice de un período + última estructura conocida
+    de secciones del informe (la refresca cada export del Coordinador)."""
+    await ensure_project_access(user, pid)
+    if periodo not in INDICE_PERIODOS:
+        raise HTTPException(400, "periodo debe ser diario, semanal o mensual")
+    proj = await db.projects.find_one({"id": pid}, {"indice_config": 1, "indice_estructura": 1})
+    if proj is None:
+        raise HTTPException(404, "Proyecto no existe")
+    return {
+        "periodo": periodo,
+        "config": _sanitize_indice_config((proj.get("indice_config") or {}).get(periodo)),
+        "estructura": (proj.get("indice_estructura") or {}).get(periodo) or [],
+    }
+
+
+@api.put("/projects/{pid}/indice/{periodo}")
+async def put_indice_config(pid: str, periodo: str, body: dict,
+                            user: dict = Depends(require_role(ROLE_COORD))):
+    """Guarda la configuración del índice de UN período (diario/semanal/
+    mensual son independientes entre sí)."""
+    await ensure_project_access(user, pid)
+    if periodo not in INDICE_PERIODOS:
+        raise HTTPException(400, "periodo debe ser diario, semanal o mensual")
+    cfg = _sanitize_indice_config(body)
+    r = await db.projects.update_one({"id": pid}, {"$set": {f"indice_config.{periodo}": cfg}})
+    if r.matched_count == 0:
+        raise HTTPException(404, "Proyecto no existe")
+    return {"periodo": periodo, "config": cfg}
+
+
 @api.get("/projects/{pid}/export/reports.pdf")
 async def export_reports_pdf(
     pid: str,
@@ -9294,6 +9685,10 @@ async def export_reports_pdf(
         None, description="omitir|leyenda — qué hacer con nodos de agregación sin actividad en "
                            "el período. Si se omite, usa la preferencia guardada del proyecto o "
                            "'omitir' por defecto.",
+    ),
+    estructura_solo: bool = Query(
+        False, description="Solo Coordinador: en vez del PDF, devuelve la estructura de "
+                           "secciones (JSON) y la guarda para el editor del índice.",
     ),
     user: dict = Depends(current_user),
 ):
@@ -9328,6 +9723,8 @@ async def export_reports_pdf(
         _HAS_PIL = False
 
     scope_mine_only = (scope or "").lower() == "mine"
+    if estructura_solo and (user["role"] != ROLE_COORD or area_id or scope_mine_only):
+        raise HTTPException(403, "Solo el Coordinador puede consultar la estructura, sin filtros")
     data = await _gather_export_data(
         pid, period, user,
         area_id=area_id,
@@ -10005,9 +10402,10 @@ async def export_reports_pdf(
                 "estudios_avances": _draw_estudios_avances_block,
             }
 
-            for _mod_data in modulos_data.values():
+            for _mod_key, _mod_data in modulos_data.items():
                 if _mod_data is None:
                     continue
+                _indice_mark(f"mod:{_mod_key}", _mod_data["titulo"])
                 _section_header(_mod_data["titulo"])
                 for block in _mod_data["blocks"]:
                     _BLOCK_RENDERERS[block["type"]](block)
@@ -10027,6 +10425,13 @@ async def export_reports_pdf(
         #     ENCIMA del template (foreground), quedan visibles sobre el
         #     fondo magenta.
         page_num = 1
+        # Marcas de sección para el índice editable: (clave, título, índice
+        # 0-based de la página donde empieza). Ver `_indice_ranges`.
+        _indice_marks: List[tuple] = []
+
+        def _indice_mark(key: str, title: str) -> None:
+            _indice_marks.append((key, title, page_num - 1))
+
         _period_titles = {
             "diario": "REPORTE DIARIO",
             "semanal": "REPORTE SEMANAL",
@@ -10123,6 +10528,7 @@ async def export_reports_pdf(
             nonlocal page_num
             if not actividades_tabla_por_area:
                 return
+            _indice_mark("aa", "Actividades por área")
 
             AA_MARGIN_X = 2.0 * cm
             aa_content_w = PW - 2 * AA_MARGIN_X
@@ -10241,6 +10647,7 @@ async def export_reports_pdf(
         # legacy `template_map`, se emite ese archivo como única página.
         _gd_images: List[str] = list(proj.get("general_data_images") or [])
         _legacy_map_path = _get_project_template(proj, "map") if not _gd_images else None
+        _indice_mark("gd", "Datos generales")
 
         def _draw_gd_image(img_bytes: bytes) -> bool:
             try:
@@ -11240,6 +11647,7 @@ async def export_reports_pdf(
             nonlocal page_num
             if not recuento_general_rows:
                 return
+            _indice_mark("recuento", "Recuento general")
 
             MARGIN_X = 2.0 * cm
             content_w = PW - 2 * MARGIN_X
@@ -11767,6 +12175,7 @@ async def export_reports_pdf(
             )
             if not totals and not has_persistent_content:
                 return
+            _indice_mark(f"sub:{subtramo_id}", f"Resumen · {subtramo_node.get('name') or 'Subtramo'}")
             personal_rows = (totals or {}).get("personal") or []
             maquinaria_rows = (totals or {}).get("maquinaria") or []
             if es_intertramo:
@@ -11813,6 +12222,7 @@ async def export_reports_pdf(
             if not node_reps_all:
                 continue
             node_path = path_cache.get(n["id"]) or n.get("name", "")
+            _indice_mark(f"node:{n['id']}", node_path)
 
             # Portadilla de Nodo (2026-09-18): eliminada a pedido del usuario.
             # `node_path` se sigue usando como encabezado de las Actividades
@@ -11986,6 +12396,7 @@ async def export_reports_pdf(
                     _dest.append(_t)
 
         if _orphan_by_bucket:
+            _indice_mark("orphan", "Actividades generales (áreas sin reportes)")
             c.setFillColor(HexColor(_readable_dark_hex(project_color)))
             c.setFont("Helvetica-Bold", 20)
             c.drawCentredString(PW / 2, PH / 2 + 0.3 * cm, "ACTIVIDADES GENERALES")
@@ -12011,10 +12422,10 @@ async def export_reports_pdf(
         _draw_modulos_closing_pages()
 
         c.save()
-        return buf.getvalue(), section_page_indices, area_page_indices, _gd_page_count
+        return buf.getvalue(), section_page_indices, area_page_indices, _gd_page_count, _indice_marks
 
     # Render bloqueante en thread aparte → libera event loop
-    pdf_bytes, section_page_indices, area_page_indices, gd_page_count = await asyncio.to_thread(_build_pdf_blocking)
+    pdf_bytes, section_page_indices, area_page_indices, gd_page_count, indice_marks = await asyncio.to_thread(_build_pdf_blocking)
 
     # ── Fusión con plantilla PDF institucional (si existe) ────────────────
     # Modo Superposición:
@@ -12034,6 +12445,29 @@ async def export_reports_pdf(
             )
         except Exception as e:
             log.warning("template pdf merge failed: %s", e)
+
+    # ── Índice editable: reordena secciones según la config del período
+    # (diario/semanal/mensual) e inserta el índice con páginas reales.
+    indice_periodo = _indice_periodo_key(period_type, period)
+    indice_cfg = await _indice_load_config(pid, indice_periodo)
+    try:
+        pdf_bytes, indice_estructura = await asyncio.to_thread(
+            _pdf_apply_indice, pdf_bytes, indice_marks, indice_cfg,
+            template_path=tpl_pdf, brand_hex=project_color,
+            subtitulo=f"Reporte {indice_periodo} · {fechas_label}",
+            top_margin=4.0 * cm, bottom_margin=2.0 * cm, margin_x=2.0 * cm,
+        )
+    except Exception as e:
+        log.warning("[pdf] no se pudo aplicar el índice editable: %s", e)
+        indice_estructura = None
+    # Solo el Coordinador sin filtros (área/scope) refresca la estructura
+    # guardada — un export filtrado vería solo una parte de las secciones.
+    if indice_estructura is not None and role == ROLE_COORD and not area_id and not scope_mine_only:
+        await _indice_guardar_estructura(pid, indice_periodo, indice_estructura)
+    if estructura_solo:
+        if indice_estructura is None:
+            raise HTTPException(500, "No se pudo calcular la estructura del informe")
+        return {"periodo": indice_periodo, "estructura": indice_estructura}
 
     fname = _safe_export_filename(proj.get("name", "proyecto"), period, "pdf")
     return StreamingResponse(
@@ -13404,6 +13838,14 @@ async def export_reports_pptx(
         BOTTOM_MARGIN = Cm(2.0)
         blank = prs.slide_layouts[6]
 
+        # Marcas de sección para el índice editable: (clave, título, posición
+        # en `sldIdLst` de la primera diapositiva de la sección). Ver
+        # `_indice_ranges`/`_apply_indice_pptx`.
+        _indice_marks: List[tuple] = []
+
+        def _indice_mark(key: str, title: str) -> None:
+            _indice_marks.append((key, title, len(prs.slides._sldIdLst)))
+
         # Imports adicionales para shape fill
         from pptx.enum.shapes import MSO_SHAPE  # noqa: F401  (kept for compat)
         from pptx.oxml.ns import qn as _qn  # noqa: F401
@@ -14015,6 +14457,7 @@ async def export_reports_pptx(
             nonlocal _emitted_recuento_general_title
             if not recuento_general_rows:
                 return
+            _indice_mark("recuento", "Recuento general")
 
             MARGIN_X = Cm(1.5)
             content_w = SW - 2 * MARGIN_X
@@ -14523,10 +14966,11 @@ async def export_reports_pptx(
                 "tabla_resumen_matriz": _draw_tabla_resumen_matriz_block,
             }
 
-            for _mod_data in modulos_data.values():
+            for _mod_key, _mod_data in modulos_data.items():
                 if _mod_data is None:
                     continue
                 titulo = _mod_data["titulo"]
+                _indice_mark(f"mod:{_mod_key}", titulo)
                 state["slide"], state["y"] = _new_slide(titulo)
                 titulo_continua = f"{titulo} (continúa)"
                 for block in _mod_data["blocks"]:
@@ -14567,6 +15011,7 @@ async def export_reports_pptx(
             )
             if not personal_rows and not maquinaria_rows and not has_persistent_content:
                 return
+            _indice_mark(f"sub:{subtramo_id}", f"Resumen · {subtramo_node.get('name') or 'Subtramo'}")
             if es_intertramo:
                 draw_intertramo_summary_slide(
                     subtramo_node, personal_rows, maquinaria_rows,
@@ -14725,6 +15170,7 @@ async def export_reports_pptx(
         def _draw_actividades_por_area_slides() -> None:
             if not actividades_tabla_por_area:
                 return
+            _indice_mark("aa", "Actividades por área")
 
             AA_MARGIN_X = Cm(1.8)
             aa_content_w = SW - 2 * AA_MARGIN_X
@@ -14837,6 +15283,7 @@ async def export_reports_pptx(
             except Exception:
                 pass
 
+        _indice_mark("gd", "Datos generales")
         if _gd_images_p:
             for _b64 in _gd_images_p:
                 try:
@@ -14942,6 +15389,7 @@ async def export_reports_pptx(
             node_path = path_cache.get(n["id"]) or n.get("name", "")
 
             # === Portadilla de nodo: cover_image grande + TÍTULO ===========
+            _indice_mark(f"node:{n['id']}", node_path)
             s = _clone_membrete()
             _title_h = Cm(1.8)
             _title_gap = Cm(0.5)
@@ -15085,6 +15533,7 @@ async def export_reports_pptx(
                     _dest.append(_t)
 
         if _orphan_by_bucket:
+            _indice_mark("orphan", "Actividades generales (áreas sin reportes)")
             _divider = _clone_membrete()
             add_text(
                 _divider, Cm(1.0), SH / 2 - Cm(0.9), SW - Cm(2.0), Cm(1.2),
@@ -15153,23 +15602,64 @@ async def export_reports_pptx(
 
 
         # ================================================================
-        # Eliminar la diapositiva de membrete original (índice 1) para que
-        # no quede vacía en el PPTX final. Snippet exacto pedido por el
-        # usuario · borra la relación de la Presentation-part y purga la
-        # entrada del sldIdLst.
+        # ÍNDICE EDITABLE + ORDEN DE SECCIONES (ver `_indice_plan`).
+        #
+        # También elimina la diapositiva de membrete original (índice 1)
+        # para que no quede vacía en el PPTX final: borra la relación de la
+        # Presentation-part y la purga del sldIdLst. Solo existe como
+        # diapositiva aparte cuando la plantilla trae portada + membrete
+        # (2+ slides); con plantilla de 1 slide o sin plantilla el índice 1
+        # ya es contenido real y NO se borra.
         # ================================================================
+        ROW_H = Cm(0.85)
+        HEAD_H = Cm(2.0)
+        IDX_MARGIN_X = Cm(2.0)
+        idx_content_w = SW - 2 * IDX_MARGIN_X
+        idx_num_w = Cm(2.0)
+        usable_h = SH - TOP_MARGIN - BOTTOM_MARGIN
+        idx_max_chars = max(10, int((idx_content_w - idx_num_w - Cm(0.4)) // Pt(14 * 0.52)))
+
+        def _fill_index_slide(slide, chunk, is_first):
+            y = TOP_MARGIN
+            if is_first:
+                add_text(slide, IDX_MARGIN_X, y, idx_content_w, Cm(1.1), indice_cfg["titulo"],
+                         size=26, bold=True, color=READABLE_BRAND_RGB, align=PP_ALIGN.CENTER)
+                add_text(slide, IDX_MARGIN_X, y + Cm(1.1), idx_content_w, Cm(0.7),
+                         f"Reporte {indice_periodo} · {fechas_label}",
+                         size=12, color=WF_MUTED_RGB, align=PP_ALIGN.CENTER)
+                y += HEAD_H
+            for text, page_no in chunk:
+                text = _indice_truncate(text, lambda t: len(t) <= idx_max_chars)
+                add_text(slide, IDX_MARGIN_X, y, idx_content_w - idx_num_w, ROW_H, text,
+                         size=14, color=WF_TEXT_RGB)
+                add_text(slide, IDX_MARGIN_X + idx_content_w - idx_num_w, y, idx_num_w, ROW_H,
+                         str(page_no), size=14, bold=True, color=WF_TEXT_RGB, align=PP_ALIGN.RIGHT)
+                _wf_rect(slide, IDX_MARGIN_X, y + ROW_H - Pt(0.75), idx_content_w, Pt(0.75),
+                         fill_rgb=WF_BORDER_RGB)
+                y += ROW_H
+
         try:
-            rId = prs.slides._sldIdLst[1].rId
-            prs.part.drop_rel(rId)
-            del prs.slides._sldIdLst[1]
-        except Exception:
-            pass
+            _indice_estructura_out.extend(_pptx_apply_indice(
+                prs, _indice_marks, indice_cfg,
+                master_separate=(tpl_master_slide is not None and tpl_cover_slide is not None
+                                 and tpl_master_slide is not tpl_cover_slide),
+                clone_membrete=_clone_membrete, fill_index_slide=_fill_index_slide,
+                first_cap=max(1, int((usable_h - HEAD_H) // ROW_H)),
+                next_cap=max(1, int(usable_h // ROW_H)),
+            ))
+        except Exception as _e_idx:
+            log.warning("[pptx] no se pudo aplicar el índice editable: %s", _e_idx)
 
         buf = io.BytesIO()
         prs.save(buf)
         return buf.getvalue()
 
+    indice_periodo = _indice_periodo_key(period_type, period)
+    indice_cfg = await _indice_load_config(pid, indice_periodo)
+    _indice_estructura_out: List[dict] = []
     pptx_bytes = await asyncio.to_thread(_build_pptx_blocking)
+    if _indice_estructura_out and user["role"] == ROLE_COORD and not area_id and not scope_mine_only:
+        await _indice_guardar_estructura(pid, indice_periodo, _indice_estructura_out)
     fname = _safe_export_filename(project_name, period, "pptx")
     return StreamingResponse(
         io.BytesIO(pptx_bytes),
