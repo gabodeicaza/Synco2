@@ -22,6 +22,7 @@ import { HistoryCalendarModal } from '@/src/components/HistoryCalendarModal';
 import { ReportPreviewSheet } from '@/src/components/ReportPreviewSheet';
 import { fmtDateTimeCDMX } from '@/src/utils/tz';
 import { moduloActivo } from '@/src/utils/modulos';
+import { DatosContratoModal } from '@/src/components/DatosContratoModal';
 
 // Limite cliente coherente con backend (20 MB). Evita subidas que el servidor rechazaria.
 const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
@@ -244,6 +245,7 @@ export default function ProjectDetailScreen() {
 
   // P0 - Identidad institucional (objeto_contrato + cliente_principal + color_tema)
   const [objetoModalOpen, setObjetoModalOpen] = useState(false);
+  const [contratoModalOpen, setContratoModalOpen] = useState(false);
 
   // P0 Mega-Feature: Plantillas de exportacion (PDF/DOCX/PPTX)
   const [tplModalOpen, setTplModalOpen] = useState(false);
@@ -1479,6 +1481,22 @@ export default function ProjectDetailScreen() {
                     onPress={() => router.push({ pathname: '/(coord)/projects/[id]/tabla-resumen' as any, params: { id: pid } })}
                   />
                 ) : null}
+                {moduloActivo(project?.modulos, 'fotos_lidar') ? (
+                  <ActionTile
+                    icon="images-outline"
+                    title="Fotos LiDAR"
+                    subtitle="Foto original y foto actual por frente, reemplazables"
+                    onPress={() => router.push({ pathname: '/(coord)/projects/[id]/fotos-lidar' as any, params: { id: pid } })}
+                  />
+                ) : null}
+                {moduloActivo(project?.modulos, 'tapial') ? (
+                  <ActionTile
+                    icon="git-branch-outline"
+                    title="Tapial"
+                    subtitle="Avance de tapial por tramos sobre plano (con discontinuidades)"
+                    onPress={() => router.push({ pathname: '/(coord)/projects/[id]/tapial' as any, params: { id: pid } })}
+                  />
+                ) : null}
                 {moduloActivo(project?.modulos, 'estado_tiempo') ? (
                   <ActionTile
                     icon="partly-sunny-outline"
@@ -1617,6 +1635,12 @@ export default function ProjectDetailScreen() {
                 title="Identidad institucional"
                 subtitle="Objeto del contrato . Cliente principal . Color institucional"
                 onPress={openObjetoModal}
+              />
+              <ActionTile
+                icon="document-text-outline"
+                title="Datos de contrato"
+                subtitle="Obra y supervisión . Montos . Periodo . Anticipo (slide del informe PPTX)"
+                onPress={() => setContratoModalOpen(true)}
               />
               <ActionTile
                 icon="people-outline"
@@ -2399,6 +2423,13 @@ export default function ProjectDetailScreen() {
           </View>
         </KeyboardAvoidingView>
       </Modal>
+
+      <DatosContratoModal
+        visible={contratoModalOpen}
+        project={project}
+        onClose={() => setContratoModalOpen(false)}
+        onSaved={(upd) => setProject((p) => ({ ...(p || ({} as any)), ...upd }))}
+      />
 
       {/* ===== Modal: Identidad institucional (objeto + cliente + color) ===== */}
       <Modal

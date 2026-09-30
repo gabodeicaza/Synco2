@@ -1,3 +1,9 @@
+// Con `categoria="tapial"` este MISMO componente sirve el módulo Tapial: los
+// planos se filtran por categoría y la herramienta principal es el TRAMO — una
+// polilínea de N vértices con estado propio. Los tramos son independientes
+// entre sí, así que los huecos entre ellos (accesos, portones, frentes sin
+// tapial) son la discontinuidad; el backend calcula el % terminado por
+// longitud (ver `_plano_tapial_avance`, backend/server.py).
 // Plano de Avance — lista de planos (blueprints) del proyecto + editor de
 // marcadores de estado (punto=columna, dado=rectángulo de cimentación,
 // segmento=trabe; rojo/ámbar/verde) sobre cada uno. Mismo patrón "un
@@ -19,7 +25,7 @@ import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
-import { api, PlanoAvance, PlanoMarker, PlanoMarkerEstatus, Project } from '@/src/api';
+import { api, PlanoAvance, PlanoCategoria, PlanoMarker, PlanoMarkerEstatus, Project } from '@/src/api';
 import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
 import { Button } from '@/src/components/Button';
 import { confirm } from '@/src/utils/confirm';
@@ -27,14 +33,20 @@ import { useAuth } from '@/src/auth-context';
 import { ROLE_COORD, ROLE_SUB } from '@/src/utils/roles';
 import { PlanoMarkerOverlay, PLANO_MARKER_ESTADO_COLOR, PLANO_MARKER_ESTADO_LABEL } from '@/src/components/PlanoMarkerOverlay';
 
-type AddMode = 'none' | 'punto' | 'segmento' | 'dado';
-type LabelPromptDraft = { tipo: 'punto' | 'segmento' | 'dado'; x: number; y: number; x2?: number; y2?: number };
+type AddMode = 'none' | 'punto' | 'segmento' | 'dado' | 'tramo';
+type LabelPromptDraft = {
+  tipo: 'punto' | 'segmento' | 'dado' | 'tramo'; x: number; y: number; x2?: number; y2?: number; puntos?: number[][];
+};
 // Tolerancia (fracción 0-1 del tamaño de la imagen) para considerar que una
 // trabe (segmento) estaba "conectada" a un punto/dado — coincide con el
 // mismo criterio con el que el usuario las dibujó (tocando el mismo lugar).
 const CONEXION_TOL = 0.015;
 
-export default function PlanoAvanceScreen({ projectId }: { projectId: string }) {
+export default function PlanoAvanceScreen({
+  projectId, categoria = 'avance',
+}: { projectId: string; categoria?: PlanoCategoria }) {
+  const esTapial = categoria === 'tapial';
+  const tituloPantalla = esTapial ? 'Tapial' : 'Plano de Avance';
   const insets = useSafeAreaInsets();
   const { width: winWidth, height: winHeight } = useWindowDimensions();
   const { user } = useAuth();
@@ -52,6 +64,7 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
   const [addMode, setAddMode] = useState<AddMode>('none');
   const [moverActivo, setMoverActivo] = useState(false);
   const [segmentDraft, setSegmentDraft] = useState<{ x: number; y: number } | null>(null);
+  const [tramoDraft, setTramoDraft] = useState<{ x: number; y: number }[]>([]);
   const [labelPrompt, setLabelPrompt] = useState<LabelPromptDraft | null>(null);
   const [labelDraft, setLabelDraft] = useState('');
   const [savingMarker, setSavingMarker] = useState(false);
@@ -72,15 +85,15 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
     if (!projectId) return;
     try {
       setLoading(true);
-      const [proj, items] = await Promise.all([api.getProject(projectId), api.listPlanosAvance(projectId)]);
+      const [proj, items] = await Promise.all([api.getProject(projectId), api.listPlanosAvance(projectId, categoria)]);
       setProject(proj);
       setPlanos(items);
     } catch (e: any) {
-      Alert.alert('Error', e?.message || 'No se pudo cargar Plano de Avance.');
+      Alert.alert('Error', e?.message || `No se pudo cargar ${tituloPantalla}.`);
     } finally {
       setLoading(false);
     }
-  }, [projectId]);
+  }, [projectId, categoria, tituloPantalla]);
 
   useEffect(() => { loadList(); }, [loadList]);
 
@@ -99,7 +112,7 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
 
   useEffect(() => {
     if (selectedId) loadDetail(selectedId);
-    else { setDetail(null); setImgSize(null); setAddMode('none'); setSegmentDraft(null); setMoverActivo(false); }
+    else { setDetail(null); setImgSize(null); setAddMode('none'); setSegmentDraft(null); setTramoDraft([]); setMoverActivo(false); }
   }, [selectedId, loadDetail]);
 
   // Recalcula el tamaño de despliegue a partir de las dimensiones reales de
@@ -126,6 +139,10 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
       setLabelDraft('');
       return;
     }
+    if (addMode === 'tramo') {
+      setTramoDraft((d) => [...d, { x: xFrac, y: yFrac }]);
+      return;
+    }
     if (addMode === 'segmento') {
       if (!segmentDraft) {
         setSegmentDraft({ x: xFrac, y: yFrac });
@@ -137,6 +154,22 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
       return;
     }
     if (hit) setMarkerModal(hit);
+  }
+
+  function onFinishTramo() {
+    if (tramoDraft.length < 2) {
+      Alert.alert('Faltan puntos', 'Un tramo necesita al menos 2 puntos. Toca el plano para agregar vértices.');
+      return;
+    }
+    setLabelPrompt({
+      tipo: 'tramo', x: tramoDraft[0].x, y: tramoDraft[0].y, puntos: tramoDraft.map((q) => [q.x, q.y]),
+    });
+    setLabelDraft('');
+  }
+
+  function onCancelTramo() {
+    setTramoDraft([]);
+    setAddMode('none');
   }
 
   async function onSaveNewMarker() {
@@ -153,10 +186,12 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
         label,
         x: labelPrompt.x, y: labelPrompt.y,
         x2: labelPrompt.x2, y2: labelPrompt.y2,
+        puntos: labelPrompt.puntos,
         estatus: 'sin_iniciar',
       });
       setLabelPrompt(null);
       setAddMode('none');
+      setTramoDraft([]);
       await loadDetail(detail.id);
     } catch (e: any) {
       Alert.alert('No se pudo guardar', e?.message || 'Intentalo nuevamente.');
@@ -256,7 +291,7 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
   async function pickAndCreatePlano() {
     const nombre = nombreDraft.trim();
     if (!nombre) {
-      Alert.alert('Falta información', 'Dale un nombre al plano (ej. "Cimentación").');
+      Alert.alert('Falta información', esTapial ? 'Dale un nombre al plano (ej. "Estación 1").' : 'Dale un nombre al plano (ej. "Cimentación").');
       return;
     }
     try {
@@ -296,7 +331,7 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
       }
 
       setUploading(true);
-      const created = await api.uploadPlanoAvance(projectId, nombre, { uri, name, mimeType: mime });
+      const created = await api.uploadPlanoAvance(projectId, nombre, { uri, name, mimeType: mime }, categoria);
       setNewPlanoOpen(false);
       setNombreDraft('');
       await loadList();
@@ -334,7 +369,34 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
           <View style={styles.center}><ActivityIndicator color={colors.primary} /></View>
         ) : (
           <ScrollView contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + spacing.xl, alignItems: 'center' }]}>
-            {canEditEstructura ? (
+            {canEditEstructura && esTapial ? (
+              <View style={styles.toolRow}>
+                <Pressable
+                  onPress={() => { if (addMode === 'tramo') onCancelTramo(); else { setAddMode('tramo'); setTramoDraft([]); } }}
+                  style={[styles.toolBtn, addMode === 'tramo' && styles.toolBtnActive]}
+                >
+                  <Ionicons name="git-branch-outline" size={16} color={addMode === 'tramo' ? '#fff' : colors.primary} />
+                  <Text style={[styles.toolBtnTxt, addMode === 'tramo' && { color: '#fff' }]}>Nuevo tramo</Text>
+                </Pressable>
+                {addMode === 'tramo' ? (
+                  <>
+                    <Pressable
+                      onPress={() => setTramoDraft((d) => d.slice(0, -1))}
+                      disabled={tramoDraft.length === 0}
+                      style={[styles.toolBtn, tramoDraft.length === 0 && { opacity: 0.4 }]}
+                    >
+                      <Ionicons name="arrow-undo-outline" size={16} color={colors.primary} />
+                      <Text style={styles.toolBtnTxt}>Deshacer punto</Text>
+                    </Pressable>
+                    <Pressable onPress={onFinishTramo} style={[styles.toolBtn, styles.toolBtnActive]}>
+                      <Ionicons name="checkmark" size={16} color="#fff" />
+                      <Text style={[styles.toolBtnTxt, { color: '#fff' }]}>Terminar tramo</Text>
+                    </Pressable>
+                  </>
+                ) : null}
+              </View>
+            ) : null}
+            {canEditEstructura && !esTapial ? (
               <View style={styles.toolRow}>
                 <Pressable
                   onPress={() => { setAddMode(addMode === 'punto' ? 'none' : 'punto'); setSegmentDraft(null); setMoverActivo(false); }}
@@ -366,7 +428,13 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
                 </Pressable>
               </View>
             ) : null}
-            {addMode === 'segmento' ? (
+            {addMode === 'tramo' ? (
+              <Text style={styles.hintTxt}>
+                {tramoDraft.length === 0
+                  ? 'Toca el plano para marcar el inicio del tramo; sigue tocando cada vértice.'
+                  : `${tramoDraft.length} punto${tramoDraft.length === 1 ? '' : 's'} — toca más vértices o pulsa "Terminar tramo".`}
+              </Text>
+            ) : addMode === 'segmento' ? (
               <Text style={styles.hintTxt}>{segmentDraft ? 'Toca el segundo punto de la trabe.' : 'Toca el primer punto de la trabe.'}</Text>
             ) : addMode === 'punto' ? (
               <Text style={styles.hintTxt}>Toca sobre el plano para colocar el punto.</Text>
@@ -384,6 +452,7 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
                 height={imgSize.height}
                 onTap={handleOverlayTap}
                 draftPoint={segmentDraft}
+                draftPuntos={tramoDraft}
                 mode={moverActivo ? 'mover' : 'ver'}
                 onDragEnd={onDragEndMarker}
               />
@@ -403,9 +472,25 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
               ))}
             </View>
 
+            {esTapial && detail.avance && detail.avance.tramos > 0 ? (
+              <View style={styles.avanceBox}>
+                <Text style={styles.avancePct}>
+                  {detail.avance.pct_terminado != null ? `${detail.avance.pct_terminado.toFixed(1)}%` : '—'}
+                </Text>
+                <Text style={styles.avanceSub}>
+                  terminado (por longitud) · {detail.avance.tramos} tramo{detail.avance.tramos === 1 ? '' : 's'}
+                  {detail.avance.pct_en_proceso ? ` · ${detail.avance.pct_en_proceso.toFixed(1)}% en proceso` : ''}
+                </Text>
+              </View>
+            ) : null}
+
             {detail.markers.length === 0 ? (
               <Text style={styles.emptyTxt}>
-                {canEditEstructura ? 'Sin marcadores todavía — usa "Punto/Dado/Trabe" arriba.' : 'Este plano aún no tiene marcadores.'}
+                {esTapial
+                  ? (canEditEstructura
+                    ? 'Sin tramos todavía — usa "Nuevo tramo". Deja sin marcar los huecos donde no hay tapial.'
+                    : 'Este plano aún no tiene tramos.')
+                  : (canEditEstructura ? 'Sin marcadores todavía — usa "Punto/Dado/Trabe" arriba.' : 'Este plano aún no tiene marcadores.')}
               </Text>
             ) : null}
           </ScrollView>
@@ -416,13 +501,13 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
           <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
             <View style={styles.modalCard}>
               <Text style={styles.modalTitle}>
-                {labelPrompt?.tipo === 'segmento' ? 'Nueva trabe' : labelPrompt?.tipo === 'dado' ? 'Nuevo dado' : 'Nuevo punto'}
+                {labelPrompt?.tipo === 'tramo' ? 'Nuevo tramo' : labelPrompt?.tipo === 'segmento' ? 'Nueva trabe' : labelPrompt?.tipo === 'dado' ? 'Nuevo dado' : 'Nuevo punto'}
               </Text>
               <Text style={styles.fieldLabel}>Etiqueta</Text>
               <TextInput
                 value={labelDraft}
                 onChangeText={setLabelDraft}
-                placeholder="Ej. PL-120, D-1, Estación 3..."
+                placeholder={esTapial ? 'Ej. T1, Frente norte, Acceso 2...' : 'Ej. PL-120, D-1, Estación 3...'}
                 placeholderTextColor={colors.textMuted}
                 style={styles.input}
                 autoFocus
@@ -496,7 +581,7 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
           <Pressable onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
             <Ionicons name="chevron-back" size={22} color={headerTextColor} />
           </Pressable>
-          <Text style={[styles.titleBar, { color: headerTextColor }]} numberOfLines={1}>Plano de Avance</Text>
+          <Text style={[styles.titleBar, { color: headerTextColor }]} numberOfLines={1}>{tituloPantalla}</Text>
           <View style={{ width: 32 }} />
         </View>
       </View>
@@ -516,7 +601,7 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
           {planos.length === 0 ? (
             <View style={styles.empty}>
               <Ionicons name="map-outline" size={22} color={colors.textMuted} />
-              <Text style={styles.emptyTxt}>Aún no hay planos registrados.</Text>
+              <Text style={styles.emptyTxt}>{esTapial ? 'Aún no hay planos de tapial.' : 'Aún no hay planos registrados.'}</Text>
             </View>
           ) : (
             planos.map((p, idx) => (
@@ -525,7 +610,11 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
                   <Ionicons name="map-outline" size={20} color={colors.primary} />
                   <View style={{ flex: 1 }}>
                     <Text style={styles.planoNombre} numberOfLines={1}>{p.nombre}</Text>
-                    <Text style={styles.planoSub}>{p.markers?.length || 0} marcador{(p.markers?.length || 0) === 1 ? '' : 'es'}</Text>
+                    <Text style={styles.planoSub}>
+                      {esTapial
+                        ? `${(p.markers || []).filter((m) => m.tipo === 'tramo').length} tramo(s)`
+                        : `${p.markers?.length || 0} marcador${(p.markers?.length || 0) === 1 ? '' : 'es'}`}
+                    </Text>
                   </View>
                   <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
                 </Pressable>
@@ -544,12 +633,12 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
       <Modal visible={newPlanoOpen} transparent animationType="slide" onRequestClose={() => setNewPlanoOpen(false)}>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>Nuevo plano</Text>
+            <Text style={styles.modalTitle}>{esTapial ? 'Nuevo plano de tapial' : 'Nuevo plano'}</Text>
             <Text style={styles.fieldLabel}>Nombre</Text>
             <TextInput
               value={nombreDraft}
               onChangeText={setNombreDraft}
-              placeholder="Ej. Cimentación, Estructura..."
+              placeholder={esTapial ? 'Ej. Estación 1, Perímetro norte...' : 'Ej. Cimentación, Estructura...'}
               placeholderTextColor={colors.textMuted}
               style={styles.input}
             />
@@ -598,6 +687,12 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(255,255,255,0.5)',
     alignItems: 'center', justifyContent: 'center',
   },
+  avanceBox: {
+    alignSelf: 'stretch', alignItems: 'center', marginTop: spacing.md, padding: spacing.md,
+    backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border,
+  },
+  avancePct: { fontSize: 26, fontWeight: '800', color: colors.text },
+  avanceSub: { fontSize: 12, color: colors.textMuted, marginTop: 2, textAlign: 'center' },
   legendRow: { flexDirection: 'row', gap: spacing.md, marginTop: spacing.md, flexWrap: 'wrap', justifyContent: 'center' },
   legendItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   legendDot: { width: 10, height: 10, borderRadius: 5 },

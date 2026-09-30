@@ -67,9 +67,9 @@ export default function TablaResumenScreen({ projectId }: { projectId: string })
   const [columnas, setColumnas] = useState<TablaResumenColumna[]>([]);
   const [celdas, setCeldas] = useState<TablaResumenCelda[]>([]);
 
-  const [actForm, setActForm] = useState<{ open: boolean; editing: TablaResumenActividad | null; nombre: string; saving: boolean }>({
-    open: false, editing: null, nombre: '', saving: false,
-  });
+  const [actForm, setActForm] = useState<{
+    open: boolean; editing: TablaResumenActividad | null; nombre: string; esSeccion: boolean; saving: boolean;
+  }>({ open: false, editing: null, nombre: '', esSeccion: false, saving: false });
   const [colForm, setColForm] = useState<{
     open: boolean; editing: TablaResumenColumna | null; label: string; tipo: 'estacion' | 'intertramo'; saving: boolean;
   }>({ open: false, editing: null, label: '', tipo: 'estacion', saving: false });
@@ -118,7 +118,7 @@ export default function TablaResumenScreen({ projectId }: { projectId: string })
 
   // === Actividades (filas) ===
   function openActForm(editing: TablaResumenActividad | null) {
-    setActForm({ open: true, editing, nombre: editing?.nombre || '', saving: false });
+    setActForm({ open: true, editing, nombre: editing?.nombre || '', esSeccion: !!editing?.es_seccion, saving: false });
   }
   async function saveActividad() {
     const nombre = actForm.nombre.trim();
@@ -129,9 +129,9 @@ export default function TablaResumenScreen({ projectId }: { projectId: string })
     try {
       setActForm((s) => ({ ...s, saving: true }));
       if (actForm.editing) {
-        await api.updateTablaResumenActividad(projectId, actForm.editing.id, { nombre });
+        await api.updateTablaResumenActividad(projectId, actForm.editing.id, { nombre, es_seccion: actForm.esSeccion });
       } else {
-        await api.createTablaResumenActividad(projectId, { nombre, orden: actividades.length });
+        await api.createTablaResumenActividad(projectId, { nombre, orden: actividades.length, es_seccion: actForm.esSeccion });
       }
       setActForm((s) => ({ ...s, open: false }));
       await load();
@@ -320,6 +320,18 @@ export default function TablaResumenScreen({ projectId }: { projectId: string })
 
               <ScrollView style={{ flex: 1 }}>
                 {actividades.map((act) => (
+                  act.es_seccion ? (
+                    <Pressable
+                      key={act.id}
+                      onPress={() => canEditEstructura && openActForm(act)}
+                      style={[
+                        styles.cell, styles.cellSeccion,
+                        { width: ACT_COL_W + VAL_COL_W * columnas.length + TOTAL_COL_W },
+                      ]}
+                    >
+                      <Text style={styles.headerTxt}>{act.nombre}</Text>
+                    </Pressable>
+                  ) : (
                   <View key={act.id} style={styles.row}>
                     <Pressable
                       onPress={() => canEditEstructura && openActForm(act)}
@@ -344,6 +356,7 @@ export default function TablaResumenScreen({ projectId }: { projectId: string })
                       <Text style={styles.totalTxt}>{rowTotal(act.id)}</Text>
                     </View>
                   </View>
+                  )
                 ))}
               </ScrollView>
             </View>
@@ -375,10 +388,20 @@ export default function TablaResumenScreen({ projectId }: { projectId: string })
             <TextInput
               value={actForm.nombre}
               onChangeText={(v) => setActForm((s) => ({ ...s, nombre: v }))}
-              placeholder="Ej. Vuelo Lidar"
+              placeholder={actForm.esSeccion ? 'Ej. INTER TRAMOS' : 'Ej. Vuelo Lidar'}
               placeholderTextColor={colors.textMuted}
               style={styles.input}
             />
+            <View style={styles.switchRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.switchLabel}>Fila de sección</Text>
+                <Text style={styles.switchHint}>Separador de grupo a todo lo ancho (sin valores), ej. “INTER TRAMOS”.</Text>
+              </View>
+              <Switch
+                value={actForm.esSeccion}
+                onValueChange={(v) => setActForm((st) => ({ ...st, esSeccion: v }))}
+              />
+            </View>
             <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
               {actForm.editing && (
                 <Button label="Eliminar" variant="danger" onPress={deleteActividad} loading={actForm.saving} style={{ flex: 1 }} />
@@ -493,6 +516,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4, paddingVertical: 6,
   },
   cellHeader: { backgroundColor: colors.surface },
+  cellSeccion: { backgroundColor: '#D9D9D9', alignItems: 'center', justifyContent: 'center' },
+  switchRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginTop: spacing.md },
+  switchLabel: { fontSize: 13, fontWeight: '700', color: colors.text },
+  switchHint: { fontSize: 11, color: colors.textMuted, marginTop: 2 },
   cellActividad: { width: ACT_COL_W, alignItems: 'flex-start', backgroundColor: colors.surface },
   cellValor: { width: VAL_COL_W },
   cellTotal: { width: TOTAL_COL_W, backgroundColor: colors.bg },

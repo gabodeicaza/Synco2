@@ -290,6 +290,8 @@ export interface TablaResumenActividad {
   project_id: string;
   nombre: string;
   orden: number;
+  // Fila separadora de grupo (ej. "INTER TRAMOS"): sin valores, no entra al promedio.
+  es_seccion?: boolean;
   created_at: string;
 }
 
@@ -458,22 +460,35 @@ export type PlanoMarkerEstatus = 'sin_iniciar' | 'en_proceso' | 'terminado';
 
 export interface PlanoMarker {
   id: string;
-  tipo: 'punto' | 'segmento' | 'dado';
+  // "tramo": polilínea (≥2 vértices en `puntos`) — un tramo de Tapial. Cada
+  // tramo es independiente; los huecos entre tramos son la discontinuidad.
+  tipo: 'punto' | 'segmento' | 'dado' | 'tramo';
   label: string;
   x: number;
   y: number;
   x2?: number | null;
   y2?: number | null;
+  puntos?: number[][] | null;
   estatus: PlanoMarkerEstatus;
   updated_by: string;
   updated_by_name: string;
   updated_at: string;
 }
 
+export type PlanoCategoria = 'avance' | 'tapial';
+
+export interface TapialAvance {
+  tramos: number;
+  pct_terminado: number | null;
+  pct_en_proceso: number | null;
+}
+
 export interface PlanoAvance {
   id: string;
   project_id: string;
   nombre: string;
+  categoria?: PlanoCategoria;
+  avance?: TapialAvance; // solo en el detalle de un plano de Tapial
   imagen?: string; // ausente en el listado (GET .../planos-avance), presente en el detalle
   markers: PlanoMarker[];
   created_by: string;
@@ -481,6 +496,27 @@ export interface PlanoAvance {
   created_at: string;
   updated_at: string;
 }
+
+// === Fotos LiDAR (foto ORIGINAL vs foto ACTUAL por frente) ================
+export interface FotoLidar {
+  id: string;
+  project_id: string;
+  titulo: string;
+  node_id?: string | null;
+  orden: number;
+  tiene_original: boolean;
+  tiene_actual: boolean;
+  // Miniaturas (base64 SIN prefijo data:) — vienen en el listado.
+  thumb_original?: string | null;
+  thumb_actual?: string | null;
+  // Foto completa (data URL) — solo en el detalle (GET .../fotos-lidar/{id}).
+  foto_original?: string | null;
+  foto_actual?: string | null;
+  foto_original_fecha?: string | null;
+  foto_actual_fecha?: string | null;
+  updated_at: string;
+}
+export type FotoLidarSlot = 'original' | 'actual';
 
 // === Presentación (Informe de Actividades semanal) =========================
 export type EstudioDisciplinaAvanceEstatus = 'en_proceso' | 'terminado';
@@ -550,12 +586,33 @@ export interface AmbientalAuditoriaItem {
   created_at: string;
 }
 
+export interface DatosContratoBloque {
+  objeto?: string;
+  empresa?: string;
+  contrato?: string;
+  ubicacion?: string;
+  inicio?: string;
+  fin?: string;
+  monto?: string;
+  iva?: string;
+  monto_con_iva?: string;
+  anticipo_label?: string;
+  anticipo?: string;
+}
+
+export interface DatosContrato {
+  obra?: DatosContratoBloque;
+  supervision?: DatosContratoBloque;
+}
+
 export interface Project {
   id: string;
   name: string;
   constructora: string;
   contract_number: string;
   objeto_contrato?: string | null;
+  // Diapositiva "DATOS DE CONTRATO" del informe PPTX (obra y supervisión).
+  datos_contrato?: DatosContrato | null;
   cliente_principal?: string | null;
   // color_tema: ACOTADO a pintar SOLO el título de portada del Informe
   // PDF/PPTX exportado. Para color de marca en pantallas/tablas/acentos,
@@ -1688,6 +1745,7 @@ export const api = {
     pid: string,
     nombre: string,
     file: { uri: string; name: string; mimeType?: string | null },
+    categoria: PlanoCategoria = 'avance',
   ): Promise<PlanoAvance> => {
     if (!file || !file.uri) {
       Alert.alert('Error de Subida', 'No se ha seleccionado ninguna imagen para el plano.');
@@ -1696,7 +1754,7 @@ export const api = {
     const isWeb = Platform.OS === 'web';
     const fileName = file.name || 'plano.jpg';
     const mime = file.mimeType || 'image/jpeg';
-    const url = `${BASE}/projects/${pid}/planos-avance?nombre=${encodeURIComponent(nombre)}`;
+    const url = `${BASE}/projects/${pid}/planos-avance?nombre=${encodeURIComponent(nombre)}&categoria=${categoria}`;
 
     if (!isWeb) {
       return nativeMultipartUpload<PlanoAvance>(url, file.uri, fileName, mime, 'plano');
@@ -1721,17 +1779,19 @@ export const api = {
     }
     return data as PlanoAvance;
   },
-  listPlanosAvance: (pid: string) => request<PlanoAvance[]>('GET', `/projects/${pid}/planos-avance`),
+  listPlanosAvance: (pid: string, categoria: PlanoCategoria = 'avance') =>
+    request<PlanoAvance[]>('GET', `/projects/${pid}/planos-avance?categoria=${categoria}`),
   getPlanoAvance: (pid: string, planoId: string) => request<PlanoAvance>('GET', `/projects/${pid}/planos-avance/${planoId}`),
   updatePlanoAvance: (pid: string, planoId: string, body: Partial<{ nombre: string }>) =>
     request<PlanoAvance>('PATCH', `/projects/${pid}/planos-avance/${planoId}`, body),
   deletePlanoAvance: (pid: string, planoId: string) =>
     request<{ ok: boolean }>('DELETE', `/projects/${pid}/planos-avance/${planoId}`),
   createPlanoMarker: (pid: string, planoId: string, body: {
-    tipo: 'punto' | 'segmento' | 'dado'; label: string; x: number; y: number; x2?: number; y2?: number; estatus?: PlanoMarkerEstatus;
+    tipo: 'punto' | 'segmento' | 'dado' | 'tramo'; label: string; x: number; y: number; x2?: number; y2?: number;
+    puntos?: number[][]; estatus?: PlanoMarkerEstatus;
   }) => request<PlanoMarker>('POST', `/projects/${pid}/planos-avance/${planoId}/markers`, body),
   updatePlanoMarker: (pid: string, planoId: string, markerId: string, body: Partial<{
-    label: string; x: number; y: number; x2: number; y2: number; estatus: PlanoMarkerEstatus;
+    label: string; x: number; y: number; x2: number; y2: number; puntos: number[][]; estatus: PlanoMarkerEstatus;
   }>) => request<PlanoMarker>('PATCH', `/projects/${pid}/planos-avance/${planoId}/markers/${markerId}`, body),
   deletePlanoMarker: (pid: string, planoId: string, markerId: string) =>
     request<{ ok: boolean }>('DELETE', `/projects/${pid}/planos-avance/${planoId}/markers/${markerId}`),
@@ -2021,9 +2081,9 @@ export const api = {
 
   // === Módulo: Tabla Resumen (matriz de avance 100% configurable) ===
   getTablaResumen: (pid: string) => request<TablaResumenData>('GET', `/projects/${pid}/tabla-resumen`),
-  createTablaResumenActividad: (pid: string, body: { nombre: string; orden?: number }) =>
+  createTablaResumenActividad: (pid: string, body: { nombre: string; orden?: number; es_seccion?: boolean }) =>
     request<TablaResumenActividad>('POST', `/projects/${pid}/tabla-resumen/actividades`, body),
-  updateTablaResumenActividad: (pid: string, aid: string, body: Partial<{ nombre: string; orden: number }>) =>
+  updateTablaResumenActividad: (pid: string, aid: string, body: Partial<{ nombre: string; orden: number; es_seccion: boolean }>) =>
     request<TablaResumenActividad>('PATCH', `/projects/${pid}/tabla-resumen/actividades/${aid}`, body),
   deleteTablaResumenActividad: (pid: string, aid: string) =>
     request<{ ok: boolean }>('DELETE', `/projects/${pid}/tabla-resumen/actividades/${aid}`),
@@ -2036,6 +2096,21 @@ export const api = {
   upsertTablaResumenCelda: (pid: string, body: {
     actividad_id: string; columna_id: string; valor: number | null; no_aplica: boolean;
   }) => request<TablaResumenCelda>('PUT', `/projects/${pid}/tabla-resumen/celdas`, body),
+
+  // === Módulo: Fotos LiDAR ===
+  listFotosLidar: (pid: string) => request<FotoLidar[]>('GET', `/projects/${pid}/fotos-lidar`),
+  getFotoLidar: (pid: string, fid: string) => request<FotoLidar>('GET', `/projects/${pid}/fotos-lidar/${fid}`),
+  createFotoLidar: (pid: string, body: { titulo: string; node_id?: string | null; orden?: number }) =>
+    request<FotoLidar>('POST', `/projects/${pid}/fotos-lidar`, body),
+  updateFotoLidar: (pid: string, fid: string, body: Partial<{ titulo: string; node_id: string | null; orden: number }>) =>
+    request<FotoLidar>('PATCH', `/projects/${pid}/fotos-lidar/${fid}`, body),
+  // `image` = data URL o base64 (el backend la normaliza a JPEG ≤1800px).
+  setFotoLidarFoto: (pid: string, fid: string, slot: FotoLidarSlot, body: { image: string; fecha?: string }) =>
+    request<FotoLidar>('PUT', `/projects/${pid}/fotos-lidar/${fid}/foto/${slot}`, body),
+  deleteFotoLidarFoto: (pid: string, fid: string, slot: FotoLidarSlot) =>
+    request<{ ok: boolean }>('DELETE', `/projects/${pid}/fotos-lidar/${fid}/foto/${slot}`),
+  deleteFotoLidar: (pid: string, fid: string) =>
+    request<{ ok: boolean }>('DELETE', `/projects/${pid}/fotos-lidar/${fid}`),
 
   // === Módulo piloto: Estado del Tiempo ===
   listWeatherLogs: (pid: string, date?: string) =>

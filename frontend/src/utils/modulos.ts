@@ -83,6 +83,22 @@ export const MODULOS: ModuloDef[] = [
     area: 'Ingeniería',
   },
   {
+    key: 'fotos_lidar',
+    label: 'Fotos LiDAR',
+    subtitle: 'Foto original y foto actual por frente, reemplazables',
+    icon: 'images-outline',
+    screen: 'fotos-lidar',
+    area: 'Ingeniería',
+  },
+  {
+    key: 'tapial',
+    label: 'Tapial',
+    subtitle: 'Avance de tapial por tramos sobre plano (con discontinuidades)',
+    icon: 'git-branch-outline',
+    screen: 'tapial',
+    area: 'Ingeniería',
+  },
+  {
     key: 'estado_tiempo',
     label: 'Estado del Tiempo',
     subtitle: 'Temperatura, viento, precipitación y calidad del aire por estación',

@@ -116,6 +116,8 @@ export default function SubCoordLayout() {
         <Tabs.Screen name="estudios-proyecto" options={{ href: null }} />
         <Tabs.Screen name="impacto-ambiental" options={{ href: null }} />
         <Tabs.Screen name="tabla-resumen" options={{ href: null }} />
+        <Tabs.Screen name="fotos-lidar" options={{ href: null }} />
+        <Tabs.Screen name="tapial" options={{ href: null }} />
         <Tabs.Screen name="estado-tiempo" options={{ href: null }} />
         <Tabs.Screen name="control-obra" options={{ href: null }} />
         {/* Hub de módulos activos — alcanzable via router.push (menu hamburgues), sin tab visible. */}

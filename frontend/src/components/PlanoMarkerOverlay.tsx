@@ -7,7 +7,7 @@
 // dado en coordenadas FRACCIÓN (0-1) del tamaño de la imagen base.
 import React, { useMemo, useRef, useState } from 'react';
 import { Image, PanResponder, StyleSheet, View } from 'react-native';
-import Svg, { Circle, Line, Rect, Text as SvgText } from 'react-native-svg';
+import Svg, { Circle, Line, Polyline, Rect, Text as SvgText } from 'react-native-svg';
 import { colors } from '@/src/theme';
 import type { PlanoMarker, PlanoMarkerEstatus } from '@/src/api';
 
@@ -42,6 +42,15 @@ function distToSegment(px: number, py: number, x1: number, y1: number, x2: numbe
   return Math.hypot(px - cx, py - cy);
 }
 
+/** Distancia mínima del punto (px,py) a una polilínea de vértices en píxeles. */
+function distToPolyline(px: number, py: number, pts: number[][]): number {
+  let best = Infinity;
+  for (let i = 0; i < pts.length - 1; i++) {
+    best = Math.min(best, distToSegment(px, py, pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1]));
+  }
+  return best;
+}
+
 function clamp01(v: number): number {
   return Math.max(0, Math.min(1, v));
 }
@@ -56,6 +65,9 @@ interface Props {
   onTap?: (marker: PlanoMarker | null, xFrac: number, yFrac: number) => void;
   /** Punto pendiente de un segmento en construcción (ver PlanoAvanceScreen). */
   draftPoint?: { x: number; y: number } | null;
+  /** Vértices ya tocados de un TRAMO en construcción (Tapial) — se dibuja
+   * como polilínea punteada con un círculo por vértice. */
+  draftPuntos?: { x: number; y: number }[] | null;
   /** 'mover' habilita arrastrar marcadores tipo punto/dado (ver
    * PlanoAvanceScreen) — 'ver' (default, o prop omitida) es el
    * comportamiento de siempre: tap simple vía onTap, sin cambios. */
@@ -68,7 +80,7 @@ interface Props {
 }
 
 export function PlanoMarkerOverlay({
-  imageUri, markers, width, height, markerRadius = 11, onTap, draftPoint, mode = 'ver', onDragEnd,
+  imageUri, markers, width, height, markerRadius = 11, onTap, draftPoint, draftPuntos, mode = 'ver', onDragEnd,
 }: Props) {
   // Posición VISUAL temporal del marcador que se está arrastrando — no se
   // persiste hasta soltar (onDragEnd). Mientras exista, el render de ESE
@@ -89,7 +101,7 @@ export function PlanoMarkerOverlay({
     const { markers: ms, width: w, height: h, markerRadius: r } = liveRef.current;
     for (let i = ms.length - 1; i >= 0; i--) {
       const m = ms[i];
-      if (m.tipo === 'segmento') continue; // ver nota: los segmentos no se arrastran directo.
+      if (m.tipo === 'segmento' || m.tipo === 'tramo') continue; // ver nota: segmentos/tramos no se arrastran directo.
       const mx = m.x * w;
       const my = m.y * h;
       if (Math.hypot(x - mx, y - my) <= r + HIT_PAD) return m;
@@ -106,7 +118,10 @@ export function PlanoMarkerOverlay({
       const m = markers[i];
       const mx = m.x * width;
       const my = m.y * height;
-      if (m.tipo === 'segmento' && m.x2 != null && m.y2 != null) {
+      if (m.tipo === 'tramo' && m.puntos && m.puntos.length >= 2) {
+        const pts = m.puntos.map((q) => [q[0] * width, q[1] * height]);
+        if (distToPolyline(x, y, pts) <= HIT_PAD) { hit = m; break; }
+      } else if (m.tipo === 'segmento' && m.x2 != null && m.y2 != null) {
         const mx2 = m.x2 * width;
         const my2 = m.y2 * height;
         if (distToSegment(x, y, mx, my, mx2, my2) <= HIT_PAD) { hit = m; break; }
@@ -182,6 +197,28 @@ export function PlanoMarkerOverlay({
           const my = (preview ? preview.yFrac : m.y) * height;
           const label = (m.label || '').trim();
 
+          if (m.tipo === 'tramo' && m.puntos && m.puntos.length >= 2) {
+            const pts = m.puntos.map((q) => `${q[0] * width},${q[1] * height}`).join(' ');
+            const mid = m.puntos[Math.floor(m.puntos.length / 2)];
+            return (
+              <React.Fragment key={m.id}>
+                <Polyline
+                  points={pts} fill="none" stroke={color} strokeWidth={5}
+                  strokeLinecap="round" strokeLinejoin="round"
+                />
+                {label ? (
+                  <SvgText
+                    x={mid[0] * width} y={mid[1] * height - 8}
+                    fontSize={10} fontWeight="bold" textAnchor="middle"
+                    fill="#1A1A1A" stroke="#FFFFFF" strokeWidth={3} paintOrder="stroke"
+                  >
+                    {label}
+                  </SvgText>
+                ) : null}
+              </React.Fragment>
+            );
+          }
+
           if (m.tipo === 'segmento' && m.x2 != null && m.y2 != null) {
             const x2 = m.x2 * width;
             const y2 = m.y2 * height;
@@ -237,6 +274,23 @@ export function PlanoMarkerOverlay({
             </React.Fragment>
           );
         })}
+        {draftPuntos && draftPuntos.length > 0 ? (
+          <>
+            {draftPuntos.length > 1 ? (
+              <Polyline
+                points={draftPuntos.map((q) => `${q.x * width},${q.y * height}`).join(' ')}
+                fill="none" stroke={colors.primary} strokeWidth={3} strokeDasharray="6,4"
+                strokeLinecap="round" strokeLinejoin="round"
+              />
+            ) : null}
+            {draftPuntos.map((q, i) => (
+              <Circle
+                key={i} cx={q.x * width} cy={q.y * height} r={markerRadius * 0.55}
+                fill="#FFFFFF" stroke={colors.primary} strokeWidth={2.5}
+              />
+            ))}
+          </>
+        ) : null}
         {draftPoint ? (
           <Circle
             cx={draftPoint.x * width} cy={draftPoint.y * height}
