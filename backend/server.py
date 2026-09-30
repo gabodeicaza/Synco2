@@ -155,6 +155,7 @@ MODULOS_KEYS = {
     "seguridad_higiene", "forestal_arbolado",
     "gestion_riesgos", "estudios_proyecto", "impacto_ambiental",
     "tabla_resumen", "estado_tiempo", "control_obra",
+    "fotos_lidar", "tapial",
 }
 MODULOS_DIARIOS = MODULOS_KEYS
 MODULOS_SEMANALES = MODULOS_KEYS
@@ -182,6 +183,35 @@ def _sanitize_modulos(value: Optional[dict]) -> dict:
             v = cat_in.get(clave) if isinstance(cat_in, dict) else None
             cat_out[clave] = bool(v) if isinstance(v, bool) else False
         out[categoria] = cat_out
+    return out
+
+
+_DATOS_CONTRATO_BLOQUES = ("obra", "supervision")
+_DATOS_CONTRATO_CAMPOS = (
+    "objeto", "empresa", "contrato", "ubicacion", "inicio", "fin",
+    "monto", "iva", "monto_con_iva", "anticipo_label", "anticipo",
+)
+
+
+def _sanitize_datos_contrato(value) -> dict:
+    """Normaliza `datos_contrato` (slide "DATOS DE CONTRATO" del informe
+    PPTX): dos bloques, `obra` y `supervision`, cada uno con campos de
+    texto libre (los montos se capturan ya formateados, ej. "$117,352,207.05").
+    Se descartan claves desconocidas y se recorta cada valor."""
+    out: dict = {}
+    if not isinstance(value, dict):
+        return out
+    for bloque in _DATOS_CONTRATO_BLOQUES:
+        src = value.get(bloque)
+        if not isinstance(src, dict):
+            continue
+        clean = {}
+        for campo in _DATOS_CONTRATO_CAMPOS:
+            v = src.get(campo)
+            if isinstance(v, str) and v.strip():
+                clean[campo] = v.strip()[:1000]
+        if clean:
+            out[bloque] = clean
     return out
 
 
@@ -317,6 +347,8 @@ class ProjectIn(BaseModel):
     constructora: str
     contract_number: str
     objeto_contrato: Optional[str] = None  # Descripción institucional del objeto del contrato
+    # Slide "DATOS DE CONTRATO" del informe PPTX — ver _sanitize_datos_contrato.
+    datos_contrato: Optional[dict] = None
     cliente_principal: Optional[str] = None  # Cliente / dependencia que contrata (aparece en portada)
     # color_tema: ACOTADO a pintar SOLO el título grande de la portada del
     # Informe PDF/PPTX exportado (Diario/Semanal/Mensual) — antes también
@@ -401,6 +433,7 @@ class ProjectPatch(BaseModel):
     constructora: Optional[str] = None
     contract_number: Optional[str] = None
     objeto_contrato: Optional[str] = None
+    datos_contrato: Optional[dict] = None
     cliente_principal: Optional[str] = None
     color_tema: Optional[str] = None
     color_institucional: Optional[str] = None
@@ -438,6 +471,7 @@ class ProjectOut(BaseModel):
     constructora: str
     contract_number: str
     objeto_contrato: Optional[str] = None
+    datos_contrato: Optional[dict] = None
     cliente_principal: Optional[str] = None
     color_tema: Optional[str] = None
     color_institucional: Optional[str] = None
@@ -1096,6 +1130,8 @@ async def startup_event():
     await db.forestal_registros.create_index([("project_id", 1), ("created_at", -1)])
     await db.forestal_autorizado.create_index("id", unique=True)
     await db.forestal_autorizado.create_index([("project_id", 1), ("orden", 1)])
+    await db.fotos_lidar.create_index("id", unique=True)
+    await db.fotos_lidar.create_index([("project_id", 1), ("orden", 1)])
     await db.tabla_resumen_actividades.create_index("id", unique=True)
     await db.tabla_resumen_actividades.create_index([("project_id", 1), ("orden", 1)])
     await db.tabla_resumen_columnas.create_index("id", unique=True)
@@ -1582,6 +1618,7 @@ async def create_project(body: ProjectIn, user: dict = Depends(require_role(ROLE
         "constructora": body.constructora.strip(),
         "contract_number": body.contract_number.strip(),
         "objeto_contrato": (body.objeto_contrato or "").strip() or None,
+        "datos_contrato": _sanitize_datos_contrato(body.datos_contrato),
         "cliente_principal": (body.cliente_principal or "").strip() or None,
         "color_tema": _sanitize_color_hex(body.color_tema) or "#003366",
         "color_institucional": _sanitize_color_hex(body.color_institucional) or "#003366",
@@ -1623,6 +1660,7 @@ async def get_project(pid: str, user: dict = Depends(current_user)):
     p.setdefault("categorias_personal", [])
     p.setdefault("categorias_equipo", [])
     p.setdefault("objeto_contrato", None)
+    p.setdefault("datos_contrato", {})
     p.setdefault("cliente_principal", None)
     p.setdefault("color_tema", "#003366")
     p.setdefault("color_institucional", "#003366")
@@ -1674,6 +1712,8 @@ async def update_project(pid: str, body: ProjectPatch, user: dict = Depends(requ
         upd["contract_number"] = body.contract_number.strip()
     if body.objeto_contrato is not None:
         upd["objeto_contrato"] = body.objeto_contrato.strip() or None
+    if body.datos_contrato is not None:
+        upd["datos_contrato"] = _sanitize_datos_contrato(body.datos_contrato)
     if body.cliente_principal is not None:
         upd["cliente_principal"] = body.cliente_principal.strip() or None
     if body.color_tema is not None:
@@ -1767,6 +1807,7 @@ def _project_public(p: dict) -> dict:
     p.setdefault("categorias_personal", [])
     p.setdefault("categorias_equipo", [])
     p.setdefault("objeto_contrato", None)
+    p.setdefault("datos_contrato", {})
     p.setdefault("cliente_principal", None)
     p.setdefault("color_tema", "#003366")
     p.setdefault("color_institucional", "#003366")
@@ -2125,11 +2166,16 @@ async def delete_forestal_autorizado(
 class TablaResumenActividadIn(BaseModel):
     nombre: str
     orden: int = 0
+    # Fila separadora de grupo (ej. "INTER TRAMOS"): ocupa todo el ancho de la
+    # tabla, no lleva valores ni entra al promedio — igual que en el formato
+    # de referencia del informe diario.
+    es_seccion: bool = False
 
 
 class TablaResumenActividadPatch(BaseModel):
     nombre: Optional[str] = None
     orden: Optional[int] = None
+    es_seccion: Optional[bool] = None
 
 
 class TablaResumenColumnaIn(BaseModel):
@@ -2173,6 +2219,7 @@ async def create_tabla_resumen_actividad(
         raise HTTPException(400, "nombre es requerido")
     doc = {
         "id": str(uuid.uuid4()), "project_id": pid, "nombre": nombre, "orden": body.orden,
+        "es_seccion": body.es_seccion,
         "created_at": datetime.now(timezone.utc),
     }
     await db.tabla_resumen_actividades.insert_one(doc)
@@ -3468,6 +3515,230 @@ async def delete_node_cover(
     return updated
 
 
+# === FOTOS LIDAR (módulo: foto ORIGINAL vs foto ACTUAL por frente) ===========
+# Un registro por frente/estación (o tema libre): dos fotos reemplazables
+# independientemente — "original" (línea base, ej. el vuelo LiDAR inicial) y
+# "actual" (la más reciente). Reemplazar una foto sobrescribe la anterior: solo
+# importa el estado vigente (mismo criterio que Plano de Avance / Tabla
+# Resumen), por eso el export NO filtra por período.
+_FOTOS_LIDAR_SLOTS = ("original", "actual")
+_FOTOS_LIDAR_MAX_RAW = 15 * 1024 * 1024
+
+
+def _normalize_photo_b64(b64_str: str, max_dim: int = 1800, quality: int = 82) -> str:
+    """Valida y normaliza una foto (base64 o data URL) a un data URL JPEG
+    acotado a `max_dim` px por lado — mantiene cada documento Mongo muy por
+    debajo del límite de 16 MB aun con dos fotos por registro. Bloqueante
+    (CPU-bound): llamar vía asyncio.to_thread."""
+    import base64 as _b64
+    from PIL import Image as _PILImage
+    from PIL.ImageOps import exif_transpose as _exif_transpose
+    try:
+        raw = _b64.b64decode(_strip_b64_prefix(b64_str))
+    except Exception:
+        raise HTTPException(400, "Imagen inválida (base64)")
+    if not raw:
+        raise HTTPException(400, "Imagen vacía")
+    if len(raw) > _FOTOS_LIDAR_MAX_RAW:
+        raise HTTPException(413, f"Imagen demasiado grande (máx {_FOTOS_LIDAR_MAX_RAW // (1024*1024)} MB).")
+    try:
+        img = _PILImage.open(io.BytesIO(raw))
+        img = _exif_transpose(img) or img
+        img = img.convert("RGB")
+        img.thumbnail((max_dim, max_dim))
+        out = io.BytesIO()
+        img.save(out, format="JPEG", quality=quality, optimize=True)
+    except Exception:
+        raise HTTPException(400, "No se pudo leer la imagen (usa JPG/PNG/WebP)")
+    return "data:image/jpeg;base64," + _b64.b64encode(out.getvalue()).decode("ascii")
+
+
+def _png_bytes_to_jpeg_dataurl(png: bytes, max_dim: int = 2000, quality: int = 85) -> str:
+    """PNG (p. ej. el snapshot de un plano) → data URL JPEG acotado — el
+    export embebe imágenes de ~300 KB en vez de PNGs de decenas de MB.
+    Bloqueante: llamar vía asyncio.to_thread."""
+    import base64 as _b64
+    from PIL import Image as _PILImage
+    img = _PILImage.open(io.BytesIO(png)).convert("RGB")
+    img.thumbnail((max_dim, max_dim))
+    out = io.BytesIO()
+    img.save(out, format="JPEG", quality=quality, optimize=True)
+    return "data:image/jpeg;base64," + _b64.b64encode(out.getvalue()).decode("ascii")
+
+
+def _fmt_iso_dmy(value: Optional[str]) -> str:
+    """'2026-09-29' → '29/09/2026'; cualquier otra cosa se devuelve tal cual."""
+    try:
+        return date.fromisoformat(str(value)[:10]).strftime("%d/%m/%Y")
+    except (ValueError, TypeError):
+        return str(value or "")
+
+
+def _fotos_lidar_etiqueta(base: str, fecha: Optional[str]) -> str:
+    return f"{base} · {_fmt_iso_dmy(fecha)}" if fecha else base
+
+
+class FotoLidarIn(BaseModel):
+    titulo: str
+    node_id: Optional[str] = None  # Estación/intertramo del árbol, si aplica
+    orden: int = 0
+
+
+class FotoLidarPatch(BaseModel):
+    titulo: Optional[str] = None
+    node_id: Optional[str] = None
+    orden: Optional[int] = None
+
+
+class FotoLidarFotoIn(BaseModel):
+    image: str  # base64 / data URL
+    fecha: Optional[str] = None  # ISO date de la toma; default = hoy (CDMX)
+
+
+def _foto_lidar_public(doc: dict, *, with_images: bool) -> dict:
+    out = {k: v for k, v in doc.items() if k != "_id"}
+    out["tiene_original"] = bool(doc.get("foto_original"))
+    out["tiene_actual"] = bool(doc.get("foto_actual"))
+    if not with_images:
+        out.pop("foto_original", None)
+        out.pop("foto_actual", None)
+    return out
+
+
+@api.get("/projects/{pid}/fotos-lidar")
+async def list_fotos_lidar(pid: str, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    # El listado lleva solo miniaturas (thumb_*); la foto completa se pide
+    # en el detalle — mismo criterio que planos-avance.
+    cursor = db.fotos_lidar.find({"project_id": pid}, {"foto_original": 0, "foto_actual": 0}).sort(
+        [("orden", 1), ("created_at", 1)]
+    )
+    items = await cursor.to_list(length=500)
+    for it in items:
+        it["tiene_original"] = bool(it.get("thumb_original"))
+        it["tiene_actual"] = bool(it.get("thumb_actual"))
+        it.pop("_id", None)
+    return items
+
+
+@api.get("/projects/{pid}/fotos-lidar/{fid}")
+async def get_foto_lidar(pid: str, fid: str, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    doc = await db.fotos_lidar.find_one({"id": fid, "project_id": pid})
+    if not doc:
+        raise HTTPException(404, "Registro no existe")
+    return _foto_lidar_public(doc, with_images=True)
+
+
+@api.post("/projects/{pid}/fotos-lidar")
+async def create_foto_lidar(pid: str, body: FotoLidarIn, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB))):
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "fotos_lidar")
+    titulo = body.titulo.strip()
+    if not titulo:
+        raise HTTPException(400, "titulo es requerido")
+    if body.node_id:
+        node = await db.location_nodes.find_one({"id": body.node_id, "project_id": pid})
+        if not node:
+            raise HTTPException(400, "Nodo no existe en este proyecto")
+    now = datetime.now(timezone.utc)
+    doc = {
+        "id": str(uuid.uuid4()), "project_id": pid, "titulo": titulo, "node_id": body.node_id,
+        "orden": body.orden,
+        "foto_original": None, "foto_original_fecha": None, "thumb_original": None,
+        "foto_actual": None, "foto_actual_fecha": None, "thumb_actual": None,
+        "created_by": user["id"], "created_by_name": user["name"],
+        "created_at": now, "updated_at": now,
+    }
+    await db.fotos_lidar.insert_one(doc)
+    return _foto_lidar_public(doc, with_images=False)
+
+
+@api.patch("/projects/{pid}/fotos-lidar/{fid}")
+async def update_foto_lidar(
+    pid: str, fid: str, body: FotoLidarPatch, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB)),
+):
+    await ensure_project_access(user, pid)
+    doc = await db.fotos_lidar.find_one({"id": fid, "project_id": pid})
+    if not doc:
+        raise HTTPException(404, "Registro no existe")
+    upd: dict = {}
+    fields = body.model_dump(exclude_unset=True)
+    if fields.get("titulo") is not None:
+        t = fields["titulo"].strip()
+        if not t:
+            raise HTTPException(400, "titulo no puede quedar vacío")
+        upd["titulo"] = t
+    if "node_id" in fields:
+        if fields["node_id"]:
+            node = await db.location_nodes.find_one({"id": fields["node_id"], "project_id": pid})
+            if not node:
+                raise HTTPException(400, "Nodo no existe en este proyecto")
+        upd["node_id"] = fields["node_id"] or None
+    if fields.get("orden") is not None:
+        upd["orden"] = fields["orden"]
+    if upd:
+        upd["updated_at"] = datetime.now(timezone.utc)
+        await db.fotos_lidar.update_one({"id": fid}, {"$set": upd})
+    out = await db.fotos_lidar.find_one({"id": fid})
+    return _foto_lidar_public(out, with_images=False)
+
+
+@api.put("/projects/{pid}/fotos-lidar/{fid}/foto/{slot}")
+async def set_foto_lidar_foto(
+    pid: str, fid: str, slot: str, body: FotoLidarFotoIn, user: dict = Depends(current_user),
+):
+    """Adjunta o REEMPLAZA la foto `original` o `actual` del registro. Abierto
+    a cualquier rol de escritura con acceso al proyecto (captura de campo);
+    crear/renombrar/borrar registros sí es solo Coordinador/Sub-Coordinador."""
+    if slot not in _FOTOS_LIDAR_SLOTS:
+        raise HTTPException(400, "slot debe ser 'original' o 'actual'")
+    _assert_write_allowed(user)
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "fotos_lidar")
+    doc = await db.fotos_lidar.find_one({"id": fid, "project_id": pid}, {"id": 1})
+    if not doc:
+        raise HTTPException(404, "Registro no existe")
+    fecha = body.fecha or datetime.now(MX_TZ).date().isoformat()
+    try:
+        date.fromisoformat(fecha)
+    except ValueError:
+        raise HTTPException(400, "fecha debe ser YYYY-MM-DD")
+    foto = await asyncio.to_thread(_normalize_photo_b64, body.image)
+    thumb = await asyncio.to_thread(_compress_image_b64, foto)
+    now = datetime.now(timezone.utc)
+    await db.fotos_lidar.update_one({"id": fid}, {"$set": {
+        f"foto_{slot}": foto,
+        f"foto_{slot}_fecha": fecha,
+        f"thumb_{slot}": thumb,
+        f"foto_{slot}_by": user["name"],
+        "updated_at": now,
+    }})
+    out = await db.fotos_lidar.find_one({"id": fid})
+    return _foto_lidar_public(out, with_images=False)
+
+
+@api.delete("/projects/{pid}/fotos-lidar/{fid}/foto/{slot}")
+async def delete_foto_lidar_foto(
+    pid: str, fid: str, slot: str, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB)),
+):
+    if slot not in _FOTOS_LIDAR_SLOTS:
+        raise HTTPException(400, "slot debe ser 'original' o 'actual'")
+    await ensure_project_access(user, pid)
+    await db.fotos_lidar.update_one({"id": fid, "project_id": pid}, {"$set": {
+        f"foto_{slot}": None, f"foto_{slot}_fecha": None, f"thumb_{slot}": None,
+        "updated_at": datetime.now(timezone.utc),
+    }})
+    return {"ok": True}
+
+
+@api.delete("/projects/{pid}/fotos-lidar/{fid}")
+async def delete_foto_lidar(pid: str, fid: str, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB))):
+    await ensure_project_access(user, pid)
+    await db.fotos_lidar.delete_one({"id": fid, "project_id": pid})
+    return {"ok": True}
+
+
 # === PLANO DE AVANCE (marcadores de estado sobre un plano/blueprint) =======
 # Cada plano vive como un documento con sus marcadores EMBEBIDOS (sin
 # colección aparte ni historial — solo importa el estado vigente). Coordenadas
@@ -3484,20 +3755,80 @@ _PLANO_MARKER_ESTADO_COLOR = {
 # Campos del PATCH que SOLO Coordinador/Sub-Coordinador pueden tocar —
 # reposicionar o renombrar un marcador es "definir estructura", no captura
 # de campo. `estatus` es el único que Especialista también puede escribir.
-_PLANO_MARKER_CAMPOS_ESTRUCTURA = ("label", "x", "y", "x2", "y2")
+_PLANO_MARKER_CAMPOS_ESTRUCTURA = ("label", "x", "y", "x2", "y2", "puntos")
+# Categorías de plano: "avance" (Plano de Avance clásico; docs viejos sin el
+# campo cuentan como "avance") y "tapial" (módulo Tapial: mismos planos pero
+# con tramos poligonales DISCONTINUOS — ver marcador tipo "tramo").
+_PLANO_CATEGORIAS = ("avance", "tapial")
 
 
 class PlanoMarkerIn(BaseModel):
     # "dado": rectángulo de cimentación (dado/zapata) — se valida igual que
     # "punto" (solo x/y, sin x2/y2), solo cambia cómo lo dibuja el overlay
     # (ver PlanoMarkerOverlay.tsx / _bake_plano_snapshot).
-    tipo: Literal["punto", "segmento", "dado"]
+    # "tramo": polilínea (≥2 vértices en `puntos`, fracciones 0-1) — un tramo
+    # de tapial. Cada tramo es independiente: los huecos entre tramos son
+    # justamente las discontinuidades (accesos, portones, frentes sin tapial).
+    tipo: Literal["punto", "segmento", "dado", "tramo"]
     label: str
     x: float
     y: float
     x2: Optional[float] = None
     y2: Optional[float] = None
+    puntos: Optional[List[List[float]]] = None
     estatus: Literal["sin_iniciar", "en_proceso", "terminado"] = "sin_iniciar"
+
+
+def _sanitize_plano_puntos(puntos) -> List[List[float]]:
+    """Valida los vértices de un tramo: ≥2 pares [x, y] finitos en 0-1
+    (máx 200 vértices). Levanta 400 si algo no cuadra."""
+    if not isinstance(puntos, list) or len(puntos) < 2:
+        raise HTTPException(400, "Un tramo requiere al menos 2 puntos")
+    if len(puntos) > 200:
+        raise HTTPException(400, "Un tramo admite máximo 200 puntos")
+    out: List[List[float]] = []
+    for pt in puntos:
+        if (not isinstance(pt, (list, tuple)) or len(pt) != 2
+                or not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in pt)):
+            raise HTTPException(400, "Cada punto debe ser [x, y]")
+        x, y = float(pt[0]), float(pt[1])
+        if not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0):
+            raise HTTPException(400, "Las coordenadas del tramo deben estar entre 0 y 1")
+        out.append([x, y])
+    return out
+
+
+def _plano_tapial_avance(plano: dict) -> dict:
+    """Avance de un plano de Tapial: % terminado POR LONGITUD (lo terminado /
+    la suma de todos los tramos, medida en píxeles de la imagen base para que
+    ancho y alto pesen igual; sin imagen se asume razón 1:1). Los tramos en
+    proceso NO se prorratean: no hay dato de cuánto llevan, así que no se
+    inventa un porcentaje para ellos — se reportan aparte."""
+    w = h = 1.0
+    try:
+        import base64 as _b64
+        from PIL import Image as _PILImage
+        img = _PILImage.open(io.BytesIO(_b64.b64decode(_strip_b64_prefix(plano["imagen"]))))
+        w, h = float(img.size[0]), float(img.size[1])
+    except Exception:
+        pass
+    largo = {"terminado": 0.0, "en_proceso": 0.0, "sin_iniciar": 0.0}
+    n_tramos = 0
+    for m in (plano.get("markers") or []):
+        pts = m.get("puntos") or []
+        if m.get("tipo") != "tramo" or len(pts) < 2:
+            continue
+        n_tramos += 1
+        total = 0.0
+        for (xa, ya), (xb, yb) in zip(pts, pts[1:]):
+            total += (((xb - xa) * w) ** 2 + ((yb - ya) * h) ** 2) ** 0.5
+        largo[m.get("estatus") if m.get("estatus") in largo else "sin_iniciar"] += total
+    suma = sum(largo.values())
+    return {
+        "tramos": n_tramos,
+        "pct_terminado": round(largo["terminado"] / suma * 100, 1) if suma > 0 else None,
+        "pct_en_proceso": round(largo["en_proceso"] / suma * 100, 1) if suma > 0 else None,
+    }
 
 
 class PlanoMarkerPatch(BaseModel):
@@ -3506,6 +3837,7 @@ class PlanoMarkerPatch(BaseModel):
     y: Optional[float] = None
     x2: Optional[float] = None
     y2: Optional[float] = None
+    puntos: Optional[List[List[float]]] = None
     estatus: Optional[Literal["sin_iniciar", "en_proceso", "terminado"]] = None
 
 
@@ -3517,6 +3849,7 @@ class PlanoAvancePatch(BaseModel):
 async def upload_plano_avance(
     pid: str,
     nombre: str,
+    categoria: str = "avance",
     file: UploadFile = File(...),
     user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB)),
 ):
@@ -3529,6 +3862,8 @@ async def upload_plano_avance(
     nombre = nombre.strip()
     if not nombre:
         raise HTTPException(400, "Nombre del plano requerido")
+    if categoria not in _PLANO_CATEGORIAS:
+        raise HTTPException(400, "categoria debe ser 'avance' o 'tapial'")
     content_type = (file.content_type or "").lower()
     if content_type and content_type not in _PLANO_MIME:
         raise HTTPException(415, f"Formato no soportado: {content_type}. Usa JPG/PNG/WebP.")
@@ -3543,6 +3878,7 @@ async def upload_plano_avance(
         "id": str(uuid.uuid4()),
         "project_id": pid,
         "nombre": nombre,
+        "categoria": categoria,
         "imagen": data_url,
         "markers": [],
         "created_by": user["id"],
@@ -3556,12 +3892,16 @@ async def upload_plano_avance(
 
 
 @api.get("/projects/{pid}/planos-avance")
-async def list_planos_avance(pid: str, user: dict = Depends(current_user)):
+async def list_planos_avance(pid: str, categoria: str = "avance", user: dict = Depends(current_user)):
     await ensure_project_access(user, pid)
+    if categoria not in _PLANO_CATEGORIAS:
+        raise HTTPException(400, "categoria debe ser 'avance' o 'tapial'")
+    # Docs anteriores a la categoría no traen el campo → son "avance".
+    cat_q = {"categoria": "tapial"} if categoria == "tapial" else {"categoria": {"$ne": "tapial"}}
     # Excluye `imagen` (pesada, base64) del listado — la imagen completa
     # solo se sirve en el detalle, mismo criterio que ensure_project_access
     # excluye general_data_images de la carga por default.
-    cursor = db.planos_avance.find({"project_id": pid}, {"imagen": 0}).sort("created_at", -1)
+    cursor = db.planos_avance.find({"project_id": pid, **cat_q}, {"imagen": 0}).sort("created_at", -1)
     items = await cursor.to_list(length=500)
     for it in items:
         it.pop("_id", None)
@@ -3575,6 +3915,8 @@ async def get_plano_avance(pid: str, plano_id: str, user: dict = Depends(current
     if not doc:
         raise HTTPException(404, "Plano no existe")
     doc.pop("_id", None)
+    if doc.get("categoria") == "tapial":
+        doc["avance"] = _plano_tapial_avance(doc)
     return doc
 
 
@@ -3617,13 +3959,18 @@ async def create_plano_marker(
         raise HTTPException(400, "Etiqueta del marcador requerida")
     if body.tipo == "segmento" and (body.x2 is None or body.y2 is None):
         raise HTTPException(400, "Marcador de segmento requiere x2/y2")
+    puntos = None
+    if body.tipo == "tramo":
+        puntos = _sanitize_plano_puntos(body.puntos)
     now = datetime.now(timezone.utc)
     marker = {
         "id": str(uuid.uuid4()),
         "tipo": body.tipo,
         "label": label,
-        "x": body.x, "y": body.y,
+        "x": puntos[0][0] if puntos else body.x,
+        "y": puntos[0][1] if puntos else body.y,
         "x2": body.x2, "y2": body.y2,
+        "puntos": puntos,
         "estatus": body.estatus,
         "updated_by": user["id"],
         "updated_by_name": user["name"],
@@ -3668,6 +4015,11 @@ async def update_plano_marker(
         val = getattr(body, campo)
         if val is not None:
             marker[campo] = val
+    if body.puntos is not None:
+        if marker.get("tipo") != "tramo":
+            raise HTTPException(400, "Solo un marcador tipo tramo admite puntos")
+        marker["puntos"] = _sanitize_plano_puntos(body.puntos)
+        marker["x"], marker["y"] = marker["puntos"][0]
     if body.estatus is not None:
         marker["estatus"] = body.estatus
     marker["updated_by"] = user["id"]
@@ -3731,7 +4083,12 @@ def _bake_plano_snapshot(plano: dict) -> bytes:
         color = _PLANO_MARKER_ESTADO_COLOR.get(m.get("estatus"), "#94A3B8")
         tipo = m.get("tipo")
         label = (m.get("label") or "").strip()
-        if tipo == "segmento" and m.get("x2") is not None and m.get("y2") is not None:
+        if tipo == "tramo" and len(m.get("puntos") or []) >= 2:
+            pts = [(px * w, py * h) for px, py in m["puntos"]]
+            draw.line(pts, fill=color, width=line_width, joint="curve")
+            mid = pts[len(pts) // 2]
+            _draw_label(mid[0], mid[1] - radius, label)
+        elif tipo == "segmento" and m.get("x2") is not None and m.get("y2") is not None:
             x1, y1 = m["x"] * w, m["y"] * h
             x2, y2 = m["x2"] * w, m["y2"] * h
             draw.line([(x1, y1), (x2, y2)], fill=color, width=line_width)
@@ -10397,6 +10754,11 @@ async def export_reports_pdf(
                     data = [headers]
                     bg_cmds = []
                     for ridx, f in enumerate(filas):
+                        if f.get("seccion"):
+                            data.append([Paragraph(_xml_escape(f["actividad"]), head_style)] + [""] * (len(headers) - 1))
+                            bg_cmds.append(("SPAN", (0, ridx + 1), (-1, ridx + 1)))
+                            bg_cmds.append(("BACKGROUND", (0, ridx + 1), (-1, ridx + 1), HexColor("#D9D9D9")))
+                            continue
                         row_vals = f["valores"][col_offset:col_offset + len(chunk)]
                         row = [Paragraph(_xml_escape(f["actividad"]), act_style)]
                         for cidx, v in enumerate(row_vals):
@@ -10437,6 +10799,71 @@ async def export_reports_pdf(
                     lx += 12 + c.stringWidth(label, "Helvetica", 9) + 20
                 y -= 20
 
+            def _pdf_fit_image(b64_str, x, y_top, max_w, max_h) -> float:
+                """Dibuja la imagen dentro de la caja SIN deformarla (centrada
+                horizontalmente) y devuelve su alto real; 0 si no se pudo leer."""
+                try:
+                    raw = base64.b64decode(_strip_b64_prefix(b64_str))
+                    img = ImageReader(io.BytesIO(raw))
+                    iw, ih = img.getSize()
+                    sc = min(max_w / iw, max_h / ih)
+                    w, h = iw * sc, ih * sc
+                    c.drawImage(img, x + (max_w - w) / 2, y_top - h, w, h)
+                    return h
+                except Exception:
+                    return 0.0
+
+            def _draw_fotos_comparativa_block(block: dict) -> None:
+                nonlocal y
+                gap = 0.8 * cm
+                col_w = (content_w - gap) / 2
+                for it in (block.get("items") or []):
+                    _ensure_space(11.0 * cm)
+                    if it.get("titulo"):
+                        _draw_heading(it["titulo"])
+                    img_h = min(8.5 * cm, y - bottom_y - 1.4 * cm)
+                    drawn_h = 0.0
+                    for col, (key, lbl, fkey) in enumerate((
+                        ("original", "ORIGINAL", "fecha_original"), ("actual", "ACTUAL", "fecha_actual"),
+                    )):
+                        x = left_x + col * (col_w + gap)
+                        h = _pdf_fit_image(it[key], x, y, col_w, img_h) if it.get(key) else 0.0
+                        if not h:
+                            c.setStrokeColor(BORDER)
+                            c.rect(x, y - img_h, col_w, img_h, stroke=1, fill=0)
+                            c.setFillColor(MUTED)
+                            c.setFont("Helvetica-Oblique", 11)
+                            c.drawCentredString(x + col_w / 2, y - img_h / 2, "Sin foto")
+                            h = img_h
+                        drawn_h = max(drawn_h, h)
+                        c.setFillColor(TEXT)
+                        c.setFont("Helvetica-Bold", 11)
+                        c.drawCentredString(x + col_w / 2, y - img_h - 13, _fotos_lidar_etiqueta(lbl, it.get(fkey)))
+                    y -= img_h + 13 + 18
+
+            def _draw_imagen_block(block: dict) -> None:
+                nonlocal y
+                _ensure_space(9.0 * cm)
+                if block.get("heading"):
+                    _draw_heading(block["heading"])
+                img_h = y - bottom_y - 2.2 * cm
+                h = _pdf_fit_image(block["imagen"], left_x, y, content_w, img_h)
+                y -= (h or 0) + 10
+                if block.get("caption"):
+                    c.setFillColor(TEXT)
+                    c.setFont("Helvetica-Bold", 11)
+                    c.drawCentredString(PW / 2, y - 6, block["caption"])
+                    y -= 11 * 2.0
+                lx = left_x
+                for label, hexcolor in (block.get("leyenda") or []):
+                    c.setFillColor(HexColor(hexcolor))
+                    c.circle(lx + 4, y - 3.5, 4, fill=1, stroke=0)
+                    c.setFillColor(TEXT)
+                    c.setFont("Helvetica", 9)
+                    c.drawString(lx + 12, y - 7, label)
+                    lx += 12 + c.stringWidth(label, "Helvetica", 9) + 20
+                y -= 26
+
             _BLOCK_RENDERERS = {
                 "summary": _draw_summary_block,
                 "table": _draw_table_block,
@@ -10446,6 +10873,8 @@ async def export_reports_pdf(
                 "tabla_resumen_matriz": _draw_tabla_resumen_matriz_block,
                 "seguridad_indicadores": _draw_seguridad_indicadores_block,
                 "estudios_avances": _draw_estudios_avances_block,
+                "fotos_comparativa": _draw_fotos_comparativa_block,
+                "imagen": _draw_imagen_block,
             }
 
             for _mod_key, _mod_data in modulos_data.items():
@@ -12882,7 +13311,7 @@ async def _gather_modulos_export_data(
     activos = modulos.get(categoria, {})
     out: dict = {
         "forestal": None, "seguridad": None, "riesgos": None, "estudios": None, "ambiental": None,
-        "tabla_resumen": None,
+        "tabla_resumen": None, "fotos_lidar": None, "tapial": None,
     }
     date_q = {"created_at": {"$gte": start_dt, "$lte": end_dt}}
     # Riesgos y Estudios son matrices mutables (el % de avance se actualiza
@@ -13054,6 +13483,9 @@ async def _gather_modulos_export_data(
         celda_map = {(c["actividad_id"], c["columna_id"]): c for c in celdas}
         filas = []
         for act in actividades:
+            if act.get("es_seccion"):
+                filas.append({"actividad": act["nombre"], "seccion": True, "valores": [], "total": None})
+                continue
             valores = []
             for col in columnas:
                 c = celda_map.get((act["id"], col["id"]))
@@ -13067,13 +13499,69 @@ async def _gather_modulos_export_data(
         has_data = any(v["valor"] is not None or v["no_aplica"] for f in filas for v in f["valores"])
         if columnas and filas and has_data:
             out["tabla_resumen"] = {
-                "titulo": "TABLA RESUMEN",
+                "titulo": "TABLA DE AVANCE ACUMULADO",
                 "blocks": [{
                     "type": "tabla_resumen_matriz",
                     "columnas": [{"tipo": col["tipo"], "label": col["label"]} for col in columnas],
                     "filas": filas,
                 }],
             }
+
+    if activos.get("fotos_lidar"):
+        # Estado vigente (como tabla_resumen): NO se filtra por período — lo
+        # que importa es la foto original y la actual de cada frente hoy.
+        registros = await db.fotos_lidar.find({"project_id": pid}).sort(
+            [("orden", 1), ("created_at", 1)]
+        ).to_list(length=200)
+        items = []
+        for r in registros:
+            if not (r.get("foto_original") or r.get("foto_actual")):
+                continue
+            items.append({
+                "titulo": r.get("titulo") or "",
+                "original": r.get("foto_original"),
+                "actual": r.get("foto_actual"),
+                "fecha_original": r.get("foto_original_fecha"),
+                "fecha_actual": r.get("foto_actual_fecha"),
+            })
+        if items:
+            out["fotos_lidar"] = {
+                "titulo": "FOTOS LIDAR",
+                "blocks": [{"type": "fotos_comparativa", "items": items}],
+            }
+
+    if activos.get("tapial"):
+        # Igual que arriba: estado vigente de cada plano de Tapial. Un plano
+        # sin ningún tramo dibujado no se imprime.
+        planos = await db.planos_avance.find({"project_id": pid, "categoria": "tapial"}).sort(
+            "created_at", 1
+        ).to_list(length=50)
+        bloques_tapial = []
+        for pl in planos:
+            if not any(m.get("tipo") == "tramo" for m in (pl.get("markers") or [])):
+                continue
+            png = await asyncio.to_thread(_bake_plano_snapshot, pl)
+            jpg = await asyncio.to_thread(_png_bytes_to_jpeg_dataurl, png)
+            av = _plano_tapial_avance(pl)
+            partes = []
+            if av["pct_terminado"] is not None:
+                partes.append(f"Terminado: {av['pct_terminado']:.1f}% de la longitud")
+            if av["pct_en_proceso"]:
+                partes.append(f"En proceso: {av['pct_en_proceso']:.1f}%")
+            partes.append(f"{av['tramos']} tramo(s)")
+            bloques_tapial.append({
+                "type": "imagen",
+                "heading": pl.get("nombre") or "Tapial",
+                "imagen": jpg,
+                "caption": " · ".join(partes),
+                "leyenda": [
+                    ("Terminado", _PLANO_MARKER_ESTADO_COLOR["terminado"]),
+                    ("En proceso", _PLANO_MARKER_ESTADO_COLOR["en_proceso"]),
+                    ("Sin iniciar", _PLANO_MARKER_ESTADO_COLOR["sin_iniciar"]),
+                ],
+            })
+        if bloques_tapial:
+            out["tapial"] = {"titulo": "TAPIAL", "blocks": bloques_tapial}
 
     return out
 
@@ -13639,6 +14127,9 @@ async def export_reports_docx(
             rows = []
             for f in filas:
                 row = [f["actividad"]]
+                if f.get("seccion"):
+                    rows.append(row + [""] * (len(headers) - 1))
+                    continue
                 for v in f["valores"]:
                     if v["no_aplica"]:
                         row.append("N/A")
@@ -13652,8 +14143,55 @@ async def export_reports_docx(
                 rows.append(row)
             _mod_table(headers, rows)
 
+        def _mod_image_b64(b64_str, width_cm: float) -> bool:
+            try:
+                raw = base64.b64decode(_strip_b64_prefix(b64_str))
+                doc.add_picture(io.BytesIO(raw), width=Cm(width_cm))
+                return True
+            except Exception:
+                return False
+
+        def _mod_fotos_comparativa_block(block: dict):
+            for it in (block.get("items") or []):
+                if it.get("titulo"):
+                    _mod_heading(it["titulo"])
+                t = doc.add_table(rows=2, cols=2)
+                for col, (key, lbl, fkey) in enumerate((
+                    ("original", "ORIGINAL", "fecha_original"), ("actual", "ACTUAL", "fecha_actual"),
+                )):
+                    cp = t.rows[0].cells[col].paragraphs[0]
+                    cp.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    if it.get(key):
+                        try:
+                            cp.add_run().add_picture(
+                                io.BytesIO(base64.b64decode(_strip_b64_prefix(it[key]))), width=Cm(8.0),
+                            )
+                        except Exception:
+                            cp.add_run("Sin foto").italic = True
+                    else:
+                        cp.add_run("Sin foto").italic = True
+                    lp = t.rows[1].cells[col].paragraphs[0]
+                    lp.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    lr = lp.add_run(_fotos_lidar_etiqueta(lbl, it.get(fkey)))
+                    lr.bold = True
+                    lr.font.size = Pt(10)
+                doc.add_paragraph()
+
+        def _mod_imagen_block(block: dict):
+            if block.get("heading"):
+                _mod_heading(block["heading"])
+            _mod_image_b64(block["imagen"], 16.0)
+            if block.get("caption"):
+                p = doc.add_paragraph()
+                r = p.add_run(block["caption"])
+                r.bold = True
+                r.font.size = Pt(10)
+                r.font.color.rgb = TEXT_RGB
+
         _MOD_BLOCK_RENDERERS = {
             "summary": _mod_summary_block,
+            "fotos_comparativa": _mod_fotos_comparativa_block,
+            "imagen": _mod_imagen_block,
             "table": _mod_table_block,
             "list": _mod_list_block,
             "forestal_sheet": _mod_forestal_sheet_block,
@@ -14925,87 +15463,171 @@ async def export_reports_pptx(
                              size=9.5, bold=True, color=WF_TEXT_RGB, align=PP_ALIGN.CENTER)
                 state["y"] = cy + Cm(0.3)
 
-            def _tr_cell_visual(v: dict):
+            def _tr_label(v: dict) -> str:
                 if v["no_aplica"]:
-                    return (0xF1, 0xF5, 0xF9), "N/A", WF_MUTED_RGB
+                    return "No Aplica"
                 if v["valor"] is None:
-                    return WF_WHITE_RGB, "", WF_TEXT_RGB
+                    return ""
                 val = v["valor"]
-                label = f"{val:.0f}%" if float(val).is_integer() else f"{val:.2f}%"
-                if val <= 0:
-                    return MAROON_RGB, label, WF_WHITE_RGB
-                if val >= 100:
-                    return (0xA9, 0xD1, 0x8E), label, WF_TEXT_RGB
-                return (0xBD, 0xD7, 0xEE), label, WF_TEXT_RGB
+                return f"{val:.0f}%" if float(val).is_integer() else f"{val:.2f}%"
 
             def _draw_tabla_resumen_matriz_block(titulo_continua: str, block: dict) -> None:
+                """Tabla de avance acumulado — calcada de la diapositiva de
+                referencia del informe diario: fila de título, encabezado
+                ACTIVIDAD / EST 1 / E1-E2 … / Total, celdas sin color con
+                borde gris, columna Total en negritas y filas de sección
+                (ej. "INTER TRAMOS") a todo lo ancho."""
                 columnas = block.get("columnas") or []
                 filas = block.get("filas") or []
                 if not columnas or not filas:
                     _draw_empty("Sin datos capturados en la Tabla Resumen.")
                     return
-                act_w = Cm(4.2)
-                total_w = Cm(1.6)
-                min_col_w = Cm(1.35)
+                GRIS_BORDE = (0xA6, 0xA6, 0xA6)
+                GRIS_HEAD = (0xD9, 0xD9, 0xD9)
+                act_w = Cm(4.4)
+                total_w = Cm(1.8)
+                min_col_w = Cm(1.25)
                 avail = content_w - act_w - total_w
                 max_cols = max(1, int(avail / min_col_w))
                 chunks = [columnas[i:i + max_cols] for i in range(0, len(columnas), max_cols)]
-                header_h = Cm(0.85)
-                row_h = Cm(0.75)
+                title_h = Cm(0.7)
+                header_h = Cm(0.7)
+                row_h = Cm(0.56)
                 col_offset = 0
                 for chunk_idx, chunk in enumerate(chunks):
                     is_last = chunk_idx == len(chunks) - 1
                     col_w = int(avail / len(chunk))
-                    _ensure_space(titulo_continua, header_h + row_h * (len(filas) + 1))
-                    x = MARGIN_X
-                    y0 = state["y"]
-                    _wf_rect(state["slide"], x, y0, act_w, header_h, fill_rgb=(0xF1, 0xF5, 0xF9))
-                    add_text(state["slide"], x, y0, act_w, header_h, "Actividad",
-                             size=8, bold=True, color=WF_TEXT_RGB, align=PP_ALIGN.CENTER)
-                    cx = x + act_w
-                    for col in chunk:
-                        _wf_rect(state["slide"], cx, y0, col_w, header_h, fill_rgb=(0xF1, 0xF5, 0xF9))
-                        add_text(state["slide"], cx, y0, col_w, header_h, col["label"],
-                                 size=7.5, bold=True, color=WF_TEXT_RGB, align=PP_ALIGN.CENTER)
-                        cx += col_w
-                    if is_last:
-                        _wf_rect(state["slide"], cx, y0, total_w, header_h, fill_rgb=(0xF1, 0xF5, 0xF9))
-                        add_text(state["slide"], cx, y0, total_w, header_h, "Total",
-                                 size=8, bold=True, color=WF_TEXT_RGB, align=PP_ALIGN.CENTER)
-                    cy = y0 + header_h
+                    tbl_w = act_w + col_w * len(chunk) + (total_w if is_last else 0)
+
+                    def _head() -> None:
+                        _ensure_space(titulo_continua, title_h + header_h + row_h * 3)
+                        sl = state["slide"]
+                        y0 = state["y"]
+                        _wf_rect(sl, MARGIN_X, y0, tbl_w, title_h, fill_rgb=GRIS_HEAD,
+                                 line_rgb=GRIS_BORDE, line_pt=0.5)
+                        add_text(sl, MARGIN_X, y0, tbl_w, title_h, "TABLA DE AVANCE ACUMULADO",
+                                 size=10, bold=True, color=WF_TEXT_RGB, align=PP_ALIGN.CENTER)
+                        y1 = y0 + title_h
+                        _wf_rect(sl, MARGIN_X, y1, act_w, header_h, fill_rgb=GRIS_HEAD,
+                                 line_rgb=GRIS_BORDE, line_pt=0.5)
+                        add_text(sl, MARGIN_X, y1, act_w, header_h, "ACTIVIDAD",
+                                 size=9, bold=True, color=WF_TEXT_RGB, align=PP_ALIGN.CENTER)
+                        cx = MARGIN_X + act_w
+                        for col in chunk:
+                            _wf_rect(sl, cx, y1, col_w, header_h, fill_rgb=GRIS_HEAD,
+                                     line_rgb=GRIS_BORDE, line_pt=0.5)
+                            add_text(sl, cx, y1, col_w, header_h, col["label"],
+                                     size=8, bold=True, color=WF_TEXT_RGB, align=PP_ALIGN.CENTER)
+                            cx += col_w
+                        if is_last:
+                            _wf_rect(sl, cx, y1, total_w, header_h, fill_rgb=GRIS_HEAD,
+                                     line_rgb=GRIS_BORDE, line_pt=0.5)
+                            add_text(sl, cx, y1, total_w, header_h, "Total",
+                                     size=8, bold=True, color=WF_TEXT_RGB, align=PP_ALIGN.CENTER)
+                        state["y"] = y1 + header_h
+
+                    _head()
                     for f in filas:
-                        _wf_rect(state["slide"], x, cy, act_w, row_h, fill_rgb=WF_WHITE_RGB,
-                                 line_rgb=WF_BORDER_RGB, line_pt=0.4)
-                        add_text(state["slide"], x, cy, act_w, row_h, f["actividad"], size=7.5, bold=True, color=WF_TEXT_RGB)
-                        cx = x + act_w
-                        row_vals = f["valores"][col_offset:col_offset + len(chunk)]
-                        for v in row_vals:
-                            bg, label, txt_rgb = _tr_cell_visual(v)
-                            _wf_rect(state["slide"], cx, cy, col_w, row_h, fill_rgb=bg,
-                                     line_rgb=WF_BORDER_RGB, line_pt=0.4)
-                            add_text(state["slide"], cx, cy, col_w, row_h, label,
-                                     size=7.5, bold=True, color=txt_rgb, align=PP_ALIGN.CENTER)
+                        if state["y"] + row_h > bottom_y:
+                            state["slide"], state["y"] = _new_slide(titulo_continua)
+                            _head()
+                        sl = state["slide"]
+                        cy = state["y"]
+                        if f.get("seccion"):
+                            _wf_rect(sl, MARGIN_X, cy, tbl_w, row_h, fill_rgb=GRIS_HEAD,
+                                     line_rgb=GRIS_BORDE, line_pt=0.5)
+                            add_text(sl, MARGIN_X, cy, tbl_w, row_h, f["actividad"],
+                                     size=8, bold=True, color=WF_TEXT_RGB, align=PP_ALIGN.CENTER)
+                            state["y"] = cy + row_h
+                            continue
+                        _wf_rect(sl, MARGIN_X, cy, act_w, row_h, fill_rgb=WF_WHITE_RGB,
+                                 line_rgb=GRIS_BORDE, line_pt=0.5)
+                        add_text(sl, MARGIN_X, cy, act_w, row_h, f["actividad"],
+                                 size=7.5, bold=True, color=WF_TEXT_RGB)
+                        cx = MARGIN_X + act_w
+                        for v in f["valores"][col_offset:col_offset + len(chunk)]:
+                            _wf_rect(sl, cx, cy, col_w, row_h, fill_rgb=WF_WHITE_RGB,
+                                     line_rgb=GRIS_BORDE, line_pt=0.5)
+                            add_text(sl, cx, cy, col_w, row_h, _tr_label(v),
+                                     size=7.5, color=WF_TEXT_RGB, align=PP_ALIGN.CENTER)
                             cx += col_w
                         if is_last:
                             t = f.get("total")
-                            _wf_rect(state["slide"], cx, cy, total_w, row_h, fill_rgb=WF_WHITE_RGB,
-                                     line_rgb=WF_BORDER_RGB, line_pt=0.4)
-                            add_text(state["slide"], cx, cy, total_w, row_h, f"{t:.2f}%" if t is not None else "—",
-                                     size=7.5, color=WF_TEXT_RGB, align=PP_ALIGN.CENTER)
-                        cy += row_h
-                    state["y"] = cy + Cm(0.3)
+                            _wf_rect(sl, cx, cy, total_w, row_h, fill_rgb=WF_WHITE_RGB,
+                                     line_rgb=GRIS_BORDE, line_pt=0.5)
+                            add_text(sl, cx, cy, total_w, row_h, f"{t:.2f}%" if t is not None else "",
+                                     size=7.5, bold=True, color=WF_TEXT_RGB, align=PP_ALIGN.CENTER)
+                        state["y"] = cy + row_h
+                    state["y"] += Cm(0.5)
                     col_offset += len(chunk)
 
-                _ensure_space(titulo_continua, Cm(1.0))
-                legend = [
-                    ("Concluido", (0xA9, 0xD1, 0x8E)), ("En proceso", (0xBD, 0xD7, 0xEE)), ("Sin iniciar", MAROON_RGB),
-                ]
+            def _place_img(slide, b64_str, x, y, w, h) -> int:
+                """Coloca la imagen dentro de la caja (x, y, w, h) SIN
+                deformarla, centrada en horizontal; devuelve el y inferior
+                real (o `y` si no se pudo leer)."""
+                try:
+                    from PIL import Image as _PI
+                    raw = base64.b64decode(_strip_b64_prefix(b64_str))
+                    iw, ih = _PI.open(io.BytesIO(raw)).size
+                    sc = min(w / iw, h / ih)
+                    pw, ph = int(iw * sc), int(ih * sc)
+                    slide.shapes.add_picture(io.BytesIO(raw), int(x + (w - pw) / 2), int(y), width=pw, height=ph)
+                    return int(y + ph)
+                except Exception:
+                    return int(y)
+
+            def _draw_fotos_comparativa_block(titulo_continua: str, block: dict) -> None:
+                """Una diapositiva por registro: foto ORIGINAL a la izquierda,
+                foto ACTUAL a la derecha, cada una con su fecha de toma."""
+                gap = Cm(1.0)
+                col_w = int((content_w - gap) / 2)
+                for idx, it in enumerate(block.get("items") or []):
+                    if idx > 0 or state["y"] > top_y + Cm(2.6):
+                        state["slide"], state["y"] = _new_slide(titulo_continua)
+                    if it.get("titulo"):
+                        _draw_heading(titulo_continua, it["titulo"])
+                    y0 = state["y"]
+                    img_h = int(bottom_y - y0 - Cm(1.6))
+                    y_end = y0
+                    for col, (key, lbl, fkey) in enumerate((
+                        ("original", "ORIGINAL", "fecha_original"), ("actual", "ACTUAL", "fecha_actual"),
+                    )):
+                        x = MARGIN_X + col * (col_w + gap)
+                        if it.get(key):
+                            y_end = max(y_end, _place_img(state["slide"], it[key], x, y0, col_w, img_h))
+                        else:
+                            _wf_rect(state["slide"], x, y0, col_w, img_h, fill_rgb=(0xF1, 0xF5, 0xF9),
+                                     line_rgb=WF_BORDER_RGB, line_pt=0.75)
+                            add_text(state["slide"], x, y0, col_w, img_h, "Sin foto",
+                                     size=14, italic=True, color=WF_MUTED_RGB, align=PP_ALIGN.CENTER)
+                            y_end = max(y_end, y0 + img_h)
+                    for col, (lbl, fkey) in enumerate((("ORIGINAL", "fecha_original"), ("ACTUAL", "fecha_actual"))):
+                        x = MARGIN_X + col * (col_w + gap)
+                        add_text(state["slide"], x, y_end + Cm(0.15), col_w, Cm(0.9),
+                                 _fotos_lidar_etiqueta(lbl, it.get(fkey)),
+                                 size=13, bold=True, color=WF_TEXT_RGB, align=PP_ALIGN.CENTER)
+                    state["y"] = bottom_y
+
+            def _draw_imagen_block(titulo_continua: str, block: dict) -> None:
+                if state["y"] > top_y + Cm(2.6):
+                    state["slide"], state["y"] = _new_slide(titulo_continua)
+                if block.get("heading"):
+                    _draw_heading(titulo_continua, block["heading"])
+                img_h = int(bottom_y - state["y"] - Cm(2.0))
+                y_end = _place_img(state["slide"], block["imagen"], MARGIN_X, state["y"], content_w, img_h)
+                state["y"] = y_end + Cm(0.25)
+                if block.get("caption"):
+                    add_text(state["slide"], MARGIN_X, state["y"], content_w, Cm(0.8), block["caption"],
+                             size=12, bold=True, color=WF_TEXT_RGB, align=PP_ALIGN.CENTER)
+                    state["y"] += Cm(0.9)
                 lx = MARGIN_X
-                for label, rgb in legend:
+                for label, hexcolor in (block.get("leyenda") or []):
+                    rgb = tuple(int(hexcolor[i:i + 2], 16) for i in (1, 3, 5))
                     _wf_oval(state["slide"], lx, state["y"] + Cm(0.05), Cm(0.35), Cm(0.35), rgb)
-                    add_text(state["slide"], lx + Cm(0.5), state["y"], Cm(2.2), Cm(0.5), label, size=10, color=WF_TEXT_RGB)
-                    lx += Cm(2.9)
-                state["y"] += Cm(0.7)
+                    add_text(state["slide"], lx + Cm(0.5), state["y"], Cm(2.6), Cm(0.5), label,
+                             size=10, color=WF_TEXT_RGB)
+                    lx += Cm(3.2)
+                state["y"] += Cm(0.8)
 
             _BLOCK_RENDERERS = {
                 "summary": _draw_summary_block,
@@ -15016,6 +15638,8 @@ async def export_reports_pptx(
                 "seguridad_indicadores": _draw_seguridad_indicadores_block,
                 "estudios_avances": _draw_estudios_avances_block,
                 "tabla_resumen_matriz": _draw_tabla_resumen_matriz_block,
+                "fotos_comparativa": _draw_fotos_comparativa_block,
+                "imagen": _draw_imagen_block,
             }
 
             for _mod_key, _mod_data in modulos_data.items():
@@ -15312,6 +15936,118 @@ async def export_reports_pptx(
                         yy += row_h
 
                     idx = chunk_end
+
+        # ===== SLIDE DATOS DE CONTRATO =====================================
+        # Formato del informe diario de referencia: dos columnas (OBRA y
+        # SUPERVISIÓN), cada una con objeto, empresa, contrato, ubicación y
+        # una tabla Periodo / Monto / IVA / Monto con IVA / Anticipo. Todo
+        # sale de los datos del proyecto (`datos_contrato` + campos base
+        # como fallback); sin datos de supervisión, la obra ocupa todo el
+        # ancho.
+        def _emit_contrato_slide() -> None:
+            dc = _sanitize_datos_contrato(proj.get("datos_contrato"))
+            obra = dict(dc.get("obra") or {})
+            sup = dict(dc.get("supervision") or {})
+            obra.setdefault("objeto", (proj.get("objeto_contrato") or proj.get("name") or "").strip())
+            if not obra.get("empresa") and proj.get("constructora"):
+                obra["empresa"] = proj["constructora"]
+            if not obra.get("contrato") and proj.get("contract_number"):
+                obra["contrato"] = proj["contract_number"]
+            if not obra.get("inicio") and proj.get("start_date"):
+                obra["inicio"] = _fmt_iso_dmy(proj["start_date"])
+            if not obra.get("fin") and proj.get("end_date"):
+                obra["fin"] = _fmt_iso_dmy(proj["end_date"])
+            bloques = [("OBRA", obra)]
+            if sup:
+                bloques.append(("SUPERVISIÓN", sup))
+            if not any(v for _, d in bloques for v in d.values()):
+                return
+
+            _indice_mark("contrato", "Datos de contrato")
+            sl = _clone_membrete()
+            k = min(1.0, SW / Cm(33.9))
+            f_head = max(14.0, 18 * k)
+            f_body = max(9.0, 14 * k)
+            f_tbl = max(8.5, 12 * k)
+            margin = Cm(1.5)
+            gap = Cm(1.6)
+            col_w = int((SW - 2 * margin - gap * (len(bloques) - 1)) / len(bloques))
+            for bi, (etq, d) in enumerate(bloques):
+                x = margin + bi * (col_w + gap)
+                y = TOP_MARGIN
+                add_text(sl, x, y, col_w, Cm(1.0), "DATOS DE CONTRATO", size=f_head, bold=True,
+                         color=READABLE_BRAND_RGB)
+                y += Cm(1.3)
+                tb = sl.shapes.add_textbox(x, y, col_w, Cm(6.0))
+                tf = tb.text_frame
+                tf.word_wrap = True
+                lineas = []
+                if d.get("objeto"):
+                    lineas.append((etq + ":", f"\u201c{d['objeto']}\u201d."))
+                if d.get("empresa"):
+                    lineas.append(("EMPRESA:", d["empresa"].upper()))
+                if d.get("contrato"):
+                    lineas.append(("CONTRATO:", d["contrato"]))
+                if d.get("ubicacion"):
+                    lineas.append(("UBICACIÓN:", d["ubicacion"].upper()))
+                for li, (lbl, val) in enumerate(lineas):
+                    par = tf.paragraphs[0] if li == 0 else tf.add_paragraph()
+                    par.space_after = Pt(6)
+                    r1 = par.add_run()
+                    r1.text = lbl + " "
+                    r1.font.size = Pt(f_body)
+                    r1.font.bold = True
+                    r1.font.color.rgb = PRGBColor(*WF_TEXT_RGB)
+                    r2 = par.add_run()
+                    r2.text = val
+                    r2.font.size = Pt(f_body)
+                    r2.font.color.rgb = PRGBColor(*WF_TEXT_RGB)
+                # Tabla de montos — solo filas con dato.
+                filas = []
+                if d.get("inicio") or d.get("fin"):
+                    filas.append(("Periodo de ejecución", d.get("inicio") or "", d.get("fin") or "", False))
+                if d.get("monto"):
+                    filas.append(("Monto", d["monto"], "", True))
+                if d.get("iva"):
+                    filas.append(("IVA", d["iva"], "", True))
+                if d.get("monto_con_iva"):
+                    filas.append(("Monto con IVA", d["monto_con_iva"], "", True))
+                if d.get("anticipo"):
+                    filas.append((d.get("anticipo_label") or "Anticipo", d["anticipo"], "", True))
+                if filas:
+                    ty = y + Cm(6.6)
+                    row_h = Cm(0.95)
+                    lw = int(col_w * 0.42)
+                    vw = int((col_w - lw) / 2)
+                    _wf_rect(sl, x, ty, lw, row_h, fill_rgb=BRAND_RGB, line_rgb=BRAND_RGB, line_pt=0.5)
+                    _wf_rect(sl, x + lw, ty, vw, row_h, fill_rgb=BRAND_RGB, line_rgb=BRAND_RGB, line_pt=0.5)
+                    _wf_rect(sl, x + lw + vw, ty, vw, row_h, fill_rgb=BRAND_RGB, line_rgb=BRAND_RGB, line_pt=0.5)
+                    add_text(sl, x + lw, ty, vw, row_h, "Inicio", size=f_tbl, bold=True,
+                             color=HEADER_TEXT_RGB, align=PP_ALIGN.CENTER)
+                    add_text(sl, x + lw + vw, ty, vw, row_h, "Fin", size=f_tbl, bold=True,
+                             color=HEADER_TEXT_RGB, align=PP_ALIGN.CENTER)
+                    ty += row_h
+                    for lbl, v1, v2, unida in filas:
+                        _wf_rect(sl, x, ty, lw, row_h, fill_rgb=BRAND_RGB, line_rgb=BRAND_RGB, line_pt=0.5)
+                        add_text(sl, x, ty, lw, row_h, lbl, size=f_tbl, bold=True,
+                                 color=HEADER_TEXT_RGB, align=PP_ALIGN.CENTER)
+                        if unida:
+                            _wf_rect(sl, x + lw, ty, vw * 2, row_h, fill_rgb=WF_WHITE_RGB,
+                                     line_rgb=BRAND_RGB, line_pt=0.5)
+                            add_text(sl, x + lw, ty, vw * 2, row_h, v1, size=f_tbl,
+                                     color=WF_TEXT_RGB, align=PP_ALIGN.CENTER)
+                        else:
+                            _wf_rect(sl, x + lw, ty, vw, row_h, fill_rgb=WF_WHITE_RGB,
+                                     line_rgb=BRAND_RGB, line_pt=0.5)
+                            _wf_rect(sl, x + lw + vw, ty, vw, row_h, fill_rgb=WF_WHITE_RGB,
+                                     line_rgb=BRAND_RGB, line_pt=0.5)
+                            add_text(sl, x + lw, ty, vw, row_h, v1, size=f_tbl,
+                                     color=WF_TEXT_RGB, align=PP_ALIGN.CENTER)
+                            add_text(sl, x + lw + vw, ty, vw, row_h, v2, size=f_tbl,
+                                     color=WF_TEXT_RGB, align=PP_ALIGN.CENTER)
+                        ty += row_h
+
+        _emit_contrato_slide()
 
         # ===== SLIDES DATOS GENERALES (ex-Mapa: array de imágenes) =========
         # Cada imagen en `general_data_images` produce UNA slide dedicada
