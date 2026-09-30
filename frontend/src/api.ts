@@ -300,7 +300,7 @@ export interface TablaResumenData {
 
 // Captura manual de la sección "ESTADO DEL TIEMPO" del resumen impreso por
 // Subtramo (ver draw_subtramo_summary_page/`_slide` en server.py) — un doc
-// por (nodo Estación, día CDMX). Nombres de campo idénticos a los que ya
+// por (nodo Estación, día CDMX, hora CDMX) — se captura cada hora. Nombres de campo idénticos a los que ya
 // devuelve la consulta automática a Open-Meteo, para que el renderer no
 // distinga de dónde salió el dato.
 export interface WeatherLog {
@@ -309,6 +309,8 @@ export interface WeatherLog {
   node_id: string;
   node_name: string;
   fecha_cdmx: string;
+  // Hora CDMX ("00"-"23") de la captura; ausente en capturas anteriores al cambio a clima por hora.
+  hora_cdmx?: string;
   temperature_c: number | null;
   wind_kmh: number | null;
   precipitation_mm: number | null;

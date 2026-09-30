@@ -44,6 +44,10 @@ const CAMPOS: { campo: Campo; label: string; unidad: string; placeholder: string
   { campo: 'us_aqi', label: 'Calidad del aire', unidad: 'ICA', placeholder: 'Ej. 53.8' },
 ];
 
+function fmtVal(v: number | null | undefined, unidad: string): string {
+  return v != null ? `${v} ${unidad}` : '—';
+}
+
 function draftFromLog(log: WeatherLog | undefined): Draft {
   return {
     temperature_c: log?.temperature_c != null ? String(log.temperature_c) : '',
@@ -53,6 +57,19 @@ function draftFromLog(log: WeatherLog | undefined): Draft {
   };
 }
 
+// Hora actual en CDMX ("00"-"23"), la misma que usa el backend para la llave
+// de la captura; si Intl no soporta la zona, cae a la hora local del equipo.
+function horaCdmxActual(): string {
+  try {
+    const h = new Intl.DateTimeFormat('en-GB', {
+      hour: '2-digit', hour12: false, timeZone: 'America/Mexico_City',
+    }).format(new Date());
+    return h.slice(0, 2).padStart(2, '0');
+  } catch {
+    return String(new Date().getHours()).padStart(2, '0');
+  }
+}
+
 function parseNum(s: string): number | null {
   const t = (s || '').trim().replace(',', '.');
   if (!t) return null;
@@ -60,12 +77,18 @@ function parseNum(s: string): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+function logDeHora(list: WeatherLog[] | undefined, h: string): WeatherLog | undefined {
+  return (list || []).find((l) => l.hora_cdmx === h);
+}
+
 export default function EstadoTiempoScreen({ projectId }: { projectId: string }) {
   const insets = useSafeAreaInsets();
   const [loading, setLoading] = useState(true);
   const [project, setProject] = useState<Project | null>(null);
   const [allNodes, setAllNodes] = useState<LocationNode[]>([]);
-  const [logs, setLogs] = useState<Record<string, WeatherLog>>({});
+  // Todas las capturas de hoy por nodo (una por hora); la de la hora actual es la editable.
+  const [logs, setLogs] = useState<Record<string, WeatherLog[]>>({});
+  const [hora, setHora] = useState<string>(horaCdmxActual());
   const [drafts, setDrafts] = useState<Record<string, Draft>>({});
   const [busy, setBusy] = useState<Record<string, boolean>>({});
 
@@ -84,11 +107,13 @@ export default function EstadoTiempoScreen({ projectId }: { projectId: string })
       ]);
       setProject(proj);
       setAllNodes(nodes || []);
-      const byNode: Record<string, WeatherLog> = {};
-      (logsRes.logs || []).forEach((l) => { byNode[l.node_id] = l; });
+      const h = horaCdmxActual();
+      setHora(h);
+      const byNode: Record<string, WeatherLog[]> = {};
+      (logsRes.logs || []).forEach((l) => { (byNode[l.node_id] ||= []).push(l); });
       setLogs(byNode);
       const d: Record<string, Draft> = {};
-      (nodes || []).forEach((n) => { d[n.id] = draftFromLog(byNode[n.id]); });
+      (nodes || []).forEach((n) => { d[n.id] = draftFromLog(logDeHora(byNode[n.id], h)); });
       setDrafts(d);
     } catch (e: any) {
       Alert.alert('Error', e?.message || 'No se pudo cargar Estado del Tiempo');
@@ -107,12 +132,15 @@ export default function EstadoTiempoScreen({ projectId }: { projectId: string })
   function isDirty(nodeId: string): boolean {
     const d = drafts[nodeId];
     if (!d) return false;
-    const base = draftFromLog(logs[nodeId]);
+    const base = draftFromLog(logDeHora(logs[nodeId], hora));
     return CAMPOS.some(({ campo }) => (d[campo] || '') !== (base[campo] || ''));
   }
 
   async function save(nodeId: string) {
     if (busy[nodeId]) return;
+    // Si cambió la hora desde que se cargó la pantalla, refresca para no
+    // guardar bajo la hora equivocada.
+    if (horaCdmxActual() !== hora) { load(); return; }
     const d = drafts[nodeId];
     if (!d) return;
     setBusy((b) => ({ ...b, [nodeId]: true }));
@@ -124,9 +152,13 @@ export default function EstadoTiempoScreen({ projectId }: { projectId: string })
         precipitation_mm: parseNum(d.precipitation_mm),
         us_aqi: parseNum(d.us_aqi),
       });
-      setLogs((prev) => ({ ...prev, [nodeId]: updated }));
+      setLogs((prev) => ({
+        ...prev,
+        [nodeId]: [...(prev[nodeId] || []).filter((l) => l.id !== updated.id), updated]
+          .sort((a, b) => (a.hora_cdmx || '').localeCompare(b.hora_cdmx || '')),
+      }));
     } catch (e: any) {
-      Alert.alert('Error', e?.message || 'No se pudo guardar el clima de hoy');
+      Alert.alert('Error', e?.message || 'No se pudo guardar el clima de esta hora');
     } finally {
       setBusy((b) => ({ ...b, [nodeId]: false }));
     }
@@ -157,8 +189,9 @@ export default function EstadoTiempoScreen({ projectId }: { projectId: string })
 
       <ScrollView contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + spacing.xl }]}>
         <Text style={styles.help}>
-          Captura manual de temperatura, viento, precipitación y calidad del aire de hoy por estación —
-          reemplaza a la consulta automática en el resumen exportado (PDF/PPT) mientras exista una captura del día.
+          Captura manual de temperatura, viento, precipitación y calidad del aire por estación, cada hora
+          (hora actual: {hora}:00). En el resumen exportado (PDF/PPT) se usa la captura más reciente del día
+          y reemplaza a la consulta automática.
         </Text>
 
         {estaciones.length === 0 ? (
@@ -169,13 +202,17 @@ export default function EstadoTiempoScreen({ projectId }: { projectId: string })
             const breadcrumb = path.slice(0, -1).join(' › ') || 'Raíz';
             const d = drafts[n.id] || draftFromLog(undefined);
             const dirty = isDirty(n.id);
-            const log = logs[n.id];
+            const nodeLogs = logs[n.id] || [];
+            const log = logDeHora(nodeLogs, hora);
+            const previas = nodeLogs.filter((l) => l.hora_cdmx !== hora);
             return (
               <View key={n.id} style={styles.card}>
                 <Text style={styles.tramoLabel} numberOfLines={1}>{breadcrumb}</Text>
                 <Text style={styles.subtramoName} numberOfLines={2}>{n.name}</Text>
                 <Text style={styles.updatedTxt}>
-                  {log ? `Última captura: ${log.captured_by_name}` : 'Sin captura hoy — se usará el clima automático'}
+                  {log
+                    ? `Captura de las ${hora}:00 — ${log.captured_by_name}`
+                    : `Sin captura de las ${hora}:00${nodeLogs.length ? '' : ' — se usará el clima automático'}`}
                 </Text>
 
                 <View style={styles.camposRow}>
@@ -196,6 +233,16 @@ export default function EstadoTiempoScreen({ projectId }: { projectId: string })
                     </View>
                   ))}
                 </View>
+
+                {previas.length > 0 ? (
+                  <View style={styles.historial}>
+                    {previas.map((l) => (
+                      <Text key={l.id} style={styles.historialTxt}>
+                        {l.hora_cdmx ? `${l.hora_cdmx}:00` : 'Sin hora'} · {fmtVal(l.temperature_c, '°C')} · {fmtVal(l.wind_kmh, 'km/hr')} · {fmtVal(l.precipitation_mm, 'mm')} · {fmtVal(l.us_aqi, 'ICA')}
+                      </Text>
+                    ))}
+                  </View>
+                ) : null}
 
                 {dirty ? (
                   <Pressable onPress={() => save(n.id)} disabled={!!busy[n.id]} style={styles.saveBtn}>
@@ -238,6 +285,8 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: colors.border, borderRadius: radius.sm,
     paddingHorizontal: 10, paddingVertical: 8, fontSize: 14, color: colors.text, backgroundColor: colors.bg,
   },
+  historial: { gap: 2, marginTop: 2 },
+  historialTxt: { fontSize: 11, color: colors.textMuted },
   saveBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
     alignSelf: 'flex-end', paddingHorizontal: 14, paddingVertical: 8,
