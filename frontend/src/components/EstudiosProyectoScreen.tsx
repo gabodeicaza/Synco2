@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import { t } from '@/src/i18n';
 import {
   api, EstudioActividad, EstudioBitacoraEntry, EstudioDisciplina, ESTUDIO_DISCIPLINA_LABEL, Project,
 } from '@/src/api';
@@ -55,7 +56,7 @@ export default function EstudiosProyectoScreen({ projectId }: { projectId: strin
       setActividades(acts);
       setBitacora(bit);
     } catch (e: any) {
-      Alert.alert('Error', e?.message || 'No se pudo cargar el módulo Estudios y Proyecto Ejecutivo.');
+      Alert.alert(t('estudiosProyecto.error'), e?.message || t('estudiosProyecto.noSePudoCargarEl'));
     } finally {
       setLoading(false);
     }
@@ -73,7 +74,7 @@ export default function EstudiosProyectoScreen({ projectId }: { projectId: strin
   async function onSaveActividad() {
     const nombre = actNombreDraft.trim();
     if (!nombre) {
-      Alert.alert('Falta información', 'Indica el nombre de la actividad.');
+      Alert.alert(t('estudiosProyecto.faltaInformacion'), t('estudiosProyecto.indicaElNombreDeLa'));
       return;
     }
     try {
@@ -83,7 +84,7 @@ export default function EstudiosProyectoScreen({ projectId }: { projectId: strin
       setActNombreDraft('');
       await load();
     } catch (e: any) {
-      Alert.alert('No se pudo guardar', e?.message || 'Inténtalo nuevamente.');
+      Alert.alert(t('estudiosProyecto.noSePudoGuardar'), e?.message || t('estudiosProyecto.intentaloNuevamente'));
     } finally {
       setSavingAct(false);
     }
@@ -98,7 +99,7 @@ export default function EstudiosProyectoScreen({ projectId }: { projectId: strin
     if (!editingAct) return;
     const pct = parseInt(avanceDraft, 10);
     if (Number.isNaN(pct) || pct < 0 || pct > 100) {
-      Alert.alert('Valor inválido', 'El avance debe ser un número entre 0 y 100.');
+      Alert.alert(t('estudiosProyecto.valorInvalido'), t('estudiosProyecto.elAvanceDebeSerUn'));
       return;
     }
     try {
@@ -107,7 +108,7 @@ export default function EstudiosProyectoScreen({ projectId }: { projectId: strin
       setEditingAct(null);
       await load();
     } catch (e: any) {
-      Alert.alert('No se pudo guardar', e?.message || 'Inténtalo nuevamente.');
+      Alert.alert(t('estudiosProyecto.noSePudoGuardar'), e?.message || t('estudiosProyecto.intentaloNuevamente'));
     } finally {
       setSavingAvance(false);
     }
@@ -116,7 +117,7 @@ export default function EstudiosProyectoScreen({ projectId }: { projectId: strin
   async function onSaveBitacora() {
     const texto = bitTextoDraft.trim();
     if (!texto) {
-      Alert.alert('Falta información', 'Escribe la nota de bitácora.');
+      Alert.alert(t('estudiosProyecto.faltaInformacion'), t('estudiosProyecto.escribeLaNotaDeBitacora'));
       return;
     }
     try {
@@ -126,7 +127,7 @@ export default function EstudiosProyectoScreen({ projectId }: { projectId: strin
       setBitTextoDraft('');
       await load();
     } catch (e: any) {
-      Alert.alert('No se pudo guardar', e?.message || 'Inténtalo nuevamente.');
+      Alert.alert(t('estudiosProyecto.noSePudoGuardar'), e?.message || t('estudiosProyecto.intentaloNuevamente'));
     } finally {
       setSavingBit(false);
     }
@@ -142,15 +143,15 @@ export default function EstudiosProyectoScreen({ projectId }: { projectId: strin
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <ScreenHeader title="Estudios y Proyecto Ejecutivo" backgroundColor={headerColor} />
+      <ScreenHeader title={t('estudiosProyecto.estudiosYProyectoEjecutivo')} backgroundColor={headerColor} />
 
       <ScrollView contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + spacing.xl }]}>
         {/* === Panel superior: avance por actividad === */}
         <View style={styles.sectionHeaderRow}>
-          <Text style={styles.sectionTitle}>Avance de actividades</Text>
+          <Text style={styles.sectionTitle}>{t('estudiosProyecto.avanceDeActividades')}</Text>
           <Pressable accessibilityRole="button" onPress={() => setActFormOpen(true)} style={styles.addBtn}>
             <Ionicons name="add" size={16} color={colors.primary} />
-            <Text style={styles.addBtnTxt}>Agregar</Text>
+            <Text style={styles.addBtnTxt}>{t('estudiosProyecto.agregar')}</Text>
           </Pressable>
         </View>
 
@@ -158,7 +159,7 @@ export default function EstudiosProyectoScreen({ projectId }: { projectId: strin
           {actividades.length === 0 ? (
             <View style={styles.empty}>
               <Ionicons name="bar-chart-outline" size={22} color={colors.textMuted} />
-              <Text style={styles.emptyTxt}>Aún no hay actividades registradas.</Text>
+              <Text style={styles.emptyTxt}>{t('estudiosProyecto.aunNoHayActividadesRegistradas')}</Text>
             </View>
           ) : (
             actividades.map((a, idx) => (
@@ -178,7 +179,7 @@ export default function EstudiosProyectoScreen({ projectId }: { projectId: strin
         </View>
 
         {/* === Panel inferior: bitácora por disciplina === */}
-        <Text style={[styles.sectionTitle, { marginTop: spacing.lg }]}>Bitácora por disciplina</Text>
+        <Text style={[styles.sectionTitle, { marginTop: spacing.lg }]}>{t('estudiosProyecto.bitacoraPorDisciplina')}</Text>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: spacing.sm }}>
           <View style={styles.tabsRow}>
             {DISCIPLINAS.map((d) => (
@@ -196,17 +197,17 @@ export default function EstudiosProyectoScreen({ projectId }: { projectId: strin
         </ScrollView>
 
         <View style={styles.sectionHeaderRow}>
-          <Text style={styles.bitacoraCount}>{bitacoraFiltrada.length} nota{bitacoraFiltrada.length === 1 ? '' : 's'}</Text>
+          <Text style={styles.bitacoraCount}>{bitacoraFiltrada.length === 1 ? t('estudiosProyecto.notaUna') : t('estudiosProyecto.notas', { n: bitacoraFiltrada.length })}</Text>
           <Pressable accessibilityRole="button" onPress={() => setBitFormOpen(true)} style={styles.addBtn}>
             <Ionicons name="add" size={16} color={colors.primary} />
-            <Text style={styles.addBtnTxt}>Agregar nota</Text>
+            <Text style={styles.addBtnTxt}>{t('estudiosProyecto.agregarNota')}</Text>
           </Pressable>
         </View>
 
         <View style={styles.card}>
           {bitacoraFiltrada.length === 0 ? (
             <View style={styles.empty}>
-              <Text style={styles.emptyTxt}>Sin notas de {ESTUDIO_DISCIPLINA_LABEL[disciplinaTab]}.</Text>
+              <Text style={styles.emptyTxt}>{t('estudiosProyecto.sinNotasDe')} {ESTUDIO_DISCIPLINA_LABEL[disciplinaTab]}.</Text>
             </View>
           ) : (
             bitacoraFiltrada.map((b, idx) => (
@@ -226,18 +227,18 @@ export default function EstudiosProyectoScreen({ projectId }: { projectId: strin
       <Modal visible={actFormOpen} transparent animationType="slide" onRequestClose={() => setActFormOpen(false)}>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>Nueva actividad</Text>
-            <Text style={styles.fieldLabel}>Nombre</Text>
+            <Text style={styles.modalTitle}>{t('estudiosProyecto.nuevaActividad')}</Text>
+            <Text style={styles.fieldLabel}>{t('estudiosProyecto.nombre')}</Text>
             <TextInput
               value={actNombreDraft}
               onChangeText={setActNombreDraft}
-              placeholder="Ej. SIGG, Trabajo de campo, Anexos..."
+              placeholder={t('estudiosProyecto.ejSiggTrabajoDeCampo')}
               placeholderTextColor={colors.textMuted}
               style={styles.input}
             />
             <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
-              <Button label="Cancelar" variant="secondary" onPress={() => setActFormOpen(false)} style={{ flex: 1 }} />
-              <Button label="Guardar" loading={savingAct} onPress={onSaveActividad} style={{ flex: 1 }} />
+              <Button label={t('estudiosProyecto.cancelar')} variant="secondary" onPress={() => setActFormOpen(false)} style={{ flex: 1 }} />
+              <Button label={t('estudiosProyecto.guardar')} loading={savingAct} onPress={onSaveActividad} style={{ flex: 1 }} />
             </View>
           </View>
         </KeyboardAvoidingView>
@@ -248,7 +249,7 @@ export default function EstudiosProyectoScreen({ projectId }: { projectId: strin
         <View style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
             <Text style={styles.modalTitle}>{editingAct?.nombre}</Text>
-            <Text style={styles.fieldLabel}>% de avance</Text>
+            <Text style={styles.fieldLabel}>{t('estudiosProyecto.deAvance')}</Text>
             <TextInput
               value={avanceDraft}
               onChangeText={setAvanceDraft}
@@ -256,8 +257,8 @@ export default function EstudiosProyectoScreen({ projectId }: { projectId: strin
               style={styles.input}
             />
             <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
-              <Button label="Cancelar" variant="secondary" onPress={() => setEditingAct(null)} style={{ flex: 1 }} />
-              <Button label="Guardar" loading={savingAvance} onPress={onSaveAvance} style={{ flex: 1 }} />
+              <Button label={t('estudiosProyecto.cancelar')} variant="secondary" onPress={() => setEditingAct(null)} style={{ flex: 1 }} />
+              <Button label={t('estudiosProyecto.guardar')} loading={savingAvance} onPress={onSaveAvance} style={{ flex: 1 }} />
             </View>
           </View>
         </View>
@@ -267,19 +268,19 @@ export default function EstudiosProyectoScreen({ projectId }: { projectId: strin
       <Modal visible={bitFormOpen} transparent animationType="slide" onRequestClose={() => setBitFormOpen(false)}>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>Nueva nota · {ESTUDIO_DISCIPLINA_LABEL[disciplinaTab]}</Text>
-            <Text style={styles.fieldLabel}>Nota de bitácora</Text>
+            <Text style={styles.modalTitle}>{t('estudiosProyecto.nuevaNota')} {ESTUDIO_DISCIPLINA_LABEL[disciplinaTab]}</Text>
+            <Text style={styles.fieldLabel}>{t('estudiosProyecto.notaDeBitacora')}</Text>
             <TextInput
               value={bitTextoDraft}
               onChangeText={setBitTextoDraft}
-              placeholder="Describe la actividad realizada, hallazgo u observación..."
+              placeholder={t('estudiosProyecto.describeLaActividadRealizadaHallazgo')}
               placeholderTextColor={colors.textMuted}
               style={[styles.input, { minHeight: 90, textAlignVertical: 'top' }]}
               multiline
             />
             <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
-              <Button label="Cancelar" variant="secondary" onPress={() => setBitFormOpen(false)} style={{ flex: 1 }} />
-              <Button label="Guardar" loading={savingBit} onPress={onSaveBitacora} style={{ flex: 1 }} />
+              <Button label={t('estudiosProyecto.cancelar')} variant="secondary" onPress={() => setBitFormOpen(false)} style={{ flex: 1 }} />
+              <Button label={t('estudiosProyecto.guardar')} loading={savingBit} onPress={onSaveBitacora} style={{ flex: 1 }} />
             </View>
           </View>
         </KeyboardAvoidingView>

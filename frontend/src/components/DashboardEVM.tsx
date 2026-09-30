@@ -129,7 +129,7 @@ function CurvaSChart({ curva }: { curva: CurvaS }) {
   if (!curva.meses.length) {
     return (
       <View style={styles.curvaVacia}>
-        <Text style={styles.curvaVaciaTxt}>Todavía no hay conceptos con fechas de inicio/fin capturadas para trazar la Curva S.</Text>
+        <Text style={styles.curvaVaciaTxt}>{t('tableroEvm.todaviaNoHayConceptosCon')}</Text>
       </View>
     );
   }
@@ -138,7 +138,7 @@ function CurvaSChart({ curva }: { curva: CurvaS }) {
 
   return (
     <View>
-      <Text style={styles.ejeYTitulo}>Importe acumulado (MXN)</Text>
+      <Text style={styles.ejeYTitulo}>{t('tableroEvm.importeAcumuladoMxn')}</Text>
       <ScrollView horizontal showsHorizontalScrollIndicator>
         <Svg width={width} height={height}>
           {yTicks.map((v, i) => {
@@ -177,11 +177,11 @@ function CurvaSChart({ curva }: { curva: CurvaS }) {
           ))}
         </Svg>
       </ScrollView>
-      <Text style={styles.ejeXTitulo}>Mes</Text>
+      <Text style={styles.ejeXTitulo}>{t('tableroEvm.mes')}</Text>
       <View style={styles.leyendaRow}>
-        <LeyendaItem color={colors.textMuted} label="Planeado" dash="8,5" valor={curva.planeado_acumulado[curva.planeado_acumulado.length - 1]} />
-        <LeyendaItem color={colors.primary} label="Ganado" valor={curva.ganado_acumulado[curva.ganado_acumulado.length - 1]} />
-        <LeyendaItem color={colors.error} label="Real" dash="1,4" valor={curva.real_acumulado[curva.real_acumulado.length - 1]} />
+        <LeyendaItem color={colors.textMuted} label={t('tableroEvm.planeado')} dash="8,5" valor={curva.planeado_acumulado[curva.planeado_acumulado.length - 1]} />
+        <LeyendaItem color={colors.primary} label={t('tableroEvm.ganado')} valor={curva.ganado_acumulado[curva.ganado_acumulado.length - 1]} />
+        <LeyendaItem color={colors.error} label={t('tableroEvm.real')} dash="1,4" valor={curva.real_acumulado[curva.real_acumulado.length - 1]} />
       </View>
     </View>
   );
@@ -227,7 +227,7 @@ function ActividadCard({ item, tab }: { item: ActividadEvm; tab: TabActividades 
       <Text style={styles.actividadClave}>{item.clave} · {item.descripcion}</Text>
       <Text style={styles.actividadFechas}>{item.fecha_inicio} → {item.fecha_fin}</Text>
       <View style={styles.actividadFooterRow}>
-        <Text style={styles.actividadEjecutado}>{item.ejecutado} de {item.meta_cantidad} {item.unidad}</Text>
+        <Text style={styles.actividadEjecutado}>{t('tableroEvm.ejecutadoDe', { ejecutado: item.ejecutado, meta: item.meta_cantidad, unidad: item.unidad })}</Text>
         <Text style={[styles.actividadPct, { color: acento }]}>{item.porcentaje_avance}%</Text>
       </View>
     </View>
@@ -275,7 +275,7 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
       setActividades(actividadesResp);
       setGastos(gastosResp);
     } catch (e: any) {
-      setError(e?.message || 'No se pudo cargar el dashboard EVM');
+      setError(e?.message || t('tableroEvm.noSePudoCargarEl'));
     }
   }, [projectId]);
 
@@ -295,7 +295,7 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
       const { blob, filename } = await api.downloadGastosRealesPlantilla();
       await downloadBlob(blob, filename, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     } catch (e: any) {
-      Alert.alert('No se pudo descargar la plantilla', e?.message || 'Inténtalo nuevamente.');
+      Alert.alert(t('tableroEvm.noSePudoDescargarLa'), e?.message || t('tableroEvm.intentaloNuevamente'));
     } finally {
       setDescargandoPlantilla(false);
     }
@@ -332,7 +332,7 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
       );
       if (res.creados > 0) await cargar(rango, curva);
     } catch (e: any) {
-      Alert.alert('No se pudo importar el archivo', e?.message || 'Inténtalo nuevamente.');
+      Alert.alert(t('tableroEvm.noSePudoImportarEl'), e?.message || t('tableroEvm.intentaloNuevamente'));
     } finally {
       setImportandoGastos(false);
     }
@@ -345,7 +345,7 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
       const { blob, filename } = await api.downloadAvanceImportPlantilla(projectId);
       await downloadBlob(blob, filename, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     } catch (e: any) {
-      Alert.alert('No se pudo descargar la plantilla', e?.message || 'Inténtalo nuevamente.');
+      Alert.alert(t('tableroEvm.noSePudoDescargarLa'), e?.message || t('tableroEvm.intentaloNuevamente'));
     } finally {
       setDescargandoPlantillaAvance(false);
     }
@@ -382,7 +382,7 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
       );
       if (res.creados > 0) await cargar(rango, curva);
     } catch (e: any) {
-      Alert.alert('No se pudo importar el archivo', e?.message || 'Inténtalo nuevamente.');
+      Alert.alert(t('tableroEvm.noSePudoImportarEl'), e?.message || t('tableroEvm.intentaloNuevamente'));
     } finally {
       setImportandoAvances(false);
     }
@@ -390,16 +390,16 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
 
   async function onDeleteGasto(g: GastoReal) {
     const ok = await confirm(
-      'Borrar gasto real',
-      `¿Borrar "${g.concepto_texto}" (${formatMoney(g.monto)}, ${g.fecha})? Esto afecta el AC y el CPI ya calculados.`,
-      { confirmText: 'Borrar', destructive: true },
+      t('tableroEvm.borrarGastoReal'),
+      t('tableroEvm.borrarGastoPregunta', { concepto: g.concepto_texto, monto: formatMoney(g.monto), fecha: g.fecha }),
+      { confirmText: t('tableroEvm.borrarBoton'), destructive: true },
     );
     if (!ok) return;
     try {
       await api.deleteGastoReal(g.id);
       await cargar(rango, curva);
     } catch (e: any) {
-      Alert.alert('No se pudo borrar', e?.message || 'Inténtalo nuevamente.');
+      Alert.alert(t('tableroEvm.noSePudoBorrar'), e?.message || t('tableroEvm.intentaloNuevamente'));
     }
   }
 
@@ -454,7 +454,7 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <ScreenHeader title="Control de Obra — Valor Ganado" backgroundColor={colors.primary} />
+      <ScreenHeader title={t('tableroEvm.controlDeObraValorGanado')} backgroundColor={colors.primary} />
 
       <ScrollView
         contentContainerStyle={{ padding: spacing.md, paddingBottom: 40 }}
@@ -468,7 +468,7 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
               style={[styles.rangoChip, rango === r && { backgroundColor: colors.primary, borderColor: colors.primary }]}
             >
               <Text style={[styles.rangoChipTxt, rango === r && { color: '#fff' }]}>
-                {r === 'mes_actual' ? 'Mes actual' : r === 'ultimos_3_meses' ? 'Últimos 3 meses' : 'Proyecto completo'}
+                {r === 'mes_actual' ? t('tableroEvm.mesActual') : r === 'ultimos_3_meses' ? 'Últimos 3 meses' : 'Proyecto completo'}
               </Text>
             </Pressable>
           ))}
@@ -485,13 +485,13 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
           <>
             <View style={styles.kpiRow}>
               <KpiCard
-                label="SPI (tiempo)"
+                label={t('tableroEvm.spiTiempo')}
                 valor={analisis.spi ?? '—'}
                 sub={analisis.spi === null ? 'Sin planeado en el periodo' : undefined}
                 color={colorIndice(analisis.spi)}
               />
               <KpiCard
-                label="CPI (costo)"
+                label={t('tableroEvm.cpiCosto')}
                 valor={analisis.cpi ?? '—'}
                 sub={analisis.cpi === null ? 'Sin gasto real capturado' : undefined}
                 color={colorIndice(analisis.cpi)}
@@ -500,7 +500,7 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
                 const cv = variacionCostoUI(analisis.variacion_costo);
                 return (
                   <KpiCard
-                    label="Variación de costo"
+                    label={t('tableroEvm.variacionDeCosto')}
                     valor={cv.valor}
                     sub={cv.nota}
                     color={cv.tono === 'positivo' ? colors.success : cv.tono === 'negativo' ? colors.error : colors.textMuted}
@@ -510,8 +510,8 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
             </View>
 
             <View style={styles.pvEvAcRow}>
-              <Text style={styles.pvEvAcTxt}>PV {formatMoney(analisis.pv)}</Text>
-              <Text style={styles.pvEvAcTxt}>AC {formatMoney(analisis.ac)}</Text>
+              <Text style={styles.pvEvAcTxt}>{t('tableroEvm.pv')} {formatMoney(analisis.pv)}</Text>
+              <Text style={styles.pvEvAcTxt}>{t('tableroEvm.ac')} {formatMoney(analisis.ac)}</Text>
             </View>
             {/* A-02: dos cifras de valor ganado, claramente etiquetadas. El excedente
                 no cuenta en la contractual pero sí en la total. */}
@@ -556,10 +556,10 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
         ) : null}
 
         <View style={styles.seccionHeaderRow}>
-          <Text style={styles.seccionTitulo}>Gasto real (AC)</Text>
+          <Text style={styles.seccionTitulo}>{t('tableroEvm.gastoRealAc')}</Text>
           <Pressable accessibilityRole="button" onPress={openGastoForm} style={styles.addBtn}>
             <Ionicons name="add" size={16} color={colors.primary} />
-            <Text style={styles.addBtnTxt}>Registrar gasto</Text>
+            <Text style={styles.addBtnTxt}>{t('tableroEvm.registrarGasto')}</Text>
           </Pressable>
         </View>
         <View style={styles.importRow}>
@@ -569,21 +569,19 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
             ) : (
               <Ionicons name="document-attach-outline" size={16} color={colors.primary} />
             )}
-            <Text style={styles.addBtnTxt}>Importar desde Excel</Text>
+            <Text style={styles.addBtnTxt}>{t('tableroEvm.importarDesdeExcel')}</Text>
           </Pressable>
           <Pressable accessibilityRole="button" onPress={onDescargarPlantillaGastos} disabled={descargandoPlantilla} style={styles.importBtn}>
             <Ionicons name="download-outline" size={16} color={colors.textMuted} />
-            <Text style={styles.plantillaTxt}>Descargar plantilla</Text>
+            <Text style={styles.plantillaTxt}>{t('tableroEvm.descargarPlantilla')}</Text>
           </Pressable>
         </View>
         <Text style={styles.gastoAvisoTxt}>
-          Esto registra dinero gastado (AC), no avance físico. El % de avance de cada concepto solo cambia si capturas o
-          importas un Registro de Avance — ver "Control de actividades" más abajo.
+          {t('tableroEvm.estoRegistraDineroGastadoAc')}
         </Text>
         {gastos.length === 0 ? (
           <Text style={styles.sinExcepciones}>
-            Aún no has capturado ningún gasto real — por eso CPI y Variación de costo no reflejan nada. Registra uno,
-            aunque sea de un mes anterior que no se haya capturado a tiempo, o importa un Excel con miles de una vez.
+            {t('tableroEvm.aunNoHasCapturadoNingun')}
           </Text>
         ) : (
           <FlatList
@@ -612,13 +610,11 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
           />
         )}
 
-        <Text style={styles.seccionTitulo}>Curva S</Text>
+        <Text style={styles.seccionTitulo}>{t('tableroEvm.curvaS')}</Text>
         {curva ? <CurvaSChart curva={curva} /> : null}
         {soloHayGastoSinAvance ? (
           <Text style={styles.gastoAvisoTxt}>
-            La línea "Ganado" está en $0 porque todavía no se ha capturado ningún Registro de Avance en este proyecto —
-            no significa que no haya avance real, solo que aún no se ha registrado en el sistema (distinto del gasto,
-            que sí se ha capturado).
+            {t('tableroEvm.laLineaGanadoEstaEn')}
           </Text>
         ) : null}
 
@@ -637,7 +633,7 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
           />
         )}
 
-        <Text style={styles.seccionTitulo}>Control de actividades</Text>
+        <Text style={styles.seccionTitulo}>{t('tableroEvm.controlDeActividades')}</Text>
         <View style={styles.importRow}>
           <Pressable accessibilityRole="button" onPress={onImportarAvancesExcel} disabled={importandoAvances} style={styles.importBtn}>
             {importandoAvances ? (
@@ -645,16 +641,15 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
             ) : (
               <Ionicons name="document-attach-outline" size={16} color={colors.primary} />
             )}
-            <Text style={styles.addBtnTxt}>Importar avance desde Excel</Text>
+            <Text style={styles.addBtnTxt}>{t('tableroEvm.importarAvanceDesdeExcel')}</Text>
           </Pressable>
           <Pressable accessibilityRole="button" onPress={onDescargarPlantillaAvance} disabled={descargandoPlantillaAvance} style={styles.importBtn}>
             <Ionicons name="download-outline" size={16} color={colors.textMuted} />
-            <Text style={styles.plantillaTxt}>Descargar plantilla</Text>
+            <Text style={styles.plantillaTxt}>{t('tableroEvm.descargarPlantilla')}</Text>
           </Pressable>
         </View>
         <Text style={styles.gastoAvisoTxt}>
-          Esto SÍ mueve el % de avance de cada concepto (EV) — es la importación complementaria a "Gasto real (AC)" de
-          arriba, para cargar de golpe avance físico histórico en vez de capturarlo día por día desde la app.
+          {t('tableroEvm.estoSiMueveElDe')}
         </Text>
         <View style={styles.tabsRow}>
           {TABS_ACTIVIDADES.map((t) => {
@@ -674,7 +669,7 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
         </View>
         {!actividades || actividades[tabActividades].length === 0 ? (
           <Text style={styles.sinExcepciones}>
-            {tabActividades === 'pendientes' ? 'Ninguna actividad atrasada.'
+            {tabActividades === 'pendientes' ? t('tableroEvm.ningunaActividadAtrasada')
               : tabActividades === 'actuales' ? 'Ninguna actividad dentro de su ventana hoy.'
               : 'Ninguna actividad programada todavía sin empezar.'}
           </Text>

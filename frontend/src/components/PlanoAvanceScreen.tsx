@@ -27,7 +27,7 @@ import { useAuth } from '@/src/auth-context';
 import { ROLE_COORD, ROLE_SUB } from '@/src/utils/roles';
 import { PlanoMarkerOverlay, PLANO_MARKER_ESTADO_COLOR, PLANO_MARKER_ESTADO_LABEL } from '@/src/components/PlanoMarkerOverlay';
 import { requestMediaLibraryPermission } from '@/src/utils/permissions';
-import { a11y } from '@/src/i18n';
+import { t, a11y  } from '@/src/i18n';
 import { useModalUnico } from '@/src/hooks/useModalUnico';
 import { ESTILO_CAPA_CONTROLES, ESTILO_CAPA_MODAL, ESTILO_CAPA_PLANO } from '@/src/utils/capasPlano';
 
@@ -92,7 +92,7 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
       setProject(proj);
       setPlanos(items);
     } catch (e: any) {
-      Alert.alert('Error', e?.message || 'No se pudo cargar Plano de Avance.');
+      Alert.alert(t('planoAvance.error'), e?.message || t('planoAvance.noSePudoCargarPlano'));
     } finally {
       setLoading(false);
     }
@@ -106,7 +106,7 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
       const doc = await api.getPlanoAvance(projectId, planoId);
       setDetail(doc);
     } catch (e: any) {
-      Alert.alert('Error', e?.message || 'No se pudo cargar el plano.');
+      Alert.alert(t('planoAvance.error'), e?.message || t('planoAvance.noSePudoCargarEl'));
       setSelectedId(null);
     } finally {
       setDetailLoading(false);
@@ -159,7 +159,7 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
     if (!detail || !labelPrompt) return;
     const label = labelDraft.trim();
     if (!label) {
-      Alert.alert('Falta información', 'Escribe una etiqueta para el marcador.');
+      Alert.alert(t('planoAvance.faltaInformacion'), t('planoAvance.escribeUnaEtiquetaParaEl'));
       return;
     }
     try {
@@ -175,7 +175,7 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
       setAddMode('none');
       await loadDetail(detail.id);
     } catch (e: any) {
-      Alert.alert('No se pudo guardar', e?.message || 'Inténtalo nuevamente.');
+      Alert.alert(t('planoAvance.noSePudoGuardar'), e?.message || t('planoAvance.intentaloNuevamente'));
     } finally {
       setSavingMarker(false);
     }
@@ -213,7 +213,7 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
       await Promise.all(patches);
       await loadDetail(detail.id);
     } catch (e: any) {
-      Alert.alert('No se pudo mover', e?.message || 'Inténtalo nuevamente.');
+      Alert.alert(t('planoAvance.noSePudoMover'), e?.message || t('planoAvance.intentaloNuevamente'));
       await loadDetail(detail.id); // recarga por si algún PATCH sí aplicó antes de fallar
     } finally {
       setMovingMarkerId(null);
@@ -227,7 +227,7 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
       cerrarMarcador();
       await loadDetail(detail.id);
     } catch (e: any) {
-      Alert.alert('No se pudo actualizar', e?.message || 'Inténtalo nuevamente.');
+      Alert.alert(t('planoAvance.noSePudoActualizar'), e?.message || t('planoAvance.intentaloNuevamente'));
     }
   }
 
@@ -240,45 +240,45 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
       cerrarMarcador();
       await loadDetail(detail.id);
     } catch (e: any) {
-      Alert.alert('No se pudo renombrar', e?.message || 'Inténtalo nuevamente.');
+      Alert.alert(t('planoAvance.noSePudoRenombrar'), e?.message || t('planoAvance.intentaloNuevamente'));
     }
   }
 
   async function onDeleteMarker() {
     if (!detail || !markerModal) return;
-    const ok = await confirm('Eliminar marcador', `¿Eliminar "${markerModal.label}"?`, { confirmText: 'Eliminar', destructive: true });
+    const ok = await confirm(t('planoAvance.eliminarMarcador'), t('planoAvance.eliminarMarcadorPregunta', { nombre: markerModal.label }), { confirmText: t('planoAvance.eliminarBoton'), destructive: true });
     if (!ok) return;
     try {
       await api.deletePlanoMarker(projectId, detail.id, markerModal.id);
       cerrarMarcador();
       await loadDetail(detail.id);
     } catch (e: any) {
-      Alert.alert('No se pudo eliminar', e?.message || 'Inténtalo nuevamente.');
+      Alert.alert(t('planoAvance.noSePudoEliminar'), e?.message || t('planoAvance.intentaloNuevamente'));
     }
   }
 
   async function onDeletePlano(p: PlanoAvance) {
-    const ok = await confirm('Eliminar plano', `¿Eliminar "${p.nombre}" y todos sus marcadores?`, { confirmText: 'Eliminar', destructive: true });
+    const ok = await confirm(t('planoAvance.eliminarPlano'), t('planoAvance.eliminarPlanoPregunta', { nombre: p.nombre }), { confirmText: t('planoAvance.eliminarBoton'), destructive: true });
     if (!ok) return;
     try {
       await api.deletePlanoAvance(projectId, p.id);
       await loadList();
     } catch (e: any) {
-      Alert.alert('No se pudo eliminar', e?.message || 'Inténtalo nuevamente.');
+      Alert.alert(t('planoAvance.noSePudoEliminar'), e?.message || t('planoAvance.intentaloNuevamente'));
     }
   }
 
   async function pickAndCreatePlano() {
     const nombre = nombreDraft.trim();
     if (!nombre) {
-      Alert.alert('Falta información', 'Dale un nombre al plano (ej. "Cimentación").');
+      Alert.alert(t('planoAvance.faltaInformacion'), t('planoAvance.daleUnNombreAlPlano'));
       return;
     }
     try {
       if (Platform.OS !== 'web') {
         const perm = await requestMediaLibraryPermission();
         if (!perm.granted) {
-          Alert.alert('Sin permiso', 'No hay permiso para acceder a la galería.');
+          Alert.alert(t('planoAvance.sinPermiso'), t('planoAvance.noHayPermisoParaAcceder'));
           return;
         }
       }
@@ -317,7 +317,7 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
       await loadList();
       setSelectedId(created.id);
     } catch (e: any) {
-      Alert.alert('No se pudo crear el plano', e?.message || 'Inténtalo nuevamente.');
+      Alert.alert(t('planoAvance.noSePudoCrearEl'), e?.message || t('planoAvance.intentaloNuevamente'));
     } finally {
       setUploading(false);
     }
@@ -335,7 +335,7 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
   if (selectedId) {
     return (
       <View style={{ flex: 1, backgroundColor: colors.bg }}>
-        <ScreenHeader title={detail?.nombre || 'Plano'} backgroundColor={headerColor} onBack={() => setSelectedId(null)} />
+        <ScreenHeader title={detail?.nombre || t('planoAvance.plano')} backgroundColor={headerColor} onBack={() => setSelectedId(null)} />
 
         {detailLoading || !detail || !imgSize ? (
           <View style={styles.center}><ActivityIndicator color={colors.primary} /></View>
@@ -348,39 +348,39 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
                   style={[styles.toolBtn, addMode === 'punto' && styles.toolBtnActive]}
                 >
                   <Ionicons name="ellipse-outline" size={16} color={addMode === 'punto' ? '#fff' : colors.primary} />
-                  <Text style={[styles.toolBtnTxt, addMode === 'punto' && { color: '#fff' }]}>Punto</Text>
+                  <Text style={[styles.toolBtnTxt, addMode === 'punto' && { color: '#fff' }]}>{t('planoAvance.punto')}</Text>
                 </Pressable>
                 <Pressable accessibilityRole="button"
                   onPress={() => { setAddMode(addMode === 'dado' ? 'none' : 'dado'); setSegmentDraft(null); setMoverActivo(false); }}
                   style={[styles.toolBtn, addMode === 'dado' && styles.toolBtnActive]}
                 >
                   <Ionicons name="square-outline" size={16} color={addMode === 'dado' ? '#fff' : colors.primary} />
-                  <Text style={[styles.toolBtnTxt, addMode === 'dado' && { color: '#fff' }]}>Dado</Text>
+                  <Text style={[styles.toolBtnTxt, addMode === 'dado' && { color: '#fff' }]}>{t('planoAvance.dado')}</Text>
                 </Pressable>
                 <Pressable accessibilityRole="button"
                   onPress={() => { setAddMode(addMode === 'segmento' ? 'none' : 'segmento'); setSegmentDraft(null); setMoverActivo(false); }}
                   style={[styles.toolBtn, addMode === 'segmento' && styles.toolBtnActive]}
                 >
                   <Ionicons name="remove-outline" size={16} color={addMode === 'segmento' ? '#fff' : colors.primary} />
-                  <Text style={[styles.toolBtnTxt, addMode === 'segmento' && { color: '#fff' }]}>Trabe</Text>
+                  <Text style={[styles.toolBtnTxt, addMode === 'segmento' && { color: '#fff' }]}>{t('planoAvance.trabe')}</Text>
                 </Pressable>
                 <Pressable accessibilityRole="button"
                   onPress={() => { setMoverActivo((v) => !v); setAddMode('none'); setSegmentDraft(null); }}
                   style={[styles.toolBtn, moverActivo && styles.toolBtnActive]}
                 >
                   <Ionicons name="move-outline" size={16} color={moverActivo ? '#fff' : colors.primary} />
-                  <Text style={[styles.toolBtnTxt, moverActivo && { color: '#fff' }]}>Mover</Text>
+                  <Text style={[styles.toolBtnTxt, moverActivo && { color: '#fff' }]}>{t('planoAvance.mover')}</Text>
                 </Pressable>
               </View>
             ) : null}
             {addMode === 'segmento' ? (
-              <Text style={styles.hintTxt}>{segmentDraft ? 'Toca el segundo punto de la trabe.' : 'Toca el primer punto de la trabe.'}</Text>
+              <Text style={styles.hintTxt}>{segmentDraft ? t('planoAvance.tocaElSegundoPuntoDe') : t('planoAvance.tocaElPrimerPuntoDe')}</Text>
             ) : addMode === 'punto' ? (
-              <Text style={styles.hintTxt}>Toca sobre el plano para colocar el punto.</Text>
+              <Text style={styles.hintTxt}>{t('planoAvance.tocaSobreElPlanoPara')}</Text>
             ) : addMode === 'dado' ? (
-              <Text style={styles.hintTxt}>Toca sobre el plano para colocar el dado.</Text>
+              <Text style={styles.hintTxt}>{t('planoAvance.tocaSobreElPlanoPara2')}</Text>
             ) : moverActivo ? (
-              <Text style={styles.hintTxt}>Arrastra un punto o dado para reubicarlo — las trabes conectadas lo siguen.</Text>
+              <Text style={styles.hintTxt}>{t('planoAvance.arrastraUnPuntoODado')}</Text>
             ) : null}
 
             <View style={[styles.planoFrame, { width: imgSize.width, height: imgSize.height }]}>
@@ -412,7 +412,7 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
 
             {detail.markers.length === 0 ? (
               <Text style={styles.emptyTxt}>
-                {canEditEstructura ? 'Sin marcadores todavía — usa "Punto/Dado/Trabe" arriba.' : 'Este plano aún no tiene marcadores.'}
+                {canEditEstructura ? t('planoAvance.sinMarcadoresTodaviaUsaPunto') : t('planoAvance.estePlanoAunNoTiene')}
               </Text>
             ) : null}
           </ScrollView>
@@ -423,20 +423,20 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
           <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
             <View style={styles.modalCard}>
               <Text style={styles.modalTitle}>
-                {labelPrompt?.tipo === 'segmento' ? 'Nueva trabe' : labelPrompt?.tipo === 'dado' ? 'Nuevo dado' : 'Nuevo punto'}
+                {labelPrompt?.tipo === 'segmento' ? t('planoAvance.nuevaTrabe') : labelPrompt?.tipo === 'dado' ? 'Nuevo dado' : 'Nuevo punto'}
               </Text>
-              <Text style={styles.fieldLabel}>Etiqueta</Text>
+              <Text style={styles.fieldLabel}>{t('planoAvance.etiqueta')}</Text>
               <TextInput
                 value={labelDraft}
                 onChangeText={setLabelDraft}
-                placeholder="Ej. PL-120, D-1, Estación 3..."
+                placeholder={t('planoAvance.ejPl120D1')}
                 placeholderTextColor={colors.textMuted}
                 style={styles.input}
                 autoFocus
               />
               <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
-                <Button label="Cancelar" variant="secondary" onPress={cerrarEtiqueta} style={{ flex: 1 }} />
-                <Button label="Guardar" loading={savingMarker} onPress={onSaveNewMarker} style={{ flex: 1 }} />
+                <Button label={t('planoAvance.cancelar')} variant="secondary" onPress={cerrarEtiqueta} style={{ flex: 1 }} />
+                <Button label={t('planoAvance.guardar')} loading={savingMarker} onPress={onSaveNewMarker} style={{ flex: 1 }} />
               </View>
             </View>
           </KeyboardAvoidingView>
@@ -447,7 +447,7 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
           <Pressable style={styles.modalBackdropCenter} onPress={cerrarMarcador}>
             <Pressable accessibilityRole="button" style={styles.modalCard} onPress={() => {}}>
               <Text style={styles.modalTitle}>{markerModal?.label}</Text>
-              <Text style={styles.fieldLabel}>Estado</Text>
+              <Text style={styles.fieldLabel}>{t('planoAvance.estado')}</Text>
               <View style={{ gap: spacing.xs }}>
                 {(['sin_iniciar', 'en_proceso', 'terminado'] as PlanoMarkerEstatus[]).map((k) => (
                   <Pressable accessibilityRole="button"
@@ -468,10 +468,10 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
               {canEditEstructura ? (
                 <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
                   <Button
-                    label="Renombrar" variant="secondary" style={{ flex: 1 }}
+                    label={t('planoAvance.renombrar')} variant="secondary" style={{ flex: 1 }}
                     onPress={abrirRenombrar}
                   />
-                  <Button label="Eliminar" variant="danger" style={{ flex: 1 }} onPress={onDeleteMarker} />
+                  <Button label={t('planoAvance.eliminar')} variant="danger" style={{ flex: 1 }} onPress={onDeleteMarker} />
                 </View>
               ) : null}
             </Pressable>
@@ -482,11 +482,11 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
         <Modal visible={renamePrompt} transparent animationType="slide" onRequestClose={cancelarRenombrar}>
           <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
             <View style={styles.modalCard}>
-              <Text style={styles.modalTitle}>Renombrar marcador</Text>
+              <Text style={styles.modalTitle}>{t('planoAvance.renombrarMarcador')}</Text>
               <TextInput value={renameDraft} onChangeText={setRenameDraft} style={styles.input} autoFocus />
               <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
-                <Button label="Cancelar" variant="secondary" onPress={cancelarRenombrar} style={{ flex: 1 }} />
-                <Button label="Guardar" onPress={onRenameMarker} style={{ flex: 1 }} />
+                <Button label={t('planoAvance.cancelar')} variant="secondary" onPress={cancelarRenombrar} style={{ flex: 1 }} />
+                <Button label={t('planoAvance.guardar')} onPress={onRenameMarker} style={{ flex: 1 }} />
               </View>
             </View>
           </KeyboardAvoidingView>
@@ -498,15 +498,15 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
   // ======================= Vista de LISTA de planos =======================
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <ScreenHeader title="Plano de Avance" backgroundColor={headerColor} />
+      <ScreenHeader title={t('planoAvance.planoDeAvance')} backgroundColor={headerColor} />
 
       <ScrollView contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + spacing.xl }]}>
         <View style={styles.sectionHeaderRow}>
-          <Text style={styles.sectionTitle}>Planos</Text>
+          <Text style={styles.sectionTitle}>{t('planoAvance.planos')}</Text>
           {canEditEstructura ? (
             <Pressable accessibilityRole="button" onPress={() => modal.abrir('nuevoPlano')} style={styles.addBtn}>
               <Ionicons name="add" size={16} color={colors.primary} />
-              <Text style={styles.addBtnTxt}>Nuevo plano</Text>
+              <Text style={styles.addBtnTxt}>{t('planoAvance.nuevoPlano')}</Text>
             </Pressable>
           ) : null}
         </View>
@@ -515,7 +515,7 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
           {planos.length === 0 ? (
             <View style={styles.empty}>
               <Ionicons name="map-outline" size={22} color={colors.textMuted} />
-              <Text style={styles.emptyTxt}>Aún no hay planos registrados.</Text>
+              <Text style={styles.emptyTxt}>{t('planoAvance.aunNoHayPlanosRegistrados')}</Text>
             </View>
           ) : (
             planos.map((p, idx) => (
@@ -524,7 +524,7 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
                   <Ionicons name="map-outline" size={20} color={colors.primary} />
                   <View style={{ flex: 1 }}>
                     <Text style={styles.planoNombre} numberOfLines={1}>{p.nombre}</Text>
-                    <Text style={styles.planoSub}>{p.markers?.length || 0} marcador{(p.markers?.length || 0) === 1 ? '' : 'es'}</Text>
+                    <Text style={styles.planoSub}>{(p.markers?.length || 0) === 1 ? t('planoAvance.marcadorUno') : t('planoAvance.marcadores', { n: p.markers?.length || 0 })}</Text>
                   </View>
                   <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
                 </Pressable>
@@ -543,18 +543,18 @@ export default function PlanoAvanceScreen({ projectId }: { projectId: string }) 
       <Modal visible={newPlanoOpen} transparent animationType="slide" onRequestClose={() => modal.cerrar('nuevoPlano')}>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>Nuevo plano</Text>
-            <Text style={styles.fieldLabel}>Nombre</Text>
+            <Text style={styles.modalTitle}>{t('planoAvance.nuevoPlano')}</Text>
+            <Text style={styles.fieldLabel}>{t('planoAvance.nombre')}</Text>
             <TextInput
               value={nombreDraft}
               onChangeText={setNombreDraft}
-              placeholder="Ej. Cimentación, Estructura..."
+              placeholder={t('planoAvance.ejCimentacionEstructura')}
               placeholderTextColor={colors.textMuted}
               style={styles.input}
             />
             <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
-              <Button label="Cancelar" variant="secondary" onPress={() => modal.cerrar('nuevoPlano')} style={{ flex: 1 }} />
-              <Button label="Elegir imagen" loading={uploading} onPress={pickAndCreatePlano} style={{ flex: 1 }} />
+              <Button label={t('planoAvance.cancelar')} variant="secondary" onPress={() => modal.cerrar('nuevoPlano')} style={{ flex: 1 }} />
+              <Button label={t('planoAvance.elegirImagen')} loading={uploading} onPress={pickAndCreatePlano} style={{ flex: 1 }} />
             </View>
           </View>
         </KeyboardAvoidingView>

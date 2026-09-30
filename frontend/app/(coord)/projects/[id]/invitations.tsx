@@ -96,7 +96,7 @@ export default function InvitationsScreen() {
       let group = map.get(key);
       if (!group) {
         const areaName = inv.area_id
-          ? areas.find((a) => a.id === inv.area_id)?.name || 'Área desconocida'
+          ? areas.find((a) => a.id === inv.area_id)?.name || t('invitacionesLista.areaDesconocida')
           : NO_AREA_LABEL;
         group = { areaName, items: [] };
         map.set(key, group);
@@ -187,7 +187,7 @@ export default function InvitationsScreen() {
   }
 
   async function revoke(inv: Invitation) {
-    const ok = await confirm('Revocar', '¿Revocar invitación?', { destructive: true });
+    const ok = await confirm(t('invitacionesLista.revocar'), t('invitacionesLista.revocarInvitacion'), { destructive: true });
     if (!ok) return;
     setErrorAccion(null);
     try { await api.revokeInvitation(inv.id); await load(); }
@@ -254,8 +254,8 @@ export default function InvitationsScreen() {
   async function resetPassword() {
     if (!editTarget?.accepted_user_id || resettingPassword) return;
     const ok = await confirm(
-      'Restablecer contraseña',
-      `Se generará una contraseña temporal nueva para ${editTarget.name}. La contraseña anterior dejará de funcionar. ¿Continuar?`,
+      t('invitacionesLista.restablecerContrasena'),
+      t('invitacionesLista.restablecerPregunta', { nombre: editTarget.name }),
     );
     if (!ok) return;
     editForm.limpiarTodo();
@@ -273,9 +273,9 @@ export default function InvitationsScreen() {
   async function removeMember(inv: Invitation) {
     if (!inv.accepted_user_id) return;
     const ok = await confirm(
-      'Sacar del proyecto',
-      `¿Quitar a ${inv.name} del proyecto? Perderá acceso a la app de inmediato.`,
-      { confirmText: 'Sacar', destructive: true },
+      t('invitacionesLista.sacarDelProyecto'),
+      t('invitacionesLista.sacarPregunta', { nombre: inv.name }),
+      { confirmText: t('invitacionesLista.sacarBoton'), destructive: true },
     );
     if (!ok) return;
     setErrorAccion(null);
@@ -421,24 +421,24 @@ export default function InvitationsScreen() {
         <View style={styles.modalBackdrop}>
           <View style={styles.successCard}>
             <Ionicons name="checkmark-circle" size={60} color={colors.success} />
-            <Text style={styles.successTitle}>¡Listo!</Text>
+            <Text style={styles.successTitle}>{t('invitacionesLista.listo')}</Text>
             <View style={styles.tokenBox}>
-              <Text style={styles.tokenLabel}>TOKEN</Text>
+              <Text style={styles.tokenLabel}>{t('invitacionesLista.token')}</Text>
               <Text selectable style={styles.tokenValueText}>{createdInvite?.token}</Text>
             </View>
 
             <View style={styles.successActions}>
               <Pressable accessibilityRole="button" style={styles.actionPill} onPress={() => createdInvite && copyToken(createdInvite.token)}>
                 <Ionicons name="copy-outline" size={16} color={colors.primary} />
-                <Text style={styles.actionPillText}>Token</Text>
+                <Text style={styles.actionPillText}>{t('invitacionesLista.token2')}</Text>
               </Pressable>
               <Pressable accessibilityRole="button" style={styles.actionPill} onPress={() => createdInvite && shareInvite(createdInvite)}>
                 <Ionicons name="share-social-outline" size={16} color={colors.primary} />
-                <Text style={styles.actionPillText}>Compartir</Text>
+                <Text style={styles.actionPillText}>{t('invitacionesLista.compartir')}</Text>
               </Pressable>
             </View>
 
-            <Button label="Cerrar" fullWidth onPress={() => setCreatedInvite(null)} />
+            <Button label={t('invitacionesLista.cerrar')} fullWidth onPress={() => setCreatedInvite(null)} />
           </View>
         </View>
       </Modal>
@@ -478,11 +478,11 @@ export default function InvitationsScreen() {
 
               {(editTarget?.role === ROLE_ESP || editTarget?.role === ROLE_SUB) && (
                 <>
-                  <Text style={styles.label}>Área {editTarget?.role === ROLE_SUB ? '(opcional)' : ''}</Text>
+                  <Text style={styles.label}>{t('invitacionesLista.area')} {editTarget?.role === ROLE_SUB ? t('invitacionesLista.opcional') : ''}</Text>
                   <View style={styles.areaRow}>
                     {editTarget?.role === ROLE_SUB && (
                       <Pressable accessibilityRole="button" onPress={() => { editForm.limpiar('area'); setEditAreaId(null); }} style={[styles.areaPill, !editAreaId && styles.areaPillOn]}>
-                        <Text>Obra Civil</Text>
+                        <Text>{t('invitacionesLista.obraCivil')}</Text>
                       </Pressable>
                     )}
                     {areas.map((a) => (
@@ -504,7 +504,7 @@ export default function InvitationsScreen() {
                 {resettingPassword ? <ActivityIndicator color={colors.error} /> : (
                   <>
                     <Ionicons name="key-outline" size={16} color={colors.error} />
-                    <Text style={styles.resetPasswordBtnTxt}>Restablecer contraseña</Text>
+                    <Text style={styles.resetPasswordBtnTxt}>{t('invitacionesLista.restablecerContrasena')}</Text>
                   </>
                 )}
               </Pressable>
@@ -517,12 +517,12 @@ export default function InvitationsScreen() {
         <View style={styles.modalBackdrop}>
           <View style={styles.successCard}>
             <Ionicons name="key" size={48} color={colors.primary} />
-            <Text style={styles.successTitle}>Contraseña nueva</Text>
+            <Text style={styles.successTitle}>{t('invitacionesLista.contrasenaNueva')}</Text>
             <Text style={{ color: colors.textMuted, fontSize: 12, textAlign: 'center', marginBottom: 10 }}>
-              Compártesela a {editTarget?.name}. Solo se muestra una vez.
+              {t('invitacionesLista.comparteselaMsg', { nombre: editTarget?.name ?? '' })}
             </Text>
             <View style={styles.tokenBox}>
-              <Text style={styles.tokenLabel}>CONTRASEÑA TEMPORAL</Text>
+              <Text style={styles.tokenLabel}>{t('invitacionesLista.contrasenaTemporal')}</Text>
               <Text selectable style={styles.tokenValueText}>{tempPassword}</Text>
             </View>
             <Pressable accessibilityRole="button"
@@ -530,10 +530,10 @@ export default function InvitationsScreen() {
               onPress={async () => { if (tempPassword) { await Clipboard.setStringAsync(tempPassword); notify('Copiado', 'Contraseña copiada'); } }}
             >
               <Ionicons name="copy-outline" size={16} color={colors.primary} />
-              <Text style={styles.actionPillText}>Copiar</Text>
+              <Text style={styles.actionPillText}>{t('invitacionesLista.copiar')}</Text>
             </Pressable>
             <View style={{ marginTop: 16, width: '100%' }}>
-              <Button label="Cerrar" fullWidth onPress={() => setTempPassword(null)} />
+              <Button label={t('invitacionesLista.cerrar')} fullWidth onPress={() => setTempPassword(null)} />
             </View>
           </View>
         </View>
@@ -552,12 +552,12 @@ export default function InvitationsScreen() {
 function StepRole({ role, onChange }: any) {
   return (
     <View style={{ gap: 12 }}>
-      <Text style={styles.stepTitle}>Selecciona el rol</Text>
+      <Text style={styles.stepTitle}>{t('invitacionesLista.seleccionaElRol')}</Text>
       {[ROLE_ESP, ROLE_SUB, ROLE_JEFE].map((r) => (
         <Pressable accessibilityRole="button" key={r} onPress={() => onChange(r)} style={[styles.roleCard, role === r && styles.roleCardOn]}>
           <View>
             <Text style={styles.roleTitle}>{roleLabel(r)}</Text>
-            <Text style={styles.roleDesc}>{r === ROLE_ESP ? 'Captura mediciones' : r === ROLE_SUB ? 'Supervisa tramos' : 'Solo lectura global'}</Text>
+            <Text style={styles.roleDesc}>{r === ROLE_ESP ? t('invitacionesLista.capturaMediciones') : r === ROLE_SUB ? 'Supervisa tramos' : 'Solo lectura global'}</Text>
           </View>
           {role === r && <Ionicons name="checkmark-circle" size={22} color={colors.primary} />}
         </Pressable>
@@ -569,7 +569,7 @@ function StepRole({ role, onChange }: any) {
 function StepIdentity({ name, setName, email, setEmail, role, puesto, setPuesto, noControl, setNoControl, errores, onSubmit }: any) {
   return (
     <View style={{ gap: 4 }}>
-      <Text style={styles.stepTitle}>Datos básicos</Text>
+      <Text style={styles.stepTitle}>{t('invitacionesLista.datosBasicos')}</Text>
       <FormField
         label={t('invitaciones.nombreCompleto')} value={name} onChangeText={setName}
         error={errores?.name} obligatorio returnKeyType="next"
@@ -589,11 +589,11 @@ function StepIdentity({ name, setName, email, setEmail, role, puesto, setPuesto,
 function StepArea({ role, areas, areaId, onArea, error }: any) {
   return (
     <View style={{ gap: 15 }}>
-      <Text style={styles.stepTitle}>Área / Disciplina</Text>
-      <Text style={styles.label}>{role === ROLE_ESP ? 'Selecciona el área' : 'Selecciona el área (opcional)'}</Text>
+      <Text style={styles.stepTitle}>{t('invitacionesLista.areaDisciplina')}</Text>
+      <Text style={styles.label}>{role === ROLE_ESP ? t('invitacionesLista.seleccionaElArea') : t('invitacionesLista.seleccionaElAreaOpcional')}</Text>
       <View style={styles.areaRow}>
         {role === ROLE_SUB && (
-          <Pressable accessibilityRole="button" onPress={() => onArea(null)} style={[styles.areaPill, !areaId && styles.areaPillOn]}><Text>Obra Civil</Text></Pressable>
+          <Pressable accessibilityRole="button" onPress={() => onArea(null)} style={[styles.areaPill, !areaId && styles.areaPillOn]}><Text>{t('invitacionesLista.obraCivil')}</Text></Pressable>
         )}
         {areas.map((a: any) => (
           <Pressable accessibilityRole="button" key={a.id} onPress={() => onArea(a.id)} style={[styles.areaPill, areaId === a.id && styles.areaPillOn]}><Text>{a.name}</Text></Pressable>
@@ -605,16 +605,16 @@ function StepArea({ role, areas, areaId, onArea, error }: any) {
 }
 
 function StepReview({ name, email, role, areas, areaId }: any) {
-  const areaName = areas.find((a: any) => a.id === areaId)?.name || 'Obra Civil';
+  const areaName = areas.find((a: any) => a.id === areaId)?.name || t('invitacionesLista.obraCivil');
 
   return (
     <View style={{ gap: 12 }}>
-      <Text style={styles.stepTitle}>Resumen</Text>
+      <Text style={styles.stepTitle}>{t('invitacionesLista.resumen')}</Text>
       <View style={styles.reviewCard}>
-        <ReviewRow label="Nombre" value={name} />
-        <ReviewRow label="Correo" value={email} />
-        <ReviewRow label="Rol" value={roleLabel(role)} />
-        {role !== ROLE_JEFE && <ReviewRow label="Área" value={areaName} />}
+        <ReviewRow label={t('invitacionesLista.nombre')} value={name} />
+        <ReviewRow label={t('invitacionesLista.correo')} value={email} />
+        <ReviewRow label={t('invitacionesLista.rol')} value={roleLabel(role)} />
+        {role !== ROLE_JEFE && <ReviewRow label={t('invitacionesLista.area')} value={areaName} />}
       </View>
     </View>
   );
@@ -637,9 +637,9 @@ function InviteCard({ inv, onCopyToken, onCopyLink, onShare, onRevoke, onEdit, o
       <View style={{ flex: 1 }}>
         <Text style={{ fontWeight: '800' }}>{inv.name}</Text>
         <Text style={{ color: colors.textMuted, fontSize: 12 }}>{inv.email} • {roleLabel(inv.role)}</Text>
-        {isPending && <Text style={styles.tokenInline}>Token: {inv.token}</Text>}
-        {isAccepted && !!inv.puesto && <Text style={styles.tokenInline}>Puesto: {inv.puesto}</Text>}
-        {!!inv.no_control && <Text style={styles.tokenInline}>No. Control: {inv.no_control}</Text>}
+        {isPending && <Text style={styles.tokenInline}>{t('invitacionesLista.token3')} {inv.token}</Text>}
+        {isAccepted && !!inv.puesto && <Text style={styles.tokenInline}>{t('invitacionesLista.puesto')} {inv.puesto}</Text>}
+        {!!inv.no_control && <Text style={styles.tokenInline}>{t('invitacionesLista.noControl')} {inv.no_control}</Text>}
       </View>
       <View style={{ alignItems: 'flex-end', gap: 10 }}>
         <Text style={{ fontSize: 11, color: colors.primary, fontWeight: '800' }}>{inv.status.toUpperCase()}</Text>

@@ -15,7 +15,7 @@ import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
 import { Button } from '@/src/components/Button';
 import { ScreenHeader } from '@/src/components/ScreenHeader';
 import { requestMediaLibraryPermission } from '@/src/utils/permissions';
-import { a11y } from '@/src/i18n';
+import { t, a11y  } from '@/src/i18n';
 
 type Tab = 'reportes' | 'checklist';
 type Severidad = 'leve' | 'moderado' | 'grave';
@@ -60,7 +60,7 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
       setReportes(reps);
       setChecklists(checks);
     } catch (e: any) {
-      Alert.alert('Error', e?.message || 'No se pudo cargar el módulo Seguridad e Higiene.');
+      Alert.alert(t('seguridadHigiene.error'), e?.message || t('seguridadHigiene.noSePudoCargarEl'));
     } finally {
       setLoading(false);
     }
@@ -82,7 +82,7 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
   async function onPickFoto() {
     const perm = await requestMediaLibraryPermission();
     if (perm.status !== 'granted') {
-      Alert.alert('Permiso requerido', 'Habilita el acceso a fotos para adjuntar evidencia.');
+      Alert.alert(t('seguridadHigiene.permisoRequerido'), t('seguridadHigiene.habilitaElAccesoAFotos'));
       return;
     }
     const result = await ImagePicker.launchImageLibraryAsync({
@@ -98,7 +98,7 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
 
   async function onSaveReporte() {
     if (!descripcionDraft.trim()) {
-      Alert.alert('Descripción requerida', 'Describe brevemente el incidente.');
+      Alert.alert(t('seguridadHigiene.descripcionRequerida'), t('seguridadHigiene.describeBrevementeElIncidente'));
       return;
     }
     try {
@@ -112,7 +112,7 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
       setFormOpen(false);
       await load();
     } catch (e: any) {
-      Alert.alert('No se pudo guardar', e?.message || 'Inténtalo nuevamente.');
+      Alert.alert(t('seguridadHigiene.noSePudoGuardar'), e?.message || t('seguridadHigiene.intentaloNuevamente'));
     } finally {
       setSaving(false);
     }
@@ -135,7 +135,7 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
 
   async function onSaveChecklist() {
     if (checklistDraft.length === 0) {
-      Alert.alert('Checklist vacío', 'Agrega al menos un elemento antes de guardar.');
+      Alert.alert(t('seguridadHigiene.checklistVacio'), t('seguridadHigiene.agregaAlMenosUnElemento'));
       return;
     }
     try {
@@ -143,9 +143,9 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
       await api.createSeguridadChecklist(projectId, { items: checklistDraft });
       setChecklistDraft([]);
       await load();
-      Alert.alert('Guardado', 'El checklist del día se guardó correctamente.');
+      Alert.alert(t('seguridadHigiene.guardado'), t('seguridadHigiene.elChecklistDelDiaSe'));
     } catch (e: any) {
-      Alert.alert('No se pudo guardar', e?.message || 'Inténtalo nuevamente.');
+      Alert.alert(t('seguridadHigiene.noSePudoGuardar'), e?.message || t('seguridadHigiene.intentaloNuevamente'));
     } finally {
       setChecklistSaving(false);
     }
@@ -162,13 +162,13 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <View style={{ backgroundColor: headerColor }}>
-        <ScreenHeader title="Seguridad e Higiene" backgroundColor={headerColor} />
+        <ScreenHeader title={t('seguridadHigiene.seguridadEHigiene')} backgroundColor={headerColor} />
         <View style={styles.tabRow}>
           <Pressable accessibilityRole="button" onPress={() => setTab('reportes')} style={[styles.tabBtn, tab === 'reportes' && styles.tabBtnActive]}>
-            <Text style={[styles.tabTxt, { color: tab === 'reportes' ? headerColor : headerTextColor }]}>Reportes</Text>
+            <Text style={[styles.tabTxt, { color: tab === 'reportes' ? headerColor : headerTextColor }]}>{t('seguridadHigiene.reportes')}</Text>
           </Pressable>
           <Pressable accessibilityRole="button" onPress={() => setTab('checklist')} style={[styles.tabBtn, tab === 'checklist' && styles.tabBtnActive]}>
-            <Text style={[styles.tabTxt, { color: tab === 'checklist' ? headerColor : headerTextColor }]}>Checklist</Text>
+            <Text style={[styles.tabTxt, { color: tab === 'checklist' ? headerColor : headerTextColor }]}>{t('seguridadHigiene.checklist')}</Text>
           </Pressable>
         </View>
       </View>
@@ -179,7 +179,7 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
             {reportes.length === 0 ? (
               <View style={styles.empty}>
                 <Ionicons name="shield-checkmark-outline" size={22} color={colors.textMuted} />
-                <Text style={styles.emptyTxt}>Aún no hay reportes de accidentes.</Text>
+                <Text style={styles.emptyTxt}>{t('seguridadHigiene.aunNoHayReportesDe')}</Text>
               </View>
             ) : (
               reportes.map((r, idx) => {
@@ -203,7 +203,7 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
                       </View>
                       <Text style={styles.repDesc} numberOfLines={3}>{r.descripcion}</Text>
                       {!!r.acciones_tomadas && (
-                        <Text style={styles.repAcciones} numberOfLines={2}>Acciones: {r.acciones_tomadas}</Text>
+                        <Text style={styles.repAcciones} numberOfLines={2}>{t('seguridadHigiene.acciones')} {r.acciones_tomadas}</Text>
                       )}
                       <Text style={styles.repAutor}>{r.captured_by_name}</Text>
                     </View>
@@ -215,11 +215,11 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
         </ScrollView>
       ) : (
         <ScrollView contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + spacing.xl }]}>
-          <Text style={styles.sectionTitle}>Checklist de hoy</Text>
+          <Text style={styles.sectionTitle}>{t('seguridadHigiene.checklistDeHoy')}</Text>
           <View style={styles.card}>
             {checklistDraft.length === 0 ? (
               <View style={styles.empty}>
-                <Text style={styles.emptyTxt}>Agrega elementos preventivos o correctivos.</Text>
+                <Text style={styles.emptyTxt}>{t('seguridadHigiene.agregaElementosPreventivosOCorrectivos')}</Text>
               </View>
             ) : (
               checklistDraft.map((it, idx) => (
@@ -231,7 +231,7 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
                   />
                   <View style={{ flex: 1 }}>
                     <Text style={[styles.checkTxt, it.cumplido && styles.checkTxtDone]}>{it.item}</Text>
-                    <Text style={styles.checkTipo}>{it.tipo === 'preventiva' ? 'Preventiva' : 'Correctiva'}</Text>
+                    <Text style={styles.checkTipo}>{it.tipo === 'preventiva' ? t('seguridadHigiene.preventiva') : t('seguridadHigiene.correctiva')}</Text>
                   </View>
                   <Pressable accessibilityRole="button" accessibilityLabel={a11y('quitar')} hitSlop={8} onPress={() => removeChecklistItem(idx)}>
                     <Ionicons name="close-circle" size={20} color={colors.textMuted} />
@@ -246,13 +246,13 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
               onPress={() => setTipoItemDraft(tipoItemDraft === 'preventiva' ? 'correctiva' : 'preventiva')}
               style={styles.tipoToggle}
             >
-              <Text style={styles.tipoToggleTxt}>{tipoItemDraft === 'preventiva' ? 'Preventiva' : 'Correctiva'}</Text>
+              <Text style={styles.tipoToggleTxt}>{tipoItemDraft === 'preventiva' ? t('seguridadHigiene.preventiva') : t('seguridadHigiene.correctiva')}</Text>
               <Ionicons name="swap-horizontal-outline" size={14} color={colors.primary} />
             </Pressable>
             <TextInput
               value={itemDraft}
               onChangeText={setItemDraft}
-              placeholder="Nueva acción..."
+              placeholder={t('seguridadHigiene.nuevaAccion')}
               placeholderTextColor={colors.textMuted}
               style={[styles.input, { flex: 1 }]}
               onSubmitEditing={addChecklistItem}
@@ -263,7 +263,7 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
           </View>
 
           <Button
-            label="Guardar checklist del día"
+            label={t('seguridadHigiene.guardarChecklistDelDia')}
             loading={checklistSaving}
             onPress={onSaveChecklist}
             style={{ marginTop: spacing.md }}
@@ -271,13 +271,13 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
 
           {checklists.length > 0 && (
             <>
-              <Text style={[styles.sectionTitle, { marginTop: spacing.lg }]}>Checklists anteriores</Text>
+              <Text style={[styles.sectionTitle, { marginTop: spacing.lg }]}>{t('seguridadHigiene.checklistsAnteriores')}</Text>
               <View style={styles.card}>
                 {checklists.slice(0, 10).map((c, idx) => (
                   <View key={c.id} style={[styles.repRow, idx > 0 && styles.rowBorder]}>
                     <Ionicons name="checkbox-outline" size={18} color={colors.primary} />
                     <View style={{ flex: 1 }}>
-                      <Text style={styles.repDesc}>{c.fecha} · {c.items.length} elemento(s)</Text>
+                      <Text style={styles.repDesc}>{c.fecha} · {t('seguridadHigiene.elementosN', { n: c.items.length })}</Text>
                       <Text style={styles.repAutor}>{c.captured_by_name}</Text>
                     </View>
                   </View>
@@ -297,9 +297,9 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
       <Modal visible={formOpen} transparent animationType="slide" onRequestClose={() => setFormOpen(false)}>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
           <ScrollView style={styles.modalCard} contentContainerStyle={{ paddingBottom: spacing.lg }}>
-            <Text style={styles.modalTitle}>Reportar accidente</Text>
+            <Text style={styles.modalTitle}>{t('seguridadHigiene.reportarAccidente')}</Text>
 
-            <Text style={styles.fieldLabel}>Severidad</Text>
+            <Text style={styles.fieldLabel}>{t('seguridadHigiene.severidad')}</Text>
             <View style={styles.segmentRow}>
               {SEVERIDADES.map((s) => (
                 <Pressable accessibilityRole="button"
@@ -312,41 +312,41 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
               ))}
             </View>
 
-            <Text style={styles.fieldLabel}>Descripción</Text>
+            <Text style={styles.fieldLabel}>{t('seguridadHigiene.descripcion')}</Text>
             <TextInput
               value={descripcionDraft}
               onChangeText={setDescripcionDraft}
-              placeholder="¿Qué sucedió?"
+              placeholder={t('seguridadHigiene.queSucedio')}
               placeholderTextColor={colors.textMuted}
               style={[styles.input, { minHeight: 70, textAlignVertical: 'top' }]}
               multiline
             />
 
-            <Text style={styles.fieldLabel}>Acciones tomadas (opcional)</Text>
+            <Text style={styles.fieldLabel}>{t('seguridadHigiene.accionesTomadasOpcional')}</Text>
             <TextInput
               value={accionesDraft}
               onChangeText={setAccionesDraft}
-              placeholder="¿Qué se hizo al respecto?"
+              placeholder={t('seguridadHigiene.queSeHizoAlRespecto')}
               placeholderTextColor={colors.textMuted}
               style={[styles.input, { minHeight: 60, textAlignVertical: 'top' }]}
               multiline
             />
 
-            <Text style={styles.fieldLabel}>Foto (opcional)</Text>
+            <Text style={styles.fieldLabel}>{t('seguridadHigiene.fotoOpcional')}</Text>
             <Pressable accessibilityRole="button" style={styles.fotoPicker} onPress={onPickFoto}>
               {fotoDraft ? (
                 <Image source={{ uri: fotoDraft }} style={styles.fotoPreview} contentFit="cover" />
               ) : (
                 <>
                   <Ionicons name="camera-outline" size={22} color={colors.textMuted} />
-                  <Text style={styles.fotoPickerTxt}>Adjuntar foto</Text>
+                  <Text style={styles.fotoPickerTxt}>{t('seguridadHigiene.adjuntarFoto')}</Text>
                 </>
               )}
             </Pressable>
 
             <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
-              <Button label="Cancelar" variant="secondary" onPress={() => setFormOpen(false)} style={{ flex: 1 }} />
-              <Button label="Guardar" loading={saving} onPress={onSaveReporte} style={{ flex: 1 }} />
+              <Button label={t('seguridadHigiene.cancelar')} variant="secondary" onPress={() => setFormOpen(false)} style={{ flex: 1 }} />
+              <Button label={t('seguridadHigiene.guardar')} loading={saving} onPress={onSaveReporte} style={{ flex: 1 }} />
             </View>
           </ScrollView>
         </KeyboardAvoidingView>
