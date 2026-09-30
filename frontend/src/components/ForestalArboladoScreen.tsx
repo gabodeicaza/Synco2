@@ -21,7 +21,7 @@ import { Button } from '@/src/components/Button';
 import { ScreenHeader } from '@/src/components/ScreenHeader';
 import { useAuth } from '@/src/auth-context';
 import { ROLE_COORD, ROLE_SUB } from '@/src/utils/roles';
-import { a11y } from '@/src/i18n';
+import { t, a11y  } from '@/src/i18n';
 
 type TipoForestal = 'poda' | 'trasplante' | 'derribo';
 const TIPOS: { value: TipoForestal; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
@@ -132,7 +132,7 @@ export default function ForestalArboladoScreen({ projectId }: { projectId: strin
       setRegistros(list);
       setAutorizado(auth);
     } catch (e: any) {
-      Alert.alert('Error', e?.message || 'No se pudo cargar el módulo Forestal y Arbolado.');
+      Alert.alert(t('forestal.error'), e?.message || 'No se pudo cargar el módulo Forestal y Arbolado.');
     } finally {
       setLoading(false);
     }
@@ -147,7 +147,7 @@ export default function ForestalArboladoScreen({ projectId }: { projectId: strin
       const data = await api.forestalSemanal(projectId, weekStart);
       setSemanal(data);
     } catch (e: any) {
-      Alert.alert('Error', e?.message || 'No se pudo cargar la semana.');
+      Alert.alert(t('forestal.error'), e?.message || 'No se pudo cargar la semana.');
     } finally {
       setSemanalLoading(false);
     }
@@ -176,7 +176,7 @@ export default function ForestalArboladoScreen({ projectId }: { projectId: strin
   async function onSave() {
     const cantidad = parseInt(cantidadDraft, 10);
     if (!cantidad || cantidad < 1) {
-      Alert.alert('Cantidad inválida', 'Ingresa un número entero mayor o igual a 1.');
+      Alert.alert(t('forestal.cantidadInvalida'), t('forestal.ingresaUnNumeroEnteroMayor'));
       return;
     }
     try {
@@ -190,7 +190,7 @@ export default function ForestalArboladoScreen({ projectId }: { projectId: strin
       setFormOpen(false);
       await Promise.all([load(), loadSemanal()]);
     } catch (e: any) {
-      Alert.alert('No se pudo guardar', e?.message || 'Inténtalo nuevamente.');
+      Alert.alert(t('forestal.noSePudoGuardar'), e?.message || 'Inténtalo nuevamente.');
     } finally {
       setSaving(false);
     }
@@ -209,7 +209,7 @@ export default function ForestalArboladoScreen({ projectId }: { projectId: strin
   async function onSaveRow() {
     const nombre = rowEstacion.trim();
     if (!nombre) {
-      Alert.alert('Falta el nombre', 'Ingresa el nombre de la estación (o "Postes").');
+      Alert.alert(t('forestal.faltaElNombre'), t('forestal.ingresaElNombreDeLa'));
       return;
     }
     const body = {
@@ -229,7 +229,7 @@ export default function ForestalArboladoScreen({ projectId }: { projectId: strin
       setRowFormOpen(false);
       await load();
     } catch (e: any) {
-      Alert.alert('No se pudo guardar', e?.message || 'Inténtalo nuevamente.');
+      Alert.alert(t('forestal.noSePudoGuardar'), e?.message || 'Inténtalo nuevamente.');
     } finally {
       setRowSaving(false);
     }
@@ -237,7 +237,7 @@ export default function ForestalArboladoScreen({ projectId }: { projectId: strin
 
   function onDeleteRow() {
     if (!rowEditing) return;
-    Alert.alert('Eliminar renglón', `¿Eliminar "${rowEditing.estacion}" del resumen autorizado?`, [
+    Alert.alert(t('forestal.eliminarRenglon'), t('forestal.eliminarRenglonPregunta', { nombre: rowEditing.estacion }), [
       { text: 'Cancelar', style: 'cancel' },
       {
         text: 'Eliminar', style: 'destructive', onPress: async () => {
@@ -247,7 +247,7 @@ export default function ForestalArboladoScreen({ projectId }: { projectId: strin
             setRowFormOpen(false);
             await load();
           } catch (e: any) {
-            Alert.alert('No se pudo eliminar', e?.message || 'Inténtalo nuevamente.');
+            Alert.alert(t('forestal.noSePudoEliminar'), e?.message || 'Inténtalo nuevamente.');
           } finally {
             setRowSaving(false);
           }
@@ -266,27 +266,27 @@ export default function ForestalArboladoScreen({ projectId }: { projectId: strin
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <ScreenHeader title="Forestal y Arbolado" backgroundColor={headerColor} />
+      <ScreenHeader title={t('forestal.forestalYArbolado')} backgroundColor={headerColor} />
 
       <ScrollView contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + spacing.xl }]}>
-        <Text style={styles.sheetTitle}>TRATAMIENTO DE ARBOLADO</Text>
+        <Text style={styles.sheetTitle}>{t('forestal.tratamientoDeArbolado')}</Text>
 
         {/* --- Resumen autorizado mediante resolución administrativa --- */}
         <View style={styles.card}>
           <View style={[styles.bar, { backgroundColor: SHEET.salmon }]}>
-            <Text style={styles.barTxt} numberOfLines={2}>RESUMEN ARBOLADO AUTORIZADO MEDIANTE RESOLUCIÓN ADMVA.</Text>
+            <Text style={styles.barTxt} numberOfLines={2}>{t('forestal.resumenArboladoAutorizadoMedianteResolucion')}</Text>
           </View>
           <View style={[styles.tableRow, { backgroundColor: SHEET.green }]}>
-            <Text style={[styles.tableCell, styles.headTxt, { flex: 1.6 }]}>Estación</Text>
-            <Text style={[styles.tableCell, styles.headTxt]}>Poda</Text>
-            <Text style={[styles.tableCell, styles.headTxt]}>Trasp.</Text>
-            <Text style={[styles.tableCell, styles.headTxt]}>Derr.</Text>
-            <Text style={[styles.tableCell, styles.headTxt, { flex: 1.3 }]}>Total árboles</Text>
+            <Text style={[styles.tableCell, styles.headTxt, { flex: 1.6 }]}>{t('forestal.estacion')}</Text>
+            <Text style={[styles.tableCell, styles.headTxt]}>{t('forestal.poda')}</Text>
+            <Text style={[styles.tableCell, styles.headTxt]}>{t('forestal.trasp')}</Text>
+            <Text style={[styles.tableCell, styles.headTxt]}>{t('forestal.derr')}</Text>
+            <Text style={[styles.tableCell, styles.headTxt, { flex: 1.3 }]}>{t('forestal.totalArboles')}</Text>
           </View>
           {autorizado.length === 0 ? (
             <View style={styles.empty}>
               <Ionicons name="leaf-outline" size={22} color={colors.textMuted} />
-              <Text style={styles.emptyTxt}>Sin renglones autorizados capturados.</Text>
+              <Text style={styles.emptyTxt}>{t('forestal.sinRenglonesAutorizadosCapturados')}</Text>
             </View>
           ) : (
             autorizado.map((row, idx) => (
@@ -305,7 +305,7 @@ export default function ForestalArboladoScreen({ projectId }: { projectId: strin
           )}
           {autorizado.length > 0 && (
             <View style={[styles.tableRow, styles.totalRow]}>
-              <Text style={[styles.tableCell, styles.totalTxt, { flex: 1.6 }]}>TOTAL</Text>
+              <Text style={[styles.tableCell, styles.totalTxt, { flex: 1.6 }]}>{t('forestal.total')}</Text>
               <Text style={[styles.tableCell, styles.totalTxt]}>{totalAutorizado.poda}</Text>
               <Text style={[styles.tableCell, styles.totalTxt]}>{totalAutorizado.trasplante}</Text>
               <Text style={[styles.tableCell, styles.totalTxt]}>{totalAutorizado.derribo}</Text>
@@ -315,7 +315,7 @@ export default function ForestalArboladoScreen({ projectId }: { projectId: strin
           {canEditAutorizado && (
             <Pressable accessibilityRole="button" style={styles.addRowBtn} onPress={() => openRowForm(null)}>
               <Ionicons name="add-circle-outline" size={18} color={colors.primary} />
-              <Text style={styles.addRowTxt}>Agregar estación</Text>
+              <Text style={styles.addRowTxt}>{t('forestal.agregarEstacion')}</Text>
             </Pressable>
           )}
         </View>
@@ -343,18 +343,18 @@ export default function ForestalArboladoScreen({ projectId }: { projectId: strin
               <Ionicons name="chevron-back-circle-outline" size={22} color={SHEET.title} />
             </Pressable>
             <Text style={styles.barTxt} numberOfLines={2}>
-              ACTIVIDADES EJECUTADAS SEMANA {semanal ? formatRangoSemana(semanal.desde, semanal.hasta) : ''}
+              {t('forestal.actividadesEjecutadasSemana')} {semanal ? formatRangoSemana(semanal.desde, semanal.hasta) : ''}
             </Text>
             <Pressable accessibilityRole="button" accessibilityLabel={a11y('semanaSiguiente')} hitSlop={8} onPress={() => setWeekStart((w) => addDaysISO(w, 6))}>
               <Ionicons name="chevron-forward-circle-outline" size={22} color={SHEET.title} />
             </Pressable>
           </View>
           <View style={[styles.tableRow, styles.tableHeaderRow]}>
-            <Text style={[styles.tableCell, styles.tableHeaderTxt, { flex: 1.8 }]}>Fecha</Text>
-            <Text style={[styles.tableCell, styles.tableHeaderTxt]}>Podas</Text>
-            <Text style={[styles.tableCell, styles.tableHeaderTxt]}>Trasp.</Text>
-            <Text style={[styles.tableCell, styles.tableHeaderTxt]}>Derr.</Text>
-            <Text style={[styles.tableCell, styles.tableHeaderTxt]}>Total</Text>
+            <Text style={[styles.tableCell, styles.tableHeaderTxt, { flex: 1.8 }]}>{t('forestal.fecha')}</Text>
+            <Text style={[styles.tableCell, styles.tableHeaderTxt]}>{t('forestal.podas')}</Text>
+            <Text style={[styles.tableCell, styles.tableHeaderTxt]}>{t('forestal.trasp')}</Text>
+            <Text style={[styles.tableCell, styles.tableHeaderTxt]}>{t('forestal.derr')}</Text>
+            <Text style={[styles.tableCell, styles.tableHeaderTxt]}>{t('forestal.total2')}</Text>
           </View>
           {semanalLoading || !semanal ? (
             <View style={styles.empty}><ActivityIndicator color={colors.primary} /></View>
@@ -370,7 +370,7 @@ export default function ForestalArboladoScreen({ projectId }: { projectId: strin
                 </View>
               ))}
               <View style={[styles.tableRow, { backgroundColor: SHEET.subtotal }]}>
-                <Text style={[styles.tableCell, styles.totalTxt, { flex: 1.8 }]}>SUBTOTAL</Text>
+                <Text style={[styles.tableCell, styles.totalTxt, { flex: 1.8 }]}>{t('forestal.subtotal')}</Text>
                 <Text style={[styles.tableCell, styles.totalTxt]}>{semanal.subtotal.poda}</Text>
                 <Text style={[styles.tableCell, styles.totalTxt]}>{semanal.subtotal.trasplante}</Text>
                 <Text style={[styles.tableCell, styles.totalTxt]}>{semanal.subtotal.derribo}</Text>
@@ -380,11 +380,11 @@ export default function ForestalArboladoScreen({ projectId }: { projectId: strin
           )}
         </View>
 
-        <Text style={styles.sectionTitle}>Últimos registros</Text>
+        <Text style={styles.sectionTitle}>{t('forestal.ultimosRegistros')}</Text>
         <View style={styles.card}>
           {registros.length === 0 ? (
             <View style={styles.empty}>
-              <Text style={styles.emptyTxt}>Sin actividad reciente.</Text>
+              <Text style={styles.emptyTxt}>{t('forestal.sinActividadReciente')}</Text>
             </View>
           ) : (
             registros.slice(0, 20).map((r, idx) => (
@@ -410,9 +410,9 @@ export default function ForestalArboladoScreen({ projectId }: { projectId: strin
       <Modal visible={formOpen} transparent animationType="slide" onRequestClose={() => setFormOpen(false)}>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>Registrar evento forestal</Text>
+            <Text style={styles.modalTitle}>{t('forestal.registrarEventoForestal')}</Text>
 
-            <Text style={styles.fieldLabel}>Tipo</Text>
+            <Text style={styles.fieldLabel}>{t('forestal.tipo')}</Text>
             <View style={styles.segmentRow}>
               {TIPOS.map((t) => (
                 <Pressable accessibilityRole="button"
@@ -426,16 +426,16 @@ export default function ForestalArboladoScreen({ projectId }: { projectId: strin
               ))}
             </View>
 
-            <Text style={styles.fieldLabel}>Estación / ubicación</Text>
+            <Text style={styles.fieldLabel}>{t('forestal.estacionUbicacion')}</Text>
             <TextInput
               value={estacionDraft}
               onChangeText={setEstacionDraft}
-              placeholder="Ej. Estación 5+200"
+              placeholder={t('forestal.ejEstacion5200')}
               placeholderTextColor={colors.textMuted}
               style={styles.input}
             />
 
-            <Text style={styles.fieldLabel}>Cantidad</Text>
+            <Text style={styles.fieldLabel}>{t('forestal.cantidad')}</Text>
             <TextInput
               value={cantidadDraft}
               onChangeText={setCantidadDraft}
@@ -443,19 +443,19 @@ export default function ForestalArboladoScreen({ projectId }: { projectId: strin
               style={styles.input}
             />
 
-            <Text style={styles.fieldLabel}>Notas (opcional)</Text>
+            <Text style={styles.fieldLabel}>{t('forestal.notasOpcional')}</Text>
             <TextInput
               value={notasDraft}
               onChangeText={setNotasDraft}
-              placeholder="Observaciones..."
+              placeholder={t('forestal.observaciones')}
               placeholderTextColor={colors.textMuted}
               style={[styles.input, { minHeight: 70, textAlignVertical: 'top' }]}
               multiline
             />
 
             <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
-              <Button label="Cancelar" variant="secondary" onPress={() => setFormOpen(false)} style={{ flex: 1 }} />
-              <Button label="Guardar" loading={saving} onPress={onSave} style={{ flex: 1 }} />
+              <Button label={t('forestal.cancelar')} variant="secondary" onPress={() => setFormOpen(false)} style={{ flex: 1 }} />
+              <Button label={t('forestal.guardar')} loading={saving} onPress={onSave} style={{ flex: 1 }} />
             </View>
           </View>
         </KeyboardAvoidingView>
@@ -464,35 +464,35 @@ export default function ForestalArboladoScreen({ projectId }: { projectId: strin
       <Modal visible={rowFormOpen} transparent animationType="slide" onRequestClose={() => setRowFormOpen(false)}>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>{rowEditing ? 'Editar renglón autorizado' : 'Agregar renglón autorizado'}</Text>
+            <Text style={styles.modalTitle}>{rowEditing ? t('forestal.editarRenglonAutorizado') : t('forestal.agregarRenglonAutorizado')}</Text>
 
-            <Text style={styles.fieldLabel}>Estación (o "Postes")</Text>
+            <Text style={styles.fieldLabel}>{t('forestal.estacionOPostes')}</Text>
             <TextInput
               value={rowEstacion}
               onChangeText={setRowEstacion}
-              placeholder="Ej. Estación 1"
+              placeholder={t('forestal.ejEstacion1')}
               placeholderTextColor={colors.textMuted}
               style={styles.input}
             />
 
-            <Text style={styles.fieldLabel}>Poda autorizada</Text>
+            <Text style={styles.fieldLabel}>{t('forestal.podaAutorizada')}</Text>
             <TextInput value={rowPoda} onChangeText={setRowPoda} keyboardType="number-pad" style={styles.input} />
 
-            <Text style={styles.fieldLabel}>Trasplante autorizado</Text>
+            <Text style={styles.fieldLabel}>{t('forestal.trasplanteAutorizado')}</Text>
             <TextInput value={rowTrasplante} onChangeText={setRowTrasplante} keyboardType="number-pad" style={styles.input} />
 
-            <Text style={styles.fieldLabel}>Derribo autorizado</Text>
+            <Text style={styles.fieldLabel}>{t('forestal.derriboAutorizado')}</Text>
             <TextInput value={rowDerribo} onChangeText={setRowDerribo} keyboardType="number-pad" style={styles.input} />
 
-            <Text style={styles.fieldLabel}>Total de árboles dictaminados</Text>
+            <Text style={styles.fieldLabel}>{t('forestal.totalDeArbolesDictaminados')}</Text>
             <TextInput value={rowTotal} onChangeText={setRowTotal} keyboardType="number-pad" style={styles.input} />
 
             <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
               {rowEditing && (
-                <Button label="Eliminar" variant="danger" onPress={onDeleteRow} loading={rowSaving} style={{ flex: 1 }} />
+                <Button label={t('forestal.eliminar')} variant="danger" onPress={onDeleteRow} loading={rowSaving} style={{ flex: 1 }} />
               )}
-              <Button label="Cancelar" variant="secondary" onPress={() => setRowFormOpen(false)} style={{ flex: 1 }} />
-              <Button label="Guardar" loading={rowSaving} onPress={onSaveRow} style={{ flex: 1 }} />
+              <Button label={t('forestal.cancelar')} variant="secondary" onPress={() => setRowFormOpen(false)} style={{ flex: 1 }} />
+              <Button label={t('forestal.guardar')} loading={rowSaving} onPress={onSaveRow} style={{ flex: 1 }} />
             </View>
           </View>
         </KeyboardAvoidingView>

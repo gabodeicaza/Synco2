@@ -176,7 +176,7 @@ export default function NewReportScreen() {
           const tpls = await api.getReportTemplates();
           setReportTemplates(tpls || []);
         } catch (e) { console.log('Error fetching report templates', e); }
-      } catch (e) { Alert.alert('Error', 'No se pudo iniciar.'); }
+      } catch (e) { Alert.alert(t('nuevoReporte.error'), t('nuevoReporte.noSePudoIniciar')); }
       finally { setLoading(false); }
     })();
 
@@ -196,7 +196,7 @@ export default function NewReportScreen() {
       setProject(p);
       const t = await api.getTree(pid);
       setTree(t || []);
-    } catch (e) { Alert.alert('Error', 'No se pudo cargar la estructura.'); }
+    } catch (e) { Alert.alert(t('nuevoReporte.error'), t('nuevoReporte.noSePudoCargarLa')); }
     finally { setLoadingTree(false); }
   };
 
@@ -295,12 +295,12 @@ export default function NewReportScreen() {
   // confirmacion explicita en vez de enviar el reporte directo.
   function onSavePressed() {
     if (saving) return;
-    if (!selectedLeaf) return Alert.alert('Error', 'Selecciona una ubicación.');
+    if (!selectedLeaf) return Alert.alert(t('nuevoReporte.error'), t('nuevoReporte.seleccionaUnaUbicacion'));
     // Escoger un tipo de reporte es obligatorio; en el flujo normal ya viene
     // preseleccionada la plantilla general, esto es solo un respaldo (p.ej.
     // si el catalogo de plantillas quedo vacio o fallo al cargar).
     if (reportTemplates.length > 0 && !selectedTemplateId) {
-      return Alert.alert('Error', 'Selecciona un tipo de reporte.');
+      return Alert.alert(t('nuevoReporte.error'), t('nuevoReporte.seleccionaUnTipoDeReporte'));
     }
 
     if (images.length === 0) {
@@ -317,7 +317,7 @@ export default function NewReportScreen() {
 
   async function doSave() {
     if (saving) return;
-    if (!selectedLeaf) return Alert.alert('Error', 'Selecciona una ubicación.');
+    if (!selectedLeaf) return Alert.alert(t('nuevoReporte.error'), t('nuevoReporte.seleccionaUnaUbicacion'));
 
     setSaving(true);
     try {
@@ -384,7 +384,7 @@ export default function NewReportScreen() {
       const nextE = [...equipo.map(e => e.desc).filter(it => it && (typeof it === 'string' ? it : it.nombre)), ...catalogEquipo].slice(0, MAX_CATALOG_SIZE);
       await storage.setItem(CATALOG_EQUIPO_KEY, JSON.stringify(nextE));
     } catch (e: any) {
-      Alert.alert('Error', e?.message || 'No se pudo guardar.');
+      Alert.alert(t('nuevoReporte.error'), e?.message || 'No se pudo guardar.');
     } finally {
       setSaving(false);
     }
@@ -417,7 +417,7 @@ export default function NewReportScreen() {
       {/* Header (Imagen 1) */}
       <View style={[styles.header, { paddingTop: insets.top }]}>
         <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} hitSlop={8} onPress={() => router.back()} style={styles.headerBtn}><Ionicons name="close" size={24} color={colors.text} /></Pressable>
-        <Text style={styles.headerTitle}>Nuevo Reporte</Text>
+        <Text style={styles.headerTitle}>{t('nuevoReporte.nuevoReporte')}</Text>
       </View>
 
       <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
@@ -427,14 +427,14 @@ export default function NewReportScreen() {
           <View style={styles.cardHeader}>
             <View style={styles.cardIconBox}><Ionicons name="pricetag" size={16} color={colors.primary} /></View>
             <View style={{ flex: 1 }}>
-              <Text style={styles.cardLabel}>Nombre del reporte</Text>
-              <Text style={styles.cardHelp}>Opcional. Se usara para buscarlo desde el inicio.</Text>
+              <Text style={styles.cardLabel}>{t('nuevoReporte.nombreDelReporte')}</Text>
+              <Text style={styles.cardHelp}>{t('nuevoReporte.opcionalSeUsaraParaBuscarlo')}</Text>
             </View>
           </View>
-          <Text style={styles.inputLabelSmall}>NOMBRE</Text>
+          <Text style={styles.inputLabelSmall}>{t('nuevoReporte.nombre')}</Text>
           <TextInput
             value={nombre} onChangeText={setNombre}
-            placeholder="Ej. Inspección diaria de armado · C-15"
+            placeholder={t('nuevoReporte.ejInspeccionDiariaDeArmado')}
             style={styles.inputGhost}
           />
         </View>
@@ -444,16 +444,16 @@ export default function NewReportScreen() {
           <View style={styles.cardHeader}>
             <View style={styles.cardIconBox}><Ionicons name="information-circle" size={18} color={colors.primary} /></View>
             <View style={{ flex: 1 }}>
-              <Text style={styles.cardLabel}>Datos del reporte</Text>
-              <Text style={styles.cardHelp}>Información automática, no editable.</Text>
+              <Text style={styles.cardLabel}>{t('nuevoReporte.datosDelReporte')}</Text>
+              <Text style={styles.cardHelp}>{t('nuevoReporte.informacionAutomaticaNoEditable')}</Text>
             </View>
           </View>
-          <AutoRow icon="calendar" label="FECHA" value={dayjs().tz(CDMX_TZ).format('DD MMM YYYY')} />
-          <AutoRow icon="person" label="CAPTURADO POR" value={user?.name || '—'} />
-          <AutoRow icon="briefcase" label="ROL" value={user?.role || '—'} />
-          <AutoRow icon="ribbon" label="PUESTO" value={user?.puesto || '—'} />
-          <AutoRow icon="document-text" label="NO. DE CONTRATO" value={project?.contract_number || '...'} />
-          <AutoRow icon="git-branch" label="UBICACIÓN" value={(path.length > 0 ? path.map(n => n.name).join(' / ') : 'Sin seleccionar')} />
+          <AutoRow icon="calendar" label={t('nuevoReporte.fecha')} value={dayjs().tz(CDMX_TZ).format('DD MMM YYYY')} />
+          <AutoRow icon="person" label={t('nuevoReporte.capturadoPor')} value={user?.name || '—'} />
+          <AutoRow icon="briefcase" label={t('nuevoReporte.rol')} value={user?.role || '—'} />
+          <AutoRow icon="ribbon" label={t('nuevoReporte.puesto')} value={user?.puesto || '—'} />
+          <AutoRow icon="document-text" label={t('nuevoReporte.noDeContrato')} value={project?.contract_number || '...'} />
+          <AutoRow icon="git-branch" label={t('nuevoReporte.ubicacion')} value={(path.length > 0 ? path.map(n => n.name).join(' / ') : 'Sin seleccionar')} />
         </View>
 
         {/* BLOQUE SELECCION UBICACION (Imagen 3) */}
@@ -461,28 +461,28 @@ export default function NewReportScreen() {
           <View style={styles.cardHeader}>
             <View style={[styles.cardIconBox, { backgroundColor: colors.primaryLight }]}><Ionicons name="navigate" size={16} color={colors.primary} /></View>
             <View style={{ flex: 1 }}>
-              <Text style={styles.cardLabel}>Selecciona ubicación</Text>
-              <Text style={styles.cardHelp}>Navega hasta el nodo hoja autorizado.</Text>
+              <Text style={styles.cardLabel}>{t('nuevoReporte.seleccionaUbicacion')}</Text>
+              <Text style={styles.cardHelp}>{t('nuevoReporte.navegaHastaElNodoHoja')}</Text>
             </View>
           </View>
 
-          <LocationStep label="NIVEL RAÍZ" value={path[0]?.name || 'Seleccionar…'} onPress={() => popPath(0)} />
-          {path.length >= 1 && <LocationStep label={`DENTRO DE "${path[0].name}"`} value={path[1]?.name || 'Seleccionar…'} onPress={() => popPath(1)} />}
-          {path.length >= 2 && <LocationStep label={`DENTRO DE "${path[1].name}"`} value={path[2]?.name || 'Seleccionar…'} onPress={() => popPath(2)} />}
+          <LocationStep label={t('nuevoReporte.nivelRaiz')} value={path[0]?.name || t('nuevoReporte.seleccionar')} onPress={() => popPath(0)} />
+          {path.length >= 1 && <LocationStep label={t('nuevoReporte.dentroDe', { nombre: path[0].name })} value={path[1]?.name || t('nuevoReporte.seleccionar')} onPress={() => popPath(1)} />}
+          {path.length >= 2 && <LocationStep label={t('nuevoReporte.dentroDe', { nombre: path[1].name })} value={path[2]?.name || t('nuevoReporte.seleccionar')} onPress={() => popPath(2)} />}
 
           {!selectedLeaf && (
             <View style={styles.nodeGrid}>
               {currentOptions.map(n => (
                 <Pressable accessibilityRole="button" key={n.id} onPress={() => onSelectNode(n)} style={styles.nodeItem}>
                   <Text style={styles.nodeItemTxt}>{n.name}</Text>
-                  {n.is_leaf && <View style={styles.leafBadge}><Ionicons name="flag" size={10} color="#fff" /><Text style={styles.leafBadgeTxt}>Hoja</Text></View>}
+                  {n.is_leaf && <View style={styles.leafBadge}><Ionicons name="flag" size={10} color="#fff" /><Text style={styles.leafBadgeTxt}>{t('nuevoReporte.hoja')}</Text></View>}
                 </Pressable>
               ))}
-              {project?.id && currentOptions.length === 0 && <Text style={styles.emptyTxt}>No hay mas subniveles.</Text>}
+              {project?.id && currentOptions.length === 0 && <Text style={styles.emptyTxt}>{t('nuevoReporte.noHayMasSubniveles')}</Text>}
             </View>
           )}
 
-          {path.length > 0 && <Pressable accessibilityRole="button" onPress={() => { setPath([]); setSelectedLeaf(null); }}><Text style={styles.resetTxt}>Reiniciar selección</Text></Pressable>}
+          {path.length > 0 && <Pressable accessibilityRole="button" onPress={() => { setPath([]); setSelectedLeaf(null); }}><Text style={styles.resetTxt}>{t('nuevoReporte.reiniciarSeleccion')}</Text></Pressable>}
         </View>
 
         {/* BLOQUE REPORTE ESTRUCTURADO (plantilla dinámica) */}
@@ -491,8 +491,8 @@ export default function NewReportScreen() {
             <View style={styles.cardHeader}>
               <View style={styles.cardIconBox}><Ionicons name="list" size={16} color={colors.primary} /></View>
               <View style={{ flex: 1 }}>
-                <Text style={styles.cardLabel}>Tipo de reporte</Text>
-                <Text style={styles.cardHelp}>Elige la plantilla para capturar datos estructurados. Si ninguna especifica aplica, usa "{generalTemplate?.name || 'Reporte Libre'}".</Text>
+                <Text style={styles.cardLabel}>{t('nuevoReporte.tipoDeReporte')}</Text>
+                <Text style={styles.cardHelp}>{t('nuevoReporte.eligeLaPlantillaParaCapturar', { plantilla: generalTemplate?.name || t('nuevoReporte.reporteLibre') })}</Text>
               </View>
             </View>
             <Pressable accessibilityRole="button" onPress={() => setTplPickerOpen(true)} style={styles.tplSelectorRow}>
@@ -520,7 +520,7 @@ export default function NewReportScreen() {
           <View style={styles.modalBackdrop}>
             <View style={[styles.modalContent, { maxHeight: '80%' }]}>
               <View style={styles.modalHeader}>
-                <Text style={styles.modalTitle}>Tipo de reporte</Text>
+                <Text style={styles.modalTitle}>{t('nuevoReporte.tipoDeReporte')}</Text>
                 <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} hitSlop={8} onPress={() => setTplPickerOpen(false)}><Ionicons name="close" size={24} /></Pressable>
               </View>
               <ScrollView style={{ marginTop: 10 }}>
@@ -530,7 +530,7 @@ export default function NewReportScreen() {
                     style={styles.optBtn}
                   >
                     <Ionicons name="document-text-outline" size={18} color={colors.primary} />
-                    <Text style={styles.optTxt}>{generalTemplate.name} (general)</Text>
+                    <Text style={styles.optTxt}>{generalTemplate.name} {t('nuevoReporte.general')}</Text>
                     {selectedTemplateId === generalTemplate.id && <Ionicons name="checkmark" size={18} color={colors.primary} />}
                   </Pressable>
                 )}
@@ -561,19 +561,19 @@ export default function NewReportScreen() {
             <View style={styles.cardHeader}>
               <View style={styles.cardIconBox}><Ionicons name="stats-chart" size={16} color={colors.primary} /></View>
               <View style={{ flex: 1 }}>
-                <Text style={styles.cardLabel}>Lecturas</Text>
-                <Text style={styles.cardHelp}>Captura la primera y última lectura del día.</Text>
+                <Text style={styles.cardLabel}>{t('nuevoReporte.lecturas')}</Text>
+                <Text style={styles.cardHelp}>{t('nuevoReporte.capturaLaPrimeraYUltima')}</Text>
               </View>
             </View>
 
             <Pressable accessibilityRole="button" onPress={() => setRegistrarLecturas(!registrarLecturas)} style={styles.checkboxRow}>
               <Ionicons name={registrarLecturas ? 'checkbox' : 'square-outline'} size={22} color={colors.primary} />
-              <Text style={styles.checkboxTxt}>Este reporte incluye lecturas (primera/última)</Text>
+              <Text style={styles.checkboxTxt}>{t('nuevoReporte.esteReporteIncluyeLecturasPrimera')}</Text>
             </Pressable>
 
             {registrarLecturas && (
               <>
-                <Text style={styles.inputLabelSmall}>UNIDAD DE MEDIDA</Text>
+                <Text style={styles.inputLabelSmall}>{t('nuevoReporte.unidadDeMedida')}</Text>
                 <View style={styles.unitRow}>
                   {(['km', 'm', 'cm'] as const).map(u => (
                     <Pressable accessibilityRole="button" key={u} onPress={() => setUnidad(u)} style={[styles.unitBtn, unidad === u && styles.unitBtnActive]}>
@@ -581,20 +581,20 @@ export default function NewReportScreen() {
                     </Pressable>
                   ))}
                 </View>
-                <Text style={styles.inputLabelSmall}>PRIMERA LECTURA</Text>
-                <TextInput value={primeraLectura} onChangeText={setPrimeraLectura} keyboardType="numeric" placeholder="Ej. 12.45" style={styles.input} />
+                <Text style={styles.inputLabelSmall}>{t('nuevoReporte.primeraLectura')}</Text>
+                <TextInput value={primeraLectura} onChangeText={setPrimeraLectura} keyboardType="numeric" placeholder={t('nuevoReporte.ej1245')} style={styles.input} />
                 <View style={styles.historyHint}>
                   <Ionicons name="time-outline" size={12} color={colors.primary} />
                   <Text style={styles.historyHintTxt}>
-                    Última lectura registrada: {history?.last_report?.ultima_lectura || 0}
+                    {t('nuevoReporte.ultimaLecturaRegistrada')} {history?.last_report?.ultima_lectura || 0}
                   </Text>
                 </View>
-                <Text style={styles.inputLabelSmall}>ÚLTIMA LECTURA</Text>
-                <TextInput value={ultimaLectura} onChangeText={setUltimaLectura} keyboardType="numeric" placeholder="Ej. 12.80" style={styles.input} />
+                <Text style={styles.inputLabelSmall}>{t('nuevoReporte.ultimaLectura')}</Text>
+                <TextInput value={ultimaLectura} onChangeText={setUltimaLectura} keyboardType="numeric" placeholder={t('nuevoReporte.ej1280')} style={styles.input} />
                 {avanceCalculado !== '' && (
                   <View style={styles.avanceBox}>
                     <Ionicons name="speedometer-outline" size={14} color={colors.primary} />
-                    <Text style={styles.avanceBoxTxt}>Avance calculado: <Text style={{ fontWeight: '900' }}>{avanceCalculado}</Text></Text>
+                    <Text style={styles.avanceBoxTxt}>{t('nuevoReporte.avanceCalculado')} <Text style={{ fontWeight: '900' }}>{avanceCalculado}</Text></Text>
                   </View>
                 )}
               </>
@@ -608,16 +608,16 @@ export default function NewReportScreen() {
             <View style={styles.cardHeader}>
               <View style={styles.cardIconBox}><Ionicons name="document-text" size={16} color={colors.primary} /></View>
               <View style={{ flex: 1 }}>
-                <Text style={styles.cardLabel}>Reporte</Text>
-                <Text style={styles.cardHelp}>Actividades y observaciones del día.</Text>
+                <Text style={styles.cardLabel}>{t('nuevoReporte.reporte')}</Text>
+                <Text style={styles.cardHelp}>{t('nuevoReporte.actividadesYObservacionesDelDia')}</Text>
               </View>
             </View>
-            <Text style={styles.inputLabelSmall}>ACTIVIDADES</Text>
-            <TextInput value={actividades} onChangeText={setActividades} multiline placeholder="Describe las actividades del día…" style={[styles.input, { minHeight: 80 }]} />
-            <Text style={styles.inputLabelSmall}>OBSERVACIONES</Text>
-            <TextInput value={observaciones} onChangeText={setObservaciones} multiline placeholder="Comentarios, retrasos, lo que ocurrió en el día…" style={[styles.input, { minHeight: 80 }]} />
-            <Text style={styles.inputLabelSmall}>INCIDENCIAS (OPCIONAL)</Text>
-            <TextInput value={incidencias} onChangeText={setIncidencias} multiline placeholder="Eventos relevantes: bloqueos, fallas, accidentes..." style={[styles.input, { minHeight: 120, textAlignVertical: 'top' }]} />
+            <Text style={styles.inputLabelSmall}>{t('nuevoReporte.actividades')}</Text>
+            <TextInput value={actividades} onChangeText={setActividades} multiline placeholder={t('nuevoReporte.describeLasActividadesDelDia')} style={[styles.input, { minHeight: 80 }]} />
+            <Text style={styles.inputLabelSmall}>{t('nuevoReporte.observaciones')}</Text>
+            <TextInput value={observaciones} onChangeText={setObservaciones} multiline placeholder={t('nuevoReporte.comentariosRetrasosLoQueOcurrio')} style={[styles.input, { minHeight: 80 }]} />
+            <Text style={styles.inputLabelSmall}>{t('nuevoReporte.incidenciasOpcional')}</Text>
+            <TextInput value={incidencias} onChangeText={setIncidencias} multiline placeholder={t('nuevoReporte.eventosRelevantesBloqueosFallasAccidentes')} style={[styles.input, { minHeight: 120, textAlignVertical: 'top' }]} />
           </View>
         )}
 
@@ -626,10 +626,10 @@ export default function NewReportScreen() {
           <View style={styles.card}>
             <View style={styles.cardHeader}>
               <View style={styles.cardIconBox}><Ionicons name="flag" size={16} color={colors.primary} /></View>
-              <Text style={styles.cardLabel}>SEVERIDAD (SEMÁFORO)</Text>
+              <Text style={styles.cardLabel}>{t('nuevoReporte.severidadSemaforo')}</Text>
             </View>
             <Text style={styles.sevHint}>
-              Puedes elegir varias: el reporte aparecerá en todos los informes que marques.
+              {t('nuevoReporte.puedesElegirVariasElReporte')}
             </Text>
             <View style={styles.sevRow}>
               <TouchableOpacity accessibilityRole="button"
@@ -637,7 +637,7 @@ export default function NewReportScreen() {
                 style={[styles.sevBtn, { borderColor: '#1E40AF' }, severidadUI.has('Informativo') ? { backgroundColor: '#1E40AF' } : { backgroundColor: '#F8FAFC' }]}
               >
                 <Ionicons name="information-circle" size={16} color={severidadUI.has('Informativo') ? '#fff' : '#1E40AF'} />
-                <Text style={[styles.sevTxt, { color: severidadUI.has('Informativo') ? '#fff' : '#1E40AF' }]}>Informativo</Text>
+                <Text style={[styles.sevTxt, { color: severidadUI.has('Informativo') ? '#fff' : '#1E40AF' }]}>{t('nuevoReporte.informativo')}</Text>
               </TouchableOpacity>
 
               <TouchableOpacity accessibilityRole="button"
@@ -645,7 +645,7 @@ export default function NewReportScreen() {
                 style={[styles.sevBtn, { borderColor: '#10B981' }, severidadUI.has('Diario') ? { backgroundColor: '#10B981' } : { backgroundColor: '#F8FAFC' }]}
               >
                 <Ionicons name="calendar" size={16} color={severidadUI.has('Diario') ? '#fff' : '#10B981'} />
-                <Text style={[styles.sevTxt, { color: severidadUI.has('Diario') ? '#fff' : '#10B981' }]}>Diario</Text>
+                <Text style={[styles.sevTxt, { color: severidadUI.has('Diario') ? '#fff' : '#10B981' }]}>{t('nuevoReporte.diario')}</Text>
               </TouchableOpacity>
 
               <TouchableOpacity accessibilityRole="button"
@@ -653,7 +653,7 @@ export default function NewReportScreen() {
                 style={[styles.sevBtn, { borderColor: '#D97706' }, severidadUI.has('Semanal') ? { backgroundColor: '#D97706' } : { backgroundColor: '#F8FAFC' }]}
               >
                 <Ionicons name="alert-circle" size={16} color={severidadUI.has('Semanal') ? '#fff' : '#D97706'} />
-                <Text style={[styles.sevTxt, { color: severidadUI.has('Semanal') ? '#fff' : '#D97706' }]}>Semanal</Text>
+                <Text style={[styles.sevTxt, { color: severidadUI.has('Semanal') ? '#fff' : '#D97706' }]}>{t('nuevoReporte.semanal')}</Text>
               </TouchableOpacity>
 
               <TouchableOpacity accessibilityRole="button"
@@ -661,7 +661,7 @@ export default function NewReportScreen() {
                 style={[styles.sevBtn, { borderColor: '#DC2626' }, severidadUI.has('Mensual') ? { backgroundColor: '#DC2626' } : { backgroundColor: '#F8FAFC' }]}
               >
                 <Ionicons name="flash" size={16} color={severidadUI.has('Mensual') ? '#fff' : '#DC2626'} />
-                <Text style={[styles.sevTxt, { color: severidadUI.has('Mensual') ? '#fff' : '#DC2626' }]}>Mensual</Text>
+                <Text style={[styles.sevTxt, { color: severidadUI.has('Mensual') ? '#fff' : '#DC2626' }]}>{t('nuevoReporte.mensual')}</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -670,8 +670,8 @@ export default function NewReportScreen() {
         {/* PERSONAL & EQUIPO (Imagen 1, 4, 6) */}
         {selectedLeaf && (
           <>
-            <DynSectionRestored title="PERSONAL" items={personal} onAdd={() => addItem('personal')} onRemove={(id: string) => setPersonal(personal.filter(x => x.id !== id))} onUpdate={(id: string, p: any) => setPersonal(prev => prev.map(it => it.id === id ? { ...it, ...p } : it))} catalog={effectiveCatalogPersonal} />
-            <DynSectionRestored title="EQUIPO" items={equipo} onAdd={() => addItem('equipo')} onRemove={(id: string) => setEquipo(equipo.filter(x => x.id !== id))} onUpdate={(id: string, p: any) => setEquipo(prev => prev.map(it => it.id === id ? { ...it, ...p } : it))} catalog={effectiveCatalogEquipo} isEquipo />
+            <DynSectionRestored title={t('nuevoReporte.personal')} items={personal} onAdd={() => addItem('personal')} onRemove={(id: string) => setPersonal(personal.filter(x => x.id !== id))} onUpdate={(id: string, p: any) => setPersonal(prev => prev.map(it => it.id === id ? { ...it, ...p } : it))} catalog={effectiveCatalogPersonal} />
+            <DynSectionRestored title={t('nuevoReporte.equipo')} items={equipo} onAdd={() => addItem('equipo')} onRemove={(id: string) => setEquipo(equipo.filter(x => x.id !== id))} onUpdate={(id: string, p: any) => setEquipo(prev => prev.map(it => it.id === id ? { ...it, ...p } : it))} catalog={effectiveCatalogEquipo} isEquipo />
           </>
         )}
 
@@ -681,8 +681,8 @@ export default function NewReportScreen() {
             <View style={styles.cardHeader}>
               <View style={styles.cardIconBox}><Ionicons name="camera" size={18} color={colors.primary} /></View>
               <View style={{ flex: 1 }}>
-                <Text style={styles.cardLabel}>FOTOS ({images.length})</Text>
-                <Text style={styles.cardHelp}>Máximo 2 fotos se exportarán al reporte ejecutivo.</Text>
+                <Text style={styles.cardLabel}>{t('nuevoReporte.fotos', { n: images.length })}</Text>
+                <Text style={styles.cardHelp}>{t('nuevoReporte.maximo2FotosSeExportaran')}</Text>
               </View>
             </View>
             <View style={styles.row}>
@@ -709,7 +709,7 @@ export default function NewReportScreen() {
                         newC[idx] = t;
                         setCaptions(newC);
                       }}
-                      placeholder="Descripción técnica detallada..."
+                      placeholder={t('nuevoReporte.descripcionTecnicaDetallada')}
                       multiline
                       numberOfLines={3}
                       style={styles.captionInputBig}
@@ -727,7 +727,7 @@ export default function NewReportScreen() {
       {/* FOOTER GUARDAR (Imagen 6) */}
       <View style={[styles.footer, { paddingBottom: insets.bottom + 10 }]}>
         <Pressable accessibilityRole="button" onPress={onSavePressed} disabled={saving || !selectedLeaf} style={styles.finalSaveBtn}>
-          {saving ? <ActivityIndicator color="#fff" size="small" /> : <><Ionicons name="checkmark-circle" size={20} color="#fff" /><Text style={styles.finalSaveBtnTxt}>Guardar reporte</Text></>}
+          {saving ? <ActivityIndicator color="#fff" size="small" /> : <><Ionicons name="checkmark-circle" size={20} color="#fff" /><Text style={styles.finalSaveBtnTxt}>{t('nuevoReporte.guardarReporte')}</Text></>}
         </Pressable>
       </View>
 
@@ -858,13 +858,13 @@ function DynSectionRestored({ title, items, onAdd, onRemove, onUpdate, catalog, 
       <View style={styles.sectionHeader}>
         <View>
           <Text style={styles.cardLabel}>{title} ({items.length})</Text>
-          <Text style={styles.cardHelp}>{isEquipo ? 'Cantidad + descripción (ej. 1 Excavadora).' : 'Cantidad + descripción (ej. 3 Albañiles).'}</Text>
+          <Text style={styles.cardHelp}>{isEquipo ? t('nuevoReporte.cantidadDescripcionEj1Excavadora') : t('nuevoReporte.cantidadDescripcionEj3Albaniles')}</Text>
         </View>
-        <Pressable accessibilityRole="button" onPress={onAdd} style={styles.addSmallBtn}><Text style={styles.addSmallTxt}>+ Agregar</Text></Pressable>
+        <Pressable accessibilityRole="button" onPress={onAdd} style={styles.addSmallBtn}><Text style={styles.addSmallTxt}>{t('nuevoReporte.agregar')}</Text></Pressable>
       </View>
       {items.length === 0 ? (
         <View style={styles.emptyItems}>
-          <Text style={styles.emptyItemsTxt}>Aún no agregaste items. Toca "Agregar" para iniciar.</Text>
+          <Text style={styles.emptyItemsTxt}>{t('nuevoReporte.aunNoAgregasteItemsToca')}</Text>
         </View>
       ) : (
         <FlatList
@@ -922,8 +922,8 @@ function DynRow({ item, onRemove, onUpdate, catalog, isEquipo }: any) {
       </Pressable>
       <Modal visible={modalOpen} animationType="slide" transparent>
         <View style={styles.modalBackdrop}><View style={styles.modalContent}>
-          <View style={styles.modalHeader}><Text style={styles.modalTitle}>Buscar {isEquipo ? 'Equipo' : 'Personal'}</Text><Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} hitSlop={8} onPress={() => setModalOpen(false)}><Ionicons name="close" size={24} /></Pressable></View>
-          <TextInput value={search} onChangeText={setSearch} placeholder="Escribir para filtrar..." style={styles.input} autoFocus />
+          <View style={styles.modalHeader}><Text style={styles.modalTitle}>{t('nuevoReporte.buscar')} {isEquipo ? t('nuevoReporte.equipo2') : t('nuevoReporte.personal2')}</Text><Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} hitSlop={8} onPress={() => setModalOpen(false)}><Ionicons name="close" size={24} /></Pressable></View>
+          <TextInput value={search} onChangeText={setSearch} placeholder={t('nuevoReporte.escribirParaFiltrar')} style={styles.input} autoFocus />
           <ScrollView style={{ marginTop: 10, maxHeight: 400 }}>
             {filtered.map((opt: any, idx: number) => (
               <Pressable accessibilityRole="button" key={idx} onPress={() => { onUpdate({ desc: opt }); setModalOpen(false); }} style={styles.optBtn}>
@@ -933,7 +933,7 @@ function DynRow({ item, onRemove, onUpdate, catalog, isEquipo }: any) {
             ))}
             {search.trim().length > 0 && (
               <Pressable accessibilityRole="button" onPress={() => { onUpdate({ desc: isEquipo ? { nombre: search } : search }); setModalOpen(false); }} style={styles.customBtn}>
-                <Text style={styles.customTxt}>+ Usar "{search}"</Text>
+                <Text style={styles.customTxt}>{t('nuevoReporte.usar', { texto: search })}</Text>
               </Pressable>
             )}
           </ScrollView>
@@ -956,16 +956,16 @@ function ConfirmWarningModal({ warning, onCancel, onConfirm }: { warning: 'no-ph
           <View style={[styles.successIcon, { backgroundColor: '#D97706' }]}>
             <Ionicons name="alert" size={32} color="#fff" />
           </View>
-          <Text style={styles.successTitle}>Espera</Text>
+          <Text style={styles.successTitle}>{t('nuevoReporte.espera')}</Text>
           <Text style={[styles.successSub, { marginBottom: 8 }]}>{message}</Text>
           <View style={{ width: '100%', alignItems: 'center' }}>
             <Pressable accessibilityRole="button" onPress={onConfirm} style={styles.waBtn}>
               <Ionicons name="checkmark-circle-outline" size={18} color="#fff" />
-              <Text style={styles.waBtnTxt}>Si, estoy seguro</Text>
+              <Text style={styles.waBtnTxt}>{t('nuevoReporte.siEstoySeguro')}</Text>
             </Pressable>
             <Pressable accessibilityRole="button" onPress={onCancel} style={styles.copyBtn}>
               <Ionicons name="arrow-back-outline" size={18} color={colors.primary} />
-              <Text style={styles.copyBtnTxt}>Regresar</Text>
+              <Text style={styles.copyBtnTxt}>{t('nuevoReporte.regresar')}</Text>
             </Pressable>
           </View>
         </View>
@@ -989,7 +989,7 @@ function SuccessModal({ visible, report, project, user, reportTemplates, onClose
 
   const onCopy = async () => {
     await Clipboard.setStringAsync(shareText);
-    Alert.alert('Copiado', 'Texto copiado.');
+    Alert.alert(t('nuevoReporte.copiado'), t('nuevoReporte.textoCopiado'));
   };
 
   const onShareWA = async () => {
@@ -1008,20 +1008,20 @@ function SuccessModal({ visible, report, project, user, reportTemplates, onClose
             <View style={[styles.successIcon, queued && { backgroundColor: '#D97706' }]}>
               <Ionicons name={queued ? 'cloud-offline-outline' : 'checkmark'} size={32} color="#fff" />
             </View>
-            <Text style={styles.successTitle}>{queued ? 'Guardado. Se enviará al recuperar señal' : 'Reporte enviado'}</Text>
+            <Text style={styles.successTitle}>{queued ? t('nuevoReporte.guardadoSeEnviaraAlRecuperar') : t('nuevoReporte.reporteEnviado')}</Text>
             <Text style={styles.successSub}>
               {queued
-                ? 'Tu reporte y fotos se guardaron en este dispositivo. Se enviarán solos en cuanto tengas conexión. Revisa el indicador de pendientes en la parte superior.'
-                : 'Tus datos y fotos se guardaron en la base. Copia el texto o ábrelo directo en WhatsApp.'}
+                ? t('nuevoReporte.tuReporteYFotosSe')
+                : t('nuevoReporte.tusDatosYFotosSe')}
             </Text>
           </View>
           <ScrollView style={styles.sharePreview} contentContainerStyle={{ padding: 16 }}>
             <Text style={styles.shareText}>{shareText}</Text>
           </ScrollView>
           <View style={{ width: '100%', alignItems: 'center' }}>
-            <Pressable accessibilityRole="button" onPress={onShareWA} style={styles.waBtn}><Ionicons name="logo-whatsapp" size={18} color="#fff" /><Text style={styles.waBtnTxt}>Enviar por WhatsApp</Text></Pressable>
-            <Pressable accessibilityRole="button" onPress={onCopy} style={styles.copyBtn}><Ionicons name="copy-outline" size={18} color={colors.primary} /><Text style={styles.copyBtnTxt}>Copiar texto</Text></Pressable>
-            <Pressable accessibilityRole="button" onPress={onClose} style={{ marginTop: 20 }}><Text style={styles.changeTxt}>Nueva captura</Text></Pressable>
+            <Pressable accessibilityRole="button" onPress={onShareWA} style={styles.waBtn}><Ionicons name="logo-whatsapp" size={18} color="#fff" /><Text style={styles.waBtnTxt}>{t('nuevoReporte.enviarPorWhatsapp')}</Text></Pressable>
+            <Pressable accessibilityRole="button" onPress={onCopy} style={styles.copyBtn}><Ionicons name="copy-outline" size={18} color={colors.primary} /><Text style={styles.copyBtnTxt}>{t('nuevoReporte.copiarTexto')}</Text></Pressable>
+            <Pressable accessibilityRole="button" onPress={onClose} style={{ marginTop: 20 }}><Text style={styles.changeTxt}>{t('nuevoReporte.nuevaCaptura')}</Text></Pressable>
           </View>
         </View>
       </View>

@@ -24,7 +24,7 @@ import { confirm } from '@/src/utils/confirm';
 import { useAuth } from '@/src/auth-context';
 import { ROLE_COORD, ROLE_JEFE, ROLE_SUB } from '@/src/utils/roles';
 import { requestMediaLibraryPermission } from '@/src/utils/permissions';
-import { a11y } from '@/src/i18n';
+import { t, a11y  } from '@/src/i18n';
 import { hoyProyecto } from '@/src/utils/fechas';
 import { PeriodoFinancieroSelector } from '@/src/components/PeriodoFinancieroSelector';
 import { PERIODO_FINANCIERO_DEFECTO, periodoDePresentacion } from '@/src/utils/finanzas';
@@ -104,7 +104,7 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
       setProject(proj);
       setLista(items);
     } catch (e: any) {
-      Alert.alert('Error', e?.message || 'No se pudo cargar Presentación.');
+      Alert.alert(t('presentacion.error'), e?.message || 'No se pudo cargar Presentación.');
     } finally {
       setLoading(false);
     }
@@ -118,7 +118,7 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
       const doc = await api.getPresentacion(projectId, presId);
       setDetail(doc);
     } catch (e: any) {
-      Alert.alert('Error', e?.message || 'No se pudo cargar la presentación.');
+      Alert.alert(t('presentacion.error'), e?.message || 'No se pudo cargar la presentación.');
       setSelectedId(null);
     } finally {
       setDetailLoading(false);
@@ -137,7 +137,7 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
 
   async function onCreatePresentacion() {
     if (!fechaDraft.trim()) {
-      Alert.alert('Falta información', 'Indica la fecha del reporte (YYYY-MM-DD).');
+      Alert.alert(t('presentacion.faltaInformacion'), t('presentacion.indicaLaFechaDelReporte'));
       return;
     }
     try {
@@ -147,7 +147,7 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
       await loadList();
       setSelectedId(created.id);
     } catch (e: any) {
-      Alert.alert('No se pudo crear', e?.message || 'Inténtalo nuevamente.');
+      Alert.alert(t('presentacion.noSePudoCrear'), e?.message || 'Inténtalo nuevamente.');
     } finally {
       setCreating(false);
     }
@@ -169,13 +169,13 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
   }
 
   async function onDeletePresentacion(p: Presentacion) {
-    const ok = await confirm('Eliminar presentación', `¿Eliminar "${p.titulo}" (${p.fecha})?`, { confirmText: 'Eliminar', destructive: true });
+    const ok = await confirm(t('presentacion.eliminarPresentacion'), t('presentacion.eliminarPresentacionPregunta', { titulo: p.titulo, fecha: p.fecha }), { confirmText: 'Eliminar', destructive: true });
     if (!ok) return;
     try {
       await api.deletePresentacion(projectId, p.id);
       await loadList();
     } catch (e: any) {
-      Alert.alert('No se pudo eliminar', e?.message || 'Inténtalo nuevamente.');
+      Alert.alert(t('presentacion.noSePudoEliminar'), e?.message || 'Inténtalo nuevamente.');
     }
   }
 
@@ -216,7 +216,7 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
       setConfigTipo(null);
       await loadDetail(detail.id);
     } catch (e: any) {
-      Alert.alert('No se pudo agregar', e?.message || 'Inténtalo nuevamente.');
+      Alert.alert(t('presentacion.noSePudoAgregar'), e?.message || 'Inténtalo nuevamente.');
     } finally {
       setSavingSeccion(false);
     }
@@ -234,19 +234,19 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
       ]);
       await loadDetail(detail.id);
     } catch (e: any) {
-      Alert.alert('No se pudo reordenar', e?.message || 'Inténtalo nuevamente.');
+      Alert.alert(t('presentacion.noSePudoReordenar'), e?.message || 'Inténtalo nuevamente.');
     }
   }
 
   async function onDeleteSeccion(seccion: PresentacionSeccion) {
     if (!detail) return;
-    const ok = await confirm('Eliminar sección', `¿Eliminar "${TIPO_LABEL[seccion.tipo]}"?`, { confirmText: 'Eliminar', destructive: true });
+    const ok = await confirm(t('presentacion.eliminarSeccion'), t('presentacion.eliminarSeccionPregunta', { nombre: TIPO_LABEL[seccion.tipo] }), { confirmText: 'Eliminar', destructive: true });
     if (!ok) return;
     try {
       await api.deletePresentacionSeccion(projectId, detail.id, seccion.id);
       await loadDetail(detail.id);
     } catch (e: any) {
-      Alert.alert('No se pudo eliminar', e?.message || 'Inténtalo nuevamente.');
+      Alert.alert(t('presentacion.noSePudoEliminar'), e?.message || 'Inténtalo nuevamente.');
     }
   }
 
@@ -271,7 +271,7 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
     try {
       if (Platform.OS !== 'web') {
         const perm = await requestMediaLibraryPermission();
-        if (!perm.granted) { Alert.alert('Sin permiso', 'No hay permiso para acceder a la galería.'); return; }
+        if (!perm.granted) { Alert.alert(t('presentacion.sinPermiso'), t('presentacion.noHayPermisoParaAcceder')); return; }
       }
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images, base64: true, quality: 0.5,
@@ -283,7 +283,7 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
       const nueva: InformacionParticularFoto = { photo, caption: '', destacado: false, destacado_label: null };
       setBloquesDraft((cur) => cur.map((b, i) => (i === idx ? { ...b, fotos: [...b.fotos, nueva] } : b)));
     } catch (e: any) {
-      Alert.alert('No se pudo agregar la foto', e?.message || 'Inténtalo nuevamente.');
+      Alert.alert(t('presentacion.noSePudoAgregarLa'), e?.message || 'Inténtalo nuevamente.');
     }
   }
 
@@ -307,7 +307,7 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
       setBloquesSeccion(null);
       await loadDetail(detail.id);
     } catch (e: any) {
-      Alert.alert('No se pudo guardar', e?.message || 'Inténtalo nuevamente.');
+      Alert.alert(t('presentacion.noSePudoGuardar'), e?.message || 'Inténtalo nuevamente.');
     } finally {
       setSavingBloques(false);
     }
@@ -369,11 +369,11 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
               </View>
             ) : null}
             <View style={styles.sectionHeaderRow}>
-              <Text style={styles.sectionTitle}>Secciones</Text>
+              <Text style={styles.sectionTitle}>{t('presentacion.secciones')}</Text>
               {canEditEstructura ? (
                 <Pressable accessibilityRole="button" onPress={() => setTipoPickerOpen(true)} style={styles.addBtn}>
                   <Ionicons name="add" size={16} color={colors.primary} />
-                  <Text style={styles.addBtnTxt}>Agregar</Text>
+                  <Text style={styles.addBtnTxt}>{t('presentacion.agregar')}</Text>
                 </Pressable>
               ) : null}
             </View>
@@ -382,7 +382,7 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
               {secciones.length === 0 ? (
                 <View style={styles.empty}>
                   <Ionicons name="albums-outline" size={22} color={colors.textMuted} />
-                  <Text style={styles.emptyTxt}>Aún no hay secciones.</Text>
+                  <Text style={styles.emptyTxt}>{t('presentacion.aunNoHaySecciones')}</Text>
                 </View>
               ) : (
                 secciones.map((s, idx) => (
@@ -421,7 +421,7 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
         <Modal visible={tipoPickerOpen} transparent animationType="slide" onRequestClose={() => setTipoPickerOpen(false)}>
           <Pressable style={styles.modalBackdrop} onPress={() => setTipoPickerOpen(false)}>
             <Pressable accessibilityRole="button" style={styles.modalCard} onPress={() => {}}>
-              <Text style={styles.modalTitle}>Agregar sección</Text>
+              <Text style={styles.modalTitle}>{t('presentacion.agregarSeccion')}</Text>
               {TIPO_ORDEN_PICKER.map((t) => (
                 <Pressable accessibilityRole="button" key={t} onPress={() => onPickTipo(t)} style={styles.tipoOption}>
                   <Ionicons name={TIPO_ICON[t]} size={18} color={colors.primary} />
@@ -436,16 +436,16 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
         <Modal visible={configTipo === 'divisor'} transparent animationType="slide" onRequestClose={() => setConfigTipo(null)}>
           <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
             <View style={styles.modalCard}>
-              <Text style={styles.modalTitle}>Divisor de sección</Text>
-              <Text style={styles.fieldLabel}>Título</Text>
+              <Text style={styles.modalTitle}>{t('presentacion.divisorDeSeccion')}</Text>
+              <Text style={styles.fieldLabel}>{t('presentacion.titulo')}</Text>
               <TextInput
                 value={configTitulo} onChangeText={setConfigTitulo}
-                placeholder="Ej. FINANCIERO, ESTUDIOS Y ANÁLISIS, AVANCE DE OBRA"
+                placeholder={t('presentacion.ejFinancieroEstudiosYAnalisis')}
                 placeholderTextColor={colors.textMuted} style={styles.input} autoFocus
               />
               <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
-                <Button label="Cancelar" variant="secondary" onPress={() => setConfigTipo(null)} style={{ flex: 1 }} />
-                <Button label="Agregar" loading={savingSeccion} onPress={() => createSeccion({ tipo: 'divisor', titulo: configTitulo })} style={{ flex: 1 }} />
+                <Button label={t('presentacion.cancelar')} variant="secondary" onPress={() => setConfigTipo(null)} style={{ flex: 1 }} />
+                <Button label={t('presentacion.agregar')} loading={savingSeccion} onPress={() => createSeccion({ tipo: 'divisor', titulo: configTitulo })} style={{ flex: 1 }} />
               </View>
             </View>
           </KeyboardAvoidingView>
@@ -455,7 +455,7 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
         <Modal visible={configTipo === 'croquis_estacion'} transparent animationType="slide" onRequestClose={() => setConfigTipo(null)}>
           <View style={styles.modalBackdrop}>
             <View style={[styles.modalCard, { maxHeight: '70%' }]}>
-              <Text style={styles.modalTitle}>Elegir Estación</Text>
+              <Text style={styles.modalTitle}>{t('presentacion.elegirEstacion')}</Text>
               <ScrollView>
                 {nodes.map((n) => (
                   <Pressable accessibilityRole="button" key={n.id} onPress={() => createSeccion({ tipo: 'croquis_estacion', node_id: n.id })} style={styles.tipoOption}>
@@ -463,7 +463,7 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
                   </Pressable>
                 ))}
               </ScrollView>
-              <Button label="Cancelar" variant="secondary" onPress={() => setConfigTipo(null)} style={{ marginTop: spacing.sm }} />
+              <Button label={t('presentacion.cancelar')} variant="secondary" onPress={() => setConfigTipo(null)} style={{ marginTop: spacing.sm }} />
             </View>
           </View>
         </Modal>
@@ -472,8 +472,8 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
         <Modal visible={configTipo === 'avance_grafico'} transparent animationType="slide" onRequestClose={() => setConfigTipo(null)}>
           <View style={styles.modalBackdrop}>
             <View style={[styles.modalCard, { maxHeight: '70%' }]}>
-              <Text style={styles.modalTitle}>Elegir Plano</Text>
-              {planos.length === 0 ? <Text style={styles.emptyTxt}>No hay planos de avance creados todavía.</Text> : null}
+              <Text style={styles.modalTitle}>{t('presentacion.elegirPlano')}</Text>
+              {planos.length === 0 ? <Text style={styles.emptyTxt}>{t('presentacion.noHayPlanosDeAvance')}</Text> : null}
               <ScrollView>
                 {planos.map((p) => (
                   <Pressable accessibilityRole="button" key={p.id} onPress={() => createSeccion({ tipo: 'avance_grafico', plano_id: p.id })} style={styles.tipoOption}>
@@ -481,7 +481,7 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
                   </Pressable>
                 ))}
               </ScrollView>
-              <Button label="Cancelar" variant="secondary" onPress={() => setConfigTipo(null)} style={{ marginTop: spacing.sm }} />
+              <Button label={t('presentacion.cancelar')} variant="secondary" onPress={() => setConfigTipo(null)} style={{ marginTop: spacing.sm }} />
             </View>
           </View>
         </Modal>
@@ -494,7 +494,7 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
                 <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} onPress={() => setBloquesSeccion(null)} hitSlop={10} style={styles.iconBtn}>
                   <Ionicons name="close" size={22} color={headerTextColor} />
                 </Pressable>
-                <Text style={[styles.titleBar, { color: headerTextColor }]}>Información Particular</Text>
+                <Text style={[styles.titleBar, { color: headerTextColor }]}>{t('presentacion.informacionParticular')}</Text>
                 <View style={{ width: 32 }} />
               </View>
             </View>
@@ -504,25 +504,25 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: spacing.sm }}>
                     <TextInput
                       value={b.titulo} onChangeText={(v) => updateBloque(bIdx, { titulo: v })}
-                      placeholder="Título (ej. Estación 3. Perisur, Intertramo E1-E2)"
+                      placeholder={t('presentacion.tituloEjEstacion3Perisur')}
                       placeholderTextColor={colors.textMuted} style={[styles.input, { flex: 1 }]}
                     />
                     <Pressable accessibilityRole="button" accessibilityLabel={a11y('eliminar')} onPress={() => removeBloque(bIdx)} hitSlop={8}>
                       <Ionicons name="trash-outline" size={18} color={colors.error} />
                     </Pressable>
                   </View>
-                  <Text style={styles.fieldLabel}>Ligar a Estación (opcional — jala Acceso al Predio/Situación Social)</Text>
+                  <Text style={styles.fieldLabel}>{t('presentacion.ligarAEstacionOpcionalJala')}</Text>
                   <Pressable accessibilityRole="button"
                     onPress={async () => { if (!nodes.length) { try { setNodes(await api.listNodes(projectId)); } catch { /* noop */ } } }}
                     style={styles.linkNodeBtn}
                   >
-                    <Text style={styles.linkNodeTxt}>{b.node_id ? (nodes.find((n) => n.id === b.node_id)?.name || b.node_id) : 'Sin ligar'}</Text>
+                    <Text style={styles.linkNodeTxt}>{b.node_id ? (nodes.find((n) => n.id === b.node_id)?.name || b.node_id) : t('presentacion.sinLigar')}</Text>
                   </Pressable>
                   {nodes.length ? (
                     <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: spacing.sm }}>
                       <View style={{ flexDirection: 'row', gap: 6 }}>
                         <Pressable accessibilityRole="button" onPress={() => updateBloque(bIdx, { node_id: null })} style={[styles.chip, !b.node_id && styles.chipActive]}>
-                          <Text style={[styles.chipTxt, !b.node_id && styles.chipTxtActive]}>Sin ligar</Text>
+                          <Text style={[styles.chipTxt, !b.node_id && styles.chipTxtActive]}>{t('presentacion.sinLigar')}</Text>
                         </Pressable>
                         {nodes.map((n) => (
                           <Pressable accessibilityRole="button" key={n.id} onPress={() => updateBloque(bIdx, { node_id: n.id })} style={[styles.chip, b.node_id === n.id && styles.chipActive]}>
@@ -532,20 +532,20 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
                       </View>
                     </ScrollView>
                   ) : null}
-                  <Text style={styles.fieldLabel}>Actividades (una por línea)</Text>
+                  <Text style={styles.fieldLabel}>{t('presentacion.actividadesUnaPorLinea')}</Text>
                   <TextInput
                     value={b.actividades.join('\n')}
                     onChangeText={(v) => updateBloque(bIdx, { actividades: v.split('\n') })}
                     multiline
-                    placeholder={'Ej.\nContinua el habilitado de acero de refuerzo\nColado de zapatas'}
+                    placeholder={t('presentacion.ejContinuaElHabilitadoDe')}
                     placeholderTextColor={colors.textMuted}
                     style={[styles.input, { minHeight: 70, textAlignVertical: 'top' }]}
                   />
                   <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: spacing.sm }}>
-                    <Text style={styles.fieldLabel}>Fotos ({b.fotos.length})</Text>
+                    <Text style={styles.fieldLabel}>{t('presentacion.fotos', { n: b.fotos.length })}</Text>
                     <Pressable accessibilityRole="button" onPress={() => addFotoToBloque(bIdx)} style={styles.addBtn}>
                       <Ionicons name="add" size={16} color={colors.primary} />
-                      <Text style={styles.addBtnTxt}>Agregar foto</Text>
+                      <Text style={styles.addBtnTxt}>{t('presentacion.agregarFoto')}</Text>
                     </Pressable>
                   </View>
                   {b.fotos.map((f, fIdx) => (
@@ -553,7 +553,7 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
                       <Text style={styles.fotoEditIdx}>{fIdx + 1}.</Text>
                       <TextInput
                         value={f.caption} onChangeText={(v) => updateFoto(bIdx, fIdx, { caption: v })}
-                        placeholder="Pie de foto" placeholderTextColor={colors.textMuted}
+                        placeholder={t('presentacion.pieDeFoto')} placeholderTextColor={colors.textMuted}
                         style={[styles.input, { flex: 1 }]}
                       />
                       <Pressable accessibilityRole="button" accessibilityLabel={a11y(f.destacado ? 'quitarDestacado' : 'destacar')} hitSlop={8} onPress={() => updateFoto(bIdx, fIdx, { destacado: !f.destacado })} style={{ paddingHorizontal: 6 }}>
@@ -571,15 +571,15 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
                         const idx = b.fotos.findIndex((f) => f.destacado);
                         if (idx >= 0) updateFoto(bIdx, idx, { destacado_label: v });
                       }}
-                      placeholder='Etiqueta del destacado (ej. "Problemática social")'
+                      placeholder={t('presentacion.etiquetaDelDestacadoEjProblematica')}
                       placeholderTextColor={colors.textMuted}
                       style={[styles.input, { marginTop: spacing.xs }]}
                     />
                   ) : null}
                 </View>
               ))}
-              <Button label="+ Agregar bloque" variant="secondary" onPress={addBloque} style={{ marginTop: spacing.sm }} />
-              <Button label="Guardar" loading={savingBloques} onPress={onSaveBloques} style={{ marginTop: spacing.md }} />
+              <Button label={t('presentacion.agregarBloque')} variant="secondary" onPress={addBloque} style={{ marginTop: spacing.sm }} />
+              <Button label={t('presentacion.guardar')} loading={savingBloques} onPress={onSaveBloques} style={{ marginTop: spacing.md }} />
             </ScrollView>
           </View>
         </Modal>
@@ -590,15 +590,15 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
   // ======================= Vista de LISTA de presentaciones =======================
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <ScreenHeader title="Presentación" backgroundColor={headerColor} />
+      <ScreenHeader title={t('presentacion.presentacion')} backgroundColor={headerColor} />
 
       <ScrollView contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + spacing.xl }]}>
         <View style={styles.sectionHeaderRow}>
-          <Text style={styles.sectionTitle}>Informes semanales</Text>
+          <Text style={styles.sectionTitle}>{t('presentacion.informesSemanales')}</Text>
           {canEditEstructura ? (
             <Pressable accessibilityRole="button" onPress={() => setNewOpen(true)} style={styles.addBtn}>
               <Ionicons name="add" size={16} color={colors.primary} />
-              <Text style={styles.addBtnTxt}>Nueva</Text>
+              <Text style={styles.addBtnTxt}>{t('presentacion.nueva')}</Text>
             </Pressable>
           ) : null}
         </View>
@@ -607,7 +607,7 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
           {lista.length === 0 ? (
             <View style={styles.empty}>
               <Ionicons name="easel-outline" size={22} color={colors.textMuted} />
-              <Text style={styles.emptyTxt}>Aún no hay presentaciones.</Text>
+              <Text style={styles.emptyTxt}>{t('presentacion.aunNoHayPresentaciones')}</Text>
             </View>
           ) : (
             lista.map((p, idx) => (
@@ -634,15 +634,15 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
       <Modal visible={newOpen} transparent animationType="slide" onRequestClose={() => setNewOpen(false)}>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>Nueva Presentación</Text>
-            <Text style={styles.fieldLabel}>Fecha (YYYY-MM-DD)</Text>
+            <Text style={styles.modalTitle}>{t('presentacion.nuevaPresentacion')}</Text>
+            <Text style={styles.fieldLabel}>{t('presentacion.fechaYyyyMmDd')}</Text>
             <TextInput value={fechaDraft} onChangeText={setFechaDraft} style={styles.input} placeholder="2026-09-10" placeholderTextColor={colors.textMuted} />
-            <Text style={styles.fieldLabel}>Título</Text>
+            <Text style={styles.fieldLabel}>{t('presentacion.titulo')}</Text>
             <TextInput value={tituloDraft} onChangeText={setTituloDraft} style={styles.input} />
             <PeriodoFinancieroSelector value={periodoDraft} onChange={setPeriodoDraft} />
             <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
-              <Button label="Cancelar" variant="secondary" onPress={() => setNewOpen(false)} style={{ flex: 1 }} />
-              <Button label="Crear" loading={creating} onPress={onCreatePresentacion} style={{ flex: 1 }} />
+              <Button label={t('presentacion.cancelar')} variant="secondary" onPress={() => setNewOpen(false)} style={{ flex: 1 }} />
+              <Button label={t('presentacion.crear')} loading={creating} onPress={onCreatePresentacion} style={{ flex: 1 }} />
             </View>
           </View>
         </KeyboardAvoidingView>
