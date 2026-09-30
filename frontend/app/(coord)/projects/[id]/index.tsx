@@ -696,6 +696,9 @@ export default function ProjectDetailScreen() {
   const [gdImages, setGdImages] = useState<string[]>([]);
   const [gdImagesLoading, setGdImagesLoading] = useState(false);
   const [gdImagesFetched, setGdImagesFetched] = useState(false);
+  // Nombre de cada imagen (alineado por indice): es la entrada que aparece en
+  // el indice del PDF/PPTX.
+  const [gdNames, setGdNames] = useState<string[]>([]);
   const gdCount = gdImagesFetched ? gdImages.length : ((project as any)?.general_data_images_count ?? 0);
 
   const loadGeneralDataImages = useCallback(async () => {
@@ -704,6 +707,7 @@ export default function ProjectDetailScreen() {
     try {
       const res = await api.getGeneralDataImages(pid);
       setGdImages(res.general_data_images || []);
+      setGdNames(res.general_data_names || []);
       setGdImagesFetched(true);
     } catch (e: any) {
       Alert.alert('Error', e?.message || 'No se pudieron cargar las imagenes.');
@@ -768,6 +772,7 @@ export default function ProjectDetailScreen() {
         const { general_data_images: freshImages, ...rest } = last as any;
         setProject((p) => ({ ...(p || ({} as any)), ...rest, general_data_images_count: (freshImages || []).length }));
         setGdImages(freshImages || []);
+        setGdNames((last as any).general_data_names || []);
         setGdImagesFetched(true);
       }
       if (uploaded === 0 && errors.length > 0) {
@@ -798,6 +803,15 @@ export default function ProjectDetailScreen() {
     }
   }
 
+  async function onSaveGeneralDataNames() {
+    try {
+      const upd: any = await api.setGeneralDataNames(pid, gdImages.map((_, i) => gdNames[i] || ''));
+      setGdNames(upd.general_data_names || []);
+    } catch (e: any) {
+      Alert.alert('No se pudo guardar el nombre', e?.message || 'Intentalo nuevamente.');
+    }
+  }
+
   async function onDeleteGeneralDataImage(idx: number) {
     if (gdBusy !== null) return;
     const ok = await confirm(
@@ -812,6 +826,7 @@ export default function ProjectDetailScreen() {
       const { general_data_images: freshImages, ...rest } = upd as any;
       setProject((p) => ({ ...(p || ({} as any)), ...rest, general_data_images_count: (freshImages || []).length }));
       setGdImages(freshImages || []);
+      setGdNames((upd as any).general_data_names || []);
       setGdImagesFetched(true);
     } catch (e: any) {
       Alert.alert('No se pudo eliminar', e?.message || 'Intentalo nuevamente.');
@@ -2676,6 +2691,23 @@ export default function ProjectDetailScreen() {
                       source={{ uri: src }}
                       style={{ width: '100%', aspectRatio: 16 / 10, backgroundColor: '#F1F5F9' }}
                       resizeMode="cover"
+                    />
+                    <TextInput
+                      value={gdNames[idx] ?? ''}
+                      onChangeText={(t) => setGdNames((arr) => {
+                        const next = gdImages.map((_, i) => arr[i] ?? '');
+                        next[idx] = t;
+                        return next;
+                      })}
+                      onEndEditing={onSaveGeneralDataNames}
+                      placeholder={`Nombre (indice) . Datos generales ${idx + 1}`}
+                      placeholderTextColor={colors.textMuted}
+                      maxLength={120}
+                      style={{
+                        marginHorizontal: 8, marginTop: 8, paddingHorizontal: 8, paddingVertical: 6,
+                        borderWidth: 1, borderColor: colors.border, borderRadius: radius.sm,
+                        fontSize: 13, color: colors.text, backgroundColor: colors.bg,
+                      }}
                     />
                     <View style={{ padding: 8, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
                       <Text style={{ color: colors.textMuted, fontSize: 12 }}>#{idx + 1}</Text>

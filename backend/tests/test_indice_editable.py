@@ -322,3 +322,24 @@ def test_periodos_son_independientes_en_la_clave_de_config():
     assert f("semanal", "today") == "semanal"
     assert f("mensual", "today") == "mensual"
     assert f(None, "week") == "semanal" and f(None, "month") == "mensual" and f(None, "yesterday") == "diario"
+
+
+# ── Nombres de Datos Generales ─────────────────────────────────────────────
+def test_gd_names_siempre_alineados_con_las_imagenes():
+    f = server._gd_names_aligned
+    assert f(None, 3) == ["", "", ""]
+    assert f(["  Presupuesto   anual ", "Programa"], 3) == ["Presupuesto anual", "Programa", ""]
+    assert f(["a", "b", "c"], 2) == ["a", "b"]
+    assert f(["x" * 500], 1) == ["x" * 120]
+    assert f(["a"], 0) == []
+
+
+def test_datos_generales_y_actividades_por_area_son_secciones_propias_en_el_indice():
+    # Una marca por imagen de Datos Generales y una por Área: cada una con su
+    # entrada, y se pueden reordenar de forma independiente.
+    marks = [("gd:0", "Presupuesto", 1), ("gd:1", "Programa", 2), ("aa:OBRA CIVIL", "Actividades por área · OBRA CIVIL", 3),
+             ("aa:SEGURIDAD", "Actividades por área · SEGURIDAD", 5)]
+    out, est = _apply(_pdf_sintetico(7), marks, cfg(order=["aa:SEGURIDAD", "gd:1", "gd:0", "aa:OBRA CIVIL"]))
+    ent = _entradas(_textos(out)[1])
+    assert list(ent) == ["Actividades por área · SEGURIDAD", "Programa", "Presupuesto", "Actividades por área · OBRA CIVIL"]
+    assert [e["key"] for e in est] == ["gd:0", "gd:1", "aa:OBRA CIVIL", "aa:SEGURIDAD"]

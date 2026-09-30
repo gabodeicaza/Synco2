@@ -460,6 +460,9 @@ class ProjectOut(BaseModel):
     # renderizan como slides/páginas dedicadas al inicio de las exportaciones
     # (presupuesto, programa, planos, etc.). Reemplaza al single `template_map`.
     general_data_images: List[str] = Field(default_factory=list)
+    # Nombre de cada imagen (alineado por índice con `general_data_images`);
+    # aparece como entrada propia en el índice del PDF/PPTX.
+    general_data_names: List[str] = Field(default_factory=list)
     tipo_contrato: str = "PRECIOS_UNITARIOS"
     modo_avance: str = "CANTIDAD"
     nombres_niveles_partida: List[str] = Field(default_factory=list)
@@ -1769,6 +1772,7 @@ def _project_public(p: dict) -> dict:
     p.setdefault("color_institucional", "#003366")
     p.setdefault("report_text_color", "#0F172A")
     p.setdefault("general_data_images", [])
+    p.setdefault("general_data_names", [])
     p.setdefault("template_pdf", None)
     p.setdefault("template_docx", None)
     p.setdefault("template_pptx", None)
@@ -9105,6 +9109,20 @@ class GeneralDataImageIn(BaseModel):
 
 class GeneralDataReplaceIn(BaseModel):
     images: List[str]  # reemplazo completo del array
+    # Nombres alineados con `images`. Si se omite se conservan los actuales
+    # (o vacíos si el array cambió de tamaño).
+    names: Optional[List[str]] = None
+
+
+class GeneralDataNamesIn(BaseModel):
+    names: List[str]
+
+
+def _gd_names_aligned(names, n: int) -> List[str]:
+    """Nombres de Datos Generales alineados a `n` imágenes: sin espacios
+    repetidos, rellenados con "" y truncados a n."""
+    out = [" ".join(str(x or "").split())[:120] for x in (names or [])[:n]]
+    return out + [""] * (n - len(out))
 
 
 @api.get("/projects/{pid}/general-data-images")
@@ -9113,8 +9131,12 @@ async def get_general_data_images(pid: str, user: dict = Depends(current_user)):
     Se pide solo cuando el usuario abre el modal "Datos Generales" — ver
     ensure_project_access, que ya no las incluye en el resto de endpoints."""
     await ensure_project_access(user, pid)
-    proj = await db.projects.find_one({"id": pid}, {"_id": 0, "general_data_images": 1})
-    return {"general_data_images": (proj or {}).get("general_data_images") or []}
+    proj = await db.projects.find_one({"id": pid}, {"_id": 0, "general_data_images": 1, "general_data_names": 1})
+    imgs = (proj or {}).get("general_data_images") or []
+    return {
+        "general_data_images": imgs,
+        "general_data_names": _gd_names_aligned((proj or {}).get("general_data_names"), len(imgs)),
+    }
 
 
 @api.post("/projects/{pid}/general-data-images", response_model=ProjectOut)
@@ -9146,8 +9168,9 @@ async def add_general_data_image(
     current = (proj.get("general_data_images") or [])
     if len(current) >= _GENERAL_DATA_MAX:
         raise HTTPException(400, f"Máximo {_GENERAL_DATA_MAX} imágenes por proyecto")
+    names = _gd_names_aligned(proj.get("general_data_names"), len(current)) + [""]
     current = current + [b64]
-    await db.projects.update_one({"id": pid}, {"$set": {"general_data_images": current}})
+    await db.projects.update_one({"id": pid}, {"$set": {"general_data_images": current, "general_data_names": names}})
     updated = await db.projects.find_one({"id": pid})
     return _project_public(updated)
 
@@ -9184,8 +9207,9 @@ async def upload_general_data_image_file(
     import base64 as _b64
     b64_str = _b64.b64encode(raw).decode("ascii")
     data_url = f"data:{content_type};base64,{b64_str}"
+    names = _gd_names_aligned(proj.get("general_data_names"), len(current)) + [""]
     current = current + [data_url]
-    await db.projects.update_one({"id": pid}, {"$set": {"general_data_images": current}})
+    await db.projects.update_one({"id": pid}, {"$set": {"general_data_images": current, "general_data_names": names}})
     updated = await db.projects.find_one({"id": pid})
     return _project_public(updated)
 
@@ -9244,7 +9268,27 @@ async def replace_general_data_images(
     for im in imgs:
         if not isinstance(im, str) or not im.startswith("data:image/"):
             raise HTTPException(400, "Cada imagen debe ser data URL base64 (data:image/...)")
-    await db.projects.update_one({"id": pid}, {"$set": {"general_data_images": imgs}})
+    names = _gd_names_aligned(body.names if body.names is not None else proj.get("general_data_names"), len(imgs))
+    await db.projects.update_one({"id": pid}, {"$set": {"general_data_images": imgs, "general_data_names": names}})
+    updated = await db.projects.find_one({"id": pid})
+    return _project_public(updated)
+
+
+@api.put("/projects/{pid}/general-data-names", response_model=ProjectOut)
+async def set_general_data_names(
+    pid: str,
+    body: GeneralDataNamesIn,
+    user: dict = Depends(current_user),
+):
+    """Guarda el nombre de cada imagen de Datos Generales (alineado por
+    índice). El nombre es la entrada que aparece en el índice del informe."""
+    if user.get("role") not in ("coordinador_general", "jefe_proyecto"):
+        raise HTTPException(403, "Solo Coordinador o Jefe de Proyecto")
+    proj = await db.projects.find_one({"id": pid}, {"general_data_images": 1})
+    if not proj:
+        raise HTTPException(404, "Proyecto no existe")
+    names = _gd_names_aligned(body.names, len(proj.get("general_data_images") or []))
+    await db.projects.update_one({"id": pid}, {"$set": {"general_data_names": names}})
     updated = await db.projects.find_one({"id": pid})
     return _project_public(updated)
 
@@ -9264,8 +9308,10 @@ async def delete_general_data_image(
     imgs = list(proj.get("general_data_images") or [])
     if index < 0 or index >= len(imgs):
         raise HTTPException(404, "Índice fuera de rango")
+    names = _gd_names_aligned(proj.get("general_data_names"), len(imgs))
     imgs.pop(index)
-    await db.projects.update_one({"id": pid}, {"$set": {"general_data_images": imgs}})
+    names.pop(index)
+    await db.projects.update_one({"id": pid}, {"$set": {"general_data_images": imgs, "general_data_names": names}})
     updated = await db.projects.find_one({"id": pid})
     return _project_public(updated)
 
@@ -10528,7 +10574,6 @@ async def export_reports_pdf(
             nonlocal page_num
             if not actividades_tabla_por_area:
                 return
-            _indice_mark("aa", "Actividades por área")
 
             AA_MARGIN_X = 2.0 * cm
             aa_content_w = PW - 2 * AA_MARGIN_X
@@ -10584,6 +10629,7 @@ async def export_reports_pdf(
                 rows = actividades_tabla_por_area.get(area_name) or []
                 if not rows:
                     continue
+                _indice_mark(f"aa:{area_name}", f"Actividades por área · {area_name}")
                 measured = []
                 for r in rows:
                     ubic_p = Paragraph(_xml_escape(r["ubicacion"]), AA_UBIC_STYLE)
@@ -10647,7 +10693,10 @@ async def export_reports_pdf(
         # legacy `template_map`, se emite ese archivo como única página.
         _gd_images: List[str] = list(proj.get("general_data_images") or [])
         _legacy_map_path = _get_project_template(proj, "map") if not _gd_images else None
-        _indice_mark("gd", "Datos generales")
+        _gd_names: List[str] = _gd_names_aligned(proj.get("general_data_names"), len(_gd_images))
+
+        def _gd_title(i: int) -> str:
+            return _gd_names[i] or (f"Datos generales {i + 1}" if len(_gd_images) > 1 else "Datos generales")
 
         def _draw_gd_image(img_bytes: bytes) -> bool:
             try:
@@ -10667,7 +10716,8 @@ async def export_reports_pdf(
 
         if _gd_images:
             _gd_page_count = len(_gd_images)
-            for _b64 in _gd_images:
+            for _gd_i, _b64 in enumerate(_gd_images):
+                _indice_mark(f"gd:{_gd_i}", _gd_title(_gd_i))
                 try:
                     raw = base64.b64decode(_strip_b64_prefix(_b64))
                 except Exception:
@@ -10677,6 +10727,7 @@ async def export_reports_pdf(
                 page_num += 1
         elif _legacy_map_path:
             _gd_page_count = 1
+            _indice_mark("gd", "Datos generales")
             try:
                 _draw_gd_image(Path(_legacy_map_path).read_bytes())
             except Exception:
@@ -10685,6 +10736,7 @@ async def export_reports_pdf(
             page_num += 1
         else:
             _gd_page_count = 1
+            _indice_mark("gd", "Datos generales")
             c.setFillColor(MUTED)
             c.setFont("Helvetica-Oblique", 12)
             c.drawCentredString(PW / 2, PH / 2,
@@ -15170,7 +15222,6 @@ async def export_reports_pptx(
         def _draw_actividades_por_area_slides() -> None:
             if not actividades_tabla_por_area:
                 return
-            _indice_mark("aa", "Actividades por área")
 
             AA_MARGIN_X = Cm(1.8)
             aa_content_w = SW - 2 * AA_MARGIN_X
@@ -15197,6 +15248,7 @@ async def export_reports_pptx(
                 rows = actividades_tabla_por_area.get(area_name) or []
                 if not rows:
                     continue
+                _indice_mark(f"aa:{area_name}", f"Actividades por área · {area_name}")
                 measured = []
                 for r in rows:
                     ubic_lines = _aa_estimate_lines(r["ubicacion"], aa_ubic_w_emu, AA_ROW_FONT)
@@ -15283,20 +15335,26 @@ async def export_reports_pptx(
             except Exception:
                 pass
 
-        _indice_mark("gd", "Datos generales")
+        _gd_names_p: List[str] = _gd_names_aligned(proj.get("general_data_names"), len(_gd_images_p))
         if _gd_images_p:
-            for _b64 in _gd_images_p:
+            for _gd_i, _b64 in enumerate(_gd_images_p):
+                _indice_mark(
+                    f"gd:{_gd_i}",
+                    _gd_names_p[_gd_i] or (f"Datos generales {_gd_i + 1}" if len(_gd_images_p) > 1 else "Datos generales"),
+                )
                 try:
                     raw = base64.b64decode(_strip_b64_prefix(_b64))
                     _emit_gd_slide_from_bytes(raw)
                 except Exception:
                     _emit_gd_slide_from_bytes(b"")
         elif _legacy_map_pptx:
+            _indice_mark("gd", "Datos generales")
             try:
                 _emit_gd_slide_from_bytes(Path(_legacy_map_pptx).read_bytes())
             except Exception:
                 _emit_gd_slide_from_bytes(b"")
         else:
+            _indice_mark("gd", "Datos generales")
             _empty = _clone_membrete()
             add_text(_empty, Cm(1.0), SH / 2 - Cm(0.6), SW - Cm(2.0), Cm(1.2),
                      "Sube imágenes de Datos Generales para el proyecto (presupuesto, programa, planos, mapa…).",

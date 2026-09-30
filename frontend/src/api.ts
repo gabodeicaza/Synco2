@@ -582,6 +582,7 @@ export interface Project {
   // bajo demanda con api.getGeneralDataImages(pid) al abrir ese modal.
   general_data_images?: string[];
   general_data_images_count?: number;
+  general_data_names?: string[];
   // Configuración de Catálogo de Conceptos / avance — ver server.py
   // (ProjectOut). tipo_contrato y modo_avance son ejes independientes.
   tipo_contrato?: 'PRECIO_ALZADO' | 'PRECIOS_UNITARIOS';
@@ -1862,7 +1863,12 @@ export const api = {
   // Carga bajo demanda del array completo (GET /projects/{pid} ya no lo trae
   // por peso). Pedir solo al abrir el modal "Datos Generales".
   getGeneralDataImages: (pid: string) =>
-    request<{ general_data_images: string[] }>('GET', `/projects/${pid}/general-data-images`),
+    request<{ general_data_images: string[]; general_data_names: string[] }>('GET', `/projects/${pid}/general-data-images`),
+
+  // Nombre de cada imagen de Datos Generales (alineado por indice); es la
+  // entrada que aparece en el indice del PDF/PPTX.
+  setGeneralDataNames: (pid: string, names: string[]) =>
+    request<Project>('PUT', `/projects/${pid}/general-data-names`, { names }),
 
   addGeneralDataImage: (pid: string, imageDataUrl: string) =>
     request<Project>('POST', `/projects/${pid}/general-data-images`, { image: imageDataUrl }),
