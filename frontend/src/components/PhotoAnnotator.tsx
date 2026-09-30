@@ -367,6 +367,7 @@ export function PhotoAnnotator({ visible, imageUri, onClose, onSave }: Props) {
               <Pressable accessibilityRole="button"
                 key={c}
                 onPress={() => setColor(c)}
+                hitSlop={8}
                 style={[
                   styles.colorDot,
                   { backgroundColor: c },

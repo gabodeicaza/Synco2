@@ -134,10 +134,14 @@ export default function AreasScreen() {
           <View style={{ gap: spacing.sm }}>
             {areas.map((a) => (
               <View key={a.id} style={styles.card}>
-                <View style={[styles.dot, { backgroundColor: a.color }]} />
+                <View
+                  style={[styles.dot, { backgroundColor: a.color }]}
+                  accessible
+                  accessibilityRole="image"
+                  accessibilityLabel={t('areas.colorDelArea', { nombre: a.name })}
+                />
                 <View style={{ flex: 1 }}>
                   <Text style={styles.cardName}>{a.name}</Text>
-                  <Text style={styles.cardId}>{a.color.toUpperCase()}</Text>
                 </View>
                 <Pressable accessibilityRole="button" accessibilityLabel={a11y('eliminar')} onPress={() => onDelete(a)} hitSlop={8} style={styles.deleteBtn}>
                   <Ionicons name="trash-outline" size={18} color={colors.error} />
@@ -214,8 +218,7 @@ const styles = StyleSheet.create({
   card: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.md, borderWidth: 1, borderColor: colors.border },
   dot: { width: 36, height: 36, borderRadius: radius.md },
   cardName: { fontSize: 15, fontWeight: '800', color: colors.text },
-  cardId: { fontSize: 11, color: colors.textMuted, fontWeight: '700', marginTop: 2 },
-  deleteBtn: { padding: 8 },
+  deleteBtn: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
   fab: { position: 'absolute', right: spacing.lg, flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: colors.primary, paddingHorizontal: 18, paddingVertical: 12, borderRadius: radius.full, ...shadow.card },
   fabText: { color: colors.textInverse, fontWeight: '800', fontSize: 14 },
 

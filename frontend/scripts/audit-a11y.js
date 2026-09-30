@@ -37,13 +37,29 @@ function finApertura(s, i) {
   return [s.length, true];
 }
 
+// Estilos de StyleSheet con ancho o alto fijo menor a 44 pt: { nombre: {width:32,...} }
+function estilosPequenos(s) {
+  const pequenos = new Set();
+  const re = /(\w+):\s*\{([^{}]*)\}/g;
+  let m;
+  while ((m = re.exec(s))) {
+    const w = /\bwidth:\s*(\d+)/.exec(m[2]);
+    const h = /\bheight:\s*(\d+)/.exec(m[2]);
+    const menor = (x) => x && Number(x[1]) < 44;
+    if (menor(w) || menor(h)) pequenos.add(m[1]);
+  }
+  return pequenos;
+}
+
 function auditar() {
   const hallazgos = [];
+  const pequenos = [];
   let total = 0;
   let conRol = 0;
   for (const c of CARPETAS) {
     for (const f of archivos(path.join(RAIZ, c))) {
       const s = fs.readFileSync(f, 'utf8');
+      const chicos = estilosPequenos(s);
       const re = new RegExp('<(' + ETIQUETAS.join('|') + ')\\b', 'g');
       let m;
       while ((m = re.exec(s))) {
@@ -51,6 +67,15 @@ function auditar() {
         const apertura = s.slice(m.index, fin);
         total++;
         if (/accessibilityRole|\brole=/.test(apertura)) conRol++;
+        // Área táctil menor a 44 pt sin hitSlop que la compense.
+        const ref = /styles\.(\w+)/g;
+        let r2;
+        while ((r2 = ref.exec(apertura))) {
+          if (chicos.has(r2[1]) && !/hitSlop/.test(apertura)) {
+            pequenos.push({ archivo: path.relative(RAIZ, f).split(path.sep).join('/'), linea: s.slice(0, m.index).split('\n').length, estilo: r2[1] });
+            break;
+          }
+        }
         if (/accessibilityLabel|aria-label/.test(apertura)) continue;
         let cuerpo = '';
         if (!auto) {
@@ -66,7 +91,7 @@ function auditar() {
       }
     }
   }
-  return { total, conRol, hallazgos };
+  return { total, conRol, hallazgos, pequenos };
 }
 
 if (require.main === module) {
@@ -76,6 +101,8 @@ if (require.main === module) {
     console.log('Elementos táctiles: ' + r.total + ' · con accessibilityRole: ' + r.conRol);
     console.log('Solo ícono y sin accessibilityLabel: ' + r.hallazgos.length);
     for (const h of r.hallazgos) console.log('  ' + h.archivo + ':' + h.linea);
+    console.log('Áreas táctiles menores a 44 pt sin hitSlop: ' + r.pequenos.length);
+    for (const h of r.pequenos) console.log('  ' + h.archivo + ':' + h.linea + ' (' + h.estilo + ')');
   }
 }
 module.exports = { auditar };

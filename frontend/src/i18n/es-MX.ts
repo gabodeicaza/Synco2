@@ -1196,6 +1196,7 @@ export const esMX = {
   areas: {
     titulo: 'Áreas / Disciplinas',
     cuantasUna: '1 área',
+    colorDelArea: 'Color del área {nombre}',
     cuantas: '{n} áreas',
     vacioTitulo: 'Aún no hay áreas',
     vacioMensaje:

@@ -112,7 +112,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.15)',
     borderWidth: 1, borderColor: 'rgba(255,255,255,0.35)',
     marginRight: 6,
-    height: 28,
+    height: 44,
   },
   projChipActive: {
     backgroundColor: '#fff',

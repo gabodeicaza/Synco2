@@ -1068,7 +1068,7 @@ const styles = StyleSheet.create({
   checkboxRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   checkboxTxt: { fontSize: 13, fontWeight: '700', color: '#1E293B', flex: 1 },
   unitRow: { flexDirection: 'row', gap: 8 },
-  unitBtn: { flex: 1, height: 40, borderRadius: 20, borderWidth: 1, borderColor: '#E2E8F0', alignItems: 'center', justifyContent: 'center', backgroundColor: '#fff' },
+  unitBtn: { flex: 1, height: 44, borderRadius: 20, borderWidth: 1, borderColor: '#E2E8F0', alignItems: 'center', justifyContent: 'center', backgroundColor: '#fff' },
   unitBtnActive: { backgroundColor: '#1E40AF', borderColor: '#1E40AF' },
   unitBtnTxt: { fontSize: 13, fontWeight: '800', color: '#64748B' },
   unitBtnTxtActive: { color: '#fff' },

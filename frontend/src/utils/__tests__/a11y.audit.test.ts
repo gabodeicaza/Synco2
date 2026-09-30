@@ -9,6 +9,10 @@ describe('auditoría de accesibilidad', () => {
     expect(r.hallazgos).toEqual([]);
   });
 
+  it('ningún botón tiene un área táctil fija menor a 44 pt sin hitSlop (X-06)', () => {
+    expect(r.pequenos).toEqual([]);
+  });
+
   it('los elementos táctiles declaran accessibilityRole (salvo fondos de modal y contenedores con inputs)', () => {
     expect(r.conRol / r.total).toBeGreaterThan(0.95);
   });
