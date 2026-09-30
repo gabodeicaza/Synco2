@@ -3578,6 +3578,13 @@ def _fotos_lidar_etiqueta(base: str, fecha: Optional[str]) -> str:
     return f"{base} · {_fmt_iso_dmy(fecha)}" if fecha else base
 
 
+def _foto_comp_etiqueta(it: dict, slot: str, base: str) -> str:
+    """Etiqueta bajo cada foto de un bloque `fotos_comparativa`: la
+    personalizada del item (ej. "TAPIAL" / "VUELO DRON") o, si no hay,
+    ORIGINAL/ACTUAL con su fecha."""
+    return it.get(f"etiqueta_{slot}") or _fotos_lidar_etiqueta(base, it.get(f"fecha_{slot}"))
+
+
 class FotoLidarIn(BaseModel):
     titulo: str
     node_id: Optional[str] = None  # Estación/intertramo del árbol, si aplica
@@ -3843,6 +3850,7 @@ class PlanoMarkerPatch(BaseModel):
 
 class PlanoAvancePatch(BaseModel):
     nombre: Optional[str] = None
+    node_id: Optional[str] = None
 
 
 @api.post("/projects/{pid}/planos-avance")
@@ -3850,6 +3858,7 @@ async def upload_plano_avance(
     pid: str,
     nombre: str,
     categoria: str = "avance",
+    node_id: Optional[str] = None,
     file: UploadFile = File(...),
     user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB)),
 ):
@@ -3864,6 +3873,9 @@ async def upload_plano_avance(
         raise HTTPException(400, "Nombre del plano requerido")
     if categoria not in _PLANO_CATEGORIAS:
         raise HTTPException(400, "categoria debe ser 'avance' o 'tapial'")
+    if node_id:
+        if not await db.location_nodes.find_one({"id": node_id, "project_id": pid}, {"id": 1}):
+            raise HTTPException(400, "Nodo no existe en este proyecto")
     content_type = (file.content_type or "").lower()
     if content_type and content_type not in _PLANO_MIME:
         raise HTTPException(415, f"Formato no soportado: {content_type}. Usa JPG/PNG/WebP.")
@@ -3879,6 +3891,9 @@ async def upload_plano_avance(
         "project_id": pid,
         "nombre": nombre,
         "categoria": categoria,
+        # Estación a la que pertenece (opcional) — el export de Tapial la usa
+        # para emparejar el plano con la foto de Vuelo DRON de esa estación.
+        "node_id": node_id or None,
         "imagen": data_url,
         "markers": [],
         "created_by": user["id"],
@@ -3933,6 +3948,10 @@ async def update_plano_avance(
         if not v:
             raise HTTPException(400, "Nombre del plano requerido")
         upd["nombre"] = v
+    if "node_id" in body.model_fields_set:
+        if body.node_id and not await db.location_nodes.find_one({"id": body.node_id, "project_id": pid}, {"id": 1}):
+            raise HTTPException(400, "Nodo no existe en este proyecto")
+        upd["node_id"] = body.node_id or None
     if upd:
         upd["updated_at"] = datetime.now(timezone.utc)
         await db.planos_avance.update_one({"id": plano_id}, {"$set": upd})
@@ -10818,7 +10837,7 @@ async def export_reports_pdf(
                 gap = 0.8 * cm
                 col_w = (content_w - gap) / 2
                 for it in (block.get("items") or []):
-                    _ensure_space(11.0 * cm)
+                    _ensure_space(12.0 * cm)
                     if it.get("titulo"):
                         _draw_heading(it["titulo"])
                     img_h = min(8.5 * cm, y - bottom_y - 1.4 * cm)
@@ -10838,8 +10857,20 @@ async def export_reports_pdf(
                         drawn_h = max(drawn_h, h)
                         c.setFillColor(TEXT)
                         c.setFont("Helvetica-Bold", 11)
-                        c.drawCentredString(x + col_w / 2, y - img_h - 13, _fotos_lidar_etiqueta(lbl, it.get(fkey)))
+                        c.drawCentredString(x + col_w / 2, y - img_h - 13,
+                                            _foto_comp_etiqueta(it, key, lbl))
                     y -= img_h + 13 + 18
+                    if block.get("leyenda"):
+                        lw_tot = sum(12 + c.stringWidth(lb, "Helvetica", 9) + 20 for lb, _ in block["leyenda"])
+                        lx = PW / 2 - lw_tot / 2
+                        for lb, hexcolor in block["leyenda"]:
+                            c.setFillColor(HexColor(hexcolor))
+                            c.circle(lx + 4, y - 3.5, 4, fill=1, stroke=0)
+                            c.setFillColor(TEXT)
+                            c.setFont("Helvetica", 9)
+                            c.drawString(lx + 12, y - 7, lb)
+                            lx += 12 + c.stringWidth(lb, "Helvetica", 9) + 20
+                        y -= 20
 
             def _draw_imagen_block(block: dict) -> None:
                 nonlocal y
@@ -13537,12 +13568,38 @@ async def _gather_modulos_export_data(
             "created_at", 1
         ).to_list(length=50)
         bloques_tapial = []
+        # Vuelo DRON: foto ACTUAL del registro de Fotos LiDAR ligado a la
+        # misma estación (solo si ese módulo está encendido para este informe).
+        dron_por_nodo: dict = {}
+        if activos.get("fotos_lidar"):
+            for r in await db.fotos_lidar.find({"project_id": pid, "node_id": {"$ne": None}}).to_list(length=200):
+                if r.get("foto_actual"):
+                    dron_por_nodo.setdefault(r["node_id"], r["foto_actual"])
+        leyenda_tapial = [
+            ("Concluido", _PLANO_MARKER_ESTADO_COLOR["terminado"]),
+            ("En proceso", _PLANO_MARKER_ESTADO_COLOR["en_proceso"]),
+            ("Sin realizar", _PLANO_MARKER_ESTADO_COLOR["sin_iniciar"]),
+        ]
         for pl in planos:
             if not any(m.get("tipo") == "tramo" for m in (pl.get("markers") or [])):
                 continue
             png = await asyncio.to_thread(_bake_plano_snapshot, pl)
             jpg = await asyncio.to_thread(_png_bytes_to_jpeg_dataurl, png)
             av = _plano_tapial_avance(pl)
+            dron = dron_por_nodo.get(pl.get("node_id")) if pl.get("node_id") else None
+            if dron:
+                # Formato del informe diario: TAPIAL a la izquierda, VUELO DRON
+                # a la derecha, leyenda debajo (mismo bloque de comparativa).
+                bloques_tapial.append({
+                    "type": "fotos_comparativa",
+                    "items": [{
+                        "titulo": pl.get("nombre") or "Tapial",
+                        "original": jpg, "actual": dron,
+                        "etiqueta_original": "TAPIAL", "etiqueta_actual": "VUELO DRON",
+                    }],
+                    "leyenda": leyenda_tapial,
+                })
+                continue
             partes = []
             if av["pct_terminado"] is not None:
                 partes.append(f"Terminado: {av['pct_terminado']:.1f}% de la longitud")
@@ -14172,9 +14229,17 @@ async def export_reports_docx(
                         cp.add_run("Sin foto").italic = True
                     lp = t.rows[1].cells[col].paragraphs[0]
                     lp.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                    lr = lp.add_run(_fotos_lidar_etiqueta(lbl, it.get(fkey)))
+                    lr = lp.add_run(_foto_comp_etiqueta(it, key, lbl))
                     lr.bold = True
                     lr.font.size = Pt(10)
+                if block.get("leyenda"):
+                    lgp = doc.add_paragraph()
+                    lgp.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    for lb, hexcolor in block["leyenda"]:
+                        dot = lgp.add_run("\u25CF ")
+                        dot.font.color.rgb = RGBColor(*tuple(int(hexcolor[i:i + 2], 16) for i in (1, 3, 5)))
+                        t = lgp.add_run(lb + "    ")
+                        t.font.size = Pt(9)
                 doc.add_paragraph()
 
         def _mod_imagen_block(block: dict):
@@ -15688,7 +15753,7 @@ async def export_reports_pptx(
                     if it.get("titulo"):
                         _draw_heading(titulo_continua, it["titulo"])
                     y0 = state["y"]
-                    img_h = int(bottom_y - y0 - Cm(1.6))
+                    img_h = int(bottom_y - y0 - (Cm(2.4) if block.get("leyenda") else Cm(1.6)))
                     y_end = y0
                     for col, (key, lbl, fkey) in enumerate((
                         ("original", "ORIGINAL", "fecha_original"), ("actual", "ACTUAL", "fecha_actual"),
@@ -15702,11 +15767,21 @@ async def export_reports_pptx(
                             add_text(state["slide"], x, y0, col_w, img_h, "Sin foto",
                                      size=14, italic=True, color=WF_MUTED_RGB, align=PP_ALIGN.CENTER)
                             y_end = max(y_end, y0 + img_h)
-                    for col, (lbl, fkey) in enumerate((("ORIGINAL", "fecha_original"), ("ACTUAL", "fecha_actual"))):
+                    for col, (lbl, slot) in enumerate((("ORIGINAL", "original"), ("ACTUAL", "actual"))):
                         x = MARGIN_X + col * (col_w + gap)
                         add_text(state["slide"], x, y_end + Cm(0.15), col_w, Cm(0.9),
-                                 _fotos_lidar_etiqueta(lbl, it.get(fkey)),
+                                 _foto_comp_etiqueta(it, slot, lbl),
                                  size=13, bold=True, color=WF_TEXT_RGB, align=PP_ALIGN.CENTER)
+                    if block.get("leyenda"):
+                        lw = Cm(3.4) * len(block["leyenda"])
+                        lx = MARGIN_X + int((content_w - lw) / 2)
+                        ly = y_end + Cm(1.2)
+                        for label, hexcolor in block["leyenda"]:
+                            rgb = tuple(int(hexcolor[i:i + 2], 16) for i in (1, 3, 5))
+                            _wf_oval(state["slide"], lx, ly + Cm(0.05), Cm(0.35), Cm(0.35), rgb)
+                            add_text(state["slide"], lx + Cm(0.5), ly, Cm(2.8), Cm(0.5), label,
+                                     size=10, color=WF_TEXT_RGB)
+                            lx += Cm(3.4)
                     state["y"] = bottom_y
 
             def _draw_imagen_block(titulo_continua: str, block: dict) -> None:
