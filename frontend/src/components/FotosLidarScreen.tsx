@@ -16,7 +16,8 @@ import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
-import { api, FotoLidar, FotoLidarSlot, Project } from '@/src/api';
+import { api, FotoLidar, FotoLidarSlot, LocationNode, Project } from '@/src/api';
+import { EstacionPicker } from '@/src/components/EstacionPicker';
 import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
 import { Button } from '@/src/components/Button';
 import { confirm } from '@/src/utils/confirm';
@@ -49,6 +50,8 @@ export default function FotosLidarScreen({ projectId }: { projectId: string }) {
 
   const [newOpen, setNewOpen] = useState(false);
   const [tituloDraft, setTituloDraft] = useState('');
+  const [nodes, setNodes] = useState<LocationNode[]>([]);
+  const [nodoDraft, setNodoDraft] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
 
   // Visor/editor de UNA foto (original o actual) de un registro.
@@ -65,7 +68,10 @@ export default function FotosLidarScreen({ projectId }: { projectId: string }) {
   const load = useCallback(async () => {
     if (!projectId) return;
     try {
-      const [proj, list] = await Promise.all([api.getProject(projectId), api.listFotosLidar(projectId)]);
+      const [proj, list, nodeList] = await Promise.all([
+        api.getProject(projectId), api.listFotosLidar(projectId), api.listNodes(projectId),
+      ]);
+      setNodes(nodeList);
       setProject(proj);
       setItems(list);
     } catch (e: any) {
@@ -78,16 +84,17 @@ export default function FotosLidarScreen({ projectId }: { projectId: string }) {
   useEffect(() => { load(); }, [load]);
 
   async function onCreate() {
-    const titulo = tituloDraft.trim();
+    const titulo = tituloDraft.trim() || (nodes.find((n) => n.id === nodoDraft)?.name || '');
     if (!titulo) {
       Alert.alert('Falta información', 'Escribe un título (ej. "Estación 1 · Universidad").');
       return;
     }
     try {
       setCreating(true);
-      await api.createFotoLidar(projectId, { titulo, orden: items.length });
+      await api.createFotoLidar(projectId, { titulo, node_id: nodoDraft, orden: items.length });
       setNewOpen(false);
       setTituloDraft('');
+      setNodoDraft(null);
       await load();
     } catch (e: any) {
       Alert.alert('No se pudo crear', e?.message || 'Intentalo nuevamente.');
@@ -247,7 +254,12 @@ export default function FotosLidarScreen({ projectId }: { projectId: string }) {
           items.map((it) => (
             <View key={it.id} style={[styles.card, { padding: spacing.md }]}>
               <View style={styles.cardHeader}>
-                <Text style={styles.cardTitle} numberOfLines={2}>{it.titulo}</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.cardTitle} numberOfLines={2}>{it.titulo}</Text>
+                  {it.node_id && nodes.find((n) => n.id === it.node_id) ? (
+                    <Text style={styles.slotFecha}>{nodes.find((n) => n.id === it.node_id)?.name}</Text>
+                  ) : null}
+                </View>
                 {canEditEstructura ? (
                   <Pressable hitSlop={8} onPress={() => onDelete(it)}>
                     <Ionicons name="trash-outline" size={18} color={colors.error} />
@@ -277,6 +289,8 @@ export default function FotosLidarScreen({ projectId }: { projectId: string }) {
               style={styles.input}
               autoFocus
             />
+            <Text style={styles.fieldLabel}>Estación (para emparejar con el plano de Tapial)</Text>
+            <EstacionPicker nodes={nodes} value={nodoDraft} onChange={setNodoDraft} />
             <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
               <Button label="Cancelar" variant="secondary" onPress={() => setNewOpen(false)} style={{ flex: 1 }} />
               <Button label="Crear" loading={creating} onPress={onCreate} style={{ flex: 1 }} />

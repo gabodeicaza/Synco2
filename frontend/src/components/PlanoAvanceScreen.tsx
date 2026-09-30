@@ -25,7 +25,8 @@ import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
-import { api, PlanoAvance, PlanoCategoria, PlanoMarker, PlanoMarkerEstatus, Project } from '@/src/api';
+import { api, LocationNode, PlanoAvance, PlanoCategoria, PlanoMarker, PlanoMarkerEstatus, Project } from '@/src/api';
+import { EstacionPicker } from '@/src/components/EstacionPicker';
 import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
 import { Button } from '@/src/components/Button';
 import { confirm } from '@/src/utils/confirm';
@@ -76,6 +77,8 @@ export default function PlanoAvanceScreen({
 
   const [newPlanoOpen, setNewPlanoOpen] = useState(false);
   const [nombreDraft, setNombreDraft] = useState('');
+  const [nodes, setNodes] = useState<LocationNode[]>([]);
+  const [nodoDraft, setNodoDraft] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
 
   const headerColor = project?.color_institucional || project?.color_tema || colors.primary;
@@ -85,7 +88,11 @@ export default function PlanoAvanceScreen({
     if (!projectId) return;
     try {
       setLoading(true);
-      const [proj, items] = await Promise.all([api.getProject(projectId), api.listPlanosAvance(projectId, categoria)]);
+      const [proj, items, nodeList] = await Promise.all([
+        api.getProject(projectId), api.listPlanosAvance(projectId, categoria),
+        esTapial ? api.listNodes(projectId) : Promise.resolve([] as LocationNode[]),
+      ]);
+      setNodes(nodeList);
       setProject(proj);
       setPlanos(items);
     } catch (e: any) {
@@ -93,7 +100,7 @@ export default function PlanoAvanceScreen({
     } finally {
       setLoading(false);
     }
-  }, [projectId, categoria, tituloPantalla]);
+  }, [projectId, categoria, tituloPantalla, esTapial]);
 
   useEffect(() => { loadList(); }, [loadList]);
 
@@ -331,9 +338,10 @@ export default function PlanoAvanceScreen({
       }
 
       setUploading(true);
-      const created = await api.uploadPlanoAvance(projectId, nombre, { uri, name, mimeType: mime }, categoria);
+      const created = await api.uploadPlanoAvance(projectId, nombre, { uri, name, mimeType: mime }, categoria, nodoDraft);
       setNewPlanoOpen(false);
       setNombreDraft('');
+      setNodoDraft(null);
       await loadList();
       setSelectedId(created.id);
     } catch (e: any) {
@@ -612,7 +620,8 @@ export default function PlanoAvanceScreen({
                     <Text style={styles.planoNombre} numberOfLines={1}>{p.nombre}</Text>
                     <Text style={styles.planoSub}>
                       {esTapial
-                        ? `${(p.markers || []).filter((m) => m.tipo === 'tramo').length} tramo(s)`
+                        ? `${(p.markers || []).filter((m) => m.tipo === 'tramo').length} tramo(s)${
+                          p.node_id && nodes.find((n) => n.id === p.node_id) ? ` · ${nodes.find((n) => n.id === p.node_id)?.name}` : ''}`
                         : `${p.markers?.length || 0} marcador${(p.markers?.length || 0) === 1 ? '' : 'es'}`}
                     </Text>
                   </View>
@@ -642,6 +651,12 @@ export default function PlanoAvanceScreen({
               placeholderTextColor={colors.textMuted}
               style={styles.input}
             />
+            {esTapial ? (
+              <>
+                <Text style={styles.fieldLabel}>Estación (para emparejar con la foto de Vuelo DRON)</Text>
+                <EstacionPicker nodes={nodes} value={nodoDraft} onChange={setNodoDraft} />
+              </>
+            ) : null}
             <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
               <Button label="Cancelar" variant="secondary" onPress={() => setNewPlanoOpen(false)} style={{ flex: 1 }} />
               <Button label="Elegir imagen" loading={uploading} onPress={pickAndCreatePlano} style={{ flex: 1 }} />

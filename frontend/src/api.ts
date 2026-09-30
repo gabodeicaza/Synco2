@@ -488,6 +488,8 @@ export interface PlanoAvance {
   project_id: string;
   nombre: string;
   categoria?: PlanoCategoria;
+  // Estación a la que pertenece (Tapial): se empareja con la foto de Vuelo DRON de esa estación.
+  node_id?: string | null;
   avance?: TapialAvance; // solo en el detalle de un plano de Tapial
   imagen?: string; // ausente en el listado (GET .../planos-avance), presente en el detalle
   markers: PlanoMarker[];
@@ -1746,6 +1748,7 @@ export const api = {
     nombre: string,
     file: { uri: string; name: string; mimeType?: string | null },
     categoria: PlanoCategoria = 'avance',
+    nodeId?: string | null,
   ): Promise<PlanoAvance> => {
     if (!file || !file.uri) {
       Alert.alert('Error de Subida', 'No se ha seleccionado ninguna imagen para el plano.');
@@ -1754,7 +1757,7 @@ export const api = {
     const isWeb = Platform.OS === 'web';
     const fileName = file.name || 'plano.jpg';
     const mime = file.mimeType || 'image/jpeg';
-    const url = `${BASE}/projects/${pid}/planos-avance?nombre=${encodeURIComponent(nombre)}&categoria=${categoria}`;
+    const url = `${BASE}/projects/${pid}/planos-avance?nombre=${encodeURIComponent(nombre)}&categoria=${categoria}${nodeId ? `&node_id=${nodeId}` : ''}`;
 
     if (!isWeb) {
       return nativeMultipartUpload<PlanoAvance>(url, file.uri, fileName, mime, 'plano');
@@ -1782,7 +1785,7 @@ export const api = {
   listPlanosAvance: (pid: string, categoria: PlanoCategoria = 'avance') =>
     request<PlanoAvance[]>('GET', `/projects/${pid}/planos-avance?categoria=${categoria}`),
   getPlanoAvance: (pid: string, planoId: string) => request<PlanoAvance>('GET', `/projects/${pid}/planos-avance/${planoId}`),
-  updatePlanoAvance: (pid: string, planoId: string, body: Partial<{ nombre: string }>) =>
+  updatePlanoAvance: (pid: string, planoId: string, body: Partial<{ nombre: string; node_id: string | null }>) =>
     request<PlanoAvance>('PATCH', `/projects/${pid}/planos-avance/${planoId}`, body),
   deletePlanoAvance: (pid: string, planoId: string) =>
     request<{ ok: boolean }>('DELETE', `/projects/${pid}/planos-avance/${planoId}`),
