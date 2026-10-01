@@ -155,7 +155,7 @@ MODULOS_KEYS = {
     "seguridad_higiene", "forestal_arbolado",
     "gestion_riesgos", "estudios_proyecto", "impacto_ambiental",
     "tabla_resumen", "estado_tiempo", "control_obra",
-    "fotos_lidar", "tapial",
+    "fotos_lidar", "tapial", "pruebas_calidad",
 }
 MODULOS_DIARIOS = MODULOS_KEYS
 MODULOS_SEMANALES = MODULOS_KEYS
@@ -1180,6 +1180,8 @@ async def startup_event():
     await db.forestal_autorizado.create_index([("project_id", 1), ("orden", 1)])
     await db.fotos_lidar.create_index("id", unique=True)
     await db.fotos_lidar.create_index([("project_id", 1), ("orden", 1)])
+    await db.pruebas_calidad.create_index("id", unique=True)
+    await db.pruebas_calidad.create_index([("project_id", 1), ("fecha", -1)])
     await db.tabla_resumen_actividades.create_index("id", unique=True)
     await db.tabla_resumen_actividades.create_index([("project_id", 1), ("orden", 1)])
     await db.tabla_resumen_columnas.create_index("id", unique=True)
@@ -4226,6 +4228,177 @@ async def delete_foto_lidar_foto(
 async def delete_foto_lidar(pid: str, fid: str, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB))):
     await ensure_project_access(user, pid)
     await db.fotos_lidar.delete_one({"id": fid, "project_id": pid})
+    return {"ok": True}
+
+
+# === CONCENTRADO DE PRUEBAS DE CALIDAD =====================================
+# Registro tabular de las pruebas/verificaciones de calidad (concreto, acero,
+# compactación, suministro de postes...) en el formato del reporte semanal:
+# FRENTE | LOCALIZACIÓN / EJE | ELEMENTO | MUESTRA No. | FECHA | TIPO |
+# OBSERVACIONES. A diferencia de Fotos LiDAR/Tapial es un LOG de eventos: se
+# filtra por la `fecha` de la prueba al exportar. Se agrupa por estación /
+# intertramo (`node_id`) o, si el frente no es del árbol de nodos (ej.
+# "SUMINISTRO GEFSA-PUEBLA"), por el texto libre `grupo`.
+PRUEBAS_CALIDAD_MUESTRA_VACIA = "No Aplica"
+
+
+class PruebaCalidadIn(BaseModel):
+    node_id: Optional[str] = None
+    grupo: Optional[str] = None
+    frente: str
+    localizacion: Optional[str] = None
+    elemento: Optional[str] = None
+    muestra_no: Optional[str] = None
+    fecha: Optional[str] = None  # ISO date de la prueba; default = hoy (CDMX)
+    tipo: Optional[str] = None
+    observaciones: Optional[str] = None
+
+
+class PruebaCalidadPatch(BaseModel):
+    node_id: Optional[str] = None
+    grupo: Optional[str] = None
+    frente: Optional[str] = None
+    localizacion: Optional[str] = None
+    elemento: Optional[str] = None
+    muestra_no: Optional[str] = None
+    fecha: Optional[str] = None
+    tipo: Optional[str] = None
+    observaciones: Optional[str] = None
+
+
+_PRUEBA_CALIDAD_TEXTOS = ("grupo", "localizacion", "elemento", "muestra_no", "tipo", "observaciones")
+
+
+def _prueba_calidad_public(doc: dict) -> dict:
+    return {k: v for k, v in doc.items() if k != "_id"}
+
+
+async def _validate_node_in_project(pid: str, node_id: Optional[str]) -> None:
+    if node_id and not await db.location_nodes.find_one({"id": node_id, "project_id": pid}):
+        raise HTTPException(400, "Nodo no existe en este proyecto")
+
+
+def _prueba_calidad_fecha(value: Optional[str]) -> str:
+    fecha = (value or "").strip() or datetime.now(MX_TZ).date().isoformat()
+    try:
+        date.fromisoformat(fecha)
+    except ValueError:
+        raise HTTPException(400, "fecha debe ser YYYY-MM-DD")
+    return fecha
+
+
+def _pruebas_calidad_bloques(registros: List[dict], nombre_nodo: dict) -> List[dict]:
+    """Un bloque `table` por frente agrupado (estación/intertramo o `grupo`),
+    en el orden en que aparecen los registros. Sin registros → lista vacía
+    (el módulo no se imprime, ver `_gather_modulos_export_data`)."""
+    grupos: dict = {}
+    for r in sorted(registros, key=lambda x: (x.get("fecha") or "", str(x.get("created_at") or ""))):
+        titulo = nombre_nodo.get(r.get("node_id")) or (r.get("grupo") or "").strip() or "General"
+        grupos.setdefault(titulo, []).append(r)
+    bloques = []
+    for titulo, rows in grupos.items():
+        bloques.append({
+            "type": "table",
+            "heading": f"CONCENTRADO DE PRUEBAS DE CALIDAD · {titulo.upper()}",
+            "headers": ["FRENTE", "LOCALIZACIÓN / EJE", "ELEMENTO", "MUESTRA No.", "FECHA", "TIPO", "OBSERVACIONES"],
+            "rows": [[
+                r.get("frente") or "",
+                r.get("localizacion") or "",
+                r.get("elemento") or "",
+                r.get("muestra_no") or PRUEBAS_CALIDAD_MUESTRA_VACIA,
+                _fmt_iso_dmy(r.get("fecha")),
+                r.get("tipo") or "",
+                r.get("observaciones") or "",
+            ] for r in rows],
+            "col_widths": [0.16, 0.12, 0.12, 0.10, 0.10, 0.16, 0.24],
+            "empty_text": "Sin pruebas registradas.",
+        })
+    return bloques
+
+
+@api.get("/projects/{pid}/pruebas-calidad")
+async def list_pruebas_calidad(
+    pid: str, desde: Optional[str] = None, hasta: Optional[str] = None, node_id: Optional[str] = None,
+    user: dict = Depends(current_user),
+):
+    await ensure_project_access(user, pid)
+    q: dict = {"project_id": pid}
+    if node_id:
+        q["node_id"] = node_id
+    rango: dict = {}
+    for clave, valor in (("$gte", desde), ("$lte", hasta)):
+        if valor:
+            rango[clave] = _prueba_calidad_fecha(valor)
+    if rango:
+        q["fecha"] = rango
+    items = await db.pruebas_calidad.find(q).sort([("fecha", -1), ("created_at", -1)]).to_list(length=2000)
+    return [_prueba_calidad_public(d) for d in items]
+
+
+@api.post("/projects/{pid}/pruebas-calidad")
+async def create_prueba_calidad(pid: str, body: PruebaCalidadIn, user: dict = Depends(current_user)):
+    """Captura de campo: cualquier rol de escritura con acceso al proyecto."""
+    _assert_write_allowed(user)
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "pruebas_calidad")
+    frente = body.frente.strip()
+    if not frente:
+        raise HTTPException(400, "frente es requerido")
+    await _validate_node_in_project(pid, body.node_id)
+    now = datetime.now(timezone.utc)
+    doc = {
+        "id": str(uuid.uuid4()), "project_id": pid, "node_id": body.node_id or None,
+        "frente": frente, "fecha": _prueba_calidad_fecha(body.fecha),
+        "created_by": user["id"], "created_by_name": user["name"],
+        "created_at": now, "updated_at": now,
+    }
+    for campo in _PRUEBA_CALIDAD_TEXTOS:
+        doc[campo] = (getattr(body, campo) or "").strip() or None
+    await db.pruebas_calidad.insert_one(doc)
+    return _prueba_calidad_public(doc)
+
+
+@api.patch("/projects/{pid}/pruebas-calidad/{rid}")
+async def update_prueba_calidad(pid: str, rid: str, body: PruebaCalidadPatch, user: dict = Depends(current_user)):
+    _assert_write_allowed(user)
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "pruebas_calidad")
+    doc = await db.pruebas_calidad.find_one({"id": rid, "project_id": pid})
+    if not doc:
+        raise HTTPException(404, "Registro no existe")
+    fields = body.model_dump(exclude_unset=True)
+    upd: dict = {}
+    if "frente" in fields:
+        frente = (fields["frente"] or "").strip()
+        if not frente:
+            raise HTTPException(400, "frente no puede quedar vacío")
+        upd["frente"] = frente
+    if "node_id" in fields:
+        await _validate_node_in_project(pid, fields["node_id"])
+        upd["node_id"] = fields["node_id"] or None
+    if "fecha" in fields:
+        upd["fecha"] = _prueba_calidad_fecha(fields["fecha"])
+    for campo in _PRUEBA_CALIDAD_TEXTOS:
+        if campo in fields:
+            upd[campo] = (fields[campo] or "").strip() or None
+    if upd:
+        upd["updated_at"] = datetime.now(timezone.utc)
+        await db.pruebas_calidad.update_one({"id": rid}, {"$set": upd})
+    return _prueba_calidad_public(await db.pruebas_calidad.find_one({"id": rid}))
+
+
+@api.delete("/projects/{pid}/pruebas-calidad/{rid}")
+async def delete_prueba_calidad(pid: str, rid: str, user: dict = Depends(current_user)):
+    """Coordinador/Sub-Coordinador borran cualquiera; el resto solo lo que
+    capturó (corregir un error propio sin depender de un supervisor)."""
+    _assert_write_allowed(user)
+    await ensure_project_access(user, pid)
+    doc = await db.pruebas_calidad.find_one({"id": rid, "project_id": pid}, {"created_by": 1})
+    if not doc:
+        raise HTTPException(404, "Registro no existe")
+    if user.get("role") not in (ROLE_COORD, ROLE_SUB) and doc.get("created_by") != user["id"]:
+        raise HTTPException(403, "Solo puedes eliminar las pruebas que tú capturaste")
+    await db.pruebas_calidad.delete_one({"id": rid, "project_id": pid})
     return {"ok": True}
 
 
@@ -14120,6 +14293,7 @@ async def _gather_modulos_export_data(
     out: dict = {
         "forestal": None, "seguridad": None, "riesgos": None, "estudios": None, "ambiental": None,
         "tabla_resumen": None, "fotos_lidar": None, "tapial": None,
+        "pruebas_calidad": None,
     }
     date_q = {"created_at": {"$gte": start_dt, "$lte": end_dt}}
     # Riesgos y Estudios son matrices mutables (el % de avance se actualiza
@@ -14426,6 +14600,22 @@ async def _gather_modulos_export_data(
             })
         if bloques_tapial:
             out["tapial"] = {"titulo": "TAPIAL", "blocks": bloques_tapial}
+
+    if activos.get("pruebas_calidad"):
+        # Log de eventos: se filtra por la `fecha` de la prueba (string ISO,
+        # en hora de CDMX), no por created_at — una prueba capturada hoy
+        # puede ser de ayer.
+        d_ini = start_dt.astimezone(MX_TZ).date().isoformat()
+        d_fin = end_dt.astimezone(MX_TZ).date().isoformat()
+        pruebas = await db.pruebas_calidad.find(
+            {"project_id": pid, "fecha": {"$gte": d_ini, "$lte": d_fin}}
+        ).to_list(length=5000)
+        nodos = await db.location_nodes.find(
+            {"project_id": pid, "id": {"$in": list({p["node_id"] for p in pruebas if p.get("node_id")})}}
+        ).to_list(length=500)
+        bloques_pc = _pruebas_calidad_bloques(pruebas, {n["id"]: n.get("name") or "" for n in nodos})
+        if bloques_pc:
+            out["pruebas_calidad"] = {"titulo": "PRUEBAS DE CALIDAD", "blocks": bloques_pc}
 
     return out
 
