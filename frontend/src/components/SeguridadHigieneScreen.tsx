@@ -13,12 +13,24 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import {
-  api, SeguridadReporte, SeguridadChecklist, SeguridadChecklistItem, SeguridadTipoRegistro, Project,
+  api, SeguridadReporte, SeguridadChecklist, SeguridadChecklistItem, SeguridadTipoRegistro, SeguridadCruz, Project,
 } from '@/src/api';
+import { downloadBlob } from '@/src/utils/downloadBlob';
 import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
 import { Button } from '@/src/components/Button';
 
-type Tab = 'reportes' | 'checklist';
+type Tab = 'reportes' | 'cruz' | 'checklist';
+const CRUZ_CELDA = 30;                 // lado de cada casilla de la cruz (px)
+const CRUZ_COLOR_FUTURO = '#A6A6A6';   // dias que aun no ocurren
+const CRUZ_TEXTO_OSCURO = new Set<string>(['dano_propiedad', 'accidente_leve']);  // fondos claros
+
+// 'AAAA-MM' del mes actual y desplazamiento de meses.
+function mesActual(): string { return hoyISO().slice(0, 7); }
+function mesDesplazado(mes: string, delta: number): string {
+  const [a, m] = mes.split('-').map(Number);
+  const d = new Date(a, m - 1 + delta, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
 const TIPOS: { value: SeguridadTipoRegistro; label: string; color: string }[] = [
   { value: 'sin_accidentes', label: 'Sin accidentes', color: colors.success },
   { value: 'dano_propiedad', label: 'Daño a la propiedad', color: colors.warning },
@@ -68,6 +80,38 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
   const [descripcionDraft, setDescripcionDraft] = useState('');
   const [seguimientoDraft, setSeguimientoDraft] = useState('');
   const [fotoDraft, setFotoDraft] = useState<string | null>(null);
+
+  // === Cruz de Seguridad ===
+  const [cruzMes, setCruzMes] = useState(mesActual());
+  const [cruz, setCruz] = useState<SeguridadCruz | null>(null);
+  const [cruzLoading, setCruzLoading] = useState(false);
+  const [cruzExporting, setCruzExporting] = useState(false);
+
+  const loadCruz = useCallback(async () => {
+    if (!projectId) return;
+    try {
+      setCruzLoading(true);
+      setCruz(await api.getSeguridadCruz(projectId, cruzMes));
+    } catch (e: any) {
+      Alert.alert('Error', e?.message || 'No se pudo cargar la Cruz de Seguridad.');
+    } finally {
+      setCruzLoading(false);
+    }
+  }, [projectId, cruzMes]);
+
+  useEffect(() => { if (tab === 'cruz') loadCruz(); }, [tab, loadCruz]);
+
+  async function onExportCruz() {
+    try {
+      setCruzExporting(true);
+      const { blob, filename } = await api.downloadSeguridadCruzXlsx(projectId, cruzMes);
+      await downloadBlob(blob, filename, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    } catch (e: any) {
+      Alert.alert('No se pudo exportar', e?.message || 'Intentalo nuevamente.');
+    } finally {
+      setCruzExporting(false);
+    }
+  }
 
   // === Checklist ===
   const [checklistDraft, setChecklistDraft] = useState<SeguridadChecklistItem[]>([]);
@@ -220,6 +264,9 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
           <Pressable onPress={() => setTab('reportes')} style={[styles.tabBtn, tab === 'reportes' && styles.tabBtnActive]}>
             <Text style={[styles.tabTxt, { color: tab === 'reportes' ? headerColor : headerTextColor }]}>Reportes</Text>
           </Pressable>
+          <Pressable onPress={() => setTab('cruz')} style={[styles.tabBtn, tab === 'cruz' && styles.tabBtnActive]}>
+            <Text style={[styles.tabTxt, { color: tab === 'cruz' ? headerColor : headerTextColor }]}>Cruz</Text>
+          </Pressable>
           <Pressable onPress={() => setTab('checklist')} style={[styles.tabBtn, tab === 'checklist' && styles.tabBtnActive]}>
             <Text style={[styles.tabTxt, { color: tab === 'checklist' ? headerColor : headerTextColor }]}>Checklist</Text>
           </Pressable>
@@ -278,6 +325,103 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
               })
             )}
           </View>
+        </ScrollView>
+      ) : tab === 'cruz' ? (
+        <ScrollView contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + spacing.xl }]}>
+          <View style={styles.cruzNav}>
+            <Pressable hitSlop={10} onPress={() => setCruzMes((m) => mesDesplazado(m, -1))}>
+              <Ionicons name="chevron-back" size={22} color={colors.text} />
+            </Pressable>
+            <Text style={styles.cruzMes}>{cruz?.mes_label ?? cruzMes}</Text>
+            <Pressable hitSlop={10} onPress={() => setCruzMes((m) => mesDesplazado(m, 1))}>
+              <Ionicons name="chevron-forward" size={22} color={colors.text} />
+            </Pressable>
+          </View>
+
+          {cruzLoading && !cruz ? (
+            <ActivityIndicator color={colors.primary} style={{ marginTop: spacing.xl }} />
+          ) : cruz ? (
+            <>
+              <View style={[styles.card, styles.cruzFuerza]}>
+                <Text style={styles.cruzFuerzaTitulo}>Fuerza de trabajo PROMEDIO</Text>
+                <Text style={styles.cruzFuerzaNum}>{cruz.fuerza_trabajo.personal ?? '—'}</Text>
+                <Text style={styles.cruzFuerzaNum}>{cruz.fuerza_trabajo.maquinaria ?? '—'}</Text>
+              </View>
+              <Text style={styles.fieldHint}>Personal · maquinaria (promedio diario de los reportes de campo del mes)</Text>
+
+              <Text style={[styles.sectionTitle, { marginTop: spacing.md }]}>Cruz de seguridad</Text>
+              <View style={[styles.card, { alignItems: 'center', padding: spacing.md }]}>
+                <View
+                  style={{
+                    width: CRUZ_CELDA * 9,
+                    height: CRUZ_CELDA * (Math.max(...cruz.dias.map((d) => d.fila)) + 1),
+                  }}
+                >
+                  {cruz.dias.map((d) => {
+                    const info = cruz.resumen.find((r) => r.tipo === d.tipo);
+                    const bg = d.tipo && info ? `#${info.color}` : CRUZ_COLOR_FUTURO;
+                    const oscuro = !d.tipo || CRUZ_TEXTO_OSCURO.has(d.tipo);
+                    return (
+                      <View
+                        key={d.dia}
+                        style={[styles.cruzCelda, { left: d.col * CRUZ_CELDA, top: d.fila * CRUZ_CELDA, backgroundColor: bg }]}
+                      >
+                        <Text style={[styles.cruzCeldaTxt, { color: oscuro ? '#0F172A' : '#fff' }]}>{d.dia}</Text>
+                      </View>
+                    );
+                  })}
+                </View>
+              </View>
+
+              <Text style={[styles.sectionTitle, { marginTop: spacing.md }]}>Registro de accidentes</Text>
+              <View style={styles.card}>
+                {cruz.resumen.map((r, idx) => (
+                  <View key={r.tipo} style={[styles.cruzFila, idx > 0 && styles.rowBorder]}>
+                    <View style={[styles.cruzEtiqueta, { backgroundColor: `#${r.color}` }]}>
+                      <Text style={[styles.cruzEtiquetaTxt, { color: CRUZ_TEXTO_OSCURO.has(r.tipo) ? '#0F172A' : '#fff' }]}>
+                        {r.label}
+                      </Text>
+                    </View>
+                    <Text style={styles.cruzCol}>{r.abrev}</Text>
+                    <Text style={styles.cruzCol}>{r.cantidad}</Text>
+                    <Text style={styles.cruzCol}>{r.porcentaje}%</Text>
+                  </View>
+                ))}
+              </View>
+              <Text style={styles.fieldHint}>
+                Cantidad = registros del mes ("Sin accidentes" = días sin eventos). Porcentaje sobre los{' '}
+                {cruz.dias_transcurridos} días transcurridos.
+              </Text>
+
+              <Button
+                label="Exportar a Excel"
+                loading={cruzExporting}
+                onPress={onExportCruz}
+                style={{ marginTop: spacing.md }}
+              />
+
+              <Text style={[styles.sectionTitle, { marginTop: spacing.lg }]}>Bitácora del año ({cruz.registros.length})</Text>
+              <View style={styles.card}>
+                {cruz.registros.length === 0 ? (
+                  <View style={styles.empty}><Text style={styles.emptyTxt}>Sin accidentes ni incidentes este año.</Text></View>
+                ) : (
+                  cruz.registros.map((b, idx) => (
+                    <View key={b.n} style={[styles.repRow, idx > 0 && styles.rowBorder]}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.repDesc} numberOfLines={2}>
+                          {b.n}. {b.abrev} · {b.mes} · {b.fecha}
+                        </Text>
+                        <Text style={styles.repAcciones} numberOfLines={1}>
+                          {[b.trabajador, b.contratista, b.ubicacion].filter(Boolean).join(' · ')}
+                        </Text>
+                        {!!b.descripcion && <Text style={styles.repAcciones} numberOfLines={2}>{b.descripcion}</Text>}
+                      </View>
+                    </View>
+                  ))
+                )}
+              </View>
+            </>
+          ) : null}
         </ScrollView>
       ) : (
         <ScrollView contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + spacing.xl }]}>
@@ -525,6 +669,17 @@ const styles = StyleSheet.create({
   modalTitle: { fontSize: 16, fontWeight: '800', color: colors.text, marginBottom: spacing.md },
   fieldLabel: { fontSize: 12, fontWeight: '700', color: colors.textMuted, marginBottom: 6, marginTop: spacing.sm },
   fieldHint: { fontSize: 11, color: colors.textMuted, marginTop: 4 },
+  cruzNav: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: spacing.md },
+  cruzMes: { fontSize: 16, fontWeight: '800', color: colors.text },
+  cruzFuerza: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: spacing.md, marginBottom: 0 },
+  cruzFuerzaTitulo: { flex: 1, fontSize: 13, fontWeight: '800', color: colors.text },
+  cruzFuerzaNum: { fontSize: 16, fontWeight: '800', color: colors.text, minWidth: 40, textAlign: 'center' },
+  cruzCelda: { position: 'absolute', width: CRUZ_CELDA, height: CRUZ_CELDA, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#fff' },
+  cruzCeldaTxt: { fontSize: 11, fontWeight: '800' },
+  cruzFila: { flexDirection: 'row', alignItems: 'center', gap: 8, padding: 6 },
+  cruzEtiqueta: { flex: 1, paddingVertical: 8, paddingHorizontal: 8, borderRadius: radius.sm },
+  cruzEtiquetaTxt: { fontSize: 11, fontWeight: '800' },
+  cruzCol: { width: 44, textAlign: 'center', fontSize: 12, fontWeight: '700', color: colors.text },
   chipWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   chip: {
     paddingHorizontal: 12, paddingVertical: 8, borderRadius: radius.md, borderWidth: 1,

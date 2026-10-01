@@ -400,6 +400,26 @@ export interface SeguridadReporte {
   created_at: string;
 }
 
+// Cruz de Seguridad: tablero mensual (una casilla por dia, pintada por el peor
+// evento del dia; `tipo: null` = dia que aun no ocurre).
+export interface CruzDia { dia: number; fila: number; col: number; tipo: SeguridadTipoRegistro | null }
+export interface CruzResumen {
+  tipo: SeguridadTipoRegistro; label: string; abrev: string; color: string; cantidad: number; porcentaje: number;
+}
+export interface CruzBitacora {
+  n: number; mes: string; mes_num: number; trabajador: string; contratista: string; tipo: SeguridadTipoRegistro;
+  abrev: string; ubicacion: string; fecha: string; descripcion: string;
+}
+export interface SeguridadCruz {
+  mes: string;                 // AAAA-MM
+  mes_label: string;           // "Marzo 2026"
+  dias_transcurridos: number;
+  dias: CruzDia[];
+  resumen: CruzResumen[];
+  fuerza_trabajo: { personal: number | null; maquinaria: number | null };
+  registros: CruzBitacora[];   // bitacora del ano, sin "Sin accidentes"
+}
+
 export interface SeguridadChecklistItem {
   item: string;
   tipo: 'preventiva' | 'correctiva';
@@ -2192,6 +2212,20 @@ export const api = {
     tipo_registro?: SeguridadTipoRegistro; ubicacion?: string | null; descripcion?: string;
     seguimiento?: string | null; images?: string[];
   }) => request<SeguridadReporte>('PATCH', `/projects/${pid}/seguridad-reportes/${rid}`, body),
+  getSeguridadCruz: (pid: string, mes?: string) =>
+    request<SeguridadCruz>('GET', `/projects/${pid}/seguridad-cruz${mes ? `?mes=${mes}` : ''}`),
+  // Excel con el formato de la hoja de referencia (cruz, resumen y bitacora).
+  downloadSeguridadCruzXlsx: async (pid: string, mes?: string): Promise<{ blob: Blob; filename: string }> => {
+    const tok = await getToken();
+    const res = await fetch(`${BASE}/projects/${pid}/seguridad-cruz.xlsx${mes ? `?mes=${mes}` : ''}`, {
+      method: 'GET',
+      headers: tok ? { Authorization: `Bearer ${tok}` } : {},
+    });
+    if (!res.ok) throw new ApiError(res.status, await _downloadErrorMessage(res, 'Error al exportar la Cruz de Seguridad'));
+    const cd = res.headers.get('Content-Disposition') || '';
+    const m = cd.match(/filename="?([^"]+)"?/);
+    return { blob: await res.blob(), filename: (m && m[1]) || 'cruz_de_seguridad.xlsx' };
+  },
   listSeguridadChecklist: (pid: string) => request<SeguridadChecklist[]>('GET', `/projects/${pid}/seguridad-checklist`),
   createSeguridadChecklist: (pid: string, body: { fecha?: string; items: SeguridadChecklistItem[] }) =>
     request<SeguridadChecklist>('POST', `/projects/${pid}/seguridad-checklist`, body),
