@@ -10266,6 +10266,11 @@ async def export_reports_pdf(
     # Generales, ver `_draw_actividades_por_area_section` más abajo) —
     # mismo prefetch, distinta forma (conserva ubicación por fila).
     actividades_tabla_por_area = await _actividades_tabla_por_area(pid, start_dt, end_dt, user)
+    # Resumen de actividades por Tramo (antes de la Tabla Resumen) — mismas
+    # actividades que muestra el hub para el rango del informe.
+    actividades_resumen_tramo = await _actividades_resumen_por_tramo_prefetch(
+        pid, start_dt, end_dt, user, nodes_by_id,
+    )
     # Clima: la captura MANUAL de hoy (módulo "Estado del Tiempo", ver
     # `upsert_weather_log`) tiene prioridad sobre la consulta automática a
     # Open-Meteo — una sola query, no una por subtramo. Si un subtramo no
@@ -10956,9 +10961,18 @@ async def export_reports_pdf(
                 "imagen": _draw_imagen_block,
             }
 
+            # Resumen de actividades por Tramo: justo ANTES de la Tabla Resumen
+            # (avance acumulado); si ese módulo no está activo, antes de los demás.
+            _resumen_tramo_pendiente = True
+            if modulos_data.get("tabla_resumen") is None:
+                _draw_resumen_actividades_tramo()
+                _resumen_tramo_pendiente = False
             for _mod_key, _mod_data in modulos_data.items():
                 if _mod_data is None:
                     continue
+                if _mod_key == "tabla_resumen" and _resumen_tramo_pendiente:
+                    _draw_resumen_actividades_tramo()
+                    _resumen_tramo_pendiente = False
                 _indice_mark(f"mod:{_mod_key}", _mod_data["titulo"])
                 _section_header(_mod_data["titulo"])
                 for block in _mod_data["blocks"]:
@@ -11193,6 +11207,129 @@ async def export_reports_pdf(
                     page_num += 1
                     if idx < len(measured):
                         y = _aa_new_page(area_name)
+
+        # --- RESUMEN DE ACTIVIDADES POR TRAMO (antes de la Tabla Resumen) ----
+        # Mismas actividades del hub Actividades Generales para el rango del
+        # informe (diario/semanal/mensual), agrupadas por Tramo. Se llama
+        # desde `_draw_modulos_closing_pages`, justo antes del módulo Tabla
+        # Resumen (o antes de todos los módulos si ese no está activo).
+        def _draw_resumen_actividades_tramo() -> None:
+            nonlocal page_num
+            if not actividades_resumen_tramo:
+                return
+
+            RT_MARGIN_X = 2.0 * cm
+            rt_content_w = PW - 2 * RT_MARGIN_X
+            rt_top_y = PH - TOP_MARGIN_PDF
+            rt_bottom_y = BOTTOM_MARGIN_PDF
+
+            RT_TITLE_COLOR = HexColor(_readable_dark_hex(project_color))
+            _rt_raw_brand_hex = _sanitize_color_hex(project_color) or "#003366"
+            RT_BRAND = HexColor(_rt_raw_brand_hex)
+            RT_HEADER_TEXT = WHITE if _hex_luminance(_rt_raw_brand_hex) <= 0.6 else HexColor("#1A1A1A")
+            RT_LINE_GRAY = HexColor("#D0D0D0")
+            RT_CONTENT_GRAY = HexColor("#333333")
+
+            RT_ROW_FONT_SIZE = 10.5
+            RT_HEADER_H = 26
+            RT_FRACS = (0.24, 0.16, 0.60)  # Ubicación / Área / Actividad
+            RT_PAD_L, RT_PAD_R = 8, 8
+
+            RT_BOLD_STYLE = ParagraphStyle(
+                "RTBold", fontName="Helvetica-Bold", fontSize=RT_ROW_FONT_SIZE,
+                leading=RT_ROW_FONT_SIZE * 1.3, textColor=RT_CONTENT_GRAY,
+            )
+            RT_TXT_STYLE = ParagraphStyle(
+                "RTTxt", fontName="Helvetica", fontSize=RT_ROW_FONT_SIZE,
+                leading=RT_ROW_FONT_SIZE * 1.3, textColor=RT_CONTENT_GRAY,
+            )
+            RT_HEADER_STYLE = ParagraphStyle(
+                "RTHeader", fontName="Helvetica-Bold", fontSize=RT_ROW_FONT_SIZE,
+                leading=RT_ROW_FONT_SIZE * 1.2, textColor=RT_HEADER_TEXT,
+            )
+            rt_col_w = [rt_content_w * f - RT_PAD_L - RT_PAD_R for f in RT_FRACS]
+
+            is_first_rt_page = True
+
+            def _rt_new_page(tramo_name: str, continua: bool) -> float:
+                nonlocal is_first_rt_page
+                y = rt_top_y
+                if is_first_rt_page:
+                    c.setFillColor(RT_TITLE_COLOR)
+                    c.setFont("Helvetica-Bold", 24)
+                    c.drawCentredString(PW / 2, y, "RESUMEN DE ACTIVIDADES POR TRAMO")
+                    y -= 24 * 1.4
+                    is_first_rt_page = False
+                c.setFillColor(TEXT)
+                c.setFont("Helvetica-Bold", 15)
+                c.drawString(RT_MARGIN_X, y, tramo_name.upper() + ("  (continúa)" if continua else ""))
+                y -= 15 * 1.6
+                return y
+
+            for grp in actividades_resumen_tramo:
+                rows = grp["rows"]
+                if not rows:
+                    continue
+                _indice_mark(f"acttramo:{grp['key']}", f"Resumen de actividades · {grp['tramo']}")
+                measured = []
+                for r in rows:
+                    ubic_p = Paragraph(_xml_escape(r["ubicacion"]), RT_BOLD_STYLE)
+                    area_p = Paragraph(_xml_escape(r["area"]), RT_TXT_STYLE)
+                    txt_p = Paragraph(_xml_escape(r["texto"]), RT_TXT_STYLE)
+                    h = max(
+                        ubic_p.wrap(rt_col_w[0], 10000)[1],
+                        area_p.wrap(rt_col_w[1], 10000)[1],
+                        txt_p.wrap(rt_col_w[2], 10000)[1],
+                    )
+                    measured.append((ubic_p, area_p, txt_p, h + 10))
+
+                idx = 0
+                y = _rt_new_page(grp["tramo"], False)
+                while idx < len(measured):
+                    avail_h = y - rt_bottom_y
+                    page_rows = []
+                    page_h = RT_HEADER_H
+                    while idx < len(measured):
+                        row_h = measured[idx][3]
+                        if page_h + row_h > avail_h and page_rows:
+                            break
+                        page_rows.append(measured[idx])
+                        page_h += row_h
+                        idx += 1
+                    if not page_rows:
+                        page_rows = [measured[idx]]
+                        idx += 1
+                    data = [[
+                        Paragraph("UBICACIÓN", RT_HEADER_STYLE),
+                        Paragraph("ÁREA", RT_HEADER_STYLE),
+                        Paragraph("ACTIVIDAD", RT_HEADER_STYLE),
+                    ]]
+                    heights = [RT_HEADER_H]
+                    for ubic_p, area_p, txt_p, row_h in page_rows:
+                        data.append([ubic_p, area_p, txt_p])
+                        heights.append(row_h)
+                    tbl = Table(
+                        data,
+                        colWidths=[rt_content_w * f for f in RT_FRACS],
+                        rowHeights=heights,
+                    )
+                    tbl.setStyle(TableStyle([
+                        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                        ("LEFTPADDING", (0, 0), (-1, -1), RT_PAD_L),
+                        ("RIGHTPADDING", (0, 0), (-1, -1), RT_PAD_R),
+                        ("TOPPADDING", (0, 0), (-1, -1), 5),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                        ("BACKGROUND", (0, 0), (-1, 0), RT_BRAND),
+                        ("BOX", (0, 0), (-1, -1), 0.75, RT_LINE_GRAY),
+                        ("LINEAFTER", (0, 1), (1, -1), 0.75, RT_LINE_GRAY),
+                        ("LINEBELOW", (0, 1), (-1, -1), 0.5, RT_LINE_GRAY),
+                    ]))
+                    tw, th = tbl.wrapOn(c, rt_content_w, avail_h)
+                    tbl.drawOn(c, RT_MARGIN_X, y - th)
+                    c.showPage()
+                    page_num += 1
+                    if idx < len(measured):
+                        y = _rt_new_page(grp["tramo"], True)
 
         # --- PÁGINAS DE DATOS GENERALES (ex-Mapa: array de imágenes) -----
         # Cada imagen del array `general_data_images` genera UNA página
@@ -14526,6 +14663,11 @@ async def export_reports_pptx(
     # Tabla consolidada "Actividades por Área" (ver la misma nota en
     # export_reports_pdf / `_draw_actividades_por_area_section`).
     actividades_tabla_por_area = await _actividades_tabla_por_area(pid, start_dt, end_dt, user)
+    # Resumen de actividades por Tramo (antes de la Tabla Resumen) — mismas
+    # actividades que muestra el hub para el rango del informe.
+    actividades_resumen_tramo = await _actividades_resumen_por_tramo_prefetch(
+        pid, start_dt, end_dt, user, nodes_by_id,
+    )
     # Clima: misma prioridad manual > automático que `export_reports_pdf` —
     # ver módulo "Estado del Tiempo" más arriba.
     _fecha_cdmx_hoy = datetime.now(timezone.utc).astimezone(MX_TZ).date().isoformat()
@@ -15957,9 +16099,18 @@ async def export_reports_pptx(
                 "imagen": _draw_imagen_block,
             }
 
+            # Resumen de actividades por Tramo: justo ANTES de la Tabla Resumen
+            # (avance acumulado); si ese módulo no está activo, antes de los demás.
+            _resumen_tramo_pendiente = True
+            if modulos_data.get("tabla_resumen") is None:
+                _emit_resumen_actividades_tramo_slides()
+                _resumen_tramo_pendiente = False
             for _mod_key, _mod_data in modulos_data.items():
                 if _mod_data is None:
                     continue
+                if _mod_key == "tabla_resumen" and _resumen_tramo_pendiente:
+                    _emit_resumen_actividades_tramo_slides()
+                    _resumen_tramo_pendiente = False
                 titulo = _mod_data["titulo"]
                 _indice_mark(f"mod:{_mod_key}", titulo)
                 state["slide"], state["y"] = _new_slide(titulo)
@@ -16330,6 +16481,99 @@ async def export_reports_pptx(
                         ty += row_h
 
         _emit_contrato_slide()
+
+        # ===== RESUMEN DE ACTIVIDADES POR TRAMO (antes de la Tabla Resumen) ===
+        # Mismas actividades del hub Actividades Generales para el rango del
+        # informe, agrupadas por Tramo. Se llama desde
+        # `_emit_modulos_closing_slides`, justo antes del módulo Tabla Resumen
+        # (o antes de todos los módulos si ese no está activo). Pagina de
+        # verdad; altura de fila estimada por conteo de caracteres.
+        def _emit_resumen_actividades_tramo_slides() -> None:
+            if not actividades_resumen_tramo:
+                return
+
+            RT_MARGIN_X = Cm(1.8)
+            rt_content_w = SW - 2 * RT_MARGIN_X
+            RT_HEADER_H = Cm(0.9)
+            RT_LINE_H = Cm(0.5)
+            RT_ROW_PAD = Cm(0.18)
+            RT_ROW_FONT = 11
+            RT_MAX_LINES = 6
+            RT_FRACS = (0.24, 0.16, 0.60)  # Ubicación / Área / Actividad
+            rt_col_x = [int(rt_content_w * sum(RT_FRACS[:i])) for i in range(3)]
+            rt_col_w = [int(rt_content_w * f) - Cm(0.4) for f in RT_FRACS]
+
+            def _rt_estimate_lines(text: str, box_w_emu: int) -> int:
+                if not text:
+                    return 1
+                avg_char_w_emu = max(1, int(Pt(RT_ROW_FONT * 0.52)))
+                chars_per_line = max(1, int(box_w_emu / avg_char_w_emu))
+                return min(RT_MAX_LINES, max(1, math.ceil(len(text) / chars_per_line)))
+
+            is_first_rt_slide = True
+            for grp in actividades_resumen_tramo:
+                rows = grp["rows"]
+                if not rows:
+                    continue
+                _indice_mark(f"acttramo:{grp['key']}", f"Resumen de actividades · {grp['tramo']}")
+                measured = []
+                for r in rows:
+                    lines = max(
+                        _rt_estimate_lines(r["ubicacion"], rt_col_w[0]),
+                        _rt_estimate_lines(r["area"], rt_col_w[1]),
+                        _rt_estimate_lines(r["texto"], rt_col_w[2]),
+                    )
+                    measured.append({**r, "h": lines * RT_LINE_H + 2 * RT_ROW_PAD})
+                n_total = len(measured)
+
+                idx = 0
+                page_in_group = 0
+                while idx < n_total or page_in_group == 0:
+                    page_in_group += 1
+                    slide = _clone_membrete()
+                    y = TOP_MARGIN
+                    if is_first_rt_slide:
+                        add_text(slide, RT_MARGIN_X, y, rt_content_w, Cm(1.1), "RESUMEN DE ACTIVIDADES POR TRAMO",
+                                 size=24, bold=True, color=READABLE_BRAND_RGB, align=PP_ALIGN.CENTER)
+                        y += Cm(1.3)
+                        is_first_rt_slide = False
+                    title = grp["tramo"].upper()
+                    if page_in_group > 1:
+                        title += f"  (CONTINÚA · {page_in_group})"
+                    add_text(slide, RT_MARGIN_X, y, rt_content_w, Cm(0.7), title,
+                             size=16, bold=True, color=WF_TEXT_RGB)
+                    y += Cm(0.75)
+
+                    _wf_rect(slide, RT_MARGIN_X, y, rt_content_w, RT_HEADER_H, fill_rgb=BRAND_RGB)
+                    for ci, label in enumerate(("UBICACIÓN", "ÁREA", "ACTIVIDAD")):
+                        add_text(slide, RT_MARGIN_X + rt_col_x[ci] + Cm(0.2), y + Cm(0.15), rt_col_w[ci],
+                                 RT_HEADER_H - Cm(0.2), label, size=12, bold=True, color=HEADER_TEXT_RGB)
+                    yy = y + RT_HEADER_H
+                    avail_h = (SH - BOTTOM_MARGIN) - yy
+
+                    cnt = 0
+                    h_acc = 0.0
+                    for i in range(idx, n_total):
+                        rh = measured[i]["h"]
+                        if cnt > 0 and h_acc + rh > avail_h:
+                            break
+                        h_acc += rh
+                        cnt += 1
+                    cnt = max(cnt, 1)
+                    chunk_end = idx + cnt
+
+                    for i in range(idx, chunk_end):
+                        row_h = measured[i]["h"]
+                        if (i - idx) % 2 == 1:
+                            _wf_rect(slide, RT_MARGIN_X, yy, rt_content_w, row_h, fill_rgb=WF_ZEBRA_TINT_RGB)
+                        for ci, (key, bold) in enumerate((("ubicacion", True), ("area", False), ("texto", False))):
+                            add_text(slide, RT_MARGIN_X + rt_col_x[ci] + Cm(0.2), yy + Cm(0.08), rt_col_w[ci],
+                                     row_h - Cm(0.1), measured[i][key], size=RT_ROW_FONT, bold=bold,
+                                     color=WF_TEXT_RGB)
+                        _wf_rect(slide, RT_MARGIN_X, yy + row_h - Pt(0.75), rt_content_w, Pt(0.75), fill_rgb=WF_BORDER_RGB)
+                        yy += row_h
+
+                    idx = chunk_end
 
         # ===== SLIDES DATOS GENERALES (ex-Mapa: array de imágenes) =========
         # Cada imagen en `general_data_images` produce UNA slide dedicada
@@ -18202,6 +18446,81 @@ async def _actividades_tabla_por_area(pid: str, start_dt: datetime, end_dt: date
             ubicacion = it.get("node_name") or ((it.get("node_path_names") or ["—"])[-1])
         out.setdefault(area_name, []).append({"ubicacion": ubicacion, "texto": texto})
     return out
+
+
+def _actividades_resumen_por_tramo(items: list, nodes_by_id: dict) -> list:
+    """Resumen de Actividades por TRAMO para el export PDF/PPTX (se imprime
+    justo antes de la Tabla Resumen / avance acumulado). Misma fuente que el
+    hub de Actividades Generales (`_actividades_generales_core`: ediciones y
+    ocultamientos ya aplicados) — `items` es lo que devuelve esa función para
+    el rango del informe (diario/semanal/mensual).
+
+    Devuelve [{"key", "tramo", "rows": [{"ubicacion", "area", "texto"}]}]:
+      · primero el grupo "General" (actividades de nivel GENERAL, que no
+        cuelgan de ningún tramo) si existe;
+      · luego un grupo por Tramo (nodo raíz) en orden del árbol; dentro de
+        cada uno las filas van por Subtramo (Estación/Intertramo), con las
+        del propio subtramo antes que las de sus nodos hoja/postes.
+    `ubicacion` es la ruta bajo el tramo (ej. "Estación 8 › Poste S65").
+    Omite textos vacíos y grupos sin filas. Pura — sin Mongo."""
+    def _root_of(node_id):
+        cur = nodes_by_id.get(node_id)
+        seen: set = set()
+        while cur and cur.get("parent_id") and cur["id"] not in seen:
+            seen.add(cur["id"])
+            parent = nodes_by_id.get(cur["parent_id"])
+            if not parent:
+                break
+            cur = parent
+        return cur
+
+    def _order(n):
+        return (n.get("order", 0), n.get("name", ""))
+
+    root_order = {
+        n["id"]: i for i, n in enumerate(sorted((n for n in nodes_by_id.values() if n.get("depth") == 0), key=_order))
+    }
+    sub_order = {
+        n["id"]: i for i, n in enumerate(sorted((n for n in nodes_by_id.values() if n.get("depth") == 1), key=_order))
+    }
+
+    groups: dict = {}
+    for pos, it in enumerate(items):
+        texto = (it.get("texto") or "").strip()
+        if not texto:
+            continue
+        area = it.get("area_name") or "Sin área"
+        if it.get("nivel") == NIVEL_GENERAL:
+            g = groups.setdefault("general", {"key": "general", "tramo": "General", "orden": -1, "rows": []})
+            g["rows"].append(((0, 0, pos), {"ubicacion": "General", "area": area, "texto": texto}))
+            continue
+        node_id = it.get("node_id")
+        root = _root_of(node_id) or {}
+        path = it.get("node_path_names") or []
+        tramo = root.get("name") or (path[0] if path else "Sin tramo")
+        key = root.get("id") or tramo
+        ubicacion = " › ".join(path[1:]) if len(path) > 1 else (it.get("node_name") or (path[-1] if path else "—"))
+        sub = _subtramo_id_for(node_id, nodes_by_id) if node_id else None
+        g = groups.setdefault(key, {"key": key, "tramo": tramo, "orden": root_order.get(key, 10 ** 6), "rows": []})
+        g["rows"].append((
+            (sub_order.get(sub, 10 ** 6), 0 if it.get("nivel") == NIVEL_SUBTRAMO else 1, pos),
+            {"ubicacion": ubicacion, "area": area, "texto": texto},
+        ))
+    out = []
+    for g in sorted(groups.values(), key=lambda g: g["orden"]):
+        rows = [r for _, r in sorted(g["rows"], key=lambda x: x[0])]
+        if rows:
+            out.append({"key": g["key"], "tramo": g["tramo"], "rows": rows})
+    return out
+
+
+async def _actividades_resumen_por_tramo_prefetch(pid: str, start_dt: datetime, end_dt: datetime,
+                                                    user: dict, nodes_by_id: dict) -> list:
+    """Prefetch (antes del render bloqueante) del resumen por tramo — mismo
+    rango exacto del informe, misma fuente que el hub."""
+    rango = {"$gte": start_dt, "$lte": end_dt}
+    items = await _actividades_generales_core(pid, None, rango, user, incluir_ocultas=False)
+    return _actividades_resumen_por_tramo(items, nodes_by_id)
 
 
 @api.get("/projects/{pid}/actividades_generales")
