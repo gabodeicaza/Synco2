@@ -2735,13 +2735,94 @@ async def export_control_obra_xlsx(pid: str, user: dict = Depends(current_user))
     )
 
 
+# Registro de accidentes (módulo Seguridad e Higiene). Una fila = un renglón
+# de la bitácora impresa: Fecha, Mes, Nombre del trabajador, Contratista,
+# Registro (tipo), Ubicación, Descripción, Foto y Seguimiento.
+SEGURIDAD_TIPOS = ("sin_accidentes", "dano_propiedad", "incidente", "accidente_leve", "incapacitante", "grave")
+SEGURIDAD_TIPO_LABEL = {
+    "sin_accidentes": "Sin accidentes",
+    "dano_propiedad": "Daño a la propiedad",
+    "incidente": "Incidente",
+    "accidente_leve": "Accidente leve / primeros auxilios",
+    "incapacitante": "Incapacitante",
+    "grave": "Grave",
+}
+# `severidad` (leve/moderado/grave) es el campo ANTERIOR a este formato: se
+# sigue guardando derivado del tipo para no romper consumidores viejos.
+_SEGURIDAD_TIPO_A_SEVERIDAD = {
+    "sin_accidentes": "leve", "dano_propiedad": "leve", "incidente": "leve",
+    "accidente_leve": "leve", "incapacitante": "moderado", "grave": "grave",
+}
+_MESES_ES = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto",
+             "Septiembre", "Octubre", "Noviembre", "Diciembre"]
+
+
+def _seguridad_mes(fecha: Optional[str]) -> str:
+    """Nombre del mes (español) de una fecha ISO 'YYYY-MM-DD'; "" si no parsea."""
+    try:
+        return _MESES_ES[date.fromisoformat((fecha or "")[:10]).month - 1]
+    except (ValueError, TypeError):
+        return ""
+
+
+def _seguridad_registro_label(doc: dict) -> str:
+    """Etiqueta del tipo de registro. Los reportes anteriores a este formato
+    solo tienen `severidad` (leve/moderado/grave): se muestra tal cual."""
+    tipo = doc.get("tipo_registro")
+    if tipo in SEGURIDAD_TIPO_LABEL:
+        return SEGURIDAD_TIPO_LABEL[tipo]
+    return (doc.get("severidad") or "").capitalize()
+
+
+def _seguridad_clean(v: Optional[str], maxlen: int) -> Optional[str]:
+    v = " ".join(str(v or "").split())[:maxlen]
+    return v or None
+
+
+def _seguridad_out(doc: dict) -> dict:
+    """Documento listo para el cliente: agrega `mes` y `registro_label`
+    (derivados, no se guardan)."""
+    out = {k: v for k, v in doc.items() if k != "_id"}
+    out["mes"] = _seguridad_mes(out.get("fecha"))
+    out["registro_label"] = _seguridad_registro_label(out)
+    return out
+
+
+def _seguridad_validar_fecha(fecha: Optional[str]) -> str:
+    if not fecha:
+        return datetime.now(MX_TZ).date().isoformat()
+    try:
+        return date.fromisoformat(fecha[:10]).isoformat()
+    except ValueError:
+        raise HTTPException(400, "Fecha inválida: usa el formato AAAA-MM-DD")
+
+
 class SeguridadReporteIn(BaseModel):
     node_id: Optional[str] = None
     fecha: Optional[str] = None  # ISO date; default = hoy
-    descripcion: str
-    acciones_tomadas: Optional[str] = None
-    severidad: Literal["leve", "moderado", "grave"] = "leve"
+    trabajador: Optional[str] = None
+    contratista: Optional[str] = None
+    tipo_registro: Optional[Literal["sin_accidentes", "dano_propiedad", "incidente",
+                                      "accidente_leve", "incapacitante", "grave"]] = None
+    ubicacion: Optional[str] = None  # texto libre; si hay node_id se imprime la ruta del nodo
+    descripcion: str = ""
+    seguimiento: Optional[str] = None
+    acciones_tomadas: Optional[str] = None  # legacy (formato anterior)
+    severidad: Optional[Literal["leve", "moderado", "grave"]] = None  # legacy: se deriva del tipo
     images: List[str] = Field(default_factory=list)  # base64
+
+
+class SeguridadReportePatch(BaseModel):
+    """Edición parcial — típicamente para ir agregando el Seguimiento."""
+    fecha: Optional[str] = None
+    trabajador: Optional[str] = None
+    contratista: Optional[str] = None
+    tipo_registro: Optional[Literal["sin_accidentes", "dano_propiedad", "incidente",
+                                      "accidente_leve", "incapacitante", "grave"]] = None
+    ubicacion: Optional[str] = None
+    descripcion: Optional[str] = None
+    seguimiento: Optional[str] = None
+    images: Optional[List[str]] = None
 
 
 @api.get("/projects/{pid}/seguridad-reportes")
@@ -2749,9 +2830,7 @@ async def list_seguridad_reportes(pid: str, user: dict = Depends(current_user)):
     await ensure_project_access(user, pid)
     cursor = db.seguridad_reportes.find({"project_id": pid}).sort("created_at", -1)
     items = await cursor.to_list(length=1000)
-    for it in items:
-        it.pop("_id", None)
-    return items
+    return [_seguridad_out(it) for it in items]
 
 
 @api.post("/projects/{pid}/seguridad-reportes")
@@ -2760,24 +2839,62 @@ async def create_seguridad_reporte(pid: str, body: SeguridadReporteIn, user: dic
     project = await ensure_project_access(user, pid)
     _ensure_modulo_activo(project, "seguridad_higiene")
     descripcion = body.descripcion.strip()
-    if not descripcion:
+    # "Sin accidentes" es un renglón válido sin descripción (el día sin novedad).
+    if not descripcion and body.tipo_registro != "sin_accidentes":
         raise HTTPException(400, "Descripción requerida")
     doc = {
         "id": str(uuid.uuid4()),
         "project_id": pid,
         "node_id": body.node_id,
-        "fecha": body.fecha or datetime.now(MX_TZ).date().isoformat(),
+        "fecha": _seguridad_validar_fecha(body.fecha),
+        "trabajador": _seguridad_clean(body.trabajador, 120),
+        "contratista": _seguridad_clean(body.contratista, 120),
+        "tipo_registro": body.tipo_registro,
+        "ubicacion": _seguridad_clean(body.ubicacion, 200),
         "descripcion": descripcion,
+        "seguimiento": _seguridad_clean(body.seguimiento, 2000),
         "acciones_tomadas": (body.acciones_tomadas or "").strip() or None,
-        "severidad": body.severidad,
+        "severidad": (_SEGURIDAD_TIPO_A_SEVERIDAD[body.tipo_registro] if body.tipo_registro
+                      else (body.severidad or "leve")),
         "images": body.images[:10],
         "captured_by": user["id"],
         "captured_by_name": user["name"],
         "created_at": datetime.now(timezone.utc),
     }
     await db.seguridad_reportes.insert_one(doc)
-    doc.pop("_id", None)
-    return doc
+    return _seguridad_out(doc)
+
+
+@api.patch("/projects/{pid}/seguridad-reportes/{rid}")
+async def update_seguridad_reporte(pid: str, rid: str, body: SeguridadReportePatch,
+                                   user: dict = Depends(current_user)):
+    _assert_write_allowed(user)
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "seguridad_higiene")
+    row = await db.seguridad_reportes.find_one({"id": rid, "project_id": pid})
+    if not row:
+        raise HTTPException(404, "Reporte no existe")
+    upd: dict = {}
+    if body.fecha is not None:
+        upd["fecha"] = _seguridad_validar_fecha(body.fecha)
+    for campo, maxlen in (("trabajador", 120), ("contratista", 120), ("ubicacion", 200), ("seguimiento", 2000)):
+        valor = getattr(body, campo)
+        if valor is not None:
+            upd[campo] = _seguridad_clean(valor, maxlen)
+    if body.tipo_registro is not None:
+        upd["tipo_registro"] = body.tipo_registro
+        upd["severidad"] = _SEGURIDAD_TIPO_A_SEVERIDAD[body.tipo_registro]
+    if body.descripcion is not None:
+        upd["descripcion"] = body.descripcion.strip()
+    if body.images is not None:
+        upd["images"] = body.images[:10]
+    tipo_final = upd.get("tipo_registro", row.get("tipo_registro"))
+    if "descripcion" in upd and not upd["descripcion"] and tipo_final != "sin_accidentes":
+        raise HTTPException(400, "Descripción requerida")
+    if not upd:
+        raise HTTPException(400, "Nada para actualizar")
+    await db.seguridad_reportes.update_one({"id": rid}, {"$set": upd})
+    return _seguridad_out({**row, **upd})
 
 
 class SeguridadChecklistItemIn(BaseModel):
@@ -10959,6 +11076,91 @@ async def export_reports_pdf(
                     lx += 12 + c.stringWidth(label, "Helvetica", 9) + 20
                 y -= 26
 
+            def _draw_seguridad_accidentes_block(block: dict) -> None:
+                """Registro de accidentes: Fecha, Mes, Trabajador, Contratista,
+                Registro, Ubicación, Descripción, Foto y Seguimiento. Pagina de
+                verdad (encabezado repetido), nunca trunca."""
+                nonlocal y, page_num
+                from reportlab.platypus import Image as RLImage
+                if block.get("heading"):
+                    _draw_heading(block["heading"])
+                rows = block.get("rows") or []
+                if not rows:
+                    _draw_empty("Sin registros de accidentes en este período.")
+                    return
+                headers = ["Fecha", "Mes", "Trabajador", "Contratista", "Registro", "Ubicación", "Descripción", "Foto", "Seguimiento"]
+                fracs = (0.075, 0.07, 0.12, 0.09, 0.105, 0.11, 0.19, 0.10, 0.14)
+                col_w = [content_w * f for f in fracs]
+                PAD = 4
+                head_color = WHITE if _hex_luminance(project_color) <= 0.6 else HexColor("#1A1A1A")
+                cell_st = ParagraphStyle("segAccCell", fontName="Helvetica", fontSize=8.5, leading=10.5, textColor=TEXT)
+                head_st = ParagraphStyle("segAccHead", fontName="Helvetica-Bold", fontSize=8.5, leading=10,
+                                         textColor=head_color)
+                text_keys = ["fecha", "mes", "trabajador", "contratista", "registro", "ubicacion",
+                             "descripcion", None, "seguimiento"]
+
+                def _foto_cell(b64_str):
+                    if not b64_str:
+                        return Paragraph("—", cell_st), 12.0
+                    try:
+                        raw = base64.b64decode(_strip_b64_prefix(b64_str))
+                        iw, ih = ImageReader(io.BytesIO(raw)).getSize()
+                        sc = min((col_w[7] - 2 * PAD) / iw, (2.4 * cm) / ih)
+                        w, h = iw * sc, ih * sc
+                        return RLImage(io.BytesIO(raw), width=w, height=h), h
+                    except Exception:
+                        return Paragraph("—", cell_st), 12.0
+
+                measured = []
+                for r in rows:
+                    cells = []
+                    h = 0.0
+                    for i, k in enumerate(text_keys):
+                        if k is None:
+                            cell, ch = _foto_cell(r.get("foto"))
+                        else:
+                            cell = Paragraph(_xml_escape(str(r.get(k) or "—")), cell_st)
+                            ch = cell.wrap(col_w[i] - 2 * PAD, 10000)[1]
+                        cells.append(cell)
+                        h = max(h, ch)
+                    measured.append((cells, h + 2 * PAD + 2))
+
+                HEADER_H = 20
+                header = [Paragraph(h, head_st) for h in headers]
+                idx = 0
+                while idx < len(measured):
+                    _ensure_space(HEADER_H + measured[idx][1])
+                    avail = y - bottom_y
+                    chunk = []
+                    used = HEADER_H
+                    while idx < len(measured):
+                        rh = measured[idx][1]
+                        if chunk and used + rh > avail:
+                            break
+                        chunk.append(measured[idx])
+                        used += rh
+                        idx += 1
+                    tbl = Table(
+                        [header] + [m[0] for m in chunk], colWidths=col_w,
+                        rowHeights=[HEADER_H] + [m[1] for m in chunk],
+                    )
+                    tbl.setStyle(TableStyle([
+                        ("BACKGROUND", (0, 0), (-1, 0), BRAND),
+                        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                        ("GRID", (0, 0), (-1, -1), 0.5, BORDER),
+                        ("LEFTPADDING", (0, 0), (-1, -1), PAD),
+                        ("RIGHTPADDING", (0, 0), (-1, -1), PAD),
+                        ("TOPPADDING", (0, 0), (-1, -1), PAD),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), PAD),
+                    ]))
+                    tw, th = tbl.wrapOn(c, content_w, avail)
+                    tbl.drawOn(c, left_x, y - th)
+                    y -= th + 10
+                    if idx < len(measured):
+                        c.showPage()
+                        page_num += 1
+                        y = top_y
+
             _BLOCK_RENDERERS = {
                 "summary": _draw_summary_block,
                 "table": _draw_table_block,
@@ -10967,6 +11169,7 @@ async def export_reports_pdf(
                 "riesgos_mapa": _draw_riesgos_mapa_block,
                 "tabla_resumen_matriz": _draw_tabla_resumen_matriz_block,
                 "seguridad_indicadores": _draw_seguridad_indicadores_block,
+                "seguridad_accidentes": _draw_seguridad_accidentes_block,
                 "estudios_avances": _draw_estudios_avances_block,
                 "fotos_comparativa": _draw_fotos_comparativa_block,
                 "imagen": _draw_imagen_block,
@@ -13674,14 +13877,44 @@ async def _gather_modulos_export_data(
             it.get("item") for it in (ultimo_checklist[0].get("items") or [])
             if it.get("tipo") == "correctiva" and not it.get("cumplido")
         ] if ultimo_checklist else []
+        # Registro de accidentes DEL PERÍODO (por created_at, igual que el
+        # resto de módulos): una fila por renglón de la bitácora.
+        accidentes = await db.seguridad_reportes.find(
+            {"project_id": pid, **date_q}
+        ).sort("created_at", 1).to_list(length=2000)
+        filas_accidentes = []
+        for a in accidentes:
+            ubicacion = a.get("ubicacion") or ""
+            if not ubicacion and a.get("node_id"):
+                ubicacion = " › ".join(await node_path_names(a["node_id"]))
+            filas_accidentes.append({
+                "fecha": a.get("fecha") or "",
+                "mes": _seguridad_mes(a.get("fecha")),
+                "trabajador": a.get("trabajador") or "",
+                "contratista": a.get("contratista") or "",
+                "registro": _seguridad_registro_label(a),
+                "ubicacion": ubicacion,
+                "descripcion": a.get("descripcion") or "",
+                "foto": (a.get("images") or [None])[0],
+                "seguimiento": a.get("seguimiento") or a.get("acciones_tomadas") or "",
+            })
+        bloques_seguridad: list = []
+        if filas_accidentes:
+            bloques_seguridad.append({
+                "type": "seguridad_accidentes",
+                "heading": "Registro de accidentes",
+                "rows": filas_accidentes,
+            })
         if pendientes:
+            bloques_seguridad.append({
+                "type": "seguridad_indicadores",
+                "subtitulo": "Acciones Correctivas Pendientes",
+                "items": pendientes,
+            })
+        if bloques_seguridad:
             out["seguridad"] = {
                 "titulo": "INDICADORES DE SEGURIDAD E HIGIENE",
-                "blocks": [{
-                    "type": "seguridad_indicadores",
-                    "subtitulo": "Acciones Correctivas Pendientes",
-                    "items": pendientes,
-                }],
+                "blocks": bloques_seguridad,
             }
 
     if activos.get("gestion_riesgos"):
@@ -14549,6 +14782,42 @@ async def export_reports_docx(
                 r.font.size = Pt(10)
                 r.font.color.rgb = TEXT_RGB
 
+        def _mod_seguridad_accidentes_block(block: dict):
+            """Registro de accidentes en Word: tabla de 9 columnas con la foto
+            dentro de su celda."""
+            if block.get("heading"):
+                _mod_heading(block["heading"])
+            rows = block.get("rows") or []
+            if not rows:
+                _mod_empty("Sin registros de accidentes en este período.")
+                return
+            headers = ["Fecha", "Mes", "Trabajador", "Contratista", "Registro", "Ubicación", "Descripción", "Foto", "Seguimiento"]
+            keys = ["fecha", "mes", "trabajador", "contratista", "registro", "ubicacion",
+                    "descripcion", None, "seguimiento"]
+            t = doc.add_table(rows=1, cols=len(headers))
+            t.style = "Table Grid"
+            for i, h in enumerate(headers):
+                cr = t.rows[0].cells[i].paragraphs[0].add_run(h)
+                cr.bold = True
+                cr.font.size = Pt(8)
+            for r in rows:
+                cells = t.add_row().cells
+                for i, k in enumerate(keys):
+                    cp = cells[i].paragraphs[0]
+                    if k is None:
+                        if r.get("foto"):
+                            try:
+                                cp.add_run().add_picture(
+                                    io.BytesIO(base64.b64decode(_strip_b64_prefix(r["foto"]))), width=Cm(2.2),
+                                )
+                                continue
+                            except Exception:
+                                pass
+                        cp.add_run("—").font.size = Pt(8)
+                        continue
+                    cp.add_run(str(r.get(k) or "—")).font.size = Pt(8)
+            doc.add_paragraph()
+
         _MOD_BLOCK_RENDERERS = {
             "summary": _mod_summary_block,
             "fotos_comparativa": _mod_fotos_comparativa_block,
@@ -14558,6 +14827,7 @@ async def export_reports_docx(
             "forestal_sheet": _mod_forestal_sheet_block,
             "riesgos_mapa": _mod_riesgos_mapa_block,
             "seguridad_indicadores": _mod_seguridad_indicadores_block,
+            "seguridad_accidentes": _mod_seguridad_accidentes_block,
             "estudios_avances": _mod_estudios_avances_block,
             "tabla_resumen_matriz": _mod_tabla_resumen_matriz_block,
         }
@@ -16106,6 +16376,66 @@ async def export_reports_pptx(
                     lx += Cm(3.2)
                 state["y"] += Cm(0.8)
 
+            def _draw_seguridad_accidentes_block(titulo_continua: str, block: dict) -> None:
+                """Registro de accidentes: Fecha, Mes, Trabajador, Contratista,
+                Registro, Ubicación, Descripción, Foto y Seguimiento. Una tabla
+                que pagina entre diapositivas repitiendo el encabezado."""
+                if block.get("heading"):
+                    _draw_heading(titulo_continua, block["heading"])
+                rows = block.get("rows") or []
+                if not rows:
+                    _draw_empty("Sin registros de accidentes en este período.")
+                    return
+                headers = ["Fecha", "Mes", "Trabajador", "Contratista", "Registro", "Ubicación", "Descripción", "Foto", "Seguimiento"]
+                fracs = (0.075, 0.07, 0.12, 0.09, 0.105, 0.11, 0.19, 0.10, 0.14)
+                col_x = [int(content_w * sum(fracs[:i])) for i in range(len(fracs))]
+                col_w = [int(content_w * f) for f in fracs]
+                HEADER_H = Cm(0.9)
+                PHOTO_H = Cm(2.2)
+                FONT = 8
+                LINE_H = Cm(0.36)
+
+                def _lines(text: str, w_emu: int) -> int:
+                    cpl = max(1, int((w_emu - Cm(0.2)) / max(1, int(Pt(FONT * 0.52)))))
+                    return min(7, max(1, math.ceil(len(text or "—") / cpl)))
+
+                def _header(slide, y):
+                    _wf_rect(slide, MARGIN_X, y, content_w, HEADER_H, fill_rgb=BRAND_RGB)
+                    for i, h in enumerate(headers):
+                        add_text(slide, MARGIN_X + col_x[i], y, col_w[i], HEADER_H, h,
+                                 size=9, bold=True, color=HEADER_TEXT_RGB, align=PP_ALIGN.CENTER)
+                    return y + HEADER_H
+
+                text_keys = ["fecha", "mes", "trabajador", "contratista", "registro", "ubicacion",
+                             "descripcion", None, "seguimiento"]
+                state["y"] = _header(state["slide"], state["y"])
+                for r in rows:
+                    row_h = max(
+                        [Cm(0.6)] + [
+                            _lines(str(r.get(k) or "—"), col_w[i]) * LINE_H + Cm(0.2)
+                            for i, k in enumerate(text_keys) if k
+                        ] + ([PHOTO_H + Cm(0.2)] if r.get("foto") else []),
+                    )
+                    if state["y"] + row_h > bottom_y:
+                        state["slide"], state["y"] = _new_slide(titulo_continua)
+                        state["y"] = _header(state["slide"], state["y"])
+                    sl, ry = state["slide"], state["y"]
+                    _wf_rect(sl, MARGIN_X, ry, content_w, row_h, fill_rgb=WF_WHITE_RGB,
+                             line_rgb=WF_BORDER_RGB, line_pt=0.75)
+                    for i, k in enumerate(text_keys):
+                        if k is None:
+                            if r.get("foto"):
+                                _place_img(sl, r["foto"], MARGIN_X + col_x[i] + Cm(0.1), ry + Cm(0.1),
+                                           col_w[i] - Cm(0.2), row_h - Cm(0.2))
+                            else:
+                                add_text(sl, MARGIN_X + col_x[i], ry, col_w[i], row_h, "—",
+                                         size=FONT, color=WF_MUTED_RGB, align=PP_ALIGN.CENTER)
+                            continue
+                        add_text(sl, MARGIN_X + col_x[i] + Cm(0.1), ry + Cm(0.05), col_w[i] - Cm(0.2),
+                                 row_h - Cm(0.1), str(r.get(k) or "—"), size=FONT, color=WF_TEXT_RGB)
+                    state["y"] = ry + row_h
+                state["y"] += Cm(0.4)
+
             _BLOCK_RENDERERS = {
                 "summary": _draw_summary_block,
                 "table": _draw_table_block,
@@ -16113,6 +16443,7 @@ async def export_reports_pptx(
                 "forestal_sheet": _draw_forestal_sheet_block,
                 "riesgos_mapa": _draw_riesgos_mapa_block,
                 "seguridad_indicadores": _draw_seguridad_indicadores_block,
+                "seguridad_accidentes": _draw_seguridad_accidentes_block,
                 "estudios_avances": _draw_estudios_avances_block,
                 "tabla_resumen_matriz": _draw_tabla_resumen_matriz_block,
                 "fotos_comparativa": _draw_fotos_comparativa_block,
