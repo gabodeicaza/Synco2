@@ -135,6 +135,13 @@ export function HeaderMenu({ basePath, projectId }: HeaderMenuProps) {
               <MenuItem icon="apps-outline" label="Módulos" onPress={() => goTo('modulos')} />
             ) : null}
 
+            {basePath === '/(subcoord)' ? (
+              // Orden, títulos y secciones ocultas del índice de los informes
+              // PDF/PPTX (Diario, Semanal y Mensual). El backend lo permite a
+              // Coordinador y Sub-Coordinador.
+              <MenuItem icon="list-outline" label="Índice de informes" onPress={() => goTo('indice')} />
+            ) : null}
+
             <View style={styles.divider} />
             {/* No pasa por goTo(): a diferencia del resto de items, no depende
                 de projectId ni necesita esperar a que el proyecto cargue. */}

@@ -10545,7 +10545,7 @@ async def _indice_load_config(pid: str, periodo: str) -> dict:
 
 
 @api.get("/projects/{pid}/indice/{periodo}")
-async def get_indice_config(pid: str, periodo: str, user: dict = Depends(require_role(ROLE_COORD))):
+async def get_indice_config(pid: str, periodo: str, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB))):
     """Configuración del índice de un período + última estructura conocida
     de secciones del informe (la refresca cada export del Coordinador)."""
     await ensure_project_access(user, pid)
@@ -10563,7 +10563,7 @@ async def get_indice_config(pid: str, periodo: str, user: dict = Depends(require
 
 @api.put("/projects/{pid}/indice/{periodo}")
 async def put_indice_config(pid: str, periodo: str, body: dict,
-                            user: dict = Depends(require_role(ROLE_COORD))):
+                            user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB))):
     """Guarda la configuración del índice de UN período (diario/semanal/
     mensual son independientes entre sí)."""
     await ensure_project_access(user, pid)
@@ -10639,8 +10639,8 @@ async def export_reports_pdf(
         _HAS_PIL = False
 
     scope_mine_only = (scope or "").lower() == "mine"
-    if estructura_solo and (user["role"] != ROLE_COORD or area_id or scope_mine_only):
-        raise HTTPException(403, "Solo el Coordinador puede consultar la estructura, sin filtros")
+    if estructura_solo and (user["role"] not in (ROLE_COORD, ROLE_SUB) or area_id or scope_mine_only):
+        raise HTTPException(403, "Solo Coordinador y Sub-Coordinador pueden consultar la estructura, sin filtros")
     data = await _gather_export_data(
         pid, period, user,
         area_id=area_id,
@@ -13751,7 +13751,7 @@ async def export_reports_pdf(
         indice_estructura = None
     # Solo el Coordinador sin filtros (área/scope) refresca la estructura
     # guardada — un export filtrado vería solo una parte de las secciones.
-    if indice_estructura is not None and role == ROLE_COORD and not area_id and not scope_mine_only:
+    if indice_estructura is not None and role in (ROLE_COORD, ROLE_SUB) and not area_id and not scope_mine_only:
         await _indice_guardar_estructura(pid, indice_periodo, indice_estructura)
     if estructura_solo:
         if indice_estructura is None:
@@ -17657,7 +17657,7 @@ async def export_reports_pptx(
     indice_cfg = await _indice_load_config(pid, indice_periodo)
     _indice_estructura_out: List[dict] = []
     pptx_bytes = await asyncio.to_thread(_build_pptx_blocking)
-    if _indice_estructura_out and user["role"] == ROLE_COORD and not area_id and not scope_mine_only:
+    if _indice_estructura_out and user["role"] in (ROLE_COORD, ROLE_SUB) and not area_id and not scope_mine_only:
         await _indice_guardar_estructura(pid, indice_periodo, _indice_estructura_out)
     fname = _safe_export_filename(project_name, period, "pptx")
     return StreamingResponse(
