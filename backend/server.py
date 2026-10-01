@@ -1196,6 +1196,7 @@ async def startup_event():
     await db.perforadoras.create_index([("project_id", 1)])
     await db.seguridad_reportes.create_index("id", unique=True)
     await db.seguridad_reportes.create_index([("project_id", 1), ("created_at", -1)])
+    await db.seguridad_fuerza_trabajo.create_index([("project_id", 1), ("mes", 1)], unique=True)
     await db.seguridad_checklist.create_index("id", unique=True)
     await db.seguridad_checklist.create_index([("project_id", 1), ("created_at", -1)])
     await db.riesgos_registros.create_index("id", unique=True)
@@ -2940,7 +2941,7 @@ def _cruz_layout(n_dias: int) -> List[tuple]:
     return out
 
 
-def _cruz_calcular(registros: list, anio: int, mes: int, hoy: date, personal_por_dia: dict) -> dict:
+def _cruz_calcular(registros: list, anio: int, mes: int, hoy: date, fuerza_trabajo: Optional[int] = None) -> dict:
     """Datos de la Cruz de Seguridad de un mes. Pura — sin Mongo.
 
     `registros`: documentos de `seguridad_reportes` (cualquier fecha; aquí se
@@ -2948,9 +2949,10 @@ def _cruz_calcular(registros: list, anio: int, mes: int, hoy: date, personal_por
     "sin_accidentes" si no hay nada; los días futuros quedan sin tipo (gris).
     El resumen cuenta REGISTROS por tipo (y, para "Sin accidentes", días
     laborables) y el porcentaje es sobre los DÍAS LABORABLES transcurridos del
-    mes (lunes a sábado; no se descuentan festivos). La fuerza de trabajo es
-    solo personal. La bitácora es el acumulado del AÑO, sin los renglones
-    "Sin accidentes"."""
+    mes (lunes a sábado; no se descuentan festivos). `fuerza_trabajo` es el
+    número de personal que se captura A MANO para el mes (incluye contratistas
+    y demás frentes, no solo la plantilla dada de alta). La bitácora es el
+    acumulado del AÑO, sin los renglones "Sin accidentes"."""
     import calendar
     n_dias = calendar.monthrange(anio, mes)[1]
     if (anio, mes) < (hoy.year, hoy.month):
@@ -2996,10 +2998,6 @@ def _cruz_calcular(registros: list, anio: int, mes: int, hoy: date, personal_por
     def _pct(n):
         return round(100 * n / laborables) if laborables else 0
 
-    def _prom(por_dia_dict):
-        vals = [v for v in por_dia_dict.values() if v]
-        return round(sum(vals) / len(vals)) if vals else None
-
     return {
         "mes": f"{anio:04d}-{mes:02d}",
         "mes_label": f"{_SEGURIDAD_MESES[mes - 1]} {anio}",
@@ -3008,7 +3006,7 @@ def _cruz_calcular(registros: list, anio: int, mes: int, hoy: date, personal_por
         "dias": dias,
         "resumen": [{"tipo": t, "label": CRUZ_LABEL[t], "abrev": CRUZ_ABREV[t], "color": CRUZ_COLOR[t],
                      "cantidad": conteo[t], "porcentaje": _pct(conteo[t])} for t in CRUZ_TIPOS_ORDEN],
-        "fuerza_trabajo": {"personal": _prom(personal_por_dia)},
+        "fuerza_trabajo": {"personal": fuerza_trabajo},
         "registros": bitacora,
     }
 
@@ -3031,22 +3029,8 @@ def _cruz_parse_mes(mes: Optional[str]) -> tuple:
 async def _cruz_fetch(pid: str, mes: Optional[str]) -> dict:
     anio, m = _cruz_parse_mes(mes)
     registros = await db.seguridad_reportes.find({"project_id": pid}).to_list(length=20000)
-    # Fuerza de trabajo promedio del mes: suma diaria de PERSONAL de los
-    # reportes de campo, promediada sobre los días con captura.
-    ini = datetime(anio, m, 1, tzinfo=MX_TZ).astimezone(timezone.utc)
-    fin = (datetime(anio + 1, 1, 1, tzinfo=MX_TZ) if m == 12 else datetime(anio, m + 1, 1, tzinfo=MX_TZ)).astimezone(timezone.utc)
-    personal: Dict[date, int] = {}
-    async for r in db.reports.find(
-        {"project_id": pid, "created_at": {"$gte": ini, "$lt": fin}}, {"personnel": 1, "created_at": 1},
-    ):
-        dt = r.get("created_at")
-        if not dt:
-            continue
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        dia = dt.astimezone(MX_TZ).date()
-        personal[dia] = personal.get(dia, 0) + sum(_parse_qty_desc(x)[0] for x in (r.get("personnel") or []))
-    return _cruz_calcular(registros, anio, m, datetime.now(MX_TZ).date(), personal)
+    ft = await db.seguridad_fuerza_trabajo.find_one({"project_id": pid, "mes": f"{anio:04d}-{m:02d}"})
+    return _cruz_calcular(registros, anio, m, datetime.now(MX_TZ).date(), (ft or {}).get("personal"))
 
 
 def _cruz_xlsx_bytes(data: dict, proyecto: str) -> bytes:
@@ -3187,6 +3171,32 @@ async def get_seguridad_cruz(pid: str, mes: Optional[str] = Query(None, descript
     """Datos de la Cruz de Seguridad del mes (cruz, resumen por tipo, fuerza de
     trabajo promedio y bitácora del año)."""
     await ensure_project_access(user, pid)
+    return await _cruz_fetch(pid, mes)
+
+
+class SeguridadFuerzaTrabajoIn(BaseModel):
+    mes: str  # AAAA-MM
+    personal: Optional[int] = Field(None, ge=0, le=100000)  # None = sin dato
+
+
+@api.put("/projects/{pid}/seguridad-cruz/fuerza-trabajo")
+async def set_seguridad_fuerza_trabajo(pid: str, body: SeguridadFuerzaTrabajoIn,
+                                       user: dict = Depends(current_user)):
+    """Fuerza de trabajo PROMEDIO del mes (personal de todos los frentes y
+    contratistas): un número que se captura directo, editable por cualquier
+    rol con permiso de escritura. Devuelve la Cruz del mes ya recalculada."""
+    _assert_write_allowed(user)
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "seguridad_higiene")
+    anio, m = _cruz_parse_mes(body.mes)
+    mes = f"{anio:04d}-{m:02d}"
+    await db.seguridad_fuerza_trabajo.update_one(
+        {"project_id": pid, "mes": mes},
+        {"$set": {"personal": body.personal, "updated_by": user["id"], "updated_by_name": user["name"],
+                  "updated_at": datetime.now(timezone.utc)},
+         "$setOnInsert": {"id": str(uuid.uuid4())}},
+        upsert=True,
+    )
     return await _cruz_fetch(pid, mes)
 
 

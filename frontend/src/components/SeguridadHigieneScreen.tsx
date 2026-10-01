@@ -86,12 +86,16 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
   const [cruz, setCruz] = useState<SeguridadCruz | null>(null);
   const [cruzLoading, setCruzLoading] = useState(false);
   const [cruzExporting, setCruzExporting] = useState(false);
+  // Fuerza de trabajo del mes: se captura directo (incluye contratistas y demas frentes).
+  const [fuerzaDraft, setFuerzaDraft] = useState('');
 
   const loadCruz = useCallback(async () => {
     if (!projectId) return;
     try {
       setCruzLoading(true);
-      setCruz(await api.getSeguridadCruz(projectId, cruzMes));
+      const data = await api.getSeguridadCruz(projectId, cruzMes);
+      setCruz(data);
+      setFuerzaDraft(data.fuerza_trabajo.personal != null ? String(data.fuerza_trabajo.personal) : '');
     } catch (e: any) {
       Alert.alert('Error', e?.message || 'No se pudo cargar la Cruz de Seguridad.');
     } finally {
@@ -100,6 +104,24 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
   }, [projectId, cruzMes]);
 
   useEffect(() => { if (tab === 'cruz') loadCruz(); }, [tab, loadCruz]);
+
+  async function onSaveFuerza(texto: string) {
+    const limpio = texto.trim();
+    const n = limpio === '' ? null : Number(limpio);
+    if (n !== null && (!Number.isInteger(n) || n < 0)) {
+      Alert.alert('Número inválido', 'Escribe la cantidad de personas como un número entero.');
+      setFuerzaDraft(cruz?.fuerza_trabajo.personal != null ? String(cruz.fuerza_trabajo.personal) : '');
+      return;
+    }
+    if (n === (cruz?.fuerza_trabajo.personal ?? null)) return;  // sin cambios
+    try {
+      const data = await api.setSeguridadFuerzaTrabajo(projectId, cruzMes, n);
+      setCruz(data);
+      setFuerzaDraft(data.fuerza_trabajo.personal != null ? String(data.fuerza_trabajo.personal) : '');
+    } catch (e: any) {
+      Alert.alert('No se pudo guardar', e?.message || 'Intentalo nuevamente.');
+    }
+  }
 
   async function onExportCruz() {
     try {
@@ -344,9 +366,20 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
             <>
               <View style={[styles.card, styles.cruzFuerza]}>
                 <Text style={styles.cruzFuerzaTitulo}>Fuerza de trabajo PROMEDIO</Text>
-                <Text style={styles.cruzFuerzaNum}>{cruz.fuerza_trabajo.personal ?? '—'}</Text>
+                <TextInput
+                  value={fuerzaDraft}
+                  onChangeText={(t) => setFuerzaDraft(t.replace(/[^0-9]/g, ''))}
+                  onEndEditing={(e) => onSaveFuerza(e.nativeEvent.text)}
+                  placeholder="—"
+                  placeholderTextColor={colors.textMuted}
+                  keyboardType="number-pad"
+                  maxLength={6}
+                  style={[styles.input, styles.cruzFuerzaInput]}
+                />
               </View>
-              <Text style={styles.fieldHint}>Personal: promedio diario de los reportes de campo del mes.</Text>
+              <Text style={styles.fieldHint}>
+                Personal del mes, de todos los frentes y contratistas: escríbelo directo (se guarda al terminar).
+              </Text>
 
               <Text style={[styles.sectionTitle, { marginTop: spacing.md }]}>Cruz de seguridad</Text>
               <View style={[styles.card, { alignItems: 'center', padding: spacing.md }]}>
@@ -672,7 +705,7 @@ const styles = StyleSheet.create({
   cruzMes: { fontSize: 16, fontWeight: '800', color: colors.text },
   cruzFuerza: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: spacing.md, marginBottom: 0 },
   cruzFuerzaTitulo: { flex: 1, fontSize: 13, fontWeight: '800', color: colors.text },
-  cruzFuerzaNum: { fontSize: 16, fontWeight: '800', color: colors.text, minWidth: 40, textAlign: 'center' },
+  cruzFuerzaInput: { width: 90, textAlign: 'center', fontSize: 16, fontWeight: '800', marginTop: 0, paddingVertical: 6 },
   cruzCelda: { position: 'absolute', width: CRUZ_CELDA, height: CRUZ_CELDA, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#fff' },
   cruzCeldaTxt: { fontSize: 11, fontWeight: '800' },
   cruzFila: { flexDirection: 'row', alignItems: 'center', gap: 8, padding: 6 },

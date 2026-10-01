@@ -2215,6 +2215,10 @@ export const api = {
   }) => request<SeguridadReporte>('PATCH', `/projects/${pid}/seguridad-reportes/${rid}`, body),
   getSeguridadCruz: (pid: string, mes?: string) =>
     request<SeguridadCruz>('GET', `/projects/${pid}/seguridad-cruz${mes ? `?mes=${mes}` : ''}`),
+  // Fuerza de trabajo promedio del mes: numero capturado a mano (personal de
+  // todos los frentes y contratistas). Devuelve la Cruz del mes recalculada.
+  setSeguridadFuerzaTrabajo: (pid: string, mes: string, personal: number | null) =>
+    request<SeguridadCruz>('PUT', `/projects/${pid}/seguridad-cruz/fuerza-trabajo`, { mes, personal }),
   // Excel con el formato de la hoja de referencia (cruz, resumen y bitacora).
   downloadSeguridadCruzXlsx: async (pid: string, mes?: string): Promise<{ blob: Blob; filename: string }> => {
     const tok = await getToken();

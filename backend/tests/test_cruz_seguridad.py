@@ -90,12 +90,12 @@ def test_meses_pasados_completos_y_futuros_todo_gris():
     assert all(r["porcentaje"] == 0 for r in futuro["resumen"])
 
 
-def test_fuerza_de_trabajo_promedio_y_reportes_anteriores_al_formato():
+def test_fuerza_de_trabajo_es_el_numero_capturado_y_reportes_anteriores_al_formato():
     d = _cruz_calcular([{"fecha": "2026-03-04", "severidad": "moderado", "descripcion": "x"}], 2026, 3,
-                       date(2026, 3, 30), {1: 200, 2: 206, 3: 0})
-    assert d["fuerza_trabajo"] == {"personal": 203}  # solo personal; los días sin dato no promedian
+                       date(2026, 3, 30), 203)
+    assert d["fuerza_trabajo"] == {"personal": 203}  # tal cual se capturó, sin promediar nada
     assert [x["tipo"] for x in d["dias"] if x["dia"] == 4] == ["incapacitante"]  # moderado → incapacitante
-    assert _cruz_calcular([], 2026, 3, date(2026, 3, 30), {})["fuerza_trabajo"] == {"personal": None}
+    assert _cruz_calcular([], 2026, 3, date(2026, 3, 30))["fuerza_trabajo"] == {"personal": None}
 
 
 def test_bitacora_es_del_anio_sin_sin_accidentes_y_numerada():
@@ -121,7 +121,7 @@ def test_xlsx_replica_la_hoja_de_referencia():
            descripcion="IMPACTA TAPIAL"),
         _r("2026-04-20", "accidente_leve", trabajador="Maria", contratista="ALFA", ubicacion="POSTE C-08"),
     ]
-    data = _cruz_calcular(regs, 2026, 4, date(2026, 4, 25), {1: 203})
+    data = _cruz_calcular(regs, 2026, 4, date(2026, 4, 25), 203)
     ws = load_workbook(io.BytesIO(_cruz_xlsx_bytes(data, "Línea 4"))).active
     assert ws.title == "CRUZ DE SEGURIDAD" and ws["A1"].value == "CRUZ DE SEGURIDAD"
     assert ws["C4"].value == "Fuerza de Trabajo PROMEDIO" and ws["D4"].value == 203 and ws["E4"].value == "personal"
@@ -159,6 +159,9 @@ def test_endpoints_de_datos_y_excel():
         async def go():
             hoy = datetime.now(server.MX_TZ).date()
             await db.projects.insert_one({"id": "p1", "name": "Línea 4", "modulos": {}})
+            await db.projects.update_one({"id": "p1"}, {"$set": {"modulos": {
+                "reportes_diarios": {"seguridad_higiene": True}, "reportes_semanales": {}, "reportes_mensuales": {}}}})
+            # Los reportes de campo NO alimentan la fuerza de trabajo: es un dato capturado.
             await db.reports.insert_one({
                 "id": "r1", "project_id": "p1", "created_at": datetime.now(timezone.utc),
                 "personnel": ["3 Ayudante", "2 Cabo"], "equipment": ["1 Retroexcavadora"]})
@@ -166,7 +169,30 @@ def test_endpoints_de_datos_y_excel():
                 "id": "s1", "project_id": "p1", "fecha": hoy.isoformat(), "tipo_registro": "accidente_leve",
                 "trabajador": "Juan", "contratista": "Alfa", "descripcion": "Caída", "ubicacion": "E3"})
             datos = await server.get_seguridad_cruz("p1", None, USER)
-            assert datos["fuerza_trabajo"] == {"personal": 5}  # 3 ayudantes + 2 cabos; la maquinaria no cuenta
+            assert datos["fuerza_trabajo"] == {"personal": None}  # nadie la ha capturado todavía
+            # Cualquier rol con escritura la captura (incluye contratistas y demás frentes).
+            for rol in (server.ROLE_COORD, server.ROLE_SUB, server.ROLE_ESPECIALISTA):
+                u = {"id": "u9", "role": rol, "name": "Alguien", "email": "a@x.mx", "project_ids": ["p1"]}
+                cruz = await server.set_seguridad_fuerza_trabajo(
+                    "p1", server.SeguridadFuerzaTrabajoIn(mes=datos["mes"], personal=203), u)
+                assert cruz["fuerza_trabajo"] == {"personal": 203}
+            assert (await server.get_seguridad_cruz("p1", datos["mes"], USER))["fuerza_trabajo"] == {"personal": 203}
+            # Es por mes: otro mes sigue sin dato; y se puede corregir o borrar (None) sin perder historial.
+            assert (await server.get_seguridad_cruz("p1", "2020-01", USER))["fuerza_trabajo"] == {"personal": None}
+            await server.set_seguridad_fuerza_trabajo(
+                "p1", server.SeguridadFuerzaTrabajoIn(mes=datos["mes"], personal=215), USER)
+            assert (await db.seguridad_fuerza_trabajo.count_documents({"project_id": "p1"})) == 1
+            solo_lectura = {"id": "u8", "role": server.ROLE_JEFE, "name": "Jefe", "email": "j@x.mx"}
+            with pytest.raises(HTTPException) as ro:
+                await server.set_seguridad_fuerza_trabajo(
+                    "p1", server.SeguridadFuerzaTrabajoIn(mes=datos["mes"], personal=1), solo_lectura)
+            assert ro.value.status_code == 403
+            with pytest.raises(HTTPException) as mal:
+                await server.set_seguridad_fuerza_trabajo(
+                    "p1", server.SeguridadFuerzaTrabajoIn(mes="marzo", personal=1), USER)
+            assert mal.value.status_code == 400
+            datos = await server.get_seguridad_cruz("p1", None, USER)
+            assert datos["fuerza_trabajo"] == {"personal": 215}
             assert {r["tipo"]: r["cantidad"] for r in datos["resumen"]}["accidente_leve"] == 1
             assert datos["registros"][0]["trabajador"] == "Juan"
             resp = await server.export_seguridad_cruz_xlsx("p1", None, USER)
