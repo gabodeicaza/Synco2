@@ -9770,6 +9770,17 @@ def _indice_periodo_key(period_type: Optional[str], period: str) -> str:
     return {"reportes_semanales": "semanal", "reportes_mensuales": "mensual"}.get(cat, "diario")
 
 
+def _indice_titulo_reporte(r: dict) -> str:
+    """Título con el que un reporte aparece en el índice: el que escogieron
+    los ingenieros al capturarlo (`title`); si lo dejaron vacío, un respaldo
+    con la ubicación del reporte."""
+    t = " ".join(str(r.get("title") or "").split())
+    if t:
+        return t[:200]
+    path = r.get("node_path_names") or []
+    return f"Reporte · {path[-1]}" if path else "Reporte"
+
+
 def _sanitize_indice_config(raw) -> dict:
     """Normaliza la configuración de UN período. Tolera basura (payload del
     cliente o documentos viejos): nunca lanza, siempre devuelve la forma
@@ -12970,7 +12981,6 @@ async def export_reports_pdf(
             if not node_reps_all:
                 continue
             node_path = path_cache.get(n["id"]) or n.get("name", "")
-            _indice_mark(f"node:{n['id']}", node_path)
 
             # Portadilla de Nodo (2026-09-18): eliminada a pedido del usuario.
             # `node_path` se sigue usando como encabezado de las Actividades
@@ -13013,6 +13023,7 @@ async def export_reports_pdf(
 
                 # === Portadilla de Área (fondo magenta de la portada) ========
                 # Índice 0-based en el PDF actual = page_num - 1
+                _indice_mark(f"area:{n['id']}:{area_name}", f"{node_path} · {area_name}")
                 area_page_indices.append(page_num - 1)
                 draw_area_cover_page(area_name)
                 c.showPage()
@@ -13038,6 +13049,8 @@ async def export_reports_pdf(
                 # observación general del reporte.
                 photo_items: List[tuple] = []
                 for r in area_reps:
+                    # Marca de índice: cada reporte con el título de los ingenieros.
+                    photo_items.append(("__MARK__", (f"rep:{r.get('id')}", _indice_titulo_reporte(r))))
                     imgs = (r.get("images") or [])[:2]  # HARD-CAP 2 fotos
                     general_obs = (r.get("observaciones") or r.get("notes") or "").strip()
                     if not general_obs:
@@ -13104,6 +13117,13 @@ async def export_reports_pdf(
                     return True
 
                 for _item in photo_items:
+                    if _item[0] == "__MARK__":
+                        # El reporte previo cerró con PAGEBREAK, así que el buffer
+                        # va vacío y `page_num - 1` es la página donde empieza éste.
+                        if _flush_page():
+                            page_num += 1
+                        _indice_mark(*_item[1])
+                        continue
                     if _item[0] == "__PAGEBREAK__":
                         if _flush_page():
                             page_num += 1
@@ -16709,7 +16729,10 @@ async def export_reports_pptx(
             node_path = path_cache.get(n["id"]) or n.get("name", "")
 
             # === Portadilla de nodo: cover_image grande + TÍTULO ===========
-            _indice_mark(f"node:{n['id']}", node_path)
+            # Marca provisional: se completa con la 1ª Área del nodo (abajo) para
+            # que el índice apunte a la portadilla del nodo.
+            _node_mark_i = len(_indice_marks)
+            _indice_mark("area-pendiente", node_path)
             s = _clone_membrete()
             _title_h = Cm(1.8)
             _title_gap = Cm(0.5)
@@ -16771,11 +16794,16 @@ async def export_reports_pptx(
             for r in node_reps_all:
                 reps_by_area_all.setdefault(_bucket_key_for_report_slides(r), []).append(r)
             _sorted_area_ids = sorted(reps_by_area_all.keys(), key=lambda a: a.lower())
-            for bkey in _sorted_area_ids:
+            for _area_i, bkey in enumerate(_sorted_area_ids):
                 area_reps = reps_by_area.get(bkey) or []  # narrativa: puede venir vacía (sin fotos)
                 area_reps_all = reps_by_area_all[bkey]
                 area_name = bkey  # ya normalizado
                 printed_area_buckets.add(area_name)
+                _area_key, _area_title = f"area:{n['id']}:{area_name}", f"{node_path} · {area_name}"
+                if _area_i == 0:
+                    _indice_marks[_node_mark_i] = (_area_key, _area_title, _indice_marks[_node_mark_i][2])
+                else:
+                    _indice_mark(_area_key, _area_title)
 
                 # --- Portadilla de Área (clon del fondo de la portada) ----
                 # Título posicionado en la MISMA Y que "REPORTE X" en la
@@ -16807,6 +16835,7 @@ async def export_reports_pptx(
                 # por foto (`photo_captions[i]`), fallback a la observación
                 # general si el caption individual está vacío.
                 for _r in area_reps:
+                    _indice_mark(f"rep:{_r.get('id')}", _indice_titulo_reporte(_r))
                     _all_imgs = _r.get("images") or []
                     _imgs = _all_imgs[:2]  # HARD-CAP: máximo 2 fotos
                     _general_obs = (

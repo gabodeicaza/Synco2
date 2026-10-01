@@ -805,9 +805,13 @@ export default function ProjectDetailScreen() {
     }
   }
 
-  async function onSaveGeneralDataNames() {
+  // `texto` llega directo del campo (evento de fin de edicion): no depende de
+  // que el estado ya se haya actualizado, asi el ultimo caracter nunca se pierde.
+  async function onSaveGeneralDataNames(idx: number, texto: string) {
     try {
-      const upd: any = await api.setGeneralDataNames(pid, gdImages.map((_, i) => gdNames[i] || ''));
+      const upd: any = await api.setGeneralDataNames(
+        pid, gdImages.map((_, i) => (i === idx ? texto : gdNames[i] || '')),
+      );
       setGdNames(upd.general_data_names || []);
     } catch (e: any) {
       Alert.alert('No se pudo guardar el nombre', e?.message || 'Intentalo nuevamente.');
@@ -2730,7 +2734,7 @@ export default function ProjectDetailScreen() {
                         next[idx] = t;
                         return next;
                       })}
-                      onEndEditing={onSaveGeneralDataNames}
+                      onEndEditing={(e) => onSaveGeneralDataNames(idx, e.nativeEvent.text)}
                       placeholder={`Nombre (indice) . Datos generales ${idx + 1}`}
                       placeholderTextColor={colors.textMuted}
                       maxLength={120}

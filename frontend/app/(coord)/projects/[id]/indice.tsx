@@ -35,17 +35,34 @@ export default function IndiceEditorScreen() {
 
   const actual = borradores[periodo];
 
+  // Recalcula la estructura (secciones y titulos por defecto) con los datos
+  // actuales del proyecto: asi el editor siempre refleja lo que el informe va
+  // a imprimir (datos generales con sus nombres, areas, reportes con el titulo
+  // de los ingenieros...) y no una version vieja. No toca los cambios sin guardar.
+  const refrescarEstructura = useCallback(async (p: IndicePeriodo, silencioso: boolean) => {
+    try {
+      setRefreshing(true);
+      const r = await api.refreshIndiceEstructura(pid, p);
+      setBorradores((b) => (b[p] ? { ...b, [p]: { ...b[p]!, estructura: r.estructura } } : b));
+    } catch (e: any) {
+      if (!silencioso) Alert.alert('No se pudo actualizar', e?.message || 'Intentalo nuevamente.');
+    } finally {
+      setRefreshing(false);
+    }
+  }, [pid]);
+
   const cargar = useCallback(async (p: IndicePeriodo) => {
     try {
       setLoading(true);
       const r = await api.getIndiceConfig(pid, p);
       setBorradores((b) => ({ ...b, [p]: { config: r.config, estructura: r.estructura, sucio: false } }));
+      refrescarEstructura(p, true);  // en segundo plano; mientras tanto se ve la ultima conocida
     } catch (e: any) {
       Alert.alert('Error', e?.message || 'No se pudo cargar el indice.');
     } finally {
       setLoading(false);
     }
-  }, [pid]);
+  }, [pid, refrescarEstructura]);
 
   useEffect(() => {
     if (!pid) return;
@@ -81,17 +98,8 @@ export default function IndiceEditorScreen() {
     }
   }
 
-  async function actualizarEstructura() {
-    if (!actual) return;
-    try {
-      setRefreshing(true);
-      const r = await api.refreshIndiceEstructura(pid, periodo);
-      setBorradores((b) => ({ ...b, [periodo]: { ...actual, estructura: r.estructura } }));
-    } catch (e: any) {
-      Alert.alert('No se pudo actualizar', e?.message || 'Intentalo nuevamente.');
-    } finally {
-      setRefreshing(false);
-    }
+  function actualizarEstructura() {
+    if (actual) refrescarEstructura(periodo, false);
   }
 
   const secciones = useMemo(

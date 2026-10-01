@@ -71,6 +71,8 @@ mongomock_motor = pytest.importorskip("mongomock_motor")
 ACT_GENERAL = "Reunion de coordinacion semanal"
 ACT_REPORTE = "Colado de pila 1 en poste"
 ACT_FUERA_DE_PERIODO = "Actividad de hace dos meses"
+TITULO_REPORTE = "Armado de cabezal poste S65"
+_PNG = ("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
 
 
 def _sembrar(db, con_tabla_resumen):
@@ -79,7 +81,8 @@ def _sembrar(db, con_tabla_resumen):
     modulos = {"reportes_diarios": {"tabla_resumen": con_tabla_resumen}, "reportes_semanales": {}, "reportes_mensuales": {}}
     return [
         db.projects.insert_one({"id": "p1", "name": "Proyecto Demo", "color_institucional": "#003366",
-                                "modulos": modulos}),
+                                "modulos": modulos, "general_data_images": [_PNG, _PNG],
+                                "general_data_names": ["Presupuesto 2026", ""]}),
         db.location_nodes.insert_many([
             {**NODES["r1"], "project_id": "p1", "is_leaf": False},
             {**NODES["s2"], "project_id": "p1", "is_leaf": False},
@@ -89,6 +92,7 @@ def _sembrar(db, con_tabla_resumen):
         db.reports.insert_many([
             {"id": "rep1", "project_id": "p1", "node_id": "p1", "area_id": "a1", "created_at": now,
              "severidad": "diario", "actividades": ACT_REPORTE, "images": [], "captured_by": "u1",
+             "title": TITULO_REPORTE,
              "node_path_names": ["TRAMO 1", "Estación 2", "Poste S65"], "captured_by_name": "Ing"},
             {"id": "rep0", "project_id": "p1", "node_id": "p1", "area_id": "a1", "created_at": viejo,
              "severidad": "diario", "actividades": ACT_FUERA_DE_PERIODO, "images": [], "captured_by": "u1",
@@ -179,3 +183,33 @@ def test_resumen_se_imprime_aunque_la_tabla_resumen_no_este_activa(formato):
     paginas = _paginas(formato, con_tabla_resumen=False)
     assert any("RESUMEN DE ACTIVIDADES POR TRAMO" in t for t in paginas)
     assert not any("TABLA DE AVANCE ACUMULADO" in t for t in paginas)
+
+
+def _indice_impreso(paginas):
+    """Texto del índice impreso (página/diapositiva 2, tras la portada)."""
+    return paginas[1]
+
+
+@pytest.mark.parametrize("formato", ["pdf", "pptx"])
+def test_indice_refleja_todo_titulos_de_ingenieros_datos_generales_y_resumen(formato):
+    paginas = _paginas(formato, con_tabla_resumen=True)
+    indice = _indice_impreso(paginas)
+    assert TITULO_REPORTE in indice, "cada reporte aparece con el título que escogieron los ingenieros"
+    assert "Presupuesto 2026" in indice and "Datos generales 2" in indice
+    assert "Resumen de actividades · TRAMO 1" in indice and "Resumen de actividades · General" in indice
+    assert "Poste S65 · Obra Civil" in indice, "el área de cada nodo es una entrada propia"
+
+
+@pytest.mark.parametrize("formato", ["pdf", "pptx"])
+def test_indice_apunta_a_la_pagina_del_reporte(formato):
+    paginas = _paginas(formato, con_tabla_resumen=True)
+    lineas = [ln.strip() for ln in _indice_impreso(paginas).splitlines() if ln.strip()]
+    ent = {t: int(n) for t, n in zip(lineas, lineas[1:]) if n.isdigit()}
+    area = ent["TRAMO 1 › Estación 2 › Poste S65 · Obra Civil"]
+    reporte = ent[TITULO_REPORTE]
+    resumen_subtramo = ent["Resumen · Estación 2"]
+    # Orden real del documento: portadilla del área → su resumen de actividades
+    # → página del reporte → resumen del subtramo (que sigue inmediatamente).
+    assert area < reporte == resumen_subtramo - 1
+    # Y la diapositiva/página del subtramo es de verdad la del resumen.
+    assert "ESTACIÓN 2" in paginas[resumen_subtramo - 1].upper()
