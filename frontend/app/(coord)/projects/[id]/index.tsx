@@ -1493,6 +1493,14 @@ export default function ProjectDetailScreen() {
                     onPress={() => router.push({ pathname: '/(coord)/projects/[id]/fotos-lidar' as any, params: { id: pid } })}
                   />
                 ) : null}
+                {moduloActivo(project?.modulos, 'pruebas_calidad') ? (
+                  <ActionTile
+                    icon="flask-outline"
+                    title="Pruebas de Calidad"
+                    subtitle="Concentrado de pruebas por frente: elemento, muestra, tipo y observaciones"
+                    onPress={() => router.push({ pathname: '/(coord)/projects/[id]/pruebas-calidad' as any, params: { id: pid } })}
+                  />
+                ) : null}
                 {moduloActivo(project?.modulos, 'tapial') ? (
                   <ActionTile
                     icon="git-branch-outline"

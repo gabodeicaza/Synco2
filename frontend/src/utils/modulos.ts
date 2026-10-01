@@ -99,6 +99,14 @@ export const MODULOS: ModuloDef[] = [
     area: 'Ingeniería',
   },
   {
+    key: 'pruebas_calidad',
+    label: 'Pruebas de Calidad',
+    subtitle: 'Concentrado de pruebas por frente: elemento, muestra, tipo y observaciones',
+    icon: 'flask-outline',
+    screen: 'pruebas-calidad',
+    area: 'Calidad',
+  },
+  {
     key: 'estado_tiempo',
     label: 'Estado del Tiempo',
     subtitle: 'Temperatura, viento, precipitación y calidad del aire por estación',

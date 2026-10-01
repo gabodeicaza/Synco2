@@ -552,6 +552,27 @@ export interface FotoLidar {
 }
 export type FotoLidarSlot = 'original' | 'actual';
 
+// === Concentrado de pruebas de calidad ====================================
+export interface PruebaCalidad {
+  id: string;
+  project_id: string;
+  node_id?: string | null;
+  grupo?: string | null; // frente fuera del árbol (ej. "Suministro Gefsa-Puebla")
+  frente: string;
+  localizacion?: string | null;
+  elemento?: string | null;
+  muestra_no?: string | null;
+  fecha: string; // YYYY-MM-DD
+  tipo?: string | null;
+  observaciones?: string | null;
+  created_by: string;
+  created_by_name: string;
+  updated_at: string;
+}
+export type PruebaCalidadInput = Partial<Omit<PruebaCalidad, 'id' | 'project_id' | 'created_by' | 'created_by_name' | 'updated_at' | 'frente'>> & {
+  frente: string;
+};
+
 // === Presentación (Informe de Actividades semanal) =========================
 export type EstudioDisciplinaAvanceEstatus = 'en_proceso' | 'terminado';
 
@@ -2146,6 +2167,16 @@ export const api = {
     request<{ ok: boolean }>('DELETE', `/projects/${pid}/fotos-lidar/${fid}/foto/${slot}`),
   deleteFotoLidar: (pid: string, fid: string) =>
     request<{ ok: boolean }>('DELETE', `/projects/${pid}/fotos-lidar/${fid}`),
+  listPruebasCalidad: (pid: string, q: { desde?: string; hasta?: string; node_id?: string } = {}) => {
+    const qs = new URLSearchParams(Object.entries(q).filter(([, v]) => !!v) as [string, string][]).toString();
+    return request<PruebaCalidad[]>('GET', `/projects/${pid}/pruebas-calidad${qs ? `?${qs}` : ''}`);
+  },
+  createPruebaCalidad: (pid: string, body: PruebaCalidadInput) =>
+    request<PruebaCalidad>('POST', `/projects/${pid}/pruebas-calidad`, body),
+  updatePruebaCalidad: (pid: string, rid: string, body: Partial<PruebaCalidadInput>) =>
+    request<PruebaCalidad>('PATCH', `/projects/${pid}/pruebas-calidad/${rid}`, body),
+  deletePruebaCalidad: (pid: string, rid: string) =>
+    request<{ ok: boolean }>('DELETE', `/projects/${pid}/pruebas-calidad/${rid}`),
 
   // === Módulo piloto: Estado del Tiempo ===
   listWeatherLogs: (pid: string, date?: string) =>
