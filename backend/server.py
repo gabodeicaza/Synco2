@@ -2940,16 +2940,17 @@ def _cruz_layout(n_dias: int) -> List[tuple]:
     return out
 
 
-def _cruz_calcular(registros: list, anio: int, mes: int, hoy: date,
-                   personal_por_dia: dict, maquinaria_por_dia: dict) -> dict:
+def _cruz_calcular(registros: list, anio: int, mes: int, hoy: date, personal_por_dia: dict) -> dict:
     """Datos de la Cruz de Seguridad de un mes. Pura — sin Mongo.
 
     `registros`: documentos de `seguridad_reportes` (cualquier fecha; aquí se
     filtran). Cada día transcurrido es el peor tipo registrado ese día, o
     "sin_accidentes" si no hay nada; los días futuros quedan sin tipo (gris).
-    El resumen cuenta REGISTROS por tipo (y, para "Sin accidentes", días) y
-    el porcentaje es sobre los días transcurridos del mes. La bitácora es el
-    acumulado del AÑO, sin los renglones "Sin accidentes"."""
+    El resumen cuenta REGISTROS por tipo (y, para "Sin accidentes", días
+    laborables) y el porcentaje es sobre los DÍAS LABORABLES transcurridos del
+    mes (lunes a sábado; no se descuentan festivos). La fuerza de trabajo es
+    solo personal. La bitácora es el acumulado del AÑO, sin los renglones
+    "Sin accidentes"."""
     import calendar
     n_dias = calendar.monthrange(anio, mes)[1]
     if (anio, mes) < (hoy.year, hoy.month):
@@ -2988,10 +2989,12 @@ def _cruz_calcular(registros: list, anio: int, mes: int, hoy: date,
     for d, fila, col in _cruz_layout(n_dias):
         tipo = None if d > transcurridos else por_dia.get(d, "sin_accidentes")
         dias.append({"dia": d, "fila": fila, "col": col, "tipo": tipo})
-    conteo["sin_accidentes"] = sum(1 for x in dias if x["tipo"] == "sin_accidentes")
+    es_laborable = lambda d: date(anio, mes, d).weekday() != 6  # noqa: E731  (domingo no cuenta)
+    laborables = sum(1 for d in range(1, transcurridos + 1) if es_laborable(d))
+    conteo["sin_accidentes"] = sum(1 for x in dias if x["tipo"] == "sin_accidentes" and es_laborable(x["dia"]))
 
     def _pct(n):
-        return round(100 * n / transcurridos) if transcurridos else 0
+        return round(100 * n / laborables) if laborables else 0
 
     def _prom(por_dia_dict):
         vals = [v for v in por_dia_dict.values() if v]
@@ -3001,10 +3004,11 @@ def _cruz_calcular(registros: list, anio: int, mes: int, hoy: date,
         "mes": f"{anio:04d}-{mes:02d}",
         "mes_label": f"{_SEGURIDAD_MESES[mes - 1]} {anio}",
         "dias_transcurridos": transcurridos,
+        "dias_laborables": laborables,
         "dias": dias,
         "resumen": [{"tipo": t, "label": CRUZ_LABEL[t], "abrev": CRUZ_ABREV[t], "color": CRUZ_COLOR[t],
                      "cantidad": conteo[t], "porcentaje": _pct(conteo[t])} for t in CRUZ_TIPOS_ORDEN],
-        "fuerza_trabajo": {"personal": _prom(personal_por_dia), "maquinaria": _prom(maquinaria_por_dia)},
+        "fuerza_trabajo": {"personal": _prom(personal_por_dia)},
         "registros": bitacora,
     }
 
@@ -3027,15 +3031,13 @@ def _cruz_parse_mes(mes: Optional[str]) -> tuple:
 async def _cruz_fetch(pid: str, mes: Optional[str]) -> dict:
     anio, m = _cruz_parse_mes(mes)
     registros = await db.seguridad_reportes.find({"project_id": pid}).to_list(length=20000)
-    # Fuerza de trabajo promedio del mes: suma diaria de personal y de
-    # maquinaria/equipo de los reportes de campo, promediada sobre los días
-    # con captura.
+    # Fuerza de trabajo promedio del mes: suma diaria de PERSONAL de los
+    # reportes de campo, promediada sobre los días con captura.
     ini = datetime(anio, m, 1, tzinfo=MX_TZ).astimezone(timezone.utc)
     fin = (datetime(anio + 1, 1, 1, tzinfo=MX_TZ) if m == 12 else datetime(anio, m + 1, 1, tzinfo=MX_TZ)).astimezone(timezone.utc)
     personal: Dict[date, int] = {}
-    maquinaria: Dict[date, int] = {}
     async for r in db.reports.find(
-        {"project_id": pid, "created_at": {"$gte": ini, "$lt": fin}}, {"personnel": 1, "equipment": 1, "created_at": 1},
+        {"project_id": pid, "created_at": {"$gte": ini, "$lt": fin}}, {"personnel": 1, "created_at": 1},
     ):
         dt = r.get("created_at")
         if not dt:
@@ -3044,8 +3046,7 @@ async def _cruz_fetch(pid: str, mes: Optional[str]) -> dict:
             dt = dt.replace(tzinfo=timezone.utc)
         dia = dt.astimezone(MX_TZ).date()
         personal[dia] = personal.get(dia, 0) + sum(_parse_qty_desc(x)[0] for x in (r.get("personnel") or []))
-        maquinaria[dia] = maquinaria.get(dia, 0) + sum(_parse_qty_desc(x)[0] for x in (r.get("equipment") or []))
-    return _cruz_calcular(registros, anio, m, datetime.now(MX_TZ).date(), personal, maquinaria)
+    return _cruz_calcular(registros, anio, m, datetime.now(MX_TZ).date(), personal)
 
 
 def _cruz_xlsx_bytes(data: dict, proyecto: str) -> bytes:
@@ -3094,14 +3095,12 @@ def _cruz_xlsx_bytes(data: dict, proyecto: str) -> bytes:
     ws["C4"].value = "Fuerza de Trabajo PROMEDIO"
     ws["C4"].font = Font(bold=True)
     ws["D4"].value = ft["personal"]
-    ws["E4"].value = ft["maquinaria"]
-    ws["F4"].value = "personal · maquinaria"
-    ws["F4"].font = Font(italic=True, size=9, color="595959")
-    for ref in ("C4", "D4", "E4"):
+    ws["E4"].value = "personal"
+    ws["E4"].font = Font(italic=True, size=9, color="595959")
+    for ref in ("C4", "D4"):
         ws[ref].border = box
         ws[ref].alignment = center
     ws["D4"].font = Font(bold=True)
-    ws["E4"].font = Font(bold=True)
 
     ws.merge_cells("C5:F5")
     ws["C5"].value = "REGISTRO DE ACCIDENTES"
@@ -3111,7 +3110,7 @@ def _cruz_xlsx_bytes(data: dict, proyecto: str) -> bytes:
 
     resumen = {r["tipo"]: r for r in data["resumen"]}
     sa = resumen["sin_accidentes"]
-    ws["C6"].value = f"SIN ACCIDENTES ({sa['cantidad']} días)"
+    ws["C6"].value = f"SIN ACCIDENTES ({sa['cantidad']} días laborables)"
     ws["C6"].fill = fill(CRUZ_COLOR["sin_accidentes"])
     ws["C6"].font = Font(color="FFFFFF")
     for ref, txt in (("D6", "TIPO ACCIDENTE"), ("E6", "CANTIDAD"), ("F6", "PORCENTAJE")):

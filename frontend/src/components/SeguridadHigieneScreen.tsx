@@ -345,9 +345,8 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
               <View style={[styles.card, styles.cruzFuerza]}>
                 <Text style={styles.cruzFuerzaTitulo}>Fuerza de trabajo PROMEDIO</Text>
                 <Text style={styles.cruzFuerzaNum}>{cruz.fuerza_trabajo.personal ?? '—'}</Text>
-                <Text style={styles.cruzFuerzaNum}>{cruz.fuerza_trabajo.maquinaria ?? '—'}</Text>
               </View>
-              <Text style={styles.fieldHint}>Personal · maquinaria (promedio diario de los reportes de campo del mes)</Text>
+              <Text style={styles.fieldHint}>Personal: promedio diario de los reportes de campo del mes.</Text>
 
               <Text style={[styles.sectionTitle, { marginTop: spacing.md }]}>Cruz de seguridad</Text>
               <View style={[styles.card, { alignItems: 'center', padding: spacing.md }]}>
@@ -389,8 +388,8 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
                 ))}
               </View>
               <Text style={styles.fieldHint}>
-                Cantidad = registros del mes ("Sin accidentes" = días sin eventos). Porcentaje sobre los{' '}
-                {cruz.dias_transcurridos} días transcurridos.
+                Cantidad = registros del mes ("Sin accidentes" = días laborables sin eventos). Porcentaje sobre los{' '}
+                {cruz.dias_laborables} días laborables transcurridos (lunes a sábado).
               </Text>
 
               <Button

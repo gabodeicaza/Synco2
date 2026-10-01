@@ -50,7 +50,7 @@ def test_dias_se_pintan_por_el_peor_evento_y_el_futuro_queda_gris():
         _r("2026-03-20", "grave"),
         _r("2026-04-01", "grave"),                 # otro mes: no cuenta aquí
     ]
-    d = _cruz_calcular(regs, 2026, 3, date(2026, 3, 26), {}, {})
+    d = _cruz_calcular(regs, 2026, 3, date(2026, 3, 26), {})
     tipo = {x["dia"]: x["tipo"] for x in d["dias"]}
     assert tipo[1] == "sin_accidentes" and tipo[2] == "accidente_leve" and tipo[5] == "sin_accidentes"
     assert tipo[16] == "incidente" and tipo[20] == "grave"
@@ -58,31 +58,44 @@ def test_dias_se_pintan_por_el_peor_evento_y_el_futuro_queda_gris():
     assert d["dias_transcurridos"] == 26 and d["mes_label"] == "Marzo 2026"
 
 
-def test_resumen_cuenta_registros_y_porcentaje_sobre_dias_transcurridos():
+def test_resumen_cuenta_registros_y_porcentaje_sobre_dias_laborables():
+    # Marzo 2026 empieza en domingo (1, 8, 15, 22 y 29 son domingos).
     regs = [_r(f"2026-03-{d:02d}", "accidente_leve") for d in (2, 3, 16, 25, 28)]
     regs += [_r("2026-03-10", "dano_propiedad"), _r("2026-03-11", "incidente")]
-    d = _cruz_calcular(regs, 2026, 3, date(2026, 3, 30), {}, {})
+    d = _cruz_calcular(regs, 2026, 3, date(2026, 3, 30), {})
+    assert d["dias_transcurridos"] == 30 and d["dias_laborables"] == 30 - 5  # sin los 5 domingos
     res = {r["tipo"]: r for r in d["resumen"]}
-    assert res["accidente_leve"]["cantidad"] == 5 and res["accidente_leve"]["porcentaje"] == 17  # 5/30
-    assert res["dano_propiedad"]["cantidad"] == 1 and res["incapacitante"]["cantidad"] == 0
-    assert res["sin_accidentes"]["cantidad"] == 30 - 7  # días sin ningún evento
+    assert res["accidente_leve"]["cantidad"] == 5 and res["accidente_leve"]["porcentaje"] == 20  # 5/25
+    assert res["dano_propiedad"]["cantidad"] == 1 and res["dano_propiedad"]["porcentaje"] == 4  # 1/25
+    assert res["incapacitante"]["cantidad"] == 0 and res["incapacitante"]["porcentaje"] == 0
+    assert res["sin_accidentes"]["cantidad"] == 25 - 7  # días laborables sin ningún evento
     assert [r["abrev"] for r in d["resumen"]] == ["SA", "DP", "I", "PA", "INCA", "GR"]
 
 
+def test_el_domingo_no_cuenta_como_dia_laborable_ni_como_dia_sin_accidentes():
+    d = _cruz_calcular([], 2026, 3, date(2026, 3, 8), {})  # 1 al 8 de marzo: 2 domingos (1 y 8)
+    assert d["dias_transcurridos"] == 8 and d["dias_laborables"] == 6
+    sa = {r["tipo"]: r for r in d["resumen"]}["sin_accidentes"]
+    assert sa["cantidad"] == 6 and sa["porcentaje"] == 100
+    # Pero el domingo SÍ se pinta en la cruz (verde): la cruz muestra todos los días.
+    assert [x["tipo"] for x in d["dias"] if x["dia"] in (1, 8)] == ["sin_accidentes", "sin_accidentes"]
+
+
 def test_meses_pasados_completos_y_futuros_todo_gris():
-    pasado = _cruz_calcular([], 2026, 1, date(2026, 3, 26), {}, {})
+    pasado = _cruz_calcular([], 2026, 1, date(2026, 3, 26), {})
     assert pasado["dias_transcurridos"] == 31 and all(x["tipo"] == "sin_accidentes" for x in pasado["dias"])
-    futuro = _cruz_calcular([], 2026, 8, date(2026, 3, 26), {}, {})
-    assert futuro["dias_transcurridos"] == 0 and all(x["tipo"] is None for x in futuro["dias"])
+    futuro = _cruz_calcular([], 2026, 8, date(2026, 3, 26), {})
+    assert futuro["dias_transcurridos"] == 0 and futuro["dias_laborables"] == 0
+    assert all(x["tipo"] is None for x in futuro["dias"])
     assert all(r["porcentaje"] == 0 for r in futuro["resumen"])
 
 
 def test_fuerza_de_trabajo_promedio_y_reportes_anteriores_al_formato():
     d = _cruz_calcular([{"fecha": "2026-03-04", "severidad": "moderado", "descripcion": "x"}], 2026, 3,
-                       date(2026, 3, 30), {1: 200, 2: 206, 3: 0}, {1: 9, 2: 11})
-    assert d["fuerza_trabajo"] == {"personal": 203, "maquinaria": 10}  # los días sin dato no promedian
+                       date(2026, 3, 30), {1: 200, 2: 206, 3: 0})
+    assert d["fuerza_trabajo"] == {"personal": 203}  # solo personal; los días sin dato no promedian
     assert [x["tipo"] for x in d["dias"] if x["dia"] == 4] == ["incapacitante"]  # moderado → incapacitante
-    assert _cruz_calcular([], 2026, 3, date(2026, 3, 30), {}, {})["fuerza_trabajo"] == {"personal": None, "maquinaria": None}
+    assert _cruz_calcular([], 2026, 3, date(2026, 3, 30), {})["fuerza_trabajo"] == {"personal": None}
 
 
 def test_bitacora_es_del_anio_sin_sin_accidentes_y_numerada():
@@ -93,7 +106,7 @@ def test_bitacora_es_del_anio_sin_sin_accidentes_y_numerada():
         _r("2026-05-22", "incidente", trabajador="Víctor Ruiz", contratista="ALFA"),
         _r("2025-12-30", "grave"),                 # otro año
     ]
-    d = _cruz_calcular(regs, 2026, 5, date(2026, 5, 30), {}, {})
+    d = _cruz_calcular(regs, 2026, 5, date(2026, 5, 30), {})
     b = d["registros"]
     assert [(x["n"], x["mes"], x["abrev"]) for x in b] == [(1, "Marzo", "DP"), (2, "Mayo", "I")]
     assert b[0]["trabajador"] == "Vehículo" and b[0]["fecha"] == "2026-03-12"
@@ -108,14 +121,16 @@ def test_xlsx_replica_la_hoja_de_referencia():
            descripcion="IMPACTA TAPIAL"),
         _r("2026-04-20", "accidente_leve", trabajador="Maria", contratista="ALFA", ubicacion="POSTE C-08"),
     ]
-    data = _cruz_calcular(regs, 2026, 4, date(2026, 4, 25), {1: 203}, {1: 10})
+    data = _cruz_calcular(regs, 2026, 4, date(2026, 4, 25), {1: 203})
     ws = load_workbook(io.BytesIO(_cruz_xlsx_bytes(data, "Línea 4"))).active
     assert ws.title == "CRUZ DE SEGURIDAD" and ws["A1"].value == "CRUZ DE SEGURIDAD"
-    assert ws["C4"].value == "Fuerza de Trabajo PROMEDIO" and (ws["D4"].value, ws["E4"].value) == (203, 10)
+    assert ws["C4"].value == "Fuerza de Trabajo PROMEDIO" and ws["D4"].value == 203 and ws["E4"].value == "personal"
     assert ws["C5"].value == "REGISTRO DE ACCIDENTES"
     assert ws["C6"].value.startswith("SIN ACCIDENTES") and ws["D6"].value == "TIPO ACCIDENTE"
     filas = {ws.cell(r, 4).value: (ws.cell(r, 3).value, ws.cell(r, 5).value, ws.cell(r, 6).value) for r in range(7, 12)}
-    assert filas["DP"] == ("DAÑO A LA PROPIEDAD", 1, "4%") and filas["PA"][1] == 1 and filas["GR"][1] == 0
+    # Abril 2026 hasta el 25: 25 días, 3 domingos (5, 12, 19) y 1 más (26 no llega) → 22 laborables
+    assert data["dias_laborables"] == 22
+    assert filas["DP"] == ("DAÑO A LA PROPIEDAD", 1, "5%") and filas["PA"][1] == 1 and filas["GR"][1] == 0
     assert ws["C7"].fill.fgColor.rgb.endswith("6DC8E8")  # color de DP en la referencia
     # La cruz: el día 20 (accidente leve) amarillo, el 26 (futuro) gris, el 1 verde.
     celdas = {ws.cell(r, c).value: ws.cell(r, c).fill.fgColor.rgb[-6:] for r in range(4, 11) for c in range(10, 19)
@@ -151,7 +166,7 @@ def test_endpoints_de_datos_y_excel():
                 "id": "s1", "project_id": "p1", "fecha": hoy.isoformat(), "tipo_registro": "accidente_leve",
                 "trabajador": "Juan", "contratista": "Alfa", "descripcion": "Caída", "ubicacion": "E3"})
             datos = await server.get_seguridad_cruz("p1", None, USER)
-            assert datos["fuerza_trabajo"] == {"personal": 5, "maquinaria": 1}
+            assert datos["fuerza_trabajo"] == {"personal": 5}  # 3 ayudantes + 2 cabos; la maquinaria no cuenta
             assert {r["tipo"]: r["cantidad"] for r in datos["resumen"]}["accidente_leve"] == 1
             assert datos["registros"][0]["trabajador"] == "Juan"
             resp = await server.export_seguridad_cruz_xlsx("p1", None, USER)

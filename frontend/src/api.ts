@@ -414,9 +414,10 @@ export interface SeguridadCruz {
   mes: string;                 // AAAA-MM
   mes_label: string;           // "Marzo 2026"
   dias_transcurridos: number;
+  dias_laborables: number;     // lunes a sabado transcurridos: base del porcentaje
   dias: CruzDia[];
   resumen: CruzResumen[];
-  fuerza_trabajo: { personal: number | null; maquinaria: number | null };
+  fuerza_trabajo: { personal: number | null };
   registros: CruzBitacora[];   // bitacora del ano, sin "Sin accidentes"
 }
 
