@@ -2753,14 +2753,14 @@ _SEGURIDAD_TIPO_A_SEVERIDAD = {
     "sin_accidentes": "leve", "dano_propiedad": "leve", "incidente": "leve",
     "accidente_leve": "leve", "incapacitante": "moderado", "grave": "grave",
 }
-_MESES_ES = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto",
-             "Septiembre", "Octubre", "Noviembre", "Diciembre"]
+_SEGURIDAD_MESES = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto",
+                    "Septiembre", "Octubre", "Noviembre", "Diciembre"]
 
 
 def _seguridad_mes(fecha: Optional[str]) -> str:
     """Nombre del mes (español) de una fecha ISO 'YYYY-MM-DD'; "" si no parsea."""
     try:
-        return _MESES_ES[date.fromisoformat((fecha or "")[:10]).month - 1]
+        return _SEGURIDAD_MESES[date.fromisoformat((fecha or "")[:10]).month - 1]
     except (ValueError, TypeError):
         return ""
 
@@ -2895,6 +2895,315 @@ async def update_seguridad_reporte(pid: str, rid: str, body: SeguridadReportePat
         raise HTTPException(400, "Nada para actualizar")
     await db.seguridad_reportes.update_one({"id": rid}, {"$set": upd})
     return _seguridad_out({**row, **upd})
+
+
+# === CRUZ DE SEGURIDAD =====================================================
+# Tablero visual del mes: cada día es una casilla de una cruz (30 casillas) y
+# se pinta según lo peor que pasó ese día — verde si no hubo accidentes, gris
+# los días que aún no ocurren. Junto a la cruz van el resumen por tipo de
+# accidente, la fuerza de trabajo promedio y la bitácora del año por mes.
+CRUZ_TIPOS_ORDEN = ["sin_accidentes", "dano_propiedad", "incidente", "accidente_leve", "incapacitante", "grave"]
+CRUZ_ABREV = {"sin_accidentes": "SA", "dano_propiedad": "DP", "incidente": "I",
+              "accidente_leve": "PA", "incapacitante": "INCA", "grave": "GR"}
+# Colores de la hoja de referencia (hex RRGGBB, sin #).
+CRUZ_COLOR = {"sin_accidentes": "008040", "dano_propiedad": "6DC8E8", "incidente": "7030A0",
+              "accidente_leve": "FFC000", "incapacitante": "ED7D31", "grave": "E0104A"}
+CRUZ_COLOR_FUTURO = "A6A6A6"
+# Etiqueta de la hoja de referencia por tipo (en mayúsculas, como se imprime).
+CRUZ_LABEL = {"sin_accidentes": "SIN ACCIDENTES", "dano_propiedad": "DAÑO A LA PROPIEDAD",
+              "incidente": "INCIDENTE", "accidente_leve": "ACCIDENTE LEVE / PRIMEROS AUXILIO",
+              "incapacitante": "INCAPACITANTE", "grave": "GRAVE"}
+_CRUZ_GRAVEDAD = {t: i for i, t in enumerate(CRUZ_TIPOS_ORDEN)}
+_CRUZ_LEGACY = {"leve": "accidente_leve", "moderado": "incapacitante", "grave": "grave"}
+
+
+def _seguridad_tipo_efectivo(doc: dict) -> str:
+    """Tipo del registro; los reportes anteriores al formato solo traen
+    `severidad` y se mapean (leve → accidente leve, moderado → incapacitante)."""
+    tipo = doc.get("tipo_registro")
+    if tipo in _CRUZ_GRAVEDAD:
+        return tipo
+    return _CRUZ_LEGACY.get(doc.get("severidad"), "accidente_leve")
+
+
+def _cruz_layout(n_dias: int) -> List[tuple]:
+    """Posición (día, fila, columna) de cada casilla de la cruz, en una
+    cuadrícula de 9 columnas: brazo superior 3×2 (días 1-6), cuerpo 9×2
+    (7-24) y brazo inferior de 3 de ancho (25-30, y el 31 debajo)."""
+    bandas = [(range(1, 4), 3), (range(4, 7), 3), (range(7, 16), 0), (range(16, 25), 0),
+              (range(25, 28), 3), (range(28, 31), 3), (range(31, 32), 3)]
+    out: List[tuple] = []
+    for fila, (dias, col0) in enumerate(bandas):
+        for i, d in enumerate(dias):
+            if d <= n_dias:
+                out.append((d, fila, col0 + i))
+    return out
+
+
+def _cruz_calcular(registros: list, anio: int, mes: int, hoy: date,
+                   personal_por_dia: dict, maquinaria_por_dia: dict) -> dict:
+    """Datos de la Cruz de Seguridad de un mes. Pura — sin Mongo.
+
+    `registros`: documentos de `seguridad_reportes` (cualquier fecha; aquí se
+    filtran). Cada día transcurrido es el peor tipo registrado ese día, o
+    "sin_accidentes" si no hay nada; los días futuros quedan sin tipo (gris).
+    El resumen cuenta REGISTROS por tipo (y, para "Sin accidentes", días) y
+    el porcentaje es sobre los días transcurridos del mes. La bitácora es el
+    acumulado del AÑO, sin los renglones "Sin accidentes"."""
+    import calendar
+    n_dias = calendar.monthrange(anio, mes)[1]
+    if (anio, mes) < (hoy.year, hoy.month):
+        transcurridos = n_dias
+    elif (anio, mes) == (hoy.year, hoy.month):
+        transcurridos = hoy.day
+    else:
+        transcurridos = 0
+
+    por_dia: Dict[int, str] = {}
+    conteo = {t: 0 for t in CRUZ_TIPOS_ORDEN}
+    bitacora = []
+    for r in sorted(registros, key=lambda r: (r.get("fecha") or "", r.get("created_at") or "")):
+        try:
+            f = date.fromisoformat((r.get("fecha") or "")[:10])
+        except ValueError:
+            continue
+        tipo = _seguridad_tipo_efectivo(r)
+        if f.year == anio and tipo != "sin_accidentes":
+            bitacora.append({
+                "mes": _SEGURIDAD_MESES[f.month - 1], "mes_num": f.month,
+                "trabajador": r.get("trabajador") or "", "contratista": r.get("contratista") or "",
+                "tipo": tipo, "abrev": CRUZ_ABREV[tipo], "ubicacion": r.get("ubicacion") or "",
+                "fecha": f.isoformat(), "descripcion": r.get("descripcion") or "",
+            })
+        if (f.year, f.month) == (anio, mes):
+            if tipo != "sin_accidentes":
+                conteo[tipo] += 1
+            actual = por_dia.get(f.day)
+            if actual is None or _CRUZ_GRAVEDAD[tipo] > _CRUZ_GRAVEDAD[actual]:
+                por_dia[f.day] = tipo
+    for i, b in enumerate(bitacora, 1):
+        b["n"] = i
+
+    dias = []
+    for d, fila, col in _cruz_layout(n_dias):
+        tipo = None if d > transcurridos else por_dia.get(d, "sin_accidentes")
+        dias.append({"dia": d, "fila": fila, "col": col, "tipo": tipo})
+    conteo["sin_accidentes"] = sum(1 for x in dias if x["tipo"] == "sin_accidentes")
+
+    def _pct(n):
+        return round(100 * n / transcurridos) if transcurridos else 0
+
+    def _prom(por_dia_dict):
+        vals = [v for v in por_dia_dict.values() if v]
+        return round(sum(vals) / len(vals)) if vals else None
+
+    return {
+        "mes": f"{anio:04d}-{mes:02d}",
+        "mes_label": f"{_SEGURIDAD_MESES[mes - 1]} {anio}",
+        "dias_transcurridos": transcurridos,
+        "dias": dias,
+        "resumen": [{"tipo": t, "label": CRUZ_LABEL[t], "abrev": CRUZ_ABREV[t], "color": CRUZ_COLOR[t],
+                     "cantidad": conteo[t], "porcentaje": _pct(conteo[t])} for t in CRUZ_TIPOS_ORDEN],
+        "fuerza_trabajo": {"personal": _prom(personal_por_dia), "maquinaria": _prom(maquinaria_por_dia)},
+        "registros": bitacora,
+    }
+
+
+def _cruz_parse_mes(mes: Optional[str]) -> tuple:
+    """'YYYY-MM' → (año, mes); por omisión el mes actual (CDMX)."""
+    if not mes:
+        hoy = datetime.now(MX_TZ).date()
+        return hoy.year, hoy.month
+    try:
+        anio, m = mes.split("-")
+        anio, m = int(anio), int(m)
+        if not (1 <= m <= 12 and 2000 <= anio <= 2200):
+            raise ValueError
+        return anio, m
+    except ValueError:
+        raise HTTPException(400, "mes debe tener el formato AAAA-MM")
+
+
+async def _cruz_fetch(pid: str, mes: Optional[str]) -> dict:
+    anio, m = _cruz_parse_mes(mes)
+    registros = await db.seguridad_reportes.find({"project_id": pid}).to_list(length=20000)
+    # Fuerza de trabajo promedio del mes: suma diaria de personal y de
+    # maquinaria/equipo de los reportes de campo, promediada sobre los días
+    # con captura.
+    ini = datetime(anio, m, 1, tzinfo=MX_TZ).astimezone(timezone.utc)
+    fin = (datetime(anio + 1, 1, 1, tzinfo=MX_TZ) if m == 12 else datetime(anio, m + 1, 1, tzinfo=MX_TZ)).astimezone(timezone.utc)
+    personal: Dict[date, int] = {}
+    maquinaria: Dict[date, int] = {}
+    async for r in db.reports.find(
+        {"project_id": pid, "created_at": {"$gte": ini, "$lt": fin}}, {"personnel": 1, "equipment": 1, "created_at": 1},
+    ):
+        dt = r.get("created_at")
+        if not dt:
+            continue
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        dia = dt.astimezone(MX_TZ).date()
+        personal[dia] = personal.get(dia, 0) + sum(_parse_qty_desc(x)[0] for x in (r.get("personnel") or []))
+        maquinaria[dia] = maquinaria.get(dia, 0) + sum(_parse_qty_desc(x)[0] for x in (r.get("equipment") or []))
+    return _cruz_calcular(registros, anio, m, datetime.now(MX_TZ).date(), personal, maquinaria)
+
+
+def _cruz_xlsx_bytes(data: dict, proyecto: str) -> bytes:
+    """Hoja "CRUZ DE SEGURIDAD" con el formato de la referencia: banda de
+    título, fuerza de trabajo y resumen por tipo a la izquierda, la cruz de
+    casillas a la derecha y, debajo, la bitácora agrupada por mes."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "CRUZ DE SEGURIDAD"
+    ws.sheet_view.showGridLines = False
+
+    def fill(hex_):
+        return PatternFill("solid", fgColor=hex_)
+
+    thin = Side(style="thin", color="000000")
+    box = Border(left=thin, right=thin, top=thin, bottom=thin)
+    center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    NAVY, MAROON, GRAY_HEAD, GRAY_ROW = "0A2342", "9B1D45", "595959", "BFBFBF"
+    CLARO = {"dano_propiedad", "accidente_leve"}  # fondos claros → texto oscuro
+
+    # Columnas: A..H bitácora/resumen · I separador · J..R cuadrícula de la cruz.
+    for col, w in zip("ABCDEFGH", (5, 12, 32, 14, 9, 24, 13, 66)):
+        ws.column_dimensions[col].width = w
+    ws.column_dimensions["I"].width = 3
+    for i in range(10, 19):
+        ws.column_dimensions[get_column_letter(i)].width = 4.6
+
+    ws.merge_cells("A1:R1")
+    c = ws["A1"]
+    c.value = "CRUZ DE SEGURIDAD"
+    c.font = Font(bold=True, size=20, color="FFFFFF")
+    c.fill = fill(NAVY)
+    c.alignment = center
+    ws.row_dimensions[1].height = 32
+    ws.merge_cells("A2:R2")
+    ws["A2"].value = f"{proyecto} · {data['mes_label']}"
+    ws["A2"].alignment = center
+    ws["A2"].font = Font(italic=True, size=11, color="595959")
+
+    # Fuerza de trabajo promedio.
+    ft = data["fuerza_trabajo"]
+    ws["C4"].value = "Fuerza de Trabajo PROMEDIO"
+    ws["C4"].font = Font(bold=True)
+    ws["D4"].value = ft["personal"]
+    ws["E4"].value = ft["maquinaria"]
+    ws["F4"].value = "personal · maquinaria"
+    ws["F4"].font = Font(italic=True, size=9, color="595959")
+    for ref in ("C4", "D4", "E4"):
+        ws[ref].border = box
+        ws[ref].alignment = center
+    ws["D4"].font = Font(bold=True)
+    ws["E4"].font = Font(bold=True)
+
+    ws.merge_cells("C5:F5")
+    ws["C5"].value = "REGISTRO DE ACCIDENTES"
+    ws["C5"].fill = fill(MAROON)
+    ws["C5"].font = Font(color="FFFFFF")
+    ws["C5"].alignment = center
+
+    resumen = {r["tipo"]: r for r in data["resumen"]}
+    sa = resumen["sin_accidentes"]
+    ws["C6"].value = f"SIN ACCIDENTES ({sa['cantidad']} días)"
+    ws["C6"].fill = fill(CRUZ_COLOR["sin_accidentes"])
+    ws["C6"].font = Font(color="FFFFFF")
+    for ref, txt in (("D6", "TIPO ACCIDENTE"), ("E6", "CANTIDAD"), ("F6", "PORCENTAJE")):
+        ws[ref].value = txt
+        ws[ref].fill = fill(GRAY_HEAD)
+        ws[ref].font = Font(bold=True, color="FFFFFF", size=9)
+    for ref in ("C6", "D6", "E6", "F6"):
+        ws[ref].alignment = center
+        ws[ref].border = box
+    ws.row_dimensions[6].height = 28
+    for i, t in enumerate(CRUZ_TIPOS_ORDEN[1:]):
+        row = 7 + i
+        r = resumen[t]
+        ws.cell(row, 3, r["label"]).fill = fill(CRUZ_COLOR[t])
+        ws.cell(row, 3).font = Font(color="000000" if t in CLARO else "FFFFFF", size=10)
+        ws.cell(row, 4, r["abrev"])
+        ws.cell(row, 5, r["cantidad"])
+        ws.cell(row, 6, f"{r['porcentaje']}%")
+        for col in (3, 4, 5, 6):
+            ws.cell(row, col).alignment = center
+            ws.cell(row, col).border = box
+        ws.row_dimensions[row].height = 26
+
+    # La cruz.
+    for d in data["dias"]:
+        cell = ws.cell(4 + d["fila"], 10 + d["col"], d["dia"])
+        color = CRUZ_COLOR_FUTURO if d["tipo"] is None else CRUZ_COLOR[d["tipo"]]
+        cell.fill = fill(color)
+        cell.font = Font(size=9, bold=True, color="000000" if d["tipo"] in CLARO or d["tipo"] is None else "FFFFFF")
+        cell.alignment = center
+        cell.border = Border(left=Side(style="thin", color="FFFFFF"), right=Side(style="thin", color="FFFFFF"),
+                             top=Side(style="thin", color="FFFFFF"), bottom=Side(style="thin", color="FFFFFF"))
+
+    # Bitácora del año, agrupada por mes.
+    fila = 14
+    for i, h in enumerate(("Nº", "Mes", "Nombre de trabajador", "Contratista", "Tipo", "Ubicación", "Fecha", "Descripción"), 1):
+        c = ws.cell(fila, i, h)
+        c.fill = fill(MAROON)
+        c.font = Font(bold=True, color="FFFFFF")
+        c.alignment = center
+        c.border = box
+    fila += 1
+    mes_actual = None
+    for b in data["registros"]:
+        if b["mes_num"] != mes_actual:
+            mes_actual = b["mes_num"]
+            if b["mes_num"] != data["registros"][0]["mes_num"]:
+                ws.merge_cells(start_row=fila, start_column=1, end_row=fila, end_column=8)
+                ws.cell(fila, 1, b["mes"].upper()).alignment = center
+                ws.cell(fila, 1).font = Font(bold=True)
+                ws.cell(fila, 1).fill = fill(GRAY_ROW)
+                fila += 1
+        f = date.fromisoformat(b["fecha"])
+        valores = (b["n"], b["mes"], b["trabajador"], b["contratista"], b["abrev"], b["ubicacion"],
+                   f.strftime("%d/%m/%Y"), b["descripcion"])
+        for i, v in enumerate(valores, 1):
+            c = ws.cell(fila, i, v)
+            c.alignment = center
+            c.border = box
+        fila += 1
+
+    ws.page_setup.orientation = "landscape"
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+@api.get("/projects/{pid}/seguridad-cruz")
+async def get_seguridad_cruz(pid: str, mes: Optional[str] = Query(None, description="AAAA-MM; por omisión el mes actual"),
+                             user: dict = Depends(current_user)):
+    """Datos de la Cruz de Seguridad del mes (cruz, resumen por tipo, fuerza de
+    trabajo promedio y bitácora del año)."""
+    await ensure_project_access(user, pid)
+    return await _cruz_fetch(pid, mes)
+
+
+@api.get("/projects/{pid}/seguridad-cruz.xlsx")
+async def export_seguridad_cruz_xlsx(pid: str, mes: Optional[str] = Query(None, description="AAAA-MM"),
+                                     user: dict = Depends(current_user)):
+    """Exporta la Cruz de Seguridad a Excel, con el formato de la hoja de referencia."""
+    project = await ensure_project_access(user, pid)
+    data = await _cruz_fetch(pid, mes)
+    xlsx = await asyncio.to_thread(_cruz_xlsx_bytes, data, project.get("name") or "Proyecto")
+    fname = f"cruz_de_seguridad_{data['mes']}.xlsx"
+    return StreamingResponse(
+        io.BytesIO(xlsx),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
 
 
 class SeguridadChecklistItemIn(BaseModel):

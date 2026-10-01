@@ -131,7 +131,7 @@ def test_el_informe_imprime_el_registro_de_accidentes_completo(formato):
                      "Caída de andamio", "Sin accidentes"):
         assert esperado in texto, f"falta {esperado!r} en el {formato}"
     hoy = datetime.now(server.MX_TZ).date()
-    assert hoy.isoformat() in texto and server._MESES_ES[hoy.month - 1] in texto
+    assert hoy.isoformat() in texto and server._SEGURIDAD_MESES[hoy.month - 1] in texto
     for col in ("Fecha", "Mes", "Trabajador", "Contratista", "Registro", "Ubicación", "Descripción", "Foto",
                 "Seguimiento"):
         assert col in texto, f"falta la columna {col!r} en el {formato}"
