@@ -1,6 +1,7 @@
 // Módulo piloto "Seguridad e Higiene" (sistema Multi-Proyecto Modular).
-// Dos secciones: ficha de reporte de accidentes (foto, descripción, acciones
-// tomadas) y checklist de acciones preventivas/correctivas. Screen "dueña"
+// Dos secciones: registro de accidentes (Fecha, Mes, Trabajador, Contratista,
+// Registro, Ubicación, Descripción, Foto y Seguimiento — el mismo formato que
+// se imprime en el informe) y checklist de acciones preventivas/correctivas. Screen "dueña"
 // de su propio header — mismo patrón que CatalogoConceptosScreen.tsx.
 import React, { useCallback, useEffect, useState } from 'react';
 import {
@@ -11,17 +12,41 @@ import * as ImagePicker from 'expo-image-picker';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { api, SeguridadReporte, SeguridadChecklist, SeguridadChecklistItem, Project } from '@/src/api';
+import {
+  api, SeguridadReporte, SeguridadChecklist, SeguridadChecklistItem, SeguridadTipoRegistro, Project,
+} from '@/src/api';
 import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
 import { Button } from '@/src/components/Button';
 
 type Tab = 'reportes' | 'checklist';
-type Severidad = 'leve' | 'moderado' | 'grave';
-const SEVERIDADES: { value: Severidad; label: string; color: string }[] = [
-  { value: 'leve', label: 'Leve', color: colors.success },
-  { value: 'moderado', label: 'Moderado', color: colors.warning },
+const TIPOS: { value: SeguridadTipoRegistro; label: string; color: string }[] = [
+  { value: 'sin_accidentes', label: 'Sin accidentes', color: colors.success },
+  { value: 'dano_propiedad', label: 'Daño a la propiedad', color: colors.warning },
+  { value: 'incidente', label: 'Incidente', color: colors.warning },
+  { value: 'accidente_leve', label: 'Accidente leve / primeros auxilios', color: colors.warning },
+  { value: 'incapacitante', label: 'Incapacitante', color: colors.error },
   { value: 'grave', label: 'Grave', color: colors.error },
 ];
+// Reportes anteriores al formato solo traen `severidad`.
+const SEVERIDAD_LEGACY_COLOR: Record<string, string> = {
+  leve: colors.success, moderado: colors.warning, grave: colors.error,
+};
+const MESES = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre',
+  'Octubre', 'Noviembre', 'Diciembre'];
+
+function hoyISO(): string {
+  const d = new Date();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${d.getFullYear()}-${mm}-${dd}`;
+}
+
+// Mes (en espanol) de una fecha AAAA-MM-DD; '' si aun no es una fecha valida.
+function mesDe(fecha: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(fecha.trim());
+  const n = m ? parseInt(m[2], 10) : 0;
+  return n >= 1 && n <= 12 ? MESES[n - 1] : '';
+}
 
 export default function SeguridadHigieneScreen({ projectId }: { projectId: string }) {
   const insets = useSafeAreaInsets();
@@ -34,9 +59,14 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
   // === Reporte de accidente ===
   const [formOpen, setFormOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null); // null = alta nueva
+  const [fechaDraft, setFechaDraft] = useState(hoyISO());
+  const [trabajadorDraft, setTrabajadorDraft] = useState('');
+  const [contratistaDraft, setContratistaDraft] = useState('');
+  const [tipoDraft, setTipoDraft] = useState<SeguridadTipoRegistro>('accidente_leve');
+  const [ubicacionDraft, setUbicacionDraft] = useState('');
   const [descripcionDraft, setDescripcionDraft] = useState('');
-  const [accionesDraft, setAccionesDraft] = useState('');
-  const [severidadDraft, setSeveridadDraft] = useState<Severidad>('leve');
+  const [seguimientoDraft, setSeguimientoDraft] = useState('');
   const [fotoDraft, setFotoDraft] = useState<string | null>(null);
 
   // === Checklist ===
@@ -69,13 +99,21 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
   const headerColor = project?.color_institucional || project?.color_tema || colors.primary;
   const headerTextColor = contrastText(headerColor);
 
-  function openForm() {
-    setDescripcionDraft('');
-    setAccionesDraft('');
-    setSeveridadDraft('leve');
-    setFotoDraft(null);
+  function openForm(r?: SeguridadReporte) {
+    setEditingId(r?.id ?? null);
+    setFechaDraft(r?.fecha ?? hoyISO());
+    setTrabajadorDraft(r?.trabajador ?? '');
+    setContratistaDraft(r?.contratista ?? '');
+    setTipoDraft(r?.tipo_registro ?? 'accidente_leve');
+    setUbicacionDraft(r?.ubicacion ?? '');
+    setDescripcionDraft(r?.descripcion ?? '');
+    setSeguimientoDraft(r?.seguimiento ?? r?.acciones_tomadas ?? '');
+    setFotoDraft(r?.images?.[0] ?? null);
     setFormOpen(true);
   }
+
+  // Contratistas del proyecto (catalogo del Coordinador): se eligen con un toque.
+  const contratistas = (project?.contratistas_list || []).filter(Boolean);
 
   async function onPickFoto() {
     const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -95,18 +133,29 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
   }
 
   async function onSaveReporte() {
-    if (!descripcionDraft.trim()) {
-      Alert.alert('Descripción requerida', 'Describe brevemente el incidente.');
+    if (!mesDe(fechaDraft)) {
+      Alert.alert('Fecha inválida', 'Escribe la fecha como AAAA-MM-DD (ej. 2026-10-01).');
+      return;
+    }
+    // "Sin accidentes" es un renglón válido sin descripción (día sin novedad).
+    if (!descripcionDraft.trim() && tipoDraft !== 'sin_accidentes') {
+      Alert.alert('Descripción requerida', 'Describe brevemente lo sucedido.');
       return;
     }
     try {
       setSaving(true);
-      await api.createSeguridadReporte(projectId, {
+      const body = {
+        fecha: fechaDraft.trim(),
+        trabajador: trabajadorDraft.trim() || null,
+        contratista: contratistaDraft.trim() || null,
+        tipo_registro: tipoDraft,
+        ubicacion: ubicacionDraft.trim() || null,
         descripcion: descripcionDraft.trim(),
-        acciones_tomadas: accionesDraft.trim() || null,
-        severidad: severidadDraft,
+        seguimiento: seguimientoDraft.trim() || null,
         images: fotoDraft ? [fotoDraft] : [],
-      });
+      };
+      if (editingId) await api.updateSeguridadReporte(projectId, editingId, body);
+      else await api.createSeguridadReporte(projectId, body);
       setFormOpen(false);
       await load();
     } catch (e: any) {
@@ -187,10 +236,15 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
               </View>
             ) : (
               reportes.map((r, idx) => {
-                const sev = SEVERIDADES.find((s) => s.value === r.severidad) || SEVERIDADES[0];
+                const tipo = TIPOS.find((t) => t.value === r.tipo_registro);
+                const badgeColor = tipo?.color ?? SEVERIDAD_LEGACY_COLOR[r.severidad] ?? colors.textMuted;
                 const foto = r.images?.[0];
                 return (
-                  <View key={r.id} style={[styles.repRow, idx > 0 && styles.rowBorder]}>
+                  <Pressable
+                    key={r.id}
+                    onPress={() => openForm(r)}
+                    style={[styles.repRow, idx > 0 && styles.rowBorder]}
+                  >
                     {foto ? (
                       <Image source={{ uri: foto }} style={styles.repThumb} contentFit="cover" />
                     ) : (
@@ -200,18 +254,26 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
                     )}
                     <View style={{ flex: 1 }}>
                       <View style={styles.repHeaderRow}>
-                        <View style={[styles.badge, { backgroundColor: sev.color + '22' }]}>
-                          <Text style={[styles.badgeTxt, { color: sev.color }]}>{sev.label}</Text>
+                        <View style={[styles.badge, { backgroundColor: badgeColor + '22' }]}>
+                          <Text style={[styles.badgeTxt, { color: badgeColor }]}>{r.registro_label}</Text>
                         </View>
-                        <Text style={styles.repDate}>{r.fecha}</Text>
+                        <Text style={styles.repDate}>{r.fecha}{r.mes ? ` · ${r.mes}` : ''}</Text>
                       </View>
-                      <Text style={styles.repDesc} numberOfLines={3}>{r.descripcion}</Text>
-                      {!!r.acciones_tomadas && (
-                        <Text style={styles.repAcciones} numberOfLines={2}>Acciones: {r.acciones_tomadas}</Text>
+                      {!!(r.trabajador || r.contratista) && (
+                        <Text style={styles.repAcciones} numberOfLines={1}>
+                          {[r.trabajador, r.contratista].filter(Boolean).join(' · ')}
+                        </Text>
                       )}
-                      <Text style={styles.repAutor}>{r.captured_by_name}</Text>
+                      {!!r.ubicacion && <Text style={styles.repAcciones} numberOfLines={1}>{r.ubicacion}</Text>}
+                      {!!r.descripcion && <Text style={styles.repDesc} numberOfLines={3}>{r.descripcion}</Text>}
+                      {!!(r.seguimiento || r.acciones_tomadas) && (
+                        <Text style={styles.repAcciones} numberOfLines={2}>
+                          Seguimiento: {r.seguimiento || r.acciones_tomadas}
+                        </Text>
+                      )}
+                      <Text style={styles.repAutor}>{r.captured_by_name} · toca para editar o dar seguimiento</Text>
                     </View>
-                  </View>
+                  </Pressable>
                 );
               })
             )}
@@ -293,7 +355,7 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
       )}
 
       {tab === 'reportes' && (
-        <Pressable style={styles.fab} onPress={openForm}>
+        <Pressable style={styles.fab} onPress={() => openForm()}>
           <Ionicons name="add" size={26} color="#fff" />
         </Pressable>
       )}
@@ -301,22 +363,79 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
       <Modal visible={formOpen} transparent animationType="slide" onRequestClose={() => setFormOpen(false)}>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
           <ScrollView style={styles.modalCard} contentContainerStyle={{ paddingBottom: spacing.lg }}>
-            <Text style={styles.modalTitle}>Reportar accidente</Text>
+            <Text style={styles.modalTitle}>{editingId ? 'Editar registro' : 'Registro de accidentes'}</Text>
 
-            <Text style={styles.fieldLabel}>Severidad</Text>
-            <View style={styles.segmentRow}>
-              {SEVERIDADES.map((s) => (
+            <Text style={styles.fieldLabel}>Fecha</Text>
+            <TextInput
+              value={fechaDraft}
+              onChangeText={setFechaDraft}
+              placeholder="AAAA-MM-DD"
+              placeholderTextColor={colors.textMuted}
+              style={styles.input}
+              autoCapitalize="none"
+              maxLength={10}
+            />
+            <Text style={styles.fieldHint}>Mes: {mesDe(fechaDraft) || '— (fecha incompleta)'}</Text>
+
+            <Text style={styles.fieldLabel}>Registro</Text>
+            <View style={styles.chipWrap}>
+              {TIPOS.map((t) => (
                 <Pressable
-                  key={s.value}
-                  onPress={() => setSeveridadDraft(s.value)}
-                  style={[styles.segmentBtn, severidadDraft === s.value && { backgroundColor: s.color, borderColor: s.color }]}
+                  key={t.value}
+                  onPress={() => setTipoDraft(t.value)}
+                  style={[styles.chip, tipoDraft === t.value && { backgroundColor: t.color, borderColor: t.color }]}
                 >
-                  <Text style={[styles.segmentTxt, severidadDraft === s.value && styles.segmentTxtActive]}>{s.label}</Text>
+                  <Text style={[styles.segmentTxt, tipoDraft === t.value && styles.segmentTxtActive]}>{t.label}</Text>
                 </Pressable>
               ))}
             </View>
 
-            <Text style={styles.fieldLabel}>Descripción</Text>
+            <Text style={styles.fieldLabel}>Nombre del trabajador</Text>
+            <TextInput
+              value={trabajadorDraft}
+              onChangeText={setTrabajadorDraft}
+              placeholder="Nombre completo"
+              placeholderTextColor={colors.textMuted}
+              style={styles.input}
+              maxLength={120}
+            />
+
+            <Text style={styles.fieldLabel}>Contratista</Text>
+            {contratistas.length > 0 && (
+              <View style={[styles.chipWrap, { marginBottom: 6 }]}>
+                {contratistas.map((c) => (
+                  <Pressable
+                    key={c}
+                    onPress={() => setContratistaDraft(c)}
+                    style={[styles.chip, contratistaDraft === c && { backgroundColor: colors.primary, borderColor: colors.primary }]}
+                  >
+                    <Text style={[styles.segmentTxt, contratistaDraft === c && styles.segmentTxtActive]}>{c}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            )}
+            <TextInput
+              value={contratistaDraft}
+              onChangeText={setContratistaDraft}
+              placeholder={contratistas.length > 0 ? 'O escribe otro' : 'Nombre del contratista'}
+              placeholderTextColor={colors.textMuted}
+              style={styles.input}
+              maxLength={120}
+            />
+
+            <Text style={styles.fieldLabel}>Ubicación</Text>
+            <TextInput
+              value={ubicacionDraft}
+              onChangeText={setUbicacionDraft}
+              placeholder="Estación, poste, frente de trabajo…"
+              placeholderTextColor={colors.textMuted}
+              style={styles.input}
+              maxLength={200}
+            />
+
+            <Text style={styles.fieldLabel}>
+              Descripción{tipoDraft === 'sin_accidentes' ? ' (opcional)' : ''}
+            </Text>
             <TextInput
               value={descripcionDraft}
               onChangeText={setDescripcionDraft}
@@ -326,11 +445,11 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
               multiline
             />
 
-            <Text style={styles.fieldLabel}>Acciones tomadas (opcional)</Text>
+            <Text style={styles.fieldLabel}>Seguimiento (opcional)</Text>
             <TextInput
-              value={accionesDraft}
-              onChangeText={setAccionesDraft}
-              placeholder="¿Qué se hizo al respecto?"
+              value={seguimientoDraft}
+              onChangeText={setSeguimientoDraft}
+              placeholder="¿Qué se hizo o qué sigue? Puedes completarlo después."
               placeholderTextColor={colors.textMuted}
               style={[styles.input, { minHeight: 60, textAlignVertical: 'top' }]}
               multiline
@@ -405,6 +524,12 @@ const styles = StyleSheet.create({
   modalCard: { backgroundColor: colors.surface, borderTopLeftRadius: radius.lg, borderTopRightRadius: radius.lg, padding: spacing.lg, maxHeight: '85%' },
   modalTitle: { fontSize: 16, fontWeight: '800', color: colors.text, marginBottom: spacing.md },
   fieldLabel: { fontSize: 12, fontWeight: '700', color: colors.textMuted, marginBottom: 6, marginTop: spacing.sm },
+  fieldHint: { fontSize: 11, color: colors.textMuted, marginTop: 4 },
+  chipWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  chip: {
+    paddingHorizontal: 12, paddingVertical: 8, borderRadius: radius.md, borderWidth: 1,
+    borderColor: colors.border, backgroundColor: colors.bg,
+  },
   segmentRow: { flexDirection: 'row', gap: 8 },
   segmentBtn: {
     flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 10,

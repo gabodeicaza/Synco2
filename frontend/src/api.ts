@@ -375,13 +375,24 @@ export interface Perforadora {
   created_at: string;
 }
 
+// Registro de accidentes: los 6 tipos de la bitacora.
+export type SeguridadTipoRegistro =
+  | 'sin_accidentes' | 'dano_propiedad' | 'incidente' | 'accidente_leve' | 'incapacitante' | 'grave';
+
 export interface SeguridadReporte {
   id: string;
   project_id: string;
   node_id?: string | null;
   fecha: string;
+  mes: string;                         // derivado de la fecha (lo calcula el servidor)
+  trabajador?: string | null;
+  contratista?: string | null;
+  tipo_registro?: SeguridadTipoRegistro | null;
+  registro_label: string;              // etiqueta del tipo (o la severidad en reportes anteriores)
+  ubicacion?: string | null;
   descripcion: string;
-  acciones_tomadas?: string | null;
+  seguimiento?: string | null;
+  acciones_tomadas?: string | null;    // formato anterior
   severidad: 'leve' | 'moderado' | 'grave';
   images: string[];
   captured_by: string;
@@ -2171,9 +2182,16 @@ export const api = {
   // === Módulo piloto: Seguridad e Higiene ===
   listSeguridadReportes: (pid: string) => request<SeguridadReporte[]>('GET', `/projects/${pid}/seguridad-reportes`),
   createSeguridadReporte: (pid: string, body: {
-    node_id?: string | null; fecha?: string; descripcion: string; acciones_tomadas?: string | null;
-    severidad?: 'leve' | 'moderado' | 'grave'; images?: string[];
+    node_id?: string | null; fecha?: string; trabajador?: string | null; contratista?: string | null;
+    tipo_registro?: SeguridadTipoRegistro; ubicacion?: string | null; descripcion?: string;
+    seguimiento?: string | null; images?: string[];
   }) => request<SeguridadReporte>('POST', `/projects/${pid}/seguridad-reportes`, body),
+  // Edicion parcial: tipicamente para ir agregando el Seguimiento.
+  updateSeguridadReporte: (pid: string, rid: string, body: {
+    fecha?: string; trabajador?: string | null; contratista?: string | null;
+    tipo_registro?: SeguridadTipoRegistro; ubicacion?: string | null; descripcion?: string;
+    seguimiento?: string | null; images?: string[];
+  }) => request<SeguridadReporte>('PATCH', `/projects/${pid}/seguridad-reportes/${rid}`, body),
   listSeguridadChecklist: (pid: string) => request<SeguridadChecklist[]>('GET', `/projects/${pid}/seguridad-checklist`),
   createSeguridadChecklist: (pid: string, body: { fecha?: string; items: SeguridadChecklistItem[] }) =>
     request<SeguridadChecklist>('POST', `/projects/${pid}/seguridad-checklist`, body),
