@@ -1525,6 +1525,14 @@ export default function ProjectDetailScreen() {
                     onPress={() => router.push({ pathname: '/(coord)/projects/[id]/pendientes-generales' as any, params: { id: pid } })}
                   />
                 ) : null}
+                {moduloActivo(project?.modulos, 'aspectos_sociales') ? (
+                  <ActionTile
+                    icon="people-outline"
+                    title="Aspectos Sociales"
+                    subtitle="Dictámenes y fe notarial, y salvamento arqueológico (con gráficas)"
+                    onPress={() => router.push({ pathname: '/(coord)/projects/[id]/aspectos-sociales' as any, params: { id: pid } })}
+                  />
+                ) : null}
                 {moduloActivo(project?.modulos, 'tapial') ? (
                   <ActionTile
                     icon="git-branch-outline"

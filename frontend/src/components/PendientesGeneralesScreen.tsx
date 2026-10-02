@@ -1,5 +1,6 @@
 // Módulo "Pendientes Generales" — pendientes o requerimientos generales de
-// obra y de supervisión que el reporte semanal imprime como lista. Solo los
+// obra, de supervisión y de aspectos sociales (liberaciones de postes y
+// predios) que el reporte semanal imprime como lista. Solo los
 // VIGENTES se imprimen: al resolverse, el pendiente se marca como resuelto y
 // deja de salir en el reporte (sin borrarse). Captura abierta a cualquier rol
 // de escritura; borrar es de Coordinador/Sub-Coordinador (el backend aplica el
@@ -12,16 +13,17 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { api, ContratoFin, PendienteGeneral, Project } from '@/src/api';
+import { api, PendienteAmbito, PendienteGeneral, Project } from '@/src/api';
 import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
 import { Button } from '@/src/components/Button';
 import { confirm } from '@/src/utils/confirm';
 import { useAuth } from '@/src/auth-context';
 import { ROLE_COORD, ROLE_SUB, ROLE_JEFE } from '@/src/utils/roles';
 
-const CONTRATO_LABEL: Record<ContratoFin, string> = { obra: 'Obra', supervision: 'Supervisión' };
+const CONTRATO_LABEL: Record<PendienteAmbito, string> = { obra: 'Obra', supervision: 'Supervisión', sociales: 'Aspectos sociales' };
+const AMBITOS: PendienteAmbito[] = ['obra', 'supervision', 'sociales'];
 
-type Draft = { id: string | null; contrato: ContratoFin; titulo: string; descripcion: string };
+type Draft = { id: string | null; contrato: PendienteAmbito; titulo: string; descripcion: string };
 
 export default function PendientesGeneralesScreen({ projectId }: { projectId: string }) {
   const insets = useSafeAreaInsets();
@@ -53,7 +55,7 @@ export default function PendientesGeneralesScreen({ projectId }: { projectId: st
 
   useEffect(() => { load(); }, [load]);
 
-  const porContrato = useMemo(() => (['obra', 'supervision'] as ContratoFin[]).map((c) => ({
+  const porContrato = useMemo(() => AMBITOS.map((c) => ({
     contrato: c, rows: items.filter((i) => (i.contrato || 'obra') === c),
   })), [items]);
 

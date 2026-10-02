@@ -140,6 +140,14 @@ export const MODULOS: ModuloDef[] = [
     area: 'Ingeniería',
   },
   {
+    key: 'aspectos_sociales',
+    label: 'Aspectos Sociales',
+    subtitle: 'Dictámenes y fe notarial, y salvamento arqueológico (con gráficas)',
+    icon: 'people-outline',
+    screen: 'aspectos-sociales',
+    area: 'Social',
+  },
+  {
     key: 'estado_tiempo',
     label: 'Estado del Tiempo',
     subtitle: 'Temperatura, viento, precipitación y calidad del aire por estación',

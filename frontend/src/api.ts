@@ -612,14 +612,41 @@ export interface Estimacion {
   fecha_pago?: string | null; // fecha o texto libre ("Por pagar")
   updated_at: string;
 }
+// === Aspectos sociales (reporte semanal) ==================================
+export type LevantamientoTipo = 'dictamen_estructural' | 'fe_notarial';
+export type SocialAmbito = 'estacion' | 'poste';
+export interface LevantamientoSocial {
+  id: string;
+  tipo: LevantamientoTipo;
+  ambito: SocialAmbito;
+  total_requerido: number;
+  realizados: number;
+  updated_at: string;
+}
+export interface SalvamentoArqueologico {
+  id: string;
+  project_id: string;
+  ambito: SocialAmbito;
+  etiqueta: string; // ej. "UNIVERSIDAD PS2" o "S2"
+  fecha_inicio: string; // YYYY-MM-DD
+  fecha_liberacion?: string | null; // null = en curso
+  observaciones?: string | null;
+  orden: number;
+  created_by: string;
+  created_by_name?: string;
+  updated_at: string;
+}
 export type EstimacionInput = Partial<Omit<Estimacion, 'id' | 'project_id' | 'updated_at' | 'contrato' | 'numero'>> & {
   contrato?: ContratoFin;
   numero: number;
 };
+// Ámbito de un pendiente general: obra, supervisión o aspectos sociales (el
+// campo se llama `contrato` en la API por compatibilidad).
+export type PendienteAmbito = ContratoFin | 'sociales';
 export interface PendienteGeneral {
   id: string;
   project_id: string;
-  contrato: ContratoFin;
+  contrato: PendienteAmbito;
   titulo: string;
   descripcion?: string | null;
   orden: number;
@@ -2246,12 +2273,24 @@ export const api = {
     request<{ ok: boolean }>('DELETE', `/projects/${pid}/estimaciones/${eid}`),
   listPendientesGenerales: (pid: string) =>
     request<PendienteGeneral[]>('GET', `/projects/${pid}/pendientes-generales`),
-  createPendienteGeneral: (pid: string, body: { contrato: ContratoFin; titulo: string; descripcion?: string; orden?: number }) =>
+  createPendienteGeneral: (pid: string, body: { contrato: PendienteAmbito; titulo: string; descripcion?: string; orden?: number }) =>
     request<PendienteGeneral>('POST', `/projects/${pid}/pendientes-generales`, body),
   updatePendienteGeneral: (pid: string, rid: string, body: Partial<{ titulo: string; descripcion: string; orden: number; resuelto: boolean }>) =>
     request<PendienteGeneral>('PATCH', `/projects/${pid}/pendientes-generales/${rid}`, body),
   deletePendienteGeneral: (pid: string, rid: string) =>
     request<{ ok: boolean }>('DELETE', `/projects/${pid}/pendientes-generales/${rid}`),
+  listLevantamientosSociales: (pid: string) =>
+    request<LevantamientoSocial[]>('GET', `/projects/${pid}/levantamientos-sociales`),
+  setLevantamientoSocial: (pid: string, body: { tipo: LevantamientoTipo; ambito: SocialAmbito; total_requerido: number; realizados: number }) =>
+    request<LevantamientoSocial>('PUT', `/projects/${pid}/levantamientos-sociales`, body),
+  listSalvamentoArqueologico: (pid: string) =>
+    request<SalvamentoArqueologico[]>('GET', `/projects/${pid}/salvamento-arqueologico`),
+  createSalvamentoArqueologico: (pid: string, body: { ambito: SocialAmbito; etiqueta: string; fecha_inicio: string; fecha_liberacion?: string; observaciones?: string }) =>
+    request<SalvamentoArqueologico>('POST', `/projects/${pid}/salvamento-arqueologico`, body),
+  updateSalvamentoArqueologico: (pid: string, rid: string, body: Partial<{ etiqueta: string; fecha_inicio: string; fecha_liberacion: string; observaciones: string; quitar_liberacion: boolean }>) =>
+    request<SalvamentoArqueologico>('PATCH', `/projects/${pid}/salvamento-arqueologico/${rid}`, body),
+  deleteSalvamentoArqueologico: (pid: string, rid: string) =>
+    request<{ ok: boolean }>('DELETE', `/projects/${pid}/salvamento-arqueologico/${rid}`),
   listControlCalidad: (pid: string) => request<ControlCalidad[]>('GET', `/projects/${pid}/control-calidad`),
   getControlCalidad: (pid: string, rid: string) =>
     request<ControlCalidad>('GET', `/projects/${pid}/control-calidad/${rid}`),
