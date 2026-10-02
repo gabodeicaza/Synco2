@@ -13,8 +13,9 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import {
-  api, SeguridadReporte, SeguridadChecklist, SeguridadChecklistItem, SeguridadTipoRegistro, SeguridadCruz, Project,
+  api, SeguridadReporte, SeguridadChecklist, SeguridadChecklistItem, SeguridadTipoRegistro, SeguridadCruz, JerarquiaInforme, Project,
 } from '@/src/api';
+import { JerarquiaInformePicker, JERARQUIA_DEFAULT } from '@/src/components/JerarquiaInformePicker';
 import { downloadBlob } from '@/src/utils/downloadBlob';
 import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
 import { Button } from '@/src/components/Button';
@@ -80,6 +81,7 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
   const [descripcionDraft, setDescripcionDraft] = useState('');
   const [seguimientoDraft, setSeguimientoDraft] = useState('');
   const [fotoDraft, setFotoDraft] = useState<string | null>(null);
+  const [jerarquiaDraft, setJerarquiaDraft] = useState<JerarquiaInforme>(JERARQUIA_DEFAULT);
 
   // === Cruz de Seguridad ===
   const [cruzMes, setCruzMes] = useState(mesActual());
@@ -175,6 +177,7 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
     setDescripcionDraft(r?.descripcion ?? '');
     setSeguimientoDraft(r?.seguimiento ?? r?.acciones_tomadas ?? '');
     setFotoDraft(r?.images?.[0] ?? null);
+    setJerarquiaDraft(r?.jerarquia || JERARQUIA_DEFAULT);
     setFormOpen(true);
   }
 
@@ -219,6 +222,7 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
         descripcion: descripcionDraft.trim(),
         seguimiento: seguimientoDraft.trim() || null,
         images: fotoDraft ? [fotoDraft] : [],
+        jerarquia: jerarquiaDraft,
       };
       if (editingId) await api.updateSeguridadReporte(projectId, editingId, body);
       else await api.createSeguridadReporte(projectId, body);
@@ -642,6 +646,8 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
                 </>
               )}
             </Pressable>
+
+            <JerarquiaInformePicker value={jerarquiaDraft} onChange={setJerarquiaDraft} />
 
             <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
               <Button label="Cancelar" variant="secondary" onPress={() => setFormOpen(false)} style={{ flex: 1 }} />

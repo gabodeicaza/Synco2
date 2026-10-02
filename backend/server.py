@@ -169,6 +169,40 @@ MODULOS_CATALOG = {
     "reportes_mensuales": MODULOS_MENSUALES,
 }
 
+# Jerarquía por REGISTRO en los módulos de captura (misma regla que los
+# reportes de actividad, ver `_severity_set_for_period_type`): cada registro
+# lleva a qué informe llega, de forma excluyente —
+#   "diario" → solo el informe Diario, "semanal" → solo el Semanal,
+#   "mensual" → solo el Mensual, "informativo" → a ninguno.
+# El interruptor por informe del módulo (MODULOS_CATALOG) sigue siendo la
+# primera puerta; la jerarquía decide, dentro de un módulo encendido, qué
+# registros se imprimen. Un registro SIN jerarquía (capturado antes de esta
+# regla) sigue imprimiéndose en todos los informes donde el módulo esté
+# encendido, para no esconder datos históricos.
+JERARQUIAS_MODULO = ("informativo", "diario", "semanal", "mensual")
+_CATEGORIA_A_JERARQUIA = {
+    "reportes_diarios": "diario",
+    "reportes_semanales": "semanal",
+    "reportes_mensuales": "mensual",
+}
+
+
+def _jerarquia_modulo(value: Optional[str], default: Optional[str] = "diario") -> Optional[str]:
+    """Valida la jerarquía de un registro de módulo (400 si no es válida);
+    vacío → `default` (los registros nuevos nacen como "diario")."""
+    v = (value or "").strip().lower()
+    if not v:
+        return default
+    if v not in JERARQUIAS_MODULO:
+        raise HTTPException(400, "jerarquia debe ser informativo, diario, semanal o mensual")
+    return v
+
+
+def _jerarquia_q(categoria: str) -> dict:
+    """Filtro Mongo: registros que corresponden al informe `categoria`
+    (jerarquía igual a la del informe, o sin jerarquía = legado)."""
+    return {"jerarquia": {"$in": [None, _CATEGORIA_A_JERARQUIA.get(categoria, "diario")]}}
+
 
 def _sanitize_modulos(value: Optional[dict]) -> dict:
     """Normaliza el objeto `modulos`: sólo conserva claves conocidas por
@@ -2146,6 +2180,7 @@ class ForestalRegistroIn(BaseModel):
     fecha: Optional[str] = None  # ISO date; default = hoy
     notas: Optional[str] = None
     images: List[str] = Field(default_factory=list)  # base64
+    jerarquia: Optional[str] = None  # informe al que llega (ver JERARQUIAS_MODULO)
 
 
 class ForestalRegistroOut(BaseModel):
@@ -2196,6 +2231,7 @@ async def create_forestal_registro(pid: str, body: ForestalRegistroIn, user: dic
         "fecha": body.fecha or datetime.now(MX_TZ).date().isoformat(),
         "notas": (body.notas or "").strip() or None,
         "images": body.images[:10],
+        "jerarquia": _jerarquia_modulo(body.jerarquia),
         "captured_by": user["id"],
         "captured_by_name": user["name"],
         "created_at": datetime.now(timezone.utc),
@@ -2964,6 +3000,7 @@ class SeguridadReporteIn(BaseModel):
     acciones_tomadas: Optional[str] = None  # legacy (formato anterior)
     severidad: Optional[Literal["leve", "moderado", "grave"]] = None  # legacy: se deriva del tipo
     images: List[str] = Field(default_factory=list)  # base64
+    jerarquia: Optional[str] = None  # informe al que llega (ver JERARQUIAS_MODULO)
 
 
 class SeguridadReportePatch(BaseModel):
@@ -2977,6 +3014,7 @@ class SeguridadReportePatch(BaseModel):
     descripcion: Optional[str] = None
     seguimiento: Optional[str] = None
     images: Optional[List[str]] = None
+    jerarquia: Optional[str] = None
 
 
 @api.get("/projects/{pid}/seguridad-reportes")
@@ -3010,6 +3048,7 @@ async def create_seguridad_reporte(pid: str, body: SeguridadReporteIn, user: dic
         "acciones_tomadas": (body.acciones_tomadas or "").strip() or None,
         "severidad": (_SEGURIDAD_TIPO_A_SEVERIDAD[body.tipo_registro] if body.tipo_registro
                       else (body.severidad or "leve")),
+        "jerarquia": _jerarquia_modulo(body.jerarquia),
         "images": body.images[:10],
         "captured_by": user["id"],
         "captured_by_name": user["name"],
@@ -3042,6 +3081,8 @@ async def update_seguridad_reporte(pid: str, rid: str, body: SeguridadReportePat
         upd["descripcion"] = body.descripcion.strip()
     if body.images is not None:
         upd["images"] = body.images[:10]
+    if body.jerarquia is not None:
+        upd["jerarquia"] = _jerarquia_modulo(body.jerarquia)
     tipo_final = upd.get("tipo_registro", row.get("tipo_registro"))
     if "descripcion" in upd and not upd["descripcion"] and tipo_final != "sin_accidentes":
         raise HTTPException(400, "Descripción requerida")
@@ -3421,6 +3462,7 @@ class RiesgoRegistroIn(BaseModel):
     # False = la fila no se numera en el mapa impreso (ej. la fila de postes
     # que solo cita los números de los riesgos de la estación).
     numerar: bool = True
+    jerarquia: Optional[str] = None  # informe al que llega (ver JERARQUIAS_MODULO)
 
 
 class RiesgoRegistroPatch(BaseModel):
@@ -3433,6 +3475,7 @@ class RiesgoRegistroPatch(BaseModel):
     porcentaje_avance: Optional[int] = None
     notas: Optional[str] = None
     numerar: Optional[bool] = None
+    jerarquia: Optional[str] = None
 
 
 @api.get("/projects/{pid}/riesgos-registros")
@@ -3474,6 +3517,7 @@ async def create_riesgo_registro(pid: str, body: RiesgoRegistroIn, user: dict = 
         "porcentaje_avance": body.porcentaje_avance,
         "notas": (body.notas or "").strip() or None,
         "numerar": body.numerar,
+        "jerarquia": _jerarquia_modulo(body.jerarquia),
         "captured_by": user["id"],
         "captured_by_name": user["name"],
         "created_at": datetime.now(timezone.utc),
@@ -3513,6 +3557,8 @@ async def update_riesgo_registro(pid: str, rid: str, body: RiesgoRegistroPatch, 
         upd["notas"] = body.notas.strip() or None
     if body.numerar is not None:
         upd["numerar"] = body.numerar
+    if body.jerarquia is not None:
+        upd["jerarquia"] = _jerarquia_modulo(body.jerarquia)
     if upd:
         upd["updated_at"] = datetime.now(timezone.utc)
         await db.riesgos_registros.update_one({"id": rid, "project_id": pid}, {"$set": upd})
@@ -3625,6 +3671,7 @@ class EstudioBitacoraIn(BaseModel):
     disciplina: Literal["mecanica_suelos", "topografia", "hidrologico", "instalaciones"]
     texto: str
     fecha: Optional[str] = None
+    jerarquia: Optional[str] = None  # informe al que llega (ver JERARQUIAS_MODULO)
 
 
 @api.get("/projects/{pid}/estudios-bitacora")
@@ -3651,6 +3698,7 @@ async def create_estudio_bitacora(pid: str, body: EstudioBitacoraIn, user: dict 
         "disciplina": body.disciplina,
         "texto": texto,
         "fecha": body.fecha or datetime.now(MX_TZ).date().isoformat(),
+        "jerarquia": _jerarquia_modulo(body.jerarquia),
         "captured_by": user["id"],
         "captured_by_name": user["name"],
         "created_at": datetime.now(timezone.utc),
@@ -3752,6 +3800,7 @@ class AmbientalAuditoriaIn(BaseModel):
     fecha: Optional[str] = None
     notas: Optional[str] = None
     images: List[str] = Field(default_factory=list)  # base64
+    jerarquia: Optional[str] = None  # informe al que llega (ver JERARQUIAS_MODULO)
 
 
 @api.get("/projects/{pid}/ambiental-auditoria")
@@ -3780,6 +3829,7 @@ async def create_ambiental_auditoria(pid: str, body: AmbientalAuditoriaIn, user:
         "fecha": body.fecha or datetime.now(MX_TZ).date().isoformat(),
         "notas": (body.notas or "").strip() or None,
         "images": body.images[:10],
+        "jerarquia": _jerarquia_modulo(body.jerarquia),
         "captured_by": user["id"],
         "captured_by_name": user["name"],
         "created_at": datetime.now(timezone.utc),
@@ -4419,6 +4469,7 @@ class PruebaCalidadIn(BaseModel):
     fecha: Optional[str] = None  # ISO date de la prueba; default = hoy (CDMX)
     tipo: Optional[str] = None
     observaciones: Optional[str] = None
+    jerarquia: Optional[str] = None  # informe al que llega (ver JERARQUIAS_MODULO)
 
 
 class PruebaCalidadPatch(BaseModel):
@@ -4431,6 +4482,7 @@ class PruebaCalidadPatch(BaseModel):
     fecha: Optional[str] = None
     tipo: Optional[str] = None
     observaciones: Optional[str] = None
+    jerarquia: Optional[str] = None
 
 
 _PRUEBA_CALIDAD_TEXTOS = ("grupo", "localizacion", "elemento", "muestra_no", "tipo", "observaciones")
@@ -4515,6 +4567,7 @@ async def create_prueba_calidad(pid: str, body: PruebaCalidadIn, user: dict = De
     doc = {
         "id": str(uuid.uuid4()), "project_id": pid, "node_id": body.node_id or None,
         "frente": frente, "fecha": _prueba_calidad_fecha(body.fecha),
+        "jerarquia": _jerarquia_modulo(body.jerarquia),
         "created_by": user["id"], "created_by_name": user["name"],
         "created_at": now, "updated_at": now,
     }
@@ -4544,6 +4597,8 @@ async def update_prueba_calidad(pid: str, rid: str, body: PruebaCalidadPatch, us
         upd["node_id"] = fields["node_id"] or None
     if "fecha" in fields:
         upd["fecha"] = _prueba_calidad_fecha(fields["fecha"])
+    if fields.get("jerarquia"):
+        upd["jerarquia"] = _jerarquia_modulo(fields["jerarquia"])
     for campo in _PRUEBA_CALIDAD_TEXTOS:
         if campo in fields:
             upd[campo] = (fields[campo] or "").strip() or None
@@ -4586,6 +4641,7 @@ class ControlCalidadIn(BaseModel):
     descripcion: Optional[str] = None  # texto sobre la foto
     pie: Optional[str] = None  # pie de foto
     fecha: Optional[str] = None  # ISO date; default = hoy (CDMX)
+    jerarquia: Optional[str] = None  # informe al que llega (ver JERARQUIAS_MODULO)
 
 
 class ControlCalidadPatch(BaseModel):
@@ -4594,6 +4650,7 @@ class ControlCalidadPatch(BaseModel):
     descripcion: Optional[str] = None
     pie: Optional[str] = None
     fecha: Optional[str] = None
+    jerarquia: Optional[str] = None
     image: Optional[str] = None  # reemplaza la foto
 
 
@@ -4676,6 +4733,7 @@ async def create_control_calidad(pid: str, body: ControlCalidadIn, user: dict = 
     doc = {
         "id": str(uuid.uuid4()), "project_id": pid, "node_id": body.node_id or None,
         "fecha": _prueba_calidad_fecha(body.fecha), "foto": foto, "thumb": thumb,
+        "jerarquia": _jerarquia_modulo(body.jerarquia),
         "created_by": user["id"], "created_by_name": user["name"],
         "created_at": now, "updated_at": now,
     }
@@ -4699,6 +4757,8 @@ async def update_control_calidad(pid: str, rid: str, body: ControlCalidadPatch, 
         upd["node_id"] = fields["node_id"] or None
     if "fecha" in fields:
         upd["fecha"] = _prueba_calidad_fecha(fields["fecha"])
+    if fields.get("jerarquia"):
+        upd["jerarquia"] = _jerarquia_modulo(fields["jerarquia"])
     for campo in _CONTROL_CALIDAD_TEXTOS:
         if campo in fields:
             upd[campo] = (fields[campo] or "").strip() or None
@@ -5056,6 +5116,7 @@ class ActPartIn(BaseModel):
     subcategoria: Optional[str] = None
     texto: str
     fecha: Optional[str] = None
+    jerarquia: Optional[str] = None  # informe al que llega (ver JERARQUIAS_MODULO)
 
 
 class ActPartPatch(BaseModel):
@@ -5064,6 +5125,7 @@ class ActPartPatch(BaseModel):
     subcategoria: Optional[str] = None
     texto: Optional[str] = None
     fecha: Optional[str] = None
+    jerarquia: Optional[str] = None
 
 
 def _act_part_public(doc: dict) -> dict:
@@ -5197,6 +5259,7 @@ async def create_act_part(pid: str, body: ActPartIn, user: dict = Depends(curren
     doc = {"id": str(uuid.uuid4()), "project_id": pid, "node_id": body.node_id, "categoria_id": body.categoria_id,
            "categoria_nombre": cat["nombre"], "subcategoria": (body.subcategoria or "").strip() or None,
            "texto": texto, "fecha": _prueba_calidad_fecha(body.fecha),
+           "jerarquia": _jerarquia_modulo(body.jerarquia),
            "created_by": user["id"], "created_by_name": user["name"], "created_at": now, "updated_at": now}
     await db.actividades_particulares.insert_one(doc)
     return _act_part_public(doc)
@@ -5226,6 +5289,8 @@ async def update_act_part(pid: str, rid: str, body: ActPartPatch, user: dict = D
         upd["texto"] = texto
     if "fecha" in fields:
         upd["fecha"] = _prueba_calidad_fecha(fields["fecha"])
+    if fields.get("jerarquia"):
+        upd["jerarquia"] = _jerarquia_modulo(fields["jerarquia"])
     if upd:
         upd["updated_at"] = datetime.now(timezone.utc)
         await db.actividades_particulares.update_one({"id": rid}, {"$set": upd})
@@ -16644,7 +16709,10 @@ async def _gather_modulos_export_data(
         "aspectos_sociales": None, "indicadores_seguridad": None, "juntas_trabajo": None,
         "supervision_ambiental": None, "actividades_particulares": None,
     }
-    date_q = {"created_at": {"$gte": start_dt, "$lte": end_dt}}
+    # Jerarquía por registro: solo entran al informe los registros que le
+    # corresponden (o sin jerarquía = legado), ver `_jerarquia_q`.
+    jq = _jerarquia_q(categoria)
+    date_q = {"created_at": {"$gte": start_dt, "$lte": end_dt}, **jq}
     # Riesgos y Estudios son matrices mutables (el % de avance se actualiza
     # in situ, no se recrea la fila) — una fila cuenta para el período si se
     # creó O se actualizó dentro de él, no sólo si se creó.
@@ -16764,9 +16832,9 @@ async def _gather_modulos_export_data(
         # vigente (todo lo que no está al 100%) más lo que se creó, actualizó
         # o cerró en el período — si no, cada semana saldría un fragmento.
         if categoria in ("reportes_semanales", "reportes_mensuales"):
-            riesgos_q = {"project_id": pid, "$or": [{"porcentaje_avance": {"$lt": 100}}] + mutable_date_q["$or"]}
+            riesgos_q = {"project_id": pid, **jq, "$or": [{"porcentaje_avance": {"$lt": 100}}] + mutable_date_q["$or"]}
         else:
-            riesgos_q = {"project_id": pid, **mutable_date_q}
+            riesgos_q = {"project_id": pid, **jq, **mutable_date_q}
         registros = await db.riesgos_registros.find(riesgos_q).sort(
             [("estacion_nombre", 1), ("created_at", 1)]
         ).to_list(length=2000)
@@ -16950,7 +17018,7 @@ async def _gather_modulos_export_data(
         d_ini = start_dt.astimezone(MX_TZ).date().isoformat()
         d_fin = end_dt.astimezone(MX_TZ).date().isoformat()
         pruebas = await db.pruebas_calidad.find(
-            {"project_id": pid, "fecha": {"$gte": d_ini, "$lte": d_fin}}
+            {"project_id": pid, "fecha": {"$gte": d_ini, "$lte": d_fin}, **jq}
         ).to_list(length=5000)
         nodos = await db.location_nodes.find(
             {"project_id": pid, "id": {"$in": list({p["node_id"] for p in pruebas if p.get("node_id")})}}
@@ -16963,7 +17031,7 @@ async def _gather_modulos_export_data(
         d_ini = start_dt.astimezone(MX_TZ).date().isoformat()
         d_fin = end_dt.astimezone(MX_TZ).date().isoformat()
         fotos_cc = await db.control_calidad.find(
-            {"project_id": pid, "fecha": {"$gte": d_ini, "$lte": d_fin}}
+            {"project_id": pid, "fecha": {"$gte": d_ini, "$lte": d_fin}, **jq}
         ).to_list(length=1000)
         nodos_cc = await db.location_nodes.find(
             {"project_id": pid, "id": {"$in": list({r["node_id"] for r in fotos_cc if r.get("node_id")})}}
@@ -17033,7 +17101,7 @@ async def _gather_modulos_export_data(
         d_ini_ap = start_dt.astimezone(MX_TZ).date().isoformat()
         d_fin_ap = end_dt.astimezone(MX_TZ).date().isoformat()
         regs_ap = await db.actividades_particulares.find(
-            {"project_id": pid, "fecha": {"$gte": d_ini_ap, "$lte": d_fin_ap}}
+            {"project_id": pid, "fecha": {"$gte": d_ini_ap, "$lte": d_fin_ap}, **jq}
         ).to_list(length=5000)
         if regs_ap:
             cat_ap = await db.act_part_cat.find({"project_id": pid}).sort("orden", 1).to_list(length=200)

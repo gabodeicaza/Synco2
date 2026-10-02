@@ -9,7 +9,8 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { api, AmbientalAuditoriaItem, Project } from '@/src/api';
+import { api, AmbientalAuditoriaItem, JerarquiaInforme, Project } from '@/src/api';
+import { JerarquiaInformePicker, JERARQUIA_DEFAULT } from '@/src/components/JerarquiaInformePicker';
 import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
 import { Button } from '@/src/components/Button';
 
@@ -25,6 +26,7 @@ export default function ImpactoAmbientalScreen({ projectId }: { projectId: strin
   const [tipoDraft, setTipoDraft] = useState<Tipo>('cumplimiento');
   const [descripcionDraft, setDescripcionDraft] = useState('');
   const [notasDraft, setNotasDraft] = useState('');
+  const [jerarquiaDraft, setJerarquiaDraft] = useState<JerarquiaInforme>(JERARQUIA_DEFAULT);
   const [saving, setSaving] = useState(false);
 
   const load = useCallback(async () => {
@@ -56,6 +58,7 @@ export default function ImpactoAmbientalScreen({ projectId }: { projectId: strin
     setTipoDraft(tipo);
     setDescripcionDraft('');
     setNotasDraft('');
+    setJerarquiaDraft(JERARQUIA_DEFAULT);
     setFormOpen(true);
   }
 
@@ -71,8 +74,10 @@ export default function ImpactoAmbientalScreen({ projectId }: { projectId: strin
         tipo: tipoDraft,
         descripcion,
         notas: notasDraft.trim() || null,
+        jerarquia: jerarquiaDraft,
       });
       setFormOpen(false);
+      setJerarquiaDraft(JERARQUIA_DEFAULT);
       await load();
     } catch (e: any) {
       Alert.alert('No se pudo guardar', e?.message || 'Intentalo nuevamente.');
@@ -165,6 +170,8 @@ export default function ImpactoAmbientalScreen({ projectId }: { projectId: strin
               style={[styles.input, { minHeight: 60, textAlignVertical: 'top' }]}
               multiline
             />
+
+            <JerarquiaInformePicker value={jerarquiaDraft} onChange={setJerarquiaDraft} />
 
             <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
               <Button label="Cancelar" variant="secondary" onPress={() => setFormOpen(false)} style={{ flex: 1 }} />

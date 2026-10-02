@@ -236,6 +236,11 @@ export interface IndiceResponse {
   estructura: IndiceSeccion[];   // ultima estructura conocida del informe
 }
 
+// Jerarquía por registro en los módulos de captura (misma regla que los reportes:
+// cada registro llega a UN solo informe; "informativo" a ninguno). Un registro
+// anterior a la regla viene sin jerarquía y sale en todos los informes.
+export type JerarquiaInforme = 'informativo' | 'diario' | 'semanal' | 'mensual';
+
 export interface ForestalRegistro {
   id: string;
   project_id: string;
@@ -246,6 +251,7 @@ export interface ForestalRegistro {
   fecha: string;
   notas?: string | null;
   images: string[];
+  jerarquia?: JerarquiaInforme | null;
   captured_by: string;
   captured_by_name: string;
   created_at: string;
@@ -395,6 +401,7 @@ export interface SeguridadReporte {
   acciones_tomadas?: string | null;    // formato anterior
   severidad: 'leve' | 'moderado' | 'grave';
   images: string[];
+  jerarquia?: JerarquiaInforme | null;
   captured_by: string;
   captured_by_name: string;
   created_at: string;
@@ -449,6 +456,7 @@ export interface RiesgoRegistro {
   notas?: string | null;
   // false = la fila no se numera en el mapa impreso (ej. la fila de postes).
   numerar?: boolean;
+  jerarquia?: JerarquiaInforme | null;
   captured_by: string;
   captured_by_name: string;
   created_at: string;
@@ -482,6 +490,7 @@ export interface EstudioBitacoraEntry {
   disciplina: EstudioDisciplina;
   texto: string;
   fecha: string;
+  jerarquia?: JerarquiaInforme | null;
   captured_by: string;
   captured_by_name: string;
   created_at: string;
@@ -567,6 +576,7 @@ export interface PruebaCalidad {
   fecha: string; // YYYY-MM-DD
   tipo?: string | null;
   observaciones?: string | null;
+  jerarquia?: JerarquiaInforme | null;
   created_by: string;
   created_by_name: string;
   updated_at: string;
@@ -582,6 +592,7 @@ export interface ControlCalidad {
   fecha: string; // YYYY-MM-DD
   thumb?: string | null; // miniatura (base64 SIN prefijo data:) — listado
   foto?: string | null; // foto completa (data URL) — solo detalle
+  jerarquia?: JerarquiaInforme | null;
   created_by: string;
   created_by_name: string;
   updated_at: string;
@@ -592,6 +603,7 @@ export interface ControlCalidadInput {
   grupo?: string;
   descripcion?: string;
   pie?: string;
+  jerarquia?: JerarquiaInforme | null;
   fecha?: string;
 }
 // === Supervisión ambiental (todo editable) ================================
@@ -626,10 +638,11 @@ export interface ActPartRegistro {
   subcategoria?: string | null;
   texto: string;
   fecha: string; // YYYY-MM-DD
+  jerarquia?: JerarquiaInforme | null;
   created_by: string;
   created_by_name: string;
 }
-export interface ActPartInput { node_id: string; categoria_id: string; subcategoria?: string | null; texto: string; fecha?: string }
+export interface ActPartInput { node_id: string; categoria_id: string; subcategoria?: string | null; texto: string; fecha?: string; jerarquia?: JerarquiaInforme }
 // === Capa financiera del reporte semanal =================================
 export type ContratoFin = 'obra' | 'supervision';
 export interface Estimacion {
@@ -714,7 +727,8 @@ export interface PendienteGeneral {
   created_by_name?: string;
   updated_at: string;
 }
-export type PruebaCalidadInput = Partial<Omit<PruebaCalidad, 'id' | 'project_id' | 'created_by' | 'created_by_name' | 'updated_at' | 'frente'>> & {
+export type PruebaCalidadInput = Partial<Omit<PruebaCalidad, 'id' | 'project_id' | 'created_by' | 'created_by_name' | 'updated_at' | 'frente' | 'jerarquia'>> & {
+  jerarquia?: JerarquiaInforme;
   frente: string;
 };
 
@@ -781,6 +795,7 @@ export interface AmbientalAuditoriaItem {
   fecha: string;
   notas?: string | null;
   images: string[];
+  jerarquia?: JerarquiaInforme | null;
   captured_by: string;
   captured_by_name: string;
   created_at: string;
@@ -2277,7 +2292,7 @@ export const api = {
   listForestalRegistros: (pid: string) => request<ForestalRegistro[]>('GET', `/projects/${pid}/forestal-registros`),
   createForestalRegistro: (pid: string, body: {
     node_id?: string | null; estacion_nombre?: string | null; tipo: 'poda' | 'trasplante' | 'derribo';
-    cantidad: number; fecha?: string; notas?: string | null; images?: string[];
+    cantidad: number; fecha?: string; notas?: string | null; images?: string[]; jerarquia?: JerarquiaInforme;
   }) => request<ForestalRegistro>('POST', `/projects/${pid}/forestal-registros`, body),
   forestalResumen: (pid: string) => request<ForestalResumen>('GET', `/projects/${pid}/forestal-registros/resumen`),
   forestalSemanal: (pid: string, desde: string) =>
@@ -2459,13 +2474,13 @@ export const api = {
   createSeguridadReporte: (pid: string, body: {
     node_id?: string | null; fecha?: string; trabajador?: string | null; contratista?: string | null;
     tipo_registro?: SeguridadTipoRegistro; ubicacion?: string | null; descripcion?: string;
-    seguimiento?: string | null; images?: string[];
+    seguimiento?: string | null; images?: string[]; jerarquia?: JerarquiaInforme;
   }) => request<SeguridadReporte>('POST', `/projects/${pid}/seguridad-reportes`, body),
   // Edicion parcial: tipicamente para ir agregando el Seguimiento.
   updateSeguridadReporte: (pid: string, rid: string, body: {
     fecha?: string; trabajador?: string | null; contratista?: string | null;
     tipo_registro?: SeguridadTipoRegistro; ubicacion?: string | null; descripcion?: string;
-    seguimiento?: string | null; images?: string[];
+    seguimiento?: string | null; images?: string[]; jerarquia?: JerarquiaInforme;
   }) => request<SeguridadReporte>('PATCH', `/projects/${pid}/seguridad-reportes/${rid}`, body),
   getSeguridadCruz: (pid: string, mes?: string) =>
     request<SeguridadCruz>('GET', `/projects/${pid}/seguridad-cruz${mes ? `?mes=${mes}` : ''}`),
@@ -2494,10 +2509,11 @@ export const api = {
   createRiesgoRegistro: (pid: string, body: {
     node_id?: string | null; estacion_nombre?: string | null; descripcion_riesgo: string;
     propuesta_control: string; porcentaje_avance?: number; notas?: string | null; numerar?: boolean;
+    jerarquia?: JerarquiaInforme;
   }) => request<RiesgoRegistro>('POST', `/projects/${pid}/riesgos-registros`, body),
   updateRiesgoRegistro: (pid: string, rid: string, body: Partial<{
     estacion_nombre: string | null; descripcion_riesgo: string; propuesta_control: string;
-    porcentaje_avance: number; notas: string | null; numerar: boolean;
+    porcentaje_avance: number; notas: string | null; numerar: boolean; jerarquia: JerarquiaInforme;
   }>) => request<RiesgoRegistro>('PATCH', `/projects/${pid}/riesgos-registros/${rid}`, body),
 
   // === Módulo piloto: Estudios y Proyecto Ejecutivo ===
@@ -2509,7 +2525,7 @@ export const api = {
   deleteEstudioActividad: (pid: string, aid: string) =>
     request<{ ok: boolean }>('DELETE', `/projects/${pid}/estudios-actividades/${aid}`),
   listEstudiosBitacora: (pid: string) => request<EstudioBitacoraEntry[]>('GET', `/projects/${pid}/estudios-bitacora`),
-  createEstudioBitacora: (pid: string, body: { disciplina: EstudioDisciplina; texto: string; fecha?: string }) =>
+  createEstudioBitacora: (pid: string, body: { disciplina: EstudioDisciplina; texto: string; fecha?: string; jerarquia?: JerarquiaInforme }) =>
     request<EstudioBitacoraEntry>('POST', `/projects/${pid}/estudios-bitacora`, body),
 
   // === Presentación: seguimiento de Estudios y Análisis por disciplina ===
@@ -2547,6 +2563,7 @@ export const api = {
   listAmbientalAuditoria: (pid: string) => request<AmbientalAuditoriaItem[]>('GET', `/projects/${pid}/ambiental-auditoria`),
   createAmbientalAuditoria: (pid: string, body: {
     tipo: 'cumplimiento' | 'incumplimiento'; descripcion: string; fecha?: string; notas?: string | null; images?: string[];
+    jerarquia?: JerarquiaInforme;
   }) => request<AmbientalAuditoriaItem>('POST', `/projects/${pid}/ambiental-auditoria`, body),
 
   listInvitations: (pid: string) => request<Invitation[]>('GET', `/projects/${pid}/invitations`),
