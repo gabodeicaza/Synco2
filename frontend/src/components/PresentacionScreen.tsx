@@ -15,7 +15,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import {
   api, InformacionParticularBloque, InformacionParticularFoto, LocationNode, PlanoAvance,
-  Presentacion, PresentacionSeccion, PresentacionSeccionTipo, Project,
+  Presentacion, PresentacionSeccion, PresentacionSeccionTipo, Project, ReporteSemanaItem,
 } from '@/src/api';
 import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
 import { Button } from '@/src/components/Button';
@@ -32,6 +32,8 @@ const TIPO_ICON: Record<PresentacionSeccionTipo, keyof typeof Ionicons.glyphMap>
   croquis_estacion: 'business-outline',
   informacion_particular: 'images-outline',
   avance_grafico: 'construct-outline',
+  reportes_semana: 'newspaper-outline',
+  cierre: 'checkmark-done-outline',
 };
 
 const TIPO_LABEL: Record<PresentacionSeccionTipo, string> = {
@@ -43,12 +45,25 @@ const TIPO_LABEL: Record<PresentacionSeccionTipo, string> = {
   croquis_estacion: 'Croquis General (Estación)',
   informacion_particular: 'Información Particular',
   avance_grafico: 'Avance Gráfico (Plano)',
+  reportes_semana: 'Reportes de la semana',
+  cierre: 'Cierre (Gracias)',
 };
 
 const TIPO_ORDEN_PICKER: PresentacionSeccionTipo[] = [
   'portada', 'mapa_general', 'divisor', 'financiero',
   'seguimiento_estudios', 'croquis_estacion', 'informacion_particular', 'avance_grafico',
+  'reportes_semana', 'cierre',
 ];
+
+/** "4 – 10 sep" a partir de la fecha del informe (fecha − 6 días .. fecha). */
+function weekRangeLabel(fechaIso: string): string {
+  const [y, m, d] = fechaIso.split('-').map((v) => parseInt(v, 10));
+  const end = new Date(Date.UTC(y, (m || 1) - 1, d || 1));
+  const start = new Date(end);
+  start.setUTCDate(start.getUTCDate() - 6);
+  const f = (dt: Date) => dt.toLocaleDateString('es-MX', { day: 'numeric', month: 'short', timeZone: 'UTC' });
+  return `${f(start)} – ${f(end)}`;
+}
 
 function todayIso(): string {
   const d = new Date();
@@ -72,6 +87,14 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
   const [fechaDraft, setFechaDraft] = useState(todayIso());
   const [tituloDraft, setTituloDraft] = useState('INFORME DE ACTIVIDADES');
   const [creating, setCreating] = useState(false);
+  const [plantillaSemanal, setPlantillaSemanal] = useState(true);
+
+  // Selector de reportes de la semana (sección 'reportes_semana')
+  const [reportesSeccion, setReportesSeccion] = useState<PresentacionSeccion | null>(null);
+  const [reportesSemana, setReportesSemana] = useState<ReporteSemanaItem[]>([]);
+  const [reportesSel, setReportesSel] = useState<string[]>([]);
+  const [reportesLoading, setReportesLoading] = useState(false);
+  const [savingReportes, setSavingReportes] = useState(false);
 
   const [tipoPickerOpen, setTipoPickerOpen] = useState(false);
   const [configTipo, setConfigTipo] = useState<PresentacionSeccionTipo | null>(null);
@@ -133,7 +156,10 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
     }
     try {
       setCreating(true);
-      const created = await api.createPresentacion(projectId, { fecha: fechaDraft.trim(), titulo: tituloDraft.trim() || undefined });
+      const created = await api.createPresentacion(projectId, {
+        fecha: fechaDraft.trim(), titulo: tituloDraft.trim() || undefined,
+        plantilla: plantillaSemanal ? 'semanal' : undefined,
+      });
       setNewOpen(false);
       await loadList();
       setSelectedId(created.id);
@@ -180,6 +206,17 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
       setConfigTipo('avance_grafico');
       return;
     }
+    if (tipo === 'reportes_semana') {
+      if (!detail) return;
+      try {
+        const created = await api.addPresentacionSeccion(projectId, detail.id, { tipo, orden: nextOrden() });
+        await loadDetail(detail.id);
+        await openReportesSelector(created);
+      } catch (e: any) {
+        Alert.alert('No se pudo agregar', e?.message || 'Intentalo nuevamente.');
+      }
+      return;
+    }
     // Tipos sin configuración adicional: se agregan directo.
     await createSeccion({ tipo });
   }
@@ -223,6 +260,43 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
       await loadDetail(detail.id);
     } catch (e: any) {
       Alert.alert('No se pudo eliminar', e?.message || 'Intentalo nuevamente.');
+    }
+  }
+
+  async function openReportesSelector(seccion: PresentacionSeccion) {
+    if (!detail) return;
+    setReportesSeccion(seccion);
+    setReportesSel([...(seccion.report_ids || [])]);
+    setReportesLoading(true);
+    try {
+      setReportesSemana(await api.listReportesSemanaPresentacion(projectId, detail.id));
+    } catch (e: any) {
+      setReportesSemana([]);
+      Alert.alert('Error', e?.message || 'No se pudieron cargar los reportes de la semana.');
+    } finally {
+      setReportesLoading(false);
+    }
+  }
+
+  function toggleReporte(id: string) {
+    setReportesSel((cur) => (cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]));
+  }
+
+  async function saveReportes() {
+    if (!detail || !reportesSeccion) return;
+    try {
+      setSavingReportes(true);
+      // Solo ids que siguen en la ventana semanal (los demás ya no aplican).
+      const vigentes = new Set(reportesSemana.map((r) => r.id));
+      await api.updatePresentacionSeccion(projectId, detail.id, reportesSeccion.id, {
+        report_ids: reportesSel.filter((id) => vigentes.has(id)),
+      });
+      setReportesSeccion(null);
+      await loadDetail(detail.id);
+    } catch (e: any) {
+      Alert.alert('No se pudo guardar', e?.message || 'Intentalo nuevamente.');
+    } finally {
+      setSavingReportes(false);
     }
   }
 
@@ -308,6 +382,10 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
     if (s.tipo === 'divisor') return s.titulo || 'Sin título';
     if (s.tipo === 'croquis_estacion') return nodes.find((n) => n.id === s.node_id)?.name || s.node_id || 'Estación no cargada';
     if (s.tipo === 'avance_grafico') return planos.find((p) => p.id === s.plano_id)?.nombre || s.plano_id || 'Plano no cargado';
+    if (s.tipo === 'reportes_semana') {
+      const n = (s.report_ids || []).length;
+      return n ? `${n} reporte${n === 1 ? '' : 's'} elegido${n === 1 ? '' : 's'}` : 'Sin reportes elegidos — toca para elegir';
+    }
     if (s.tipo === 'informacion_particular') return `${(s.bloques || []).length} bloque${(s.bloques || []).length === 1 ? '' : 's'}`;
     return 'Se arma en vivo al previsualizar/exportar';
   }
@@ -360,6 +438,11 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
                       <Text style={styles.seccionTitulo} numberOfLines={1}>{TIPO_LABEL[s.tipo]}</Text>
                       <Text style={styles.seccionSub} numberOfLines={1}>{seccionSubtitle(s)}</Text>
                     </View>
+                    {s.tipo === 'reportes_semana' && canEditEstructura ? (
+                      <Pressable onPress={() => openReportesSelector(s)} hitSlop={8} style={{ paddingHorizontal: 4 }}>
+                        <Ionicons name="checkbox-outline" size={18} color={colors.primary} />
+                      </Pressable>
+                    ) : null}
                     {s.tipo === 'informacion_particular' ? (
                       <Pressable onPress={() => openBloquesEditor(s)} hitSlop={8} style={{ paddingHorizontal: 4 }}>
                         <Ionicons name="create-outline" size={18} color={colors.primary} />
@@ -398,6 +481,51 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
               ))}
             </Pressable>
           </Pressable>
+        </Modal>
+
+        {/* Modal: elegir los reportes de la semana que se destacan */}
+        <Modal visible={!!reportesSeccion} transparent animationType="slide" onRequestClose={() => setReportesSeccion(null)}>
+          <View style={styles.modalBackdrop}>
+            <View style={[styles.modalCard, { maxHeight: '85%' }]}>
+              <Text style={styles.modalTitle}>Reportes de la semana</Text>
+              <Text style={styles.seccionSub}>
+                Elige los que quieres destacar en el informe ({detail ? weekRangeLabel(detail.fecha) : ''}).
+              </Text>
+              {reportesLoading ? (
+                <ActivityIndicator color={colors.primary} style={{ marginVertical: spacing.lg }} />
+              ) : reportesSemana.length === 0 ? (
+                <Text style={[styles.emptyTxt, { paddingVertical: spacing.lg }]}>No hay reportes capturados en esa semana.</Text>
+              ) : (
+                <>
+                  <View style={{ flexDirection: 'row', gap: spacing.md, marginVertical: spacing.sm }}>
+                    <Pressable onPress={() => setReportesSel(reportesSemana.map((r) => r.id))}><Text style={styles.addBtnTxt}>Seleccionar todos</Text></Pressable>
+                    <Pressable onPress={() => setReportesSel([])}><Text style={styles.addBtnTxt}>Ninguno</Text></Pressable>
+                    <Text style={[styles.seccionSub, { marginLeft: 'auto' }]}>{reportesSel.length} de {reportesSemana.length}</Text>
+                  </View>
+                  <ScrollView>
+                    {reportesSemana.map((r) => {
+                      const on = reportesSel.includes(r.id);
+                      return (
+                        <Pressable key={r.id} onPress={() => toggleReporte(r.id)} style={styles.tipoOption}>
+                          <Ionicons name={on ? 'checkbox' : 'square-outline'} size={22} color={on ? colors.primary : colors.textMuted} />
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.tipoOptionTxt} numberOfLines={2}>{r.titulo}</Text>
+                            <Text style={styles.seccionSub} numberOfLines={1}>
+                              {[r.ubicacion, r.fecha ? r.fecha.slice(0, 10) : '', `${r.n_fotos} foto${r.n_fotos === 1 ? '' : 's'}`].filter(Boolean).join(' · ')}
+                            </Text>
+                          </View>
+                        </Pressable>
+                      );
+                    })}
+                  </ScrollView>
+                </>
+              )}
+              <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
+                <Button label="Cancelar" variant="secondary" onPress={() => setReportesSeccion(null)} style={{ flex: 1 }} />
+                <Button label="Guardar" loading={savingReportes} onPress={saveReportes} style={{ flex: 1 }} />
+              </View>
+            </View>
+          </View>
         </Modal>
 
         {/* Modal: config de "divisor" (título) */}
@@ -615,6 +743,13 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
             <TextInput value={fechaDraft} onChangeText={setFechaDraft} style={styles.input} placeholder="2026-09-10" placeholderTextColor={colors.textMuted} />
             <Text style={styles.fieldLabel}>Título</Text>
             <TextInput value={tituloDraft} onChangeText={setTituloDraft} style={styles.input} />
+            <Pressable onPress={() => setPlantillaSemanal((v) => !v)} style={[styles.tipoOption, { borderTopWidth: 0, marginTop: spacing.sm }]}>
+              <Ionicons name={plantillaSemanal ? 'checkbox' : 'square-outline'} size={22} color={plantillaSemanal ? colors.primary : colors.textMuted} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.tipoOptionTxt}>Precargar estructura del informe semanal</Text>
+                <Text style={styles.seccionSub}>Portada, mapa, Financiero, Estudios, Avance de obra, reportes de la semana y cierre.</Text>
+              </View>
+            </Pressable>
             <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
               <Button label="Cancelar" variant="secondary" onPress={() => setNewOpen(false)} style={{ flex: 1 }} />
               <Button label="Crear" loading={creating} onPress={onCreatePresentacion} style={{ flex: 1 }} />

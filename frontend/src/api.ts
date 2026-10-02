@@ -763,7 +763,8 @@ export interface InformacionParticularBloque {
 
 export type PresentacionSeccionTipo =
   | 'portada' | 'mapa_general' | 'divisor' | 'financiero'
-  | 'seguimiento_estudios' | 'croquis_estacion' | 'informacion_particular' | 'avance_grafico';
+  | 'seguimiento_estudios' | 'croquis_estacion' | 'informacion_particular' | 'avance_grafico'
+  | 'reportes_semana' | 'cierre';
 
 export interface PresentacionSeccion {
   id: string;
@@ -773,6 +774,20 @@ export interface PresentacionSeccion {
   node_id?: string | null;
   plano_id?: string | null;
   bloques?: InformacionParticularBloque[];
+  /** 'reportes_semana': ids de los reportes que el usuario eligió destacar. */
+  report_ids?: string[];
+}
+
+/** Reporte de la semana (ligero, sin imágenes) para el selector de la sección 'reportes_semana'. */
+export interface ReporteSemanaItem {
+  id: string;
+  titulo: string;
+  ubicacion: string;
+  area?: string | null;
+  severidad: string[];
+  capturado_por?: string | null;
+  fecha?: string | null;
+  n_fotos: number;
 }
 
 export interface Presentacion {
@@ -2539,7 +2554,7 @@ export const api = {
 
   // === Presentación (Informe de Actividades semanal) ===
   listPresentaciones: (pid: string) => request<Presentacion[]>('GET', `/projects/${pid}/presentaciones`),
-  createPresentacion: (pid: string, body: { fecha: string; titulo?: string }) =>
+  createPresentacion: (pid: string, body: { fecha: string; titulo?: string; plantilla?: 'semanal' }) =>
     request<Presentacion>('POST', `/projects/${pid}/presentaciones`, { project_id: pid, ...body }),
   getPresentacion: (pid: string, presId: string) => request<Presentacion>('GET', `/projects/${pid}/presentaciones/${presId}`),
   updatePresentacion: (pid: string, presId: string, body: Partial<{ fecha: string; titulo: string }>) =>
@@ -2548,15 +2563,17 @@ export const api = {
     request<{ ok: boolean }>('DELETE', `/projects/${pid}/presentaciones/${presId}`),
   addPresentacionSeccion: (pid: string, presId: string, body: {
     tipo: PresentacionSeccionTipo; orden?: number; titulo?: string; node_id?: string; plano_id?: string;
-    bloques?: InformacionParticularBloque[];
+    bloques?: InformacionParticularBloque[]; report_ids?: string[];
   }) => request<PresentacionSeccion>('POST', `/projects/${pid}/presentaciones/${presId}/secciones`, body),
   updatePresentacionSeccion: (pid: string, presId: string, secId: string, body: Partial<{
-    orden: number; titulo: string; node_id: string; plano_id: string;
+    orden: number; titulo: string; node_id: string; plano_id: string; report_ids: string[];
   }>) => request<PresentacionSeccion>('PATCH', `/projects/${pid}/presentaciones/${presId}/secciones/${secId}`, body),
   deletePresentacionSeccion: (pid: string, presId: string, secId: string) =>
     request<{ ok: boolean }>('DELETE', `/projects/${pid}/presentaciones/${presId}/secciones/${secId}`),
   updateInformacionParticular: (pid: string, presId: string, secId: string, bloques: InformacionParticularBloque[]) =>
     request<PresentacionSeccion>('PATCH', `/projects/${pid}/presentaciones/${presId}/secciones/${secId}/informacion-particular`, { bloques }),
+  listReportesSemanaPresentacion: (pid: string, presId: string) =>
+    request<ReporteSemanaItem[]>('GET', `/projects/${pid}/presentaciones/${presId}/reportes-semana`),
   presentacionExportUrl: (pid: string, presId: string) => `${BASE}/projects/${pid}/presentaciones/${presId}/export.pptx`,
 
   // === Módulo piloto: Impacto Ambiental ===
