@@ -158,7 +158,7 @@ MODULOS_KEYS = {
     "fotos_lidar", "tapial", "pruebas_calidad", "control_calidad",
     "avance_obra", "estimaciones", "pendientes_generales", "aspectos_sociales",
     "indicadores_seguridad", "juntas_trabajo", "supervision_ambiental",
-    "actividades_particulares",
+    "actividades_particulares", "electromecanica",
 }
 MODULOS_DIARIOS = MODULOS_KEYS
 MODULOS_SEMANALES = MODULOS_KEYS
@@ -1228,6 +1228,7 @@ async def startup_event():
     await db.pendientes_generales.create_index([("project_id", 1), ("contrato", 1), ("orden", 1)])
     await db.seguridad_indicadores.create_index("id", unique=True)
     await db.seguridad_indicadores.create_index([("project_id", 1), ("clave", 1)], unique=True)
+    await db.electromecanica.create_index("project_id", unique=True)
     await db.levantamientos_sociales.create_index("id", unique=True)
     await db.levantamientos_sociales.create_index([("project_id", 1), ("tipo", 1), ("ambito", 1)], unique=True)
     await db.salvamento_arqueologico.create_index("id", unique=True)
@@ -7196,12 +7197,188 @@ class InformacionParticularBloqueIn(BaseModel):
     fotos: List[InformacionParticularFotoIn] = Field(default_factory=list)
 
 
+# ============================================================================
+# MÓDULO "ELECTROMECÁNICA" (Sistema Electromecánico del informe semanal)
+# ============================================================================
+# Estado VIGENTE (no un log): un solo documento por proyecto con
+#   · avance por componente × etapa (fabricación / suministro / montaje, %),
+#   · avance general (calculado como promedio de lo capturado, o manual),
+#   · documentación y actividades del proyecto con su estatus,
+#   · pilonas suministradas vs total + nota del patio de almacenamiento,
+#   · observaciones libres.
+# Se imprime en los informes con bloques genéricos (table / imagen / list).
+ELECTROMEC_COMPONENTES = {
+    "estaciones": "Estaciones", "pilonas": "Pilonas (Ejes)", "cable": "Cable Portador-Tractor",
+    "garage": "Garage", "cabinas": "Cabinas",
+}
+ELECTROMEC_ETAPAS = {"fabricacion": "Fabricación", "suministro": "Suministro", "montaje": "Montaje"}
+ELECTROMEC_ETAPA_COLOR = {"fabricacion": "#9CA3AF", "suministro": "#2563EB", "montaje": "#16A34A"}
+ELECTROMEC_ESTATUS = {
+    "recibido": "Recibido", "en_revision": "En revisión", "pendiente": "Pendiente", "emitido": "Emitido",
+}
+
+
+class ElectromecDocumento(BaseModel):
+    id: Optional[str] = None
+    titulo: str
+    estatus: Optional[Literal["recibido", "en_revision", "pendiente", "emitido"]] = None
+    nota: Optional[str] = None
+
+
+class ElectromecObservacion(BaseModel):
+    id: Optional[str] = None
+    titulo: Optional[str] = None
+    texto: str
+
+
+class ElectromecIn(BaseModel):
+    # {componente: {etapa: porcentaje 0-100 | null}}
+    avance: Dict[str, Dict[str, Optional[float]]] = Field(default_factory=dict)
+    avance_general: Optional[float] = None  # manual; vacío = promedio de lo capturado
+    pilonas_total: Optional[int] = None
+    pilonas_suministradas: Optional[int] = None
+    patio_nota: Optional[str] = None
+    documentos: List[ElectromecDocumento] = Field(default_factory=list)
+    observaciones: List[ElectromecObservacion] = Field(default_factory=list)
+
+
+def _electromec_pct(v, campo: str) -> Optional[float]:
+    if v is None:
+        return None
+    if not (0 <= float(v) <= 100):
+        raise HTTPException(400, f"{campo}: el porcentaje debe estar entre 0 y 100")
+    return round(float(v), 2)
+
+
+def _electromec_normalizar(body: ElectromecIn) -> dict:
+    avance: dict = {}
+    for comp, etapas in body.avance.items():
+        if comp not in ELECTROMEC_COMPONENTES:
+            raise HTTPException(400, f"Componente desconocido: {comp}")
+        fila = {}
+        for etapa, v in etapas.items():
+            if etapa not in ELECTROMEC_ETAPAS:
+                raise HTTPException(400, f"Etapa desconocida: {etapa}")
+            fila[etapa] = _electromec_pct(v, f"{ELECTROMEC_COMPONENTES[comp]} · {ELECTROMEC_ETAPAS[etapa]}")
+        avance[comp] = fila
+    total, sumin = body.pilonas_total, body.pilonas_suministradas
+    if (total is not None and total < 0) or (sumin is not None and sumin < 0):
+        raise HTTPException(400, "Las pilonas no pueden ser negativas")
+    if total is not None and sumin is not None and sumin > total:
+        raise HTTPException(400, "Las pilonas suministradas no pueden superar el total")
+    docs = []
+    for d in body.documentos:
+        titulo = " ".join((d.titulo or "").split())[:300]
+        if titulo:
+            docs.append({"id": d.id or str(uuid.uuid4()), "titulo": titulo, "estatus": d.estatus,
+                         "nota": (d.nota or "").strip()[:1000] or None})
+    obs = []
+    for o in body.observaciones:
+        texto = (o.texto or "").strip()[:3000]
+        if texto:
+            obs.append({"id": o.id or str(uuid.uuid4()), "titulo": (o.titulo or "").strip()[:200] or None, "texto": texto})
+    return {
+        "avance": avance,
+        "avance_general": _electromec_pct(body.avance_general, "Avance general"),
+        "pilonas_total": total, "pilonas_suministradas": sumin,
+        "patio_nota": (body.patio_nota or "").strip()[:2000] or None,
+        "documentos": docs, "observaciones": obs,
+    }
+
+
+def _electromec_general(doc: dict) -> Optional[float]:
+    """Avance general: el manual si existe; si no, promedio de todo lo capturado."""
+    if doc.get("avance_general") is not None:
+        return float(doc["avance_general"])
+    vals = [v for etapas in (doc.get("avance") or {}).values() for v in etapas.values() if v is not None]
+    return round(sum(vals) / len(vals), 2) if vals else None
+
+
+def _electromec_out(doc: Optional[dict]) -> dict:
+    base = {"avance": {}, "avance_general": None, "pilonas_total": None, "pilonas_suministradas": None,
+            "patio_nota": None, "documentos": [], "observaciones": []}
+    if doc:
+        base.update({k: doc[k] for k in base if k in doc})
+        base["updated_at"] = doc.get("updated_at")
+    base["avance_general_calculado"] = _electromec_general(base)
+    return base
+
+
+async def _electromec_bloques(doc: dict) -> List[dict]:
+    """Bloques del informe para el Sistema Electromecánico; [] si no hay nada."""
+    bloques: List[dict] = []
+    docs = doc.get("documentos") or []
+    if docs:
+        bloques.append({
+            "type": "table", "heading": "CUMPLIMIENTO PROYECTO DEL SISTEMA ELECTROMECÁNICO",
+            "headers": ["DOCUMENTO / ACTIVIDAD", "ESTATUS", "OBSERVACIÓN"],
+            "rows": [[d["titulo"], ELECTROMEC_ESTATUS.get(d.get("estatus") or "", "-"), d.get("nota") or "-"] for d in docs],
+            "col_widths": [0.5, 0.17, 0.33], "empty_text": "Sin documentos.",
+        })
+    avance = doc.get("avance") or {}
+    comps = [c for c in ELECTROMEC_COMPONENTES if any(v is not None for v in (avance.get(c) or {}).values())]
+    if comps:
+        series = [(ELECTROMEC_ETAPAS[e], ELECTROMEC_ETAPA_COLOR[e], [(avance.get(c) or {}).get(e) for c in comps])
+                  for e in ELECTROMEC_ETAPAS]
+        png = await asyncio.to_thread(
+            _grafica_barras_png, "Avance del sistema electromecánico", [ELECTROMEC_COMPONENTES[c] for c in comps], series)
+        bloques.append({"type": "imagen", "heading": "CUMPLIMIENTO DEL SISTEMA ELECTROMECÁNICO",
+                        "imagen": await asyncio.to_thread(_png_bytes_to_jpeg_dataurl, png), "caption": ""})
+    general = _electromec_general(doc)
+    if general is not None:
+        png = await asyncio.to_thread(
+            _grafica_donas_png, "Avance general del sistema electromecánico", [("Avance general", general, 100)],
+            lambda real, total: f"Pendiente {100 - real:g}%", 2)
+        bloques.append({"type": "imagen", "heading": "AVANCE GENERAL DEL SISTEMA ELECTROMECÁNICO",
+                        "imagen": await asyncio.to_thread(_png_bytes_to_jpeg_dataurl, png), "caption": ""})
+    total, sumin = doc.get("pilonas_total"), doc.get("pilonas_suministradas")
+    if total:
+        png = await asyncio.to_thread(
+            _grafica_donas_png, "Pilonas suministradas", [("Total pilonas", sumin or 0, total)],
+            lambda real, tot: f"{real:g} de {tot:g} · por suministrar {tot - real:g}", 0)
+        bloques.append({"type": "imagen", "heading": "PATIO DE ALMACENAMIENTO · PILONAS",
+                        "imagen": await asyncio.to_thread(_png_bytes_to_jpeg_dataurl, png),
+                        "caption": doc.get("patio_nota") or ""})
+    elif doc.get("patio_nota"):
+        bloques.append({"type": "list", "heading": "PATIO DE ALMACENAMIENTO · PILONAS", "empty_text": "",
+                        "items": [{"title": None, "body": doc["patio_nota"], "extra": None, "meta": None}]})
+    obs = doc.get("observaciones") or []
+    if obs:
+        bloques.append({"type": "list", "heading": "OBSERVACIONES", "empty_text": "Sin observaciones.",
+                        "items": [{"title": o.get("titulo"), "body": o["texto"], "extra": None, "meta": None} for o in obs]})
+    return bloques
+
+
+@api.get("/projects/{pid}/electromecanica")
+async def get_electromecanica(pid: str, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    doc = await db.electromecanica.find_one({"project_id": pid})
+    return _electromec_out(doc)
+
+
+@api.put("/projects/{pid}/electromecanica")
+async def set_electromecanica(pid: str, body: ElectromecIn, user: dict = Depends(current_user)):
+    """Reemplaza el estado vigente del Sistema Electromecánico del proyecto."""
+    _assert_write_allowed(user)
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "electromecanica")
+    data = _electromec_normalizar(body)
+    now = datetime.now(timezone.utc)
+    await db.electromecanica.update_one(
+        {"project_id": pid},
+        {"$set": {**data, "updated_at": now, "updated_by": user["id"]},
+         "$setOnInsert": {"id": str(uuid.uuid4()), "created_at": now}},
+        upsert=True,
+    )
+    return _electromec_out(await db.electromecanica.find_one({"project_id": pid}))
+
+
 class PresentacionSeccionIn(BaseModel):
     tipo: Literal[
         "portada", "mapa_general", "divisor", "financiero",
         "seguimiento_estudios", "croquis_estacion", "informacion_particular",
         "avance_grafico", "reportes_semana", "cierre",
-        "ambiental", "social", "seguridad", "proyecto", "calidad", "pendientes",
+        "ambiental", "social", "seguridad", "proyecto", "calidad", "pendientes", "electromecanico",
     ]
     orden: int = 0
     titulo: Optional[str] = None  # "divisor" (ej. "FINANCIERO"); libre, no atado a Área
@@ -7239,6 +7416,7 @@ _PRES_AUTO_MODULOS = {
     "proyecto": ("estudios",),
     "calidad": ("pruebas_calidad", "control_calidad"),
     "pendientes": ("pendientes_generales",),
+    "electromecanico": ("electromecanica",),
 }
 
 
@@ -7269,6 +7447,7 @@ def _secciones_plantilla_semanal() -> List[dict]:
         ("divisor", "ESTUDIOS Y ANÁLISIS"), ("seguimiento_estudios", None), ("proyecto", None),
         ("divisor", "AVANCE DE OBRA"),
         ("reportes_semana", None),
+        ("divisor", "SISTEMA ELECTROMECÁNICO"), ("electromecanico", None),
         ("divisor", "CALIDAD"), ("calidad", None),
         ("divisor", "AMBIENTAL"), ("ambiental", None),
         ("divisor", "SOCIAL / IMPACTO URBANO"), ("social", None),
@@ -17255,7 +17434,7 @@ async def _gather_modulos_export_data(
         "pruebas_calidad": None, "control_calidad": None,
         "avance_obra": None, "estimaciones": None, "pendientes_generales": None,
         "aspectos_sociales": None, "indicadores_seguridad": None, "juntas_trabajo": None,
-        "supervision_ambiental": None, "actividades_particulares": None,
+        "supervision_ambiental": None, "actividades_particulares": None, "electromecanica": None,
     }
     # Jerarquía por registro: solo entran al informe los registros que le
     # corresponden (o sin jerarquía = legado), ver `_jerarquia_q`.
@@ -17662,6 +17841,13 @@ async def _gather_modulos_export_data(
             bloques_ap = _actividades_particulares_bloques(regs_ap, cat_ap, nodos_ap)
             if bloques_ap:
                 out["actividades_particulares"] = {"titulo": "ACTIVIDADES PARTICULARES", "blocks": bloques_ap}
+
+    if activos.get("electromecanica"):
+        # Estado vigente (no un log): lo capturado/editado en el módulo.
+        doc_em = await db.electromecanica.find_one({"project_id": pid})
+        bloques_em = await _electromec_bloques(doc_em) if doc_em else []
+        if bloques_em:
+            out["electromecanica"] = {"titulo": "SISTEMA ELECTROMECÁNICO", "blocks": bloques_em}
 
     if activos.get("supervision_ambiental"):
         # Estado vigente (no un log): lo capturado/editado a mano en el módulo.

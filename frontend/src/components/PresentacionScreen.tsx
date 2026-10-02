@@ -40,6 +40,7 @@ const TIPO_ICON: Record<PresentacionSeccionTipo, keyof typeof Ionicons.glyphMap>
   proyecto: 'document-text-outline',
   calidad: 'ribbon-outline',
   pendientes: 'alert-circle-outline',
+  electromecanico: 'hardware-chip-outline',
 };
 
 const TIPO_LABEL: Record<PresentacionSeccionTipo, string> = {
@@ -59,12 +60,13 @@ const TIPO_LABEL: Record<PresentacionSeccionTipo, string> = {
   proyecto: 'Estudios y proyecto ejecutivo (automático)',
   calidad: 'Calidad (automático)',
   pendientes: 'Pendientes generales (automático)',
+  electromecanico: 'Sistema electromecánico (automático)',
 };
 
 const TIPO_ORDEN_PICKER: PresentacionSeccionTipo[] = [
   'portada', 'mapa_general', 'divisor', 'financiero',
   'seguimiento_estudios', 'croquis_estacion', 'informacion_particular', 'avance_grafico',
-  'reportes_semana', 'proyecto', 'calidad', 'pendientes', 'ambiental', 'social', 'seguridad', 'cierre',
+  'reportes_semana', 'proyecto', 'electromecanico', 'calidad', 'pendientes', 'ambiental', 'social', 'seguridad', 'cierre',
 ];
 
 /** "4 – 10 sep" a partir de la fecha del informe (fecha − 6 días .. fecha). */
@@ -394,7 +396,7 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
     if (s.tipo === 'divisor') return s.titulo || 'Sin título';
     if (s.tipo === 'croquis_estacion') return nodes.find((n) => n.id === s.node_id)?.name || s.node_id || 'Estación no cargada';
     if (s.tipo === 'avance_grafico') return planos.find((p) => p.id === s.plano_id)?.nombre || s.plano_id || 'Plano no cargado';
-    if (['ambiental', 'social', 'seguridad', 'proyecto', 'calidad', 'pendientes'].includes(s.tipo)) {
+    if (['ambiental', 'social', 'seguridad', 'proyecto', 'calidad', 'pendientes', 'electromecanico'].includes(s.tipo)) {
       return 'Se llena solo con los módulos de la semana';
     }
     if (s.tipo === 'reportes_semana') {

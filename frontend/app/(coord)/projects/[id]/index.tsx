@@ -1549,6 +1549,14 @@ export default function ProjectDetailScreen() {
                     onPress={() => router.push({ pathname: '/(coord)/projects/[id]/aspectos-sociales' as any, params: { id: pid } })}
                   />
                 ) : null}
+                {moduloActivo(project?.modulos, 'electromecanica') ? (
+                  <ActionTile
+                    icon="hardware-chip-outline"
+                    title="Electromecánica"
+                    subtitle="Avance de fabricación, suministro y montaje, documentación, pilonas y observaciones"
+                    onPress={() => router.push({ pathname: '/(coord)/projects/[id]/electromecanica' as any, params: { id: pid } })}
+                  />
+                ) : null}
                 {moduloActivo(project?.modulos, 'indicadores_seguridad') ? (
                   <ActionTile
                     icon="speedometer-outline"

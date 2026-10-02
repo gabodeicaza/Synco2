@@ -32,6 +32,7 @@ export default function ProjectLayout() {
       <Stack.Screen name="actividades-particulares" />
       <Stack.Screen name="pendientes-generales" />
       <Stack.Screen name="aspectos-sociales" />
+      <Stack.Screen name="electromecanica" />
       <Stack.Screen name="indicadores-seguridad" />
       <Stack.Screen name="tapial" />
       <Stack.Screen name="estado-tiempo" />
