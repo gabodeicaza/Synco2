@@ -1493,6 +1493,54 @@ export default function ProjectDetailScreen() {
                     onPress={() => router.push({ pathname: '/(coord)/projects/[id]/fotos-lidar' as any, params: { id: pid } })}
                   />
                 ) : null}
+                {moduloActivo(project?.modulos, 'pruebas_calidad') ? (
+                  <ActionTile
+                    icon="flask-outline"
+                    title="Pruebas de Calidad"
+                    subtitle="Concentrado de pruebas por frente: elemento, muestra, tipo y observaciones"
+                    onPress={() => router.push({ pathname: '/(coord)/projects/[id]/pruebas-calidad' as any, params: { id: pid } })}
+                  />
+                ) : null}
+                {moduloActivo(project?.modulos, 'control_calidad') ? (
+                  <ActionTile
+                    icon="camera-outline"
+                    title="Control de Calidad"
+                    subtitle="Fotos de actividades de control de calidad con descripción y pie de foto"
+                    onPress={() => router.push({ pathname: '/(coord)/projects/[id]/control-calidad' as any, params: { id: pid } })}
+                  />
+                ) : null}
+                {moduloActivo(project?.modulos, 'estimaciones') ? (
+                  <ActionTile
+                    icon="cash-outline"
+                    title="Estimaciones"
+                    subtitle="Concentrado de estimaciones de obra y de supervisión"
+                    onPress={() => router.push({ pathname: '/(coord)/projects/[id]/estimaciones' as any, params: { id: pid } })}
+                  />
+                ) : null}
+                {moduloActivo(project?.modulos, 'pendientes_generales') ? (
+                  <ActionTile
+                    icon="list-outline"
+                    title="Pendientes Generales"
+                    subtitle="Pendientes o requerimientos generales de obra y de supervisión"
+                    onPress={() => router.push({ pathname: '/(coord)/projects/[id]/pendientes-generales' as any, params: { id: pid } })}
+                  />
+                ) : null}
+                {moduloActivo(project?.modulos, 'aspectos_sociales') ? (
+                  <ActionTile
+                    icon="people-outline"
+                    title="Aspectos Sociales"
+                    subtitle="Dictámenes y fe notarial, y salvamento arqueológico (con gráficas)"
+                    onPress={() => router.push({ pathname: '/(coord)/projects/[id]/aspectos-sociales' as any, params: { id: pid } })}
+                  />
+                ) : null}
+                {moduloActivo(project?.modulos, 'indicadores_seguridad') ? (
+                  <ActionTile
+                    icon="speedometer-outline"
+                    title="Indicadores de Seguridad"
+                    subtitle="Cumplimiento en campo, documental y PIPC (con medidor y gráficas)"
+                    onPress={() => router.push({ pathname: '/(coord)/projects/[id]/indicadores-seguridad' as any, params: { id: pid } })}
+                  />
+                ) : null}
                 {moduloActivo(project?.modulos, 'tapial') ? (
                   <ActionTile
                     icon="git-branch-outline"

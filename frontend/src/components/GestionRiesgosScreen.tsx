@@ -8,6 +8,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, TextInput, Alert, Modal, KeyboardAvoidingView, Platform,
+  Switch,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
@@ -36,10 +37,15 @@ export default function GestionRiesgosScreen({ projectId }: { projectId: string 
   const [estacionDraft, setEstacionDraft] = useState('');
   const [descripcionDraft, setDescripcionDraft] = useState('');
   const [propuestaDraft, setPropuestaDraft] = useState('');
+  const [numerarDraft, setNumerarDraft] = useState(true);
 
-  // Modal de edición de % avance (fila existente)
+  // Modal de edición de una fila existente (texto, % de avance y numeración)
   const [editing, setEditing] = useState<RiesgoRegistro | null>(null);
   const [avanceDraft, setAvanceDraft] = useState('0');
+  const [estacionEdit, setEstacionEdit] = useState('');
+  const [descripcionEdit, setDescripcionEdit] = useState('');
+  const [propuestaEdit, setPropuestaEdit] = useState('');
+  const [numerarEdit, setNumerarEdit] = useState(true);
   const [savingAvance, setSavingAvance] = useState(false);
 
   const load = useCallback(async () => {
@@ -68,6 +74,7 @@ export default function GestionRiesgosScreen({ projectId }: { projectId: string 
     setEstacionDraft('');
     setDescripcionDraft('');
     setPropuestaDraft('');
+    setNumerarDraft(true);
     setFormOpen(true);
   }
 
@@ -89,6 +96,7 @@ export default function GestionRiesgosScreen({ projectId }: { projectId: string 
         descripcion_riesgo: descripcion,
         propuesta_control: propuesta,
         porcentaje_avance: 0,
+        numerar: numerarDraft,
       });
       setFormOpen(false);
       await load();
@@ -102,6 +110,10 @@ export default function GestionRiesgosScreen({ projectId }: { projectId: string 
   function openEditAvance(r: RiesgoRegistro) {
     setEditing(r);
     setAvanceDraft(String(r.porcentaje_avance));
+    setEstacionEdit(r.estacion_nombre || '');
+    setDescripcionEdit(r.descripcion_riesgo);
+    setPropuestaEdit(r.propuesta_control);
+    setNumerarEdit(r.numerar !== false);
   }
 
   async function onSaveAvance() {
@@ -111,9 +123,19 @@ export default function GestionRiesgosScreen({ projectId }: { projectId: string 
       Alert.alert('Valor inválido', 'El avance debe ser un número entre 0 y 100.');
       return;
     }
+    if (!descripcionEdit.trim() || !propuestaEdit.trim()) {
+      Alert.alert('Falta información', 'El riesgo y su propuesta de control no pueden quedar vacíos.');
+      return;
+    }
     try {
       setSavingAvance(true);
-      await api.updateRiesgoRegistro(projectId, editing.id, { porcentaje_avance: pct });
+      await api.updateRiesgoRegistro(projectId, editing.id, {
+        porcentaje_avance: pct,
+        estacion_nombre: estacionEdit.trim() || null,
+        descripcion_riesgo: descripcionEdit.trim(),
+        propuesta_control: propuestaEdit.trim(),
+        numerar: numerarEdit,
+      });
       setEditing(null);
       await load();
     } catch (e: any) {
@@ -145,7 +167,8 @@ export default function GestionRiesgosScreen({ projectId }: { projectId: string 
 
       <ScrollView contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + spacing.xl }]}>
         <Text style={styles.helpTxt}>
-          Toca el % de avance de un riesgo para actualizarlo conforme se ejecuta su propuesta de control.
+          Toca un riesgo para actualizar su % de avance conforme se ejecuta su propuesta de control, o para
+          corregir su texto. El mapa impreso numera los riesgos de cada estación (1, 2, 3…).
         </Text>
 
         {registros.length === 0 ? (
@@ -218,6 +241,14 @@ export default function GestionRiesgosScreen({ projectId }: { projectId: string 
               multiline
             />
 
+            <View style={styles.switchRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.switchLabel}>Numerar en el mapa impreso</Text>
+                <Text style={styles.switchHint}>Apágalo en filas que solo citan números de otros riesgos (ej. "Poste 2. Riesgos 1 y 2").</Text>
+              </View>
+              <Switch value={numerarDraft} onValueChange={setNumerarDraft} />
+            </View>
+
             <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
               <Button label="Cancelar" variant="secondary" onPress={() => setFormOpen(false)} style={{ flex: 1 }} />
               <Button label="Guardar" loading={saving} onPress={onSave} style={{ flex: 1 }} />
@@ -226,12 +257,31 @@ export default function GestionRiesgosScreen({ projectId }: { projectId: string 
         </KeyboardAvoidingView>
       </Modal>
 
-      {/* Modal: editar % avance */}
+      {/* Modal: editar un riesgo (avance, texto y numeración) */}
       <Modal visible={!!editing} transparent animationType="fade" onRequestClose={() => setEditing(null)}>
-        <View style={styles.modalBackdrop}>
-          <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>Actualizar avance</Text>
-            <Text style={styles.riskTxt} numberOfLines={2}>{editing?.descripcion_riesgo}</Text>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
+          <ScrollView style={[styles.modalCard, { maxHeight: '92%' }]} keyboardShouldPersistTaps="handled">
+            <Text style={styles.modalTitle}>Editar riesgo</Text>
+
+            <Text style={styles.fieldLabel}>Estación / poste</Text>
+            <TextInput value={estacionEdit} onChangeText={setEstacionEdit} style={styles.input} placeholderTextColor={colors.textMuted} />
+
+            <Text style={styles.fieldLabel}>Descripción del riesgo</Text>
+            <TextInput
+              value={descripcionEdit} onChangeText={setDescripcionEdit} multiline
+              style={[styles.input, { minHeight: 70, textAlignVertical: 'top' }]}
+            />
+
+            <Text style={styles.fieldLabel}>Propuesta de control</Text>
+            <TextInput
+              value={propuestaEdit} onChangeText={setPropuestaEdit} multiline
+              style={[styles.input, { minHeight: 70, textAlignVertical: 'top' }]}
+            />
+
+            <View style={styles.switchRow}>
+              <Text style={[styles.switchLabel, { flex: 1 }]}>Numerar en el mapa impreso</Text>
+              <Switch value={numerarEdit} onValueChange={setNumerarEdit} />
+            </View>
 
             <Text style={styles.fieldLabel}>% de avance</Text>
             <TextInput
@@ -252,8 +302,8 @@ export default function GestionRiesgosScreen({ projectId }: { projectId: string 
               <Button label="Cancelar" variant="secondary" onPress={() => setEditing(null)} style={{ flex: 1 }} />
               <Button label="Guardar" loading={savingAvance} onPress={onSaveAvance} style={{ flex: 1 }} />
             </View>
-          </View>
-        </View>
+          </ScrollView>
+        </KeyboardAvoidingView>
       </Modal>
     </View>
   );
@@ -293,6 +343,9 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, paddingHorizontal: 12, paddingVertical: 10,
     fontSize: 14, color: colors.text, backgroundColor: colors.bg,
   },
+  switchRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginTop: spacing.md },
+  switchLabel: { fontSize: 13, fontWeight: '700', color: colors.text },
+  switchHint: { fontSize: 11, color: colors.textMuted, marginTop: 2 },
   atajosRow: { flexDirection: 'row', gap: 8, marginTop: spacing.sm },
   atajoBtn: {
     flex: 1, alignItems: 'center', paddingVertical: 8, borderRadius: radius.md,

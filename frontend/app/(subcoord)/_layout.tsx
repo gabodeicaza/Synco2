@@ -117,6 +117,12 @@ export default function SubCoordLayout() {
         <Tabs.Screen name="impacto-ambiental" options={{ href: null }} />
         <Tabs.Screen name="tabla-resumen" options={{ href: null }} />
         <Tabs.Screen name="fotos-lidar" options={{ href: null }} />
+        <Tabs.Screen name="pruebas-calidad" options={{ href: null }} />
+        <Tabs.Screen name="control-calidad" options={{ href: null }} />
+        <Tabs.Screen name="estimaciones" options={{ href: null }} />
+        <Tabs.Screen name="pendientes-generales" options={{ href: null }} />
+        <Tabs.Screen name="aspectos-sociales" options={{ href: null }} />
+        <Tabs.Screen name="indicadores-seguridad" options={{ href: null }} />
         <Tabs.Screen name="tapial" options={{ href: null }} />
         <Tabs.Screen name="estado-tiempo" options={{ href: null }} />
         <Tabs.Screen name="control-obra" options={{ href: null }} />

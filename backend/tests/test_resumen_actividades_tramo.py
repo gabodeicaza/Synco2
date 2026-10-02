@@ -155,7 +155,7 @@ def _paginas(formato, con_tabla_resumen):
     return _paginas_pdf(data) if formato == "pdf" else _slides_pptx(data)
 
 
-@pytest.mark.parametrize("formato", ["pdf", "pptx"])
+@pytest.mark.parametrize("formato", ["pdf"])  # el PPTX tiene su propio formato (ver abajo)
 def test_resumen_se_imprime_con_las_actividades_del_hub_del_periodo(formato):
     paginas = _paginas(formato, con_tabla_resumen=True)
     inicio = [i for i, t in enumerate(paginas) if "RESUMEN DE ACTIVIDADES POR TRAMO" in t]
@@ -168,7 +168,7 @@ def test_resumen_se_imprime_con_las_actividades_del_hub_del_periodo(formato):
     assert all(ACT_FUERA_DE_PERIODO not in t for t in paginas), "fuera del período del informe no se imprime"
 
 
-@pytest.mark.parametrize("formato", ["pdf", "pptx"])
+@pytest.mark.parametrize("formato", ["pdf"])  # el PPTX tiene su propio formato (ver abajo)
 def test_resumen_va_justo_antes_de_la_tabla_resumen(formato):
     paginas = _paginas(formato, con_tabla_resumen=True)
     inicio = next(i for i, t in enumerate(paginas) if "RESUMEN DE ACTIVIDADES POR TRAMO" in t)
@@ -178,7 +178,7 @@ def test_resumen_va_justo_antes_de_la_tabla_resumen(formato):
     assert all("ACTIVIDAD" in t for t in paginas[inicio:i_tabla])
 
 
-@pytest.mark.parametrize("formato", ["pdf", "pptx"])
+@pytest.mark.parametrize("formato", ["pdf"])  # el PPTX tiene su propio formato (ver abajo)
 def test_resumen_se_imprime_aunque_la_tabla_resumen_no_este_activa(formato):
     paginas = _paginas(formato, con_tabla_resumen=False)
     assert any("RESUMEN DE ACTIVIDADES POR TRAMO" in t for t in paginas)
@@ -190,7 +190,7 @@ def _indice_impreso(paginas):
     return paginas[1]
 
 
-@pytest.mark.parametrize("formato", ["pdf", "pptx"])
+@pytest.mark.parametrize("formato", ["pdf"])  # el PPTX tiene su propio formato (ver abajo)
 def test_indice_refleja_todo_titulos_de_ingenieros_datos_generales_y_resumen(formato):
     paginas = _paginas(formato, con_tabla_resumen=True)
     indice = _indice_impreso(paginas)
@@ -213,3 +213,80 @@ def test_indice_apunta_a_la_pagina_del_reporte(formato):
     assert area < reporte == resumen_subtramo - 1
     # Y la diapositiva/página del subtramo es de verdad la del resumen.
     assert "ESTACIÓN 2" in paginas[resumen_subtramo - 1].upper()
+
+
+# ── PPTX: resumen de actividades POR FRENTE al inicio (formato de referencia) ──
+def test_pptx_resumen_por_frente_va_al_inicio_con_el_formato_de_referencia():
+    slides = _paginas("pptx", con_tabla_resumen=True)
+    i_res = next(i for i, t in enumerate(slides) if "ACTIVIDADES GENERALES" in t and "OBRA CIVIL" in t and i > 1)
+    i_reporte = next(i for i, t in enumerate(slides) if i > i_res and "TRAMO 1 › Estación 2 › Poste S65" in t)
+    i_tabla = max(i for i, t in enumerate(slides) if "TABLA DE AVANCE ACUMULADO" in t)
+    assert i_res < i_reporte < i_tabla, "el resumen va antes del cuerpo por nodo y de la Tabla Resumen"
+    texto = slides[i_res]
+    # un encabezado por frente (Estación) y bajo él las actividades, las de poste con su nombre por delante
+    assert "Estación 2" in texto and "Poste S65 " + ACT_REPORTE in texto
+    # las generales del hub salen bajo "General"; lo de fuera de período no sale
+    assert "General" in texto and ACT_GENERAL in texto
+    assert all(ACT_FUERA_DE_PERIODO not in t for t in slides)
+    # ya no se imprime la tabla "por tramo" al final del PPTX
+    assert not any("RESUMEN DE ACTIVIDADES POR TRAMO" in t for t in slides)
+
+
+def test_pptx_indice_apunta_al_resumen_por_area():
+    slides = _paginas("pptx", con_tabla_resumen=True)
+    indice = _indice_impreso(slides)
+    assert "Resumen de actividades · OBRA CIVIL" in indice
+    assert "Resumen de actividades · TRAMO 1" not in indice
+    lineas = [ln.strip() for ln in indice.splitlines() if ln.strip()]
+    ent = {t: int(n) for t, n in zip(lineas, lineas[1:]) if n.isdigit()}
+    pagina = ent["Resumen de actividades · OBRA CIVIL"]
+    assert "ACTIVIDADES GENERALES" in slides[pagina - 1]
+
+
+# ── Puro: agrupación por frente ────────────────────────────────────────────
+from server import _actividades_resumen_por_frente  # noqa: E402
+
+NODOS_FRENTE = {
+    "r1": {"id": "r1", "name": "TRAMO I", "parent_id": None, "depth": 0, "order": 0},
+    "r2": {"id": "r2", "name": "TRAMO II", "parent_id": None, "depth": 0, "order": 1},
+    "e1": {"id": "e1", "name": "Estación 1 UNIVERSIDAD", "parent_id": "r1", "depth": 1, "order": 0},
+    "i12": {"id": "i12", "name": "Inter-tramo E1-E2", "parent_id": "r1", "depth": 1, "order": 1, "tipo_nodo": "intertramo"},
+    "e2": {"id": "e2", "name": "Estación 2 CANTERA", "parent_id": "r1", "depth": 1, "order": 2},
+    "e9": {"id": "e9", "name": "Estación 9 OTRO TRAMO", "parent_id": "r2", "depth": 1, "order": 0},
+    "s3": {"id": "s3", "name": "Poste S3", "parent_id": "i12", "depth": 2, "order": 0},
+    "s4": {"id": "s4", "name": "Poste S4", "parent_id": "i12", "depth": 2, "order": 1},
+}
+
+
+def _item(texto, nivel, node_id=None, area="OBRA CIVIL"):
+    return {"texto": texto, "nivel": nivel, "node_id": node_id, "area_name": area}
+
+
+def test_por_frente_todos_los_frentes_en_orden_del_arbol_con_sin_actividad():
+    items = [
+        _item("Armado de columna", NIVEL_SUBTRAMO, "e1"),
+        _item("reconstrucción de muro", NIVEL_NODO, "s3"),
+        _item("Poste S4 montaje de poste", NIVEL_NODO, "s4"),   # ya trae su nombre: no se repite
+        _item("Perforación de pila", NIVEL_SUBTRAMO, "e2"),
+    ]
+    (grupo,) = _actividades_resumen_por_frente(items, NODOS_FRENTE)
+    assert grupo["area"] == "OBRA CIVIL"
+    assert [b["titulo"] for b in grupo["bloques"]] == [
+        "Estación 1 UNIVERSIDAD", "Inter-tramo E1-E2", "Estación 2 CANTERA", "Estación 9 OTRO TRAMO"]  # TRAMO I, luego TRAMO II
+    por = {b["titulo"]: b["lineas"] for b in grupo["bloques"]}
+    assert por["Estación 1 UNIVERSIDAD"] == ["Armado de columna"]
+    assert por["Inter-tramo E1-E2"] == ["Poste S3 reconstrucción de muro", "Poste S4 montaje de poste"]
+    assert por["Estación 9 OTRO TRAMO"] == ["Sin actividad"]
+
+
+def test_por_frente_una_entrada_por_area_con_actividad_y_general_primero():
+    items = [
+        _item("de seguridad", NIVEL_SUBTRAMO, "e1", area="SEGURIDAD"),
+        _item("reunión general", NIVEL_GENERAL, area="OBRA CIVIL"),
+        _item("   ", NIVEL_SUBTRAMO, "e2", area="AMBIENTAL"),  # texto vacío: el área no cuenta
+    ]
+    out = _actividades_resumen_por_frente(items, NODOS_FRENTE)
+    assert [g["area"] for g in out] == ["OBRA CIVIL", "SEGURIDAD"]
+    assert out[0]["bloques"][0] == {"titulo": "General", "lineas": ["reunión general"]}
+    assert [b["lineas"] for b in out[1]["bloques"]][0] == ["de seguridad"]
+    assert _actividades_resumen_por_frente([], NODOS_FRENTE) == []

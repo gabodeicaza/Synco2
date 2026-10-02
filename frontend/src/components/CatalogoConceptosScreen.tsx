@@ -236,6 +236,23 @@ export default function CatalogoConceptosScreen({ projectId }: { projectId: stri
     }
   }
 
+  async function cambiarContrato(p: Partida) {
+    const destino = p.contrato === 'supervision' ? 'obra' : 'supervision';
+    const ok = await confirm(
+      'Cambiar contrato',
+      `"${p.clave} — ${p.nombre}" y todo lo que contiene pasará a ${destino === 'obra' ? 'Obra' : 'Supervisión'}. `
+      + 'Cambia en qué contrato se cuenta su avance en el reporte y en el dashboard.',
+      { confirmText: 'Cambiar' },
+    );
+    if (!ok) return;
+    try {
+      await api.updatePartida(p.id, { contrato: destino });
+      await loadPartidas();
+    } catch (e: any) {
+      setError(e?.message || 'No se pudo cambiar el contrato');
+    }
+  }
+
   async function borrarPartida(p: Partida) {
     const esCarpeta = tienePartidasHijas(p);
     const ok = await confirm(
@@ -379,6 +396,7 @@ export default function CatalogoConceptosScreen({ projectId }: { projectId: stri
           canImport={canImport}
           canEdit={canEdit}
           onDeletePartida={borrarPartida}
+          onCambiarContrato={cambiarContrato}
           onNuevaPartida={() => setNuevaPartidaOpen(true)}
         />
       ) : (
@@ -469,11 +487,12 @@ function NuevaPartidaModal({
   const nivel = nombreNivel(project, depth);
   const [clave, setClave] = useState('');
   const [nombre, setNombre] = useState('');
+  const [contrato, setContrato] = useState<'obra' | 'supervision'>('obra');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
-    if (visible) { setClave(''); setNombre(''); setErr(null); }
+    if (visible) { setClave(''); setNombre(''); setContrato('obra'); setErr(null); }
   }, [visible]);
 
   async function crear() {
@@ -486,6 +505,8 @@ function NuevaPartidaModal({
       await api.createPartida({
         project_id: projectId, clave: clave.trim(), nombre: nombre.trim(), orden: ordenSugerido,
         partida_padre_id: partidaPadreId || undefined,
+        // Solo las partidas raíz definen el contrato; las hijas lo heredan.
+        contrato: partidaPadreId ? undefined : contrato,
       });
       onCreada();
     } catch (e: any) {
@@ -516,6 +537,23 @@ function NuevaPartidaModal({
           <TextInput value={clave} onChangeText={setClave} style={styles.nuevaPartidaInput} editable={!busy} autoCapitalize="none" />
           <Text style={[styles.detailLabel, { marginTop: 10 }]}>Nombre</Text>
           <TextInput value={nombre} onChangeText={setNombre} style={styles.nuevaPartidaInput} editable={!busy} placeholder="Ej. Albañilerías" placeholderTextColor={colors.textMuted} />
+          {!partidaPadreId ? (
+            <>
+              <Text style={[styles.detailLabel, { marginTop: 10 }]}>Contrato</Text>
+              <View style={{ flexDirection: 'row', gap: 8 }}>
+                {(['obra', 'supervision'] as const).map((c) => (
+                  <Pressable
+                    key={c} onPress={() => setContrato(c)} disabled={busy}
+                    style={[styles.unidadChip, contrato === c && { backgroundColor: colors.primary, borderColor: colors.primary }]}
+                  >
+                    <Text style={[styles.unidadChipTxt, contrato === c && { color: '#fff' }]}>
+                      {c === 'obra' ? 'Obra' : 'Supervisión'}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            </>
+          ) : null}
           {err ? <Text style={{ color: colors.error, fontSize: 12, marginTop: 8 }}>{err}</Text> : null}
           <View style={{ flexDirection: 'row', gap: 10, marginTop: 16 }}>
             <Pressable onPress={onClose} style={[styles.nuevaPartidaBtn, { backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border }]} disabled={busy}>
@@ -536,7 +574,7 @@ function NuevaPartidaModal({
 // ============================================================================
 function PartidasList({
   project, depth, partidas, totalCatalogoCents, esRaiz, breadcrumb, onIrABreadcrumb,
-  tienePartidasHijas, onAbrirCarpeta, onPressPartida, onVerConceptos, canImport, canEdit, onDeletePartida, onNuevaPartida,
+  tienePartidasHijas, onAbrirCarpeta, onPressPartida, onVerConceptos, canImport, canEdit, onDeletePartida, onCambiarContrato, onNuevaPartida,
 }: {
   project: Project | null;
   depth: number;
@@ -552,6 +590,7 @@ function PartidasList({
   canImport: boolean;
   canEdit: boolean;
   onDeletePartida: (p: Partida) => void;
+  onCambiarContrato: (p: Partida) => void;
   onNuevaPartida: () => void;
 }) {
   const nivelActual = nombreNivel(project, depth);
@@ -605,6 +644,9 @@ function PartidasList({
                     <Text style={styles.partidaMetaTxt}>{p.numero_conceptos} {conceptoPlural.toLowerCase()}</Text>
                     <Text style={styles.partidaMetaTxt}>·</Text>
                     <Text style={styles.partidaMetaTxt}>{formatMoney(p.importe_contratado_partida)}</Text>
+                    {esRaiz && p.contrato === 'supervision' ? (
+                      <Text style={[styles.partidaMetaTxt, { fontWeight: '800', color: colors.primary }]}>· SUPERVISIÓN</Text>
+                    ) : null}
                   </View>
                   <View style={styles.progressTrack}>
                     <View style={[styles.progressFill, { width: `${pct}%` }]} />
@@ -623,6 +665,15 @@ function PartidasList({
                 >
                   <Ionicons name={esCarpeta ? 'list-outline' : 'folder-open-outline'} size={16} color={colors.primary} />
                 </Pressable>
+                {canEdit && esRaiz ? (
+                  <Pressable
+                    onPress={(e) => { e.stopPropagation(); onCambiarContrato(p); }}
+                    hitSlop={8}
+                    style={styles.verConceptosBtn}
+                  >
+                    <Ionicons name="swap-horizontal-outline" size={16} color={colors.primary} />
+                  </Pressable>
+                ) : null}
                 {canEdit ? (
                   <Pressable
                     onPress={(e) => { e.stopPropagation(); onDeletePartida(p); }}

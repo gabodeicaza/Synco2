@@ -21,7 +21,7 @@ import { Ionicons } from '@expo/vector-icons';
 import Svg, { Polyline, Line as SvgLine, Text as SvgText, Circle } from 'react-native-svg';
 import * as DocumentPicker from 'expo-document-picker';
 
-import { api, AnalisisPeriodo, CurvaS, ExcepcionEvm, ActividadEvm, ActividadesEvm, GastoReal, GastoRealImportResult, RegistroAvanceImportResult } from '@/src/api';
+import { api, ContratoFin, AnalisisPeriodo, CurvaS, ExcepcionEvm, ActividadEvm, ActividadesEvm, GastoReal, GastoRealImportResult, RegistroAvanceImportResult } from '@/src/api';
 import { colors, spacing, radius, shadow } from '@/src/theme';
 import { Button } from '@/src/components/Button';
 import { confirm } from '@/src/utils/confirm';
@@ -261,6 +261,10 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
   const [actividades, setActividades] = useState<ActividadesEvm | null>(null);
   const [tabActividades, setTabActividades] = useState<TabActividades>('pendientes');
   const [gastos, setGastos] = useState<GastoReal[]>([]);
+  // Contrato que se está viendo. El selector solo aparece si el proyecto tiene
+  // un árbol de partidas de supervisión; los gastos reales (AC) son de la obra.
+  const [contrato, setContrato] = useState<ContratoFin>('obra');
+  const [haySupervision, setHaySupervision] = useState(false);
 
   // Modal "Registrar gasto real (AC)" — fecha libre en vez de selector nativo
   // (mismo criterio que fecha_reunion en MinutasView.tsx): así se puede
@@ -283,17 +287,17 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
     try {
       // La Curva S se pide primero porque "proyecto completo" necesita su
       // primer mes para saber desde dónde arrancar la ventana de analisisPeriodo.
-      const curvaResp = await api.analisisPeriodoCurvaS(projectId);
+      const curvaResp = await api.analisisPeriodoCurvaS(projectId, contrato);
       setCurva(curvaResp);
       const { start, end } = rangoDesde(rangoActual, curvaResp || curvaPrevia);
       const [analisisResp, excepcionesResp, actividadesResp, gastosResp] = await Promise.all([
-        api.analisisPeriodo(projectId, start, end),
-        api.analisisPeriodoExcepciones(projectId),
-        api.analisisPeriodoActividades(projectId),
+        api.analisisPeriodo(projectId, start, end, contrato),
+        api.analisisPeriodoExcepciones(projectId, contrato),
+        api.analisisPeriodoActividades(projectId, contrato),
         // Acotado al mismo rango que las tarjetas — un proyecto con miles de
         // gastos importados no debe renderizar todo el historial de golpe
         // (ver import_gastos_reales); "Proyecto completo" sí trae todo.
-        api.listGastosReales(projectId, { desde: start, hasta: end }),
+        contrato === 'obra' ? api.listGastosReales(projectId, { desde: start, hasta: end }) : Promise.resolve([] as GastoReal[]),
       ]);
       setAnalisis(analisisResp);
       setExcepciones(excepcionesResp);
@@ -302,7 +306,7 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
     } catch (e: any) {
       setError(e?.message || 'No se pudo cargar el dashboard EVM');
     }
-  }, [projectId]);
+  }, [projectId, contrato]);
 
   function openGastoForm() {
     setGastoFecha(dayjs().tz(CDMX_TZ).format('YYYY-MM-DD'));
@@ -459,7 +463,14 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
     setLoading(true);
     cargar(rango, curva).finally(() => setLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId, rango]);
+  }, [projectId, rango, contrato]);
+
+  useEffect(() => {
+    if (!projectId) return;
+    api.listPartidas(projectId)
+      .then((ps) => setHaySupervision(ps.some((p) => p.contrato === 'supervision')))
+      .catch(() => setHaySupervision(false));
+  }, [projectId]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -519,6 +530,21 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
         contentContainerStyle={{ padding: spacing.md, paddingBottom: 40 }}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[colors.primary]} />}
       >
+        {haySupervision ? (
+          <View style={styles.rangoRow}>
+            {(['obra', 'supervision'] as ContratoFin[]).map((c) => (
+              <Pressable
+                key={c}
+                onPress={() => setContrato(c)}
+                style={[styles.rangoChip, contrato === c && { backgroundColor: colors.primary, borderColor: colors.primary }]}
+              >
+                <Text style={[styles.rangoChipTxt, contrato === c && { color: '#fff' }]}>
+                  {c === 'obra' ? 'Obra' : 'Supervisión'}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+        ) : null}
         <View style={styles.rangoRow}>
           {(['mes_actual', 'ultimos_3_meses', 'proyecto_completo'] as RangoRapido[]).map((r) => (
             <Pressable

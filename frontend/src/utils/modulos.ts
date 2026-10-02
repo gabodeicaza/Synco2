@@ -27,7 +27,9 @@ export type ModuloDef = {
   icon: keyof typeof Ionicons.glyphMap;
   // Nombre de ruta bajo cada grupo de rol — igual en (coord)/projects/[id]/,
   // (subcoord)/ y (spec)/ (ver app/(subcoord)/<screen>.tsx).
-  screen: string;
+  // Ausente en módulos CALCULADOS (sin captura propia, ej. avance_obra): solo
+  // se encienden/apagan por informe y no aparecen en el menú ni en el hub.
+  screen?: string;
   // Área temática fija de la plantilla (ver nota arriba) — informativa,
   // ya no determina agrupación en ninguna pantalla.
   area: string;
@@ -99,6 +101,61 @@ export const MODULOS: ModuloDef[] = [
     area: 'Ingeniería',
   },
   {
+    key: 'pruebas_calidad',
+    label: 'Pruebas de Calidad',
+    subtitle: 'Concentrado de pruebas por frente: elemento, muestra, tipo y observaciones',
+    icon: 'flask-outline',
+    screen: 'pruebas-calidad',
+    area: 'Calidad',
+  },
+  {
+    key: 'control_calidad',
+    label: 'Control de Calidad',
+    subtitle: 'Fotos de actividades de control de calidad con descripción y pie de foto',
+    icon: 'camera-outline',
+    screen: 'control-calidad',
+    area: 'Calidad',
+  },
+  {
+    key: 'avance_obra',
+    label: 'Avance de Obra',
+    subtitle: 'Programa en barras, tabla de avance por partidas y gráficas (calculado del avance capturado)',
+    icon: 'stats-chart-outline',
+    area: 'Ingeniería',
+  },
+  {
+    key: 'estimaciones',
+    label: 'Estimaciones',
+    subtitle: 'Concentrado de estimaciones de obra y de supervisión',
+    icon: 'cash-outline',
+    screen: 'estimaciones',
+    area: 'Ingeniería',
+  },
+  {
+    key: 'pendientes_generales',
+    label: 'Pendientes Generales',
+    subtitle: 'Pendientes o requerimientos generales de obra y de supervisión',
+    icon: 'list-outline',
+    screen: 'pendientes-generales',
+    area: 'Ingeniería',
+  },
+  {
+    key: 'aspectos_sociales',
+    label: 'Aspectos Sociales',
+    subtitle: 'Dictámenes y fe notarial, y salvamento arqueológico (con gráficas)',
+    icon: 'people-outline',
+    screen: 'aspectos-sociales',
+    area: 'Social',
+  },
+  {
+    key: 'indicadores_seguridad',
+    label: 'Indicadores de Seguridad',
+    subtitle: 'Cumplimiento en campo, documental y PIPC (con medidor y gráficas)',
+    icon: 'speedometer-outline',
+    screen: 'indicadores-seguridad',
+    area: 'Seguridad',
+  },
+  {
     key: 'estado_tiempo',
     label: 'Estado del Tiempo',
     subtitle: 'Temperatura, viento, precipitación y calidad del aire por estación',
@@ -141,5 +198,5 @@ export function moduloActivo(modulos: ModulosConfig | null | undefined, key: str
  * presentación que la pestaña Operación de Coordinador General
  * (index.tsx), que tampoco los separa por área. */
 export function modulosActivos(modulos: ModulosConfig | null | undefined): ModuloDef[] {
-  return MODULOS.filter((m) => moduloActivo(modulos, m.key));
+  return MODULOS.filter((m) => !!m.screen && moduloActivo(modulos, m.key));
 }

@@ -447,6 +447,8 @@ export interface RiesgoRegistro {
   propuesta_control: string;
   porcentaje_avance: number;
   notas?: string | null;
+  // false = la fila no se numera en el mapa impreso (ej. la fila de postes).
+  numerar?: boolean;
   captured_by: string;
   captured_by_name: string;
   created_at: string;
@@ -551,6 +553,134 @@ export interface FotoLidar {
   updated_at: string;
 }
 export type FotoLidarSlot = 'original' | 'actual';
+
+// === Concentrado de pruebas de calidad ====================================
+export interface PruebaCalidad {
+  id: string;
+  project_id: string;
+  node_id?: string | null;
+  grupo?: string | null; // frente fuera del árbol (ej. "Suministro Gefsa-Puebla")
+  frente: string;
+  localizacion?: string | null;
+  elemento?: string | null;
+  muestra_no?: string | null;
+  fecha: string; // YYYY-MM-DD
+  tipo?: string | null;
+  observaciones?: string | null;
+  created_by: string;
+  created_by_name: string;
+  updated_at: string;
+}
+// === Control de calidad con fotos =========================================
+export interface ControlCalidad {
+  id: string;
+  project_id: string;
+  node_id?: string | null;
+  grupo?: string | null;
+  descripcion?: string | null; // actividad de control (texto sobre la foto)
+  pie?: string | null; // pie de foto
+  fecha: string; // YYYY-MM-DD
+  thumb?: string | null; // miniatura (base64 SIN prefijo data:) — listado
+  foto?: string | null; // foto completa (data URL) — solo detalle
+  created_by: string;
+  created_by_name: string;
+  updated_at: string;
+}
+export interface ControlCalidadInput {
+  image: string;
+  node_id?: string | null;
+  grupo?: string;
+  descripcion?: string;
+  pie?: string;
+  fecha?: string;
+}
+// === Capa financiera del reporte semanal =================================
+export type ContratoFin = 'obra' | 'supervision';
+export interface Estimacion {
+  id: string;
+  project_id: string;
+  contrato: ContratoFin;
+  numero: number;
+  periodo_inicio?: string | null;
+  periodo_fin?: string | null;
+  estatus?: string | null;
+  // Importes como texto decimal (sin $ ni comas).
+  obra_ejecutada?: string | null;
+  amortizacion?: string | null;
+  pct_amortizacion_anticipo?: string | null;
+  total_deducciones?: string | null;
+  iva?: string | null;
+  total_neto?: string | null;
+  fecha_pago?: string | null; // fecha o texto libre ("Por pagar")
+  updated_at: string;
+}
+// === Aspectos sociales (reporte semanal) ==================================
+export type LevantamientoTipo = 'dictamen_estructural' | 'fe_notarial';
+export type SocialAmbito = 'estacion' | 'poste';
+export interface LevantamientoSocial {
+  id: string;
+  tipo: LevantamientoTipo;
+  ambito: SocialAmbito;
+  total_requerido: number;
+  realizados: number;
+  updated_at: string;
+}
+export interface SalvamentoArqueologico {
+  id: string;
+  project_id: string;
+  ambito: SocialAmbito;
+  etiqueta: string; // ej. "UNIVERSIDAD PS2" o "S2"
+  fecha_inicio: string; // YYYY-MM-DD
+  fecha_liberacion?: string | null; // null = en curso
+  observaciones?: string | null;
+  orden: number;
+  created_by: string;
+  created_by_name?: string;
+  updated_at: string;
+}
+// === Indicadores de seguridad e higiene (reporte semanal) =================
+export type SeguridadIndicadorTipo = 'campo' | 'doc_mensual' | 'doc_semanal' | 'pipc' | 'nota_pipc';
+export type SeguridadCategoria = 'seguridad' | 'proteccion_civil' | 'higiene_salud';
+export interface SeguridadIndicador {
+  id: string;
+  tipo: SeguridadIndicadorTipo;
+  fecha?: string; // campo
+  mes?: string; // doc_mensual (AAAA-MM)
+  semana?: string; // doc_semanal (lunes de la semana)
+  categoria?: SeguridadCategoria;
+  porcentaje?: number;
+  dias_sin_accidentes?: number | null; // campo: fija a mano el contador
+  etiqueta?: string; // pipc: "E1"…
+  orden?: number;
+  puntos?: number[]; // pipc: puntos de los 4 pasos
+  texto?: string; // nota_pipc
+  created_by?: string;
+  updated_at: string;
+}
+export type SeguridadIndicadorInput = Partial<Omit<SeguridadIndicador, 'id' | 'updated_at' | 'created_by' | 'tipo'>> & {
+  tipo: SeguridadIndicadorTipo;
+};
+export type EstimacionInput = Partial<Omit<Estimacion, 'id' | 'project_id' | 'updated_at' | 'contrato' | 'numero'>> & {
+  contrato?: ContratoFin;
+  numero: number;
+};
+// Ámbito de un pendiente general: obra, supervisión o aspectos sociales (el
+// campo se llama `contrato` en la API por compatibilidad).
+export type PendienteAmbito = ContratoFin | 'sociales' | 'seguridad';
+export interface PendienteGeneral {
+  id: string;
+  project_id: string;
+  contrato: PendienteAmbito;
+  titulo: string;
+  descripcion?: string | null;
+  orden: number;
+  resuelto: boolean;
+  created_by_name?: string;
+  updated_at: string;
+}
+export type PruebaCalidadInput = Partial<Omit<PruebaCalidad, 'id' | 'project_id' | 'created_by' | 'created_by_name' | 'updated_at' | 'frente'>> & {
+  frente: string;
+};
 
 // === Presentación (Informe de Actividades semanal) =========================
 export type EstudioDisciplinaAvanceEstatus = 'en_proceso' | 'terminado';
@@ -1146,6 +1276,8 @@ export interface Partida {
   numero_conceptos: number;
   importe_contratado_partida: string;
   porcentaje_avance_partida: string;
+  // Contrato EFECTIVO (el de su partida raíz; las subpartidas lo heredan).
+  contrato?: ContratoFin;
 }
 
 export interface Concepto {
@@ -2146,6 +2278,58 @@ export const api = {
     request<{ ok: boolean }>('DELETE', `/projects/${pid}/fotos-lidar/${fid}/foto/${slot}`),
   deleteFotoLidar: (pid: string, fid: string) =>
     request<{ ok: boolean }>('DELETE', `/projects/${pid}/fotos-lidar/${fid}`),
+  listPruebasCalidad: (pid: string, q: { desde?: string; hasta?: string; node_id?: string } = {}) => {
+    const qs = new URLSearchParams(Object.entries(q).filter(([, v]) => !!v) as [string, string][]).toString();
+    return request<PruebaCalidad[]>('GET', `/projects/${pid}/pruebas-calidad${qs ? `?${qs}` : ''}`);
+  },
+  createPruebaCalidad: (pid: string, body: PruebaCalidadInput) =>
+    request<PruebaCalidad>('POST', `/projects/${pid}/pruebas-calidad`, body),
+  updatePruebaCalidad: (pid: string, rid: string, body: Partial<PruebaCalidadInput>) =>
+    request<PruebaCalidad>('PATCH', `/projects/${pid}/pruebas-calidad/${rid}`, body),
+  deletePruebaCalidad: (pid: string, rid: string) =>
+    request<{ ok: boolean }>('DELETE', `/projects/${pid}/pruebas-calidad/${rid}`),
+  listEstimaciones: (pid: string) => request<Estimacion[]>('GET', `/projects/${pid}/estimaciones`),
+  createEstimacion: (pid: string, body: EstimacionInput) =>
+    request<Estimacion>('POST', `/projects/${pid}/estimaciones`, body),
+  updateEstimacion: (pid: string, eid: string, body: Partial<EstimacionInput>) =>
+    request<Estimacion>('PATCH', `/projects/${pid}/estimaciones/${eid}`, body),
+  deleteEstimacion: (pid: string, eid: string) =>
+    request<{ ok: boolean }>('DELETE', `/projects/${pid}/estimaciones/${eid}`),
+  listPendientesGenerales: (pid: string) =>
+    request<PendienteGeneral[]>('GET', `/projects/${pid}/pendientes-generales`),
+  createPendienteGeneral: (pid: string, body: { contrato: PendienteAmbito; titulo: string; descripcion?: string; orden?: number }) =>
+    request<PendienteGeneral>('POST', `/projects/${pid}/pendientes-generales`, body),
+  updatePendienteGeneral: (pid: string, rid: string, body: Partial<{ titulo: string; descripcion: string; orden: number; resuelto: boolean }>) =>
+    request<PendienteGeneral>('PATCH', `/projects/${pid}/pendientes-generales/${rid}`, body),
+  deletePendienteGeneral: (pid: string, rid: string) =>
+    request<{ ok: boolean }>('DELETE', `/projects/${pid}/pendientes-generales/${rid}`),
+  listSeguridadIndicadores: (pid: string) =>
+    request<SeguridadIndicador[]>('GET', `/projects/${pid}/seguridad-indicadores`),
+  setSeguridadIndicador: (pid: string, body: SeguridadIndicadorInput) =>
+    request<SeguridadIndicador>('PUT', `/projects/${pid}/seguridad-indicadores`, body),
+  deleteSeguridadIndicador: (pid: string, rid: string) =>
+    request<{ ok: boolean }>('DELETE', `/projects/${pid}/seguridad-indicadores/${rid}`),
+  listLevantamientosSociales: (pid: string) =>
+    request<LevantamientoSocial[]>('GET', `/projects/${pid}/levantamientos-sociales`),
+  setLevantamientoSocial: (pid: string, body: { tipo: LevantamientoTipo; ambito: SocialAmbito; total_requerido: number; realizados: number }) =>
+    request<LevantamientoSocial>('PUT', `/projects/${pid}/levantamientos-sociales`, body),
+  listSalvamentoArqueologico: (pid: string) =>
+    request<SalvamentoArqueologico[]>('GET', `/projects/${pid}/salvamento-arqueologico`),
+  createSalvamentoArqueologico: (pid: string, body: { ambito: SocialAmbito; etiqueta: string; fecha_inicio: string; fecha_liberacion?: string; observaciones?: string }) =>
+    request<SalvamentoArqueologico>('POST', `/projects/${pid}/salvamento-arqueologico`, body),
+  updateSalvamentoArqueologico: (pid: string, rid: string, body: Partial<{ etiqueta: string; fecha_inicio: string; fecha_liberacion: string; observaciones: string; quitar_liberacion: boolean }>) =>
+    request<SalvamentoArqueologico>('PATCH', `/projects/${pid}/salvamento-arqueologico/${rid}`, body),
+  deleteSalvamentoArqueologico: (pid: string, rid: string) =>
+    request<{ ok: boolean }>('DELETE', `/projects/${pid}/salvamento-arqueologico/${rid}`),
+  listControlCalidad: (pid: string) => request<ControlCalidad[]>('GET', `/projects/${pid}/control-calidad`),
+  getControlCalidad: (pid: string, rid: string) =>
+    request<ControlCalidad>('GET', `/projects/${pid}/control-calidad/${rid}`),
+  createControlCalidad: (pid: string, body: ControlCalidadInput) =>
+    request<ControlCalidad>('POST', `/projects/${pid}/control-calidad`, body),
+  updateControlCalidad: (pid: string, rid: string, body: Partial<ControlCalidadInput>) =>
+    request<ControlCalidad>('PATCH', `/projects/${pid}/control-calidad/${rid}`, body),
+  deleteControlCalidad: (pid: string, rid: string) =>
+    request<{ ok: boolean }>('DELETE', `/projects/${pid}/control-calidad/${rid}`),
 
   // === Módulo piloto: Estado del Tiempo ===
   listWeatherLogs: (pid: string, date?: string) =>
@@ -2239,11 +2423,11 @@ export const api = {
   listRiesgosRegistros: (pid: string) => request<RiesgoRegistro[]>('GET', `/projects/${pid}/riesgos-registros`),
   createRiesgoRegistro: (pid: string, body: {
     node_id?: string | null; estacion_nombre?: string | null; descripcion_riesgo: string;
-    propuesta_control: string; porcentaje_avance?: number; notas?: string | null;
+    propuesta_control: string; porcentaje_avance?: number; notas?: string | null; numerar?: boolean;
   }) => request<RiesgoRegistro>('POST', `/projects/${pid}/riesgos-registros`, body),
   updateRiesgoRegistro: (pid: string, rid: string, body: Partial<{
     estacion_nombre: string | null; descripcion_riesgo: string; propuesta_control: string;
-    porcentaje_avance: number; notas: string | null;
+    porcentaje_avance: number; notas: string | null; numerar: boolean;
   }>) => request<RiesgoRegistro>('PATCH', `/projects/${pid}/riesgos-registros/${rid}`, body),
 
   // === Módulo piloto: Estudios y Proyecto Ejecutivo ===
@@ -2608,9 +2792,9 @@ export const api = {
   // ---- Catálogo de Conceptos ------------------------------------------------
   listPartidas: (pid: string, incluirInactivas = false) =>
     request<Partida[]>('GET', `/projects/${pid}/partidas${incluirInactivas ? '?incluir_inactivas=true' : ''}`),
-  createPartida: (payload: { project_id: string; clave: string; nombre: string; orden?: number; partida_padre_id?: string | null }) =>
+  createPartida: (payload: { project_id: string; clave: string; nombre: string; orden?: number; partida_padre_id?: string | null; contrato?: ContratoFin }) =>
     request<Partida>('POST', '/partidas', payload),
-  updatePartida: (id: string, payload: { clave?: string; nombre?: string; orden?: number; activo?: boolean; partida_padre_id?: string; quitar_padre?: boolean }) =>
+  updatePartida: (id: string, payload: { clave?: string; nombre?: string; orden?: number; activo?: boolean; partida_padre_id?: string; quitar_padre?: boolean; contrato?: ContratoFin }) =>
     request<Partida>('PATCH', `/partidas/${id}`, payload),
   deletePartida: (id: string) =>
     request<{ ok: boolean; partidas_borradas: number; conceptos_borrados: number }>('DELETE', `/partidas/${id}`),
@@ -2942,16 +3126,17 @@ export const api = {
   },
 
   // ---- Análisis de Periodos EVM (Valor Ganado) / Dashboard -----------------
-  analisisPeriodo: (pid: string, start: string, end: string) =>
-    request<AnalisisPeriodo>('GET', `/projects/${pid}/analisis_periodo?start=${start}&end=${end}`),
-  analisisPeriodoCurvaS: (pid: string) =>
-    request<CurvaS>('GET', `/projects/${pid}/analisis_periodo/curva_s`),
-  analisisPeriodoPresupuestoTotal: (pid: string) =>
-    request<{ project_id: string; presupuesto_total: string }>('GET', `/projects/${pid}/analisis_periodo/presupuesto_total`),
-  analisisPeriodoExcepciones: (pid: string) =>
-    request<ExcepcionEvm[]>('GET', `/projects/${pid}/analisis_periodo/excepciones`),
-  analisisPeriodoActividades: (pid: string) =>
-    request<ActividadesEvm>('GET', `/projects/${pid}/analisis_periodo/actividades`),
+  // `contrato` (obra | supervision): el backend asume obra si no se manda.
+  analisisPeriodo: (pid: string, start: string, end: string, contrato: ContratoFin = 'obra') =>
+    request<AnalisisPeriodo>('GET', `/projects/${pid}/analisis_periodo?start=${start}&end=${end}&contrato=${contrato}`),
+  analisisPeriodoCurvaS: (pid: string, contrato: ContratoFin = 'obra') =>
+    request<CurvaS>('GET', `/projects/${pid}/analisis_periodo/curva_s?contrato=${contrato}`),
+  analisisPeriodoPresupuestoTotal: (pid: string, contrato: ContratoFin = 'obra') =>
+    request<{ project_id: string; presupuesto_total: string }>('GET', `/projects/${pid}/analisis_periodo/presupuesto_total?contrato=${contrato}`),
+  analisisPeriodoExcepciones: (pid: string, contrato: ContratoFin = 'obra') =>
+    request<ExcepcionEvm[]>('GET', `/projects/${pid}/analisis_periodo/excepciones?contrato=${contrato}`),
+  analisisPeriodoActividades: (pid: string, contrato: ContratoFin = 'obra') =>
+    request<ActividadesEvm>('GET', `/projects/${pid}/analisis_periodo/actividades?contrato=${contrato}`),
 
   createGastoReal: (pid: string, payload: { fecha: string; monto: string; concepto_texto: string; concepto_clave?: string }) =>
     request<GastoReal>('POST', `/projects/${pid}/gastos_reales`, payload),

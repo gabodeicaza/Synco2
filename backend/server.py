@@ -155,7 +155,9 @@ MODULOS_KEYS = {
     "seguridad_higiene", "forestal_arbolado",
     "gestion_riesgos", "estudios_proyecto", "impacto_ambiental",
     "tabla_resumen", "estado_tiempo", "control_obra",
-    "fotos_lidar", "tapial",
+    "fotos_lidar", "tapial", "pruebas_calidad", "control_calidad",
+    "avance_obra", "estimaciones", "pendientes_generales", "aspectos_sociales",
+    "indicadores_seguridad",
 }
 MODULOS_DIARIOS = MODULOS_KEYS
 MODULOS_SEMANALES = MODULOS_KEYS
@@ -1180,6 +1182,20 @@ async def startup_event():
     await db.forestal_autorizado.create_index([("project_id", 1), ("orden", 1)])
     await db.fotos_lidar.create_index("id", unique=True)
     await db.fotos_lidar.create_index([("project_id", 1), ("orden", 1)])
+    await db.pruebas_calidad.create_index("id", unique=True)
+    await db.pruebas_calidad.create_index([("project_id", 1), ("fecha", -1)])
+    await db.control_calidad.create_index("id", unique=True)
+    await db.control_calidad.create_index([("project_id", 1), ("fecha", -1)])
+    await db.estimaciones.create_index("id", unique=True)
+    await db.estimaciones.create_index([("project_id", 1), ("contrato", 1), ("numero", 1)])
+    await db.pendientes_generales.create_index("id", unique=True)
+    await db.pendientes_generales.create_index([("project_id", 1), ("contrato", 1), ("orden", 1)])
+    await db.seguridad_indicadores.create_index("id", unique=True)
+    await db.seguridad_indicadores.create_index([("project_id", 1), ("clave", 1)], unique=True)
+    await db.levantamientos_sociales.create_index("id", unique=True)
+    await db.levantamientos_sociales.create_index([("project_id", 1), ("tipo", 1), ("ambito", 1)], unique=True)
+    await db.salvamento_arqueologico.create_index("id", unique=True)
+    await db.salvamento_arqueologico.create_index([("project_id", 1), ("ambito", 1), ("orden", 1)])
     await db.tabla_resumen_actividades.create_index("id", unique=True)
     await db.tabla_resumen_actividades.create_index([("project_id", 1), ("orden", 1)])
     await db.tabla_resumen_columnas.create_index("id", unique=True)
@@ -3265,6 +3281,9 @@ class RiesgoRegistroIn(BaseModel):
     propuesta_control: str
     porcentaje_avance: int = 0
     notas: Optional[str] = None
+    # False = la fila no se numera en el mapa impreso (ej. la fila de postes
+    # que solo cita los números de los riesgos de la estación).
+    numerar: bool = True
 
 
 class RiesgoRegistroPatch(BaseModel):
@@ -3276,6 +3295,7 @@ class RiesgoRegistroPatch(BaseModel):
     propuesta_control: Optional[str] = None
     porcentaje_avance: Optional[int] = None
     notas: Optional[str] = None
+    numerar: Optional[bool] = None
 
 
 @api.get("/projects/{pid}/riesgos-registros")
@@ -3316,6 +3336,7 @@ async def create_riesgo_registro(pid: str, body: RiesgoRegistroIn, user: dict = 
         "propuesta_control": propuesta,
         "porcentaje_avance": body.porcentaje_avance,
         "notas": (body.notas or "").strip() or None,
+        "numerar": body.numerar,
         "captured_by": user["id"],
         "captured_by_name": user["name"],
         "created_at": datetime.now(timezone.utc),
@@ -3353,6 +3374,8 @@ async def update_riesgo_registro(pid: str, rid: str, body: RiesgoRegistroPatch, 
         upd["porcentaje_avance"] = body.porcentaje_avance
     if body.notas is not None:
         upd["notas"] = body.notas.strip() or None
+    if body.numerar is not None:
+        upd["numerar"] = body.numerar
     if upd:
         upd["updated_at"] = datetime.now(timezone.utc)
         await db.riesgos_registros.update_one({"id": rid, "project_id": pid}, {"$set": upd})
@@ -4065,7 +4088,16 @@ def _foto_comp_etiqueta(it: dict, slot: str, base: str) -> str:
     """Etiqueta bajo cada foto de un bloque `fotos_comparativa`: la
     personalizada del item (ej. "TAPIAL" / "VUELO DRON") o, si no hay,
     ORIGINAL/ACTUAL con su fecha."""
-    return it.get(f"etiqueta_{slot}") or _fotos_lidar_etiqueta(base, it.get(f"fecha_{slot}"))
+    key = f"etiqueta_{slot}"
+    if key in it:  # presente (aunque vacío) = el item decide; vacío → sin pie
+        return it[key] or ""
+    return _fotos_lidar_etiqueta(base, it.get(f"fecha_{slot}"))
+
+
+def _foto_comp_desc(it: dict, slot: str) -> str:
+    """Texto opcional ARRIBA de cada foto de un bloque `fotos_comparativa`
+    (ej. "Actividades de control de calidad" + descripción)."""
+    return (it.get(f"desc_{slot}") or "").strip()
 
 
 class FotoLidarIn(BaseModel):
@@ -4226,6 +4258,1661 @@ async def delete_foto_lidar_foto(
 async def delete_foto_lidar(pid: str, fid: str, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB))):
     await ensure_project_access(user, pid)
     await db.fotos_lidar.delete_one({"id": fid, "project_id": pid})
+    return {"ok": True}
+
+
+# === CONCENTRADO DE PRUEBAS DE CALIDAD =====================================
+# Registro tabular de las pruebas/verificaciones de calidad (concreto, acero,
+# compactación, suministro de postes...) en el formato del reporte semanal:
+# FRENTE | LOCALIZACIÓN / EJE | ELEMENTO | MUESTRA No. | FECHA | TIPO |
+# OBSERVACIONES. A diferencia de Fotos LiDAR/Tapial es un LOG de eventos: se
+# filtra por la `fecha` de la prueba al exportar. Se agrupa por estación /
+# intertramo (`node_id`) o, si el frente no es del árbol de nodos (ej.
+# "SUMINISTRO GEFSA-PUEBLA"), por el texto libre `grupo`.
+PRUEBAS_CALIDAD_MUESTRA_VACIA = "No Aplica"
+
+
+class PruebaCalidadIn(BaseModel):
+    node_id: Optional[str] = None
+    grupo: Optional[str] = None
+    frente: str
+    localizacion: Optional[str] = None
+    elemento: Optional[str] = None
+    muestra_no: Optional[str] = None
+    fecha: Optional[str] = None  # ISO date de la prueba; default = hoy (CDMX)
+    tipo: Optional[str] = None
+    observaciones: Optional[str] = None
+
+
+class PruebaCalidadPatch(BaseModel):
+    node_id: Optional[str] = None
+    grupo: Optional[str] = None
+    frente: Optional[str] = None
+    localizacion: Optional[str] = None
+    elemento: Optional[str] = None
+    muestra_no: Optional[str] = None
+    fecha: Optional[str] = None
+    tipo: Optional[str] = None
+    observaciones: Optional[str] = None
+
+
+_PRUEBA_CALIDAD_TEXTOS = ("grupo", "localizacion", "elemento", "muestra_no", "tipo", "observaciones")
+
+
+def _prueba_calidad_public(doc: dict) -> dict:
+    return {k: v for k, v in doc.items() if k != "_id"}
+
+
+async def _validate_node_in_project(pid: str, node_id: Optional[str]) -> None:
+    if node_id and not await db.location_nodes.find_one({"id": node_id, "project_id": pid}):
+        raise HTTPException(400, "Nodo no existe en este proyecto")
+
+
+def _prueba_calidad_fecha(value: Optional[str]) -> str:
+    fecha = (value or "").strip() or datetime.now(MX_TZ).date().isoformat()
+    try:
+        date.fromisoformat(fecha)
+    except ValueError:
+        raise HTTPException(400, "fecha debe ser YYYY-MM-DD")
+    return fecha
+
+
+def _pruebas_calidad_bloques(registros: List[dict], nombre_nodo: dict) -> List[dict]:
+    """Un bloque `table` por frente agrupado (estación/intertramo o `grupo`),
+    en el orden en que aparecen los registros. Sin registros → lista vacía
+    (el módulo no se imprime, ver `_gather_modulos_export_data`)."""
+    grupos: dict = {}
+    for r in sorted(registros, key=lambda x: (x.get("fecha") or "", str(x.get("created_at") or ""))):
+        titulo = nombre_nodo.get(r.get("node_id")) or (r.get("grupo") or "").strip() or "General"
+        grupos.setdefault(titulo, []).append(r)
+    bloques = []
+    for titulo, rows in grupos.items():
+        bloques.append({
+            "type": "table",
+            "heading": f"CONCENTRADO DE PRUEBAS DE CALIDAD · {titulo.upper()}",
+            "headers": ["FRENTE", "LOCALIZACIÓN / EJE", "ELEMENTO", "MUESTRA No.", "FECHA", "TIPO", "OBSERVACIONES"],
+            "rows": [[
+                r.get("frente") or "",
+                r.get("localizacion") or "",
+                r.get("elemento") or "",
+                r.get("muestra_no") or PRUEBAS_CALIDAD_MUESTRA_VACIA,
+                _fmt_iso_dmy(r.get("fecha")),
+                r.get("tipo") or "",
+                r.get("observaciones") or "",
+            ] for r in rows],
+            "col_widths": [0.16, 0.12, 0.12, 0.10, 0.10, 0.16, 0.24],
+            "empty_text": "Sin pruebas registradas.",
+        })
+    return bloques
+
+
+@api.get("/projects/{pid}/pruebas-calidad")
+async def list_pruebas_calidad(
+    pid: str, desde: Optional[str] = None, hasta: Optional[str] = None, node_id: Optional[str] = None,
+    user: dict = Depends(current_user),
+):
+    await ensure_project_access(user, pid)
+    q: dict = {"project_id": pid}
+    if node_id:
+        q["node_id"] = node_id
+    rango: dict = {}
+    for clave, valor in (("$gte", desde), ("$lte", hasta)):
+        if valor:
+            rango[clave] = _prueba_calidad_fecha(valor)
+    if rango:
+        q["fecha"] = rango
+    items = await db.pruebas_calidad.find(q).sort([("fecha", -1), ("created_at", -1)]).to_list(length=2000)
+    return [_prueba_calidad_public(d) for d in items]
+
+
+@api.post("/projects/{pid}/pruebas-calidad")
+async def create_prueba_calidad(pid: str, body: PruebaCalidadIn, user: dict = Depends(current_user)):
+    """Captura de campo: cualquier rol de escritura con acceso al proyecto."""
+    _assert_write_allowed(user)
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "pruebas_calidad")
+    frente = body.frente.strip()
+    if not frente:
+        raise HTTPException(400, "frente es requerido")
+    await _validate_node_in_project(pid, body.node_id)
+    now = datetime.now(timezone.utc)
+    doc = {
+        "id": str(uuid.uuid4()), "project_id": pid, "node_id": body.node_id or None,
+        "frente": frente, "fecha": _prueba_calidad_fecha(body.fecha),
+        "created_by": user["id"], "created_by_name": user["name"],
+        "created_at": now, "updated_at": now,
+    }
+    for campo in _PRUEBA_CALIDAD_TEXTOS:
+        doc[campo] = (getattr(body, campo) or "").strip() or None
+    await db.pruebas_calidad.insert_one(doc)
+    return _prueba_calidad_public(doc)
+
+
+@api.patch("/projects/{pid}/pruebas-calidad/{rid}")
+async def update_prueba_calidad(pid: str, rid: str, body: PruebaCalidadPatch, user: dict = Depends(current_user)):
+    _assert_write_allowed(user)
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "pruebas_calidad")
+    doc = await db.pruebas_calidad.find_one({"id": rid, "project_id": pid})
+    if not doc:
+        raise HTTPException(404, "Registro no existe")
+    fields = body.model_dump(exclude_unset=True)
+    upd: dict = {}
+    if "frente" in fields:
+        frente = (fields["frente"] or "").strip()
+        if not frente:
+            raise HTTPException(400, "frente no puede quedar vacío")
+        upd["frente"] = frente
+    if "node_id" in fields:
+        await _validate_node_in_project(pid, fields["node_id"])
+        upd["node_id"] = fields["node_id"] or None
+    if "fecha" in fields:
+        upd["fecha"] = _prueba_calidad_fecha(fields["fecha"])
+    for campo in _PRUEBA_CALIDAD_TEXTOS:
+        if campo in fields:
+            upd[campo] = (fields[campo] or "").strip() or None
+    if upd:
+        upd["updated_at"] = datetime.now(timezone.utc)
+        await db.pruebas_calidad.update_one({"id": rid}, {"$set": upd})
+    return _prueba_calidad_public(await db.pruebas_calidad.find_one({"id": rid}))
+
+
+@api.delete("/projects/{pid}/pruebas-calidad/{rid}")
+async def delete_prueba_calidad(pid: str, rid: str, user: dict = Depends(current_user)):
+    """Coordinador/Sub-Coordinador borran cualquiera; el resto solo lo que
+    capturó (corregir un error propio sin depender de un supervisor)."""
+    _assert_write_allowed(user)
+    await ensure_project_access(user, pid)
+    doc = await db.pruebas_calidad.find_one({"id": rid, "project_id": pid}, {"created_by": 1})
+    if not doc:
+        raise HTTPException(404, "Registro no existe")
+    if user.get("role") not in (ROLE_COORD, ROLE_SUB) and doc.get("created_by") != user["id"]:
+        raise HTTPException(403, "Solo puedes eliminar las pruebas que tú capturaste")
+    await db.pruebas_calidad.delete_one({"id": rid, "project_id": pid})
+    return {"ok": True}
+
+
+# === CONTROL DE CALIDAD CON FOTOS ==========================================
+# Registro fotográfico de las actividades de control de calidad (verificación
+# de habilitado, hincado de pila, suministro de postes...): una FOTO con su
+# descripción de la actividad (arriba) y un pie de foto (abajo), como en las
+# diapositivas "CONTROL DE CALIDAD" del reporte semanal. Log de eventos: se
+# filtra por `fecha` al exportar y se agrupa por estación/intertramo
+# (`node_id`) o por el texto libre `grupo`. El export acomoda DOS registros
+# por diapositiva reutilizando el bloque `fotos_comparativa`.
+CONTROL_CALIDAD_ENCABEZADO = "ACTIVIDADES DE CONTROL DE CALIDAD"
+
+
+class ControlCalidadIn(BaseModel):
+    image: str  # base64 / data URL
+    node_id: Optional[str] = None
+    grupo: Optional[str] = None
+    descripcion: Optional[str] = None  # texto sobre la foto
+    pie: Optional[str] = None  # pie de foto
+    fecha: Optional[str] = None  # ISO date; default = hoy (CDMX)
+
+
+class ControlCalidadPatch(BaseModel):
+    node_id: Optional[str] = None
+    grupo: Optional[str] = None
+    descripcion: Optional[str] = None
+    pie: Optional[str] = None
+    fecha: Optional[str] = None
+    image: Optional[str] = None  # reemplaza la foto
+
+
+_CONTROL_CALIDAD_TEXTOS = ("grupo", "descripcion", "pie")
+
+
+def _control_calidad_public(doc: dict, *, with_image: bool) -> dict:
+    out = {k: v for k, v in doc.items() if k not in ("_id", "foto", "thumb")}
+    if with_image:
+        out["foto"] = doc.get("foto")
+    else:
+        out["thumb"] = doc.get("thumb")
+    return out
+
+
+def _control_calidad_bloques(registros: List[dict], nombre_nodo: dict) -> List[dict]:
+    """Un bloque `fotos_comparativa` por frente agrupado (estación/intertramo
+    o `grupo`), con los registros de dos en dos (una diapositiva cada par).
+    Sin registros con foto → lista vacía (el módulo no se imprime)."""
+    grupos: dict = {}
+    for r in sorted(registros, key=lambda x: (x.get("fecha") or "", str(x.get("created_at") or ""))):
+        if not r.get("foto"):
+            continue
+        titulo = nombre_nodo.get(r.get("node_id")) or (r.get("grupo") or "").strip() or "General"
+        grupos.setdefault(titulo, []).append(r)
+    bloques = []
+    for titulo, rows in grupos.items():
+        items = []
+        for i in range(0, len(rows), 2):
+            a = rows[i]
+            b = rows[i + 1] if i + 1 < len(rows) else None
+            items.append({
+                "titulo": f"CONTROL DE CALIDAD · {titulo.upper()}",
+                "original": a["foto"], "actual": b["foto"] if b else None,
+                "desc_encabezado": CONTROL_CALIDAD_ENCABEZADO,
+                "desc_original": a.get("descripcion") or "", "desc_actual": (b or {}).get("descripcion") or "",
+                "etiqueta_original": a.get("pie") or "", "etiqueta_actual": (b or {}).get("pie") or "",
+                "sin_placeholder": True,
+            })
+        bloques.append({"type": "fotos_comparativa", "items": items})
+    return bloques
+
+
+@api.get("/projects/{pid}/control-calidad")
+async def list_control_calidad(
+    pid: str, desde: Optional[str] = None, hasta: Optional[str] = None, user: dict = Depends(current_user),
+):
+    await ensure_project_access(user, pid)
+    q: dict = {"project_id": pid}
+    rango: dict = {}
+    for clave, valor in (("$gte", desde), ("$lte", hasta)):
+        if valor:
+            rango[clave] = _prueba_calidad_fecha(valor)
+    if rango:
+        q["fecha"] = rango
+    # El listado lleva solo miniaturas; la foto completa se pide en el detalle.
+    cursor = db.control_calidad.find(q, {"foto": 0}).sort([("fecha", -1), ("created_at", -1)])
+    return [_control_calidad_public(d, with_image=False) for d in await cursor.to_list(length=1000)]
+
+
+@api.get("/projects/{pid}/control-calidad/{rid}")
+async def get_control_calidad(pid: str, rid: str, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    doc = await db.control_calidad.find_one({"id": rid, "project_id": pid})
+    if not doc:
+        raise HTTPException(404, "Registro no existe")
+    return _control_calidad_public(doc, with_image=True)
+
+
+@api.post("/projects/{pid}/control-calidad")
+async def create_control_calidad(pid: str, body: ControlCalidadIn, user: dict = Depends(current_user)):
+    """Captura de campo: cualquier rol de escritura con acceso al proyecto."""
+    _assert_write_allowed(user)
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "control_calidad")
+    await _validate_node_in_project(pid, body.node_id)
+    foto = await asyncio.to_thread(_normalize_photo_b64, body.image)
+    thumb = await asyncio.to_thread(_compress_image_b64, foto)
+    now = datetime.now(timezone.utc)
+    doc = {
+        "id": str(uuid.uuid4()), "project_id": pid, "node_id": body.node_id or None,
+        "fecha": _prueba_calidad_fecha(body.fecha), "foto": foto, "thumb": thumb,
+        "created_by": user["id"], "created_by_name": user["name"],
+        "created_at": now, "updated_at": now,
+    }
+    for campo in _CONTROL_CALIDAD_TEXTOS:
+        doc[campo] = (getattr(body, campo) or "").strip() or None
+    await db.control_calidad.insert_one(doc)
+    return _control_calidad_public(doc, with_image=False)
+
+
+@api.patch("/projects/{pid}/control-calidad/{rid}")
+async def update_control_calidad(pid: str, rid: str, body: ControlCalidadPatch, user: dict = Depends(current_user)):
+    _assert_write_allowed(user)
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "control_calidad")
+    if not await db.control_calidad.find_one({"id": rid, "project_id": pid}, {"id": 1}):
+        raise HTTPException(404, "Registro no existe")
+    fields = body.model_dump(exclude_unset=True)
+    upd: dict = {}
+    if "node_id" in fields:
+        await _validate_node_in_project(pid, fields["node_id"])
+        upd["node_id"] = fields["node_id"] or None
+    if "fecha" in fields:
+        upd["fecha"] = _prueba_calidad_fecha(fields["fecha"])
+    for campo in _CONTROL_CALIDAD_TEXTOS:
+        if campo in fields:
+            upd[campo] = (fields[campo] or "").strip() or None
+    if fields.get("image"):
+        upd["foto"] = await asyncio.to_thread(_normalize_photo_b64, fields["image"])
+        upd["thumb"] = await asyncio.to_thread(_compress_image_b64, upd["foto"])
+    if upd:
+        upd["updated_at"] = datetime.now(timezone.utc)
+        await db.control_calidad.update_one({"id": rid}, {"$set": upd})
+    return _control_calidad_public(await db.control_calidad.find_one({"id": rid}), with_image=False)
+
+
+@api.delete("/projects/{pid}/control-calidad/{rid}")
+async def delete_control_calidad(pid: str, rid: str, user: dict = Depends(current_user)):
+    """Coordinador/Sub-Coordinador borran cualquiera; el resto solo lo suyo."""
+    _assert_write_allowed(user)
+    await ensure_project_access(user, pid)
+    doc = await db.control_calidad.find_one({"id": rid, "project_id": pid}, {"created_by": 1})
+    if not doc:
+        raise HTTPException(404, "Registro no existe")
+    if user.get("role") not in (ROLE_COORD, ROLE_SUB) and doc.get("created_by") != user["id"]:
+        raise HTTPException(403, "Solo puedes eliminar los registros que tú capturaste")
+    await db.control_calidad.delete_one({"id": rid, "project_id": pid})
+    return {"ok": True}
+
+
+# === CAPA FINANCIERA DEL REPORTE SEMANAL ===================================
+# Tres módulos del reporte semanal de Cablebús:
+#  - avance_obra: CALCULADO (sin captura propia) desde el motor EVM que ya
+#    existe (conceptos, partidas, registros de avance y gastos reales):
+#    tabla de avance por partidas (semanal/acumulado como aporte al total del
+#    contrato), avance programado vs real y las gráficas físico/financiera.
+#  - estimaciones: concentrado capturado a mano (obra o supervisión).
+#  - pendientes_generales: pendientes/requerimientos vigentes (obra o
+#    supervisión).
+CONTRATOS_FIN = ("obra", "supervision")
+CONTRATO_FIN_LABEL = {"obra": "OBRA", "supervision": "SUPERVISIÓN"}
+# Los pendientes generales también existen para Aspectos Sociales (liberaciones
+# de postes y predios). El campo sigue llamándose `contrato` por compatibilidad,
+# pero aquí es un ÁMBITO: obra, supervisión o aspectos sociales.
+PENDIENTES_AMBITOS = ("obra", "supervision", "sociales", "seguridad")
+PENDIENTE_AMBITO_HEADING = {
+    "obra": "PENDIENTES O REQUERIMIENTOS GENERALES (OBRA)",
+    "supervision": "PENDIENTES O REQUERIMIENTOS GENERALES (SUPERVISIÓN)",
+    "sociales": "PENDIENTES GENERALES (ASPECTOS SOCIALES)",
+    "seguridad": "PENDIENTES ADMINISTRATIVOS (SEGURIDAD E HIGIENE)",
+}
+
+
+def _pptx_texto_lineas(texto: str, ancho_emu: int, size_pt: float) -> int:
+    """Líneas que ocupa `texto` en una celda de `ancho_emu` a `size_pt`
+    (estimación conservadora: ancho medio de carácter ≈ 0.55 em, descontando
+    el margen interno de 0.25 cm por lado del cuadro de texto de PowerPoint)."""
+    util_pt = max(ancho_emu / 12700 - 2 * 0.25 / 2.54 * 72, size_pt)
+    por_linea = max(int(util_pt / (size_pt * 0.55)), 1)
+    return sum(max(-(-len(parrafo) // por_linea), 1) for parrafo in str(texto).split("\n"))
+
+
+def _pptx_fila_alto(celdas: List[str], anchos_emu: List[int], size_pt: float) -> int:
+    """Alto (EMU) de una fila: la celda con más líneas manda, más el margen
+    vertical del cuadro de texto (0.13 cm arriba y abajo)."""
+    lineas = max(_pptx_texto_lineas(c, w, size_pt) for c, w in zip(celdas, anchos_emu))
+    return int(lineas * size_pt * 1.2 * 12700 + 0.26 / 2.54 * 914400)
+
+
+_RIESGO_NUM_RE = re.compile(r"^\s*\d+\s*[\)\.\-]\s*")
+
+
+def _riesgos_grupos(registros: List[dict]) -> List[dict]:
+    """Agrupa los riesgos por estación/poste (en el orden recibido) y numera
+    cada fila "1) ...", "2) ..." dentro de su grupo — la numeración es lo que
+    permite referirse a ellos ("Poste 2. Riesgos 1, 2 y 6"). Una fila con
+    `numerar=False` (ej. la de postes, que solo cita números de otra) no se
+    numera ni cuenta; a las numeradas se les quita el número que el usuario
+    haya tecleado para no duplicarlo."""
+    orden: List[str] = []
+    grupos: Dict[str, list] = {}
+    for r in registros:
+        estacion = r.get("estacion_nombre") or "—"
+        if estacion not in grupos:
+            orden.append(estacion)
+            grupos[estacion] = []
+        grupos[estacion].append(r)
+    out = []
+    for estacion in orden:
+        n = 0
+        filas = []
+        for r in grupos[estacion]:
+            texto = (r.get("descripcion_riesgo") or "").strip()
+            if r.get("numerar", True):
+                n += 1
+                texto = f"{n}) {_RIESGO_NUM_RE.sub('', texto)}"
+            filas.append({"descripcion": texto, "control": r.get("propuesta_control") or "",
+                          "avance": r.get("porcentaje_avance", 0)})
+        out.append({"estacion": estacion, "filas": filas})
+    return out
+
+
+def _money_fmt(value) -> str:
+    return f"${chr(0xA0)}{to_decimal(value):,.2f}"  # espacio sin salto: nunca se parte entre "$" y la cifra
+
+
+def _pct_fmt(value) -> str:
+    return f"{to_decimal(value):.2f}%"
+
+
+def _avance_obra_resumen(
+    conceptos: List[dict], partidas: List[dict], registros: List[dict], gastos: List[dict],
+    ini: date, fin: date,
+) -> Optional[dict]:
+    """Avance del contrato de obra al corte `fin` y en la ventana [ini, fin].
+
+    Cada partida RAÍZ muestra su APORTE al total del contrato (EV de sus
+    conceptos / presupuesto total, en %), por eso la columna suma el avance
+    real del contrato — es como lo imprime el reporte. EV sale de lo ya
+    CONGELADO en cada registro de avance (nunca se recalcula con el precio de
+    hoy) y PV del prorrateo analítico por días (mismo criterio que
+    `analisis_periodo`). Devuelve None si no hay presupuesto."""
+    total = sum((_concepto_importe_efectivo(c) for c in conceptos), start=Decimal("0"))
+    if total <= 0:
+        return None
+    padre = {pa["id"]: pa.get("partida_padre_id") for pa in partidas}
+
+    def raiz(pid: Optional[str]) -> Optional[str]:
+        vistos: set = set()
+        while pid and padre.get(pid) and pid not in vistos:
+            vistos.add(pid)
+            pid = padre[pid]
+        return pid
+
+    concepto_raiz = {c["id"]: raiz(c.get("partida_id")) for c in conceptos}
+    ini_iso, fin_iso = ini.isoformat(), fin.isoformat()
+    cien = Decimal("100")
+    sem: dict = {}
+    acum: dict = {}
+    ev_mes: dict = {}
+    for a in registros:
+        f = a.get("fecha") or ""
+        if a.get("importe_ganado_congelado") is None or not f or f > fin_iso:
+            continue
+        v = to_decimal(a["importe_ganado_congelado"])
+        r = concepto_raiz.get(a.get("concepto_id"))
+        acum[r] = acum.get(r, Decimal("0")) + v
+        if f >= ini_iso:
+            sem[r] = sem.get(r, Decimal("0")) + v
+        ev_mes[f[:7]] = ev_mes.get(f[:7], Decimal("0")) + v
+
+    raices = sorted(
+        (pa for pa in partidas if not pa.get("partida_padre_id") and pa.get("activo", True)),
+        key=lambda pa: (pa.get("orden", 0), pa.get("nombre", "")),
+    )
+    filas = []
+    for i, pa in enumerate(raices, start=1):
+        filas.append({
+            "numero": i, "partida": pa.get("nombre") or "",
+            "semanal": sem.get(pa["id"], Decimal("0")) / total * cien,
+            "acumulado": acum.get(pa["id"], Decimal("0")) / total * cien,
+        })
+    huerfano_s, huerfano_a = sem.get(None, Decimal("0")), acum.get(None, Decimal("0"))
+    ids_raiz = {pa["id"] for pa in raices}
+    for r, v in acum.items():  # raíces inactivas o conceptos sin partida: no se pierden del total
+        if r is not None and r not in ids_raiz:
+            huerfano_a += v
+            huerfano_s += sem.get(r, Decimal("0"))
+    if huerfano_a != 0 or huerfano_s != 0:
+        filas.append({"numero": len(filas) + 1, "partida": "OTRAS PARTIDAS",
+                      "semanal": huerfano_s / total * cien, "acumulado": huerfano_a / total * cien})
+
+    pv_acum = sum((_prorrateo_concepto_en_ventana(c, date(1900, 1, 1), fin) for c in conceptos), start=Decimal("0"))
+    ev_acum = sum(acum.values(), start=Decimal("0"))
+
+    pv_mes: dict = {}
+    for c in conceptos:
+        for punto in _curva_mensual_concepto(c):
+            pv_mes[punto["mes"]] = pv_mes.get(punto["mes"], Decimal("0")) + to_decimal(punto["valor"])
+    ac_mes: dict = {}
+    for g in gastos:
+        if g.get("fecha") and g["fecha"] <= fin_iso:
+            ac_mes[g["fecha"][:7]] = ac_mes.get(g["fecha"][:7], Decimal("0")) + to_decimal(g["monto"])
+    meses = sorted(m for m in (set(pv_mes) | set(ev_mes) | set(ac_mes)) if m <= fin_iso[:7])
+    curva = {"meses": meses, "pv": [], "ev": [], "ac": []}
+    a_pv = a_ev = a_ac = Decimal("0")
+    for m in meses:
+        a_pv += pv_mes.get(m, Decimal("0"))
+        a_ev += ev_mes.get(m, Decimal("0"))
+        a_ac += ac_mes.get(m, Decimal("0"))
+        curva["pv"].append(a_pv)
+        curva["ev"].append(a_ev)
+        curva["ac"].append(a_ac)
+    return {
+        "presupuesto_total": total,
+        "programado_pct": pv_acum / total * cien,
+        "real_pct": ev_acum / total * cien,
+        "filas": filas,
+        "total_semanal": sum((f["semanal"] for f in filas), start=Decimal("0")),
+        "total_acumulado": sum((f["acumulado"] for f in filas), start=Decimal("0")),
+        "curva": curva,
+    }
+
+
+_CHART_FONT_CANDIDATAS = (
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/TTF/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+    "C:/Windows/Fonts/segoeui.ttf",
+    "C:/Windows/Fonts/arial.ttf",
+    "/Library/Fonts/Arial.ttf",
+    "/System/Library/Fonts/Supplemental/Arial.ttf",
+)
+
+
+def _sin_acentos(texto: str) -> str:
+    import unicodedata
+    return "".join(c for c in unicodedata.normalize("NFKD", str(texto)) if not unicodedata.combining(c))
+
+
+def _chart_canvas(img, *tamanos: int):
+    """(draw, [fuentes...]) para las gráficas dibujadas con Pillow. La fuente
+    por defecto de Pillow NO trae vocales acentuadas (salen como cuadros), así
+    que se busca una TrueType del sistema (DejaVu en el servidor Ubuntu); si
+    no hay ninguna, el draw quita los acentos del texto para que se lea."""
+    from PIL import ImageDraw as _D, ImageFont as _F
+    fuentes, acentos = None, False
+    for ruta in _CHART_FONT_CANDIDATAS:
+        try:
+            fuentes, acentos = [_F.truetype(ruta, t) for t in tamanos], True
+            break
+        except OSError:
+            continue
+    if fuentes is None:
+        try:
+            fuentes = [_F.load_default(size=t) for t in tamanos]
+        except TypeError:  # Pillow viejo sin tamaño
+            fuentes = [_F.load_default() for _ in tamanos]
+
+    class _Draw(_D.ImageDraw):
+        def text(self, xy, text, *a, **k):
+            return super().text(xy, text if acentos else _sin_acentos(text), *a, **k)
+
+        def textlength(self, text, *a, **k):
+            return super().textlength(text if acentos else _sin_acentos(text), *a, **k)
+
+    return _Draw(img), fuentes
+
+
+def _grafica_lineas_png(titulo: str, etiquetas: List[str], series: List[tuple], formato) -> bytes:
+    """Gráfica de líneas acumuladas dibujada con Pillow (el backend no usa
+    matplotlib). `series` = [(nombre, "#RRGGBB", [valores...]), ...]."""
+    from PIL import Image as _I
+    W, H = 1800, 800
+    img = _I.new("RGB", (W, H), "white")
+    d, (f_txt, f_tit) = _chart_canvas(img, 22, 28)
+    d.text((W / 2, 28), titulo, fill="#0F172A", font=f_tit, anchor="mm")
+    x0, x1, y0, y1 = 150, W - 60, 80, H - 150
+    vmax = max([float(v) for _, _, vals in series for v in vals] + [0.0])
+    vmax = vmax * 1.08 if vmax > 0 else 1.0
+    for i in range(6):
+        y = y1 - (y1 - y0) * i / 5
+        d.line([(x0, y), (x1, y)], fill="#E2E8F0", width=1)
+        d.text((x0 - 12, y), formato(vmax * i / 5), fill="#475569", font=f_txt, anchor="rm")
+    d.line([(x0, y0), (x0, y1), (x1, y1)], fill="#475569", width=2)
+    n = len(etiquetas)
+    xs = [x0 + (x1 - x0) * (i / (n - 1) if n > 1 else 0.5) for i in range(n)]
+    paso = max(1, n // 12)
+    for i, et in enumerate(etiquetas):
+        if i % paso == 0 or i == n - 1:
+            d.text((xs[i], y1 + 14), et, fill="#475569", font=f_txt, anchor="mt")
+    lx = x0
+    for nombre, color, vals in series:
+        pts = [(xs[i], y1 - (y1 - y0) * float(v) / vmax) for i, v in enumerate(vals)]
+        if len(pts) > 1:
+            d.line(pts, fill=color, width=5, joint="curve")
+        for px, py in pts:
+            d.ellipse([px - 6, py - 6, px + 6, py + 6], fill=color)
+        d.rectangle([lx, H - 60, lx + 28, H - 40], fill=color)
+        d.text((lx + 38, H - 50), nombre, fill="#0F172A", font=f_txt, anchor="lm")
+        lx += 60 + int(d.textlength(nombre, font=f_txt)) + 40
+    out = io.BytesIO()
+    img.save(out, format="PNG")
+    return out.getvalue()
+
+
+def _avance_obra_bloques(res: dict, ini: date, fin: date, contrato: str = "obra") -> List[dict]:
+    filas = res["filas"]
+    rows = [[str(f["numero"]), f["partida"], _pct_fmt(f["semanal"]), _pct_fmt(f["acumulado"])] for f in filas]
+    rows.append(["", "TOTAL", _pct_fmt(res["total_semanal"]), _pct_fmt(res["total_acumulado"])])
+    bloques: List[dict] = [
+        {"type": "summary",
+         "text": f"AVANCE  ·  PROGRAMADO {_pct_fmt(res['programado_pct'])}  ·  REAL {_pct_fmt(res['real_pct'])}"},
+        {"type": "table", "heading": f"TABLA DE AVANCE POR PARTIDAS ({CONTRATO_FIN_LABEL[contrato]})",
+         "headers": ["N°", "PARTIDAS", "AVANCE SEMANAL (%)", "AVANCE ACUMULADO (%)"],
+         "rows": rows, "col_widths": [0.07, 0.55, 0.19, 0.19], "empty_text": "Sin partidas."},
+    ]
+    return bloques
+
+
+PROGRAMA_FILAS_POR_GRAFICA = 18
+
+
+def _programa_barras(
+    conceptos: List[dict], partidas: List[dict], registros: List[dict], corte: date, max_nivel: int = 1,
+) -> List[dict]:
+    """Filas del programa en barras: cada partida raíz y sus subpartidas
+    (hasta `max_nivel`), con el rango de fechas que abarcan sus conceptos, el
+    avance REAL acumulado al corte (valor ganado congelado / importe) y el
+    PROGRAMADO (prorrateo por días / importe). Las partidas sin conceptos con
+    fechas no se dibujan. Pura — sin Mongo."""
+    activas = [pa for pa in partidas if pa.get("activo", True)]
+    hijos: Dict[Optional[str], list] = {}
+    for pa in activas:
+        hijos.setdefault(pa.get("partida_padre_id") or None, []).append(pa)
+    for lista in hijos.values():
+        lista.sort(key=lambda pa: (pa.get("orden", 0), pa.get("clave", ""), pa.get("nombre", "")))
+    por_partida: Dict[Optional[str], list] = {}
+    for c in conceptos:
+        por_partida.setdefault(c.get("partida_id"), []).append(c)
+    corte_iso = corte.isoformat()
+    ev_concepto: Dict[str, Decimal] = {}
+    for r in registros:
+        if r.get("importe_ganado_congelado") is not None and (r.get("fecha") or "") <= corte_iso:
+            ev_concepto[r.get("concepto_id")] = ev_concepto.get(r.get("concepto_id"), Decimal("0")) + to_decimal(r["importe_ganado_congelado"])
+
+    def subarbol(pa: dict) -> List[dict]:
+        out, pila, vistos = [], [pa], set()
+        while pila:
+            cur = pila.pop()
+            if cur["id"] in vistos:
+                continue
+            vistos.add(cur["id"])
+            out += por_partida.get(cur["id"], [])
+            pila += hijos.get(cur["id"], [])
+        return out
+
+    filas: List[dict] = []
+
+    def visitar(pa: dict, nivel: int) -> None:
+        cs = subarbol(pa)
+        datados = [c for c in cs if _concepto_tiene_datos_evm(c) and c.get("fecha_inicio") and c.get("fecha_fin")]
+        if datados:
+            importe = sum((_concepto_importe_efectivo(c) for c in cs), start=Decimal("0"))
+            ev = sum((ev_concepto.get(c["id"], Decimal("0")) for c in cs), start=Decimal("0"))
+            pv = sum((_prorrateo_concepto_en_ventana(c, date(1900, 1, 1), corte) for c in cs), start=Decimal("0"))
+            filas.append({
+                "nombre": pa.get("nombre") or "", "nivel": nivel,
+                "inicio": min(date.fromisoformat(c["fecha_inicio"]) for c in datados),
+                "fin": max(date.fromisoformat(c["fecha_fin"]) for c in datados),
+                "real": float(min(ev / importe * 100, Decimal(100))) if importe > 0 else 0.0,
+                "programado": float(min(pv / importe * 100, Decimal(100))) if importe > 0 else 0.0,
+            })
+        if nivel < max_nivel:
+            for h in hijos.get(pa["id"], []):
+                visitar(h, nivel + 1)
+
+    for raiz in hijos.get(None, []):
+        visitar(raiz, 0)
+    return filas
+
+
+def _grafica_programa_png(titulo: str, filas: List[dict], corte: date) -> bytes:
+    """Programa de obra en barras: la barra clara es el plazo de la partida
+    (inicio → fin), el relleno oscuro el avance REAL y la línea roja el corte.
+    A la derecha, real y programado en %. Dibujada con Pillow."""
+    from PIL import Image as _I
+    W = 1800
+    row_h = 40
+    top, left, right = 100, 560, 250
+    H = top + row_h * len(filas) + 130
+    img = _I.new("RGB", (W, H), "white")
+    d, (f_txt, f_tit, f_peq) = _chart_canvas(img, 20, 28, 17)
+    d.text((W / 2, 40), titulo, fill="#0F172A", font=f_tit, anchor="mm")
+    t0 = min(f["inicio"] for f in filas)
+    t1 = max(max(f["fin"] for f in filas), t0 + timedelta(days=1))
+    span = (t1 - t0).days or 1
+    x0, x1 = left, W - right
+
+    def xpos(dt: date) -> float:
+        return x0 + (x1 - x0) * (min(max(dt, t0), t1) - t0).days / span
+
+    n_meses = (t1.year - t0.year) * 12 + t1.month - t0.month + 1
+    paso = max(1, -(-64 // max(int((x1 - x0) / n_meses), 1)))  # una etiqueta cada `paso` meses: sin amontonarse
+    cur, k = date(t0.year, t0.month, 1), 0
+    while cur <= t1:  # una línea por mes
+        if cur >= t0:
+            x = xpos(cur)
+            d.line([(x, top - 14), (x, H - 100)], fill="#E2E8F0", width=1)
+            if k % paso == 0:
+                d.text((x, H - 88), cur.strftime("%m/%y"), fill="#475569", font=f_peq, anchor="mt")
+            k += 1
+        cur = date(cur.year + (cur.month == 12), cur.month % 12 + 1, 1)
+    for i, f in enumerate(filas):
+        y = top + i * row_h
+        raiz = f["nivel"] == 0
+        etiqueta = (f["nombre"] if len(f["nombre"]) <= 44 else f["nombre"][:43] + "…")
+        if raiz:
+            etiqueta = etiqueta.upper()
+        tx = 20 + f["nivel"] * 28
+        d.text((tx, y + row_h / 2), etiqueta, fill="#0F172A" if raiz else "#334155", font=f_txt, anchor="lm")
+        if raiz:
+            d.text((tx + 1, y + row_h / 2), etiqueta, fill="#0F172A", font=f_txt, anchor="lm")
+        xa, xb = xpos(f["inicio"]), max(xpos(f["fin"]), xpos(f["inicio"]) + 6)
+        alto = 20 if raiz else 14
+        ya = y + (row_h - alto) / 2
+        d.rectangle([xa, ya, xb, ya + alto], fill="#93C5FD" if raiz else "#BFDBFE")
+        if f["real"] > 0:
+            d.rectangle([xa, ya, xa + (xb - xa) * f["real"] / 100, ya + alto], fill="#1D4ED8" if raiz else "#3B82F6")
+        d.text((x1 + 20, y + row_h / 2), f"real {f['real']:.1f}% · prog {f['programado']:.1f}%", fill="#475569", font=f_peq, anchor="lm")
+    xc = xpos(corte)
+    d.line([(xc, top - 14), (xc, H - 100)], fill="#DC2626", width=3)
+    d.text((xc, top - 18), f"Corte {corte.strftime('%d/%m/%Y')}", fill="#DC2626", font=f_peq, anchor="mb")
+    ly = H - 40
+    for k, (color, texto) in enumerate((("#93C5FD", "Plazo programado"), ("#1D4ED8", "Avance real"), ("#DC2626", "Corte"))):
+        lx = left + k * 260
+        d.rectangle([lx, ly - 8, lx + 28, ly + 8], fill=color)
+        d.text((lx + 38, ly), texto, fill="#0F172A", font=f_peq, anchor="lm")
+    out = io.BytesIO()
+    img.save(out, format="PNG")
+    return out.getvalue()
+
+
+def _programa_barras_graficas(
+    conceptos: List[dict], partidas: List[dict], registros: List[dict], ini: date, fin: date, contrato: str = "obra",
+) -> List[tuple]:
+    """[(heading, caption, png)] del programa del contrato al corte `fin`,
+    en bloques de `PROGRAMA_FILAS_POR_GRAFICA` filas si es largo."""
+    filas = _programa_barras(conceptos, partidas, registros, fin)
+    if not filas:
+        return []
+    lbl = {"obra": "OBRA", "supervision": "SUPERVISIÓN"}[contrato]
+    texto = "obra" if contrato == "obra" else "servicios de supervisión"
+    caption = f"Programa de {texto} de la semana del {_fmt_iso_dmy(ini.isoformat())} al {_fmt_iso_dmy(fin.isoformat())}"
+    n = PROGRAMA_FILAS_POR_GRAFICA
+    total = (len(filas) + n - 1) // n
+    out = []
+    for k in range(total):
+        pag = f" ({k + 1}/{total})" if total > 1 else ""
+        out.append((f"PROGRAMA DE {lbl}{pag}", caption,
+                    _grafica_programa_png(f"Programa de {texto} en barras", filas[k * n:(k + 1) * n], fin)))
+    return out
+
+
+def _avance_obra_graficas(res: dict, fin: date, contrato: str = "obra") -> List[tuple]:
+    """[(heading, caption, png_bytes), ...] — gráfica física (% acumulado
+    programado vs real) y financiera (importe acumulado programado, ganado y
+    real, en millones)."""
+    c = res["curva"]
+    if not c["meses"]:
+        return []
+    total = res["presupuesto_total"]
+    etiquetas = [f"{m[5:]}/{m[2:4]}" for m in c["meses"]]
+    cien = Decimal("100")
+    fisica = _grafica_lineas_png(
+        "Avance físico acumulado (% del contrato)", etiquetas,
+        [("Programado", "#2563EB", [v / total * cien for v in c["pv"]]),
+         ("Real", "#16A34A", [v / total * cien for v in c["ev"]])],
+        lambda v: f"{v:.0f}%",
+    )
+    fin_png = _grafica_lineas_png(
+        "Físico-financiero acumulado (millones de pesos)", etiquetas,
+        [("Programado", "#2563EB", [v / Decimal("1000000") for v in c["pv"]]),
+         ("Ganado (avance)", "#16A34A", [v / Decimal("1000000") for v in c["ev"]]),
+         ("Gasto real", "#DC2626", [v / Decimal("1000000") for v in c["ac"]])][: 3 if any(c["ac"]) else 2],
+        lambda v: f"{v:,.0f} M",
+    )
+    corte = f"al {_fmt_iso_dmy(fin.isoformat())}"
+    lbl = CONTRATO_FIN_LABEL[contrato]
+    return [(f"GRÁFICA DE AVANCE ({lbl})", f"Avance físico acumulado {corte}", fisica),
+            (f"FÍSICO – FINANCIERO ({lbl})", f"Gráfica físico–financiera {corte}", fin_png)]
+
+
+class EstimacionIn(BaseModel):
+    contrato: Literal["obra", "supervision"] = "obra"
+    numero: int
+    periodo_inicio: Optional[str] = None
+    periodo_fin: Optional[str] = None
+    estatus: Optional[str] = None  # ej. LIBERADA / NO LIBERADA
+    obra_ejecutada: Optional[str] = None
+    amortizacion: Optional[str] = None
+    pct_amortizacion_anticipo: Optional[str] = None
+    total_deducciones: Optional[str] = None
+    iva: Optional[str] = None
+    total_neto: Optional[str] = None
+    fecha_pago: Optional[str] = None  # fecha o texto libre ("Por pagar")
+
+
+class EstimacionPatch(BaseModel):
+    numero: Optional[int] = None
+    periodo_inicio: Optional[str] = None
+    periodo_fin: Optional[str] = None
+    estatus: Optional[str] = None
+    obra_ejecutada: Optional[str] = None
+    amortizacion: Optional[str] = None
+    pct_amortizacion_anticipo: Optional[str] = None
+    total_deducciones: Optional[str] = None
+    iva: Optional[str] = None
+    total_neto: Optional[str] = None
+    fecha_pago: Optional[str] = None
+
+
+_ESTIMACION_IMPORTES = ("obra_ejecutada", "amortizacion", "pct_amortizacion_anticipo", "total_deducciones", "iva", "total_neto")
+_ESTIMACION_TEXTOS = ("estatus", "fecha_pago")
+_ESTIMACION_FECHAS = ("periodo_inicio", "periodo_fin")
+
+
+def _estimacion_valor(campo: str, value: Optional[str]) -> Optional[str]:
+    """Normaliza un campo de la estimación: importes y % como Decimal (texto
+    limpio o None), fechas como YYYY-MM-DD, el resto como texto recortado."""
+    if value is None or not str(value).strip():
+        return None
+    v = str(value).strip()
+    if campo in _ESTIMACION_IMPORTES:
+        try:
+            return dec_to_str(to_decimal(v.replace("$", "").replace(",", "").replace("%", "").strip()))
+        except Exception:
+            raise HTTPException(400, f"{campo} debe ser un número")
+    if campo in _ESTIMACION_FECHAS:
+        try:
+            date.fromisoformat(v)
+        except ValueError:
+            raise HTTPException(400, f"{campo} debe ser YYYY-MM-DD")
+    return v
+
+
+def _estimaciones_bloques(registros: List[dict]) -> List[dict]:
+    """Un bloque `table` por contrato (obra / supervisión). La SUMA ACUMULADA
+    se calcula aquí (acumulado de obra ejecutada hasta ese número), no se
+    captura: así nunca queda desfasada de las filas."""
+    bloques = []
+    for contrato in CONTRATOS_FIN:
+        regs = sorted((r for r in registros if r.get("contrato", "obra") == contrato), key=lambda r: r.get("numero", 0))
+        if not regs:
+            continue
+        acumulado = Decimal("0")
+        rows = []
+        for r in regs:
+            acumulado += to_decimal(r.get("obra_ejecutada") or "0")
+            money = lambda k: _money_fmt(r[k]) if r.get(k) is not None else "-"  # noqa: E731
+            rows.append([
+                str(r.get("numero", "")),
+                f"{_fmt_iso_dmy(r.get('periodo_inicio'))} al {_fmt_iso_dmy(r.get('periodo_fin'))}" if r.get("periodo_inicio") else "-",
+                r.get("estatus") or "-",
+                money("obra_ejecutada"),
+                _money_fmt(acumulado),
+                money("amortizacion"),
+                _pct_fmt(r["pct_amortizacion_anticipo"]) if r.get("pct_amortizacion_anticipo") is not None else "-",
+                money("total_deducciones"),
+                money("iva"),
+                money("total_neto"),
+                _fmt_iso_dmy(r["fecha_pago"]) if r.get("fecha_pago") else "-",
+            ])
+        bloques.append({
+            "type": "table",
+            "heading": f"CONCENTRADO ESTIMACIONES ({CONTRATO_FIN_LABEL[contrato]})",
+            "headers": ["N°", "PERIODO", "ESTATUS GENERAL", "OBRA EJECUTADA", "SUMA ACUMULADA", "AMORTIZACIÓN",
+                        "% ACUM. AMORT. ANTICIPO", "TOTAL DEDUCCIONES", "IVA 16%", "TOTAL NETO", "FECHA DE PAGO"],
+            "rows": rows,
+            "col_widths": [0.04, 0.12, 0.075, 0.105, 0.105, 0.105, 0.075, 0.105, 0.095, 0.105, 0.07],
+            "empty_text": "Sin estimaciones.",
+        })
+    return bloques
+
+
+@api.get("/projects/{pid}/estimaciones")
+async def list_estimaciones(pid: str, contrato: Optional[str] = None, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    q: dict = {"project_id": pid}
+    if contrato:
+        q["contrato"] = contrato
+    items = await db.estimaciones.find(q).sort([("contrato", 1), ("numero", 1)]).to_list(length=500)
+    return [{k: v for k, v in d.items() if k != "_id"} for d in items]
+
+
+@api.post("/projects/{pid}/estimaciones")
+async def create_estimacion(pid: str, body: EstimacionIn, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB))):
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "estimaciones")
+    if await db.estimaciones.find_one({"project_id": pid, "contrato": body.contrato, "numero": body.numero}, {"id": 1}):
+        raise HTTPException(409, f"Ya existe la estimación {body.numero} de {CONTRATO_FIN_LABEL[body.contrato].lower()}")
+    now = datetime.now(timezone.utc)
+    doc = {"id": str(uuid.uuid4()), "project_id": pid, "contrato": body.contrato, "numero": body.numero,
+           "created_by": user["id"], "created_at": now, "updated_at": now}
+    for campo in _ESTIMACION_IMPORTES + _ESTIMACION_TEXTOS + _ESTIMACION_FECHAS:
+        doc[campo] = _estimacion_valor(campo, getattr(body, campo))
+    await db.estimaciones.insert_one(doc)
+    return {k: v for k, v in doc.items() if k != "_id"}
+
+
+@api.patch("/projects/{pid}/estimaciones/{eid}")
+async def update_estimacion(pid: str, eid: str, body: EstimacionPatch, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB))):
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "estimaciones")
+    doc = await db.estimaciones.find_one({"id": eid, "project_id": pid})
+    if not doc:
+        raise HTTPException(404, "Estimación no existe")
+    fields = body.model_dump(exclude_unset=True)
+    upd: dict = {}
+    if fields.get("numero") is not None and fields["numero"] != doc["numero"]:
+        if await db.estimaciones.find_one({"project_id": pid, "contrato": doc["contrato"], "numero": fields["numero"]}, {"id": 1}):
+            raise HTTPException(409, f"Ya existe la estimación {fields['numero']}")
+        upd["numero"] = fields["numero"]
+    for campo in _ESTIMACION_IMPORTES + _ESTIMACION_TEXTOS + _ESTIMACION_FECHAS:
+        if campo in fields:
+            upd[campo] = _estimacion_valor(campo, fields[campo])
+    if upd:
+        upd["updated_at"] = datetime.now(timezone.utc)
+        await db.estimaciones.update_one({"id": eid}, {"$set": upd})
+    out = await db.estimaciones.find_one({"id": eid})
+    return {k: v for k, v in out.items() if k != "_id"}
+
+
+@api.delete("/projects/{pid}/estimaciones/{eid}")
+async def delete_estimacion(pid: str, eid: str, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB))):
+    await ensure_project_access(user, pid)
+    res = await db.estimaciones.delete_one({"id": eid, "project_id": pid})
+    if not res.deleted_count:
+        raise HTTPException(404, "Estimación no existe")
+    return {"ok": True}
+
+
+class PendienteIn(BaseModel):
+    contrato: Literal["obra", "supervision", "sociales", "seguridad"] = "obra"
+    titulo: str
+    descripcion: Optional[str] = None
+    orden: int = 0
+
+
+class PendientePatch(BaseModel):
+    titulo: Optional[str] = None
+    descripcion: Optional[str] = None
+    orden: Optional[int] = None
+    resuelto: Optional[bool] = None
+
+
+def _pendientes_bloques(registros: List[dict]) -> List[dict]:
+    """Un bloque `list` por contrato con los pendientes VIGENTES (los
+    resueltos no se imprimen). Sin vigentes → sin bloque."""
+    bloques = []
+    for contrato in PENDIENTES_AMBITOS:
+        vigentes = sorted(
+            (r for r in registros if r.get("contrato", "obra") == contrato and not r.get("resuelto")),
+            key=lambda r: (r.get("orden", 0), str(r.get("created_at") or "")),
+        )
+        if not vigentes:
+            continue
+        bloques.append({
+            "type": "list",
+            "heading": PENDIENTE_AMBITO_HEADING[contrato],
+            "items": [{"title": r["titulo"], "body": r.get("descripcion") or "", "extra": None, "meta": None}
+                      for r in vigentes],
+            "empty_text": "Sin pendientes.",
+        })
+    return bloques
+
+
+@api.get("/projects/{pid}/pendientes-generales")
+async def list_pendientes_generales(pid: str, contrato: Optional[str] = None, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    q: dict = {"project_id": pid}
+    if contrato:
+        q["contrato"] = contrato
+    items = await db.pendientes_generales.find(q).sort([("contrato", 1), ("orden", 1), ("created_at", 1)]).to_list(length=500)
+    return [{k: v for k, v in d.items() if k != "_id"} for d in items]
+
+
+@api.post("/projects/{pid}/pendientes-generales")
+async def create_pendiente_general(pid: str, body: PendienteIn, user: dict = Depends(current_user)):
+    _assert_write_allowed(user)
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "pendientes_generales")
+    titulo = body.titulo.strip()
+    if not titulo:
+        raise HTTPException(400, "titulo es requerido")
+    now = datetime.now(timezone.utc)
+    doc = {"id": str(uuid.uuid4()), "project_id": pid, "contrato": body.contrato, "titulo": titulo,
+           "descripcion": (body.descripcion or "").strip() or None, "orden": body.orden, "resuelto": False,
+           "created_by": user["id"], "created_by_name": user["name"], "created_at": now, "updated_at": now}
+    await db.pendientes_generales.insert_one(doc)
+    return {k: v for k, v in doc.items() if k != "_id"}
+
+
+@api.patch("/projects/{pid}/pendientes-generales/{rid}")
+async def update_pendiente_general(pid: str, rid: str, body: PendientePatch, user: dict = Depends(current_user)):
+    _assert_write_allowed(user)
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "pendientes_generales")
+    if not await db.pendientes_generales.find_one({"id": rid, "project_id": pid}, {"id": 1}):
+        raise HTTPException(404, "Pendiente no existe")
+    fields = body.model_dump(exclude_unset=True)
+    upd: dict = {}
+    if "titulo" in fields:
+        t = (fields["titulo"] or "").strip()
+        if not t:
+            raise HTTPException(400, "titulo no puede quedar vacío")
+        upd["titulo"] = t
+    if "descripcion" in fields:
+        upd["descripcion"] = (fields["descripcion"] or "").strip() or None
+    if fields.get("orden") is not None:
+        upd["orden"] = fields["orden"]
+    if fields.get("resuelto") is not None:
+        upd["resuelto"] = fields["resuelto"]
+    if upd:
+        upd["updated_at"] = datetime.now(timezone.utc)
+        await db.pendientes_generales.update_one({"id": rid}, {"$set": upd})
+    out = await db.pendientes_generales.find_one({"id": rid})
+    return {k: v for k, v in out.items() if k != "_id"}
+
+
+@api.delete("/projects/{pid}/pendientes-generales/{rid}")
+async def delete_pendiente_general(pid: str, rid: str, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB))):
+    await ensure_project_access(user, pid)
+    res = await db.pendientes_generales.delete_one({"id": rid, "project_id": pid})
+    if not res.deleted_count:
+        raise HTTPException(404, "Pendiente no existe")
+    return {"ok": True}
+
+
+# === ASPECTOS SOCIALES (reporte semanal) ===================================
+# Dos registros estructurados que el reporte imprime con gráficas:
+#  - levantamientos: dictámenes estructurales y fe notarial, requeridos vs
+#    realizados por estaciones y por postes (gráficas de dona).
+#  - salvamento arqueológico: fecha de inicio y de liberación por punto de
+#    sondeo (estación) o poste (gráfica de barras tipo Gantt).
+# Las actividades generales, las fotos con pie "FOTO n." y la situación
+# social por estación salen del sistema de reportes por área y del hub del
+# nodo; los pendientes de liberación, de Pendientes Generales (ámbito social).
+LEVANTAMIENTO_TIPOS = {"dictamen_estructural": "Dictámenes estructurales", "fe_notarial": "Fe notarial"}
+LEVANTAMIENTO_AMBITOS = {"estacion": "estaciones", "poste": "postes"}
+
+
+class LevantamientoIn(BaseModel):
+    tipo: Literal["dictamen_estructural", "fe_notarial"]
+    ambito: Literal["estacion", "poste"]
+    total_requerido: int
+    realizados: int
+
+
+def _levantamientos_bloques(registros: List[dict]) -> List[dict]:
+    """Tabla de cumplimiento (requerido / realizado / %) y una gráfica de
+    dona por cada tipo que tenga algo requerido. Devuelve bloques `table` e
+    `imagen` ya listos (las imágenes en data URL JPEG)."""
+    por_clave = {(r["tipo"], r["ambito"]): r for r in registros}
+    filas = []
+    for tipo, tipo_lbl in LEVANTAMIENTO_TIPOS.items():
+        for ambito, ambito_lbl in LEVANTAMIENTO_AMBITOS.items():
+            r = por_clave.get((tipo, ambito))
+            if not r or not r.get("total_requerido"):
+                continue
+            pct = r["realizados"] / r["total_requerido"] * 100
+            filas.append([f"{tipo_lbl} ({ambito_lbl})", str(r["total_requerido"]), str(r["realizados"]), f"{pct:.1f}%"])
+    if not filas:
+        return []
+    return [{
+        "type": "table", "heading": "AVANCE EN DICTÁMENES ESTRUCTURALES Y FE NOTARIAL",
+        "headers": ["LEVANTAMIENTO", "TOTAL REQUERIDO", "REALIZADOS", "% DE CUMPLIMIENTO"],
+        "rows": filas, "col_widths": [0.46, 0.18, 0.18, 0.18], "empty_text": "Sin levantamientos.",
+    }]
+
+
+def _levantamientos_graficas(registros: List[dict]) -> List[tuple]:
+    """[(heading, caption, png)] — una imagen por tipo con una dona por ámbito."""
+    por_clave = {(r["tipo"], r["ambito"]): r for r in registros}
+    out = []
+    for tipo, tipo_lbl in LEVANTAMIENTO_TIPOS.items():
+        items = []
+        for ambito, ambito_lbl in LEVANTAMIENTO_AMBITOS.items():
+            r = por_clave.get((tipo, ambito))
+            if r and r.get("total_requerido"):
+                items.append((f"{tipo_lbl} ({ambito_lbl})", r["realizados"], r["total_requerido"]))
+        if items:
+            out.append((tipo_lbl.upper(), f"Porcentaje de avance en {tipo_lbl.lower()} por estaciones y postes",
+                        _grafica_donas_png(tipo_lbl, items)))
+    return out
+
+
+def _grafica_donas_png(titulo: str, items: List[tuple], detalle: Optional[Callable] = None, decimales: int = 0) -> bytes:
+    """Una dona por item `(nombre, realizados, total)`: verde = realizado,
+    gris = pendiente, con el % al centro. Dibujada con Pillow."""
+    from PIL import Image as _I
+    W, H = 1800, 800
+    img = _I.new("RGB", (W, H), "white")
+    d, (f_txt, f_tit, f_big) = _chart_canvas(img, 24, 30, 64)
+    d.text((W / 2, 40), titulo, fill="#0F172A", font=f_tit, anchor="mm")
+    n = max(len(items), 1)
+    r = 230
+    for i, (nombre, real, total) in enumerate(items):
+        cx, cy = W * (i + 0.5) / n, 880 / 2
+        bbox = [cx - r, cy - r, cx + r, cy + r]
+        d.ellipse(bbox, fill="#E2E8F0")
+        if total > 0 and real > 0:
+            d.pieslice(bbox, -90, -90 + 360 * min(real, total) / total, fill="#16A34A")
+        hueco = r * 0.58
+        d.ellipse([cx - hueco, cy - hueco, cx + hueco, cy + hueco], fill="white")
+        pct = real / total * 100 if total else 0
+        d.text((cx, cy), f"{pct:.{decimales}f}%", fill="#0F172A", font=f_big, anchor="mm")
+        d.text((cx, cy + r + 45), nombre, fill="#0F172A", font=f_txt, anchor="mm")
+        d.text((cx, cy + r + 80), detalle(real, total) if detalle else f"{real} de {total} realizados",
+               fill="#475569", font=f_txt, anchor="mm")
+    out = io.BytesIO()
+    img.save(out, format="PNG")
+    return out.getvalue()
+
+
+def _salvamento_dias(r: dict, corte: date) -> Optional[int]:
+    """Días de trabajo: inicio → liberación, o inicio → corte si sigue en
+    curso. None si aún no inicia (inicio posterior al corte)."""
+    try:
+        ini = date.fromisoformat(r["fecha_inicio"])
+    except (KeyError, ValueError, TypeError):
+        return None
+    if ini > corte:
+        return None
+    fin = date.fromisoformat(r["fecha_liberacion"]) if r.get("fecha_liberacion") else corte
+    return max((min(fin, corte) - ini).days, 0) + 1
+
+
+def _grafica_gantt_png(titulo: str, filas: List[tuple], corte: date) -> bytes:
+    """Barras horizontales por punto/poste: de la fecha de inicio a la de
+    liberación (verde) o al corte si sigue en curso (ámbar). `filas` =
+    [(etiqueta, inicio, fin, en_curso, dias), ...]."""
+    from PIL import Image as _I
+    W = 1800
+    row_h = 34
+    top, left, right = 90, 330, 90
+    H = top + row_h * len(filas) + 110
+    img = _I.new("RGB", (W, H), "white")
+    d, (f_txt, f_tit) = _chart_canvas(img, 20, 28)
+    d.text((W / 2, 36), titulo, fill="#0F172A", font=f_tit, anchor="mm")
+    t0 = min(f[1] for f in filas)
+    t1 = max(max(f[2] for f in filas), t0 + timedelta(days=1))
+    span = (t1 - t0).days or 1
+    x0, x1 = left, W - right
+
+    def xpos(dt: date) -> float:
+        return x0 + (x1 - x0) * (dt - t0).days / span
+
+    cur = date(t0.year, t0.month, 1)
+    while cur <= t1:  # líneas por mes
+        if cur >= t0:
+            x = xpos(cur)
+            d.line([(x, top - 10), (x, H - 80)], fill="#E2E8F0", width=1)
+            d.text((x, H - 62), cur.strftime("%m/%Y"), fill="#475569", font=f_txt, anchor="mt")
+        cur = date(cur.year + (cur.month == 12), cur.month % 12 + 1, 1)
+    for i, (etiqueta, ini, fin, en_curso, dias) in enumerate(filas):
+        y = top + i * row_h
+        d.text((left - 12, y + row_h / 2), etiqueta, fill="#0F172A", font=f_txt, anchor="rm")
+        xa, xb = xpos(ini), max(xpos(fin), xpos(ini) + 6)
+        d.rectangle([xa, y + 6, xb, y + row_h - 6], fill="#F59E0B" if en_curso else "#16A34A")
+        d.text((xb + 8, y + row_h / 2), f"{dias} d", fill="#475569", font=f_txt, anchor="lm")
+    d.rectangle([left, H - 32, left + 24, H - 16], fill="#16A34A")
+    d.text((left + 34, H - 24), "Liberado", fill="#0F172A", font=f_txt, anchor="lm")
+    d.rectangle([left + 160, H - 32, left + 184, H - 16], fill="#F59E0B")
+    d.text((left + 194, H - 24), "En curso", fill="#0F172A", font=f_txt, anchor="lm")
+    out = io.BytesIO()
+    img.save(out, format="PNG")
+    return out.getvalue()
+
+
+SALVAMENTO_FILAS_POR_GRAFICA = 22
+
+
+def _salvamento_graficas(registros: List[dict], corte: date) -> List[tuple]:
+    """[(heading, caption, png)] — una gráfica por ámbito, en bloques de
+    `SALVAMENTO_FILAS_POR_GRAFICA` filas para que sea legible. Los que aún no
+    inician al corte no se dibujan."""
+    out = []
+    for ambito, lbl in (("estacion", "ESTACIONES"), ("poste", "POSTES")):
+        regs = sorted((r for r in registros if r.get("ambito") == ambito), key=lambda r: r.get("orden", 0))
+        filas = []
+        for r in regs:
+            dias = _salvamento_dias(r, corte)
+            if dias is None:
+                continue
+            ini = date.fromisoformat(r["fecha_inicio"])
+            fin = min(date.fromisoformat(r["fecha_liberacion"]), corte) if r.get("fecha_liberacion") else corte
+            filas.append((r.get("etiqueta") or "", ini, fin, not r.get("fecha_liberacion"), dias))
+        total = (len(filas) + SALVAMENTO_FILAS_POR_GRAFICA - 1) // SALVAMENTO_FILAS_POR_GRAFICA
+        for k in range(total):
+            tramo = filas[k * SALVAMENTO_FILAS_POR_GRAFICA:(k + 1) * SALVAMENTO_FILAS_POR_GRAFICA]
+            pag = f" ({k + 1}/{total})" if total > 1 else ""
+            out.append((
+                f"SALVAMENTO ARQUEOLÓGICO POR {lbl}{pag}",
+                f"Avance de trabajos de salvamento arqueológico por {lbl.lower()} · fecha de inicio a liberación",
+                _grafica_gantt_png(f"Avance de trabajos de salvamento arqueológico por {lbl.lower()}", tramo, corte),
+            ))
+    return out
+
+
+class SalvamentoIn(BaseModel):
+    ambito: Literal["estacion", "poste"]
+    etiqueta: str  # ej. "UNIVERSIDAD PS2" o "S2"
+    fecha_inicio: str
+    fecha_liberacion: Optional[str] = None
+    observaciones: Optional[str] = None
+
+
+class SalvamentoPatch(BaseModel):
+    etiqueta: Optional[str] = None
+    fecha_inicio: Optional[str] = None
+    fecha_liberacion: Optional[str] = None
+    observaciones: Optional[str] = None
+    quitar_liberacion: bool = False
+
+
+def _salvamento_fecha(value: Optional[str], campo: str) -> str:
+    try:
+        date.fromisoformat((value or "").strip())
+    except ValueError:
+        raise HTTPException(400, f"{campo} debe ser YYYY-MM-DD")
+    return value.strip()
+
+
+def _salvamento_validar_rango(inicio: str, liberacion: Optional[str]) -> None:
+    if liberacion and date.fromisoformat(liberacion) < date.fromisoformat(inicio):
+        raise HTTPException(400, "La liberación no puede ser anterior al inicio")
+
+
+@api.get("/projects/{pid}/levantamientos-sociales")
+async def list_levantamientos_sociales(pid: str, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    items = await db.levantamientos_sociales.find({"project_id": pid}).to_list(length=50)
+    return [{k: v for k, v in d.items() if k != "_id"} for d in items]
+
+
+@api.put("/projects/{pid}/levantamientos-sociales")
+async def set_levantamiento_social(pid: str, body: LevantamientoIn, user: dict = Depends(current_user)):
+    """Un registro por (tipo, ámbito): crea o reemplaza los contadores."""
+    _assert_write_allowed(user)
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "aspectos_sociales")
+    if body.total_requerido < 0 or body.realizados < 0:
+        raise HTTPException(400, "Los valores no pueden ser negativos")
+    if body.realizados > body.total_requerido:
+        raise HTTPException(400, "Los realizados no pueden superar el total requerido")
+    now = datetime.now(timezone.utc)
+    clave = {"project_id": pid, "tipo": body.tipo, "ambito": body.ambito}
+    await db.levantamientos_sociales.update_one(
+        clave,
+        {"$set": {"total_requerido": body.total_requerido, "realizados": body.realizados,
+                  "updated_at": now, "updated_by": user["id"]},
+         "$setOnInsert": {"id": str(uuid.uuid4()), "created_at": now}},
+        upsert=True,
+    )
+    doc = await db.levantamientos_sociales.find_one(clave)
+    return {k: v for k, v in doc.items() if k != "_id"}
+
+
+@api.get("/projects/{pid}/salvamento-arqueologico")
+async def list_salvamento_arqueologico(pid: str, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    items = await db.salvamento_arqueologico.find({"project_id": pid}).sort([("ambito", 1), ("orden", 1)]).to_list(length=2000)
+    return [{k: v for k, v in d.items() if k != "_id"} for d in items]
+
+
+@api.post("/projects/{pid}/salvamento-arqueologico")
+async def create_salvamento_arqueologico(pid: str, body: SalvamentoIn, user: dict = Depends(current_user)):
+    _assert_write_allowed(user)
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "aspectos_sociales")
+    etiqueta = body.etiqueta.strip()
+    if not etiqueta:
+        raise HTTPException(400, "etiqueta es requerida")
+    inicio = _salvamento_fecha(body.fecha_inicio, "fecha_inicio")
+    liberacion = _salvamento_fecha(body.fecha_liberacion, "fecha_liberacion") if (body.fecha_liberacion or "").strip() else None
+    _salvamento_validar_rango(inicio, liberacion)
+    ultimo = await db.salvamento_arqueologico.find({"project_id": pid, "ambito": body.ambito}).sort("orden", -1).to_list(length=1)
+    now = datetime.now(timezone.utc)
+    doc = {"id": str(uuid.uuid4()), "project_id": pid, "ambito": body.ambito, "etiqueta": etiqueta,
+           "fecha_inicio": inicio, "fecha_liberacion": liberacion,
+           "observaciones": (body.observaciones or "").strip() or None,
+           "orden": (ultimo[0].get("orden", 0) + 1) if ultimo else 0,
+           "created_by": user["id"], "created_by_name": user["name"], "created_at": now, "updated_at": now}
+    await db.salvamento_arqueologico.insert_one(doc)
+    return {k: v for k, v in doc.items() if k != "_id"}
+
+
+@api.patch("/projects/{pid}/salvamento-arqueologico/{rid}")
+async def update_salvamento_arqueologico(pid: str, rid: str, body: SalvamentoPatch, user: dict = Depends(current_user)):
+    _assert_write_allowed(user)
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "aspectos_sociales")
+    doc = await db.salvamento_arqueologico.find_one({"id": rid, "project_id": pid})
+    if not doc:
+        raise HTTPException(404, "Registro no existe")
+    fields = body.model_dump(exclude_unset=True)
+    upd: dict = {}
+    if "etiqueta" in fields:
+        e = (fields["etiqueta"] or "").strip()
+        if not e:
+            raise HTTPException(400, "etiqueta no puede quedar vacía")
+        upd["etiqueta"] = e
+    if fields.get("fecha_inicio"):
+        upd["fecha_inicio"] = _salvamento_fecha(fields["fecha_inicio"], "fecha_inicio")
+    if body.quitar_liberacion:
+        upd["fecha_liberacion"] = None
+    elif fields.get("fecha_liberacion"):
+        upd["fecha_liberacion"] = _salvamento_fecha(fields["fecha_liberacion"], "fecha_liberacion")
+    if "observaciones" in fields:
+        upd["observaciones"] = (fields["observaciones"] or "").strip() or None
+    _salvamento_validar_rango(upd.get("fecha_inicio", doc["fecha_inicio"]),
+                              upd["fecha_liberacion"] if "fecha_liberacion" in upd else doc.get("fecha_liberacion"))
+    if upd:
+        upd["updated_at"] = datetime.now(timezone.utc)
+        await db.salvamento_arqueologico.update_one({"id": rid}, {"$set": upd})
+    out = await db.salvamento_arqueologico.find_one({"id": rid})
+    return {k: v for k, v in out.items() if k != "_id"}
+
+
+@api.delete("/projects/{pid}/salvamento-arqueologico/{rid}")
+async def delete_salvamento_arqueologico(pid: str, rid: str, user: dict = Depends(current_user)):
+    """Coordinador/Sub-Coordinador borran cualquiera; el resto solo lo suyo."""
+    _assert_write_allowed(user)
+    await ensure_project_access(user, pid)
+    doc = await db.salvamento_arqueologico.find_one({"id": rid, "project_id": pid}, {"created_by": 1})
+    if not doc:
+        raise HTTPException(404, "Registro no existe")
+    if user.get("role") not in (ROLE_COORD, ROLE_SUB) and doc.get("created_by") != user["id"]:
+        raise HTTPException(403, "Solo puedes eliminar los registros que tú capturaste")
+    await db.salvamento_arqueologico.delete_one({"id": rid, "project_id": pid})
+    return {"ok": True}
+
+
+# === INDICADORES DE SEGURIDAD E HIGIENE (reporte semanal) ===================
+# "Cumplimiento seguridad e higiene" del reporte: cumplimiento en campo (%
+# actual vs anterior y días sin accidentes), cumplimiento documental (mensual
+# y por semana en Seguridad / Protección civil / Higiene y salud) y
+# cumplimiento del PIPC (Programa Interno de Protección Civil, modalidad
+# Estudio de Riesgo Obra y Demolición) por estación. Los porcentajes los
+# calcula la supervisión de seguridad y aquí solo se capturan; los DÍAS SIN
+# ACCIDENTES se derivan del registro de accidentes (o se fijan a mano).
+# Los pendientes administrativos salen de Pendientes Generales (ámbito
+# "seguridad").
+SEG_CATEGORIAS = {"seguridad": "Seguridad", "proteccion_civil": "Protección civil", "higiene_salud": "Higiene y salud"}
+# Tipos de registro que REINICIAN el contador de días sin accidentes: los
+# que lesionan con baja o gravedad. Un accidente leve (primeros auxilios) no
+# lo reinicia — criterio asumido, ver `_seg_dias_sin_accidentes`.
+SEG_TIPOS_QUE_REINICIAN = ("incapacitante", "grave")
+PIPC_PASOS = [
+    ("ELABORACIÓN", "El Responsable Oficial de Protección Civil (ROPC) elabora el Estudio de Riesgo", 70),
+    ("CAPTURA DIGITAL", "La información se ingresa en la Plataforma Digital compartida entre la Secretaría y las Alcaldías.", 10),
+    ("OBTENCIÓN DE FOLIO", "El sistema otorga un folio de captura único al finalizar la carga de datos.", 10),
+    ("REGISTRO", "Una vez cumplidos los requisitos, la Secretaría emite la Constancia de registro, documento oficial "
+                 "que ampara la legalidad de la obra en materia de protección civil.", 10),
+]
+PIPC_NOTA = ("El paso de Elaboración corresponde a 70 puntos del cumplimiento total. La captura digital, la obtención "
+             "del folio y el registro, a los 30 puntos restantes. Para tener el 100% es necesario completar los cuatro pasos.")
+
+
+class IndicadorIn(BaseModel):
+    tipo: Literal["campo", "doc_mensual", "doc_semanal", "pipc", "nota_pipc"]
+    fecha: Optional[str] = None  # campo: fecha del corte (YYYY-MM-DD)
+    mes: Optional[str] = None  # doc_mensual: YYYY-MM
+    semana: Optional[str] = None  # doc_semanal: cualquier fecha de la semana (se normaliza al lunes)
+    categoria: Optional[Literal["seguridad", "proteccion_civil", "higiene_salud"]] = None
+    porcentaje: Optional[float] = None
+    dias_sin_accidentes: Optional[int] = None  # campo: fija a mano el contador (opcional)
+    etiqueta: Optional[str] = None  # pipc: "E1"…
+    orden: int = 0
+    puntos: Optional[List[float]] = None  # pipc: puntos de los 4 pasos
+    texto: Optional[str] = None  # nota_pipc
+
+
+def _seg_pct(valor: Optional[float]) -> float:
+    if valor is None or not (0 <= valor <= 100):
+        raise HTTPException(400, "porcentaje debe estar entre 0 y 100")
+    return round(float(valor), 2)
+
+
+def _seg_fecha(valor: Optional[str], campo: str) -> date:
+    try:
+        return date.fromisoformat((valor or "").strip())
+    except ValueError:
+        raise HTTPException(400, f"{campo} debe ser YYYY-MM-DD")
+
+
+def _indicador_normalizar(body: IndicadorIn) -> tuple:
+    """(clave natural, campos a guardar) de un indicador, validados. Pura. La
+    clave es la que hace que capturar dos veces el mismo corte lo REEMPLACE."""
+    t = body.tipo
+    if t == "campo":
+        f = _seg_fecha(body.fecha, "fecha")
+        if body.dias_sin_accidentes is not None and body.dias_sin_accidentes < 0:
+            raise HTTPException(400, "dias_sin_accidentes no puede ser negativo")
+        return f"campo|{f.isoformat()}", {"fecha": f.isoformat(), "porcentaje": _seg_pct(body.porcentaje),
+                                          "dias_sin_accidentes": body.dias_sin_accidentes}
+    if t == "doc_mensual":
+        mes = (body.mes or "").strip()
+        if not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", mes):
+            raise HTTPException(400, "mes debe ser AAAA-MM")
+        return f"doc_mensual|{mes}", {"mes": mes, "porcentaje": _seg_pct(body.porcentaje)}
+    if t == "doc_semanal":
+        if body.categoria is None:
+            raise HTTPException(400, "categoria es requerida")
+        f = _seg_fecha(body.semana, "semana")
+        lunes = (f - timedelta(days=f.weekday())).isoformat()
+        return f"doc_semanal|{lunes}|{body.categoria}", {"semana": lunes, "categoria": body.categoria,
+                                                         "porcentaje": _seg_pct(body.porcentaje)}
+    if t == "pipc":
+        etiqueta = (body.etiqueta or "").strip()
+        if not etiqueta or len(etiqueta) > 30:
+            raise HTTPException(400, "etiqueta es requerida (máx. 30 caracteres)")
+        puntos = body.puntos
+        if puntos is None or len(puntos) != len(PIPC_PASOS):
+            raise HTTPException(400, f"puntos debe traer {len(PIPC_PASOS)} valores (uno por paso)")
+        puntos = [round(float(v), 2) for v in puntos]
+        if any(v < 0 for v in puntos):
+            raise HTTPException(400, "Los puntos no pueden ser negativos")
+        if puntos[0] > PIPC_PASOS[0][2]:
+            raise HTTPException(400, f"La elaboración vale máximo {PIPC_PASOS[0][2]} puntos")
+        if sum(puntos[1:]) > 100 - PIPC_PASOS[0][2]:
+            raise HTTPException(400, f"Los pasos 2 a 4 valen máximo {100 - PIPC_PASOS[0][2]} puntos en total")
+        return f"pipc|{etiqueta.upper()}", {"etiqueta": etiqueta, "orden": body.orden, "puntos": puntos}
+    texto = (body.texto or "").strip()
+    return "nota_pipc", {"texto": texto}
+
+
+def _seg_campo_resumen(registros: List[dict], corte: date) -> Optional[dict]:
+    """Cumplimiento en campo al corte: el último registro con fecha <= corte
+    es el ACTUAL y el inmediato anterior es el ANTERIOR."""
+    vigentes = sorted((r for r in registros if r.get("tipo") == "campo" and (r.get("fecha") or "") <= corte.isoformat()),
+                      key=lambda r: r["fecha"])
+    if not vigentes:
+        return None
+    actual = vigentes[-1]
+    return {"actual": actual["porcentaje"], "fecha": actual["fecha"],
+            "anterior": vigentes[-2]["porcentaje"] if len(vigentes) > 1 else None,
+            "dias_manual": actual.get("dias_sin_accidentes")}
+
+
+def _seg_dias_sin_accidentes(reportes: List[dict], corte: date, manual: Optional[int] = None) -> Optional[int]:
+    """Días transcurridos desde el último accidente que reinicia el contador
+    (`SEG_TIPOS_QUE_REINICIAN`) hasta el corte. Sin ninguno: días desde el
+    primer registro de cualquier tipo; sin registros: None. `manual`, si
+    viene, manda — el criterio de cada obra puede ser distinto."""
+    if manual is not None:
+        return manual
+    fechas_all, fechas_acc = [], []
+    for r in reportes:
+        try:
+            f = date.fromisoformat((r.get("fecha") or "")[:10])
+        except ValueError:
+            continue
+        if f > corte:
+            continue
+        fechas_all.append(f)
+        if _seguridad_tipo_efectivo(r) in SEG_TIPOS_QUE_REINICIAN:
+            fechas_acc.append(f)
+    ref = max(fechas_acc) if fechas_acc else (min(fechas_all) if fechas_all else None)
+    return (corte - ref).days if ref else None
+
+
+def _seg_doc_mensual(registros: List[dict], corte: date) -> Optional[dict]:
+    """Cumplimiento documental mensual: el último mes <= el del corte y el
+    mes anterior capturado (para comparar, "42%: Abril / 67.37%: Mayo")."""
+    tope = f"{corte.year:04d}-{corte.month:02d}"
+    meses = sorted((r for r in registros if r.get("tipo") == "doc_mensual" and (r.get("mes") or "") <= tope),
+                   key=lambda r: r["mes"])
+    if not meses:
+        return None
+    return {"actual": meses[-1], "anterior": meses[-2] if len(meses) > 1 else None}
+
+
+def _mes_label(mes: str) -> str:
+    return f"{_SEGURIDAD_MESES[int(mes[5:7]) - 1]} {mes[:4]}"
+
+
+def _seg_doc_semanal(registros: List[dict], corte: date) -> Optional[dict]:
+    """Las dos últimas semanas capturadas (<= corte) con el % por categoría."""
+    semanas = sorted({r["semana"] for r in registros if r.get("tipo") == "doc_semanal" and r["semana"] <= corte.isoformat()})[-2:]
+    if not semanas:
+        return None
+    valores = {(r["semana"], r["categoria"]): r["porcentaje"] for r in registros if r.get("tipo") == "doc_semanal"}
+    return {"semanas": [{"fecha": sm, "label": f"SEMANA {date.fromisoformat(sm).isocalendar()[1]}"} for sm in semanas],
+            "categorias": [{"clave": c, "label": lbl, "valores": [valores.get((sm, c)) for sm in semanas]}
+                           for c, lbl in SEG_CATEGORIAS.items()]}
+
+
+def _pipc_total(puntos: List[float]) -> float:
+    return min(round(sum(puntos), 2), 100.0)
+
+
+def _pipc_bloques(registros: List[dict]) -> List[dict]:
+    """Tabla de cumplimiento del PIPC: un renglón por paso y una columna por
+    estación (en puntos), más el total por estación, y las notas de avance."""
+    estaciones = sorted((r for r in registros if r.get("tipo") == "pipc"), key=lambda r: (r.get("orden", 0), r.get("etiqueta", "")))
+    if not estaciones:
+        return []
+
+    def num(v: float) -> str:
+        return f"{v:g}"
+
+    filas = [[str(i), nombre, concepto] + [num(e["puntos"][i - 1]) for e in estaciones]
+             for i, (nombre, concepto, _max) in enumerate(PIPC_PASOS, start=1)]
+    totales = [_pipc_total(e["puntos"]) for e in estaciones]
+    filas.append(["", "CUMPLIMIENTO TOTAL", f"Promedio de las estaciones: {num(round(sum(totales) / len(totales), 2))}%"]
+                 + [f"{num(t)}%" for t in totales])
+    n = len(estaciones)
+    resto = 0.54 / n
+    bloques: List[dict] = [{
+        "type": "table", "heading": "CUMPLIMIENTO DEL PIPC MODALIDAD ESTUDIO DE RIESGO OBRA Y DEMOLICIÓN (EROD)",
+        "headers": ["N°", "PASOS - ETAPAS", "CONCEPTO"] + [e["etiqueta"] for e in estaciones],
+        "rows": filas, "col_widths": [0.04, 0.12, 0.30] + [resto] * n, "empty_text": "Sin datos del PIPC.",
+    }, {"type": "list", "heading": None, "items": [{"title": None, "body": PIPC_NOTA, "extra": None, "meta": None}],
+        "empty_text": ""}]
+    nota = next((r for r in registros if r.get("tipo") == "nota_pipc"), None)
+    lineas = [ln.strip() for ln in (nota or {}).get("texto", "").splitlines() if ln.strip()]
+    if lineas:
+        bloques.append({"type": "list", "heading": "Notas de avance",
+                        "items": [{"title": None, "body": ln, "extra": None, "meta": None} for ln in lineas],
+                        "empty_text": ""})
+    return bloques
+
+
+def _grafica_gauge_png(titulo: str, porcentaje: float, detalle: str) -> bytes:
+    """Medidor semicircular del % de cumplimiento (rojo < 40, ámbar < 70,
+    verde desde 70), con el valor al centro. Dibujado con Pillow."""
+    from PIL import Image as _I
+    W, H = 1800, 800
+    img = _I.new("RGB", (W, H), "white")
+    d, (f_txt, f_tit, f_big) = _chart_canvas(img, 26, 32, 110)
+    d.text((W / 2, 50), titulo, fill="#0F172A", font=f_tit, anchor="mm")
+    cx, cy, r = W / 2, 560, 380
+    bbox = [cx - r, cy - r, cx + r, cy + r]
+    d.pieslice(bbox, 180, 360, fill="#E2E8F0")
+    pct = max(0.0, min(float(porcentaje), 100.0))
+    color = "#DC2626" if pct < 40 else "#F59E0B" if pct < 70 else "#16A34A"
+    if pct > 0:
+        d.pieslice(bbox, 180, 180 + 180 * pct / 100, fill=color)
+    hueco = r * 0.62
+    d.ellipse([cx - hueco, cy - hueco, cx + hueco, cy + hueco], fill="white")
+    d.rectangle([cx - r - 5, cy, cx + r + 5, cy + 60], fill="white")
+    d.text((cx, cy - 90), f"{pct:g}%", fill="#0F172A", font=f_big, anchor="mm")
+    d.text((cx - r + (r - hueco) / 2, cy + 30), "0%", fill="#475569", font=f_txt, anchor="mm")
+    d.text((cx + r - (r - hueco) / 2, cy + 30), "100%", fill="#475569", font=f_txt, anchor="mm")
+    if detalle:
+        d.text((cx, cy + 110), detalle, fill="#475569", font=f_txt, anchor="mm")
+    out = io.BytesIO()
+    img.save(out, format="PNG")
+    return out.getvalue()
+
+
+def _grafica_barras_png(titulo: str, categorias: List[str], series: List[tuple]) -> bytes:
+    """Barras agrupadas (una barra por serie dentro de cada categoría) con el
+    valor sobre cada barra. `series` = [(nombre, "#RRGGBB", [valores 0-100 o None])]."""
+    from PIL import Image as _I
+    W, H = 1800, 800
+    img = _I.new("RGB", (W, H), "white")
+    d, (f_txt, f_tit) = _chart_canvas(img, 24, 32)
+    d.text((W / 2, 45), titulo, fill="#0F172A", font=f_tit, anchor="mm")
+    x0, x1, y0, y1 = 140, W - 60, 110, H - 170
+    for i in range(6):
+        y = y1 - (y1 - y0) * i / 5
+        d.line([(x0, y), (x1, y)], fill="#E2E8F0", width=1)
+        d.text((x0 - 12, y), f"{20 * i}%", fill="#475569", font=f_txt, anchor="rm")
+    d.line([(x0, y0), (x0, y1), (x1, y1)], fill="#475569", width=2)
+    ancho_grupo = (x1 - x0) / max(len(categorias), 1)
+    ancho_barra = min(ancho_grupo * 0.8 / max(len(series), 1), 160)
+    for gi, cat in enumerate(categorias):
+        gx = x0 + ancho_grupo * (gi + 0.5)
+        d.text((gx, y1 + 22), cat, fill="#0F172A", font=f_txt, anchor="mt")
+        for si, (_nombre, color, valores) in enumerate(series):
+            v = valores[gi]
+            if v is None:
+                continue
+            bx = gx + (si - (len(series) - 1) / 2) * (ancho_barra + 10)
+            top = y1 - (y1 - y0) * min(float(v), 100.0) / 100
+            d.rectangle([bx - ancho_barra / 2, top, bx + ancho_barra / 2, y1], fill=color)
+            d.text((bx, top - 8), f"{v:g}%", fill="#0F172A", font=f_txt, anchor="mb")
+    lx = x0
+    for nombre, color, _v in series:
+        d.rectangle([lx, H - 60, lx + 28, H - 40], fill=color)
+        d.text((lx + 38, H - 50), nombre, fill="#0F172A", font=f_txt, anchor="lm")
+        lx += 70 + int(d.textlength(nombre, font=f_txt)) + 40
+    out = io.BytesIO()
+    img.save(out, format="PNG")
+    return out.getvalue()
+
+
+def _indicadores_seguridad_graficas(registros: List[dict], reportes: List[dict], corte: date) -> tuple:
+    """([bloques ANTES de las gráficas], [(heading, caption, png)], [bloques
+    DESPUÉS]) del cumplimiento de seguridad e higiene al corte, en el orden del
+    reporte: días sin accidentes → medidor de campo → documental → PIPC. Cada
+    parte se omite si no hay datos."""
+    bloques: List[dict] = []
+    graficas: List[tuple] = []
+    campo = _seg_campo_resumen(registros, corte)
+    if campo:
+        dias = _seg_dias_sin_accidentes(reportes, corte, campo["dias_manual"])
+        previo = f"{campo['anterior']:g}%" if campo["anterior"] is not None else "sin dato"
+        detalle = f"Porcentaje actual {campo['actual']:g}%  ·  Porcentaje anterior {previo}"
+        if dias is not None:
+            bloques.append({"type": "summary", "text": f"DÍAS SIN ACCIDENTES: {dias}"})
+        graficas.append(("CUMPLIMIENTO EN CAMPO", detalle,
+                         _grafica_gauge_png("Cumplimiento en campo", campo["actual"], "")))
+    mensual = _seg_doc_mensual(registros, corte)
+    if mensual:
+        a, b = mensual["actual"], mensual["anterior"]
+        comp = f"  ·  {b['porcentaje']:g}%: {_SEGURIDAD_MESES[int(b['mes'][5:7]) - 1]}" if b else ""
+        cap = f"Porcentaje de cumplimiento documental mensual · Periodo {_mes_label(a['mes'])}{comp}  ·  {a['porcentaje']:g}%: {_SEGURIDAD_MESES[int(a['mes'][5:7]) - 1]}"
+        graficas.append(("CUMPLIMIENTO DOCUMENTAL", cap, _grafica_donas_png(
+            f"Cumplimiento documental · {_mes_label(a['mes'])}", [("Completo", a["porcentaje"], 100)],
+            detalle=lambda real, total: f"Faltante {100 - real:g}%", decimales=2)))
+    semanal = _seg_doc_semanal(registros, corte)
+    if semanal:
+        colores = ["#9CA3AF", "#2563EB"]
+        series = [(sm["label"], colores[i % 2], [c["valores"][i] for c in semanal["categorias"]])
+                  for i, sm in enumerate(semanal["semanas"])]
+        graficas.append(("PORCENTAJE DE CUMPLIMIENTO POR ÁREA", "Cumplimiento documental por semana en Seguridad, Protección civil e Higiene y salud",
+                         _grafica_barras_png("Porcentaje de cumplimiento", [c["label"] for c in semanal["categorias"]], series)))
+    return bloques, graficas, _pipc_bloques(registros)
+
+
+@api.get("/projects/{pid}/seguridad-indicadores")
+async def list_seguridad_indicadores(pid: str, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    items = await db.seguridad_indicadores.find({"project_id": pid}).to_list(length=5000)
+    items.sort(key=lambda r: (r.get("tipo", ""), r.get("fecha") or r.get("mes") or r.get("semana") or "", r.get("orden", 0)))
+    return [{k: v for k, v in d.items() if k != "_id"} for d in items]
+
+
+@api.put("/projects/{pid}/seguridad-indicadores")
+async def set_seguridad_indicador(pid: str, body: IndicadorIn, user: dict = Depends(current_user)):
+    """Crea o REEMPLAZA un indicador por su clave natural (mismo corte, mes,
+    semana+categoría o estación)."""
+    _assert_write_allowed(user)
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "indicadores_seguridad")
+    clave, campos = _indicador_normalizar(body)
+    now = datetime.now(timezone.utc)
+    await db.seguridad_indicadores.update_one(
+        {"project_id": pid, "clave": clave},
+        {"$set": {**campos, "tipo": body.tipo, "updated_at": now, "updated_by": user["id"]},
+         "$setOnInsert": {"id": str(uuid.uuid4()), "created_at": now, "created_by": user["id"],
+                          "created_by_name": user["name"]}},
+        upsert=True,
+    )
+    doc = await db.seguridad_indicadores.find_one({"project_id": pid, "clave": clave})
+    return {k: v for k, v in doc.items() if k != "_id"}
+
+
+@api.delete("/projects/{pid}/seguridad-indicadores/{rid}")
+async def delete_seguridad_indicador(pid: str, rid: str, user: dict = Depends(current_user)):
+    """Coordinador/Sub-Coordinador borran cualquiera; el resto solo lo suyo."""
+    _assert_write_allowed(user)
+    await ensure_project_access(user, pid)
+    doc = await db.seguridad_indicadores.find_one({"id": rid, "project_id": pid}, {"created_by": 1})
+    if not doc:
+        raise HTTPException(404, "Registro no existe")
+    if user.get("role") not in (ROLE_COORD, ROLE_SUB) and doc.get("created_by") != user["id"]:
+        raise HTTPException(403, "Solo puedes eliminar los registros que tú capturaste")
+    await db.seguridad_indicadores.delete_one({"id": rid, "project_id": pid})
     return {"ok": True}
 
 
@@ -4957,11 +6644,11 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
         try:
             end_d = date.fromisoformat(pres["fecha"])
             start_d = end_d - timedelta(days=6)
-            conceptos = await db.conceptos.find({"project_id": pid, "activo": True}).to_list(length=100000)
+            conceptos, _pertenece_obra = await _conceptos_activos_contrato(pid, "obra")
             pv_total = sum((_prorrateo_concepto_en_ventana(c, start_d, end_d) for c in conceptos), start=Decimal("0"))
             ev_total = Decimal("0")
             async for a in db.registros_avance.find({"project_id": pid, "fecha": {"$gte": start_d.isoformat(), "$lte": end_d.isoformat()}}):
-                if a.get("importe_ganado_congelado") is not None:
+                if _pertenece_obra(a.get("concepto_id")) and a.get("importe_ganado_congelado") is not None:
                     ev_total += to_decimal(a["importe_ganado_congelado"])
             ac_total = Decimal("0")
             async for g in db.gastos_reales.find({"project_id": pid, "fecha": {"$gte": start_d.isoformat(), "$lte": end_d.isoformat()}}):
@@ -10941,6 +12628,36 @@ async def export_reports_pdf(
                 c.drawCentredString(PW / 2, y, block["text"])
                 y -= 14 * 2.2
 
+            def _draw_tabla_paginada(tbl) -> None:
+                """Dibuja una Table de reportlab y, si no cabe en lo que queda
+                de la página, la parte por filas (repitiendo el encabezado,
+                `repeatRows=1`) en las páginas siguientes."""
+                nonlocal y, page_num
+                _ensure_space(2.0 * cm)
+                while True:
+                    disp = y - bottom_y
+                    tw, th = tbl.wrapOn(c, content_w, disp)
+                    if th <= disp:
+                        tbl.drawOn(c, left_x, y - th)
+                        y -= th + 14 * 1.2
+                        return
+                    partes = tbl.split(content_w, disp)
+                    if len(partes) < 2:  # una sola fila más alta que lo disponible: página nueva y a dibujar
+                        if y < top_y:
+                            c.showPage()
+                            page_num += 1
+                            y = top_y
+                            continue
+                        tbl.drawOn(c, left_x, y - th)
+                        y -= th + 14 * 1.2
+                        return
+                    primera, tbl = partes[0], partes[1]
+                    _tw, _th = primera.wrapOn(c, content_w, disp)
+                    primera.drawOn(c, left_x, y - _th)
+                    c.showPage()
+                    page_num += 1
+                    y = top_y
+
             def _draw_table_block(block: dict) -> None:
                 nonlocal y
                 if block.get("heading"):
@@ -10954,7 +12671,7 @@ async def export_reports_pdf(
                 data = [headers]
                 for row in rows:
                     data.append([Paragraph(_xml_escape(str(v)), cell_style) for v in row])
-                tbl = Table(data, colWidths=[content_w * w for w in widths])
+                tbl = Table(data, colWidths=[content_w * w for w in widths], repeatRows=1)
                 tbl.setStyle(TableStyle([
                     ("BACKGROUND", (0, 0), (-1, 0), BRAND),
                     ("TEXTCOLOR", (0, 0), (-1, 0), WHITE),
@@ -10965,10 +12682,7 @@ async def export_reports_pdf(
                     ("TOPPADDING", (0, 0), (-1, -1), 5),
                     ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
                 ]))
-                _ensure_space(2.0 * cm)
-                tw, th = tbl.wrapOn(c, content_w, y - bottom_y)
-                tbl.drawOn(c, left_x, y - th)
-                y -= th + 14 * 1.2
+                _draw_tabla_paginada(tbl)
 
             def _draw_list_block(block: dict) -> None:
                 nonlocal y
@@ -11117,10 +12831,10 @@ async def export_reports_pdf(
                 if not grupos:
                     _draw_empty("Sin riesgos registrados en este período.")
                     return
-                headers = ["Estaciones/Postes", "Riesgos", "Propuesta de control", "Avance"]
-                widths = [0.14, 0.32, 0.42, 0.12]
+                headers = ["Estaciones\nPostes", "Riesgos", "Propuesta de control", "Avance"]
+                widths = [0.10, 0.38, 0.40, 0.12]
                 data = [headers]
-                span_cmds = []
+                caja_cmds = []
                 row_i = 1
                 for g in grupos:
                     filas = g.get("filas") or []
@@ -11128,33 +12842,32 @@ async def export_reports_pdf(
                         continue
                     start_row = row_i
                     for idx, f in enumerate(filas):
-                        riesgo_txt = f"{idx + 1}) {f['descripcion']}"
                         data.append([
-                            Paragraph(_xml_escape(g["estacion"]), cell_style) if idx == 0 else "",
-                            Paragraph(_xml_escape(riesgo_txt), cell_style),
+                            Paragraph(f"<b>{_xml_escape(g['estacion'])}</b>", cell_style) if idx == 0 else "",
+                            Paragraph(_xml_escape(f["descripcion"]), cell_style),
                             Paragraph(_xml_escape(f["control"]).replace("\n", "<br/>"), cell_style),
                             f"{f['avance']}%",
                         ])
                         row_i += 1
-                    if len(filas) > 1:
-                        span_cmds.append(("SPAN", (0, start_row), (0, row_i - 1)))
+                    # La estación se imprime una vez por grupo: su columna es
+                    # una caja sin líneas internas (sin SPAN, que no sobrevive
+                    # a partir la tabla entre páginas).
+                    caja_cmds.append(("BOX", (0, start_row), (0, row_i - 1), 0.5, BORDER))
                 style = [
                     ("BACKGROUND", (0, 0), (-1, 0), SHEET_MAROON),
                     ("TEXTCOLOR", (0, 0), (-1, 0), WHITE),
                     ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
                     ("FONTSIZE", (0, 0), (-1, -1), 9),
-                    ("GRID", (0, 0), (-1, -1), 0.5, BORDER),
-                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("BOX", (0, 0), (-1, 0), 0.5, BORDER),
+                    ("GRID", (1, 0), (-1, -1), 0.5, BORDER),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
                     ("ALIGN", (-1, 0), (-1, -1), "CENTER"),
                     ("TOPPADDING", (0, 0), (-1, -1), 5),
                     ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-                ] + span_cmds
-                tbl = Table(data, colWidths=[content_w * w for w in widths])
+                ] + caja_cmds
+                tbl = Table(data, colWidths=[content_w * w for w in widths], repeatRows=1)
                 tbl.setStyle(TableStyle(style))
-                _ensure_space(2.0 * cm)
-                tw, th = tbl.wrapOn(c, content_w, y - bottom_y)
-                tbl.drawOn(c, left_x, y - th)
-                y -= th + 14
+                _draw_tabla_paginada(tbl)
 
             def _draw_seguridad_indicadores_block(block: dict) -> None:
                 nonlocal y
@@ -11339,6 +13052,18 @@ async def export_reports_pdf(
                     _ensure_space(12.0 * cm)
                     if it.get("titulo"):
                         _draw_heading(it["titulo"])
+                    if _foto_comp_desc(it, "original") or _foto_comp_desc(it, "actual"):
+                        from reportlab.lib.utils import simpleSplit
+                        for col, key in enumerate(("original", "actual")):
+                            x = left_x + col * (col_w + gap)
+                            c.setFillColor(TEXT)
+                            if it.get("desc_encabezado"):
+                                c.setFont("Helvetica-Bold", 10)
+                                c.drawString(x, y - 10, it["desc_encabezado"])
+                            c.setFont("Helvetica", 10)
+                            for i, ln in enumerate(simpleSplit(_foto_comp_desc(it, key), "Helvetica", 10, col_w)[:4]):
+                                c.drawString(x, y - 24 - i * 12, ln)
+                        y -= 76
                     img_h = min(8.5 * cm, y - bottom_y - 1.4 * cm)
                     drawn_h = 0.0
                     for col, (key, lbl, fkey) in enumerate((
@@ -11346,6 +13071,8 @@ async def export_reports_pdf(
                     )):
                         x = left_x + col * (col_w + gap)
                         h = _pdf_fit_image(it[key], x, y, col_w, img_h) if it.get(key) else 0.0
+                        if not h and it.get("sin_placeholder"):
+                            continue
                         if not h:
                             c.setStrokeColor(BORDER)
                             c.rect(x, y - img_h, col_w, img_h, stroke=1, fill=0)
@@ -12674,7 +14401,7 @@ async def export_reports_pdf(
             y = _section_title(left_x, y, col_w, "Actividad en Postes")
 
             POSTE_COLS = ["POSTE", "UBICACIÓN", "PILAS", "CABEZAL", "FUSTE", "POSTE"]
-            POSTE_FRACS = [0.09, 0.19, 0.18, 0.18, 0.18, 0.18]
+            POSTE_FRACS = [0.14, 0.17, 0.17, 0.17, 0.17, 0.18]  # 1ª columna: que "Poste S4" no se parta
             poste_col_w = [col_w * f for f in POSTE_FRACS]
             POSTE_HEADER_H = 16
             POSTE_ROW_H = 13
@@ -14120,6 +15847,9 @@ async def _gather_modulos_export_data(
     out: dict = {
         "forestal": None, "seguridad": None, "riesgos": None, "estudios": None, "ambiental": None,
         "tabla_resumen": None, "fotos_lidar": None, "tapial": None,
+        "pruebas_calidad": None, "control_calidad": None,
+        "avance_obra": None, "estimaciones": None, "pendientes_generales": None,
+        "aspectos_sociales": None, "indicadores_seguridad": None,
     }
     date_q = {"created_at": {"$gte": start_dt, "$lte": end_dt}}
     # Riesgos y Estudios son matrices mutables (el % de avance se actualiza
@@ -14236,28 +15966,21 @@ async def _gather_modulos_export_data(
             }
 
     if activos.get("gestion_riesgos"):
-        registros = await db.riesgos_registros.find(
-            {"project_id": pid, **mutable_date_q}
-        ).sort("estacion_nombre", 1).to_list(length=2000)
+        # El mapa es una matriz VIVA: en el informe diario cuenta lo creado o
+        # actualizado en el día; en el semanal y el mensual se imprime el mapa
+        # vigente (todo lo que no está al 100%) más lo que se creó, actualizó
+        # o cerró en el período — si no, cada semana saldría un fragmento.
+        if categoria in ("reportes_semanales", "reportes_mensuales"):
+            riesgos_q = {"project_id": pid, "$or": [{"porcentaje_avance": {"$lt": 100}}] + mutable_date_q["$or"]}
+        else:
+            riesgos_q = {"project_id": pid, **mutable_date_q}
+        registros = await db.riesgos_registros.find(riesgos_q).sort(
+            [("estacion_nombre", 1), ("created_at", 1)]
+        ).to_list(length=2000)
         if registros:
-            grupos_orden: List[str] = []
-            grupos: Dict[str, list] = {}
-            for r in registros:
-                estacion = r.get("estacion_nombre") or "—"
-                if estacion not in grupos:
-                    grupos_orden.append(estacion)
-                    grupos[estacion] = []
-                grupos[estacion].append({
-                    "descripcion": r.get("descripcion_riesgo") or "",
-                    "control": r.get("propuesta_control") or "",
-                    "avance": r.get("porcentaje_avance", 0),
-                })
             out["riesgos"] = {
                 "titulo": "MAPA DE RIESGOS",
-                "blocks": [{
-                    "type": "riesgos_mapa",
-                    "grupos": [{"estacion": e, "filas": grupos[e]} for e in grupos_orden],
-                }],
+                "blocks": [{"type": "riesgos_mapa", "grupos": _riesgos_grupos(registros)}],
             }
 
     if activos.get("estudios_proyecto"):
@@ -14426,6 +16149,106 @@ async def _gather_modulos_export_data(
             })
         if bloques_tapial:
             out["tapial"] = {"titulo": "TAPIAL", "blocks": bloques_tapial}
+
+    if activos.get("pruebas_calidad"):
+        # Log de eventos: se filtra por la `fecha` de la prueba (string ISO,
+        # en hora de CDMX), no por created_at — una prueba capturada hoy
+        # puede ser de ayer.
+        d_ini = start_dt.astimezone(MX_TZ).date().isoformat()
+        d_fin = end_dt.astimezone(MX_TZ).date().isoformat()
+        pruebas = await db.pruebas_calidad.find(
+            {"project_id": pid, "fecha": {"$gte": d_ini, "$lte": d_fin}}
+        ).to_list(length=5000)
+        nodos = await db.location_nodes.find(
+            {"project_id": pid, "id": {"$in": list({p["node_id"] for p in pruebas if p.get("node_id")})}}
+        ).to_list(length=500)
+        bloques_pc = _pruebas_calidad_bloques(pruebas, {n["id"]: n.get("name") or "" for n in nodos})
+        if bloques_pc:
+            out["pruebas_calidad"] = {"titulo": "PRUEBAS DE CALIDAD", "blocks": bloques_pc}
+
+    if activos.get("control_calidad"):
+        d_ini = start_dt.astimezone(MX_TZ).date().isoformat()
+        d_fin = end_dt.astimezone(MX_TZ).date().isoformat()
+        fotos_cc = await db.control_calidad.find(
+            {"project_id": pid, "fecha": {"$gte": d_ini, "$lte": d_fin}}
+        ).to_list(length=1000)
+        nodos_cc = await db.location_nodes.find(
+            {"project_id": pid, "id": {"$in": list({r["node_id"] for r in fotos_cc if r.get("node_id")})}}
+        ).to_list(length=500)
+        bloques_cc = _control_calidad_bloques(fotos_cc, {n["id"]: n.get("name") or "" for n in nodos_cc})
+        if bloques_cc:
+            out["control_calidad"] = {"titulo": "CONTROL DE CALIDAD", "blocks": bloques_cc}
+
+    if activos.get("avance_obra"):
+        # Estado acumulado al corte del informe (no un log): se calcula del
+        # motor EVM, sin captura propia — una sección por contrato (obra y
+        # supervisión) que tenga presupuesto y avance o programa.
+        ini_d = start_dt.astimezone(MX_TZ).date()
+        fin_d = end_dt.astimezone(MX_TZ).date()
+        por_contrato = _split_por_contrato(
+            await db.conceptos.find({"project_id": pid}).to_list(length=100000),
+            await db.partidas.find({"project_id": pid}).to_list(length=5000),
+            await db.registros_avance.find({"project_id": pid}).to_list(length=200000),
+        )
+        gastos_ao = await db.gastos_reales.find({"project_id": pid}).to_list(length=100000)
+        blocks_ao: List[dict] = []
+        contratos_ao: List[str] = []
+        for contrato_ao in CONTRATOS_FIN:
+            conceptos_c, partidas_c, registros_c = por_contrato[contrato_ao]
+            res_ao = _avance_obra_resumen(
+                conceptos_c, partidas_c, registros_c, gastos_ao if contrato_ao == "obra" else [], ini_d, fin_d,
+            )
+            if not (res_ao and (res_ao["real_pct"] or res_ao["programado_pct"])):
+                continue
+            contratos_ao.append(contrato_ao)
+            for heading, caption, png in _programa_barras_graficas(conceptos_c, partidas_c, registros_c, ini_d, fin_d, contrato_ao):
+                jpg = await asyncio.to_thread(_png_bytes_to_jpeg_dataurl, png)
+                blocks_ao.append({"type": "imagen", "heading": heading, "imagen": jpg, "caption": caption})
+            blocks_ao += _avance_obra_bloques(res_ao, ini_d, fin_d, contrato_ao)
+            for heading, caption, png in _avance_obra_graficas(res_ao, fin_d, contrato_ao):
+                jpg = await asyncio.to_thread(_png_bytes_to_jpeg_dataurl, png)
+                blocks_ao.append({"type": "imagen", "heading": heading, "imagen": jpg, "caption": caption})
+        if blocks_ao:
+            titulo_ao = ("AVANCE DE OBRA Y SUPERVISIÓN" if len(contratos_ao) == 2
+                         else f"AVANCE DE {CONTRATO_FIN_LABEL[contratos_ao[0]]}")
+            out["avance_obra"] = {"titulo": titulo_ao, "blocks": blocks_ao}
+
+    if activos.get("estimaciones"):
+        bloques_es = _estimaciones_bloques(await db.estimaciones.find({"project_id": pid}).to_list(length=500))
+        if bloques_es:
+            out["estimaciones"] = {"titulo": "CONCENTRADO DE ESTIMACIONES", "blocks": bloques_es}
+
+    if activos.get("pendientes_generales"):
+        bloques_pg = _pendientes_bloques(await db.pendientes_generales.find({"project_id": pid}).to_list(length=500))
+        if bloques_pg:
+            out["pendientes_generales"] = {"titulo": "PENDIENTES O REQUERIMIENTOS GENERALES", "blocks": bloques_pg}
+
+    if activos.get("aspectos_sociales"):
+        # Estado vigente al corte del informe (no un log): levantamientos y
+        # salvamento acumulan desde el arranque de los trabajos.
+        corte_as = end_dt.astimezone(MX_TZ).date()
+        lev_as = await db.levantamientos_sociales.find({"project_id": pid}).to_list(length=50)
+        salv_as = await db.salvamento_arqueologico.find({"project_id": pid}).to_list(length=2000)
+        blocks_as = _levantamientos_bloques(lev_as)
+        for heading, caption, png in _levantamientos_graficas(lev_as) + _salvamento_graficas(salv_as, corte_as):
+            jpg = await asyncio.to_thread(_png_bytes_to_jpeg_dataurl, png)
+            blocks_as.append({"type": "imagen", "heading": heading, "imagen": jpg, "caption": caption})
+        if blocks_as:
+            out["aspectos_sociales"] = {"titulo": "ASPECTOS SOCIALES", "blocks": blocks_as}
+
+    if activos.get("indicadores_seguridad"):
+        corte_is = end_dt.astimezone(MX_TZ).date()
+        bloques_is, graficas_is, bloques_pipc = _indicadores_seguridad_graficas(
+            await db.seguridad_indicadores.find({"project_id": pid}).to_list(length=5000),
+            await db.seguridad_reportes.find({"project_id": pid}).to_list(length=20000),
+            corte_is,
+        )
+        for heading, caption, png in graficas_is:
+            jpg = await asyncio.to_thread(_png_bytes_to_jpeg_dataurl, png)
+            bloques_is.append({"type": "imagen", "heading": heading, "imagen": jpg, "caption": caption})
+        bloques_is += bloques_pipc
+        if bloques_is:
+            out["indicadores_seguridad"] = {"titulo": "CUMPLIMIENTO SEGURIDAD E HIGIENE", "blocks": bloques_is}
 
     return out
 
@@ -15063,8 +16886,21 @@ async def export_reports_docx(
                 for col, (key, lbl, fkey) in enumerate((
                     ("original", "ORIGINAL", "fecha_original"), ("actual", "ACTUAL", "fecha_actual"),
                 )):
-                    cp = t.rows[0].cells[col].paragraphs[0]
+                    celda = t.rows[0].cells[col]
+                    if _foto_comp_desc(it, key):
+                        dp = celda.paragraphs[0]
+                        if it.get("desc_encabezado"):
+                            dr = dp.add_run(it["desc_encabezado"] + "\n")
+                            dr.bold = True
+                            dr.font.size = Pt(9)
+                        dt = dp.add_run(_foto_comp_desc(it, key))
+                        dt.font.size = Pt(9)
+                        cp = celda.add_paragraph()
+                    else:
+                        cp = celda.paragraphs[0]
                     cp.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    if not it.get(key) and it.get("sin_placeholder"):
+                        continue
                     if it.get(key):
                         try:
                             cp.add_run().add_picture(
@@ -15268,14 +17104,13 @@ async def export_reports_pptx(
     for _sid, _textos in actividades_curadas_by_subtramo.items():
         if _textos:
             actividades_by_subtramo[_sid] = _textos
-    # Tabla consolidada "Actividades por Área" (ver la misma nota en
-    # export_reports_pdf / `_draw_actividades_por_area_section`).
-    actividades_tabla_por_area = await _actividades_tabla_por_area(pid, start_dt, end_dt, user)
-    # Resumen de actividades por Tramo (antes de la Tabla Resumen) — mismas
-    # actividades que muestra el hub para el rango del informe.
-    actividades_resumen_tramo = await _actividades_resumen_por_tramo_prefetch(
-        pid, start_dt, end_dt, user, nodes_by_id,
+    # Resumen de actividades POR FRENTE, al inicio del PPTX con el formato del
+    # reporte semanal de referencia — mismas actividades que muestra el hub
+    # (`_actividades_generales_core`) para el rango exacto del informe.
+    _actividades_items_resumen = await _actividades_generales_core(
+        pid, None, {"$gte": start_dt, "$lte": end_dt}, user, incluir_ocultas=False,
     )
+    actividades_resumen_frente = _actividades_resumen_por_frente(_actividades_items_resumen, nodes_by_id)
     # Clima: misma prioridad manual > automático que `export_reports_pdf` —
     # ver módulo "Estado del Tiempo" más arriba.
     _fecha_cdmx_hoy = datetime.now(timezone.utc).astimezone(MX_TZ).date().isoformat()
@@ -15865,7 +17700,7 @@ async def export_reports_pptx(
             y = _section_title(left_x, y, col_w, "Actividad en Postes")
 
             POSTE_COLS = ["POSTE", "UBICACIÓN", "PILAS", "CABEZAL", "FUSTE", "POSTE"]
-            POSTE_FRACS = [0.09, 0.19, 0.18, 0.18, 0.18, 0.18]
+            POSTE_FRACS = [0.14, 0.17, 0.17, 0.17, 0.17, 0.18]  # 1ª columna: que "Poste S4" no se parta
             poste_col_w = [int(col_w * f) for f in POSTE_FRACS]
             POSTE_HEADER_H = Cm(0.5)
             POSTE_ROW_H = Cm(0.42)
@@ -15902,7 +17737,12 @@ async def export_reports_pptx(
 
             rows_to_draw = [_poste_row_vals(p) for p in postes_shown]
             if not rows_to_draw:
-                rows_to_draw = [["Sin postes registrados", "", "", "", "", ""]]
+                # Un solo renglón a todo lo ancho (partido en 6 celdas el
+                # mensaje se encajonaba en la 1ª columna y pisaba el título de abajo).
+                _wf_rect(slide, left_x, yy, col_w, POSTE_ROW_H, line_rgb=WF_BORDER_RGB, line_pt=0.5)
+                add_text(slide, left_x, yy, col_w, POSTE_ROW_H, "Sin postes registrados", size=POSTE_FONT_SIZE,
+                         italic=True, color=WF_MUTED_RGB, align=PP_ALIGN.CENTER)
+                yy += POSTE_ROW_H
             for ridx, vals in enumerate(rows_to_draw):
                 if ridx % 2 == 1:
                     _wf_rect(slide, left_x, yy, col_w, POSTE_ROW_H, fill_rgb=WF_ZEBRA_TINT_RGB)
@@ -16022,7 +17862,9 @@ async def export_reports_pptx(
                 # ver `_recuento_general_by_nodo`) el ancho se reparte en 3
                 # franjas (POSTE/desc/CANT.), sin ella en 2 (histórico).
                 if tiene_poste:
-                    poste_x0, name_x0, qty_x0 = 0.0, 0.30, 0.72
+                    # POSTE angosta, descripción ancha: "MAQUINARIA Y EQUIPO"
+                    # (13 pt, negritas) no cabe en menos y se partía en dos líneas.
+                    poste_x0, name_x0, qty_x0 = 0.0, 0.26, 0.78
                 else:
                     poste_x0, name_x0, qty_x0 = None, 0.0, 0.62
                 _wf_rect(slide, x, y_top, tbl_w, HEADER_H, fill_rgb=BRAND_RGB)
@@ -16100,7 +17942,7 @@ async def export_reports_pptx(
                 n_total = max(len(personal_rows_e), len(maquinaria_rows_e))
 
                 title_reserved = Cm(1.3) if not _emitted_recuento_general_title else Cm(0)
-                subtitle_reserved = Cm(1.0) + (Cm(0.55) if show_path else Cm(0))
+                subtitle_reserved = Cm(1.0) + (Cm(0.8) if show_path else Cm(0))
                 avail_h = (SH - BOTTOM_MARGIN) - TOP_MARGIN - title_reserved - subtitle_reserved - HEADER_H - TOTAL_H
                 rows_per_slide = max(1, int(avail_h / ROW_H))
 
@@ -16122,9 +17964,9 @@ async def export_reports_pptx(
                               size=18, bold=True, color=WF_TEXT_RGB, align=PP_ALIGN.CENTER)
                     y += Cm(1.0)
                     if show_path:
-                        add_text(slide, MARGIN_X, y, content_w, Cm(0.55), nodo_path,
+                        add_text(slide, MARGIN_X, y, content_w, Cm(0.65), nodo_path,
                                   size=11, color=WF_MUTED_RGB, align=PP_ALIGN.CENTER)
-                        y += Cm(0.55)
+                        y += Cm(0.8)  # aire bajo la ruta: el encabezado de la tabla la tapaba
 
                     chunk_end = min(idx + rows_per_slide, n_total)
                     is_last_chunk = chunk_end >= n_total
@@ -16136,8 +17978,9 @@ async def export_reports_pptx(
                     idx = chunk_end
 
         def _emit_resumen_frentes_slides() -> None:
-            """Slides "RESUMEN POR FRENTE" (formato del informe diario de
-            referencia, últimas diapositivas): a la izquierda FRENTE /
+            """Slides "RECURSOS GENERALES DE LA OBRA" (formato de los reportes de
+            referencia, últimas diapositivas), con los subtítulos FUERZA DE
+            TRABAJO y MAQUINARIA Y EQUIPO sobre cada tabla: a la izquierda FRENTE /
             CANTIDAD (personas) y a la derecha ESTACIÓN / MAQUINARIA Y
             EQUIPO / CANTIDAD, con una fila por Estación e Intertramo en el
             orden del árbol (incluidos los frentes sin actividad: "0
@@ -16178,7 +18021,7 @@ async def export_reports_pptx(
                 })
             if not any(f["personas"] or f["equipos_qty"] for f in filas):
                 return  # sin actividad en ningún frente: no se imprime una hoja en blanco
-            _indice_mark("resumen_frentes", "Resumen por frente")
+            _indice_mark("resumen_frentes", "Recursos generales de la obra")
 
             MARGIN_X = Cm(1.5)
             content_w = SW - 2 * MARGIN_X
@@ -16189,7 +18032,8 @@ async def export_reports_pptx(
             ROW_H = Cm(1.0)
             TOTAL_H = Cm(1.0)
             title_h = Cm(1.6)
-            avail_h = (SH - BOTTOM_MARGIN) - TOP_MARGIN - title_h - HEADER_H - TOTAL_H
+            SUB_H = Cm(1.3)  # subtítulo con ícono sobre cada tabla
+            avail_h = (SH - BOTTOM_MARGIN) - TOP_MARGIN - title_h - SUB_H - HEADER_H - TOTAL_H
             rows_per_slide = max(1, int(avail_h / ROW_H))
             total_personas = sum(f["personas"] for f in filas)
             total_equipos = sum(f["equipos_qty"] for f in filas)
@@ -16204,11 +18048,22 @@ async def export_reports_pptx(
                 slide = _clone_membrete()
                 y0 = TOP_MARGIN
                 add_text(slide, MARGIN_X, y0, content_w, Cm(1.3),
-                         "RESUMEN POR FRENTE" + ("" if pi == 0 else " (continúa)"),
+                         "RECURSOS GENERALES DE LA OBRA" + ("" if pi == 0 else " (continúa)"),
                          size=28, bold=True, color=READABLE_BRAND_RGB, align=PP_ALIGN.CENTER)
                 y = y0 + title_h
                 lx, rx = MARGIN_X, MARGIN_X + left_w + gutter
-                e_w, m_w, q_w = int(right_w * 0.14), int(right_w * 0.72), right_w - int(right_w * 0.14) - int(right_w * 0.72)
+                icon_r = int(Cm(0.45))
+                for ix, titulo_tbl, es_persona in ((lx, "FUERZA DE TRABAJO", True), (rx, "MAQUINARIA Y EQUIPO", False)):
+                    if es_persona:
+                        _wf_person_icon(slide, ix + icon_r, y + icon_r, icon_r)
+                    else:
+                        _wf_gear_icon(slide, ix + icon_r, y + icon_r, icon_r)
+                    add_text(slide, ix + 2 * icon_r + Cm(0.25), y + Cm(0.05), (left_w if es_persona else right_w) - 2 * icon_r - Cm(0.25),
+                             Cm(0.9), titulo_tbl, size=14, bold=True, color=READABLE_BRAND_RGB)
+                y += SUB_H
+                # La columna CANTIDAD necesita ≥16% del ancho: a 14% "CANTIDAD" se partía en dos líneas.
+                e_w, m_w = int(right_w * 0.14), int(right_w * 0.70)
+                q_w = right_w - e_w - m_w
                 _cell(slide, lx, y, int(left_w * 0.45), HEADER_H, "FRENTE", bold=True, fill=BRAND_RGB, color=HEADER_TEXT_RGB, size=12)
                 _cell(slide, lx + int(left_w * 0.45), y, left_w - int(left_w * 0.45), HEADER_H, "CANTIDAD",
                       bold=True, fill=BRAND_RGB, color=HEADER_TEXT_RGB, size=12)
@@ -16216,7 +18071,7 @@ async def export_reports_pptx(
                 _cell(slide, rx + e_w, y, m_w, HEADER_H, "MAQUINARIA Y EQUIPO", bold=True, fill=BRAND_RGB,
                       color=HEADER_TEXT_RGB, size=12)
                 _cell(slide, rx + e_w + m_w, y, q_w, HEADER_H, "CANTIDAD", bold=True, fill=BRAND_RGB,
-                      color=HEADER_TEXT_RGB, size=12)
+                      color=HEADER_TEXT_RGB, size=11)
                 y += HEADER_H
                 for f in pagina:
                     lw1 = int(left_w * 0.45)
@@ -16261,24 +18116,6 @@ async def export_reports_pptx(
                          align=PP_ALIGN.CENTER)
                 return slide, top_y + Cm(2.5)
 
-            def _draw_table(slide, x, y, headers, rows):
-                col_w = int(content_w / len(headers))
-                header_h = Cm(1.0)
-                row_h = Cm(0.9)
-                _wf_rect(slide, x, y, content_w, header_h, fill_rgb=BRAND_RGB)
-                for i, h in enumerate(headers):
-                    add_text(slide, x + i * col_w, y, col_w, header_h, h,
-                             size=12, bold=True, color=HEADER_TEXT_RGB, align=PP_ALIGN.CENTER)
-                cy = y + header_h
-                for row in rows:
-                    _wf_rect(slide, x, cy, content_w, row_h, fill_rgb=WF_WHITE_RGB,
-                             line_rgb=WF_BORDER_RGB, line_pt=0.75)
-                    for i, val in enumerate(row):
-                        add_text(slide, x + i * col_w, cy, col_w, row_h, str(val)[:90],
-                                 size=11, color=WF_TEXT_RGB, align=PP_ALIGN.CENTER)
-                    cy += row_h
-                return cy
-
             state: dict = {}
 
             def _ensure_space(titulo_continua: str, need) -> None:
@@ -16305,11 +18142,42 @@ async def export_reports_pptx(
                 if block.get("heading"):
                     _draw_heading(titulo_continua, block["heading"])
                 rows = block.get("rows") or []
-                if rows:
-                    state["y"] = _draw_table(state["slide"], MARGIN_X, state["y"], block["headers"], rows)
-                    state["y"] += Cm(0.4)
-                else:
+                if not rows:
                     _draw_empty(block.get("empty_text", "Sin datos en este período."))
+                    return
+                headers = block["headers"]
+                fracs = block.get("col_widths") or [1.0 / len(headers)] * len(headers)
+                widths = [int(content_w * f) for f in fracs]
+                size = 11 if len(headers) <= 5 else 9 if len(headers) <= 8 else 8
+                header_h = max(Cm(1.0), _pptx_fila_alto(headers, widths, size + 1))
+
+                def _encabezado() -> None:
+                    _wf_rect(state["slide"], MARGIN_X, state["y"], content_w, header_h, fill_rgb=BRAND_RGB)
+                    cx = MARGIN_X
+                    for h, w in zip(headers, widths):
+                        add_text(state["slide"], cx, state["y"], w, header_h, h, size=size + 1, bold=True,
+                                 color=HEADER_TEXT_RGB, align=PP_ALIGN.CENTER)
+                        cx += w
+                    state["y"] += header_h
+
+                primera_h = _pptx_fila_alto([str(v) for v in rows[0]], widths, size)
+                _ensure_space(titulo_continua, header_h + min(primera_h, Cm(4)))
+                _encabezado()
+                for row in rows:
+                    celdas = [str(v) for v in row]
+                    row_h = _pptx_fila_alto(celdas, widths, size)
+                    if state["y"] + row_h > bottom_y:
+                        state["slide"], state["y"] = _new_slide(titulo_continua)
+                        _encabezado()
+                    _wf_rect(state["slide"], MARGIN_X, state["y"], content_w, row_h, fill_rgb=WF_WHITE_RGB,
+                             line_rgb=WF_BORDER_RGB, line_pt=0.75)
+                    cx = MARGIN_X
+                    for texto, w in zip(celdas, widths):
+                        add_text(state["slide"], cx, state["y"], w, row_h, texto, size=size, color=WF_TEXT_RGB,
+                                 align=PP_ALIGN.LEFT if len(texto) > 24 else PP_ALIGN.CENTER)
+                        cx += w
+                    state["y"] += row_h
+                state["y"] += Cm(0.4)
 
             def _draw_list_block(titulo_continua: str, block: dict) -> None:
                 if block.get("heading"):
@@ -16427,50 +18295,62 @@ async def export_reports_pptx(
 
             def _draw_riesgos_mapa_block(titulo_continua: str, block: dict) -> None:
                 grupos = block.get("grupos") or []
-                if not grupos:
+                if not any(g.get("filas") for g in grupos):
                     _draw_empty("Sin riesgos registrados en este período.")
                     return
-                col_fracs = [0.14, 0.32, 0.42, 0.12]
-                widths = [int(content_w * f) for f in col_fracs]
-                headers = ["Estaciones/Postes", "Riesgos", "Propuesta de control", "Avance"]
-                total_filas = sum(len(g.get("filas") or []) for g in grupos)
-                _ensure_space(titulo_continua, Cm(0.9) * (total_filas + 2))
+                headers = ["Estaciones\nPostes", "Riesgos", "Propuesta de control", "Avance"]
+                widths = [int(content_w * f) for f in (0.10, 0.38, 0.40, 0.12)]
+                size = 9
+                header_h = Cm(1.2)
                 x = MARGIN_X
-                y = state["y"]
-                header_h = Cm(0.85)
-                _wf_rect(state["slide"], x, y, content_w, header_h, fill_rgb=MAROON_RGB)
-                cx = x
-                for i, h in enumerate(headers):
-                    add_text(state["slide"], cx, y, widths[i], header_h, h,
-                             size=9.5, bold=True, color=WF_WHITE_RGB, align=PP_ALIGN.CENTER)
-                    cx += widths[i]
-                cy = y + header_h
+
+                def _encabezado() -> None:
+                    _wf_rect(state["slide"], x, state["y"], content_w, header_h, fill_rgb=MAROON_RGB)
+                    cx = x
+                    for h, w in zip(headers, widths):
+                        add_text(state["slide"], cx, state["y"], w, header_h, h, size=9.5, bold=True,
+                                 color=WF_WHITE_RGB, align=PP_ALIGN.CENTER)
+                        cx += w
+                    state["y"] += header_h
+
+                def _cerrar_grupo(estacion: str, top: int, continua: bool) -> None:
+                    alto = state["y"] - top
+                    if alto <= 0:
+                        return
+                    _wf_rect(state["slide"], x, top, widths[0], alto, fill_rgb=WF_WHITE_RGB,
+                             line_rgb=WF_BORDER_RGB, line_pt=0.5)
+                    add_text(state["slide"], x, top, widths[0], alto, estacion + (" (cont.)" if continua else ""),
+                             size=9.5, bold=True, color=WF_TEXT_RGB, align=PP_ALIGN.CENTER)
+
+                _ensure_space(titulo_continua, header_h + Cm(2.5))
+                _encabezado()
                 for g in grupos:
                     filas = g.get("filas") or []
                     if not filas:
                         continue
-                    group_top = cy
-                    for idx, f in enumerate(filas):
-                        row_h = Cm(0.9)
-                        _wf_rect(state["slide"], x + widths[0], cy, widths[1], row_h, fill_rgb=WF_WHITE_RGB,
+                    top = state["y"]
+                    continua = False
+                    for f in filas:
+                        celdas = [f["descripcion"], f["control"]]
+                        row_h = _pptx_fila_alto(celdas, widths[1:3], size)
+                        if state["y"] + row_h > bottom_y:
+                            _cerrar_grupo(g["estacion"], top, continua)
+                            state["slide"], state["y"] = _new_slide(titulo_continua)
+                            _encabezado()
+                            top, continua = state["y"], True
+                        cx = x + widths[0]
+                        for texto, w in ((f["descripcion"], widths[1]), (f["control"], widths[2])):
+                            _wf_rect(state["slide"], cx, state["y"], w, row_h, fill_rgb=WF_WHITE_RGB,
+                                     line_rgb=WF_BORDER_RGB, line_pt=0.5)
+                            add_text(state["slide"], cx, state["y"], w, row_h, texto, size=size, color=WF_TEXT_RGB)
+                            cx += w
+                        _wf_rect(state["slide"], cx, state["y"], widths[3], row_h, fill_rgb=WF_WHITE_RGB,
                                  line_rgb=WF_BORDER_RGB, line_pt=0.5)
-                        add_text(state["slide"], x + widths[0], cy, widths[1], row_h, f"{idx + 1}) {f['descripcion']}",
-                                 size=8.5, color=WF_TEXT_RGB)
-                        _wf_rect(state["slide"], x + widths[0] + widths[1], cy, widths[2], row_h, fill_rgb=WF_WHITE_RGB,
-                                 line_rgb=WF_BORDER_RGB, line_pt=0.5)
-                        add_text(state["slide"], x + widths[0] + widths[1], cy, widths[2], row_h, f["control"],
-                                 size=8.5, color=WF_TEXT_RGB)
-                        _wf_rect(state["slide"], x + widths[0] + widths[1] + widths[2], cy, widths[3], row_h,
-                                 fill_rgb=WF_WHITE_RGB, line_rgb=WF_BORDER_RGB, line_pt=0.5)
-                        add_text(state["slide"], x + widths[0] + widths[1] + widths[2], cy, widths[3], row_h,
-                                 f"{f['avance']}%", size=9, color=WF_TEXT_RGB, align=PP_ALIGN.CENTER)
-                        cy += row_h
-                    group_h = cy - group_top
-                    _wf_rect(state["slide"], x, group_top, widths[0], group_h, fill_rgb=WF_WHITE_RGB,
-                             line_rgb=WF_BORDER_RGB, line_pt=0.5)
-                    add_text(state["slide"], x, group_top, widths[0], group_h, g["estacion"],
-                             size=9.5, bold=True, color=WF_TEXT_RGB, align=PP_ALIGN.CENTER)
-                state["y"] = cy + Cm(0.3)
+                        add_text(state["slide"], cx, state["y"], widths[3], row_h, f"{f['avance']}%", size=size + 0.5,
+                                 color=WF_TEXT_RGB, align=PP_ALIGN.CENTER)
+                        state["y"] += row_h
+                    _cerrar_grupo(g["estacion"], top, continua)
+                state["y"] += Cm(0.3)
 
             def _draw_seguridad_indicadores_block(titulo_continua: str, block: dict) -> None:
                 _ensure_space(titulo_continua, Cm(1.0))
@@ -16642,6 +18522,15 @@ async def export_reports_pptx(
                     if it.get("titulo"):
                         _draw_heading(titulo_continua, it["titulo"])
                     y0 = state["y"]
+                    if _foto_comp_desc(it, "original") or _foto_comp_desc(it, "actual"):
+                        for col, key in enumerate(("original", "actual")):
+                            x = MARGIN_X + col * (col_w + gap)
+                            if it.get("desc_encabezado"):
+                                add_text(state["slide"], x, y0, col_w, Cm(0.6), it["desc_encabezado"],
+                                         size=11, bold=True, color=WF_TEXT_RGB)
+                            add_text(state["slide"], x, y0 + Cm(0.6), col_w, Cm(1.8), _foto_comp_desc(it, key),
+                                     size=11, color=WF_TEXT_RGB)
+                        y0 += Cm(2.5)
                     img_h = int(bottom_y - y0 - (Cm(2.4) if block.get("leyenda") else Cm(1.6)))
                     y_end = y0
                     for col, (key, lbl, fkey) in enumerate((
@@ -16650,6 +18539,8 @@ async def export_reports_pptx(
                         x = MARGIN_X + col * (col_w + gap)
                         if it.get(key):
                             y_end = max(y_end, _place_img(state["slide"], it[key], x, y0, col_w, img_h))
+                        elif it.get("sin_placeholder"):
+                            continue
                         else:
                             _wf_rect(state["slide"], x, y0, col_w, img_h, fill_rgb=(0xF1, 0xF5, 0xF9),
                                      line_rgb=WF_BORDER_RGB, line_pt=0.75)
@@ -16658,8 +18549,10 @@ async def export_reports_pptx(
                             y_end = max(y_end, y0 + img_h)
                     for col, (lbl, slot) in enumerate((("ORIGINAL", "original"), ("ACTUAL", "actual"))):
                         x = MARGIN_X + col * (col_w + gap)
-                        add_text(state["slide"], x, y_end + Cm(0.15), col_w, Cm(0.9),
-                                 _foto_comp_etiqueta(it, slot, lbl),
+                        _et = _foto_comp_etiqueta(it, slot, lbl)
+                        if not _et:
+                            continue
+                        add_text(state["slide"], x, y_end + Cm(0.15), col_w, Cm(0.9), _et,
                                  size=13, bold=True, color=WF_TEXT_RGB, align=PP_ALIGN.CENTER)
                     if block.get("leyenda"):
                         lw = Cm(3.4) * len(block["leyenda"])
@@ -16768,18 +18661,11 @@ async def export_reports_pptx(
                 "imagen": _draw_imagen_block,
             }
 
-            # Resumen de actividades por Tramo: justo ANTES de la Tabla Resumen
-            # (avance acumulado); si ese módulo no está activo, antes de los demás.
-            _resumen_tramo_pendiente = True
-            if modulos_data.get("tabla_resumen") is None:
-                _emit_resumen_actividades_tramo_slides()
-                _resumen_tramo_pendiente = False
+            # (El resumen de actividades va al INICIO del PPTX, ver
+            # `_emit_resumen_actividades_frente_slides`.)
             for _mod_key, _mod_data in modulos_data.items():
                 if _mod_data is None:
                     continue
-                if _mod_key == "tabla_resumen" and _resumen_tramo_pendiente:
-                    _emit_resumen_actividades_tramo_slides()
-                    _resumen_tramo_pendiente = False
                 titulo = _mod_data["titulo"]
                 _indice_mark(f"mod:{_mod_key}", titulo)
                 state["slide"], state["y"] = _new_slide(titulo)
@@ -16787,11 +18673,16 @@ async def export_reports_pptx(
                 for block in _mod_data["blocks"]:
                     _BLOCK_RENDERERS[block["type"]](titulo_continua, block)
 
-        def _emit_subtramo_summary_slide(subtramo_id: Optional[str]) -> None:
+        resumen_subtramos_emitidos: set = set()
+
+        def _emit_subtramo_summary_slide(subtramo_id: Optional[str], forzar: bool = False) -> None:
             """Emite (si hay datos) la slide de resumen del Subtramo
             `subtramo_id` para todo el período exportado — al final de la
-            sección de ese subtramo."""
-            if not subtramo_id:
+            sección de ese subtramo. Con `forzar=True` la emite aunque no haya
+            nada (frente sin reportes): las tablas dicen "Sin registros" y las
+            actividades "Sin actividad", como en el reporte de referencia. Un
+            subtramo ya impreso no se vuelve a emitir."""
+            if not subtramo_id or subtramo_id in resumen_subtramos_emitidos:
                 return
             totals = resource_consolidated_by_subtramo.get(subtramo_id)
             subtramo_node = nodes_by_id.get(subtramo_id) or {}
@@ -16820,13 +18711,15 @@ async def export_reports_pptx(
                 or (actividades_by_subtramo.get(subtramo_id) or [])
                 or postes
             )
-            if not personal_rows and not maquinaria_rows and not has_persistent_content:
+            if not forzar and not personal_rows and not maquinaria_rows and not has_persistent_content:
                 return
+            resumen_subtramos_emitidos.add(subtramo_id)
+            _acts_sub = actividades_by_subtramo.get(subtramo_id) or (["Sin actividad"] if forzar else [])
             _indice_mark(f"sub:{subtramo_id}", f"Resumen · {subtramo_node.get('name') or 'Subtramo'}")
             if es_intertramo:
                 draw_intertramo_summary_slide(
                     subtramo_node, personal_rows, maquinaria_rows,
-                    actividades_by_subtramo.get(subtramo_id) or [],
+                    _acts_sub,
                     acceso_node.get("situacion_social") if acceso_node else None,
                     postes,
                     mostrar_situacion=acceso_node is not None,
@@ -16834,13 +18727,34 @@ async def export_reports_pptx(
             else:
                 draw_subtramo_summary_slide(
                     subtramo_node, personal_rows, maquinaria_rows,
-                    actividades_by_subtramo.get(subtramo_id) or [],
+                    _acts_sub,
                     acceso_node.get("situacion_social") if acceso_node else None,
                     acceso_node.get("acceso_predio") if acceso_node else None,
                     weather_by_subtramo.get(subtramo_id),
                     mostrar_acceso_predio=acceso_node is not None,
                     acceso_node_label=(acceso_node.get("name") if acceso_node else None),
                 )
+
+        # Frentes (Estación/Intertramo) SIN ningún reporte en el período: se
+        # imprimen igual, con "Sin actividad", en su lugar del orden del árbol
+        # (el reporte de referencia muestra siempre todos los frentes).
+        _raices_orden = sorted((n for n in nodes_by_id.values() if n.get("depth") == 0),
+                               key=lambda n: (n.get("order", 0), n.get("name", "")))
+        _rank_raiz = {r["id"]: i for i, r in enumerate(_raices_orden)}
+        frentes_orden = [f["id"] for f in sorted(
+            (n for n in nodes_by_id.values() if n.get("depth") == 1),
+            key=lambda n: (_rank_raiz.get(n.get("parent_id"), 10 ** 6), n.get("order", 0), n.get("name", "")),
+        )]
+        frentes_con_reportes = {
+            _subtramo_id_for(n["id"], nodes_by_id) for n in leaf_nodes if workforce_reports_by_node.get(n["id"])
+        }
+
+        def _emit_frentes_sin_actividad(antes_de: Optional[str]) -> None:
+            for sid in frentes_orden:
+                if antes_de is not None and sid == antes_de:
+                    break
+                if sid not in frentes_con_reportes:
+                    _emit_subtramo_summary_slide(sid, forzar=True)
 
         def _emit_actividades_area_slides(area_name: str, node_path: str, items: List[str]) -> None:
             """Slide(s) "RESUMEN DE ACTIVIDADES" insertadas justo después de
@@ -16972,105 +18886,77 @@ async def export_reports_pptx(
             # Sin plantilla: portada en blanco.
             prs.slides.add_slide(blank)
 
-        # ===== SLIDES "ACTIVIDADES POR ÁREA" (justo después de Datos Generales) ==
-        # Tabla de 2 columnas (Ubicación / Actividad) por cada Área del
-        # proyecto — ver la misma nota en export_reports_pdf
-        # (`_draw_actividades_por_area_section`). Pagina de verdad (nunca
-        # trunca con "+N más"); altura de fila estimada por conteo de
-        # caracteres, igual criterio que `_emit_actividades_area_slides`.
-        def _draw_actividades_por_area_slides() -> None:
-            if not actividades_tabla_por_area:
+        # ===== SLIDES "ACTIVIDADES GENERALES" (resumen por frente) =============
+        # Formato del reporte semanal de referencia: título "ACTIVIDADES
+        # GENERALES", el nombre del Área debajo y dos columnas de texto (12 pt)
+        # con un encabezado en negritas por Estación/Intertramo y sus
+        # actividades con viñeta; los frentes sin actividad dicen "Sin
+        # actividad". Va justo después de Datos Generales, antes del cuerpo por
+        # nodo/área. Pagina de verdad (nunca trunca); la altura se estima con
+        # `_pptx_texto_lineas`.
+        def _emit_resumen_actividades_frente_slides() -> None:
+            if not actividades_resumen_frente:
                 return
+            RF_MARGIN_X = Cm(1.5)
+            RF_GUTTER = Cm(1.0)
+            rf_content_w = SW - 2 * RF_MARGIN_X
+            rf_col_w = int((rf_content_w - RF_GUTTER) / 2)
+            RF_FONT = 12
+            RF_LINE = int(RF_FONT * 1.2 * 12700)
+            RF_GAP = int(Pt(4))
+            RF_SPC_ANTES_H = int(Pt(6))
+            RF_INDENT = int(Cm(0.6))
+            col_top = TOP_MARGIN + Cm(1.3) + Cm(1.0)
+            col_h = int((SH - BOTTOM_MARGIN) - col_top - Cm(0.2))
 
-            AA_MARGIN_X = Cm(1.8)
-            aa_content_w = SW - 2 * AA_MARGIN_X
-            AA_HEADER_H = Cm(0.9)
-            AA_LINE_H = Cm(0.5)
-            AA_ROW_PAD = Cm(0.18)
-            AA_ROW_FONT = 11
-            AA_MAX_LINES_PER_ROW = 6
-            AA_UBIC_FRAC, AA_TXT_FRAC = 0.28, 0.72
+            for grp in actividades_resumen_frente:
+                entradas: list = []
+                for b in grp["bloques"]:
+                    entradas.append(("h", b["titulo"], RF_LINE * _pptx_texto_lineas(b["titulo"], rf_col_w, RF_FONT) + RF_GAP + RF_SPC_ANTES_H))
+                    for ln in b["lineas"]:
+                        entradas.append(("b", ln, RF_LINE * _pptx_texto_lineas(ln, rf_col_w - RF_INDENT, RF_FONT) + RF_GAP))
+                columnas: list = []
+                cur: list = []
+                usado = 0
+                for i, (tipo, texto, h) in enumerate(entradas):
+                    # Un encabezado nunca queda solo al final de la columna.
+                    necesita = h + (entradas[i + 1][2] if tipo == "h" and i + 1 < len(entradas) else 0)
+                    if cur and usado + necesita > col_h:
+                        columnas.append(cur)
+                        cur, usado = [], 0
+                    cur.append((tipo, texto))
+                    usado += h
+                if cur:
+                    columnas.append(cur)
 
-            def _aa_estimate_lines(text: str, box_w_emu: int, font_pt: float) -> int:
-                if not text:
-                    return 1
-                avg_char_w_emu = max(1, int(Pt(font_pt * 0.52)))
-                chars_per_line = max(1, int(box_w_emu / avg_char_w_emu))
-                return min(AA_MAX_LINES_PER_ROW, max(1, math.ceil(len(text) / chars_per_line)))
-
-            aa_ubic_w_emu = int(aa_content_w * AA_UBIC_FRAC) - Cm(0.4)
-            aa_txt_w_emu = int(aa_content_w * AA_TXT_FRAC) - Cm(0.4)
-
-            is_first_aa_slide = True
-
-            for area_name in sorted(actividades_tabla_por_area.keys(), key=lambda s: s.upper()):
-                rows = actividades_tabla_por_area.get(area_name) or []
-                if not rows:
-                    continue
-                _indice_mark(f"aa:{area_name}", f"Actividades por área · {area_name}")
-                measured = []
-                for r in rows:
-                    ubic_lines = _aa_estimate_lines(r["ubicacion"], aa_ubic_w_emu, AA_ROW_FONT)
-                    txt_lines = _aa_estimate_lines(r["texto"], aa_txt_w_emu, AA_ROW_FONT)
-                    lines = max(ubic_lines, txt_lines)
-                    measured.append({
-                        "ubicacion": r["ubicacion"], "texto": r["texto"],
-                        "h": lines * AA_LINE_H + 2 * AA_ROW_PAD,
-                    })
-                n_total = len(measured)
-
-                idx = 0
-                page_in_area = 0
-                while idx < n_total or page_in_area == 0:
-                    page_in_area += 1
+                for pi in range(0, len(columnas), 2):
+                    if pi == 0:
+                        _indice_mark(f"actfrente:{grp['area']}", f"Resumen de actividades · {grp['area']}")
                     slide = _clone_membrete()
-                    y = TOP_MARGIN
-                    if is_first_aa_slide:
-                        add_text(slide, AA_MARGIN_X, y, aa_content_w, Cm(1.1), "ACTIVIDADES POR ÁREA",
-                                 size=26, bold=True, color=READABLE_BRAND_RGB, align=PP_ALIGN.CENTER)
-                        y += Cm(1.3)
-                        is_first_aa_slide = False
-                    title = area_name.upper()
-                    if page_in_area > 1:
-                        title += f"  (CONTINÚA · {page_in_area})"
-                    add_text(slide, AA_MARGIN_X, y, aa_content_w, Cm(0.7), title,
-                             size=16, bold=True, color=WF_TEXT_RGB)
-                    y += Cm(0.75)
-
-                    _wf_rect(slide, AA_MARGIN_X, y, aa_content_w, AA_HEADER_H, fill_rgb=BRAND_RGB)
-                    add_text(slide, AA_MARGIN_X + Cm(0.2), y + Cm(0.15), int(aa_content_w * AA_UBIC_FRAC) - Cm(0.3),
-                             AA_HEADER_H - Cm(0.2), "UBICACIÓN", size=12, bold=True, color=HEADER_TEXT_RGB)
-                    add_text(slide, AA_MARGIN_X + int(aa_content_w * AA_UBIC_FRAC) + Cm(0.2), y + Cm(0.15),
-                             int(aa_content_w * AA_TXT_FRAC) - Cm(0.3), AA_HEADER_H - Cm(0.2),
-                             "ACTIVIDAD", size=12, bold=True, color=HEADER_TEXT_RGB)
-                    yy = y + AA_HEADER_H
-                    avail_h = (SH - BOTTOM_MARGIN) - yy
-
-                    cnt = 0
-                    h_acc = 0.0
-                    for i in range(idx, n_total):
-                        rh = measured[i]["h"]
-                        if cnt > 0 and h_acc + rh > avail_h:
-                            break
-                        h_acc += rh
-                        cnt += 1
-                    cnt = max(cnt, 1)
-                    chunk_end = idx + cnt
-
-                    for i in range(idx, chunk_end):
-                        row_h = measured[i]["h"]
-                        if (i - idx) % 2 == 1:
-                            _wf_rect(slide, AA_MARGIN_X, yy, aa_content_w, row_h, fill_rgb=WF_ZEBRA_TINT_RGB)
-                        add_text(slide, AA_MARGIN_X + Cm(0.2), yy + Cm(0.08),
-                                 int(aa_content_w * AA_UBIC_FRAC) - Cm(0.3), row_h - Cm(0.1),
-                                 measured[i]["ubicacion"], size=AA_ROW_FONT, bold=True, color=WF_TEXT_RGB)
-                        add_text(slide, AA_MARGIN_X + int(aa_content_w * AA_UBIC_FRAC) + Cm(0.2), yy + Cm(0.08),
-                                 int(aa_content_w * AA_TXT_FRAC) - Cm(0.3), row_h - Cm(0.1),
-                                 measured[i]["texto"], size=AA_ROW_FONT, color=WF_TEXT_RGB)
-                        _wf_rect(slide, AA_MARGIN_X, yy + row_h - Pt(0.75), aa_content_w, Pt(0.75), fill_rgb=WF_BORDER_RGB)
-                        yy += row_h
-
-                    idx = chunk_end
+                    add_text(slide, RF_MARGIN_X, TOP_MARGIN, rf_content_w, Cm(1.3), "ACTIVIDADES GENERALES",
+                             size=26, bold=True, color=READABLE_BRAND_RGB, align=PP_ALIGN.CENTER)
+                    add_text(slide, RF_MARGIN_X, TOP_MARGIN + Cm(1.3), rf_content_w, Cm(0.9),
+                             grp["area"].upper() + ("  (CONTINÚA)" if pi else ""),
+                             size=18, bold=True, color=WF_TEXT_RGB)
+                    for ci, col in enumerate(columnas[pi:pi + 2]):
+                        tb = slide.shapes.add_textbox(RF_MARGIN_X + ci * (rf_col_w + RF_GUTTER), col_top, rf_col_w, col_h)
+                        tf = tb.text_frame
+                        tf.word_wrap = True
+                        for k, (tipo, texto) in enumerate(col):
+                            par = tf.paragraphs[0] if k == 0 else tf.add_paragraph()
+                            run = par.add_run()
+                            run.text = texto
+                            run.font.size = Pt(RF_FONT)
+                            run.font.bold = tipo == "h"
+                            run.font.color.rgb = PRGBColor(*WF_TEXT_RGB)
+                            par.space_after = Pt(4)
+                            if tipo == "h" and k > 0:
+                                par.space_before = Pt(6)
+                            if tipo == "b":
+                                pPr = par._p.get_or_add_pPr()
+                                pPr.set("marL", str(RF_INDENT))
+                                pPr.set("indent", str(-RF_INDENT))
+                                _ET.SubElement(pPr, _qn("a:buChar")).set("char", "\u2022")
 
         # ===== SLIDE DATOS DE CONTRATO =====================================
         # Formato del informe diario de referencia: dos columnas (OBRA y
@@ -17151,99 +19037,6 @@ async def export_reports_pptx(
 
         _emit_contrato_slide()
 
-        # ===== RESUMEN DE ACTIVIDADES POR TRAMO (antes de la Tabla Resumen) ===
-        # Mismas actividades del hub Actividades Generales para el rango del
-        # informe, agrupadas por Tramo. Se llama desde
-        # `_emit_modulos_closing_slides`, justo antes del módulo Tabla Resumen
-        # (o antes de todos los módulos si ese no está activo). Pagina de
-        # verdad; altura de fila estimada por conteo de caracteres.
-        def _emit_resumen_actividades_tramo_slides() -> None:
-            if not actividades_resumen_tramo:
-                return
-
-            RT_MARGIN_X = Cm(1.8)
-            rt_content_w = SW - 2 * RT_MARGIN_X
-            RT_HEADER_H = Cm(0.9)
-            RT_LINE_H = Cm(0.5)
-            RT_ROW_PAD = Cm(0.18)
-            RT_ROW_FONT = 11
-            RT_MAX_LINES = 6
-            RT_FRACS = (0.24, 0.16, 0.60)  # Ubicación / Área / Actividad
-            rt_col_x = [int(rt_content_w * sum(RT_FRACS[:i])) for i in range(3)]
-            rt_col_w = [int(rt_content_w * f) - Cm(0.4) for f in RT_FRACS]
-
-            def _rt_estimate_lines(text: str, box_w_emu: int) -> int:
-                if not text:
-                    return 1
-                avg_char_w_emu = max(1, int(Pt(RT_ROW_FONT * 0.52)))
-                chars_per_line = max(1, int(box_w_emu / avg_char_w_emu))
-                return min(RT_MAX_LINES, max(1, math.ceil(len(text) / chars_per_line)))
-
-            is_first_rt_slide = True
-            for grp in actividades_resumen_tramo:
-                rows = grp["rows"]
-                if not rows:
-                    continue
-                _indice_mark(f"acttramo:{grp['key']}", f"Resumen de actividades · {grp['tramo']}")
-                measured = []
-                for r in rows:
-                    lines = max(
-                        _rt_estimate_lines(r["ubicacion"], rt_col_w[0]),
-                        _rt_estimate_lines(r["area"], rt_col_w[1]),
-                        _rt_estimate_lines(r["texto"], rt_col_w[2]),
-                    )
-                    measured.append({**r, "h": lines * RT_LINE_H + 2 * RT_ROW_PAD})
-                n_total = len(measured)
-
-                idx = 0
-                page_in_group = 0
-                while idx < n_total or page_in_group == 0:
-                    page_in_group += 1
-                    slide = _clone_membrete()
-                    y = TOP_MARGIN
-                    if is_first_rt_slide:
-                        add_text(slide, RT_MARGIN_X, y, rt_content_w, Cm(1.1), "RESUMEN DE ACTIVIDADES POR TRAMO",
-                                 size=24, bold=True, color=READABLE_BRAND_RGB, align=PP_ALIGN.CENTER)
-                        y += Cm(1.3)
-                        is_first_rt_slide = False
-                    title = grp["tramo"].upper()
-                    if page_in_group > 1:
-                        title += f"  (CONTINÚA · {page_in_group})"
-                    add_text(slide, RT_MARGIN_X, y, rt_content_w, Cm(0.7), title,
-                             size=16, bold=True, color=WF_TEXT_RGB)
-                    y += Cm(0.75)
-
-                    _wf_rect(slide, RT_MARGIN_X, y, rt_content_w, RT_HEADER_H, fill_rgb=BRAND_RGB)
-                    for ci, label in enumerate(("UBICACIÓN", "ÁREA", "ACTIVIDAD")):
-                        add_text(slide, RT_MARGIN_X + rt_col_x[ci] + Cm(0.2), y + Cm(0.15), rt_col_w[ci],
-                                 RT_HEADER_H - Cm(0.2), label, size=12, bold=True, color=HEADER_TEXT_RGB)
-                    yy = y + RT_HEADER_H
-                    avail_h = (SH - BOTTOM_MARGIN) - yy
-
-                    cnt = 0
-                    h_acc = 0.0
-                    for i in range(idx, n_total):
-                        rh = measured[i]["h"]
-                        if cnt > 0 and h_acc + rh > avail_h:
-                            break
-                        h_acc += rh
-                        cnt += 1
-                    cnt = max(cnt, 1)
-                    chunk_end = idx + cnt
-
-                    for i in range(idx, chunk_end):
-                        row_h = measured[i]["h"]
-                        if (i - idx) % 2 == 1:
-                            _wf_rect(slide, RT_MARGIN_X, yy, rt_content_w, row_h, fill_rgb=WF_ZEBRA_TINT_RGB)
-                        for ci, (key, bold) in enumerate((("ubicacion", True), ("area", False), ("texto", False))):
-                            add_text(slide, RT_MARGIN_X + rt_col_x[ci] + Cm(0.2), yy + Cm(0.08), rt_col_w[ci],
-                                     row_h - Cm(0.1), measured[i][key], size=RT_ROW_FONT, bold=bold,
-                                     color=WF_TEXT_RGB)
-                        _wf_rect(slide, RT_MARGIN_X, yy + row_h - Pt(0.75), rt_content_w, Pt(0.75), fill_rgb=WF_BORDER_RGB)
-                        yy += row_h
-
-                    idx = chunk_end
-
         # ===== SLIDES DATOS GENERALES (ex-Mapa: array de imágenes) =========
         # Cada imagen en `general_data_images` produce UNA slide dedicada
         # sobre el membrete institucional. Retro-compat: si el array está
@@ -17292,9 +19085,9 @@ async def export_reports_pptx(
                      size=14, italic=True, color=TEXT_MUTED,
                      align=PP_ALIGN.CENTER)
 
-        # "Actividades por Área" va justo DEBAJO/después de Datos Generales
+        # El resumen de actividades va justo DESPUÉS de Datos Generales
         # (spec de producto) — antes del cuerpo principal por nodo/área.
-        _draw_actividades_por_area_slides()
+        _emit_resumen_actividades_frente_slides()
 
         # ================================================================
         # Helper: emite una slide ejecutiva con hasta 2 FOTOS (foto + pie).
@@ -17367,58 +19160,17 @@ async def export_reports_pptx(
             node_reps_all = workforce_reports_by_node.get(n["id"]) or []
             if not node_reps_all:
                 continue
-            # FIX (2026-09): ver la misma nota en export_reports_pdf —
-            # `cover_meta_pptx` es None cuando ningún ancestro tiene
-            # `cover_image`, lo cual NO debe borrar el nodo entero (fotos y
-            # actividades con la severidad correcta para el informe). El
-            # bloque de abajo ya tolera `cover_image` vacío (título sin
-            # imagen), así que solo se omite la imagen, nunca el nodo.
-            cover_meta_pptx = cover_ancestor_by_node.get(n["id"]) or {}
+            _emit_frentes_sin_actividad(n_subtramo_id)
             any_data = True
             node_path = path_cache.get(n["id"]) or n.get("name", "")
 
-            # === Portadilla de nodo: cover_image grande + TÍTULO ===========
-            # Marca provisional: se completa con la 1ª Área del nodo (abajo) para
-            # que el índice apunte a la portadilla del nodo.
+            # SIN portadilla por nodo (a pedido del usuario, igual que en el PDF
+            # desde 77b5000): el nodo ya no imprime su propia diapositiva de
+            # título/imagen. La marca provisional del índice se completa con la
+            # 1ª Área del nodo (abajo) y apunta a la primera diapositiva que
+            # sigue, que es la portadilla de Área.
             _node_mark_i = len(_indice_marks)
             _indice_mark("area-pendiente", node_path)
-            s = _clone_membrete()
-            _title_h = Cm(1.8)
-            _title_gap = Cm(0.5)
-            _cov_b64_p = _strip_b64_prefix(cover_meta_pptx.get("cover_image") or "")
-            _cw = Cm(0)
-            _ch2 = Cm(0)
-            _cy = TOP_MARGIN
-            if _cov_b64_p:
-                try:
-                    _avail_w = SW - Cm(2.0)
-                    _avail_h = SH - TOP_MARGIN - BOTTOM_MARGIN - _title_h - _title_gap
-                    _target_ratio = 4.0 / 3.0
-                    _w_from_h = _avail_h * _target_ratio
-                    if _w_from_h <= _avail_w:
-                        _cw = _w_from_h
-                        _ch2 = _avail_h
-                    else:
-                        _cw = _avail_w
-                        _ch2 = _avail_w / _target_ratio
-                    _cx = (SW - _cw) // 2
-                    _cy = TOP_MARGIN + (_avail_h - _ch2) // 2
-                    s.shapes.add_picture(
-                        io.BytesIO(base64.b64decode(_cov_b64_p)),
-                        _cx, _cy, width=_cw, height=_ch2,
-                    )
-                except Exception:
-                    _ch2 = Cm(0)
-            _title_y = (
-                _cy + _ch2 + _title_gap
-                if _ch2 and _ch2 > Cm(0)
-                else TOP_MARGIN + (SH - TOP_MARGIN - BOTTOM_MARGIN) // 2 - _title_h // 2
-            )
-            add_text(
-                s, Cm(1.0), _title_y, SW - Cm(2.0), _title_h,
-                node_path,
-                size=28, bold=True, color=NODE_TITLE_COLOR, align=PP_ALIGN.CENTER,
-            )
 
             # === Sub-bucle por Área/Disciplina (bucket normalizado) ========
             # "Sub supervisores" → "OBRA CIVIL". Áreas con tildes/plurales
@@ -17509,6 +19261,8 @@ async def export_reports_pptx(
                     _pair_slide(_pair)
 
         _emit_subtramo_summary_slide(current_subtramo_id)
+        if any_data:
+            _emit_frentes_sin_actividad(None)
 
         # === ÁREAS SIN REPORTES: ver nota equivalente en export_reports_pdf
         # — Actividades Generales curadas (hub) cuyo bucket de Área nunca
@@ -19126,6 +20880,65 @@ async def _actividades_tabla_por_area(pid: str, start_dt: datetime, end_dt: date
     return out
 
 
+def _actividades_resumen_por_frente(items: list, nodes_by_id: dict) -> list:
+    """Resumen de Actividades Generales POR FRENTE para el PPTX (formato del
+    reporte semanal de referencia: "ACTIVIDADES GENERALES", un encabezado en
+    negritas por Estación/Intertramo y debajo sus actividades con viñeta).
+
+    `items` es lo que devuelve `_actividades_generales_core` para el rango del
+    informe (ediciones y ocultamientos ya aplicados). Devuelve
+    [{"area", "bloques": [{"titulo", "lineas": [str]}]}], una entrada por Área
+    que tenga AL MENOS una actividad. Dentro de cada Área van TODOS los frentes
+    (nodos de profundidad 1) en orden del árbol — los que no tienen actividad
+    llevan la línea "Sin actividad" — precedidos por "General" si hay
+    actividades de ese nivel. Las de un poste (nodo bajo el frente) se
+    agregan al frente con el nombre del poste por delante, salvo que el texto
+    ya lo traiga. Pura — sin Mongo."""
+    def _orden(n):
+        return (n.get("order", 0), n.get("name", ""))
+
+    raices = sorted((n for n in nodes_by_id.values() if n.get("depth") == 0), key=_orden)
+    rank_raiz = {r["id"]: i for i, r in enumerate(raices)}
+    frentes = sorted(
+        (n for n in nodes_by_id.values() if n.get("depth") == 1),
+        key=lambda n: (rank_raiz.get(n.get("parent_id"), 10 ** 6),) + _orden(n),
+    )
+    ids_frente = {f["id"] for f in frentes}
+    por_area: dict = {}
+    for pos, it in enumerate(items):
+        texto = (it.get("texto") or "").strip()
+        if not texto:
+            continue
+        area = it.get("area_name") or "Sin área"
+        a = por_area.setdefault(area, {"general": [], "frentes": {}, "otros": {}})
+        if it.get("nivel") == NIVEL_GENERAL:
+            a["general"].append(texto)
+            continue
+        node_id = it.get("node_id")
+        nodo = nodes_by_id.get(node_id) or {}
+        frente = _subtramo_id_for(node_id, nodes_by_id) if node_id else None
+        if nodo and nodo.get("id") != frente and nodo.get("name") and not texto.lower().startswith(nodo["name"].lower()):
+            texto = f"{nodo['name']} {texto}"
+        rank = (0 if it.get("nivel") == NIVEL_SUBTRAMO else 1, pos)
+        if frente in ids_frente:
+            a["frentes"].setdefault(frente, []).append((rank, texto))
+        else:  # nodo fuera de cualquier frente (ej. a nivel Tramo): bloque propio
+            a["otros"].setdefault(nodo.get("name") or "Sin frente", []).append((rank, texto))
+    out = []
+    for area in sorted(por_area, key=lambda s_: s_.upper()):
+        a = por_area[area]
+        bloques = []
+        if a["general"]:
+            bloques.append({"titulo": "General", "lineas": a["general"]})
+        for f in frentes:
+            lineas = [t for _, t in sorted(a["frentes"].get(f["id"], []), key=lambda x: x[0])]
+            bloques.append({"titulo": f.get("name") or "—", "lineas": lineas or ["Sin actividad"]})
+        for nombre, filas in a["otros"].items():
+            bloques.append({"titulo": nombre, "lineas": [t for _, t in sorted(filas, key=lambda x: x[0])]})
+        out.append({"area": area, "bloques": bloques})
+    return out
+
+
 def _actividades_resumen_por_tramo(items: list, nodes_by_id: dict) -> list:
     """Resumen de Actividades por TRAMO para el export PDF/PPTX (se imprime
     justo antes de la Tabla Resumen / avance acumulado). Misma fuente que el
@@ -20090,6 +21903,9 @@ class PartidaIn(BaseModel):
     # aquí (se captura después de crear la partida), pero se admite por
     # completitud de la API.
     peso_manual: Optional[str] = None
+    # Contrato al que pertenece el árbol (obra / supervisión). Solo aplica a
+    # partidas RAÍZ — las subpartidas heredan el de su raíz. None = obra.
+    contrato: Optional[Literal["obra", "supervision"]] = None
 
     @field_validator("peso_manual")
     @classmethod
@@ -20129,6 +21945,8 @@ class PartidaPatch(BaseModel):
     # silencio.
     peso_manual: Optional[str] = None
     quitar_peso_manual: bool = False
+    # Solo para partidas RAÍZ (ver PartidaIn.contrato). None = no tocar.
+    contrato: Optional[Literal["obra", "supervision"]] = None
 
     @field_validator("peso_manual")
     @classmethod
@@ -20160,6 +21978,8 @@ class PartidaOut(BaseModel):
     # leer peso_manual/importe_contratado_partida por separado para eso.
     peso_efectivo: str = "0"
     peso_es_manual: bool = False
+    # Contrato EFECTIVO: el de su partida raíz (las subpartidas heredan).
+    contrato: Literal["obra", "supervision"] = "obra"
 
 
 class ConceptoIn(BaseModel):
@@ -20638,6 +22458,64 @@ async def _partida_subtree_ids_en_proyecto(project_id: str, partida_id: str) -> 
     return _partida_subtree_ids(partida_id, _partida_children_by_parent(all_partidas))
 
 
+def _mapa_contrato_partidas(partidas: List[dict]) -> Dict[str, str]:
+    """partida_id → contrato EFECTIVO ("obra" / "supervision"): el de su raíz.
+    Una raíz sin marca (todo lo anterior a este campo) es "obra", así que un
+    proyecto sin árbol de supervisión se comporta exactamente como antes."""
+    por_id = {pa["id"]: pa for pa in partidas}
+    out: Dict[str, str] = {}
+    for pa in partidas:
+        cur, vistos = pa, set()
+        while cur.get("partida_padre_id") and cur["partida_padre_id"] in por_id and cur["id"] not in vistos:
+            vistos.add(cur["id"])
+            cur = por_id[cur["partida_padre_id"]]
+        out[pa["id"]] = "supervision" if cur.get("contrato") == "supervision" else "obra"
+    return out
+
+
+async def _filtro_contrato(pid: str, contrato: str) -> Callable[[Optional[str]], bool]:
+    """Predicado sobre `concepto_id` para quedarse con un contrato. Obra es el
+    COMPLEMENTO de supervisión (no "lo que tiene partida de obra"): así un
+    registro de avance de un concepto ya borrado, o sin partida, sigue
+    contando como obra igual que antes de existir la separación."""
+    if contrato not in CONTRATOS_FIN:
+        raise HTTPException(400, "contrato debe ser 'obra' o 'supervision'")
+    partidas = await db.partidas.find({"project_id": pid}).to_list(length=10000)
+    mapa = _mapa_contrato_partidas(partidas)
+    sup_partidas = {pid_ for pid_, c in mapa.items() if c == "supervision"}
+    sup_ids: set = set()
+    if sup_partidas:
+        async for c in db.conceptos.find({"project_id": pid, "partida_id": {"$in": list(sup_partidas)}}, {"id": 1}):
+            sup_ids.add(c["id"])
+    if contrato == "supervision":
+        return lambda cid: cid in sup_ids
+    return lambda cid: cid not in sup_ids
+
+
+async def _conceptos_activos_contrato(pid: str, contrato: str):
+    """(conceptos activos del contrato, predicado de pertenencia por concepto_id)."""
+    pertenece = await _filtro_contrato(pid, contrato)
+    todos = await db.conceptos.find({"project_id": pid, "activo": True}).to_list(length=100000)
+    return [c for c in todos if pertenece(c["id"])], pertenece
+
+
+def _split_por_contrato(conceptos_all: List[dict], partidas: List[dict], registros: List[dict]) -> Dict[str, tuple]:
+    """{contrato: (conceptos activos, partidas, registros de avance)} — cada
+    contrato solo con lo suyo. Los conceptos se clasifican por su partida y
+    los registros por su concepto (un registro de un concepto borrado va a
+    obra, ver `_filtro_contrato`)."""
+    mapa = _mapa_contrato_partidas(partidas)
+    contrato_concepto = {c["id"]: mapa.get(c.get("partida_id"), "obra") for c in conceptos_all}
+    out: Dict[str, tuple] = {}
+    for contrato in CONTRATOS_FIN:
+        out[contrato] = (
+            [c for c in conceptos_all if c.get("activo", True) and contrato_concepto[c["id"]] == contrato],
+            [pa for pa in partidas if mapa[pa["id"]] == contrato],
+            [r for r in registros if contrato_concepto.get(r.get("concepto_id"), "obra") == contrato],
+        )
+    return out
+
+
 async def _partida_out(doc: dict, all_partidas: List[dict]) -> PartidaOut:
     # El total/porcentaje/conteo de una partida incluye TODA su subtree (las
     # subpartidas anidadas dentro), no solo sus conceptos directos — una
@@ -20692,6 +22570,7 @@ async def _partida_out(doc: dict, all_partidas: List[dict]) -> PartidaOut:
         peso_manual=peso_manual,
         peso_efectivo=dec_to_str(peso_efectivo),
         peso_es_manual=peso_es_manual,
+        contrato=_mapa_contrato_partidas(all_partidas + ([doc] if all(pa["id"] != doc["id"] for pa in all_partidas) else [])).get(doc["id"], "obra"),
     )
 
 
@@ -20719,6 +22598,8 @@ async def create_partida(body: PartidaIn, user: dict = Depends(require_role(ROLE
         padre = await db.partidas.find_one({"id": partida_padre_id, "project_id": body.project_id})
         if not padre:
             raise HTTPException(404, "La partida padre no existe en este proyecto")
+        if body.contrato is not None:
+            raise HTTPException(400, "El contrato se define en la partida raíz; las subpartidas lo heredan")
     pid = str(uuid.uuid4())
     doc = {
         "id": pid,
@@ -20729,6 +22610,7 @@ async def create_partida(body: PartidaIn, user: dict = Depends(require_role(ROLE
         "activo": True,
         "partida_padre_id": partida_padre_id,
         "peso_manual": body.peso_manual,
+        "contrato": None if partida_padre_id else (body.contrato or "obra"),
         "created_at": datetime.now(timezone.utc),
         "created_by": user["id"],
     }
@@ -20772,6 +22654,11 @@ async def update_partida(partida_id: str, body: PartidaPatch, user: dict = Depen
         upd["peso_manual"] = None
     elif body.peso_manual is not None:
         upd["peso_manual"] = body.peso_manual
+    if body.contrato is not None:
+        sera_raiz = (upd["partida_padre_id"] is None) if "partida_padre_id" in upd else not partida.get("partida_padre_id")
+        if not sera_raiz:
+            raise HTTPException(400, "El contrato se define en la partida raíz; las subpartidas lo heredan")
+        upd["contrato"] = body.contrato
     if upd:
         await db.partidas.update_one({"id": partida_id}, {"$set": upd})
     updated = await db.partidas.find_one({"id": partida_id})
@@ -23118,7 +25005,7 @@ class CurvaSOut(BaseModel):
 
 
 @api.get("/projects/{pid}/analisis_periodo", response_model=AnalisisPeriodoOut)
-async def analisis_periodo(pid: str, start: str, end: str, user: dict = Depends(current_user)):
+async def analisis_periodo(pid: str, start: str, end: str, contrato: str = "obra", user: dict = Depends(current_user)):
     """Motor EVM: PV analítico (nunca se guarda un prorrateo día por día en
     Mongo, ver _prorrateo_concepto_en_ventana), EV desde lo ya CONGELADO en
     cada RegistroAvance (nunca se recalcula con el precio de hoy — ver
@@ -23132,7 +25019,7 @@ async def analisis_periodo(pid: str, start: str, end: str, user: dict = Depends(
     if ventana_fin < ventana_ini:
         raise HTTPException(400, "end no puede ser anterior a start")
 
-    conceptos = await db.conceptos.find({"project_id": pid, "activo": True}).to_list(length=100000)
+    conceptos, pertenece = await _conceptos_activos_contrato(pid, contrato)
     pv_total = sum(
         (_prorrateo_concepto_en_ventana(c, ventana_ini, ventana_fin) for c in conceptos),
         start=Decimal("0"),
@@ -23140,6 +25027,8 @@ async def analisis_periodo(pid: str, start: str, end: str, user: dict = Depends(
 
     ev_total = Decimal("0")
     async for a in db.registros_avance.find({"project_id": pid, "fecha": {"$gte": start, "$lte": end}}):
+        if not pertenece(a.get("concepto_id")):
+            continue
         if a.get("importe_ganado_congelado") is not None:
             ev_total += to_decimal(a["importe_ganado_congelado"])
         # Avances capturados ANTES de la congelación (sin
@@ -23147,7 +25036,8 @@ async def analisis_periodo(pid: str, start: str, end: str, user: dict = Depends(
         # precio histórico confiable que inventarles.
 
     ac_total = Decimal("0")
-    async for g in db.gastos_reales.find({"project_id": pid, "fecha": {"$gte": start, "$lte": end}}):
+    # Los gastos reales no distinguen contrato: se atribuyen a la obra.
+    async for g in db.gastos_reales.find({"project_id": pid, "fecha": {"$gte": start, "$lte": end}} if contrato == "obra" else {"_id": None}):
         ac_total += to_decimal(g["monto"])
 
     # SPI/CPI son índices de desempeño, no dinero — se muestran a 4
@@ -23170,7 +25060,7 @@ async def analisis_periodo(pid: str, start: str, end: str, user: dict = Depends(
 
 
 @api.get("/projects/{pid}/analisis_periodo/presupuesto_total")
-async def analisis_periodo_presupuesto_total(pid: str, user: dict = Depends(current_user)):
+async def analisis_periodo_presupuesto_total(pid: str, contrato: str = "obra", user: dict = Depends(current_user)):
     """Presupuesto total del proyecto (suma del importe efectivo de todos
     los conceptos activos) — NO depende de start/end como AnalisisPeriodoOut,
     por eso vive en su propio endpoint en vez de sumarse a ese modelo.
@@ -23180,19 +25070,19 @@ async def analisis_periodo_presupuesto_total(pid: str, user: dict = Depends(curr
     sumen correctamente por igual — sumar importe_total_editable a secas
     dejaría en $0 cualquier concepto que no haya migrado a Etapa EVM."""
     await ensure_project_access(user, pid)
-    conceptos = await db.conceptos.find({"project_id": pid, "activo": True}).to_list(length=100000)
+    conceptos, _ = await _conceptos_activos_contrato(pid, contrato)
     total = sum((_concepto_importe_efectivo(c) for c in conceptos), start=Decimal("0"))
     return {"project_id": pid, "presupuesto_total": dec_to_str(round_money(total))}
 
 
 @api.get("/projects/{pid}/analisis_periodo/curva_s", response_model=CurvaSOut)
-async def analisis_periodo_curva_s(pid: str, user: dict = Depends(current_user)):
+async def analisis_periodo_curva_s(pid: str, contrato: str = "obra", user: dict = Depends(current_user)):
     """Curva S completa del proyecto (todos los meses que tocan sus
     conceptos EVM), para el gráfico de 3 líneas del dashboard — no depende
     de start/end porque la curva se ve completa, la ventana de
     start/end es solo para las tarjetas de analisis_periodo."""
     await ensure_project_access(user, pid)
-    conceptos = await db.conceptos.find({"project_id": pid, "activo": True}).to_list(length=100000)
+    conceptos, pertenece = await _conceptos_activos_contrato(pid, contrato)
 
     planeado_por_mes: Dict[str, Decimal] = {}
     for c in conceptos:
@@ -23201,13 +25091,13 @@ async def analisis_periodo_curva_s(pid: str, user: dict = Depends(current_user))
 
     ganado_por_mes: Dict[str, Decimal] = {}
     async for a in db.registros_avance.find({"project_id": pid}):
-        if a.get("importe_ganado_congelado") is None or not a.get("fecha"):
+        if a.get("importe_ganado_congelado") is None or not a.get("fecha") or not pertenece(a.get("concepto_id")):
             continue
         mes = a["fecha"][:7]  # "YYYY-MM-DD" -> "YYYY-MM"
         ganado_por_mes[mes] = ganado_por_mes.get(mes, Decimal("0")) + to_decimal(a["importe_ganado_congelado"])
 
     real_por_mes: Dict[str, Decimal] = {}
-    async for g in db.gastos_reales.find({"project_id": pid}):
+    async for g in db.gastos_reales.find({"project_id": pid} if contrato == "obra" else {"_id": None}):
         mes = g["fecha"][:7]
         real_por_mes[mes] = real_por_mes.get(mes, Decimal("0")) + to_decimal(g["monto"])
 
@@ -23226,7 +25116,7 @@ async def analisis_periodo_curva_s(pid: str, user: dict = Depends(current_user))
 
 
 @api.get("/projects/{pid}/analisis_periodo/excepciones", response_model=List[ExcepcionEvmOut])
-async def analisis_periodo_excepciones(pid: str, user: dict = Depends(current_user)):
+async def analisis_periodo_excepciones(pid: str, contrato: str = "obra", user: dict = Depends(current_user)):
     """Lista por excepción del dashboard (Tarea 4): conceptos con avances
     fuera de su ventana fecha_inicio/fecha_fin, cuyo acumulado ejecutado
     superó meta_cantidad, o cuya fecha_fin YA PASÓ sin haber alcanzado la
@@ -23238,7 +25128,7 @@ async def analisis_periodo_excepciones(pid: str, user: dict = Depends(current_us
     await ensure_project_access(user, pid)
     project = await db.projects.find_one({"id": pid})
     modo_avance = (project or {}).get("modo_avance", "CANTIDAD")
-    conceptos = await db.conceptos.find({"project_id": pid, "activo": True}).to_list(length=100000)
+    conceptos, _ = await _conceptos_activos_contrato(pid, contrato)
     conceptos_por_id = {c["id"]: c for c in conceptos}
     hoy = datetime.now(MX_TZ).date()
 
@@ -23313,7 +25203,7 @@ class ActividadesEvmOut(BaseModel):
 
 
 @api.get("/projects/{pid}/analisis_periodo/actividades", response_model=ActividadesEvmOut)
-async def analisis_periodo_actividades(pid: str, user: dict = Depends(current_user)):
+async def analisis_periodo_actividades(pid: str, contrato: str = "obra", user: dict = Depends(current_user)):
     """3 categorías de control del dashboard (Tarea 5): actividades
     PENDIENTES (ya venció su fecha_fin y no alcanzó la meta), ACTUALES (hoy
     cae dentro de su ventana) y POR VENIR (su ventana todavía no empieza —
@@ -23328,7 +25218,7 @@ async def analisis_periodo_actividades(pid: str, user: dict = Depends(current_us
     project = await db.projects.find_one({"id": pid})
     modo_avance = (project or {}).get("modo_avance", "CANTIDAD")
     hoy = datetime.now(MX_TZ).date()
-    conceptos = await db.conceptos.find({"project_id": pid, "activo": True}).to_list(length=100000)
+    conceptos, _ = await _conceptos_activos_contrato(pid, contrato)
 
     pendientes: List[ActividadEvmOut] = []
     actuales: List[ActividadEvmOut] = []
