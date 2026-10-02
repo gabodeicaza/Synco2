@@ -156,6 +156,7 @@ MODULOS_KEYS = {
     "gestion_riesgos", "estudios_proyecto", "impacto_ambiental",
     "tabla_resumen", "estado_tiempo", "control_obra",
     "fotos_lidar", "tapial", "pruebas_calidad", "control_calidad",
+    "avance_obra", "estimaciones", "pendientes_generales",
 }
 MODULOS_DIARIOS = MODULOS_KEYS
 MODULOS_SEMANALES = MODULOS_KEYS
@@ -1184,6 +1185,10 @@ async def startup_event():
     await db.pruebas_calidad.create_index([("project_id", 1), ("fecha", -1)])
     await db.control_calidad.create_index("id", unique=True)
     await db.control_calidad.create_index([("project_id", 1), ("fecha", -1)])
+    await db.estimaciones.create_index("id", unique=True)
+    await db.estimaciones.create_index([("project_id", 1), ("contrato", 1), ("numero", 1)])
+    await db.pendientes_generales.create_index("id", unique=True)
+    await db.pendientes_generales.create_index([("project_id", 1), ("contrato", 1), ("orden", 1)])
     await db.tabla_resumen_actividades.create_index("id", unique=True)
     await db.tabla_resumen_actividades.create_index([("project_id", 1), ("orden", 1)])
     await db.tabla_resumen_columnas.create_index("id", unique=True)
@@ -4567,6 +4572,450 @@ async def delete_control_calidad(pid: str, rid: str, user: dict = Depends(curren
     if user.get("role") not in (ROLE_COORD, ROLE_SUB) and doc.get("created_by") != user["id"]:
         raise HTTPException(403, "Solo puedes eliminar los registros que tú capturaste")
     await db.control_calidad.delete_one({"id": rid, "project_id": pid})
+    return {"ok": True}
+
+
+# === CAPA FINANCIERA DEL REPORTE SEMANAL ===================================
+# Tres módulos del reporte semanal de Cablebús:
+#  - avance_obra: CALCULADO (sin captura propia) desde el motor EVM que ya
+#    existe (conceptos, partidas, registros de avance y gastos reales):
+#    tabla de avance por partidas (semanal/acumulado como aporte al total del
+#    contrato), avance programado vs real y las gráficas físico/financiera.
+#  - estimaciones: concentrado capturado a mano (obra o supervisión).
+#  - pendientes_generales: pendientes/requerimientos vigentes (obra o
+#    supervisión).
+CONTRATOS_FIN = ("obra", "supervision")
+CONTRATO_FIN_LABEL = {"obra": "OBRA", "supervision": "SUPERVISIÓN"}
+
+
+def _money_fmt(value) -> str:
+    return f"$ {to_decimal(value):,.2f}"
+
+
+def _pct_fmt(value) -> str:
+    return f"{to_decimal(value):.2f}%"
+
+
+def _avance_obra_resumen(
+    conceptos: List[dict], partidas: List[dict], registros: List[dict], gastos: List[dict],
+    ini: date, fin: date,
+) -> Optional[dict]:
+    """Avance del contrato de obra al corte `fin` y en la ventana [ini, fin].
+
+    Cada partida RAÍZ muestra su APORTE al total del contrato (EV de sus
+    conceptos / presupuesto total, en %), por eso la columna suma el avance
+    real del contrato — es como lo imprime el reporte. EV sale de lo ya
+    CONGELADO en cada registro de avance (nunca se recalcula con el precio de
+    hoy) y PV del prorrateo analítico por días (mismo criterio que
+    `analisis_periodo`). Devuelve None si no hay presupuesto."""
+    total = sum((_concepto_importe_efectivo(c) for c in conceptos), start=Decimal("0"))
+    if total <= 0:
+        return None
+    padre = {pa["id"]: pa.get("partida_padre_id") for pa in partidas}
+
+    def raiz(pid: Optional[str]) -> Optional[str]:
+        vistos: set = set()
+        while pid and padre.get(pid) and pid not in vistos:
+            vistos.add(pid)
+            pid = padre[pid]
+        return pid
+
+    concepto_raiz = {c["id"]: raiz(c.get("partida_id")) for c in conceptos}
+    ini_iso, fin_iso = ini.isoformat(), fin.isoformat()
+    cien = Decimal("100")
+    sem: dict = {}
+    acum: dict = {}
+    ev_mes: dict = {}
+    for a in registros:
+        f = a.get("fecha") or ""
+        if a.get("importe_ganado_congelado") is None or not f or f > fin_iso:
+            continue
+        v = to_decimal(a["importe_ganado_congelado"])
+        r = concepto_raiz.get(a.get("concepto_id"))
+        acum[r] = acum.get(r, Decimal("0")) + v
+        if f >= ini_iso:
+            sem[r] = sem.get(r, Decimal("0")) + v
+        ev_mes[f[:7]] = ev_mes.get(f[:7], Decimal("0")) + v
+
+    raices = sorted(
+        (pa for pa in partidas if not pa.get("partida_padre_id") and pa.get("activo", True)),
+        key=lambda pa: (pa.get("orden", 0), pa.get("nombre", "")),
+    )
+    filas = []
+    for i, pa in enumerate(raices, start=1):
+        filas.append({
+            "numero": i, "partida": pa.get("nombre") or "",
+            "semanal": sem.get(pa["id"], Decimal("0")) / total * cien,
+            "acumulado": acum.get(pa["id"], Decimal("0")) / total * cien,
+        })
+    huerfano_s, huerfano_a = sem.get(None, Decimal("0")), acum.get(None, Decimal("0"))
+    ids_raiz = {pa["id"] for pa in raices}
+    for r, v in acum.items():  # raíces inactivas o conceptos sin partida: no se pierden del total
+        if r is not None and r not in ids_raiz:
+            huerfano_a += v
+            huerfano_s += sem.get(r, Decimal("0"))
+    if huerfano_a != 0 or huerfano_s != 0:
+        filas.append({"numero": len(filas) + 1, "partida": "OTRAS PARTIDAS",
+                      "semanal": huerfano_s / total * cien, "acumulado": huerfano_a / total * cien})
+
+    pv_acum = sum((_prorrateo_concepto_en_ventana(c, date(1900, 1, 1), fin) for c in conceptos), start=Decimal("0"))
+    ev_acum = sum(acum.values(), start=Decimal("0"))
+
+    pv_mes: dict = {}
+    for c in conceptos:
+        for punto in _curva_mensual_concepto(c):
+            pv_mes[punto["mes"]] = pv_mes.get(punto["mes"], Decimal("0")) + to_decimal(punto["valor"])
+    ac_mes: dict = {}
+    for g in gastos:
+        if g.get("fecha") and g["fecha"] <= fin_iso:
+            ac_mes[g["fecha"][:7]] = ac_mes.get(g["fecha"][:7], Decimal("0")) + to_decimal(g["monto"])
+    meses = sorted(m for m in (set(pv_mes) | set(ev_mes) | set(ac_mes)) if m <= fin_iso[:7])
+    curva = {"meses": meses, "pv": [], "ev": [], "ac": []}
+    a_pv = a_ev = a_ac = Decimal("0")
+    for m in meses:
+        a_pv += pv_mes.get(m, Decimal("0"))
+        a_ev += ev_mes.get(m, Decimal("0"))
+        a_ac += ac_mes.get(m, Decimal("0"))
+        curva["pv"].append(a_pv)
+        curva["ev"].append(a_ev)
+        curva["ac"].append(a_ac)
+    return {
+        "presupuesto_total": total,
+        "programado_pct": pv_acum / total * cien,
+        "real_pct": ev_acum / total * cien,
+        "filas": filas,
+        "total_semanal": sum((f["semanal"] for f in filas), start=Decimal("0")),
+        "total_acumulado": sum((f["acumulado"] for f in filas), start=Decimal("0")),
+        "curva": curva,
+    }
+
+
+def _grafica_lineas_png(titulo: str, etiquetas: List[str], series: List[tuple], formato) -> bytes:
+    """Gráfica de líneas acumuladas dibujada con Pillow (el backend no usa
+    matplotlib). `series` = [(nombre, "#RRGGBB", [valores...]), ...]."""
+    from PIL import Image as _I, ImageDraw as _D, ImageFont as _F
+    W, H = 1800, 800
+    img = _I.new("RGB", (W, H), "white")
+    d = _D.Draw(img)
+    try:
+        f_txt, f_tit = _F.load_default(size=22), _F.load_default(size=28)
+    except TypeError:  # Pillow viejo sin tamaño
+        f_txt = f_tit = _F.load_default()
+    d.text((W / 2, 28), titulo, fill="#0F172A", font=f_tit, anchor="mm")
+    x0, x1, y0, y1 = 150, W - 60, 80, H - 150
+    vmax = max([float(v) for _, _, vals in series for v in vals] + [0.0])
+    vmax = vmax * 1.08 if vmax > 0 else 1.0
+    for i in range(6):
+        y = y1 - (y1 - y0) * i / 5
+        d.line([(x0, y), (x1, y)], fill="#E2E8F0", width=1)
+        d.text((x0 - 12, y), formato(vmax * i / 5), fill="#475569", font=f_txt, anchor="rm")
+    d.line([(x0, y0), (x0, y1), (x1, y1)], fill="#475569", width=2)
+    n = len(etiquetas)
+    xs = [x0 + (x1 - x0) * (i / (n - 1) if n > 1 else 0.5) for i in range(n)]
+    paso = max(1, n // 12)
+    for i, et in enumerate(etiquetas):
+        if i % paso == 0 or i == n - 1:
+            d.text((xs[i], y1 + 14), et, fill="#475569", font=f_txt, anchor="mt")
+    lx = x0
+    for nombre, color, vals in series:
+        pts = [(xs[i], y1 - (y1 - y0) * float(v) / vmax) for i, v in enumerate(vals)]
+        if len(pts) > 1:
+            d.line(pts, fill=color, width=5, joint="curve")
+        for px, py in pts:
+            d.ellipse([px - 6, py - 6, px + 6, py + 6], fill=color)
+        d.rectangle([lx, H - 60, lx + 28, H - 40], fill=color)
+        d.text((lx + 38, H - 50), nombre, fill="#0F172A", font=f_txt, anchor="lm")
+        lx += 60 + int(d.textlength(nombre, font=f_txt)) + 40
+    out = io.BytesIO()
+    img.save(out, format="PNG")
+    return out.getvalue()
+
+
+def _avance_obra_bloques(res: dict, ini: date, fin: date) -> List[dict]:
+    filas = res["filas"]
+    rows = [[str(f["numero"]), f["partida"], _pct_fmt(f["semanal"]), _pct_fmt(f["acumulado"])] for f in filas]
+    rows.append(["", "TOTAL", _pct_fmt(res["total_semanal"]), _pct_fmt(res["total_acumulado"])])
+    bloques: List[dict] = [
+        {"type": "summary",
+         "text": f"AVANCE  ·  PROGRAMADO {_pct_fmt(res['programado_pct'])}  ·  REAL {_pct_fmt(res['real_pct'])}"},
+        {"type": "table", "heading": "TABLA DE AVANCE POR PARTIDAS (OBRA)",
+         "headers": ["N°", "PARTIDAS", "AVANCE SEMANAL (%)", "AVANCE ACUMULADO (%)"],
+         "rows": rows, "col_widths": [0.07, 0.55, 0.19, 0.19], "empty_text": "Sin partidas."},
+    ]
+    return bloques
+
+
+def _avance_obra_graficas(res: dict, fin: date) -> List[tuple]:
+    """[(heading, caption, png_bytes), ...] — gráfica física (% acumulado
+    programado vs real) y financiera (importe acumulado programado, ganado y
+    real, en millones)."""
+    c = res["curva"]
+    if not c["meses"]:
+        return []
+    total = res["presupuesto_total"]
+    etiquetas = [f"{m[5:]}/{m[2:4]}" for m in c["meses"]]
+    cien = Decimal("100")
+    fisica = _grafica_lineas_png(
+        "Avance físico acumulado (% del contrato)", etiquetas,
+        [("Programado", "#2563EB", [v / total * cien for v in c["pv"]]),
+         ("Real", "#16A34A", [v / total * cien for v in c["ev"]])],
+        lambda v: f"{v:.0f}%",
+    )
+    fin_png = _grafica_lineas_png(
+        "Físico-financiero acumulado (millones de pesos)", etiquetas,
+        [("Programado", "#2563EB", [v / Decimal("1000000") for v in c["pv"]]),
+         ("Ganado (avance)", "#16A34A", [v / Decimal("1000000") for v in c["ev"]]),
+         ("Gasto real", "#DC2626", [v / Decimal("1000000") for v in c["ac"]])],
+        lambda v: f"{v:,.0f} M",
+    )
+    corte = f"al {_fmt_iso_dmy(fin.isoformat())}"
+    return [("GRÁFICA DE AVANCE (OBRA)", f"Avance físico acumulado {corte}", fisica),
+            ("FÍSICO – FINANCIERO (OBRA)", f"Gráfica físico–financiera {corte}", fin_png)]
+
+
+class EstimacionIn(BaseModel):
+    contrato: Literal["obra", "supervision"] = "obra"
+    numero: int
+    periodo_inicio: Optional[str] = None
+    periodo_fin: Optional[str] = None
+    estatus: Optional[str] = None  # ej. LIBERADA / NO LIBERADA
+    obra_ejecutada: Optional[str] = None
+    amortizacion: Optional[str] = None
+    pct_amortizacion_anticipo: Optional[str] = None
+    total_deducciones: Optional[str] = None
+    iva: Optional[str] = None
+    total_neto: Optional[str] = None
+    fecha_pago: Optional[str] = None  # fecha o texto libre ("Por pagar")
+
+
+class EstimacionPatch(BaseModel):
+    numero: Optional[int] = None
+    periodo_inicio: Optional[str] = None
+    periodo_fin: Optional[str] = None
+    estatus: Optional[str] = None
+    obra_ejecutada: Optional[str] = None
+    amortizacion: Optional[str] = None
+    pct_amortizacion_anticipo: Optional[str] = None
+    total_deducciones: Optional[str] = None
+    iva: Optional[str] = None
+    total_neto: Optional[str] = None
+    fecha_pago: Optional[str] = None
+
+
+_ESTIMACION_IMPORTES = ("obra_ejecutada", "amortizacion", "pct_amortizacion_anticipo", "total_deducciones", "iva", "total_neto")
+_ESTIMACION_TEXTOS = ("estatus", "fecha_pago")
+_ESTIMACION_FECHAS = ("periodo_inicio", "periodo_fin")
+
+
+def _estimacion_valor(campo: str, value: Optional[str]) -> Optional[str]:
+    """Normaliza un campo de la estimación: importes y % como Decimal (texto
+    limpio o None), fechas como YYYY-MM-DD, el resto como texto recortado."""
+    if value is None or not str(value).strip():
+        return None
+    v = str(value).strip()
+    if campo in _ESTIMACION_IMPORTES:
+        try:
+            return dec_to_str(to_decimal(v.replace("$", "").replace(",", "").replace("%", "").strip()))
+        except Exception:
+            raise HTTPException(400, f"{campo} debe ser un número")
+    if campo in _ESTIMACION_FECHAS:
+        try:
+            date.fromisoformat(v)
+        except ValueError:
+            raise HTTPException(400, f"{campo} debe ser YYYY-MM-DD")
+    return v
+
+
+def _estimaciones_bloques(registros: List[dict]) -> List[dict]:
+    """Un bloque `table` por contrato (obra / supervisión). La SUMA ACUMULADA
+    se calcula aquí (acumulado de obra ejecutada hasta ese número), no se
+    captura: así nunca queda desfasada de las filas."""
+    bloques = []
+    for contrato in CONTRATOS_FIN:
+        regs = sorted((r for r in registros if r.get("contrato", "obra") == contrato), key=lambda r: r.get("numero", 0))
+        if not regs:
+            continue
+        acumulado = Decimal("0")
+        rows = []
+        for r in regs:
+            acumulado += to_decimal(r.get("obra_ejecutada") or "0")
+            money = lambda k: _money_fmt(r[k]) if r.get(k) is not None else "-"  # noqa: E731
+            rows.append([
+                str(r.get("numero", "")),
+                f"{_fmt_iso_dmy(r.get('periodo_inicio'))} al {_fmt_iso_dmy(r.get('periodo_fin'))}" if r.get("periodo_inicio") else "-",
+                r.get("estatus") or "-",
+                money("obra_ejecutada"),
+                _money_fmt(acumulado),
+                money("amortizacion"),
+                _pct_fmt(r["pct_amortizacion_anticipo"]) if r.get("pct_amortizacion_anticipo") is not None else "-",
+                money("total_deducciones"),
+                money("iva"),
+                money("total_neto"),
+                _fmt_iso_dmy(r["fecha_pago"]) if r.get("fecha_pago") else "-",
+            ])
+        bloques.append({
+            "type": "table",
+            "heading": f"CONCENTRADO ESTIMACIONES ({CONTRATO_FIN_LABEL[contrato]})",
+            "headers": ["NO.", "PERIODO", "ESTATUS GENERAL", "OBRA EJECUTADA", "SUMA ACUMULADA", "AMORTIZACIÓN",
+                        "% ACUM. AMORT. ANTICIPO", "TOTAL DEDUCCIONES", "IVA 16%", "TOTAL NETO", "FECHA DE PAGO"],
+            "rows": rows,
+            "col_widths": [0.04, 0.14, 0.09, 0.10, 0.10, 0.09, 0.08, 0.09, 0.09, 0.10, 0.08],
+            "empty_text": "Sin estimaciones.",
+        })
+    return bloques
+
+
+@api.get("/projects/{pid}/estimaciones")
+async def list_estimaciones(pid: str, contrato: Optional[str] = None, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    q: dict = {"project_id": pid}
+    if contrato:
+        q["contrato"] = contrato
+    items = await db.estimaciones.find(q).sort([("contrato", 1), ("numero", 1)]).to_list(length=500)
+    return [{k: v for k, v in d.items() if k != "_id"} for d in items]
+
+
+@api.post("/projects/{pid}/estimaciones")
+async def create_estimacion(pid: str, body: EstimacionIn, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB))):
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "estimaciones")
+    if await db.estimaciones.find_one({"project_id": pid, "contrato": body.contrato, "numero": body.numero}, {"id": 1}):
+        raise HTTPException(409, f"Ya existe la estimación {body.numero} de {CONTRATO_FIN_LABEL[body.contrato].lower()}")
+    now = datetime.now(timezone.utc)
+    doc = {"id": str(uuid.uuid4()), "project_id": pid, "contrato": body.contrato, "numero": body.numero,
+           "created_by": user["id"], "created_at": now, "updated_at": now}
+    for campo in _ESTIMACION_IMPORTES + _ESTIMACION_TEXTOS + _ESTIMACION_FECHAS:
+        doc[campo] = _estimacion_valor(campo, getattr(body, campo))
+    await db.estimaciones.insert_one(doc)
+    return {k: v for k, v in doc.items() if k != "_id"}
+
+
+@api.patch("/projects/{pid}/estimaciones/{eid}")
+async def update_estimacion(pid: str, eid: str, body: EstimacionPatch, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB))):
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "estimaciones")
+    doc = await db.estimaciones.find_one({"id": eid, "project_id": pid})
+    if not doc:
+        raise HTTPException(404, "Estimación no existe")
+    fields = body.model_dump(exclude_unset=True)
+    upd: dict = {}
+    if fields.get("numero") is not None and fields["numero"] != doc["numero"]:
+        if await db.estimaciones.find_one({"project_id": pid, "contrato": doc["contrato"], "numero": fields["numero"]}, {"id": 1}):
+            raise HTTPException(409, f"Ya existe la estimación {fields['numero']}")
+        upd["numero"] = fields["numero"]
+    for campo in _ESTIMACION_IMPORTES + _ESTIMACION_TEXTOS + _ESTIMACION_FECHAS:
+        if campo in fields:
+            upd[campo] = _estimacion_valor(campo, fields[campo])
+    if upd:
+        upd["updated_at"] = datetime.now(timezone.utc)
+        await db.estimaciones.update_one({"id": eid}, {"$set": upd})
+    out = await db.estimaciones.find_one({"id": eid})
+    return {k: v for k, v in out.items() if k != "_id"}
+
+
+@api.delete("/projects/{pid}/estimaciones/{eid}")
+async def delete_estimacion(pid: str, eid: str, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB))):
+    await ensure_project_access(user, pid)
+    res = await db.estimaciones.delete_one({"id": eid, "project_id": pid})
+    if not res.deleted_count:
+        raise HTTPException(404, "Estimación no existe")
+    return {"ok": True}
+
+
+class PendienteIn(BaseModel):
+    contrato: Literal["obra", "supervision"] = "obra"
+    titulo: str
+    descripcion: Optional[str] = None
+    orden: int = 0
+
+
+class PendientePatch(BaseModel):
+    titulo: Optional[str] = None
+    descripcion: Optional[str] = None
+    orden: Optional[int] = None
+    resuelto: Optional[bool] = None
+
+
+def _pendientes_bloques(registros: List[dict]) -> List[dict]:
+    """Un bloque `list` por contrato con los pendientes VIGENTES (los
+    resueltos no se imprimen). Sin vigentes → sin bloque."""
+    bloques = []
+    for contrato in CONTRATOS_FIN:
+        vigentes = sorted(
+            (r for r in registros if r.get("contrato", "obra") == contrato and not r.get("resuelto")),
+            key=lambda r: (r.get("orden", 0), str(r.get("created_at") or "")),
+        )
+        if not vigentes:
+            continue
+        bloques.append({
+            "type": "list",
+            "heading": f"PENDIENTES O REQUERIMIENTOS GENERALES ({CONTRATO_FIN_LABEL[contrato]})",
+            "items": [{"title": r["titulo"], "body": r.get("descripcion") or "", "extra": None, "meta": None}
+                      for r in vigentes],
+            "empty_text": "Sin pendientes.",
+        })
+    return bloques
+
+
+@api.get("/projects/{pid}/pendientes-generales")
+async def list_pendientes_generales(pid: str, contrato: Optional[str] = None, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    q: dict = {"project_id": pid}
+    if contrato:
+        q["contrato"] = contrato
+    items = await db.pendientes_generales.find(q).sort([("contrato", 1), ("orden", 1), ("created_at", 1)]).to_list(length=500)
+    return [{k: v for k, v in d.items() if k != "_id"} for d in items]
+
+
+@api.post("/projects/{pid}/pendientes-generales")
+async def create_pendiente_general(pid: str, body: PendienteIn, user: dict = Depends(current_user)):
+    _assert_write_allowed(user)
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "pendientes_generales")
+    titulo = body.titulo.strip()
+    if not titulo:
+        raise HTTPException(400, "titulo es requerido")
+    now = datetime.now(timezone.utc)
+    doc = {"id": str(uuid.uuid4()), "project_id": pid, "contrato": body.contrato, "titulo": titulo,
+           "descripcion": (body.descripcion or "").strip() or None, "orden": body.orden, "resuelto": False,
+           "created_by": user["id"], "created_by_name": user["name"], "created_at": now, "updated_at": now}
+    await db.pendientes_generales.insert_one(doc)
+    return {k: v for k, v in doc.items() if k != "_id"}
+
+
+@api.patch("/projects/{pid}/pendientes-generales/{rid}")
+async def update_pendiente_general(pid: str, rid: str, body: PendientePatch, user: dict = Depends(current_user)):
+    _assert_write_allowed(user)
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "pendientes_generales")
+    if not await db.pendientes_generales.find_one({"id": rid, "project_id": pid}, {"id": 1}):
+        raise HTTPException(404, "Pendiente no existe")
+    fields = body.model_dump(exclude_unset=True)
+    upd: dict = {}
+    if "titulo" in fields:
+        t = (fields["titulo"] or "").strip()
+        if not t:
+            raise HTTPException(400, "titulo no puede quedar vacío")
+        upd["titulo"] = t
+    if "descripcion" in fields:
+        upd["descripcion"] = (fields["descripcion"] or "").strip() or None
+    if fields.get("orden") is not None:
+        upd["orden"] = fields["orden"]
+    if fields.get("resuelto") is not None:
+        upd["resuelto"] = fields["resuelto"]
+    if upd:
+        upd["updated_at"] = datetime.now(timezone.utc)
+        await db.pendientes_generales.update_one({"id": rid}, {"$set": upd})
+    out = await db.pendientes_generales.find_one({"id": rid})
+    return {k: v for k, v in out.items() if k != "_id"}
+
+
+@api.delete("/projects/{pid}/pendientes-generales/{rid}")
+async def delete_pendiente_general(pid: str, rid: str, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB))):
+    await ensure_project_access(user, pid)
+    res = await db.pendientes_generales.delete_one({"id": rid, "project_id": pid})
+    if not res.deleted_count:
+        raise HTTPException(404, "Pendiente no existe")
     return {"ok": True}
 
 
@@ -14476,6 +14925,7 @@ async def _gather_modulos_export_data(
         "forestal": None, "seguridad": None, "riesgos": None, "estudios": None, "ambiental": None,
         "tabla_resumen": None, "fotos_lidar": None, "tapial": None,
         "pruebas_calidad": None, "control_calidad": None,
+        "avance_obra": None, "estimaciones": None, "pendientes_generales": None,
     }
     date_q = {"created_at": {"$gte": start_dt, "$lte": end_dt}}
     # Riesgos y Estudios son matrices mutables (el % de avance se actualiza
@@ -14811,6 +15261,36 @@ async def _gather_modulos_export_data(
         bloques_cc = _control_calidad_bloques(fotos_cc, {n["id"]: n.get("name") or "" for n in nodos_cc})
         if bloques_cc:
             out["control_calidad"] = {"titulo": "CONTROL DE CALIDAD", "blocks": bloques_cc}
+
+    if activos.get("avance_obra"):
+        # Estado acumulado al corte del informe (no un log): se calcula del
+        # motor EVM, sin captura propia. Sin presupuesto o sin avance ni
+        # programa → no se imprime.
+        ini_d = start_dt.astimezone(MX_TZ).date()
+        fin_d = end_dt.astimezone(MX_TZ).date()
+        res_ao = _avance_obra_resumen(
+            await db.conceptos.find({"project_id": pid, "activo": True}).to_list(length=100000),
+            await db.partidas.find({"project_id": pid}).to_list(length=5000),
+            await db.registros_avance.find({"project_id": pid}).to_list(length=200000),
+            await db.gastos_reales.find({"project_id": pid}).to_list(length=100000),
+            ini_d, fin_d,
+        )
+        if res_ao and (res_ao["real_pct"] or res_ao["programado_pct"]):
+            blocks_ao = _avance_obra_bloques(res_ao, ini_d, fin_d)
+            for heading, caption, png in _avance_obra_graficas(res_ao, fin_d):
+                jpg = await asyncio.to_thread(_png_bytes_to_jpeg_dataurl, png)
+                blocks_ao.append({"type": "imagen", "heading": heading, "imagen": jpg, "caption": caption})
+            out["avance_obra"] = {"titulo": "AVANCE DE OBRA", "blocks": blocks_ao}
+
+    if activos.get("estimaciones"):
+        bloques_es = _estimaciones_bloques(await db.estimaciones.find({"project_id": pid}).to_list(length=500))
+        if bloques_es:
+            out["estimaciones"] = {"titulo": "CONCENTRADO DE ESTIMACIONES", "blocks": bloques_es}
+
+    if activos.get("pendientes_generales"):
+        bloques_pg = _pendientes_bloques(await db.pendientes_generales.find({"project_id": pid}).to_list(length=500))
+        if bloques_pg:
+            out["pendientes_generales"] = {"titulo": "PENDIENTES O REQUERIMIENTOS GENERALES", "blocks": bloques_pg}
 
     return out
 
