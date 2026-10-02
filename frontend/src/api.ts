@@ -1225,6 +1225,8 @@ export interface Partida {
   numero_conceptos: number;
   importe_contratado_partida: string;
   porcentaje_avance_partida: string;
+  // Contrato EFECTIVO (el de su partida raíz; las subpartidas lo heredan).
+  contrato?: ContratoFin;
 }
 
 export interface Concepto {
@@ -2721,9 +2723,9 @@ export const api = {
   // ---- Catálogo de Conceptos ------------------------------------------------
   listPartidas: (pid: string, incluirInactivas = false) =>
     request<Partida[]>('GET', `/projects/${pid}/partidas${incluirInactivas ? '?incluir_inactivas=true' : ''}`),
-  createPartida: (payload: { project_id: string; clave: string; nombre: string; orden?: number; partida_padre_id?: string | null }) =>
+  createPartida: (payload: { project_id: string; clave: string; nombre: string; orden?: number; partida_padre_id?: string | null; contrato?: ContratoFin }) =>
     request<Partida>('POST', '/partidas', payload),
-  updatePartida: (id: string, payload: { clave?: string; nombre?: string; orden?: number; activo?: boolean; partida_padre_id?: string; quitar_padre?: boolean }) =>
+  updatePartida: (id: string, payload: { clave?: string; nombre?: string; orden?: number; activo?: boolean; partida_padre_id?: string; quitar_padre?: boolean; contrato?: ContratoFin }) =>
     request<Partida>('PATCH', `/partidas/${id}`, payload),
   deletePartida: (id: string) =>
     request<{ ok: boolean; partidas_borradas: number; conceptos_borrados: number }>('DELETE', `/partidas/${id}`),
@@ -3055,16 +3057,17 @@ export const api = {
   },
 
   // ---- Análisis de Periodos EVM (Valor Ganado) / Dashboard -----------------
-  analisisPeriodo: (pid: string, start: string, end: string) =>
-    request<AnalisisPeriodo>('GET', `/projects/${pid}/analisis_periodo?start=${start}&end=${end}`),
-  analisisPeriodoCurvaS: (pid: string) =>
-    request<CurvaS>('GET', `/projects/${pid}/analisis_periodo/curva_s`),
-  analisisPeriodoPresupuestoTotal: (pid: string) =>
-    request<{ project_id: string; presupuesto_total: string }>('GET', `/projects/${pid}/analisis_periodo/presupuesto_total`),
-  analisisPeriodoExcepciones: (pid: string) =>
-    request<ExcepcionEvm[]>('GET', `/projects/${pid}/analisis_periodo/excepciones`),
-  analisisPeriodoActividades: (pid: string) =>
-    request<ActividadesEvm>('GET', `/projects/${pid}/analisis_periodo/actividades`),
+  // `contrato` (obra | supervision): el backend asume obra si no se manda.
+  analisisPeriodo: (pid: string, start: string, end: string, contrato: ContratoFin = 'obra') =>
+    request<AnalisisPeriodo>('GET', `/projects/${pid}/analisis_periodo?start=${start}&end=${end}&contrato=${contrato}`),
+  analisisPeriodoCurvaS: (pid: string, contrato: ContratoFin = 'obra') =>
+    request<CurvaS>('GET', `/projects/${pid}/analisis_periodo/curva_s?contrato=${contrato}`),
+  analisisPeriodoPresupuestoTotal: (pid: string, contrato: ContratoFin = 'obra') =>
+    request<{ project_id: string; presupuesto_total: string }>('GET', `/projects/${pid}/analisis_periodo/presupuesto_total?contrato=${contrato}`),
+  analisisPeriodoExcepciones: (pid: string, contrato: ContratoFin = 'obra') =>
+    request<ExcepcionEvm[]>('GET', `/projects/${pid}/analisis_periodo/excepciones?contrato=${contrato}`),
+  analisisPeriodoActividades: (pid: string, contrato: ContratoFin = 'obra') =>
+    request<ActividadesEvm>('GET', `/projects/${pid}/analisis_periodo/actividades?contrato=${contrato}`),
 
   createGastoReal: (pid: string, payload: { fecha: string; monto: string; concepto_texto: string; concepto_clave?: string }) =>
     request<GastoReal>('POST', `/projects/${pid}/gastos_reales`, payload),
