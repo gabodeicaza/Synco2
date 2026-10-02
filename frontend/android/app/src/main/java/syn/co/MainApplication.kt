@@ -1,4 +1,4 @@
-package mx.apmapp.dirac
+package syn.co
 
 import android.app.Application
 import android.content.res.Configuration

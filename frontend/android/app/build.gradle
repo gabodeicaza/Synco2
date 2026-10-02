@@ -92,9 +92,9 @@ android {
     buildToolsVersion rootProject.ext.buildToolsVersion
     compileSdk rootProject.ext.compileSdkVersion
 
-    namespace 'mx.apmapp.dirac'
+    namespace 'syn.co'
     defaultConfig {
-        applicationId 'mx.apmapp.dirac'
+        applicationId 'syn.co'
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1

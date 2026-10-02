@@ -1,4 +1,4 @@
-package mx.apmapp.dirac
+package syn.co
 import expo.modules.splashscreen.SplashScreenManager
 
 import android.os.Build
