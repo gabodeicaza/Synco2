@@ -156,6 +156,14 @@ export const MODULOS: ModuloDef[] = [
     area: 'Seguridad',
   },
   {
+    key: 'actividades_particulares',
+    label: 'Actividades particulares',
+    subtitle: 'Actividades por estación e intertramo, con categorías y subcategorías editables',
+    icon: 'list-circle-outline',
+    screen: 'actividades-particulares',
+    area: 'Ingeniería',
+  },
+  {
     key: 'supervision_ambiental',
     label: 'Supervisión Ambiental',
     subtitle: 'Informes de cumplimiento, autorizaciones, arbolado, resarcimiento y estudios (todo editable)',

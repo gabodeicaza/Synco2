@@ -616,6 +616,20 @@ export interface AmbientalItem {
 }
 export interface AmbientalConfig { referencia: string | null; total_a_restituir: number | null }
 export interface AmbientalData { items: AmbientalItem[]; config: AmbientalConfig }
+// === Actividades particulares (catálogo de categorías editable) ===========
+export interface ActPartCategoria { id: string; nombre: string; subcategorias: string[]; orden: number }
+export interface ActPartRegistro {
+  id: string;
+  node_id: string;
+  categoria_id: string;
+  categoria_nombre?: string | null;
+  subcategoria?: string | null;
+  texto: string;
+  fecha: string; // YYYY-MM-DD
+  created_by: string;
+  created_by_name: string;
+}
+export interface ActPartInput { node_id: string; categoria_id: string; subcategoria?: string | null; texto: string; fecha?: string }
 // === Capa financiera del reporte semanal =================================
 export type ContratoFin = 'obra' | 'supervision';
 export interface Estimacion {
@@ -2351,6 +2365,22 @@ export const api = {
     request<SalvamentoArqueologico>('PATCH', `/projects/${pid}/salvamento-arqueologico/${rid}`, body),
   deleteSalvamentoArqueologico: (pid: string, rid: string) =>
     request<{ ok: boolean }>('DELETE', `/projects/${pid}/salvamento-arqueologico/${rid}`),
+  listActPartCatalogo: (pid: string) => request<ActPartCategoria[]>('GET', `/projects/${pid}/actividades-particulares/catalogo`),
+  createActPartCategoria: (pid: string, body: { nombre: string; subcategorias?: string[] }) =>
+    request<ActPartCategoria>('POST', `/projects/${pid}/actividades-particulares/catalogo`, body),
+  updateActPartCategoria: (pid: string, cid: string, body: { nombre?: string; subcategorias?: string[]; orden?: number }) =>
+    request<ActPartCategoria>('PATCH', `/projects/${pid}/actividades-particulares/catalogo/${cid}`, body),
+  deleteActPartCategoria: (pid: string, cid: string) =>
+    request<{ ok: boolean }>('DELETE', `/projects/${pid}/actividades-particulares/catalogo/${cid}`),
+  cargarActPartSugeridas: (pid: string) =>
+    request<{ agregadas: number; items: ActPartCategoria[] }>('POST', `/projects/${pid}/actividades-particulares/catalogo/sugeridas`),
+  listActPart: (pid: string) => request<ActPartRegistro[]>('GET', `/projects/${pid}/actividades-particulares`),
+  createActPart: (pid: string, body: ActPartInput) =>
+    request<ActPartRegistro>('POST', `/projects/${pid}/actividades-particulares`, body),
+  updateActPart: (pid: string, rid: string, body: Partial<ActPartInput>) =>
+    request<ActPartRegistro>('PATCH', `/projects/${pid}/actividades-particulares/${rid}`, body),
+  deleteActPart: (pid: string, rid: string) =>
+    request<{ ok: boolean }>('DELETE', `/projects/${pid}/actividades-particulares/${rid}`),
   getAmbiental: (pid: string) => request<AmbientalData>('GET', `/projects/${pid}/ambiental`),
   createAmbiental: (pid: string, body: Record<string, any>) =>
     request<AmbientalItem>('POST', `/projects/${pid}/ambiental`, body),

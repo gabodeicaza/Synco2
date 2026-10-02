@@ -158,6 +158,7 @@ MODULOS_KEYS = {
     "fotos_lidar", "tapial", "pruebas_calidad", "control_calidad",
     "avance_obra", "estimaciones", "pendientes_generales", "aspectos_sociales",
     "indicadores_seguridad", "juntas_trabajo", "supervision_ambiental",
+    "actividades_particulares",
 }
 MODULOS_DIARIOS = MODULOS_KEYS
 MODULOS_SEMANALES = MODULOS_KEYS
@@ -4998,6 +4999,315 @@ async def _ambiental_bloques(items: List[dict], config: dict) -> List[dict]:
             "rows": [[r["actividad"], _fmt_pct_amb(r["avance"]) if r.get("avance") is not None else "-"]
                      for r in por["avance_estudio"]],
             "col_widths": [0.75, 0.25], "empty_text": "Sin actividades.",
+        })
+    return bloques
+
+
+# === ACTIVIDADES PARTICULARES ==============================================
+# "ACTIVIDADES DESGLOSADAS" de cada estación/intertramo en el reporte semanal
+# integral: lo que la supervisión hizo en ese punto, ordenado por CATEGORÍA
+# (Estudios y análisis, Proyecto ejecutivo, Obras inducidas...) y
+# SUBCATEGORÍA (Mecánica de suelos, Topografía...). El catálogo de categorías
+# es EDITABLE por proyecto (`act_part_cat`; hay una carga de sugeridas, las del
+# reporte de referencia, que se pueden cambiar/quitar/ampliar). Cada registro
+# (`actividades_particulares`) es UNA viñeta: estación + categoría +
+# subcategoría + texto + fecha. El export imprime una tabla por estación con
+# TODAS las categorías del catálogo; las que no tuvieron registros dicen
+# "Sin actividades ésta semana".
+ACT_PART_SUGERIDAS = [
+    ("ESTUDIOS Y ANÁLISIS", ["Mecánica de Suelos", "Topografía", "Hidrológico",
+                             "Levantamiento de instalaciones municipales (OI)", "Movilidad", "Ambiental", "Urbano", "Riesgos"]),
+    ("PROYECTO EJECUTIVO", ["General", "Proyecto Arquitectónico", "Proyecto Estructural", "Proyecto Geotécnico", "Señalización de Obra"]),
+    ("OBRAS INDUCIDAS", []),
+    ("COADYUVAR EN LA LIBERACIÓN DEL DERECHO DE VÍA", ["Atención de vecinos"]),
+    ("CONSTRUCCIÓN DE OBRA CIVIL", []),
+    ("SISTEMA ELECTROMECÁNICO", []),
+    ("ACABADOS E INSTALACIONES", []),
+    ("INSTALACIONES ESPECIALES", []),
+    ("CERTIFICACIÓN", []),
+]
+ACT_PART_SIN_ACTIVIDAD = "Sin actividades ésta semana"
+
+
+def _act_part_subcats(valores) -> List[str]:
+    out: List[str] = []
+    for v in (valores or []):
+        t = str(v or "").strip()[:120]
+        if t and t not in out:
+            out.append(t)
+    return out[:60]
+
+
+class ActPartCatIn(BaseModel):
+    nombre: str
+    subcategorias: List[str] = Field(default_factory=list)
+    orden: Optional[int] = None
+
+
+class ActPartCatPatch(BaseModel):
+    nombre: Optional[str] = None
+    subcategorias: Optional[List[str]] = None
+    orden: Optional[int] = None
+
+
+class ActPartIn(BaseModel):
+    node_id: str
+    categoria_id: str
+    subcategoria: Optional[str] = None
+    texto: str
+    fecha: Optional[str] = None
+
+
+class ActPartPatch(BaseModel):
+    node_id: Optional[str] = None
+    categoria_id: Optional[str] = None
+    subcategoria: Optional[str] = None
+    texto: Optional[str] = None
+    fecha: Optional[str] = None
+
+
+def _act_part_public(doc: dict) -> dict:
+    return {k: v for k, v in doc.items() if k != "_id"}
+
+
+@api.get("/projects/{pid}/actividades-particulares/catalogo")
+async def list_act_part_cat(pid: str, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    items = await db.act_part_cat.find({"project_id": pid}).sort("orden", 1).to_list(length=200)
+    return [_act_part_public(d) for d in items]
+
+
+@api.post("/projects/{pid}/actividades-particulares/catalogo")
+async def create_act_part_cat(pid: str, body: ActPartCatIn, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB))):
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "actividades_particulares")
+    nombre = body.nombre.strip()
+    if not nombre:
+        raise HTTPException(400, "El nombre de la categoría es obligatorio")
+    if await db.act_part_cat.find_one({"project_id": pid, "nombre": nombre}, {"id": 1}):
+        raise HTTPException(409, "Ya existe una categoría con ese nombre")
+    ultimo = await db.act_part_cat.find({"project_id": pid}, {"orden": 1}).sort("orden", -1).limit(1).to_list(length=1)
+    doc = {"id": str(uuid.uuid4()), "project_id": pid, "nombre": nombre,
+           "subcategorias": _act_part_subcats(body.subcategorias),
+           "orden": body.orden if body.orden is not None else ((ultimo[0].get("orden") or 0) + 1 if ultimo else 1),
+           "created_at": datetime.now(timezone.utc)}
+    await db.act_part_cat.insert_one(doc)
+    return _act_part_public(doc)
+
+
+@api.post("/projects/{pid}/actividades-particulares/catalogo/sugeridas")
+async def cargar_act_part_sugeridas(pid: str, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB))):
+    """Agrega las categorías del reporte de referencia que aún no existan (por
+    nombre). No toca ni borra nada de lo ya capturado/editado."""
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "actividades_particulares")
+    existentes = {d["nombre"] async for d in db.act_part_cat.find({"project_id": pid}, {"nombre": 1})}
+    ultimo = await db.act_part_cat.find({"project_id": pid}, {"orden": 1}).sort("orden", -1).limit(1).to_list(length=1)
+    orden = (ultimo[0].get("orden") or 0) if ultimo else 0
+    nuevas = 0
+    for nombre, subs in ACT_PART_SUGERIDAS:
+        if nombre in existentes:
+            continue
+        orden += 1
+        nuevas += 1
+        await db.act_part_cat.insert_one({"id": str(uuid.uuid4()), "project_id": pid, "nombre": nombre,
+                                          "subcategorias": list(subs), "orden": orden, "created_at": datetime.now(timezone.utc)})
+    items = await db.act_part_cat.find({"project_id": pid}).sort("orden", 1).to_list(length=200)
+    return {"agregadas": nuevas, "items": [_act_part_public(d) for d in items]}
+
+
+@api.patch("/projects/{pid}/actividades-particulares/catalogo/{cid}")
+async def update_act_part_cat(pid: str, cid: str, body: ActPartCatPatch, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB))):
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "actividades_particulares")
+    doc = await db.act_part_cat.find_one({"id": cid, "project_id": pid})
+    if not doc:
+        raise HTTPException(404, "Categoría no existe")
+    fields = body.model_dump(exclude_unset=True)
+    upd: dict = {}
+    if "nombre" in fields:
+        nombre = (fields["nombre"] or "").strip()
+        if not nombre:
+            raise HTTPException(400, "El nombre de la categoría es obligatorio")
+        if nombre != doc["nombre"] and await db.act_part_cat.find_one({"project_id": pid, "nombre": nombre}, {"id": 1}):
+            raise HTTPException(409, "Ya existe una categoría con ese nombre")
+        upd["nombre"] = nombre
+    if "subcategorias" in fields and fields["subcategorias"] is not None:
+        upd["subcategorias"] = _act_part_subcats(fields["subcategorias"])
+    if fields.get("orden") is not None:
+        upd["orden"] = fields["orden"]
+    if upd:
+        await db.act_part_cat.update_one({"id": cid}, {"$set": upd})
+        if "nombre" in upd:  # los registros guardan el nombre vigente de su categoría
+            await db.actividades_particulares.update_many({"project_id": pid, "categoria_id": cid},
+                                                          {"$set": {"categoria_nombre": upd["nombre"]}})
+    return _act_part_public(await db.act_part_cat.find_one({"id": cid}))
+
+
+@api.delete("/projects/{pid}/actividades-particulares/catalogo/{cid}")
+async def delete_act_part_cat(pid: str, cid: str, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB))):
+    await ensure_project_access(user, pid)
+    if not await db.act_part_cat.find_one({"id": cid, "project_id": pid}, {"id": 1}):
+        raise HTTPException(404, "Categoría no existe")
+    usados = await db.actividades_particulares.count_documents({"project_id": pid, "categoria_id": cid})
+    if usados:
+        raise HTTPException(409, f"La categoría tiene {usados} actividad(es) capturada(s): cámbialas de categoría o elimínalas primero")
+    await db.act_part_cat.delete_one({"id": cid, "project_id": pid})
+    return {"ok": True}
+
+
+async def _act_part_validar(pid: str, node_id: Optional[str], categoria_id: Optional[str]) -> Optional[dict]:
+    if node_id is not None:
+        await _validate_node_in_project(pid, node_id)
+    if categoria_id is not None:
+        cat = await db.act_part_cat.find_one({"id": categoria_id, "project_id": pid})
+        if not cat:
+            raise HTTPException(400, "La categoría no existe en este proyecto")
+        return cat
+    return None
+
+
+@api.get("/projects/{pid}/actividades-particulares")
+async def list_act_part(pid: str, desde: Optional[str] = None, hasta: Optional[str] = None,
+                        node_id: Optional[str] = None, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    q: dict = {"project_id": pid}
+    rango: dict = {}
+    for clave, valor in (("$gte", desde), ("$lte", hasta)):
+        if valor:
+            rango[clave] = _prueba_calidad_fecha(valor)
+    if rango:
+        q["fecha"] = rango
+    if node_id:
+        q["node_id"] = node_id
+    items = await db.actividades_particulares.find(q).sort([("fecha", -1), ("created_at", -1)]).to_list(length=3000)
+    return [_act_part_public(d) for d in items]
+
+
+@api.post("/projects/{pid}/actividades-particulares")
+async def create_act_part(pid: str, body: ActPartIn, user: dict = Depends(current_user)):
+    _assert_write_allowed(user)
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "actividades_particulares")
+    texto = body.texto.strip()
+    if not texto:
+        raise HTTPException(400, "Escribe la actividad realizada")
+    cat = await _act_part_validar(pid, body.node_id, body.categoria_id)
+    now = datetime.now(timezone.utc)
+    doc = {"id": str(uuid.uuid4()), "project_id": pid, "node_id": body.node_id, "categoria_id": body.categoria_id,
+           "categoria_nombre": cat["nombre"], "subcategoria": (body.subcategoria or "").strip() or None,
+           "texto": texto, "fecha": _prueba_calidad_fecha(body.fecha),
+           "created_by": user["id"], "created_by_name": user["name"], "created_at": now, "updated_at": now}
+    await db.actividades_particulares.insert_one(doc)
+    return _act_part_public(doc)
+
+
+@api.patch("/projects/{pid}/actividades-particulares/{rid}")
+async def update_act_part(pid: str, rid: str, body: ActPartPatch, user: dict = Depends(current_user)):
+    _assert_write_allowed(user)
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "actividades_particulares")
+    if not await db.actividades_particulares.find_one({"id": rid, "project_id": pid}, {"id": 1}):
+        raise HTTPException(404, "Registro no existe")
+    fields = body.model_dump(exclude_unset=True)
+    upd: dict = {}
+    if fields.get("node_id") is not None:
+        await _validate_node_in_project(pid, fields["node_id"])
+        upd["node_id"] = fields["node_id"]
+    if fields.get("categoria_id") is not None:
+        cat = await _act_part_validar(pid, None, fields["categoria_id"])
+        upd["categoria_id"], upd["categoria_nombre"] = fields["categoria_id"], cat["nombre"]
+    if "subcategoria" in fields:
+        upd["subcategoria"] = (fields["subcategoria"] or "").strip() or None
+    if "texto" in fields:
+        texto = (fields["texto"] or "").strip()
+        if not texto:
+            raise HTTPException(400, "Escribe la actividad realizada")
+        upd["texto"] = texto
+    if "fecha" in fields:
+        upd["fecha"] = _prueba_calidad_fecha(fields["fecha"])
+    if upd:
+        upd["updated_at"] = datetime.now(timezone.utc)
+        await db.actividades_particulares.update_one({"id": rid}, {"$set": upd})
+    return _act_part_public(await db.actividades_particulares.find_one({"id": rid}))
+
+
+@api.delete("/projects/{pid}/actividades-particulares/{rid}")
+async def delete_act_part(pid: str, rid: str, user: dict = Depends(current_user)):
+    """Coordinador/Sub-Coordinador borran cualquiera; el resto solo lo suyo."""
+    _assert_write_allowed(user)
+    await ensure_project_access(user, pid)
+    doc = await db.actividades_particulares.find_one({"id": rid, "project_id": pid}, {"created_by": 1})
+    if not doc:
+        raise HTTPException(404, "Registro no existe")
+    if user.get("role") not in (ROLE_COORD, ROLE_SUB) and doc.get("created_by") != user["id"]:
+        raise HTTPException(403, "Solo puedes eliminar las actividades que tú capturaste")
+    await db.actividades_particulares.delete_one({"id": rid, "project_id": pid})
+    return {"ok": True}
+
+
+def _orden_arbol(nodos: List[dict]) -> dict:
+    """{node_id: posición} recorriendo el árbol de ubicaciones en profundidad
+    (hermanos por `order`): el mismo orden del árbol, para imprimir estaciones
+    e intertramos tal como están en el proyecto."""
+    hijos: dict = {}
+    for n in nodos:
+        hijos.setdefault(n.get("parent_id"), []).append(n)
+    for lst in hijos.values():
+        lst.sort(key=lambda n: (n.get("order") or 0, n.get("name") or ""))
+    orden: dict = {}
+
+    def visita(padre) -> None:
+        for n in hijos.get(padre, []):
+            orden[n["id"]] = len(orden)
+            visita(n["id"])
+    visita(None)
+    for n in nodos:  # nodos huérfanos al final
+        orden.setdefault(n["id"], len(orden))
+    return orden
+
+
+def _actividades_particulares_bloques(registros: List[dict], catalogo: List[dict], nodos: List[dict]) -> List[dict]:
+    """Una tabla `table` por estación/intertramo con registros en el período:
+    categoría / subcategoría / actividad (una viñeta por renglón). Se listan
+    TODAS las categorías del catálogo; sin registros dicen "Sin actividades
+    ésta semana". Registros de una categoría que ya no está en el catálogo se
+    imprimen al final con el nombre que guardaron."""
+    nombre_nodo = {n["id"]: n.get("name") or "" for n in nodos}
+    orden_nodo = _orden_arbol(nodos)
+    por_nodo: dict = {}
+    for r in registros:
+        if r.get("node_id") in nombre_nodo:
+            por_nodo.setdefault(r["node_id"], []).append(r)
+    bloques = []
+    for nid in sorted(por_nodo, key=lambda i: orden_nodo.get(i, 10 ** 9)):
+        regs = sorted(por_nodo[nid], key=lambda r: (r.get("fecha") or "", str(r.get("created_at") or "")))
+        cats = [(c["id"], c["nombre"], c.get("subcategorias") or []) for c in catalogo]
+        conocidas = {c[0] for c in cats}
+        for r in regs:  # categoría borrada del catálogo: se conserva con su nombre
+            if r.get("categoria_id") not in conocidas:
+                conocidas.add(r.get("categoria_id"))
+                cats.append((r.get("categoria_id"), r.get("categoria_nombre") or "Otras", []))
+        rows: List[list] = []
+        for cid, cnombre, subs in cats:
+            recs = [r for r in regs if r.get("categoria_id") == cid]
+            if not recs:
+                rows.append([cnombre, "", ACT_PART_SIN_ACTIVIDAD])
+                continue
+            claves = [None] + list(subs)
+            for r in recs:
+                if r.get("subcategoria") and r["subcategoria"] not in claves:
+                    claves.append(r["subcategoria"])
+            primera_cat = True
+            for sub in claves:
+                grupo = [r for r in recs if (r.get("subcategoria") or None) == sub]
+                for j, r in enumerate(grupo):
+                    rows.append([cnombre if primera_cat else "", (sub or "") if j == 0 else "", "• " + r["texto"]])
+                    primera_cat = False
+        bloques.append({
+            "type": "table", "heading": f"{nombre_nodo[nid].upper()} · ACTIVIDADES DESGLOSADAS",
+            "headers": ["CATEGORÍA", "SUBCATEGORÍA", "ACTIVIDADES"], "rows": rows,
+            "col_widths": [0.22, 0.2, 0.58], "empty_text": ACT_PART_SIN_ACTIVIDAD,
         })
     return bloques
 
@@ -16332,7 +16642,7 @@ async def _gather_modulos_export_data(
         "pruebas_calidad": None, "control_calidad": None,
         "avance_obra": None, "estimaciones": None, "pendientes_generales": None,
         "aspectos_sociales": None, "indicadores_seguridad": None, "juntas_trabajo": None,
-        "supervision_ambiental": None,
+        "supervision_ambiental": None, "actividades_particulares": None,
     }
     date_q = {"created_at": {"$gte": start_dt, "$lte": end_dt}}
     # Riesgos y Estudios son matrices mutables (el % de avance se actualiza
@@ -16718,6 +17028,19 @@ async def _gather_modulos_export_data(
             blocks_as.append({"type": "imagen", "heading": heading, "imagen": jpg, "caption": caption})
         if blocks_as:
             out["aspectos_sociales"] = {"titulo": "ASPECTOS SOCIALES", "blocks": blocks_as}
+
+    if activos.get("actividades_particulares"):
+        d_ini_ap = start_dt.astimezone(MX_TZ).date().isoformat()
+        d_fin_ap = end_dt.astimezone(MX_TZ).date().isoformat()
+        regs_ap = await db.actividades_particulares.find(
+            {"project_id": pid, "fecha": {"$gte": d_ini_ap, "$lte": d_fin_ap}}
+        ).to_list(length=5000)
+        if regs_ap:
+            cat_ap = await db.act_part_cat.find({"project_id": pid}).sort("orden", 1).to_list(length=200)
+            nodos_ap = await db.location_nodes.find({"project_id": pid}).to_list(length=20000)
+            bloques_ap = _actividades_particulares_bloques(regs_ap, cat_ap, nodos_ap)
+            if bloques_ap:
+                out["actividades_particulares"] = {"titulo": "ACTIVIDADES PARTICULARES", "blocks": bloques_ap}
 
     if activos.get("supervision_ambiental"):
         # Estado vigente (no un log): lo capturado/editado a mano en el módulo.
