@@ -145,6 +145,7 @@ def main() -> int:
         assert log["us_aqi"] == 55.5
         assert "_id" not in log
         assert log["fecha_cdmx"]
+        assert len(log["hora_cdmx"]) == 2
         _log(f"✅ resource_log de clima creado: {log['id']}")
 
         # GET de un solo día — confirma que trae lo recién capturado.

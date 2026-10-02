@@ -1247,7 +1247,17 @@ async def startup_event():
         [("project_id", 1), ("actividad_id", 1), ("columna_id", 1)], unique=True,
     )
     await db.weather_logs.create_index("id", unique=True)
-    await db.weather_logs.create_index([("project_id", 1), ("node_id", 1), ("fecha_cdmx", 1)], unique=True)
+    # Clima capturado cada hora: el índice único ahora incluye `hora_cdmx`.
+    # Se elimina el índice viejo (solo el índice, no datos) que permitía una
+    # sola captura por día; las capturas antiguas sin hora quedan con
+    # `hora_cdmx` ausente y siguen siendo únicas por (nodo, día).
+    try:
+        await db.weather_logs.drop_index("project_id_1_node_id_1_fecha_cdmx_1")
+    except Exception:
+        pass
+    await db.weather_logs.create_index(
+        [("project_id", 1), ("node_id", 1), ("fecha_cdmx", 1), ("hora_cdmx", 1)], unique=True,
+    )
     await db.cimentacion_elementos.create_index("id", unique=True)
     await db.cimentacion_elementos.create_index([("project_id", 1), ("node_id", 1)])
     await db.perforadoras.create_index("id", unique=True)
@@ -2620,16 +2630,35 @@ async def list_weather_logs(pid: str, date: Optional[str] = None, user: dict = D
     nodo por nodo."""
     await ensure_project_access(user, pid)
     fecha_cdmx = date or datetime.now(timezone.utc).astimezone(MX_TZ).date().isoformat()
-    docs = await db.weather_logs.find({"project_id": pid, "fecha_cdmx": fecha_cdmx}, {"_id": 0}).to_list(length=500)
+    docs = await db.weather_logs.find(
+        {"project_id": pid, "fecha_cdmx": fecha_cdmx}, {"_id": 0},
+    ).sort([("node_id", 1), ("hora_cdmx", 1)]).to_list(length=2000)
     return {"logs": docs}
+
+
+def _latest_weather_log_by_node(docs: list) -> dict:
+    """Una captura por nodo para los exports: la MÁS RECIENTE del día
+    (mayor `hora_cdmx`; las capturas antiguas sin hora cuentan como la más
+    vieja) que tenga al menos un valor — así una hora capturada en blanco no
+    tapa la última con datos."""
+    best: dict = {}
+    for wl in docs:
+        if not any(wl.get(k) is not None for k in ("temperature_c", "wind_kmh", "precipitation_mm", "us_aqi")):
+            continue
+        rank = (wl.get("hora_cdmx") or "", wl.get("updated_at") or datetime.min.replace(tzinfo=timezone.utc))
+        cur = best.get(wl["node_id"])
+        if cur is None or rank >= cur[0]:
+            best[wl["node_id"]] = (rank, wl)
+    return {nid: wl for nid, (_, wl) in best.items()}
 
 
 @api.put("/projects/{pid}/weather-logs")
 async def upsert_weather_log(pid: str, body: WeatherLogIn, user: dict = Depends(current_user)):
     """Captura ABIERTA a cualquier rol con acceso al proyecto (incluido
     Especialista, presente en sitio) — mismo criterio que
-    `upsert_tabla_resumen_celda`. Un doc por (nodo, día CDMX): capturar de
-    nuevo el mismo día sobrescribe, nunca duplica."""
+    `upsert_tabla_resumen_celda`. Un doc por (nodo, día CDMX, hora CDMX): el
+    clima se captura cada hora; capturar de nuevo en la misma hora
+    sobrescribe, nunca duplica."""
     _assert_write_allowed(user)
     project = await ensure_project_access(user, pid)
     _ensure_modulo_activo(project, "estado_tiempo")
@@ -2640,8 +2669,10 @@ async def upsert_weather_log(pid: str, body: WeatherLogIn, user: dict = Depends(
         raise HTTPException(400, "Este nodo no es una Estación habilitada en Acceso al Predio")
 
     now = datetime.now(timezone.utc)
-    fecha_cdmx = now.astimezone(MX_TZ).date().isoformat()
-    key = {"project_id": pid, "node_id": body.node_id, "fecha_cdmx": fecha_cdmx}
+    now_mx = now.astimezone(MX_TZ)
+    fecha_cdmx = now_mx.date().isoformat()
+    hora_cdmx = f"{now_mx.hour:02d}"
+    key = {"project_id": pid, "node_id": body.node_id, "fecha_cdmx": fecha_cdmx, "hora_cdmx": hora_cdmx}
     upd = {
         **key,
         "node_name": node.get("name") or "",
@@ -13988,7 +14019,7 @@ async def export_reports_pdf(
     _weather_logs_hoy = await db.weather_logs.find(
         {"project_id": pid, "fecha_cdmx": _fecha_cdmx_hoy},
     ).to_list(length=500)
-    _weather_logs_by_node = {wl["node_id"]: wl for wl in _weather_logs_hoy}
+    _weather_logs_by_node = _latest_weather_log_by_node(_weather_logs_hoy)
 
     weather_by_subtramo: dict = {}
     _weather_cache: dict = {}
@@ -18788,7 +18819,7 @@ async def export_reports_pptx(
     _weather_logs_hoy = await db.weather_logs.find(
         {"project_id": pid, "fecha_cdmx": _fecha_cdmx_hoy},
     ).to_list(length=500)
-    _weather_logs_by_node = {wl["node_id"]: wl for wl in _weather_logs_hoy}
+    _weather_logs_by_node = _latest_weather_log_by_node(_weather_logs_hoy)
 
     weather_by_subtramo: dict = {}
     _weather_cache: dict = {}
