@@ -1,10 +1,11 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '@/src/auth-context';
 import { Button } from '@/src/components/Button';
+import { EliminarCuentaModal } from '@/src/components/EliminarCuentaModal';
 import { colors, radius, spacing } from '@/src/theme';
 import { roleLabel } from '@/src/utils/roles';
 import { confirm } from '@/src/utils/confirm';
@@ -12,6 +13,7 @@ import { confirm } from '@/src/utils/confirm';
 export default function CoordProfile() {
   const insets = useSafeAreaInsets();
   const { user, logout } = useAuth();
+  const [borrando, setBorrando] = useState(false);
 
   async function onLogout() {
     const ok = await confirm('Cerrar sesion', '?Seguro que deseas salir?', { confirmText: 'Cerrar sesion', destructive: true });
@@ -113,6 +115,10 @@ export default function CoordProfile() {
         </Pressable>
 
         <Button label="Cerrar sesion" variant="danger" onPress={onLogout} fullWidth />
+        <Pressable onPress={() => setBorrando(true)} hitSlop={8} style={{ alignItems: 'center', paddingVertical: spacing.md }} accessibilityRole="button">
+          <Text style={{ color: colors.error, fontWeight: '700', fontSize: 13 }}>Eliminar mi cuenta</Text>
+        </Pressable>
+        <EliminarCuentaModal visible={borrando} onClose={() => setBorrando(false)} />
       </ScrollView>
     </View>
   );

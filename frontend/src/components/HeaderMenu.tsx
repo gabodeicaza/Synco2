@@ -9,6 +9,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '@/src/auth-context';
 import { api, ModulosConfig } from '@/src/api';
+import { EliminarCuentaModal } from '@/src/components/EliminarCuentaModal';
 import { colors, radius, shadow, spacing } from '@/src/theme';
 import { confirm } from '@/src/utils/confirm';
 import { modulosActivos } from '@/src/utils/modulos';
@@ -24,6 +25,7 @@ export function HeaderMenu({ basePath, projectId }: HeaderMenuProps) {
   const insets = useSafeAreaInsets();
   const { logout } = useAuth();
   const [open, setOpen] = useState(false);
+  const [borrando, setBorrando] = useState(false);
 
   // Sistema Multi-Proyecto Modular: qué plantillas están encendidas para el
   // proyecto actual (ver src/utils/modulos.ts para el catálogo del lado del
@@ -151,9 +153,11 @@ export function HeaderMenu({ basePath, projectId }: HeaderMenuProps) {
               onPress={() => { setOpen(false); router.push(`${basePath}/cambiar-password` as any); }}
             />
             <MenuItem icon="log-out-outline" label="Cerrar sesion" onPress={onLogout} destructive />
+            <MenuItem icon="trash-outline" label="Eliminar mi cuenta" onPress={() => { setOpen(false); setBorrando(true); }} destructive />
           </View>
         </Pressable>
       </Modal>
+      <EliminarCuentaModal visible={borrando} onClose={() => setBorrando(false)} />
     </>
   );
 }

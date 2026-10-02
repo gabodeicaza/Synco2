@@ -53,7 +53,8 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "Tomar fotografías de evidencia para reportes de obra."
+          "cameraPermission": "Tomar fotografías de evidencia para reportes de obra.",
+          "recordAudioAndroid": false
         }
       ],
       [
