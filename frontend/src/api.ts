@@ -2686,7 +2686,16 @@ export const api = {
     // siempre (tanto en el envio inmediato como en el reintento desde la
     // cola) para que el backend pueda deduplicar si un reintento en realidad
     // ya habia llegado a insertarse.
-    const payload = { ...body, client_id: body.client_id || generateClientId() };
+    // `captured_at` se fija AQUI (antes de encolar), no al hacer flush: si no
+    // hay senal, el reporte puede tardar horas en sincronizarse, y sin esto
+    // el backend le pondria como fecha la de sincronizacion en vez de la de
+    // captura real -- haciendo que "desaparezca" del informe Diario del dia
+    // en que de verdad se capturo.
+    const payload = {
+      ...body,
+      client_id: body.client_id || generateClientId(),
+      captured_at: body.captured_at || new Date().toISOString(),
+    };
 
     if (!(await isLikelyOnline())) {
       const q = await enqueueReport(payload);
