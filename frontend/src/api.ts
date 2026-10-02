@@ -569,6 +569,29 @@ export interface PruebaCalidad {
   created_by_name: string;
   updated_at: string;
 }
+// === Control de calidad con fotos =========================================
+export interface ControlCalidad {
+  id: string;
+  project_id: string;
+  node_id?: string | null;
+  grupo?: string | null;
+  descripcion?: string | null; // actividad de control (texto sobre la foto)
+  pie?: string | null; // pie de foto
+  fecha: string; // YYYY-MM-DD
+  thumb?: string | null; // miniatura (base64 SIN prefijo data:) — listado
+  foto?: string | null; // foto completa (data URL) — solo detalle
+  created_by: string;
+  created_by_name: string;
+  updated_at: string;
+}
+export interface ControlCalidadInput {
+  image: string;
+  node_id?: string | null;
+  grupo?: string;
+  descripcion?: string;
+  pie?: string;
+  fecha?: string;
+}
 export type PruebaCalidadInput = Partial<Omit<PruebaCalidad, 'id' | 'project_id' | 'created_by' | 'created_by_name' | 'updated_at' | 'frente'>> & {
   frente: string;
 };
@@ -2177,6 +2200,15 @@ export const api = {
     request<PruebaCalidad>('PATCH', `/projects/${pid}/pruebas-calidad/${rid}`, body),
   deletePruebaCalidad: (pid: string, rid: string) =>
     request<{ ok: boolean }>('DELETE', `/projects/${pid}/pruebas-calidad/${rid}`),
+  listControlCalidad: (pid: string) => request<ControlCalidad[]>('GET', `/projects/${pid}/control-calidad`),
+  getControlCalidad: (pid: string, rid: string) =>
+    request<ControlCalidad>('GET', `/projects/${pid}/control-calidad/${rid}`),
+  createControlCalidad: (pid: string, body: ControlCalidadInput) =>
+    request<ControlCalidad>('POST', `/projects/${pid}/control-calidad`, body),
+  updateControlCalidad: (pid: string, rid: string, body: Partial<ControlCalidadInput>) =>
+    request<ControlCalidad>('PATCH', `/projects/${pid}/control-calidad/${rid}`, body),
+  deleteControlCalidad: (pid: string, rid: string) =>
+    request<{ ok: boolean }>('DELETE', `/projects/${pid}/control-calidad/${rid}`),
 
   // === Módulo piloto: Estado del Tiempo ===
   listWeatherLogs: (pid: string, date?: string) =>

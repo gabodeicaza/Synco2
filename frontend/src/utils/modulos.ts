@@ -107,6 +107,14 @@ export const MODULOS: ModuloDef[] = [
     area: 'Calidad',
   },
   {
+    key: 'control_calidad',
+    label: 'Control de Calidad',
+    subtitle: 'Fotos de actividades de control de calidad con descripción y pie de foto',
+    icon: 'camera-outline',
+    screen: 'control-calidad',
+    area: 'Calidad',
+  },
+  {
     key: 'estado_tiempo',
     label: 'Estado del Tiempo',
     subtitle: 'Temperatura, viento, precipitación y calidad del aire por estación',

@@ -1501,6 +1501,14 @@ export default function ProjectDetailScreen() {
                     onPress={() => router.push({ pathname: '/(coord)/projects/[id]/pruebas-calidad' as any, params: { id: pid } })}
                   />
                 ) : null}
+                {moduloActivo(project?.modulos, 'control_calidad') ? (
+                  <ActionTile
+                    icon="camera-outline"
+                    title="Control de Calidad"
+                    subtitle="Fotos de actividades de control de calidad con descripción y pie de foto"
+                    onPress={() => router.push({ pathname: '/(coord)/projects/[id]/control-calidad' as any, params: { id: pid } })}
+                  />
+                ) : null}
                 {moduloActivo(project?.modulos, 'tapial') ? (
                   <ActionTile
                     icon="git-branch-outline"

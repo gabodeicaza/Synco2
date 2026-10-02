@@ -118,6 +118,7 @@ export default function SubCoordLayout() {
         <Tabs.Screen name="tabla-resumen" options={{ href: null }} />
         <Tabs.Screen name="fotos-lidar" options={{ href: null }} />
         <Tabs.Screen name="pruebas-calidad" options={{ href: null }} />
+        <Tabs.Screen name="control-calidad" options={{ href: null }} />
         <Tabs.Screen name="tapial" options={{ href: null }} />
         <Tabs.Screen name="estado-tiempo" options={{ href: null }} />
         <Tabs.Screen name="control-obra" options={{ href: null }} />

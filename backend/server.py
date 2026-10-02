@@ -155,7 +155,7 @@ MODULOS_KEYS = {
     "seguridad_higiene", "forestal_arbolado",
     "gestion_riesgos", "estudios_proyecto", "impacto_ambiental",
     "tabla_resumen", "estado_tiempo", "control_obra",
-    "fotos_lidar", "tapial", "pruebas_calidad",
+    "fotos_lidar", "tapial", "pruebas_calidad", "control_calidad",
 }
 MODULOS_DIARIOS = MODULOS_KEYS
 MODULOS_SEMANALES = MODULOS_KEYS
@@ -1182,6 +1182,8 @@ async def startup_event():
     await db.fotos_lidar.create_index([("project_id", 1), ("orden", 1)])
     await db.pruebas_calidad.create_index("id", unique=True)
     await db.pruebas_calidad.create_index([("project_id", 1), ("fecha", -1)])
+    await db.control_calidad.create_index("id", unique=True)
+    await db.control_calidad.create_index([("project_id", 1), ("fecha", -1)])
     await db.tabla_resumen_actividades.create_index("id", unique=True)
     await db.tabla_resumen_actividades.create_index([("project_id", 1), ("orden", 1)])
     await db.tabla_resumen_columnas.create_index("id", unique=True)
@@ -4067,7 +4069,16 @@ def _foto_comp_etiqueta(it: dict, slot: str, base: str) -> str:
     """Etiqueta bajo cada foto de un bloque `fotos_comparativa`: la
     personalizada del item (ej. "TAPIAL" / "VUELO DRON") o, si no hay,
     ORIGINAL/ACTUAL con su fecha."""
-    return it.get(f"etiqueta_{slot}") or _fotos_lidar_etiqueta(base, it.get(f"fecha_{slot}"))
+    key = f"etiqueta_{slot}"
+    if key in it:  # presente (aunque vacío) = el item decide; vacío → sin pie
+        return it[key] or ""
+    return _fotos_lidar_etiqueta(base, it.get(f"fecha_{slot}"))
+
+
+def _foto_comp_desc(it: dict, slot: str) -> str:
+    """Texto opcional ARRIBA de cada foto de un bloque `fotos_comparativa`
+    (ej. "Actividades de control de calidad" + descripción)."""
+    return (it.get(f"desc_{slot}") or "").strip()
 
 
 class FotoLidarIn(BaseModel):
@@ -4399,6 +4410,163 @@ async def delete_prueba_calidad(pid: str, rid: str, user: dict = Depends(current
     if user.get("role") not in (ROLE_COORD, ROLE_SUB) and doc.get("created_by") != user["id"]:
         raise HTTPException(403, "Solo puedes eliminar las pruebas que tú capturaste")
     await db.pruebas_calidad.delete_one({"id": rid, "project_id": pid})
+    return {"ok": True}
+
+
+# === CONTROL DE CALIDAD CON FOTOS ==========================================
+# Registro fotográfico de las actividades de control de calidad (verificación
+# de habilitado, hincado de pila, suministro de postes...): una FOTO con su
+# descripción de la actividad (arriba) y un pie de foto (abajo), como en las
+# diapositivas "CONTROL DE CALIDAD" del reporte semanal. Log de eventos: se
+# filtra por `fecha` al exportar y se agrupa por estación/intertramo
+# (`node_id`) o por el texto libre `grupo`. El export acomoda DOS registros
+# por diapositiva reutilizando el bloque `fotos_comparativa`.
+CONTROL_CALIDAD_ENCABEZADO = "ACTIVIDADES DE CONTROL DE CALIDAD"
+
+
+class ControlCalidadIn(BaseModel):
+    image: str  # base64 / data URL
+    node_id: Optional[str] = None
+    grupo: Optional[str] = None
+    descripcion: Optional[str] = None  # texto sobre la foto
+    pie: Optional[str] = None  # pie de foto
+    fecha: Optional[str] = None  # ISO date; default = hoy (CDMX)
+
+
+class ControlCalidadPatch(BaseModel):
+    node_id: Optional[str] = None
+    grupo: Optional[str] = None
+    descripcion: Optional[str] = None
+    pie: Optional[str] = None
+    fecha: Optional[str] = None
+    image: Optional[str] = None  # reemplaza la foto
+
+
+_CONTROL_CALIDAD_TEXTOS = ("grupo", "descripcion", "pie")
+
+
+def _control_calidad_public(doc: dict, *, with_image: bool) -> dict:
+    out = {k: v for k, v in doc.items() if k not in ("_id", "foto", "thumb")}
+    if with_image:
+        out["foto"] = doc.get("foto")
+    else:
+        out["thumb"] = doc.get("thumb")
+    return out
+
+
+def _control_calidad_bloques(registros: List[dict], nombre_nodo: dict) -> List[dict]:
+    """Un bloque `fotos_comparativa` por frente agrupado (estación/intertramo
+    o `grupo`), con los registros de dos en dos (una diapositiva cada par).
+    Sin registros con foto → lista vacía (el módulo no se imprime)."""
+    grupos: dict = {}
+    for r in sorted(registros, key=lambda x: (x.get("fecha") or "", str(x.get("created_at") or ""))):
+        if not r.get("foto"):
+            continue
+        titulo = nombre_nodo.get(r.get("node_id")) or (r.get("grupo") or "").strip() or "General"
+        grupos.setdefault(titulo, []).append(r)
+    bloques = []
+    for titulo, rows in grupos.items():
+        items = []
+        for i in range(0, len(rows), 2):
+            a = rows[i]
+            b = rows[i + 1] if i + 1 < len(rows) else None
+            items.append({
+                "titulo": f"CONTROL DE CALIDAD · {titulo.upper()}",
+                "original": a["foto"], "actual": b["foto"] if b else None,
+                "desc_encabezado": CONTROL_CALIDAD_ENCABEZADO,
+                "desc_original": a.get("descripcion") or "", "desc_actual": (b or {}).get("descripcion") or "",
+                "etiqueta_original": a.get("pie") or "", "etiqueta_actual": (b or {}).get("pie") or "",
+                "sin_placeholder": True,
+            })
+        bloques.append({"type": "fotos_comparativa", "items": items})
+    return bloques
+
+
+@api.get("/projects/{pid}/control-calidad")
+async def list_control_calidad(
+    pid: str, desde: Optional[str] = None, hasta: Optional[str] = None, user: dict = Depends(current_user),
+):
+    await ensure_project_access(user, pid)
+    q: dict = {"project_id": pid}
+    rango: dict = {}
+    for clave, valor in (("$gte", desde), ("$lte", hasta)):
+        if valor:
+            rango[clave] = _prueba_calidad_fecha(valor)
+    if rango:
+        q["fecha"] = rango
+    # El listado lleva solo miniaturas; la foto completa se pide en el detalle.
+    cursor = db.control_calidad.find(q, {"foto": 0}).sort([("fecha", -1), ("created_at", -1)])
+    return [_control_calidad_public(d, with_image=False) for d in await cursor.to_list(length=1000)]
+
+
+@api.get("/projects/{pid}/control-calidad/{rid}")
+async def get_control_calidad(pid: str, rid: str, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    doc = await db.control_calidad.find_one({"id": rid, "project_id": pid})
+    if not doc:
+        raise HTTPException(404, "Registro no existe")
+    return _control_calidad_public(doc, with_image=True)
+
+
+@api.post("/projects/{pid}/control-calidad")
+async def create_control_calidad(pid: str, body: ControlCalidadIn, user: dict = Depends(current_user)):
+    """Captura de campo: cualquier rol de escritura con acceso al proyecto."""
+    _assert_write_allowed(user)
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "control_calidad")
+    await _validate_node_in_project(pid, body.node_id)
+    foto = await asyncio.to_thread(_normalize_photo_b64, body.image)
+    thumb = await asyncio.to_thread(_compress_image_b64, foto)
+    now = datetime.now(timezone.utc)
+    doc = {
+        "id": str(uuid.uuid4()), "project_id": pid, "node_id": body.node_id or None,
+        "fecha": _prueba_calidad_fecha(body.fecha), "foto": foto, "thumb": thumb,
+        "created_by": user["id"], "created_by_name": user["name"],
+        "created_at": now, "updated_at": now,
+    }
+    for campo in _CONTROL_CALIDAD_TEXTOS:
+        doc[campo] = (getattr(body, campo) or "").strip() or None
+    await db.control_calidad.insert_one(doc)
+    return _control_calidad_public(doc, with_image=False)
+
+
+@api.patch("/projects/{pid}/control-calidad/{rid}")
+async def update_control_calidad(pid: str, rid: str, body: ControlCalidadPatch, user: dict = Depends(current_user)):
+    _assert_write_allowed(user)
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "control_calidad")
+    if not await db.control_calidad.find_one({"id": rid, "project_id": pid}, {"id": 1}):
+        raise HTTPException(404, "Registro no existe")
+    fields = body.model_dump(exclude_unset=True)
+    upd: dict = {}
+    if "node_id" in fields:
+        await _validate_node_in_project(pid, fields["node_id"])
+        upd["node_id"] = fields["node_id"] or None
+    if "fecha" in fields:
+        upd["fecha"] = _prueba_calidad_fecha(fields["fecha"])
+    for campo in _CONTROL_CALIDAD_TEXTOS:
+        if campo in fields:
+            upd[campo] = (fields[campo] or "").strip() or None
+    if fields.get("image"):
+        upd["foto"] = await asyncio.to_thread(_normalize_photo_b64, fields["image"])
+        upd["thumb"] = await asyncio.to_thread(_compress_image_b64, upd["foto"])
+    if upd:
+        upd["updated_at"] = datetime.now(timezone.utc)
+        await db.control_calidad.update_one({"id": rid}, {"$set": upd})
+    return _control_calidad_public(await db.control_calidad.find_one({"id": rid}), with_image=False)
+
+
+@api.delete("/projects/{pid}/control-calidad/{rid}")
+async def delete_control_calidad(pid: str, rid: str, user: dict = Depends(current_user)):
+    """Coordinador/Sub-Coordinador borran cualquiera; el resto solo lo suyo."""
+    _assert_write_allowed(user)
+    await ensure_project_access(user, pid)
+    doc = await db.control_calidad.find_one({"id": rid, "project_id": pid}, {"created_by": 1})
+    if not doc:
+        raise HTTPException(404, "Registro no existe")
+    if user.get("role") not in (ROLE_COORD, ROLE_SUB) and doc.get("created_by") != user["id"]:
+        raise HTTPException(403, "Solo puedes eliminar los registros que tú capturaste")
+    await db.control_calidad.delete_one({"id": rid, "project_id": pid})
     return {"ok": True}
 
 
@@ -11512,6 +11680,18 @@ async def export_reports_pdf(
                     _ensure_space(12.0 * cm)
                     if it.get("titulo"):
                         _draw_heading(it["titulo"])
+                    if _foto_comp_desc(it, "original") or _foto_comp_desc(it, "actual"):
+                        from reportlab.lib.utils import simpleSplit
+                        for col, key in enumerate(("original", "actual")):
+                            x = left_x + col * (col_w + gap)
+                            c.setFillColor(TEXT)
+                            if it.get("desc_encabezado"):
+                                c.setFont("Helvetica-Bold", 10)
+                                c.drawString(x, y - 10, it["desc_encabezado"])
+                            c.setFont("Helvetica", 10)
+                            for i, ln in enumerate(simpleSplit(_foto_comp_desc(it, key), "Helvetica", 10, col_w)[:4]):
+                                c.drawString(x, y - 24 - i * 12, ln)
+                        y -= 76
                     img_h = min(8.5 * cm, y - bottom_y - 1.4 * cm)
                     drawn_h = 0.0
                     for col, (key, lbl, fkey) in enumerate((
@@ -11519,6 +11699,8 @@ async def export_reports_pdf(
                     )):
                         x = left_x + col * (col_w + gap)
                         h = _pdf_fit_image(it[key], x, y, col_w, img_h) if it.get(key) else 0.0
+                        if not h and it.get("sin_placeholder"):
+                            continue
                         if not h:
                             c.setStrokeColor(BORDER)
                             c.rect(x, y - img_h, col_w, img_h, stroke=1, fill=0)
@@ -14293,7 +14475,7 @@ async def _gather_modulos_export_data(
     out: dict = {
         "forestal": None, "seguridad": None, "riesgos": None, "estudios": None, "ambiental": None,
         "tabla_resumen": None, "fotos_lidar": None, "tapial": None,
-        "pruebas_calidad": None,
+        "pruebas_calidad": None, "control_calidad": None,
     }
     date_q = {"created_at": {"$gte": start_dt, "$lte": end_dt}}
     # Riesgos y Estudios son matrices mutables (el % de avance se actualiza
@@ -14616,6 +14798,19 @@ async def _gather_modulos_export_data(
         bloques_pc = _pruebas_calidad_bloques(pruebas, {n["id"]: n.get("name") or "" for n in nodos})
         if bloques_pc:
             out["pruebas_calidad"] = {"titulo": "PRUEBAS DE CALIDAD", "blocks": bloques_pc}
+
+    if activos.get("control_calidad"):
+        d_ini = start_dt.astimezone(MX_TZ).date().isoformat()
+        d_fin = end_dt.astimezone(MX_TZ).date().isoformat()
+        fotos_cc = await db.control_calidad.find(
+            {"project_id": pid, "fecha": {"$gte": d_ini, "$lte": d_fin}}
+        ).to_list(length=1000)
+        nodos_cc = await db.location_nodes.find(
+            {"project_id": pid, "id": {"$in": list({r["node_id"] for r in fotos_cc if r.get("node_id")})}}
+        ).to_list(length=500)
+        bloques_cc = _control_calidad_bloques(fotos_cc, {n["id"]: n.get("name") or "" for n in nodos_cc})
+        if bloques_cc:
+            out["control_calidad"] = {"titulo": "CONTROL DE CALIDAD", "blocks": bloques_cc}
 
     return out
 
@@ -15253,8 +15448,21 @@ async def export_reports_docx(
                 for col, (key, lbl, fkey) in enumerate((
                     ("original", "ORIGINAL", "fecha_original"), ("actual", "ACTUAL", "fecha_actual"),
                 )):
-                    cp = t.rows[0].cells[col].paragraphs[0]
+                    celda = t.rows[0].cells[col]
+                    if _foto_comp_desc(it, key):
+                        dp = celda.paragraphs[0]
+                        if it.get("desc_encabezado"):
+                            dr = dp.add_run(it["desc_encabezado"] + "\n")
+                            dr.bold = True
+                            dr.font.size = Pt(9)
+                        dt = dp.add_run(_foto_comp_desc(it, key))
+                        dt.font.size = Pt(9)
+                        cp = celda.add_paragraph()
+                    else:
+                        cp = celda.paragraphs[0]
                     cp.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    if not it.get(key) and it.get("sin_placeholder"):
+                        continue
                     if it.get(key):
                         try:
                             cp.add_run().add_picture(
@@ -16832,6 +17040,15 @@ async def export_reports_pptx(
                     if it.get("titulo"):
                         _draw_heading(titulo_continua, it["titulo"])
                     y0 = state["y"]
+                    if _foto_comp_desc(it, "original") or _foto_comp_desc(it, "actual"):
+                        for col, key in enumerate(("original", "actual")):
+                            x = MARGIN_X + col * (col_w + gap)
+                            if it.get("desc_encabezado"):
+                                add_text(state["slide"], x, y0, col_w, Cm(0.6), it["desc_encabezado"],
+                                         size=11, bold=True, color=WF_TEXT_RGB)
+                            add_text(state["slide"], x, y0 + Cm(0.6), col_w, Cm(1.8), _foto_comp_desc(it, key),
+                                     size=11, color=WF_TEXT_RGB)
+                        y0 += Cm(2.5)
                     img_h = int(bottom_y - y0 - (Cm(2.4) if block.get("leyenda") else Cm(1.6)))
                     y_end = y0
                     for col, (key, lbl, fkey) in enumerate((
@@ -16840,6 +17057,8 @@ async def export_reports_pptx(
                         x = MARGIN_X + col * (col_w + gap)
                         if it.get(key):
                             y_end = max(y_end, _place_img(state["slide"], it[key], x, y0, col_w, img_h))
+                        elif it.get("sin_placeholder"):
+                            continue
                         else:
                             _wf_rect(state["slide"], x, y0, col_w, img_h, fill_rgb=(0xF1, 0xF5, 0xF9),
                                      line_rgb=WF_BORDER_RGB, line_pt=0.75)
@@ -16848,8 +17067,10 @@ async def export_reports_pptx(
                             y_end = max(y_end, y0 + img_h)
                     for col, (lbl, slot) in enumerate((("ORIGINAL", "original"), ("ACTUAL", "actual"))):
                         x = MARGIN_X + col * (col_w + gap)
-                        add_text(state["slide"], x, y_end + Cm(0.15), col_w, Cm(0.9),
-                                 _foto_comp_etiqueta(it, slot, lbl),
+                        _et = _foto_comp_etiqueta(it, slot, lbl)
+                        if not _et:
+                            continue
+                        add_text(state["slide"], x, y_end + Cm(0.15), col_w, Cm(0.9), _et,
                                  size=13, bold=True, color=WF_TEXT_RGB, align=PP_ALIGN.CENTER)
                     if block.get("leyenda"):
                         lw = Cm(3.4) * len(block["leyenda"])
