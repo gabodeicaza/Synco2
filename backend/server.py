@@ -7201,7 +7201,7 @@ class PresentacionSeccionIn(BaseModel):
         "portada", "mapa_general", "divisor", "financiero",
         "seguimiento_estudios", "croquis_estacion", "informacion_particular",
         "avance_grafico", "reportes_semana", "cierre",
-        "ambiental", "social", "seguridad",
+        "ambiental", "social", "seguridad", "proyecto", "calidad", "pendientes",
     ]
     orden: int = 0
     titulo: Optional[str] = None  # "divisor" (ej. "FINANCIERO"); libre, no atado a Área
@@ -7236,6 +7236,9 @@ _PRES_AUTO_MODULOS = {
     "ambiental": ("supervision_ambiental", "ambiental"),
     "social": ("aspectos_sociales",),
     "seguridad": ("indicadores_seguridad", "seguridad"),
+    "proyecto": ("estudios",),
+    "calidad": ("pruebas_calidad", "control_calidad"),
+    "pendientes": ("pendientes_generales",),
 }
 
 
@@ -7262,10 +7265,11 @@ def _secciones_plantilla_semanal() -> List[dict]:
     al exportar; `reportes_semana` arranca vacía hasta que el usuario elija."""
     tipos = [
         ("portada", None), ("mapa_general", None),
-        ("divisor", "FINANCIERO"), ("financiero", None),
-        ("divisor", "ESTUDIOS Y ANÁLISIS"), ("seguimiento_estudios", None),
+        ("divisor", "FINANCIERO"), ("financiero", None), ("pendientes", None),
+        ("divisor", "ESTUDIOS Y ANÁLISIS"), ("seguimiento_estudios", None), ("proyecto", None),
         ("divisor", "AVANCE DE OBRA"),
         ("reportes_semana", None),
+        ("divisor", "CALIDAD"), ("calidad", None),
         ("divisor", "AMBIENTAL"), ("ambiental", None),
         ("divisor", "SOCIAL / IMPACTO URBANO"), ("social", None),
         ("divisor", "SEGURIDAD"), ("seguridad", None),
@@ -7431,7 +7435,7 @@ async def preview_presentacion_modulo_auto(pid: str, pres_id: str, tipo: str, us
         out.append({"modulo": titulo, "bloques": [{
             "type": b.get("type"),
             "heading": b.get("heading") or b.get("subtitulo") or b.get("text"),
-            "n": len(b.get("rows") or b.get("items") or []),
+            "n": len(b.get("rows") or b.get("items") or b.get("grupos") or []),
         } for b in bloques]})
     return out
 
@@ -8271,6 +8275,24 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                             add_text(last, bx, int(body_y + ph + _Cm(0.1)), pw, _Cm(1.3),
                                      " · ".join(x for x in [it.get("desc_actual"), it.get("etiqueta_actual")] if x),
                                      size=10, color=TEXT_RGB, align=_PP_ALIGN.CENTER)
+                elif t == "estudios_avances":
+                    for g in b.get("grupos") or []:
+                        items = g.get("items") or []
+                        for k in range(0, max(len(items), 1), 9):
+                            last = _clone_membrete()
+                            _encabezado(last, modulo_titulo)
+                            _auto_titulo(last, (g.get("disciplina") or "").upper() + (" (cont.)" if k else ""))
+                            tb = last.shapes.add_textbox(MARGIN_X, int(TOP_MARGIN + _Cm(1.1)), content_w,
+                                                         int(SH - BOTTOM_MARGIN - TOP_MARGIN - _Cm(1.1)))
+                            tf = tb.text_frame
+                            tf.word_wrap = True
+                            for li, txt in enumerate(items[k:k + 9]):
+                                par = tf.paragraphs[0] if li == 0 else tf.add_paragraph()
+                                par.space_after = _Pt(6)
+                                r1 = par.add_run()
+                                r1.text = "• " + str(txt)
+                                r1.font.size = _Pt(11)
+                                r1.font.color.rgb = _PRGBColor(*TEXT_RGB)
                 elif t == "seguridad_accidentes":
                     rows = [[r.get("fecha") or "", r.get("trabajador") or "", r.get("contratista") or "", r.get("registro") or "",
                              r.get("ubicacion") or "", r.get("descripcion") or "", r.get("seguimiento") or ""]

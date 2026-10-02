@@ -10,7 +10,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import {
-  api, AnalisisPeriodo, EstudioDisciplinaAvance, LocationNode, ModuloAutoOutline, PlanoAvance, Presentacion, Project, Report,
+  api, AnalisisPeriodo, EstudioDisciplinaAvance, LocationNode, ModuloAutoOutline, PlanoAvance, Presentacion, PresentacionSeccionTipoAuto, Project, Report,
 } from '@/src/api';
 import { colors, radius, spacing, contrastText } from '@/src/theme';
 import { SlidePortada } from '@/src/components/presentacion/SlidePortada';
@@ -25,7 +25,11 @@ import { SlideReportesSemana } from '@/src/components/presentacion/SlideReportes
 import { SlideCierre } from '@/src/components/presentacion/SlideCierre';
 import { SlideModuloAuto } from '@/src/components/presentacion/SlideModuloAuto';
 
-const AUTO_TITULO = { ambiental: 'Ambiental', social: 'Social / Impacto urbano', seguridad: 'Seguridad' } as const;
+const AUTO_TITULO: Record<PresentacionSeccionTipoAuto, string> = {
+  ambiental: 'Ambiental', social: 'Social / Impacto urbano', seguridad: 'Seguridad',
+  proyecto: 'Estudios y proyecto ejecutivo', calidad: 'Calidad', pendientes: 'Pendientes generales',
+};
+const isAuto = (t: string): t is PresentacionSeccionTipoAuto => t in AUTO_TITULO;
 
 /** `fecha - 6 días` en calendario puro (sin zona horaria) — ventana semanal
  * que cierra en la fecha del reporte, para las tarjetas de Financiero. */
@@ -107,7 +111,7 @@ export default function PresentacionPreview({ projectId, presentacionId }: { pro
         setReportsById({});
       }
 
-      const autoTipos = Array.from(new Set(secciones.map((s) => s.tipo).filter((t) => t === 'ambiental' || t === 'social' || t === 'seguridad'))) as ('ambiental' | 'social' | 'seguridad')[];
+      const autoTipos = Array.from(new Set(secciones.map((s) => s.tipo).filter(isAuto))) as PresentacionSeccionTipoAuto[];
       if (autoTipos.length) {
         const outs = await Promise.all(autoTipos.map((t) => api.previewPresentacionModuloAuto(projectId, presentacionId, t).catch(() => [] as ModuloAutoOutline[])));
         const o: Record<string, ModuloAutoOutline[]> = {};
@@ -215,7 +219,7 @@ export default function PresentacionPreview({ projectId, presentacionId }: { pro
                     colorTema={headerColor}
                     pendientes={false}
                   />
-                ) : item.tipo === 'ambiental' || item.tipo === 'social' || item.tipo === 'seguridad' ? (
+                ) : isAuto(item.tipo) ? (
                   <SlideModuloAuto titulo={AUTO_TITULO[item.tipo]} outline={autoOutline[item.tipo] || null} colorTema={headerColor} loading={false} />
                 ) : item.tipo === 'cierre' ? (
                   <SlideCierre leyenda={project?.objeto_contrato || project?.name || ''} colorTema={headerColor} />

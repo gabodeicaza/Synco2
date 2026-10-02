@@ -44,7 +44,8 @@ async def _scenario(tmp_path: Path, con_plantilla: bool):
     proj = {"id": pid, "name": "Proyecto X", "objeto_contrato": "OBJETO DEL CONTRATO",
             "color_institucional": "#8A1538",
             "modulos": {"reportes_semanales": {"impacto_ambiental": True, "aspectos_sociales": True,
-                                                "seguridad_higiene": True}},
+                                                "seguridad_higiene": True, "estudios_proyecto": True,
+                                                "pendientes_generales": True}},
             "datos_contrato": {"obra": {"empresa": "ALFA", "contrato": "C-1", "monto": "$1.00"}}}
     if con_plantilla:
         tpl = tmp_path / "tpl.pptx"
@@ -69,6 +70,12 @@ async def _scenario(tmp_path: Path, con_plantilla: bool):
     await server.db.seguridad_reportes.insert_one({
         "id": str(uuid.uuid4()), "project_id": pid, "fecha": now.date().isoformat(), "created_at": now,
         "trabajador": "Juan Perez", "contratista": "ALFA", "descripcion": "Caida leve", "severidad": "leve", "images": []})
+    await server.db.estudios_bitacora.insert_one({
+        "id": str(uuid.uuid4()), "project_id": pid, "disciplina": "topografia",
+        "texto": "Levantamiento de poligonal", "created_at": now})
+    await server.db.pendientes_generales.insert_one({
+        "id": str(uuid.uuid4()), "project_id": pid, "contrato": "obra", "titulo": "Control de Avance",
+        "descripcion": "Programa pendiente de aval", "resuelto": False, "orden": 0, "created_at": now})
     try:
         fecha = now.date().isoformat()
         created = await server.create_presentacion(
@@ -92,7 +99,8 @@ async def _scenario(tmp_path: Path, con_plantilla: bool):
         await server.db.projects.delete_one({"id": pid})
         await server.db.presentaciones.delete_many({"project_id": pid})
         await server.db.reports.delete_many({"project_id": pid})
-        for col in ("ambiental_auditoria", "levantamientos_sociales", "seguridad_reportes"):
+        for col in ("ambiental_auditoria", "levantamientos_sociales", "seguridad_reportes",
+                    "estudios_bitacora", "pendientes_generales"):
             await server.db[col].delete_many({"project_id": pid})
 
 
@@ -123,6 +131,8 @@ def _verifica(prs):
     assert "Riego de areas verdes" in todo       # Ambiental automático
     assert "AMBIENTAL" in todo and "SEGURIDAD" in todo and "SOCIAL / IMPACTO URBANO" in todo
     assert "AVANCE EN DICTÁMENES" in todo        # Social automático
+    assert "Levantamiento de poligonal" in todo  # Estudios y proyecto ejecutivo
+    assert "Programa pendiente de aval" in todo  # Pendientes generales
     assert "Juan Perez" in todo                  # Seguridad automática
     assert "DATOS DE CONTRATO (OBRA)" in todo    # financiero con datos de contrato
     # portada, mapa, 3 divisores, contrato, estudios, 2 láminas de reporte, cierre

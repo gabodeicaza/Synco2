@@ -764,7 +764,8 @@ export interface InformacionParticularBloque {
 export type PresentacionSeccionTipo =
   | 'portada' | 'mapa_general' | 'divisor' | 'financiero'
   | 'seguimiento_estudios' | 'croquis_estacion' | 'informacion_particular' | 'avance_grafico'
-  | 'reportes_semana' | 'cierre' | 'ambiental' | 'social' | 'seguridad';
+  | 'reportes_semana' | 'cierre' | 'ambiental' | 'social' | 'seguridad'
+  | 'proyecto' | 'calidad' | 'pendientes';
 
 export interface PresentacionSeccion {
   id: string;
@@ -789,6 +790,8 @@ export interface ReporteSemanaItem {
   fecha?: string | null;
   n_fotos: number;
 }
+
+export type PresentacionSeccionTipoAuto = 'ambiental' | 'social' | 'seguridad' | 'proyecto' | 'calidad' | 'pendientes';
 
 /** Esquema de una sección automática (Ambiental/Social/Seguridad) para el preview. */
 export interface ModuloAutoOutline {
@@ -2580,7 +2583,7 @@ export const api = {
     request<PresentacionSeccion>('PATCH', `/projects/${pid}/presentaciones/${presId}/secciones/${secId}/informacion-particular`, { bloques }),
   listReportesSemanaPresentacion: (pid: string, presId: string) =>
     request<ReporteSemanaItem[]>('GET', `/projects/${pid}/presentaciones/${presId}/reportes-semana`),
-  previewPresentacionModuloAuto: (pid: string, presId: string, tipo: 'ambiental' | 'social' | 'seguridad') =>
+  previewPresentacionModuloAuto: (pid: string, presId: string, tipo: PresentacionSeccionTipoAuto) =>
     request<ModuloAutoOutline[]>('GET', `/projects/${pid}/presentaciones/${presId}/modulo-auto/${tipo}`),
   presentacionExportUrl: (pid: string, presId: string) => `${BASE}/projects/${pid}/presentaciones/${presId}/export.pptx`,
 

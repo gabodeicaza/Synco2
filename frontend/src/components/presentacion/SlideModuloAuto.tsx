@@ -10,7 +10,7 @@ import { colors, radius, spacing } from '@/src/theme';
 const TIPO_LABEL: Record<string, string> = {
   table: 'Tabla', imagen: 'Gráfica', list: 'Lista', summary: 'Dato destacado',
   fotos_comparativa: 'Fotos comparativas', seguridad_accidentes: 'Registro de accidentes',
-  seguridad_indicadores: 'Acciones pendientes',
+  seguridad_indicadores: 'Acciones pendientes', estudios_avances: 'Avances por disciplina',
 };
 
 export function SlideModuloAuto({ titulo, outline, colorTema, loading }: {
