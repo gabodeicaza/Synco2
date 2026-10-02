@@ -12,8 +12,9 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import {
-  api, EstudioActividad, EstudioBitacoraEntry, EstudioDisciplina, ESTUDIO_DISCIPLINA_LABEL, Project,
+  api, EstudioActividad, EstudioBitacoraEntry, EstudioDisciplina, ESTUDIO_DISCIPLINA_LABEL, JerarquiaInforme, Project,
 } from '@/src/api';
+import { JerarquiaInformePicker, JERARQUIA_DEFAULT } from '@/src/components/JerarquiaInformePicker';
 import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
 import { Button } from '@/src/components/Button';
 
@@ -40,6 +41,7 @@ export default function EstudiosProyectoScreen({ projectId }: { projectId: strin
   // Modal: nueva entrada de bitácora
   const [bitFormOpen, setBitFormOpen] = useState(false);
   const [bitTextoDraft, setBitTextoDraft] = useState('');
+  const [bitJerarquia, setBitJerarquia] = useState<JerarquiaInforme>(JERARQUIA_DEFAULT);
   const [savingBit, setSavingBit] = useState(false);
 
   const load = useCallback(async () => {
@@ -122,9 +124,10 @@ export default function EstudiosProyectoScreen({ projectId }: { projectId: strin
     }
     try {
       setSavingBit(true);
-      await api.createEstudioBitacora(projectId, { disciplina: disciplinaTab, texto });
+      await api.createEstudioBitacora(projectId, { disciplina: disciplinaTab, texto, jerarquia: bitJerarquia });
       setBitFormOpen(false);
       setBitTextoDraft('');
+      setBitJerarquia(JERARQUIA_DEFAULT);
       await load();
     } catch (e: any) {
       Alert.alert('No se pudo guardar', e?.message || 'Intentalo nuevamente.');
@@ -286,6 +289,7 @@ export default function EstudiosProyectoScreen({ projectId }: { projectId: strin
               style={[styles.input, { minHeight: 90, textAlignVertical: 'top' }]}
               multiline
             />
+            <JerarquiaInformePicker value={bitJerarquia} onChange={setBitJerarquia} />
             <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
               <Button label="Cancelar" variant="secondary" onPress={() => setBitFormOpen(false)} style={{ flex: 1 }} />
               <Button label="Guardar" loading={savingBit} onPress={onSaveBitacora} style={{ flex: 1 }} />

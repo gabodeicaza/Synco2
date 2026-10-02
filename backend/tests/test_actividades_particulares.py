@@ -146,7 +146,7 @@ def _exportar(formato):
             await server.cargar_act_part_sugeridas("p1", COORD)
             cat = (await server.list_act_part_cat("p1", COORD))[0]
             await server.create_act_part("p1", server.ActPartIn(node_id="e1", categoria_id=cat["id"], subcategoria="Topografía",
-                                                                 texto="Asistencia a reunión de seguimiento"), COORD)
+                                                                 texto="Asistencia a reunión de seguimiento", jerarquia="semanal"), COORD)
             common = dict(pid="p1", period="week", period_type="semanal", area_id=None, scope=None, user=COORD)
             if formato == "pdf":
                 resp = await server.export_reports_pdf(**common, recuento_nivel=None, recuento_node_ids=None,

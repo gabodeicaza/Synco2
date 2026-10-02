@@ -13,7 +13,8 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { api, RiesgoRegistro, Project } from '@/src/api';
+import { api, JerarquiaInforme, RiesgoRegistro, Project } from '@/src/api';
+import { JerarquiaInformePicker, JERARQUIA_DEFAULT } from '@/src/components/JerarquiaInformePicker';
 import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
 import { Button } from '@/src/components/Button';
 
@@ -38,6 +39,7 @@ export default function GestionRiesgosScreen({ projectId }: { projectId: string 
   const [descripcionDraft, setDescripcionDraft] = useState('');
   const [propuestaDraft, setPropuestaDraft] = useState('');
   const [numerarDraft, setNumerarDraft] = useState(true);
+  const [jerarquiaDraft, setJerarquiaDraft] = useState<JerarquiaInforme>(JERARQUIA_DEFAULT);
 
   // Modal de edición de una fila existente (texto, % de avance y numeración)
   const [editing, setEditing] = useState<RiesgoRegistro | null>(null);
@@ -46,6 +48,7 @@ export default function GestionRiesgosScreen({ projectId }: { projectId: string 
   const [descripcionEdit, setDescripcionEdit] = useState('');
   const [propuestaEdit, setPropuestaEdit] = useState('');
   const [numerarEdit, setNumerarEdit] = useState(true);
+  const [jerarquiaEdit, setJerarquiaEdit] = useState<JerarquiaInforme>(JERARQUIA_DEFAULT);
   const [savingAvance, setSavingAvance] = useState(false);
 
   const load = useCallback(async () => {
@@ -75,6 +78,7 @@ export default function GestionRiesgosScreen({ projectId }: { projectId: string 
     setDescripcionDraft('');
     setPropuestaDraft('');
     setNumerarDraft(true);
+    setJerarquiaDraft(JERARQUIA_DEFAULT);
     setFormOpen(true);
   }
 
@@ -97,6 +101,7 @@ export default function GestionRiesgosScreen({ projectId }: { projectId: string 
         propuesta_control: propuesta,
         porcentaje_avance: 0,
         numerar: numerarDraft,
+        jerarquia: jerarquiaDraft,
       });
       setFormOpen(false);
       await load();
@@ -114,6 +119,7 @@ export default function GestionRiesgosScreen({ projectId }: { projectId: string 
     setDescripcionEdit(r.descripcion_riesgo);
     setPropuestaEdit(r.propuesta_control);
     setNumerarEdit(r.numerar !== false);
+    setJerarquiaEdit(r.jerarquia || JERARQUIA_DEFAULT);
   }
 
   async function onSaveAvance() {
@@ -135,6 +141,7 @@ export default function GestionRiesgosScreen({ projectId }: { projectId: string 
         descripcion_riesgo: descripcionEdit.trim(),
         propuesta_control: propuestaEdit.trim(),
         numerar: numerarEdit,
+        jerarquia: jerarquiaEdit,
       });
       setEditing(null);
       await load();
@@ -249,6 +256,8 @@ export default function GestionRiesgosScreen({ projectId }: { projectId: string 
               <Switch value={numerarDraft} onValueChange={setNumerarDraft} />
             </View>
 
+            <JerarquiaInformePicker value={jerarquiaDraft} onChange={setJerarquiaDraft} />
+
             <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
               <Button label="Cancelar" variant="secondary" onPress={() => setFormOpen(false)} style={{ flex: 1 }} />
               <Button label="Guardar" loading={saving} onPress={onSave} style={{ flex: 1 }} />
@@ -282,6 +291,8 @@ export default function GestionRiesgosScreen({ projectId }: { projectId: string 
               <Text style={[styles.switchLabel, { flex: 1 }]}>Numerar en el mapa impreso</Text>
               <Switch value={numerarEdit} onValueChange={setNumerarEdit} />
             </View>
+
+            <JerarquiaInformePicker value={jerarquiaEdit} onChange={setJerarquiaEdit} />
 
             <Text style={styles.fieldLabel}>% de avance</Text>
             <TextInput

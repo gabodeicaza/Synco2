@@ -17,10 +17,13 @@ import { Ionicons } from '@expo/vector-icons';
 import { api, Area, ModulosConfig, ModuloCategoria, Project } from '@/src/api';
 import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
 import { MODULOS, CATEGORIA_LABEL, CATEGORIA_ORDEN, ModuloDef } from '@/src/utils/modulos';
+import { confirm } from '@/src/utils/confirm';
 
 function vacio(): ModulosConfig {
   return { reportes_diarios: {}, reportes_semanales: {}, reportes_mensuales: {} };
 }
+
+const TODOS = '__todos__';
 
 function savingKey(categoria: ModuloCategoria, key: string): string {
   return `${categoria}:${key}`;
@@ -68,6 +71,34 @@ export default function ModulosConfigScreen() {
     setSaving(savingKey(categoria, key));
     try {
       const upd = await api.setProjectModulos(pid, { [categoria]: { [key]: value } } as Partial<ModulosConfig>);
+      setProject(upd);
+      setDraft({ ...vacio(), ...(upd.modulos || {}) });
+    } catch (e: any) {
+      setDraft(previous);
+      Alert.alert('No se pudo guardar', e?.message || 'Intentalo nuevamente.');
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  // Interruptor maestro de una categoría: enciende o apaga TODOS los módulos de
+  // ese informe en una sola escritura (el backend acepta varias claves a la vez).
+  async function onToggleTodos(categoria: ModuloCategoria, value: boolean) {
+    if (!value) {
+      const ok = await confirm(
+        `Apagar todos (${CATEGORIA_LABEL[categoria]})`,
+        'Ningún módulo aparecerá en este informe. Un módulo que quede apagado en los tres informes deja de admitir captura.',
+        { confirmText: 'Apagar todos', destructive: true },
+      );
+      if (!ok) return;
+    }
+    const previous = draft;
+    const cambios: Record<string, boolean> = {};
+    for (const m of MODULOS) cambios[m.key] = value;
+    setDraft((d) => ({ ...d, [categoria]: { ...d[categoria], ...cambios } }));
+    setSaving(savingKey(categoria, TODOS));
+    try {
+      const upd = await api.setProjectModulos(pid, { [categoria]: cambios } as Partial<ModulosConfig>);
       setProject(upd);
       setDraft({ ...vacio(), ...(upd.modulos || {}) });
     } catch (e: any) {
@@ -151,11 +182,27 @@ export default function ModulosConfigScreen() {
           <View key={categoria} style={{ marginBottom: spacing.lg }}>
             <Text style={styles.sectionTitle}>{CATEGORIA_LABEL[categoria]}</Text>
             <View style={styles.card}>
-              {MODULOS.map((m, idx) => {
+              <View style={[styles.row, styles.rowTodos]}>
+                <Ionicons name="power-outline" size={20} color={colors.primary} />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.rowTitle}>Todos los módulos</Text>
+                  <Text style={styles.rowSub}>Enciende o apaga todos los módulos de este informe</Text>
+                </View>
+                {saving === savingKey(categoria, TODOS) ? (
+                  <ActivityIndicator size="small" color={colors.primary} />
+                ) : (
+                  <Switch
+                    value={MODULOS.every((m) => !!draft[categoria]?.[m.key])}
+                    onValueChange={(v) => onToggleTodos(categoria, v)}
+                    trackColor={{ false: colors.border, true: colors.primary }}
+                  />
+                )}
+              </View>
+              {MODULOS.map((m) => {
                 const value = !!draft[categoria]?.[m.key];
                 const key = savingKey(categoria, m.key);
                 return (
-                  <View key={m.key} style={[styles.row, idx > 0 && styles.rowBorder]}>
+                  <View key={m.key} style={[styles.row, styles.rowBorder]}>
                     <Ionicons name={m.icon} size={20} color={colors.primary} />
                     <View style={{ flex: 1 }}>
                       <Text style={styles.rowTitle}>{m.label}</Text>
@@ -216,6 +263,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, ...shadow.card,
   },
   row: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: spacing.md },
+  rowTodos: { backgroundColor: colors.bg, borderTopLeftRadius: radius.lg, borderTopRightRadius: radius.lg },
   rowBorder: { borderTopWidth: 1, borderTopColor: colors.border },
   rowTitle: { fontSize: 14, fontWeight: '700', color: colors.text },
   rowSub: { fontSize: 12, color: colors.textMuted, marginTop: 2 },

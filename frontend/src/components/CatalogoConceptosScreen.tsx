@@ -9,7 +9,7 @@
 // (acordeón) con el detalle completo tipo Excel.
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, TextInput, StatusBar, Alert, Modal,
+  View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, TextInput, StatusBar, Alert, Modal, BackHandler,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
@@ -154,6 +154,19 @@ export default function CatalogoConceptosScreen({ projectId }: { projectId: stri
   function subirUnNivel() {
     irABreadcrumb(breadcrumb.length - 2);
   }
+
+  // El botón "atrás" de Android sube un nivel (conceptos → partidas → carpeta padre)
+  // antes de salir de la pantalla, igual que la flecha del encabezado.
+  useEffect(() => {
+    const dentro = mode === 'conceptos' || (mode === 'partidas' && breadcrumb.length > 0);
+    if (!dentro) return undefined;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (mode === 'conceptos') backToPartidas(); else subirUnNivel();
+      return true;
+    });
+    return () => sub.remove();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, breadcrumb]);
 
   const tienePartidasHijas = useCallback(
     (p: Partida) => partidas.some((x) => x.partida_padre_id === p.id),
