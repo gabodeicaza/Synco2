@@ -145,7 +145,7 @@ export default function InvitationsScreen() {
         email: email.trim().toLowerCase(),
         name: name.trim(),
         role,
-        puesto: role === ROLE_ESP ? (puesto.trim() || null) : null,
+        puesto: (role === ROLE_ESP || role === ROLE_SUB) ? (puesto.trim() || null) : null,
         no_control: noControl.trim() || null,
         area_id: areaId,
       };
@@ -221,7 +221,7 @@ export default function InvitationsScreen() {
       await api.updateTeamMember(pid, editTarget.accepted_user_id, {
         name,
         email,
-        puesto: editTarget.role === ROLE_ESP ? (editPuesto.trim() || undefined) : undefined,
+        puesto: (editTarget.role === ROLE_ESP || editTarget.role === ROLE_SUB) ? (editPuesto.trim() || undefined) : undefined,
         no_control: editNoControl.trim() || undefined,
         area_id: editAreaId || '',
       });
@@ -443,7 +443,7 @@ export default function InvitationsScreen() {
                 autoCapitalize="none"
               />
 
-              {editTarget?.role === ROLE_ESP && (
+              {(editTarget?.role === ROLE_ESP || editTarget?.role === ROLE_SUB) && (
                 <>
                   <Text style={styles.label}>Puesto</Text>
                   <TextInput value={editPuesto} onChangeText={setEditPuesto} style={styles.inputSimple} placeholder="Puesto" />
@@ -547,7 +547,7 @@ function StepIdentity({ name, setName, email, setEmail, role, puesto, setPuesto,
       <Text style={styles.stepTitle}>Datos básicos</Text>
       <TextInput value={name} onChangeText={setName} style={styles.inputSimple} placeholder="Nombre completo" />
       <TextInput value={email} onChangeText={setEmail} style={styles.inputSimple} placeholder="Correo electrónico" keyboardType="email-address" autoCapitalize="none" />
-      {role === ROLE_ESP && <TextInput value={puesto} onChangeText={setPuesto} style={styles.inputSimple} placeholder="Puesto" />}
+      {(role === ROLE_ESP || role === ROLE_SUB) && <TextInput value={puesto} onChangeText={setPuesto} style={styles.inputSimple} placeholder="Puesto" />}
       <TextInput value={noControl} onChangeText={setNoControl} style={styles.inputSimple} placeholder="No. de Control (opcional)" />
     </View>
   );
