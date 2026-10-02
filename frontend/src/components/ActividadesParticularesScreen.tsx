@@ -14,7 +14,8 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { api, ActPartCategoria, ActPartRegistro, LocationNode, Project } from '@/src/api';
+import { api, ActPartCategoria, ActPartRegistro, JerarquiaInforme, LocationNode, Project } from '@/src/api';
+import { JerarquiaInformePicker, JERARQUIA_DEFAULT } from '@/src/components/JerarquiaInformePicker';
 import { EstacionPicker } from '@/src/components/EstacionPicker';
 import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
 import { Button } from '@/src/components/Button';
@@ -32,7 +33,7 @@ function fmtFecha(iso?: string | null): string {
   return m ? `${m[3]}/${m[2]}/${m[1]}` : iso || '';
 }
 
-type Draft = { id: string | null; node_id: string | null; categoria_id: string | null; subcategoria: string; texto: string; fecha: string };
+type Draft = { id: string | null; node_id: string | null; categoria_id: string | null; subcategoria: string; texto: string; fecha: string; jerarquia: JerarquiaInforme };
 type CatDraft = { id: string | null; nombre: string; subs: string }; // subs: una por renglón
 
 export default function ActividadesParticularesScreen({ projectId }: { projectId: string }) {
@@ -91,7 +92,7 @@ export default function ActividadesParticularesScreen({ projectId }: { projectId
     if (!fechaTecleadaOk(draft.fecha)) { Alert.alert('Fecha inválida', FECHA_AYUDA); return; }
     const body = {
       node_id: draft.node_id, categoria_id: draft.categoria_id, subcategoria: draft.subcategoria.trim() || null,
-      texto: draft.texto.trim(), fecha: draft.fecha.trim(),
+      texto: draft.texto.trim(), fecha: draft.fecha.trim(), jerarquia: draft.jerarquia,
     };
     try {
       setSaving(true);
@@ -197,7 +198,7 @@ export default function ActividadesParticularesScreen({ projectId }: { projectId
             <Pressable
               onPress={() => (cats.length === 0
                 ? Alert.alert('Sin categorías', 'El Coordinador o Sub-Coordinador debe definir las categorías primero.')
-                : setDraft({ id: null, node_id: null, categoria_id: null, subcategoria: '', texto: '', fecha: hoyISO() }))}
+                : setDraft({ id: null, node_id: null, categoria_id: null, subcategoria: '', texto: '', fecha: hoyISO(), jerarquia: JERARQUIA_DEFAULT }))}
               style={styles.addBtn}
             >
               <Ionicons name="add" size={16} color={colors.primary} />
@@ -219,6 +220,7 @@ export default function ActividadesParticularesScreen({ projectId }: { projectId
                 <Pressable key={r.id} style={[styles.card, styles.row]}
                   onPress={puedeEscribir ? () => setDraft({
                     id: r.id, node_id: r.node_id, categoria_id: r.categoria_id, subcategoria: r.subcategoria || '', texto: r.texto, fecha: r.fecha,
+                    jerarquia: r.jerarquia || JERARQUIA_DEFAULT,
                   }) : undefined}>
                   <View style={{ flex: 1 }}>
                     <Text style={styles.fecha}>{fmtFecha(r.fecha)} · {r.categoria_nombre}{r.subcategoria ? ` › ${r.subcategoria}` : ''}</Text>
@@ -274,6 +276,10 @@ export default function ActividadesParticularesScreen({ projectId }: { projectId
               <Text style={styles.fieldLabel}>Fecha (AAAA-MM-DD o DD/MM/AAAA)</Text>
               <TextInput value={draft?.fecha || ''} autoCapitalize="none" placeholderTextColor={colors.textMuted}
                 onChangeText={(t) => setDraft((d) => (d ? { ...d, fecha: t } : d))} placeholder="2026-09-23" style={styles.input} />
+              <JerarquiaInformePicker
+                value={draft?.jerarquia}
+                onChange={(j) => setDraft((d) => (d ? { ...d, jerarquia: j } : d))}
+              />
               <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
                 <Button label="Cancelar" variant="secondary" onPress={() => setDraft(null)} style={{ flex: 1 }} />
                 <Button label="Guardar" loading={saving} onPress={onSave} style={{ flex: 1 }} />

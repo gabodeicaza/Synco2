@@ -84,15 +84,15 @@ async def _capturar():
     for desc, pie in (("Verificación de hincado de pila", "Se verifica proceso de habilitado"),
                       ("Verificación de suministro Poste S-2", "Vista de suministro")):
         await server.create_control_calidad("p1", server.ControlCalidadIn(
-            image=_PNG, node_id="n1", descripcion=desc, pie=pie, fecha=hoy), ESPEC)
+            image=_PNG, node_id="n1", descripcion=desc, pie=pie, fecha=hoy, jerarquia="semanal"), ESPEC)
     await server.create_control_calidad("p1", server.ControlCalidadIn(
-        image=_PNG, grupo="Suministro Gefsa-Puebla", descripcion="Cotejo de suministro", pie="Plataforma", fecha=hoy), ESPEC)
+        image=_PNG, grupo="Suministro Gefsa-Puebla", descripcion="Cotejo de suministro", pie="Plataforma", fecha=hoy, jerarquia="semanal"), ESPEC)
     await server.create_prueba_calidad("p1", server.PruebaCalidadIn(
         node_id="n1", frente="Banqueta adecuación Poste S-2", localizacion="E1- E2", elemento="banqueta",
-        tipo="Concreto normal", observaciones="Se verifica concreto suministrado", fecha=hoy), ESPEC)
+        tipo="Concreto normal", observaciones="Se verifica concreto suministrado", fecha=hoy, jerarquia="semanal"), ESPEC)
     # Fuera del periodo: no debe aparecer.
     await server.create_prueba_calidad("p1", server.PruebaCalidadIn(
-        frente="PRUEBA ANTIGUA", fecha="2020-01-01"), ESPEC)
+        frente="PRUEBA ANTIGUA", fecha="2020-01-01", jerarquia="semanal"), ESPEC)
 
 
 def _exportar(formato, modulos, apagar_antes_de_exportar=False):

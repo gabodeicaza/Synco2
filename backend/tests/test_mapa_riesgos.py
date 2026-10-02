@@ -166,7 +166,7 @@ def test_tabla_generica_del_pptx_respeta_anchos_no_trunca_y_pagina():
         for i in range(1, 41):
             await server.create_prueba_calidad("p1", server.PruebaCalidadIn(
                 frente=f"Frente {i}", localizacion="E1- E2", elemento="banqueta", tipo="Concreto normal",
-                observaciones=obs, fecha=HOY.isoformat()), {**USER, "project_ids": ["p1"]})
+                observaciones=obs, fecha=HOY.isoformat(), jerarquia="semanal"), {**USER, "project_ids": ["p1"]})
         return await _exportar("pptx"), await _exportar("pdf")
     pptx, pdf = _con_db(go)
     prs, fuera = _pptx_shapes_dentro(pptx)

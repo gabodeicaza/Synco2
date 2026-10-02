@@ -16,7 +16,8 @@ import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
-import { api, ControlCalidad, LocationNode, Project } from '@/src/api';
+import { api, ControlCalidad, JerarquiaInforme, LocationNode, Project } from '@/src/api';
+import { JerarquiaInformePicker, JERARQUIA_DEFAULT } from '@/src/components/JerarquiaInformePicker';
 import { EstacionPicker } from '@/src/components/EstacionPicker';
 import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
 import { Button } from '@/src/components/Button';
@@ -43,12 +44,13 @@ type Draft = {
   descripcion: string;
   pie: string;
   fecha: string;
+  jerarquia: JerarquiaInforme;
   image: string | null; // data URL de la foto NUEVA (null = conservar la actual al editar)
   preview: string | null; // lo que se muestra: la foto nueva o la vigente
 };
 
 const emptyDraft = (): Draft => ({
-  id: null, node_id: null, grupo: '', descripcion: '', pie: '', fecha: hoyISO(), image: null, preview: null,
+  id: null, node_id: null, grupo: '', descripcion: '', pie: '', fecha: hoyISO(), jerarquia: JERARQUIA_DEFAULT, image: null, preview: null,
 });
 
 export default function ControlCalidadScreen({ projectId }: { projectId: string }) {
@@ -103,7 +105,7 @@ export default function ControlCalidadScreen({ projectId }: { projectId: string 
   async function openEdit(it: ControlCalidad) {
     setDraft({
       id: it.id, node_id: it.node_id || null, grupo: it.grupo || '', descripcion: it.descripcion || '',
-      pie: it.pie || '', fecha: it.fecha, image: null, preview: it.thumb ? `data:image/jpeg;base64,${it.thumb}` : null,
+      pie: it.pie || '', fecha: it.fecha, jerarquia: it.jerarquia || JERARQUIA_DEFAULT, image: null, preview: it.thumb ? `data:image/jpeg;base64,${it.thumb}` : null,
     });
     // La miniatura sirve de vista previa; la foto completa se baja en segundo plano.
     try {
@@ -156,7 +158,7 @@ export default function ControlCalidadScreen({ projectId }: { projectId: string 
       Alert.alert('Fecha inválida', FECHA_AYUDA);
       return;
     }
-    const texto = { node_id: draft.node_id, grupo: draft.grupo, descripcion: draft.descripcion, pie: draft.pie, fecha: draft.fecha.trim() };
+    const texto = { node_id: draft.node_id, grupo: draft.grupo, descripcion: draft.descripcion, pie: draft.pie, fecha: draft.fecha.trim(), jerarquia: draft.jerarquia };
     try {
       setSaving(true);
       if (draft.id) await api.updateControlCalidad(projectId, draft.id, draft.image ? { ...texto, image: draft.image } : texto);
@@ -311,6 +313,10 @@ export default function ControlCalidadScreen({ projectId }: { projectId: string 
               {field('Actividades de control de calidad', 'descripcion', 'Ej. Verificación de hincado de pila habilitada de acuerdo a especificación', true)}
               {field('Pie de foto', 'pie', 'Ej. Se verifica proceso de habilitado de acuerdo a plano')}
               {field('Fecha (AAAA-MM-DD)', 'fecha', '2026-06-26')}
+              <JerarquiaInformePicker
+                value={draft?.jerarquia}
+                onChange={(j) => setDraft((d) => (d ? { ...d, jerarquia: j } : d))}
+              />
               <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
                 <Button label="Cancelar" variant="secondary" onPress={() => setDraft(null)} style={{ flex: 1 }} />
                 <Button label="Guardar" loading={saving} onPress={onSave} style={{ flex: 1 }} />

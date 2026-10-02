@@ -14,7 +14,8 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { api, LocationNode, Project, PruebaCalidad } from '@/src/api';
+import { api, JerarquiaInforme, LocationNode, Project, PruebaCalidad } from '@/src/api';
+import { JerarquiaInformePicker, JERARQUIA_DEFAULT } from '@/src/components/JerarquiaInformePicker';
 import { EstacionPicker } from '@/src/components/EstacionPicker';
 import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
 import { Button } from '@/src/components/Button';
@@ -45,11 +46,12 @@ type Draft = {
   fecha: string;
   tipo: string;
   observaciones: string;
+  jerarquia: JerarquiaInforme;
 };
 
 const emptyDraft = (): Draft => ({
   id: null, node_id: null, grupo: '', frente: '', localizacion: '', elemento: '',
-  muestra_no: '', fecha: hoyISO(), tipo: '', observaciones: '',
+  muestra_no: '', fecha: hoyISO(), tipo: '', observaciones: '', jerarquia: JERARQUIA_DEFAULT,
 });
 
 export default function PruebasCalidadScreen({ projectId }: { projectId: string }) {
@@ -105,6 +107,7 @@ export default function PruebasCalidadScreen({ projectId }: { projectId: string 
       id: it.id, node_id: it.node_id || null, grupo: it.grupo || '', frente: it.frente,
       localizacion: it.localizacion || '', elemento: it.elemento || '', muestra_no: it.muestra_no || '',
       fecha: it.fecha, tipo: it.tipo || '', observaciones: it.observaciones || '',
+      jerarquia: it.jerarquia || JERARQUIA_DEFAULT,
     });
   }
 
@@ -121,7 +124,7 @@ export default function PruebasCalidadScreen({ projectId }: { projectId: string 
     const body = {
       node_id: draft.node_id, grupo: draft.grupo, frente: draft.frente, localizacion: draft.localizacion,
       elemento: draft.elemento, muestra_no: draft.muestra_no, fecha: draft.fecha.trim(),
-      tipo: draft.tipo, observaciones: draft.observaciones,
+      tipo: draft.tipo, observaciones: draft.observaciones, jerarquia: draft.jerarquia,
     };
     try {
       setSaving(true);
@@ -259,6 +262,10 @@ export default function PruebasCalidadScreen({ projectId }: { projectId: string 
               {field('Fecha de la prueba (AAAA-MM-DD)', 'fecha', '2026-06-26')}
               {field('Tipo', 'tipo', 'Ej. Concreto normal f\'c=150 kg/cm2')}
               {field('Observaciones', 'observaciones', 'Ej. Se verifica concreto suministrado', true)}
+              <JerarquiaInformePicker
+                value={draft?.jerarquia}
+                onChange={(j) => setDraft((d) => (d ? { ...d, jerarquia: j } : d))}
+              />
               <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
                 <Button label="Cancelar" variant="secondary" onPress={() => setDraft(null)} style={{ flex: 1 }} />
                 <Button label="Guardar" loading={saving} onPress={onSave} style={{ flex: 1 }} />
