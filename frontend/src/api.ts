@@ -592,6 +592,41 @@ export interface ControlCalidadInput {
   pie?: string;
   fecha?: string;
 }
+// === Capa financiera del reporte semanal =================================
+export type ContratoFin = 'obra' | 'supervision';
+export interface Estimacion {
+  id: string;
+  project_id: string;
+  contrato: ContratoFin;
+  numero: number;
+  periodo_inicio?: string | null;
+  periodo_fin?: string | null;
+  estatus?: string | null;
+  // Importes como texto decimal (sin $ ni comas).
+  obra_ejecutada?: string | null;
+  amortizacion?: string | null;
+  pct_amortizacion_anticipo?: string | null;
+  total_deducciones?: string | null;
+  iva?: string | null;
+  total_neto?: string | null;
+  fecha_pago?: string | null; // fecha o texto libre ("Por pagar")
+  updated_at: string;
+}
+export type EstimacionInput = Partial<Omit<Estimacion, 'id' | 'project_id' | 'updated_at' | 'contrato' | 'numero'>> & {
+  contrato?: ContratoFin;
+  numero: number;
+};
+export interface PendienteGeneral {
+  id: string;
+  project_id: string;
+  contrato: ContratoFin;
+  titulo: string;
+  descripcion?: string | null;
+  orden: number;
+  resuelto: boolean;
+  created_by_name?: string;
+  updated_at: string;
+}
 export type PruebaCalidadInput = Partial<Omit<PruebaCalidad, 'id' | 'project_id' | 'created_by' | 'created_by_name' | 'updated_at' | 'frente'>> & {
   frente: string;
 };
@@ -2200,6 +2235,21 @@ export const api = {
     request<PruebaCalidad>('PATCH', `/projects/${pid}/pruebas-calidad/${rid}`, body),
   deletePruebaCalidad: (pid: string, rid: string) =>
     request<{ ok: boolean }>('DELETE', `/projects/${pid}/pruebas-calidad/${rid}`),
+  listEstimaciones: (pid: string) => request<Estimacion[]>('GET', `/projects/${pid}/estimaciones`),
+  createEstimacion: (pid: string, body: EstimacionInput) =>
+    request<Estimacion>('POST', `/projects/${pid}/estimaciones`, body),
+  updateEstimacion: (pid: string, eid: string, body: Partial<EstimacionInput>) =>
+    request<Estimacion>('PATCH', `/projects/${pid}/estimaciones/${eid}`, body),
+  deleteEstimacion: (pid: string, eid: string) =>
+    request<{ ok: boolean }>('DELETE', `/projects/${pid}/estimaciones/${eid}`),
+  listPendientesGenerales: (pid: string) =>
+    request<PendienteGeneral[]>('GET', `/projects/${pid}/pendientes-generales`),
+  createPendienteGeneral: (pid: string, body: { contrato: ContratoFin; titulo: string; descripcion?: string; orden?: number }) =>
+    request<PendienteGeneral>('POST', `/projects/${pid}/pendientes-generales`, body),
+  updatePendienteGeneral: (pid: string, rid: string, body: Partial<{ titulo: string; descripcion: string; orden: number; resuelto: boolean }>) =>
+    request<PendienteGeneral>('PATCH', `/projects/${pid}/pendientes-generales/${rid}`, body),
+  deletePendienteGeneral: (pid: string, rid: string) =>
+    request<{ ok: boolean }>('DELETE', `/projects/${pid}/pendientes-generales/${rid}`),
   listControlCalidad: (pid: string) => request<ControlCalidad[]>('GET', `/projects/${pid}/control-calidad`),
   getControlCalidad: (pid: string, rid: string) =>
     request<ControlCalidad>('GET', `/projects/${pid}/control-calidad/${rid}`),

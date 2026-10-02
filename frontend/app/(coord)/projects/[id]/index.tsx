@@ -1509,6 +1509,22 @@ export default function ProjectDetailScreen() {
                     onPress={() => router.push({ pathname: '/(coord)/projects/[id]/control-calidad' as any, params: { id: pid } })}
                   />
                 ) : null}
+                {moduloActivo(project?.modulos, 'estimaciones') ? (
+                  <ActionTile
+                    icon="cash-outline"
+                    title="Estimaciones"
+                    subtitle="Concentrado de estimaciones de obra y de supervisión"
+                    onPress={() => router.push({ pathname: '/(coord)/projects/[id]/estimaciones' as any, params: { id: pid } })}
+                  />
+                ) : null}
+                {moduloActivo(project?.modulos, 'pendientes_generales') ? (
+                  <ActionTile
+                    icon="list-outline"
+                    title="Pendientes Generales"
+                    subtitle="Pendientes o requerimientos generales de obra y de supervisión"
+                    onPress={() => router.push({ pathname: '/(coord)/projects/[id]/pendientes-generales' as any, params: { id: pid } })}
+                  />
+                ) : null}
                 {moduloActivo(project?.modulos, 'tapial') ? (
                   <ActionTile
                     icon="git-branch-outline"

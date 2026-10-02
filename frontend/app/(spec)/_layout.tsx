@@ -110,6 +110,8 @@ export default function SpecLayout() {
         <Tabs.Screen name="fotos-lidar" options={{ href: null }} />
         <Tabs.Screen name="pruebas-calidad" options={{ href: null }} />
         <Tabs.Screen name="control-calidad" options={{ href: null }} />
+        <Tabs.Screen name="estimaciones" options={{ href: null }} />
+        <Tabs.Screen name="pendientes-generales" options={{ href: null }} />
         <Tabs.Screen name="tapial" options={{ href: null }} />
         <Tabs.Screen name="estado-tiempo" options={{ href: null }} />
         <Tabs.Screen name="control-obra" options={{ href: null }} />
