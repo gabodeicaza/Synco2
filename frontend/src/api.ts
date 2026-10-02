@@ -447,6 +447,8 @@ export interface RiesgoRegistro {
   propuesta_control: string;
   porcentaje_avance: number;
   notas?: string | null;
+  // false = la fila no se numera en el mapa impreso (ej. la fila de postes).
+  numerar?: boolean;
   captured_by: string;
   captured_by_name: string;
   created_at: string;
@@ -2393,11 +2395,11 @@ export const api = {
   listRiesgosRegistros: (pid: string) => request<RiesgoRegistro[]>('GET', `/projects/${pid}/riesgos-registros`),
   createRiesgoRegistro: (pid: string, body: {
     node_id?: string | null; estacion_nombre?: string | null; descripcion_riesgo: string;
-    propuesta_control: string; porcentaje_avance?: number; notas?: string | null;
+    propuesta_control: string; porcentaje_avance?: number; notas?: string | null; numerar?: boolean;
   }) => request<RiesgoRegistro>('POST', `/projects/${pid}/riesgos-registros`, body),
   updateRiesgoRegistro: (pid: string, rid: string, body: Partial<{
     estacion_nombre: string | null; descripcion_riesgo: string; propuesta_control: string;
-    porcentaje_avance: number; notas: string | null;
+    porcentaje_avance: number; notas: string | null; numerar: boolean;
   }>) => request<RiesgoRegistro>('PATCH', `/projects/${pid}/riesgos-registros/${rid}`, body),
 
   // === Módulo piloto: Estudios y Proyecto Ejecutivo ===
