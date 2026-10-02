@@ -30,6 +30,7 @@ export default function SubCoordLayout() {
   return (
     <View style={{ flex: 1 }}>
       <Tabs
+        backBehavior="history"
         screenOptions={{
           headerShown: false,
           tabBarActiveTintColor: colors.primary,
