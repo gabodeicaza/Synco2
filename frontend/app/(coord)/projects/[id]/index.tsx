@@ -194,6 +194,7 @@ export default function ProjectDetailScreen() {
   const [aiError, setAiError] = useState<string | null>(null);
   const [aiMeta, setAiMeta] = useState<{ reports_count: number; period_hours: number } | null>(null);
   const [aiCopied, setAiCopied] = useState(false);
+  const [aiPeriodo, setAiPeriodo] = useState<'diario' | 'semanal' | 'mensual'>('diario');
 
   // Tabs: Reportes / Operacion / Configuracion
   const [activeTab, setActiveTab] = useState<'reportes' | 'operacion' | 'configuracion'>('reportes');
@@ -392,14 +393,14 @@ export default function ProjectDetailScreen() {
     await runAiSummary();
   }
 
-  async function runAiSummary() {
+  async function runAiSummary(periodoOverride?: 'diario' | 'semanal' | 'mensual') {
     if (!pid) return;
     try {
       setAiBusy(true);
       setAiError(null);
       setAiSummary(null);
       setAiMeta(null);
-      const res = await api.aiSummary(pid);
+      const res = await api.aiSummary(pid, periodoOverride ?? aiPeriodo);
       setAiSummary(res.summary);
       setAiMeta({ reports_count: res.reports_count, period_hours: res.period_hours });
     } catch (e: any) {
@@ -407,6 +408,12 @@ export default function ProjectDetailScreen() {
     } finally {
       setAiBusy(false);
     }
+  }
+
+  async function changeAiPeriodo(p: 'diario' | 'semanal' | 'mensual') {
+    if (p === aiPeriodo) return;
+    setAiPeriodo(p);
+    await runAiSummary(p);
   }
 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -2127,8 +2134,10 @@ export default function ProjectDetailScreen() {
         error={aiError}
         meta={aiMeta}
         copied={aiCopied}
+        periodo={aiPeriodo}
         onClose={() => setAiOpen(false)}
-        onRegenerate={runAiSummary}
+        onRegenerate={() => runAiSummary()}
+        onChangePeriodo={changeAiPeriodo}
         onCopy={copyAiSummary}
       />
 
@@ -3025,8 +3034,10 @@ function AiSummaryModal({
   error,
   meta,
   copied,
+  periodo,
   onClose,
   onRegenerate,
+  onChangePeriodo,
   onCopy,
 }: {
   visible: boolean;
@@ -3035,8 +3046,10 @@ function AiSummaryModal({
   error: string | null;
   meta: { reports_count: number; period_hours: number } | null;
   copied: boolean;
+  periodo: 'diario' | 'semanal' | 'mensual';
   onClose: () => void;
   onRegenerate: () => void;
+  onChangePeriodo: (p: 'diario' | 'semanal' | 'mensual') => void;
   onCopy: () => void;
 }) {
   const insets = useSafeAreaInsets();
@@ -3049,18 +3062,41 @@ function AiSummaryModal({
           <View style={styles.exportHeader}>
             <View style={{ flex: 1 }}>
               <Text style={styles.exportTitle}>Resumen Ejecutivo con IA</Text>
-              <Text style={styles.exportSubtitle}>Generado a partir de los reportes de hoy</Text>
+              <Text style={styles.exportSubtitle}>Generado a partir de los reportes del período</Text>
             </View>
             <Pressable onPress={onClose} hitSlop={10} style={styles.exportBack}>
               <Ionicons name="close" size={22} color={colors.text} />
             </Pressable>
           </View>
 
+          <View style={{ flexDirection: 'row', gap: 6, backgroundColor: '#F1F5F9', borderRadius: 10, margin: spacing.md, marginBottom: 0, padding: 3 }}>
+            {([
+              ['diario', 'Hoy'],
+              ['semanal', 'Semana'],
+              ['mensual', 'Mes'],
+            ] as const).map(([key, label]) => (
+              <Pressable
+                key={key}
+                onPress={() => onChangePeriodo(key)}
+                disabled={busy}
+                style={({ pressed }) => [
+                  { flex: 1, paddingVertical: 7, borderRadius: 8, alignItems: 'center' },
+                  periodo === key && { backgroundColor: colors.primary },
+                  (busy || pressed) && { opacity: 0.7 },
+                ]}
+              >
+                <Text style={{ fontSize: 12, fontWeight: '700', color: periodo === key ? '#fff' : colors.textMuted }}>
+                  {label}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+
           <ScrollView style={{ flexShrink: 1 }} contentContainerStyle={{ padding: spacing.md }}>
             {busy ? (
               <View style={{ paddingVertical: 40, alignItems: 'center', gap: 12 }}>
                 <ActivityIndicator color={colors.primary} size="large" />
-                <Text style={{ color: colors.textMuted, fontWeight: '600' }}>Analizando reportes de hoy...</Text>
+                <Text style={{ color: colors.textMuted, fontWeight: '600' }}>Analizando reportes...</Text>
               </View>
             ) : error ? (
               <View style={{ paddingVertical: 20, alignItems: 'center', gap: 8 }}>
@@ -3075,7 +3111,7 @@ function AiSummaryModal({
                 {meta && (
                   <View style={{ flexDirection: 'row', gap: 8, marginBottom: 4 }}>
                     <View style={{ backgroundColor: '#F0F9FF', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, borderWidth: 1, borderColor: '#BAE6FD' }}>
-                      <Text style={{ fontSize: 10, color: '#0369A1', fontWeight: '800' }}>{meta.reports_count} REPORTES HOY</Text>
+                      <Text style={{ fontSize: 10, color: '#0369A1', fontWeight: '800' }}>{meta.reports_count} REPORTES</Text>
                     </View>
                   </View>
                 )}
