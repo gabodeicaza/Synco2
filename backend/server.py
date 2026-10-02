@@ -156,7 +156,7 @@ MODULOS_KEYS = {
     "gestion_riesgos", "estudios_proyecto", "impacto_ambiental",
     "tabla_resumen", "estado_tiempo", "control_obra",
     "fotos_lidar", "tapial", "pruebas_calidad", "control_calidad",
-    "avance_obra", "estimaciones", "pendientes_generales",
+    "avance_obra", "estimaciones", "pendientes_generales", "aspectos_sociales",
 }
 MODULOS_DIARIOS = MODULOS_KEYS
 MODULOS_SEMANALES = MODULOS_KEYS
@@ -1189,6 +1189,10 @@ async def startup_event():
     await db.estimaciones.create_index([("project_id", 1), ("contrato", 1), ("numero", 1)])
     await db.pendientes_generales.create_index("id", unique=True)
     await db.pendientes_generales.create_index([("project_id", 1), ("contrato", 1), ("orden", 1)])
+    await db.levantamientos_sociales.create_index("id", unique=True)
+    await db.levantamientos_sociales.create_index([("project_id", 1), ("tipo", 1), ("ambito", 1)], unique=True)
+    await db.salvamento_arqueologico.create_index("id", unique=True)
+    await db.salvamento_arqueologico.create_index([("project_id", 1), ("ambito", 1), ("orden", 1)])
     await db.tabla_resumen_actividades.create_index("id", unique=True)
     await db.tabla_resumen_actividades.create_index([("project_id", 1), ("orden", 1)])
     await db.tabla_resumen_columnas.create_index("id", unique=True)
@@ -4586,6 +4590,15 @@ async def delete_control_calidad(pid: str, rid: str, user: dict = Depends(curren
 #    supervisión).
 CONTRATOS_FIN = ("obra", "supervision")
 CONTRATO_FIN_LABEL = {"obra": "OBRA", "supervision": "SUPERVISIÓN"}
+# Los pendientes generales también existen para Aspectos Sociales (liberaciones
+# de postes y predios). El campo sigue llamándose `contrato` por compatibilidad,
+# pero aquí es un ÁMBITO: obra, supervisión o aspectos sociales.
+PENDIENTES_AMBITOS = ("obra", "supervision", "sociales")
+PENDIENTE_AMBITO_HEADING = {
+    "obra": "PENDIENTES O REQUERIMIENTOS GENERALES (OBRA)",
+    "supervision": "PENDIENTES O REQUERIMIENTOS GENERALES (SUPERVISIÓN)",
+    "sociales": "PENDIENTES GENERALES (ASPECTOS SOCIALES)",
+}
 
 
 def _money_fmt(value) -> str:
@@ -4690,17 +4703,59 @@ def _avance_obra_resumen(
     }
 
 
+_CHART_FONT_CANDIDATAS = (
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/TTF/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+    "C:/Windows/Fonts/segoeui.ttf",
+    "C:/Windows/Fonts/arial.ttf",
+    "/Library/Fonts/Arial.ttf",
+    "/System/Library/Fonts/Supplemental/Arial.ttf",
+)
+
+
+def _sin_acentos(texto: str) -> str:
+    import unicodedata
+    return "".join(c for c in unicodedata.normalize("NFKD", str(texto)) if not unicodedata.combining(c))
+
+
+def _chart_canvas(img, *tamanos: int):
+    """(draw, [fuentes...]) para las gráficas dibujadas con Pillow. La fuente
+    por defecto de Pillow NO trae vocales acentuadas (salen como cuadros), así
+    que se busca una TrueType del sistema (DejaVu en el servidor Ubuntu); si
+    no hay ninguna, el draw quita los acentos del texto para que se lea."""
+    from PIL import ImageDraw as _D, ImageFont as _F
+    fuentes, acentos = None, False
+    for ruta in _CHART_FONT_CANDIDATAS:
+        try:
+            fuentes, acentos = [_F.truetype(ruta, t) for t in tamanos], True
+            break
+        except OSError:
+            continue
+    if fuentes is None:
+        try:
+            fuentes = [_F.load_default(size=t) for t in tamanos]
+        except TypeError:  # Pillow viejo sin tamaño
+            fuentes = [_F.load_default() for _ in tamanos]
+
+    class _Draw(_D.ImageDraw):
+        def text(self, xy, text, *a, **k):
+            return super().text(xy, text if acentos else _sin_acentos(text), *a, **k)
+
+        def textlength(self, text, *a, **k):
+            return super().textlength(text if acentos else _sin_acentos(text), *a, **k)
+
+    return _Draw(img), fuentes
+
+
 def _grafica_lineas_png(titulo: str, etiquetas: List[str], series: List[tuple], formato) -> bytes:
     """Gráfica de líneas acumuladas dibujada con Pillow (el backend no usa
     matplotlib). `series` = [(nombre, "#RRGGBB", [valores...]), ...]."""
-    from PIL import Image as _I, ImageDraw as _D, ImageFont as _F
+    from PIL import Image as _I
     W, H = 1800, 800
     img = _I.new("RGB", (W, H), "white")
-    d = _D.Draw(img)
-    try:
-        f_txt, f_tit = _F.load_default(size=22), _F.load_default(size=28)
-    except TypeError:  # Pillow viejo sin tamaño
-        f_txt = f_tit = _F.load_default()
+    d, (f_txt, f_tit) = _chart_canvas(img, 22, 28)
     d.text((W / 2, 28), titulo, fill="#0F172A", font=f_tit, anchor="mm")
     x0, x1, y0, y1 = 150, W - 60, 80, H - 150
     vmax = max([float(v) for _, _, vals in series for v in vals] + [0.0])
@@ -4924,7 +4979,7 @@ async def delete_estimacion(pid: str, eid: str, user: dict = Depends(require_rol
 
 
 class PendienteIn(BaseModel):
-    contrato: Literal["obra", "supervision"] = "obra"
+    contrato: Literal["obra", "supervision", "sociales"] = "obra"
     titulo: str
     descripcion: Optional[str] = None
     orden: int = 0
@@ -4941,7 +4996,7 @@ def _pendientes_bloques(registros: List[dict]) -> List[dict]:
     """Un bloque `list` por contrato con los pendientes VIGENTES (los
     resueltos no se imprimen). Sin vigentes → sin bloque."""
     bloques = []
-    for contrato in CONTRATOS_FIN:
+    for contrato in PENDIENTES_AMBITOS:
         vigentes = sorted(
             (r for r in registros if r.get("contrato", "obra") == contrato and not r.get("resuelto")),
             key=lambda r: (r.get("orden", 0), str(r.get("created_at") or "")),
@@ -4950,7 +5005,7 @@ def _pendientes_bloques(registros: List[dict]) -> List[dict]:
             continue
         bloques.append({
             "type": "list",
-            "heading": f"PENDIENTES O REQUERIMIENTOS GENERALES ({CONTRATO_FIN_LABEL[contrato]})",
+            "heading": PENDIENTE_AMBITO_HEADING[contrato],
             "items": [{"title": r["titulo"], "body": r.get("descripcion") or "", "extra": None, "meta": None}
                       for r in vigentes],
             "empty_text": "Sin pendientes.",
@@ -5017,6 +5072,310 @@ async def delete_pendiente_general(pid: str, rid: str, user: dict = Depends(requ
     res = await db.pendientes_generales.delete_one({"id": rid, "project_id": pid})
     if not res.deleted_count:
         raise HTTPException(404, "Pendiente no existe")
+    return {"ok": True}
+
+
+# === ASPECTOS SOCIALES (reporte semanal) ===================================
+# Dos registros estructurados que el reporte imprime con gráficas:
+#  - levantamientos: dictámenes estructurales y fe notarial, requeridos vs
+#    realizados por estaciones y por postes (gráficas de dona).
+#  - salvamento arqueológico: fecha de inicio y de liberación por punto de
+#    sondeo (estación) o poste (gráfica de barras tipo Gantt).
+# Las actividades generales, las fotos con pie "FOTO n." y la situación
+# social por estación salen del sistema de reportes por área y del hub del
+# nodo; los pendientes de liberación, de Pendientes Generales (ámbito social).
+LEVANTAMIENTO_TIPOS = {"dictamen_estructural": "Dictámenes estructurales", "fe_notarial": "Fe notarial"}
+LEVANTAMIENTO_AMBITOS = {"estacion": "estaciones", "poste": "postes"}
+
+
+class LevantamientoIn(BaseModel):
+    tipo: Literal["dictamen_estructural", "fe_notarial"]
+    ambito: Literal["estacion", "poste"]
+    total_requerido: int
+    realizados: int
+
+
+def _levantamientos_bloques(registros: List[dict]) -> List[dict]:
+    """Tabla de cumplimiento (requerido / realizado / %) y una gráfica de
+    dona por cada tipo que tenga algo requerido. Devuelve bloques `table` e
+    `imagen` ya listos (las imágenes en data URL JPEG)."""
+    por_clave = {(r["tipo"], r["ambito"]): r for r in registros}
+    filas = []
+    for tipo, tipo_lbl in LEVANTAMIENTO_TIPOS.items():
+        for ambito, ambito_lbl in LEVANTAMIENTO_AMBITOS.items():
+            r = por_clave.get((tipo, ambito))
+            if not r or not r.get("total_requerido"):
+                continue
+            pct = r["realizados"] / r["total_requerido"] * 100
+            filas.append([f"{tipo_lbl} ({ambito_lbl})", str(r["total_requerido"]), str(r["realizados"]), f"{pct:.1f}%"])
+    if not filas:
+        return []
+    return [{
+        "type": "table", "heading": "AVANCE EN DICTÁMENES ESTRUCTURALES Y FE NOTARIAL",
+        "headers": ["LEVANTAMIENTO", "TOTAL REQUERIDO", "REALIZADOS", "% DE CUMPLIMIENTO"],
+        "rows": filas, "col_widths": [0.46, 0.18, 0.18, 0.18], "empty_text": "Sin levantamientos.",
+    }]
+
+
+def _levantamientos_graficas(registros: List[dict]) -> List[tuple]:
+    """[(heading, caption, png)] — una imagen por tipo con una dona por ámbito."""
+    por_clave = {(r["tipo"], r["ambito"]): r for r in registros}
+    out = []
+    for tipo, tipo_lbl in LEVANTAMIENTO_TIPOS.items():
+        items = []
+        for ambito, ambito_lbl in LEVANTAMIENTO_AMBITOS.items():
+            r = por_clave.get((tipo, ambito))
+            if r and r.get("total_requerido"):
+                items.append((f"{tipo_lbl} ({ambito_lbl})", r["realizados"], r["total_requerido"]))
+        if items:
+            out.append((tipo_lbl.upper(), f"Porcentaje de avance en {tipo_lbl.lower()} por estaciones y postes",
+                        _grafica_donas_png(tipo_lbl, items)))
+    return out
+
+
+def _grafica_donas_png(titulo: str, items: List[tuple]) -> bytes:
+    """Una dona por item `(nombre, realizados, total)`: verde = realizado,
+    gris = pendiente, con el % al centro. Dibujada con Pillow."""
+    from PIL import Image as _I
+    W, H = 1800, 800
+    img = _I.new("RGB", (W, H), "white")
+    d, (f_txt, f_tit, f_big) = _chart_canvas(img, 24, 30, 64)
+    d.text((W / 2, 40), titulo, fill="#0F172A", font=f_tit, anchor="mm")
+    n = max(len(items), 1)
+    r = 230
+    for i, (nombre, real, total) in enumerate(items):
+        cx, cy = W * (i + 0.5) / n, 880 / 2
+        bbox = [cx - r, cy - r, cx + r, cy + r]
+        d.ellipse(bbox, fill="#E2E8F0")
+        if total > 0 and real > 0:
+            d.pieslice(bbox, -90, -90 + 360 * min(real, total) / total, fill="#16A34A")
+        hueco = r * 0.58
+        d.ellipse([cx - hueco, cy - hueco, cx + hueco, cy + hueco], fill="white")
+        pct = real / total * 100 if total else 0
+        d.text((cx, cy), f"{pct:.0f}%", fill="#0F172A", font=f_big, anchor="mm")
+        d.text((cx, cy + r + 45), nombre, fill="#0F172A", font=f_txt, anchor="mm")
+        d.text((cx, cy + r + 80), f"{real} de {total} realizados", fill="#475569", font=f_txt, anchor="mm")
+    out = io.BytesIO()
+    img.save(out, format="PNG")
+    return out.getvalue()
+
+
+def _salvamento_dias(r: dict, corte: date) -> Optional[int]:
+    """Días de trabajo: inicio → liberación, o inicio → corte si sigue en
+    curso. None si aún no inicia (inicio posterior al corte)."""
+    try:
+        ini = date.fromisoformat(r["fecha_inicio"])
+    except (KeyError, ValueError, TypeError):
+        return None
+    if ini > corte:
+        return None
+    fin = date.fromisoformat(r["fecha_liberacion"]) if r.get("fecha_liberacion") else corte
+    return max((min(fin, corte) - ini).days, 0) + 1
+
+
+def _grafica_gantt_png(titulo: str, filas: List[tuple], corte: date) -> bytes:
+    """Barras horizontales por punto/poste: de la fecha de inicio a la de
+    liberación (verde) o al corte si sigue en curso (ámbar). `filas` =
+    [(etiqueta, inicio, fin, en_curso, dias), ...]."""
+    from PIL import Image as _I
+    W = 1800
+    row_h = 34
+    top, left, right = 90, 330, 90
+    H = top + row_h * len(filas) + 110
+    img = _I.new("RGB", (W, H), "white")
+    d, (f_txt, f_tit) = _chart_canvas(img, 20, 28)
+    d.text((W / 2, 36), titulo, fill="#0F172A", font=f_tit, anchor="mm")
+    t0 = min(f[1] for f in filas)
+    t1 = max(max(f[2] for f in filas), t0 + timedelta(days=1))
+    span = (t1 - t0).days or 1
+    x0, x1 = left, W - right
+
+    def xpos(dt: date) -> float:
+        return x0 + (x1 - x0) * (dt - t0).days / span
+
+    cur = date(t0.year, t0.month, 1)
+    while cur <= t1:  # líneas por mes
+        if cur >= t0:
+            x = xpos(cur)
+            d.line([(x, top - 10), (x, H - 80)], fill="#E2E8F0", width=1)
+            d.text((x, H - 62), cur.strftime("%m/%Y"), fill="#475569", font=f_txt, anchor="mt")
+        cur = date(cur.year + (cur.month == 12), cur.month % 12 + 1, 1)
+    for i, (etiqueta, ini, fin, en_curso, dias) in enumerate(filas):
+        y = top + i * row_h
+        d.text((left - 12, y + row_h / 2), etiqueta, fill="#0F172A", font=f_txt, anchor="rm")
+        xa, xb = xpos(ini), max(xpos(fin), xpos(ini) + 6)
+        d.rectangle([xa, y + 6, xb, y + row_h - 6], fill="#F59E0B" if en_curso else "#16A34A")
+        d.text((xb + 8, y + row_h / 2), f"{dias} d", fill="#475569", font=f_txt, anchor="lm")
+    d.rectangle([left, H - 32, left + 24, H - 16], fill="#16A34A")
+    d.text((left + 34, H - 24), "Liberado", fill="#0F172A", font=f_txt, anchor="lm")
+    d.rectangle([left + 160, H - 32, left + 184, H - 16], fill="#F59E0B")
+    d.text((left + 194, H - 24), "En curso", fill="#0F172A", font=f_txt, anchor="lm")
+    out = io.BytesIO()
+    img.save(out, format="PNG")
+    return out.getvalue()
+
+
+SALVAMENTO_FILAS_POR_GRAFICA = 22
+
+
+def _salvamento_graficas(registros: List[dict], corte: date) -> List[tuple]:
+    """[(heading, caption, png)] — una gráfica por ámbito, en bloques de
+    `SALVAMENTO_FILAS_POR_GRAFICA` filas para que sea legible. Los que aún no
+    inician al corte no se dibujan."""
+    out = []
+    for ambito, lbl in (("estacion", "ESTACIONES"), ("poste", "POSTES")):
+        regs = sorted((r for r in registros if r.get("ambito") == ambito), key=lambda r: r.get("orden", 0))
+        filas = []
+        for r in regs:
+            dias = _salvamento_dias(r, corte)
+            if dias is None:
+                continue
+            ini = date.fromisoformat(r["fecha_inicio"])
+            fin = min(date.fromisoformat(r["fecha_liberacion"]), corte) if r.get("fecha_liberacion") else corte
+            filas.append((r.get("etiqueta") or "", ini, fin, not r.get("fecha_liberacion"), dias))
+        total = (len(filas) + SALVAMENTO_FILAS_POR_GRAFICA - 1) // SALVAMENTO_FILAS_POR_GRAFICA
+        for k in range(total):
+            tramo = filas[k * SALVAMENTO_FILAS_POR_GRAFICA:(k + 1) * SALVAMENTO_FILAS_POR_GRAFICA]
+            pag = f" ({k + 1}/{total})" if total > 1 else ""
+            out.append((
+                f"SALVAMENTO ARQUEOLÓGICO POR {lbl}{pag}",
+                f"Avance de trabajos de salvamento arqueológico por {lbl.lower()} · fecha de inicio a liberación",
+                _grafica_gantt_png(f"Avance de trabajos de salvamento arqueológico por {lbl.lower()}", tramo, corte),
+            ))
+    return out
+
+
+class SalvamentoIn(BaseModel):
+    ambito: Literal["estacion", "poste"]
+    etiqueta: str  # ej. "UNIVERSIDAD PS2" o "S2"
+    fecha_inicio: str
+    fecha_liberacion: Optional[str] = None
+    observaciones: Optional[str] = None
+
+
+class SalvamentoPatch(BaseModel):
+    etiqueta: Optional[str] = None
+    fecha_inicio: Optional[str] = None
+    fecha_liberacion: Optional[str] = None
+    observaciones: Optional[str] = None
+    quitar_liberacion: bool = False
+
+
+def _salvamento_fecha(value: Optional[str], campo: str) -> str:
+    try:
+        date.fromisoformat((value or "").strip())
+    except ValueError:
+        raise HTTPException(400, f"{campo} debe ser YYYY-MM-DD")
+    return value.strip()
+
+
+def _salvamento_validar_rango(inicio: str, liberacion: Optional[str]) -> None:
+    if liberacion and date.fromisoformat(liberacion) < date.fromisoformat(inicio):
+        raise HTTPException(400, "La liberación no puede ser anterior al inicio")
+
+
+@api.get("/projects/{pid}/levantamientos-sociales")
+async def list_levantamientos_sociales(pid: str, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    items = await db.levantamientos_sociales.find({"project_id": pid}).to_list(length=50)
+    return [{k: v for k, v in d.items() if k != "_id"} for d in items]
+
+
+@api.put("/projects/{pid}/levantamientos-sociales")
+async def set_levantamiento_social(pid: str, body: LevantamientoIn, user: dict = Depends(current_user)):
+    """Un registro por (tipo, ámbito): crea o reemplaza los contadores."""
+    _assert_write_allowed(user)
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "aspectos_sociales")
+    if body.total_requerido < 0 or body.realizados < 0:
+        raise HTTPException(400, "Los valores no pueden ser negativos")
+    if body.realizados > body.total_requerido:
+        raise HTTPException(400, "Los realizados no pueden superar el total requerido")
+    now = datetime.now(timezone.utc)
+    clave = {"project_id": pid, "tipo": body.tipo, "ambito": body.ambito}
+    await db.levantamientos_sociales.update_one(
+        clave,
+        {"$set": {"total_requerido": body.total_requerido, "realizados": body.realizados,
+                  "updated_at": now, "updated_by": user["id"]},
+         "$setOnInsert": {"id": str(uuid.uuid4()), "created_at": now}},
+        upsert=True,
+    )
+    doc = await db.levantamientos_sociales.find_one(clave)
+    return {k: v for k, v in doc.items() if k != "_id"}
+
+
+@api.get("/projects/{pid}/salvamento-arqueologico")
+async def list_salvamento_arqueologico(pid: str, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    items = await db.salvamento_arqueologico.find({"project_id": pid}).sort([("ambito", 1), ("orden", 1)]).to_list(length=2000)
+    return [{k: v for k, v in d.items() if k != "_id"} for d in items]
+
+
+@api.post("/projects/{pid}/salvamento-arqueologico")
+async def create_salvamento_arqueologico(pid: str, body: SalvamentoIn, user: dict = Depends(current_user)):
+    _assert_write_allowed(user)
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "aspectos_sociales")
+    etiqueta = body.etiqueta.strip()
+    if not etiqueta:
+        raise HTTPException(400, "etiqueta es requerida")
+    inicio = _salvamento_fecha(body.fecha_inicio, "fecha_inicio")
+    liberacion = _salvamento_fecha(body.fecha_liberacion, "fecha_liberacion") if (body.fecha_liberacion or "").strip() else None
+    _salvamento_validar_rango(inicio, liberacion)
+    ultimo = await db.salvamento_arqueologico.find({"project_id": pid, "ambito": body.ambito}).sort("orden", -1).to_list(length=1)
+    now = datetime.now(timezone.utc)
+    doc = {"id": str(uuid.uuid4()), "project_id": pid, "ambito": body.ambito, "etiqueta": etiqueta,
+           "fecha_inicio": inicio, "fecha_liberacion": liberacion,
+           "observaciones": (body.observaciones or "").strip() or None,
+           "orden": (ultimo[0].get("orden", 0) + 1) if ultimo else 0,
+           "created_by": user["id"], "created_by_name": user["name"], "created_at": now, "updated_at": now}
+    await db.salvamento_arqueologico.insert_one(doc)
+    return {k: v for k, v in doc.items() if k != "_id"}
+
+
+@api.patch("/projects/{pid}/salvamento-arqueologico/{rid}")
+async def update_salvamento_arqueologico(pid: str, rid: str, body: SalvamentoPatch, user: dict = Depends(current_user)):
+    _assert_write_allowed(user)
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "aspectos_sociales")
+    doc = await db.salvamento_arqueologico.find_one({"id": rid, "project_id": pid})
+    if not doc:
+        raise HTTPException(404, "Registro no existe")
+    fields = body.model_dump(exclude_unset=True)
+    upd: dict = {}
+    if "etiqueta" in fields:
+        e = (fields["etiqueta"] or "").strip()
+        if not e:
+            raise HTTPException(400, "etiqueta no puede quedar vacía")
+        upd["etiqueta"] = e
+    if fields.get("fecha_inicio"):
+        upd["fecha_inicio"] = _salvamento_fecha(fields["fecha_inicio"], "fecha_inicio")
+    if body.quitar_liberacion:
+        upd["fecha_liberacion"] = None
+    elif fields.get("fecha_liberacion"):
+        upd["fecha_liberacion"] = _salvamento_fecha(fields["fecha_liberacion"], "fecha_liberacion")
+    if "observaciones" in fields:
+        upd["observaciones"] = (fields["observaciones"] or "").strip() or None
+    _salvamento_validar_rango(upd.get("fecha_inicio", doc["fecha_inicio"]),
+                              upd["fecha_liberacion"] if "fecha_liberacion" in upd else doc.get("fecha_liberacion"))
+    if upd:
+        upd["updated_at"] = datetime.now(timezone.utc)
+        await db.salvamento_arqueologico.update_one({"id": rid}, {"$set": upd})
+    out = await db.salvamento_arqueologico.find_one({"id": rid})
+    return {k: v for k, v in out.items() if k != "_id"}
+
+
+@api.delete("/projects/{pid}/salvamento-arqueologico/{rid}")
+async def delete_salvamento_arqueologico(pid: str, rid: str, user: dict = Depends(current_user)):
+    """Coordinador/Sub-Coordinador borran cualquiera; el resto solo lo suyo."""
+    _assert_write_allowed(user)
+    await ensure_project_access(user, pid)
+    doc = await db.salvamento_arqueologico.find_one({"id": rid, "project_id": pid}, {"created_by": 1})
+    if not doc:
+        raise HTTPException(404, "Registro no existe")
+    if user.get("role") not in (ROLE_COORD, ROLE_SUB) and doc.get("created_by") != user["id"]:
+        raise HTTPException(403, "Solo puedes eliminar los registros que tú capturaste")
+    await db.salvamento_arqueologico.delete_one({"id": rid, "project_id": pid})
     return {"ok": True}
 
 
@@ -14927,6 +15286,7 @@ async def _gather_modulos_export_data(
         "tabla_resumen": None, "fotos_lidar": None, "tapial": None,
         "pruebas_calidad": None, "control_calidad": None,
         "avance_obra": None, "estimaciones": None, "pendientes_generales": None,
+        "aspectos_sociales": None,
     }
     date_q = {"created_at": {"$gte": start_dt, "$lte": end_dt}}
     # Riesgos y Estudios son matrices mutables (el % de avance se actualiza
@@ -15303,6 +15663,19 @@ async def _gather_modulos_export_data(
         bloques_pg = _pendientes_bloques(await db.pendientes_generales.find({"project_id": pid}).to_list(length=500))
         if bloques_pg:
             out["pendientes_generales"] = {"titulo": "PENDIENTES O REQUERIMIENTOS GENERALES", "blocks": bloques_pg}
+
+    if activos.get("aspectos_sociales"):
+        # Estado vigente al corte del informe (no un log): levantamientos y
+        # salvamento acumulan desde el arranque de los trabajos.
+        corte_as = end_dt.astimezone(MX_TZ).date()
+        lev_as = await db.levantamientos_sociales.find({"project_id": pid}).to_list(length=50)
+        salv_as = await db.salvamento_arqueologico.find({"project_id": pid}).to_list(length=2000)
+        blocks_as = _levantamientos_bloques(lev_as)
+        for heading, caption, png in _levantamientos_graficas(lev_as) + _salvamento_graficas(salv_as, corte_as):
+            jpg = await asyncio.to_thread(_png_bytes_to_jpeg_dataurl, png)
+            blocks_as.append({"type": "imagen", "heading": heading, "imagen": jpg, "caption": caption})
+        if blocks_as:
+            out["aspectos_sociales"] = {"titulo": "ASPECTOS SOCIALES", "blocks": blocks_as}
 
     return out
 
