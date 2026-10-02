@@ -14401,7 +14401,7 @@ async def export_reports_pdf(
             y = _section_title(left_x, y, col_w, "Actividad en Postes")
 
             POSTE_COLS = ["POSTE", "UBICACIÓN", "PILAS", "CABEZAL", "FUSTE", "POSTE"]
-            POSTE_FRACS = [0.09, 0.19, 0.18, 0.18, 0.18, 0.18]
+            POSTE_FRACS = [0.14, 0.17, 0.17, 0.17, 0.17, 0.18]  # 1ª columna: que "Poste S4" no se parta
             poste_col_w = [col_w * f for f in POSTE_FRACS]
             POSTE_HEADER_H = 16
             POSTE_ROW_H = 13
@@ -17104,14 +17104,13 @@ async def export_reports_pptx(
     for _sid, _textos in actividades_curadas_by_subtramo.items():
         if _textos:
             actividades_by_subtramo[_sid] = _textos
-    # Tabla consolidada "Actividades por Área" (ver la misma nota en
-    # export_reports_pdf / `_draw_actividades_por_area_section`).
-    actividades_tabla_por_area = await _actividades_tabla_por_area(pid, start_dt, end_dt, user)
-    # Resumen de actividades por Tramo (antes de la Tabla Resumen) — mismas
-    # actividades que muestra el hub para el rango del informe.
-    actividades_resumen_tramo = await _actividades_resumen_por_tramo_prefetch(
-        pid, start_dt, end_dt, user, nodes_by_id,
+    # Resumen de actividades POR FRENTE, al inicio del PPTX con el formato del
+    # reporte semanal de referencia — mismas actividades que muestra el hub
+    # (`_actividades_generales_core`) para el rango exacto del informe.
+    _actividades_items_resumen = await _actividades_generales_core(
+        pid, None, {"$gte": start_dt, "$lte": end_dt}, user, incluir_ocultas=False,
     )
+    actividades_resumen_frente = _actividades_resumen_por_frente(_actividades_items_resumen, nodes_by_id)
     # Clima: misma prioridad manual > automático que `export_reports_pdf` —
     # ver módulo "Estado del Tiempo" más arriba.
     _fecha_cdmx_hoy = datetime.now(timezone.utc).astimezone(MX_TZ).date().isoformat()
@@ -17701,7 +17700,7 @@ async def export_reports_pptx(
             y = _section_title(left_x, y, col_w, "Actividad en Postes")
 
             POSTE_COLS = ["POSTE", "UBICACIÓN", "PILAS", "CABEZAL", "FUSTE", "POSTE"]
-            POSTE_FRACS = [0.09, 0.19, 0.18, 0.18, 0.18, 0.18]
+            POSTE_FRACS = [0.14, 0.17, 0.17, 0.17, 0.17, 0.18]  # 1ª columna: que "Poste S4" no se parta
             poste_col_w = [int(col_w * f) for f in POSTE_FRACS]
             POSTE_HEADER_H = Cm(0.5)
             POSTE_ROW_H = Cm(0.42)
@@ -17738,7 +17737,12 @@ async def export_reports_pptx(
 
             rows_to_draw = [_poste_row_vals(p) for p in postes_shown]
             if not rows_to_draw:
-                rows_to_draw = [["Sin postes registrados", "", "", "", "", ""]]
+                # Un solo renglón a todo lo ancho (partido en 6 celdas el
+                # mensaje se encajonaba en la 1ª columna y pisaba el título de abajo).
+                _wf_rect(slide, left_x, yy, col_w, POSTE_ROW_H, line_rgb=WF_BORDER_RGB, line_pt=0.5)
+                add_text(slide, left_x, yy, col_w, POSTE_ROW_H, "Sin postes registrados", size=POSTE_FONT_SIZE,
+                         italic=True, color=WF_MUTED_RGB, align=PP_ALIGN.CENTER)
+                yy += POSTE_ROW_H
             for ridx, vals in enumerate(rows_to_draw):
                 if ridx % 2 == 1:
                     _wf_rect(slide, left_x, yy, col_w, POSTE_ROW_H, fill_rgb=WF_ZEBRA_TINT_RGB)
@@ -18642,18 +18646,11 @@ async def export_reports_pptx(
                 "imagen": _draw_imagen_block,
             }
 
-            # Resumen de actividades por Tramo: justo ANTES de la Tabla Resumen
-            # (avance acumulado); si ese módulo no está activo, antes de los demás.
-            _resumen_tramo_pendiente = True
-            if modulos_data.get("tabla_resumen") is None:
-                _emit_resumen_actividades_tramo_slides()
-                _resumen_tramo_pendiente = False
+            # (El resumen de actividades va al INICIO del PPTX, ver
+            # `_emit_resumen_actividades_frente_slides`.)
             for _mod_key, _mod_data in modulos_data.items():
                 if _mod_data is None:
                     continue
-                if _mod_key == "tabla_resumen" and _resumen_tramo_pendiente:
-                    _emit_resumen_actividades_tramo_slides()
-                    _resumen_tramo_pendiente = False
                 titulo = _mod_data["titulo"]
                 _indice_mark(f"mod:{_mod_key}", titulo)
                 state["slide"], state["y"] = _new_slide(titulo)
@@ -18661,11 +18658,16 @@ async def export_reports_pptx(
                 for block in _mod_data["blocks"]:
                     _BLOCK_RENDERERS[block["type"]](titulo_continua, block)
 
-        def _emit_subtramo_summary_slide(subtramo_id: Optional[str]) -> None:
+        resumen_subtramos_emitidos: set = set()
+
+        def _emit_subtramo_summary_slide(subtramo_id: Optional[str], forzar: bool = False) -> None:
             """Emite (si hay datos) la slide de resumen del Subtramo
             `subtramo_id` para todo el período exportado — al final de la
-            sección de ese subtramo."""
-            if not subtramo_id:
+            sección de ese subtramo. Con `forzar=True` la emite aunque no haya
+            nada (frente sin reportes): las tablas dicen "Sin registros" y las
+            actividades "Sin actividad", como en el reporte de referencia. Un
+            subtramo ya impreso no se vuelve a emitir."""
+            if not subtramo_id or subtramo_id in resumen_subtramos_emitidos:
                 return
             totals = resource_consolidated_by_subtramo.get(subtramo_id)
             subtramo_node = nodes_by_id.get(subtramo_id) or {}
@@ -18694,13 +18696,15 @@ async def export_reports_pptx(
                 or (actividades_by_subtramo.get(subtramo_id) or [])
                 or postes
             )
-            if not personal_rows and not maquinaria_rows and not has_persistent_content:
+            if not forzar and not personal_rows and not maquinaria_rows and not has_persistent_content:
                 return
+            resumen_subtramos_emitidos.add(subtramo_id)
+            _acts_sub = actividades_by_subtramo.get(subtramo_id) or (["Sin actividad"] if forzar else [])
             _indice_mark(f"sub:{subtramo_id}", f"Resumen · {subtramo_node.get('name') or 'Subtramo'}")
             if es_intertramo:
                 draw_intertramo_summary_slide(
                     subtramo_node, personal_rows, maquinaria_rows,
-                    actividades_by_subtramo.get(subtramo_id) or [],
+                    _acts_sub,
                     acceso_node.get("situacion_social") if acceso_node else None,
                     postes,
                     mostrar_situacion=acceso_node is not None,
@@ -18708,13 +18712,34 @@ async def export_reports_pptx(
             else:
                 draw_subtramo_summary_slide(
                     subtramo_node, personal_rows, maquinaria_rows,
-                    actividades_by_subtramo.get(subtramo_id) or [],
+                    _acts_sub,
                     acceso_node.get("situacion_social") if acceso_node else None,
                     acceso_node.get("acceso_predio") if acceso_node else None,
                     weather_by_subtramo.get(subtramo_id),
                     mostrar_acceso_predio=acceso_node is not None,
                     acceso_node_label=(acceso_node.get("name") if acceso_node else None),
                 )
+
+        # Frentes (Estación/Intertramo) SIN ningún reporte en el período: se
+        # imprimen igual, con "Sin actividad", en su lugar del orden del árbol
+        # (el reporte de referencia muestra siempre todos los frentes).
+        _raices_orden = sorted((n for n in nodes_by_id.values() if n.get("depth") == 0),
+                               key=lambda n: (n.get("order", 0), n.get("name", "")))
+        _rank_raiz = {r["id"]: i for i, r in enumerate(_raices_orden)}
+        frentes_orden = [f["id"] for f in sorted(
+            (n for n in nodes_by_id.values() if n.get("depth") == 1),
+            key=lambda n: (_rank_raiz.get(n.get("parent_id"), 10 ** 6), n.get("order", 0), n.get("name", "")),
+        )]
+        frentes_con_reportes = {
+            _subtramo_id_for(n["id"], nodes_by_id) for n in leaf_nodes if workforce_reports_by_node.get(n["id"])
+        }
+
+        def _emit_frentes_sin_actividad(antes_de: Optional[str]) -> None:
+            for sid in frentes_orden:
+                if antes_de is not None and sid == antes_de:
+                    break
+                if sid not in frentes_con_reportes:
+                    _emit_subtramo_summary_slide(sid, forzar=True)
 
         def _emit_actividades_area_slides(area_name: str, node_path: str, items: List[str]) -> None:
             """Slide(s) "RESUMEN DE ACTIVIDADES" insertadas justo después de
@@ -18846,105 +18871,77 @@ async def export_reports_pptx(
             # Sin plantilla: portada en blanco.
             prs.slides.add_slide(blank)
 
-        # ===== SLIDES "ACTIVIDADES POR ÁREA" (justo después de Datos Generales) ==
-        # Tabla de 2 columnas (Ubicación / Actividad) por cada Área del
-        # proyecto — ver la misma nota en export_reports_pdf
-        # (`_draw_actividades_por_area_section`). Pagina de verdad (nunca
-        # trunca con "+N más"); altura de fila estimada por conteo de
-        # caracteres, igual criterio que `_emit_actividades_area_slides`.
-        def _draw_actividades_por_area_slides() -> None:
-            if not actividades_tabla_por_area:
+        # ===== SLIDES "ACTIVIDADES GENERALES" (resumen por frente) =============
+        # Formato del reporte semanal de referencia: título "ACTIVIDADES
+        # GENERALES", el nombre del Área debajo y dos columnas de texto (12 pt)
+        # con un encabezado en negritas por Estación/Intertramo y sus
+        # actividades con viñeta; los frentes sin actividad dicen "Sin
+        # actividad". Va justo después de Datos Generales, antes del cuerpo por
+        # nodo/área. Pagina de verdad (nunca trunca); la altura se estima con
+        # `_pptx_texto_lineas`.
+        def _emit_resumen_actividades_frente_slides() -> None:
+            if not actividades_resumen_frente:
                 return
+            RF_MARGIN_X = Cm(1.5)
+            RF_GUTTER = Cm(1.0)
+            rf_content_w = SW - 2 * RF_MARGIN_X
+            rf_col_w = int((rf_content_w - RF_GUTTER) / 2)
+            RF_FONT = 12
+            RF_LINE = int(RF_FONT * 1.2 * 12700)
+            RF_GAP = int(Pt(4))
+            RF_SPC_ANTES_H = int(Pt(6))
+            RF_INDENT = int(Cm(0.6))
+            col_top = TOP_MARGIN + Cm(1.3) + Cm(1.0)
+            col_h = int((SH - BOTTOM_MARGIN) - col_top - Cm(0.2))
 
-            AA_MARGIN_X = Cm(1.8)
-            aa_content_w = SW - 2 * AA_MARGIN_X
-            AA_HEADER_H = Cm(0.9)
-            AA_LINE_H = Cm(0.5)
-            AA_ROW_PAD = Cm(0.18)
-            AA_ROW_FONT = 11
-            AA_MAX_LINES_PER_ROW = 6
-            AA_UBIC_FRAC, AA_TXT_FRAC = 0.28, 0.72
+            for grp in actividades_resumen_frente:
+                entradas: list = []
+                for b in grp["bloques"]:
+                    entradas.append(("h", b["titulo"], RF_LINE * _pptx_texto_lineas(b["titulo"], rf_col_w, RF_FONT) + RF_GAP + RF_SPC_ANTES_H))
+                    for ln in b["lineas"]:
+                        entradas.append(("b", ln, RF_LINE * _pptx_texto_lineas(ln, rf_col_w - RF_INDENT, RF_FONT) + RF_GAP))
+                columnas: list = []
+                cur: list = []
+                usado = 0
+                for i, (tipo, texto, h) in enumerate(entradas):
+                    # Un encabezado nunca queda solo al final de la columna.
+                    necesita = h + (entradas[i + 1][2] if tipo == "h" and i + 1 < len(entradas) else 0)
+                    if cur and usado + necesita > col_h:
+                        columnas.append(cur)
+                        cur, usado = [], 0
+                    cur.append((tipo, texto))
+                    usado += h
+                if cur:
+                    columnas.append(cur)
 
-            def _aa_estimate_lines(text: str, box_w_emu: int, font_pt: float) -> int:
-                if not text:
-                    return 1
-                avg_char_w_emu = max(1, int(Pt(font_pt * 0.52)))
-                chars_per_line = max(1, int(box_w_emu / avg_char_w_emu))
-                return min(AA_MAX_LINES_PER_ROW, max(1, math.ceil(len(text) / chars_per_line)))
-
-            aa_ubic_w_emu = int(aa_content_w * AA_UBIC_FRAC) - Cm(0.4)
-            aa_txt_w_emu = int(aa_content_w * AA_TXT_FRAC) - Cm(0.4)
-
-            is_first_aa_slide = True
-
-            for area_name in sorted(actividades_tabla_por_area.keys(), key=lambda s: s.upper()):
-                rows = actividades_tabla_por_area.get(area_name) or []
-                if not rows:
-                    continue
-                _indice_mark(f"aa:{area_name}", f"Actividades por área · {area_name}")
-                measured = []
-                for r in rows:
-                    ubic_lines = _aa_estimate_lines(r["ubicacion"], aa_ubic_w_emu, AA_ROW_FONT)
-                    txt_lines = _aa_estimate_lines(r["texto"], aa_txt_w_emu, AA_ROW_FONT)
-                    lines = max(ubic_lines, txt_lines)
-                    measured.append({
-                        "ubicacion": r["ubicacion"], "texto": r["texto"],
-                        "h": lines * AA_LINE_H + 2 * AA_ROW_PAD,
-                    })
-                n_total = len(measured)
-
-                idx = 0
-                page_in_area = 0
-                while idx < n_total or page_in_area == 0:
-                    page_in_area += 1
+                for pi in range(0, len(columnas), 2):
+                    if pi == 0:
+                        _indice_mark(f"actfrente:{grp['area']}", f"Resumen de actividades · {grp['area']}")
                     slide = _clone_membrete()
-                    y = TOP_MARGIN
-                    if is_first_aa_slide:
-                        add_text(slide, AA_MARGIN_X, y, aa_content_w, Cm(1.1), "ACTIVIDADES POR ÁREA",
-                                 size=26, bold=True, color=READABLE_BRAND_RGB, align=PP_ALIGN.CENTER)
-                        y += Cm(1.3)
-                        is_first_aa_slide = False
-                    title = area_name.upper()
-                    if page_in_area > 1:
-                        title += f"  (CONTINÚA · {page_in_area})"
-                    add_text(slide, AA_MARGIN_X, y, aa_content_w, Cm(0.7), title,
-                             size=16, bold=True, color=WF_TEXT_RGB)
-                    y += Cm(0.75)
-
-                    _wf_rect(slide, AA_MARGIN_X, y, aa_content_w, AA_HEADER_H, fill_rgb=BRAND_RGB)
-                    add_text(slide, AA_MARGIN_X + Cm(0.2), y + Cm(0.15), int(aa_content_w * AA_UBIC_FRAC) - Cm(0.3),
-                             AA_HEADER_H - Cm(0.2), "UBICACIÓN", size=12, bold=True, color=HEADER_TEXT_RGB)
-                    add_text(slide, AA_MARGIN_X + int(aa_content_w * AA_UBIC_FRAC) + Cm(0.2), y + Cm(0.15),
-                             int(aa_content_w * AA_TXT_FRAC) - Cm(0.3), AA_HEADER_H - Cm(0.2),
-                             "ACTIVIDAD", size=12, bold=True, color=HEADER_TEXT_RGB)
-                    yy = y + AA_HEADER_H
-                    avail_h = (SH - BOTTOM_MARGIN) - yy
-
-                    cnt = 0
-                    h_acc = 0.0
-                    for i in range(idx, n_total):
-                        rh = measured[i]["h"]
-                        if cnt > 0 and h_acc + rh > avail_h:
-                            break
-                        h_acc += rh
-                        cnt += 1
-                    cnt = max(cnt, 1)
-                    chunk_end = idx + cnt
-
-                    for i in range(idx, chunk_end):
-                        row_h = measured[i]["h"]
-                        if (i - idx) % 2 == 1:
-                            _wf_rect(slide, AA_MARGIN_X, yy, aa_content_w, row_h, fill_rgb=WF_ZEBRA_TINT_RGB)
-                        add_text(slide, AA_MARGIN_X + Cm(0.2), yy + Cm(0.08),
-                                 int(aa_content_w * AA_UBIC_FRAC) - Cm(0.3), row_h - Cm(0.1),
-                                 measured[i]["ubicacion"], size=AA_ROW_FONT, bold=True, color=WF_TEXT_RGB)
-                        add_text(slide, AA_MARGIN_X + int(aa_content_w * AA_UBIC_FRAC) + Cm(0.2), yy + Cm(0.08),
-                                 int(aa_content_w * AA_TXT_FRAC) - Cm(0.3), row_h - Cm(0.1),
-                                 measured[i]["texto"], size=AA_ROW_FONT, color=WF_TEXT_RGB)
-                        _wf_rect(slide, AA_MARGIN_X, yy + row_h - Pt(0.75), aa_content_w, Pt(0.75), fill_rgb=WF_BORDER_RGB)
-                        yy += row_h
-
-                    idx = chunk_end
+                    add_text(slide, RF_MARGIN_X, TOP_MARGIN, rf_content_w, Cm(1.3), "ACTIVIDADES GENERALES",
+                             size=26, bold=True, color=READABLE_BRAND_RGB, align=PP_ALIGN.CENTER)
+                    add_text(slide, RF_MARGIN_X, TOP_MARGIN + Cm(1.3), rf_content_w, Cm(0.9),
+                             grp["area"].upper() + ("  (CONTINÚA)" if pi else ""),
+                             size=18, bold=True, color=WF_TEXT_RGB)
+                    for ci, col in enumerate(columnas[pi:pi + 2]):
+                        tb = slide.shapes.add_textbox(RF_MARGIN_X + ci * (rf_col_w + RF_GUTTER), col_top, rf_col_w, col_h)
+                        tf = tb.text_frame
+                        tf.word_wrap = True
+                        for k, (tipo, texto) in enumerate(col):
+                            par = tf.paragraphs[0] if k == 0 else tf.add_paragraph()
+                            run = par.add_run()
+                            run.text = texto
+                            run.font.size = Pt(RF_FONT)
+                            run.font.bold = tipo == "h"
+                            run.font.color.rgb = PRGBColor(*WF_TEXT_RGB)
+                            par.space_after = Pt(4)
+                            if tipo == "h" and k > 0:
+                                par.space_before = Pt(6)
+                            if tipo == "b":
+                                pPr = par._p.get_or_add_pPr()
+                                pPr.set("marL", str(RF_INDENT))
+                                pPr.set("indent", str(-RF_INDENT))
+                                _ET.SubElement(pPr, _qn("a:buChar")).set("char", "\u2022")
 
         # ===== SLIDE DATOS DE CONTRATO =====================================
         # Formato del informe diario de referencia: dos columnas (OBRA y
@@ -19025,99 +19022,6 @@ async def export_reports_pptx(
 
         _emit_contrato_slide()
 
-        # ===== RESUMEN DE ACTIVIDADES POR TRAMO (antes de la Tabla Resumen) ===
-        # Mismas actividades del hub Actividades Generales para el rango del
-        # informe, agrupadas por Tramo. Se llama desde
-        # `_emit_modulos_closing_slides`, justo antes del módulo Tabla Resumen
-        # (o antes de todos los módulos si ese no está activo). Pagina de
-        # verdad; altura de fila estimada por conteo de caracteres.
-        def _emit_resumen_actividades_tramo_slides() -> None:
-            if not actividades_resumen_tramo:
-                return
-
-            RT_MARGIN_X = Cm(1.8)
-            rt_content_w = SW - 2 * RT_MARGIN_X
-            RT_HEADER_H = Cm(0.9)
-            RT_LINE_H = Cm(0.5)
-            RT_ROW_PAD = Cm(0.18)
-            RT_ROW_FONT = 11
-            RT_MAX_LINES = 6
-            RT_FRACS = (0.24, 0.16, 0.60)  # Ubicación / Área / Actividad
-            rt_col_x = [int(rt_content_w * sum(RT_FRACS[:i])) for i in range(3)]
-            rt_col_w = [int(rt_content_w * f) - Cm(0.4) for f in RT_FRACS]
-
-            def _rt_estimate_lines(text: str, box_w_emu: int) -> int:
-                if not text:
-                    return 1
-                avg_char_w_emu = max(1, int(Pt(RT_ROW_FONT * 0.52)))
-                chars_per_line = max(1, int(box_w_emu / avg_char_w_emu))
-                return min(RT_MAX_LINES, max(1, math.ceil(len(text) / chars_per_line)))
-
-            is_first_rt_slide = True
-            for grp in actividades_resumen_tramo:
-                rows = grp["rows"]
-                if not rows:
-                    continue
-                _indice_mark(f"acttramo:{grp['key']}", f"Resumen de actividades · {grp['tramo']}")
-                measured = []
-                for r in rows:
-                    lines = max(
-                        _rt_estimate_lines(r["ubicacion"], rt_col_w[0]),
-                        _rt_estimate_lines(r["area"], rt_col_w[1]),
-                        _rt_estimate_lines(r["texto"], rt_col_w[2]),
-                    )
-                    measured.append({**r, "h": lines * RT_LINE_H + 2 * RT_ROW_PAD})
-                n_total = len(measured)
-
-                idx = 0
-                page_in_group = 0
-                while idx < n_total or page_in_group == 0:
-                    page_in_group += 1
-                    slide = _clone_membrete()
-                    y = TOP_MARGIN
-                    if is_first_rt_slide:
-                        add_text(slide, RT_MARGIN_X, y, rt_content_w, Cm(1.1), "RESUMEN DE ACTIVIDADES POR TRAMO",
-                                 size=24, bold=True, color=READABLE_BRAND_RGB, align=PP_ALIGN.CENTER)
-                        y += Cm(1.3)
-                        is_first_rt_slide = False
-                    title = grp["tramo"].upper()
-                    if page_in_group > 1:
-                        title += f"  (CONTINÚA · {page_in_group})"
-                    add_text(slide, RT_MARGIN_X, y, rt_content_w, Cm(0.7), title,
-                             size=16, bold=True, color=WF_TEXT_RGB)
-                    y += Cm(0.75)
-
-                    _wf_rect(slide, RT_MARGIN_X, y, rt_content_w, RT_HEADER_H, fill_rgb=BRAND_RGB)
-                    for ci, label in enumerate(("UBICACIÓN", "ÁREA", "ACTIVIDAD")):
-                        add_text(slide, RT_MARGIN_X + rt_col_x[ci] + Cm(0.2), y + Cm(0.15), rt_col_w[ci],
-                                 RT_HEADER_H - Cm(0.2), label, size=12, bold=True, color=HEADER_TEXT_RGB)
-                    yy = y + RT_HEADER_H
-                    avail_h = (SH - BOTTOM_MARGIN) - yy
-
-                    cnt = 0
-                    h_acc = 0.0
-                    for i in range(idx, n_total):
-                        rh = measured[i]["h"]
-                        if cnt > 0 and h_acc + rh > avail_h:
-                            break
-                        h_acc += rh
-                        cnt += 1
-                    cnt = max(cnt, 1)
-                    chunk_end = idx + cnt
-
-                    for i in range(idx, chunk_end):
-                        row_h = measured[i]["h"]
-                        if (i - idx) % 2 == 1:
-                            _wf_rect(slide, RT_MARGIN_X, yy, rt_content_w, row_h, fill_rgb=WF_ZEBRA_TINT_RGB)
-                        for ci, (key, bold) in enumerate((("ubicacion", True), ("area", False), ("texto", False))):
-                            add_text(slide, RT_MARGIN_X + rt_col_x[ci] + Cm(0.2), yy + Cm(0.08), rt_col_w[ci],
-                                     row_h - Cm(0.1), measured[i][key], size=RT_ROW_FONT, bold=bold,
-                                     color=WF_TEXT_RGB)
-                        _wf_rect(slide, RT_MARGIN_X, yy + row_h - Pt(0.75), rt_content_w, Pt(0.75), fill_rgb=WF_BORDER_RGB)
-                        yy += row_h
-
-                    idx = chunk_end
-
         # ===== SLIDES DATOS GENERALES (ex-Mapa: array de imágenes) =========
         # Cada imagen en `general_data_images` produce UNA slide dedicada
         # sobre el membrete institucional. Retro-compat: si el array está
@@ -19166,9 +19070,9 @@ async def export_reports_pptx(
                      size=14, italic=True, color=TEXT_MUTED,
                      align=PP_ALIGN.CENTER)
 
-        # "Actividades por Área" va justo DEBAJO/después de Datos Generales
+        # El resumen de actividades va justo DESPUÉS de Datos Generales
         # (spec de producto) — antes del cuerpo principal por nodo/área.
-        _draw_actividades_por_area_slides()
+        _emit_resumen_actividades_frente_slides()
 
         # ================================================================
         # Helper: emite una slide ejecutiva con hasta 2 FOTOS (foto + pie).
@@ -19241,6 +19145,7 @@ async def export_reports_pptx(
             node_reps_all = workforce_reports_by_node.get(n["id"]) or []
             if not node_reps_all:
                 continue
+            _emit_frentes_sin_actividad(n_subtramo_id)
             # FIX (2026-09): ver la misma nota en export_reports_pdf —
             # `cover_meta_pptx` es None cuando ningún ancestro tiene
             # `cover_image`, lo cual NO debe borrar el nodo entero (fotos y
@@ -19383,6 +19288,8 @@ async def export_reports_pptx(
                     _pair_slide(_pair)
 
         _emit_subtramo_summary_slide(current_subtramo_id)
+        if any_data:
+            _emit_frentes_sin_actividad(None)
 
         # === ÁREAS SIN REPORTES: ver nota equivalente en export_reports_pdf
         # — Actividades Generales curadas (hub) cuyo bucket de Área nunca
@@ -20997,6 +20904,65 @@ async def _actividades_tabla_por_area(pid: str, start_dt: datetime, end_dt: date
         if it.get("nivel") != NIVEL_GENERAL:
             ubicacion = it.get("node_name") or ((it.get("node_path_names") or ["—"])[-1])
         out.setdefault(area_name, []).append({"ubicacion": ubicacion, "texto": texto})
+    return out
+
+
+def _actividades_resumen_por_frente(items: list, nodes_by_id: dict) -> list:
+    """Resumen de Actividades Generales POR FRENTE para el PPTX (formato del
+    reporte semanal de referencia: "ACTIVIDADES GENERALES", un encabezado en
+    negritas por Estación/Intertramo y debajo sus actividades con viñeta).
+
+    `items` es lo que devuelve `_actividades_generales_core` para el rango del
+    informe (ediciones y ocultamientos ya aplicados). Devuelve
+    [{"area", "bloques": [{"titulo", "lineas": [str]}]}], una entrada por Área
+    que tenga AL MENOS una actividad. Dentro de cada Área van TODOS los frentes
+    (nodos de profundidad 1) en orden del árbol — los que no tienen actividad
+    llevan la línea "Sin actividad" — precedidos por "General" si hay
+    actividades de ese nivel. Las de un poste (nodo bajo el frente) se
+    agregan al frente con el nombre del poste por delante, salvo que el texto
+    ya lo traiga. Pura — sin Mongo."""
+    def _orden(n):
+        return (n.get("order", 0), n.get("name", ""))
+
+    raices = sorted((n for n in nodes_by_id.values() if n.get("depth") == 0), key=_orden)
+    rank_raiz = {r["id"]: i for i, r in enumerate(raices)}
+    frentes = sorted(
+        (n for n in nodes_by_id.values() if n.get("depth") == 1),
+        key=lambda n: (rank_raiz.get(n.get("parent_id"), 10 ** 6),) + _orden(n),
+    )
+    ids_frente = {f["id"] for f in frentes}
+    por_area: dict = {}
+    for pos, it in enumerate(items):
+        texto = (it.get("texto") or "").strip()
+        if not texto:
+            continue
+        area = it.get("area_name") or "Sin área"
+        a = por_area.setdefault(area, {"general": [], "frentes": {}, "otros": {}})
+        if it.get("nivel") == NIVEL_GENERAL:
+            a["general"].append(texto)
+            continue
+        node_id = it.get("node_id")
+        nodo = nodes_by_id.get(node_id) or {}
+        frente = _subtramo_id_for(node_id, nodes_by_id) if node_id else None
+        if nodo and nodo.get("id") != frente and nodo.get("name") and not texto.lower().startswith(nodo["name"].lower()):
+            texto = f"{nodo['name']} {texto}"
+        rank = (0 if it.get("nivel") == NIVEL_SUBTRAMO else 1, pos)
+        if frente in ids_frente:
+            a["frentes"].setdefault(frente, []).append((rank, texto))
+        else:  # nodo fuera de cualquier frente (ej. a nivel Tramo): bloque propio
+            a["otros"].setdefault(nodo.get("name") or "Sin frente", []).append((rank, texto))
+    out = []
+    for area in sorted(por_area, key=lambda s_: s_.upper()):
+        a = por_area[area]
+        bloques = []
+        if a["general"]:
+            bloques.append({"titulo": "General", "lineas": a["general"]})
+        for f in frentes:
+            lineas = [t for _, t in sorted(a["frentes"].get(f["id"], []), key=lambda x: x[0])]
+            bloques.append({"titulo": f.get("name") or "—", "lineas": lineas or ["Sin actividad"]})
+        for nombre, filas in a["otros"].items():
+            bloques.append({"titulo": nombre, "lineas": [t for _, t in sorted(filas, key=lambda x: x[0])]})
+        out.append({"area": area, "bloques": bloques})
     return out
 
 
