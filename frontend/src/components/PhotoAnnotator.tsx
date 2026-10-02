@@ -227,7 +227,15 @@ export function PhotoAnnotator({ visible, imageUri, onClose, onSave }: Props) {
     if (!shotRef.current || saving) return;
     setSaving(true);
     try {
-      const uri = await captureViewAsDataUri(shotRef, 0.9);
+      // captureRef puede quedarse colgado sin resolver ni rechazar nunca
+      // (p.ej. en web, con html2canvas, ante una imagen de otro origen sin
+      // CORS) — sin este timeout la pantalla se queda "pasmada" y solo se
+      // recupera refrescando/reiniciando la app.
+      const capture = captureViewAsDataUri(shotRef, 0.9);
+      const timeout = new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error('captureRef timeout')), 12000);
+      });
+      const uri = await Promise.race([capture, timeout]);
       onSave(uri);
     } catch (e: any) {
       // Si falla la captura no se pierde la foto original, pero hay que
