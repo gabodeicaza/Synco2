@@ -20,8 +20,10 @@ import { confirm } from '@/src/utils/confirm';
 import { useAuth } from '@/src/auth-context';
 import { ROLE_COORD, ROLE_SUB, ROLE_JEFE } from '@/src/utils/roles';
 
-const CONTRATO_LABEL: Record<PendienteAmbito, string> = { obra: 'Obra', supervision: 'Supervisión', sociales: 'Aspectos sociales' };
-const AMBITOS: PendienteAmbito[] = ['obra', 'supervision', 'sociales'];
+const CONTRATO_LABEL: Record<PendienteAmbito, string> = {
+  obra: 'Obra', supervision: 'Supervisión', sociales: 'Aspectos sociales', seguridad: 'Seguridad e higiene (administrativos)',
+};
+const AMBITOS: PendienteAmbito[] = ['obra', 'supervision', 'sociales', 'seguridad'];
 
 type Draft = { id: string | null; contrato: PendienteAmbito; titulo: string; descripcion: string };
 

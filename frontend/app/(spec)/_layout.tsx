@@ -113,6 +113,7 @@ export default function SpecLayout() {
         <Tabs.Screen name="estimaciones" options={{ href: null }} />
         <Tabs.Screen name="pendientes-generales" options={{ href: null }} />
         <Tabs.Screen name="aspectos-sociales" options={{ href: null }} />
+        <Tabs.Screen name="indicadores-seguridad" options={{ href: null }} />
         <Tabs.Screen name="tapial" options={{ href: null }} />
         <Tabs.Screen name="estado-tiempo" options={{ href: null }} />
         <Tabs.Screen name="control-obra" options={{ href: null }} />

@@ -148,6 +148,14 @@ export const MODULOS: ModuloDef[] = [
     area: 'Social',
   },
   {
+    key: 'indicadores_seguridad',
+    label: 'Indicadores de Seguridad',
+    subtitle: 'Cumplimiento en campo, documental y PIPC (con medidor y gráficas)',
+    icon: 'speedometer-outline',
+    screen: 'indicadores-seguridad',
+    area: 'Seguridad',
+  },
+  {
     key: 'estado_tiempo',
     label: 'Estado del Tiempo',
     subtitle: 'Temperatura, viento, precipitación y calidad del aire por estación',

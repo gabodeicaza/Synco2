@@ -638,13 +638,35 @@ export interface SalvamentoArqueologico {
   created_by_name?: string;
   updated_at: string;
 }
+// === Indicadores de seguridad e higiene (reporte semanal) =================
+export type SeguridadIndicadorTipo = 'campo' | 'doc_mensual' | 'doc_semanal' | 'pipc' | 'nota_pipc';
+export type SeguridadCategoria = 'seguridad' | 'proteccion_civil' | 'higiene_salud';
+export interface SeguridadIndicador {
+  id: string;
+  tipo: SeguridadIndicadorTipo;
+  fecha?: string; // campo
+  mes?: string; // doc_mensual (AAAA-MM)
+  semana?: string; // doc_semanal (lunes de la semana)
+  categoria?: SeguridadCategoria;
+  porcentaje?: number;
+  dias_sin_accidentes?: number | null; // campo: fija a mano el contador
+  etiqueta?: string; // pipc: "E1"…
+  orden?: number;
+  puntos?: number[]; // pipc: puntos de los 4 pasos
+  texto?: string; // nota_pipc
+  created_by?: string;
+  updated_at: string;
+}
+export type SeguridadIndicadorInput = Partial<Omit<SeguridadIndicador, 'id' | 'updated_at' | 'created_by' | 'tipo'>> & {
+  tipo: SeguridadIndicadorTipo;
+};
 export type EstimacionInput = Partial<Omit<Estimacion, 'id' | 'project_id' | 'updated_at' | 'contrato' | 'numero'>> & {
   contrato?: ContratoFin;
   numero: number;
 };
 // Ámbito de un pendiente general: obra, supervisión o aspectos sociales (el
 // campo se llama `contrato` en la API por compatibilidad).
-export type PendienteAmbito = ContratoFin | 'sociales';
+export type PendienteAmbito = ContratoFin | 'sociales' | 'seguridad';
 export interface PendienteGeneral {
   id: string;
   project_id: string;
@@ -2281,6 +2303,12 @@ export const api = {
     request<PendienteGeneral>('PATCH', `/projects/${pid}/pendientes-generales/${rid}`, body),
   deletePendienteGeneral: (pid: string, rid: string) =>
     request<{ ok: boolean }>('DELETE', `/projects/${pid}/pendientes-generales/${rid}`),
+  listSeguridadIndicadores: (pid: string) =>
+    request<SeguridadIndicador[]>('GET', `/projects/${pid}/seguridad-indicadores`),
+  setSeguridadIndicador: (pid: string, body: SeguridadIndicadorInput) =>
+    request<SeguridadIndicador>('PUT', `/projects/${pid}/seguridad-indicadores`, body),
+  deleteSeguridadIndicador: (pid: string, rid: string) =>
+    request<{ ok: boolean }>('DELETE', `/projects/${pid}/seguridad-indicadores/${rid}`),
   listLevantamientosSociales: (pid: string) =>
     request<LevantamientoSocial[]>('GET', `/projects/${pid}/levantamientos-sociales`),
   setLevantamientoSocial: (pid: string, body: { tipo: LevantamientoTipo; ambito: SocialAmbito; total_requerido: number; realizados: number }) =>
