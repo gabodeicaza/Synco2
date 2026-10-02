@@ -34,6 +34,12 @@ const TIPO_ICON: Record<PresentacionSeccionTipo, keyof typeof Ionicons.glyphMap>
   avance_grafico: 'construct-outline',
   reportes_semana: 'newspaper-outline',
   cierre: 'checkmark-done-outline',
+  ambiental: 'leaf-outline',
+  social: 'people-outline',
+  seguridad: 'shield-checkmark-outline',
+  proyecto: 'document-text-outline',
+  calidad: 'ribbon-outline',
+  pendientes: 'alert-circle-outline',
 };
 
 const TIPO_LABEL: Record<PresentacionSeccionTipo, string> = {
@@ -47,12 +53,18 @@ const TIPO_LABEL: Record<PresentacionSeccionTipo, string> = {
   avance_grafico: 'Avance Gráfico (Plano)',
   reportes_semana: 'Reportes de la semana',
   cierre: 'Cierre (Gracias)',
+  ambiental: 'Ambiental (automático)',
+  social: 'Social / Impacto urbano (automático)',
+  seguridad: 'Seguridad (automático)',
+  proyecto: 'Estudios y proyecto ejecutivo (automático)',
+  calidad: 'Calidad (automático)',
+  pendientes: 'Pendientes generales (automático)',
 };
 
 const TIPO_ORDEN_PICKER: PresentacionSeccionTipo[] = [
   'portada', 'mapa_general', 'divisor', 'financiero',
   'seguimiento_estudios', 'croquis_estacion', 'informacion_particular', 'avance_grafico',
-  'reportes_semana', 'cierre',
+  'reportes_semana', 'proyecto', 'calidad', 'pendientes', 'ambiental', 'social', 'seguridad', 'cierre',
 ];
 
 /** "4 – 10 sep" a partir de la fecha del informe (fecha − 6 días .. fecha). */
@@ -382,6 +394,9 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
     if (s.tipo === 'divisor') return s.titulo || 'Sin título';
     if (s.tipo === 'croquis_estacion') return nodes.find((n) => n.id === s.node_id)?.name || s.node_id || 'Estación no cargada';
     if (s.tipo === 'avance_grafico') return planos.find((p) => p.id === s.plano_id)?.nombre || s.plano_id || 'Plano no cargado';
+    if (['ambiental', 'social', 'seguridad', 'proyecto', 'calidad', 'pendientes'].includes(s.tipo)) {
+      return 'Se llena solo con los módulos de la semana';
+    }
     if (s.tipo === 'reportes_semana') {
       const n = (s.report_ids || []).length;
       return n ? `${n} reporte${n === 1 ? '' : 's'} elegido${n === 1 ? '' : 's'}` : 'Sin reportes elegidos — toca para elegir';
@@ -747,7 +762,7 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
               <Ionicons name={plantillaSemanal ? 'checkbox' : 'square-outline'} size={22} color={plantillaSemanal ? colors.primary : colors.textMuted} />
               <View style={{ flex: 1 }}>
                 <Text style={styles.tipoOptionTxt}>Precargar estructura del informe semanal</Text>
-                <Text style={styles.seccionSub}>Portada, mapa, Financiero, Estudios, Avance de obra, reportes de la semana y cierre.</Text>
+                <Text style={styles.seccionSub}>Portada, mapa, Financiero, Estudios, Avance de obra, reportes de la semana, Pendientes, Estudios, Calidad, Ambiental, Social, Seguridad y cierre.</Text>
               </View>
             </Pressable>
             <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>

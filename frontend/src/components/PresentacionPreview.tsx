@@ -10,7 +10,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import {
-  api, AnalisisPeriodo, EstudioDisciplinaAvance, LocationNode, PlanoAvance, Presentacion, Project, Report,
+  api, AnalisisPeriodo, EstudioDisciplinaAvance, LocationNode, ModuloAutoOutline, PlanoAvance, Presentacion, PresentacionSeccionTipoAuto, Project, Report,
 } from '@/src/api';
 import { colors, radius, spacing, contrastText } from '@/src/theme';
 import { SlidePortada } from '@/src/components/presentacion/SlidePortada';
@@ -23,6 +23,13 @@ import { SlideInformacionParticular } from '@/src/components/presentacion/SlideI
 import { SlideAvanceGrafico } from '@/src/components/presentacion/SlideAvanceGrafico';
 import { SlideReportesSemana } from '@/src/components/presentacion/SlideReportesSemana';
 import { SlideCierre } from '@/src/components/presentacion/SlideCierre';
+import { SlideModuloAuto } from '@/src/components/presentacion/SlideModuloAuto';
+
+const AUTO_TITULO: Record<PresentacionSeccionTipoAuto, string> = {
+  ambiental: 'Ambiental', social: 'Social / Impacto urbano', seguridad: 'Seguridad',
+  proyecto: 'Estudios y proyecto ejecutivo', calidad: 'Calidad', pendientes: 'Pendientes generales',
+};
+const isAuto = (t: string): t is PresentacionSeccionTipoAuto => t in AUTO_TITULO;
 
 /** `fecha - 6 días` en calendario puro (sin zona horaria) — ventana semanal
  * que cierra en la fecha del reporte, para las tarjetas de Financiero. */
@@ -47,6 +54,7 @@ export default function PresentacionPreview({ projectId, presentacionId }: { pro
   const [presupuestoTotal, setPresupuestoTotal] = useState<string | null>(null);
   const [generalImages, setGeneralImages] = useState<string[]>([]);
   const [reportsById, setReportsById] = useState<Record<string, Report>>({});
+  const [autoOutline, setAutoOutline] = useState<Record<string, ModuloAutoOutline[]>>({});
   const [exporting, setExporting] = useState(false);
 
   const headerColor = project?.color_institucional || project?.color_tema || colors.primary;
@@ -101,6 +109,16 @@ export default function PresentacionPreview({ projectId, presentacionId }: { pro
         setReportsById(rById);
       } else {
         setReportsById({});
+      }
+
+      const autoTipos = Array.from(new Set(secciones.map((s) => s.tipo).filter(isAuto))) as PresentacionSeccionTipoAuto[];
+      if (autoTipos.length) {
+        const outs = await Promise.all(autoTipos.map((t) => api.previewPresentacionModuloAuto(projectId, presentacionId, t).catch(() => [] as ModuloAutoOutline[])));
+        const o: Record<string, ModuloAutoOutline[]> = {};
+        autoTipos.forEach((t, i) => { o[t] = outs[i]; });
+        setAutoOutline(o);
+      } else {
+        setAutoOutline({});
       }
 
       if (secciones.some((s) => s.tipo === 'mapa_general')) {
@@ -201,6 +219,8 @@ export default function PresentacionPreview({ projectId, presentacionId }: { pro
                     colorTema={headerColor}
                     pendientes={false}
                   />
+                ) : isAuto(item.tipo) ? (
+                  <SlideModuloAuto titulo={AUTO_TITULO[item.tipo]} outline={autoOutline[item.tipo] || null} colorTema={headerColor} loading={false} />
                 ) : item.tipo === 'cierre' ? (
                   <SlideCierre leyenda={project?.objeto_contrato || project?.name || ''} colorTema={headerColor} />
                 ) : null}
