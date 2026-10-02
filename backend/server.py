@@ -3278,6 +3278,9 @@ class RiesgoRegistroIn(BaseModel):
     propuesta_control: str
     porcentaje_avance: int = 0
     notas: Optional[str] = None
+    # False = la fila no se numera en el mapa impreso (ej. la fila de postes
+    # que solo cita los números de los riesgos de la estación).
+    numerar: bool = True
 
 
 class RiesgoRegistroPatch(BaseModel):
@@ -3289,6 +3292,7 @@ class RiesgoRegistroPatch(BaseModel):
     propuesta_control: Optional[str] = None
     porcentaje_avance: Optional[int] = None
     notas: Optional[str] = None
+    numerar: Optional[bool] = None
 
 
 @api.get("/projects/{pid}/riesgos-registros")
@@ -3329,6 +3333,7 @@ async def create_riesgo_registro(pid: str, body: RiesgoRegistroIn, user: dict = 
         "propuesta_control": propuesta,
         "porcentaje_avance": body.porcentaje_avance,
         "notas": (body.notas or "").strip() or None,
+        "numerar": body.numerar,
         "captured_by": user["id"],
         "captured_by_name": user["name"],
         "created_at": datetime.now(timezone.utc),
@@ -3366,6 +3371,8 @@ async def update_riesgo_registro(pid: str, rid: str, body: RiesgoRegistroPatch, 
         upd["porcentaje_avance"] = body.porcentaje_avance
     if body.notas is not None:
         upd["notas"] = body.notas.strip() or None
+    if body.numerar is not None:
+        upd["numerar"] = body.numerar
     if upd:
         upd["updated_at"] = datetime.now(timezone.utc)
         await db.riesgos_registros.update_one({"id": rid, "project_id": pid}, {"$set": upd})
@@ -4601,8 +4608,57 @@ PENDIENTE_AMBITO_HEADING = {
 }
 
 
+def _pptx_texto_lineas(texto: str, ancho_emu: int, size_pt: float) -> int:
+    """Líneas que ocupa `texto` en una celda de `ancho_emu` a `size_pt`
+    (estimación conservadora: ancho medio de carácter ≈ 0.55 em, descontando
+    el margen interno de 0.25 cm por lado del cuadro de texto de PowerPoint)."""
+    util_pt = max(ancho_emu / 12700 - 2 * 0.25 / 2.54 * 72, size_pt)
+    por_linea = max(int(util_pt / (size_pt * 0.55)), 1)
+    return sum(max(-(-len(parrafo) // por_linea), 1) for parrafo in str(texto).split("\n"))
+
+
+def _pptx_fila_alto(celdas: List[str], anchos_emu: List[int], size_pt: float) -> int:
+    """Alto (EMU) de una fila: la celda con más líneas manda, más el margen
+    vertical del cuadro de texto (0.13 cm arriba y abajo)."""
+    lineas = max(_pptx_texto_lineas(c, w, size_pt) for c, w in zip(celdas, anchos_emu))
+    return int(lineas * size_pt * 1.2 * 12700 + 0.26 / 2.54 * 914400)
+
+
+_RIESGO_NUM_RE = re.compile(r"^\s*\d+\s*[\)\.\-]\s*")
+
+
+def _riesgos_grupos(registros: List[dict]) -> List[dict]:
+    """Agrupa los riesgos por estación/poste (en el orden recibido) y numera
+    cada fila "1) ...", "2) ..." dentro de su grupo — la numeración es lo que
+    permite referirse a ellos ("Poste 2. Riesgos 1, 2 y 6"). Una fila con
+    `numerar=False` (ej. la de postes, que solo cita números de otra) no se
+    numera ni cuenta; a las numeradas se les quita el número que el usuario
+    haya tecleado para no duplicarlo."""
+    orden: List[str] = []
+    grupos: Dict[str, list] = {}
+    for r in registros:
+        estacion = r.get("estacion_nombre") or "—"
+        if estacion not in grupos:
+            orden.append(estacion)
+            grupos[estacion] = []
+        grupos[estacion].append(r)
+    out = []
+    for estacion in orden:
+        n = 0
+        filas = []
+        for r in grupos[estacion]:
+            texto = (r.get("descripcion_riesgo") or "").strip()
+            if r.get("numerar", True):
+                n += 1
+                texto = f"{n}) {_RIESGO_NUM_RE.sub('', texto)}"
+            filas.append({"descripcion": texto, "control": r.get("propuesta_control") or "",
+                          "avance": r.get("porcentaje_avance", 0)})
+        out.append({"estacion": estacion, "filas": filas})
+    return out
+
+
 def _money_fmt(value) -> str:
-    return f"$ {to_decimal(value):,.2f}"
+    return f"${chr(0xA0)}{to_decimal(value):,.2f}"  # espacio sin salto: nunca se parte entre "$" y la cifra
 
 
 def _pct_fmt(value) -> str:
@@ -4912,10 +4968,10 @@ def _estimaciones_bloques(registros: List[dict]) -> List[dict]:
         bloques.append({
             "type": "table",
             "heading": f"CONCENTRADO ESTIMACIONES ({CONTRATO_FIN_LABEL[contrato]})",
-            "headers": ["NO.", "PERIODO", "ESTATUS GENERAL", "OBRA EJECUTADA", "SUMA ACUMULADA", "AMORTIZACIÓN",
+            "headers": ["N°", "PERIODO", "ESTATUS GENERAL", "OBRA EJECUTADA", "SUMA ACUMULADA", "AMORTIZACIÓN",
                         "% ACUM. AMORT. ANTICIPO", "TOTAL DEDUCCIONES", "IVA 16%", "TOTAL NETO", "FECHA DE PAGO"],
             "rows": rows,
-            "col_widths": [0.04, 0.14, 0.09, 0.10, 0.10, 0.09, 0.08, 0.09, 0.09, 0.10, 0.08],
+            "col_widths": [0.04, 0.12, 0.075, 0.105, 0.105, 0.105, 0.075, 0.105, 0.095, 0.105, 0.07],
             "empty_text": "Sin estimaciones.",
         })
     return bloques
@@ -12091,6 +12147,36 @@ async def export_reports_pdf(
                 c.drawCentredString(PW / 2, y, block["text"])
                 y -= 14 * 2.2
 
+            def _draw_tabla_paginada(tbl) -> None:
+                """Dibuja una Table de reportlab y, si no cabe en lo que queda
+                de la página, la parte por filas (repitiendo el encabezado,
+                `repeatRows=1`) en las páginas siguientes."""
+                nonlocal y, page_num
+                _ensure_space(2.0 * cm)
+                while True:
+                    disp = y - bottom_y
+                    tw, th = tbl.wrapOn(c, content_w, disp)
+                    if th <= disp:
+                        tbl.drawOn(c, left_x, y - th)
+                        y -= th + 14 * 1.2
+                        return
+                    partes = tbl.split(content_w, disp)
+                    if len(partes) < 2:  # una sola fila más alta que lo disponible: página nueva y a dibujar
+                        if y < top_y:
+                            c.showPage()
+                            page_num += 1
+                            y = top_y
+                            continue
+                        tbl.drawOn(c, left_x, y - th)
+                        y -= th + 14 * 1.2
+                        return
+                    primera, tbl = partes[0], partes[1]
+                    _tw, _th = primera.wrapOn(c, content_w, disp)
+                    primera.drawOn(c, left_x, y - _th)
+                    c.showPage()
+                    page_num += 1
+                    y = top_y
+
             def _draw_table_block(block: dict) -> None:
                 nonlocal y
                 if block.get("heading"):
@@ -12104,7 +12190,7 @@ async def export_reports_pdf(
                 data = [headers]
                 for row in rows:
                     data.append([Paragraph(_xml_escape(str(v)), cell_style) for v in row])
-                tbl = Table(data, colWidths=[content_w * w for w in widths])
+                tbl = Table(data, colWidths=[content_w * w for w in widths], repeatRows=1)
                 tbl.setStyle(TableStyle([
                     ("BACKGROUND", (0, 0), (-1, 0), BRAND),
                     ("TEXTCOLOR", (0, 0), (-1, 0), WHITE),
@@ -12115,10 +12201,7 @@ async def export_reports_pdf(
                     ("TOPPADDING", (0, 0), (-1, -1), 5),
                     ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
                 ]))
-                _ensure_space(2.0 * cm)
-                tw, th = tbl.wrapOn(c, content_w, y - bottom_y)
-                tbl.drawOn(c, left_x, y - th)
-                y -= th + 14 * 1.2
+                _draw_tabla_paginada(tbl)
 
             def _draw_list_block(block: dict) -> None:
                 nonlocal y
@@ -12267,10 +12350,10 @@ async def export_reports_pdf(
                 if not grupos:
                     _draw_empty("Sin riesgos registrados en este período.")
                     return
-                headers = ["Estaciones/Postes", "Riesgos", "Propuesta de control", "Avance"]
-                widths = [0.14, 0.32, 0.42, 0.12]
+                headers = ["Estaciones\nPostes", "Riesgos", "Propuesta de control", "Avance"]
+                widths = [0.10, 0.38, 0.40, 0.12]
                 data = [headers]
-                span_cmds = []
+                caja_cmds = []
                 row_i = 1
                 for g in grupos:
                     filas = g.get("filas") or []
@@ -12278,33 +12361,32 @@ async def export_reports_pdf(
                         continue
                     start_row = row_i
                     for idx, f in enumerate(filas):
-                        riesgo_txt = f"{idx + 1}) {f['descripcion']}"
                         data.append([
-                            Paragraph(_xml_escape(g["estacion"]), cell_style) if idx == 0 else "",
-                            Paragraph(_xml_escape(riesgo_txt), cell_style),
+                            Paragraph(f"<b>{_xml_escape(g['estacion'])}</b>", cell_style) if idx == 0 else "",
+                            Paragraph(_xml_escape(f["descripcion"]), cell_style),
                             Paragraph(_xml_escape(f["control"]).replace("\n", "<br/>"), cell_style),
                             f"{f['avance']}%",
                         ])
                         row_i += 1
-                    if len(filas) > 1:
-                        span_cmds.append(("SPAN", (0, start_row), (0, row_i - 1)))
+                    # La estación se imprime una vez por grupo: su columna es
+                    # una caja sin líneas internas (sin SPAN, que no sobrevive
+                    # a partir la tabla entre páginas).
+                    caja_cmds.append(("BOX", (0, start_row), (0, row_i - 1), 0.5, BORDER))
                 style = [
                     ("BACKGROUND", (0, 0), (-1, 0), SHEET_MAROON),
                     ("TEXTCOLOR", (0, 0), (-1, 0), WHITE),
                     ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
                     ("FONTSIZE", (0, 0), (-1, -1), 9),
-                    ("GRID", (0, 0), (-1, -1), 0.5, BORDER),
-                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("BOX", (0, 0), (-1, 0), 0.5, BORDER),
+                    ("GRID", (1, 0), (-1, -1), 0.5, BORDER),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
                     ("ALIGN", (-1, 0), (-1, -1), "CENTER"),
                     ("TOPPADDING", (0, 0), (-1, -1), 5),
                     ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-                ] + span_cmds
-                tbl = Table(data, colWidths=[content_w * w for w in widths])
+                ] + caja_cmds
+                tbl = Table(data, colWidths=[content_w * w for w in widths], repeatRows=1)
                 tbl.setStyle(TableStyle(style))
-                _ensure_space(2.0 * cm)
-                tw, th = tbl.wrapOn(c, content_w, y - bottom_y)
-                tbl.drawOn(c, left_x, y - th)
-                y -= th + 14
+                _draw_tabla_paginada(tbl)
 
             def _draw_seguridad_indicadores_block(block: dict) -> None:
                 nonlocal y
@@ -15403,28 +15485,21 @@ async def _gather_modulos_export_data(
             }
 
     if activos.get("gestion_riesgos"):
-        registros = await db.riesgos_registros.find(
-            {"project_id": pid, **mutable_date_q}
-        ).sort("estacion_nombre", 1).to_list(length=2000)
+        # El mapa es una matriz VIVA: en el informe diario cuenta lo creado o
+        # actualizado en el día; en el semanal y el mensual se imprime el mapa
+        # vigente (todo lo que no está al 100%) más lo que se creó, actualizó
+        # o cerró en el período — si no, cada semana saldría un fragmento.
+        if categoria in ("reportes_semanales", "reportes_mensuales"):
+            riesgos_q = {"project_id": pid, "$or": [{"porcentaje_avance": {"$lt": 100}}] + mutable_date_q["$or"]}
+        else:
+            riesgos_q = {"project_id": pid, **mutable_date_q}
+        registros = await db.riesgos_registros.find(riesgos_q).sort(
+            [("estacion_nombre", 1), ("created_at", 1)]
+        ).to_list(length=2000)
         if registros:
-            grupos_orden: List[str] = []
-            grupos: Dict[str, list] = {}
-            for r in registros:
-                estacion = r.get("estacion_nombre") or "—"
-                if estacion not in grupos:
-                    grupos_orden.append(estacion)
-                    grupos[estacion] = []
-                grupos[estacion].append({
-                    "descripcion": r.get("descripcion_riesgo") or "",
-                    "control": r.get("propuesta_control") or "",
-                    "avance": r.get("porcentaje_avance", 0),
-                })
             out["riesgos"] = {
                 "titulo": "MAPA DE RIESGOS",
-                "blocks": [{
-                    "type": "riesgos_mapa",
-                    "grupos": [{"estacion": e, "filas": grupos[e]} for e in grupos_orden],
-                }],
+                "blocks": [{"type": "riesgos_mapa", "grupos": _riesgos_grupos(registros)}],
             }
 
     if activos.get("estudios_proyecto"):
@@ -17524,24 +17599,6 @@ async def export_reports_pptx(
                          align=PP_ALIGN.CENTER)
                 return slide, top_y + Cm(2.5)
 
-            def _draw_table(slide, x, y, headers, rows):
-                col_w = int(content_w / len(headers))
-                header_h = Cm(1.0)
-                row_h = Cm(0.9)
-                _wf_rect(slide, x, y, content_w, header_h, fill_rgb=BRAND_RGB)
-                for i, h in enumerate(headers):
-                    add_text(slide, x + i * col_w, y, col_w, header_h, h,
-                             size=12, bold=True, color=HEADER_TEXT_RGB, align=PP_ALIGN.CENTER)
-                cy = y + header_h
-                for row in rows:
-                    _wf_rect(slide, x, cy, content_w, row_h, fill_rgb=WF_WHITE_RGB,
-                             line_rgb=WF_BORDER_RGB, line_pt=0.75)
-                    for i, val in enumerate(row):
-                        add_text(slide, x + i * col_w, cy, col_w, row_h, str(val)[:90],
-                                 size=11, color=WF_TEXT_RGB, align=PP_ALIGN.CENTER)
-                    cy += row_h
-                return cy
-
             state: dict = {}
 
             def _ensure_space(titulo_continua: str, need) -> None:
@@ -17568,11 +17625,42 @@ async def export_reports_pptx(
                 if block.get("heading"):
                     _draw_heading(titulo_continua, block["heading"])
                 rows = block.get("rows") or []
-                if rows:
-                    state["y"] = _draw_table(state["slide"], MARGIN_X, state["y"], block["headers"], rows)
-                    state["y"] += Cm(0.4)
-                else:
+                if not rows:
                     _draw_empty(block.get("empty_text", "Sin datos en este período."))
+                    return
+                headers = block["headers"]
+                fracs = block.get("col_widths") or [1.0 / len(headers)] * len(headers)
+                widths = [int(content_w * f) for f in fracs]
+                size = 11 if len(headers) <= 5 else 9 if len(headers) <= 8 else 8
+                header_h = max(Cm(1.0), _pptx_fila_alto(headers, widths, size + 1))
+
+                def _encabezado() -> None:
+                    _wf_rect(state["slide"], MARGIN_X, state["y"], content_w, header_h, fill_rgb=BRAND_RGB)
+                    cx = MARGIN_X
+                    for h, w in zip(headers, widths):
+                        add_text(state["slide"], cx, state["y"], w, header_h, h, size=size + 1, bold=True,
+                                 color=HEADER_TEXT_RGB, align=PP_ALIGN.CENTER)
+                        cx += w
+                    state["y"] += header_h
+
+                primera_h = _pptx_fila_alto([str(v) for v in rows[0]], widths, size)
+                _ensure_space(titulo_continua, header_h + min(primera_h, Cm(4)))
+                _encabezado()
+                for row in rows:
+                    celdas = [str(v) for v in row]
+                    row_h = _pptx_fila_alto(celdas, widths, size)
+                    if state["y"] + row_h > bottom_y:
+                        state["slide"], state["y"] = _new_slide(titulo_continua)
+                        _encabezado()
+                    _wf_rect(state["slide"], MARGIN_X, state["y"], content_w, row_h, fill_rgb=WF_WHITE_RGB,
+                             line_rgb=WF_BORDER_RGB, line_pt=0.75)
+                    cx = MARGIN_X
+                    for texto, w in zip(celdas, widths):
+                        add_text(state["slide"], cx, state["y"], w, row_h, texto, size=size, color=WF_TEXT_RGB,
+                                 align=PP_ALIGN.LEFT if len(texto) > 24 else PP_ALIGN.CENTER)
+                        cx += w
+                    state["y"] += row_h
+                state["y"] += Cm(0.4)
 
             def _draw_list_block(titulo_continua: str, block: dict) -> None:
                 if block.get("heading"):
@@ -17690,50 +17778,62 @@ async def export_reports_pptx(
 
             def _draw_riesgos_mapa_block(titulo_continua: str, block: dict) -> None:
                 grupos = block.get("grupos") or []
-                if not grupos:
+                if not any(g.get("filas") for g in grupos):
                     _draw_empty("Sin riesgos registrados en este período.")
                     return
-                col_fracs = [0.14, 0.32, 0.42, 0.12]
-                widths = [int(content_w * f) for f in col_fracs]
-                headers = ["Estaciones/Postes", "Riesgos", "Propuesta de control", "Avance"]
-                total_filas = sum(len(g.get("filas") or []) for g in grupos)
-                _ensure_space(titulo_continua, Cm(0.9) * (total_filas + 2))
+                headers = ["Estaciones\nPostes", "Riesgos", "Propuesta de control", "Avance"]
+                widths = [int(content_w * f) for f in (0.10, 0.38, 0.40, 0.12)]
+                size = 9
+                header_h = Cm(1.2)
                 x = MARGIN_X
-                y = state["y"]
-                header_h = Cm(0.85)
-                _wf_rect(state["slide"], x, y, content_w, header_h, fill_rgb=MAROON_RGB)
-                cx = x
-                for i, h in enumerate(headers):
-                    add_text(state["slide"], cx, y, widths[i], header_h, h,
-                             size=9.5, bold=True, color=WF_WHITE_RGB, align=PP_ALIGN.CENTER)
-                    cx += widths[i]
-                cy = y + header_h
+
+                def _encabezado() -> None:
+                    _wf_rect(state["slide"], x, state["y"], content_w, header_h, fill_rgb=MAROON_RGB)
+                    cx = x
+                    for h, w in zip(headers, widths):
+                        add_text(state["slide"], cx, state["y"], w, header_h, h, size=9.5, bold=True,
+                                 color=WF_WHITE_RGB, align=PP_ALIGN.CENTER)
+                        cx += w
+                    state["y"] += header_h
+
+                def _cerrar_grupo(estacion: str, top: int, continua: bool) -> None:
+                    alto = state["y"] - top
+                    if alto <= 0:
+                        return
+                    _wf_rect(state["slide"], x, top, widths[0], alto, fill_rgb=WF_WHITE_RGB,
+                             line_rgb=WF_BORDER_RGB, line_pt=0.5)
+                    add_text(state["slide"], x, top, widths[0], alto, estacion + (" (cont.)" if continua else ""),
+                             size=9.5, bold=True, color=WF_TEXT_RGB, align=PP_ALIGN.CENTER)
+
+                _ensure_space(titulo_continua, header_h + Cm(2.5))
+                _encabezado()
                 for g in grupos:
                     filas = g.get("filas") or []
                     if not filas:
                         continue
-                    group_top = cy
-                    for idx, f in enumerate(filas):
-                        row_h = Cm(0.9)
-                        _wf_rect(state["slide"], x + widths[0], cy, widths[1], row_h, fill_rgb=WF_WHITE_RGB,
+                    top = state["y"]
+                    continua = False
+                    for f in filas:
+                        celdas = [f["descripcion"], f["control"]]
+                        row_h = _pptx_fila_alto(celdas, widths[1:3], size)
+                        if state["y"] + row_h > bottom_y:
+                            _cerrar_grupo(g["estacion"], top, continua)
+                            state["slide"], state["y"] = _new_slide(titulo_continua)
+                            _encabezado()
+                            top, continua = state["y"], True
+                        cx = x + widths[0]
+                        for texto, w in ((f["descripcion"], widths[1]), (f["control"], widths[2])):
+                            _wf_rect(state["slide"], cx, state["y"], w, row_h, fill_rgb=WF_WHITE_RGB,
+                                     line_rgb=WF_BORDER_RGB, line_pt=0.5)
+                            add_text(state["slide"], cx, state["y"], w, row_h, texto, size=size, color=WF_TEXT_RGB)
+                            cx += w
+                        _wf_rect(state["slide"], cx, state["y"], widths[3], row_h, fill_rgb=WF_WHITE_RGB,
                                  line_rgb=WF_BORDER_RGB, line_pt=0.5)
-                        add_text(state["slide"], x + widths[0], cy, widths[1], row_h, f"{idx + 1}) {f['descripcion']}",
-                                 size=8.5, color=WF_TEXT_RGB)
-                        _wf_rect(state["slide"], x + widths[0] + widths[1], cy, widths[2], row_h, fill_rgb=WF_WHITE_RGB,
-                                 line_rgb=WF_BORDER_RGB, line_pt=0.5)
-                        add_text(state["slide"], x + widths[0] + widths[1], cy, widths[2], row_h, f["control"],
-                                 size=8.5, color=WF_TEXT_RGB)
-                        _wf_rect(state["slide"], x + widths[0] + widths[1] + widths[2], cy, widths[3], row_h,
-                                 fill_rgb=WF_WHITE_RGB, line_rgb=WF_BORDER_RGB, line_pt=0.5)
-                        add_text(state["slide"], x + widths[0] + widths[1] + widths[2], cy, widths[3], row_h,
-                                 f"{f['avance']}%", size=9, color=WF_TEXT_RGB, align=PP_ALIGN.CENTER)
-                        cy += row_h
-                    group_h = cy - group_top
-                    _wf_rect(state["slide"], x, group_top, widths[0], group_h, fill_rgb=WF_WHITE_RGB,
-                             line_rgb=WF_BORDER_RGB, line_pt=0.5)
-                    add_text(state["slide"], x, group_top, widths[0], group_h, g["estacion"],
-                             size=9.5, bold=True, color=WF_TEXT_RGB, align=PP_ALIGN.CENTER)
-                state["y"] = cy + Cm(0.3)
+                        add_text(state["slide"], cx, state["y"], widths[3], row_h, f"{f['avance']}%", size=size + 0.5,
+                                 color=WF_TEXT_RGB, align=PP_ALIGN.CENTER)
+                        state["y"] += row_h
+                    _cerrar_grupo(g["estacion"], top, continua)
+                state["y"] += Cm(0.3)
 
             def _draw_seguridad_indicadores_block(titulo_continua: str, block: dict) -> None:
                 _ensure_space(titulo_continua, Cm(1.0))

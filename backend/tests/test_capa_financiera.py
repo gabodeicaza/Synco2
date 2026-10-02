@@ -105,7 +105,7 @@ def test_graficas_son_png_validas():
 
 # ── Estimaciones ───────────────────────────────────────────────────────────
 def test_estimacion_valor_normaliza_y_valida():
-    assert _estimacion_valor("obra_ejecutada", "$ 5,978,451.30") == "5978451.30"
+    assert _estimacion_valor("obra_ejecutada", "$ 5,978,451.30") == "5978451.30"
     assert _estimacion_valor("pct_amortizacion_anticipo", "0.22 %") == "0.22"
     assert _estimacion_valor("estatus", "  LIBERADA ") == "LIBERADA"
     assert _estimacion_valor("iva", "  ") is None
@@ -126,9 +126,9 @@ def test_estimaciones_bloques_suma_acumulada_calculada_y_un_bloque_por_contrato(
     obra, sup = _estimaciones_bloques(regs)
     assert obra["heading"].endswith("(OBRA)") and sup["heading"].endswith("(SUPERVISIÓN)")
     r1, r2 = obra["rows"]
-    assert r1[0] == "1" and r1[1] == "08/12/2025 al 31/12/2025" and r1[3] == "$ 5,978,451.30"
-    assert r1[4] == "$ 5,978,451.30" and r1[6] == "0.22%" and r1[10] == "Por pagar" or r1[10] == "-"
-    assert r2[4] == "$ 48,471,333.82" and r2[10] == "-" and r2[5] == "-"
+    assert r1[0] == "1" and r1[1] == "08/12/2025 al 31/12/2025" and r1[3] == "$ 5,978,451.30"
+    assert r1[4] == "$ 5,978,451.30" and r1[6] == "0.22%" and r1[10] == "Por pagar" or r1[10] == "-"
+    assert r2[4] == "$ 48,471,333.82" and r2[10] == "-" and r2[5] == "-"
     assert all(len(r) == len(obra["headers"]) for r in obra["rows"] + sup["rows"])
     assert abs(sum(obra["col_widths"]) - 1.0) < 1e-9
     assert _estimaciones_bloques([]) == []
