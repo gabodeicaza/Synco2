@@ -4860,6 +4860,150 @@ def _avance_obra_bloques(res: dict, ini: date, fin: date, contrato: str = "obra"
     return bloques
 
 
+PROGRAMA_FILAS_POR_GRAFICA = 18
+
+
+def _programa_barras(
+    conceptos: List[dict], partidas: List[dict], registros: List[dict], corte: date, max_nivel: int = 1,
+) -> List[dict]:
+    """Filas del programa en barras: cada partida raíz y sus subpartidas
+    (hasta `max_nivel`), con el rango de fechas que abarcan sus conceptos, el
+    avance REAL acumulado al corte (valor ganado congelado / importe) y el
+    PROGRAMADO (prorrateo por días / importe). Las partidas sin conceptos con
+    fechas no se dibujan. Pura — sin Mongo."""
+    activas = [pa for pa in partidas if pa.get("activo", True)]
+    hijos: Dict[Optional[str], list] = {}
+    for pa in activas:
+        hijos.setdefault(pa.get("partida_padre_id") or None, []).append(pa)
+    for lista in hijos.values():
+        lista.sort(key=lambda pa: (pa.get("orden", 0), pa.get("clave", ""), pa.get("nombre", "")))
+    por_partida: Dict[Optional[str], list] = {}
+    for c in conceptos:
+        por_partida.setdefault(c.get("partida_id"), []).append(c)
+    corte_iso = corte.isoformat()
+    ev_concepto: Dict[str, Decimal] = {}
+    for r in registros:
+        if r.get("importe_ganado_congelado") is not None and (r.get("fecha") or "") <= corte_iso:
+            ev_concepto[r.get("concepto_id")] = ev_concepto.get(r.get("concepto_id"), Decimal("0")) + to_decimal(r["importe_ganado_congelado"])
+
+    def subarbol(pa: dict) -> List[dict]:
+        out, pila, vistos = [], [pa], set()
+        while pila:
+            cur = pila.pop()
+            if cur["id"] in vistos:
+                continue
+            vistos.add(cur["id"])
+            out += por_partida.get(cur["id"], [])
+            pila += hijos.get(cur["id"], [])
+        return out
+
+    filas: List[dict] = []
+
+    def visitar(pa: dict, nivel: int) -> None:
+        cs = subarbol(pa)
+        datados = [c for c in cs if _concepto_tiene_datos_evm(c) and c.get("fecha_inicio") and c.get("fecha_fin")]
+        if datados:
+            importe = sum((_concepto_importe_efectivo(c) for c in cs), start=Decimal("0"))
+            ev = sum((ev_concepto.get(c["id"], Decimal("0")) for c in cs), start=Decimal("0"))
+            pv = sum((_prorrateo_concepto_en_ventana(c, date(1900, 1, 1), corte) for c in cs), start=Decimal("0"))
+            filas.append({
+                "nombre": pa.get("nombre") or "", "nivel": nivel,
+                "inicio": min(date.fromisoformat(c["fecha_inicio"]) for c in datados),
+                "fin": max(date.fromisoformat(c["fecha_fin"]) for c in datados),
+                "real": float(min(ev / importe * 100, Decimal(100))) if importe > 0 else 0.0,
+                "programado": float(min(pv / importe * 100, Decimal(100))) if importe > 0 else 0.0,
+            })
+        if nivel < max_nivel:
+            for h in hijos.get(pa["id"], []):
+                visitar(h, nivel + 1)
+
+    for raiz in hijos.get(None, []):
+        visitar(raiz, 0)
+    return filas
+
+
+def _grafica_programa_png(titulo: str, filas: List[dict], corte: date) -> bytes:
+    """Programa de obra en barras: la barra clara es el plazo de la partida
+    (inicio → fin), el relleno oscuro el avance REAL y la línea roja el corte.
+    A la derecha, real y programado en %. Dibujada con Pillow."""
+    from PIL import Image as _I
+    W = 1800
+    row_h = 40
+    top, left, right = 100, 560, 250
+    H = top + row_h * len(filas) + 130
+    img = _I.new("RGB", (W, H), "white")
+    d, (f_txt, f_tit, f_peq) = _chart_canvas(img, 20, 28, 17)
+    d.text((W / 2, 40), titulo, fill="#0F172A", font=f_tit, anchor="mm")
+    t0 = min(f["inicio"] for f in filas)
+    t1 = max(max(f["fin"] for f in filas), t0 + timedelta(days=1))
+    span = (t1 - t0).days or 1
+    x0, x1 = left, W - right
+
+    def xpos(dt: date) -> float:
+        return x0 + (x1 - x0) * (min(max(dt, t0), t1) - t0).days / span
+
+    n_meses = (t1.year - t0.year) * 12 + t1.month - t0.month + 1
+    paso = max(1, -(-64 // max(int((x1 - x0) / n_meses), 1)))  # una etiqueta cada `paso` meses: sin amontonarse
+    cur, k = date(t0.year, t0.month, 1), 0
+    while cur <= t1:  # una línea por mes
+        if cur >= t0:
+            x = xpos(cur)
+            d.line([(x, top - 14), (x, H - 100)], fill="#E2E8F0", width=1)
+            if k % paso == 0:
+                d.text((x, H - 88), cur.strftime("%m/%y"), fill="#475569", font=f_peq, anchor="mt")
+            k += 1
+        cur = date(cur.year + (cur.month == 12), cur.month % 12 + 1, 1)
+    for i, f in enumerate(filas):
+        y = top + i * row_h
+        raiz = f["nivel"] == 0
+        etiqueta = (f["nombre"] if len(f["nombre"]) <= 44 else f["nombre"][:43] + "…")
+        if raiz:
+            etiqueta = etiqueta.upper()
+        tx = 20 + f["nivel"] * 28
+        d.text((tx, y + row_h / 2), etiqueta, fill="#0F172A" if raiz else "#334155", font=f_txt, anchor="lm")
+        if raiz:
+            d.text((tx + 1, y + row_h / 2), etiqueta, fill="#0F172A", font=f_txt, anchor="lm")
+        xa, xb = xpos(f["inicio"]), max(xpos(f["fin"]), xpos(f["inicio"]) + 6)
+        alto = 20 if raiz else 14
+        ya = y + (row_h - alto) / 2
+        d.rectangle([xa, ya, xb, ya + alto], fill="#93C5FD" if raiz else "#BFDBFE")
+        if f["real"] > 0:
+            d.rectangle([xa, ya, xa + (xb - xa) * f["real"] / 100, ya + alto], fill="#1D4ED8" if raiz else "#3B82F6")
+        d.text((x1 + 20, y + row_h / 2), f"real {f['real']:.1f}% · prog {f['programado']:.1f}%", fill="#475569", font=f_peq, anchor="lm")
+    xc = xpos(corte)
+    d.line([(xc, top - 14), (xc, H - 100)], fill="#DC2626", width=3)
+    d.text((xc, top - 18), f"Corte {corte.strftime('%d/%m/%Y')}", fill="#DC2626", font=f_peq, anchor="mb")
+    ly = H - 40
+    for k, (color, texto) in enumerate((("#93C5FD", "Plazo programado"), ("#1D4ED8", "Avance real"), ("#DC2626", "Corte"))):
+        lx = left + k * 260
+        d.rectangle([lx, ly - 8, lx + 28, ly + 8], fill=color)
+        d.text((lx + 38, ly), texto, fill="#0F172A", font=f_peq, anchor="lm")
+    out = io.BytesIO()
+    img.save(out, format="PNG")
+    return out.getvalue()
+
+
+def _programa_barras_graficas(
+    conceptos: List[dict], partidas: List[dict], registros: List[dict], ini: date, fin: date, contrato: str = "obra",
+) -> List[tuple]:
+    """[(heading, caption, png)] del programa del contrato al corte `fin`,
+    en bloques de `PROGRAMA_FILAS_POR_GRAFICA` filas si es largo."""
+    filas = _programa_barras(conceptos, partidas, registros, fin)
+    if not filas:
+        return []
+    lbl = {"obra": "OBRA", "supervision": "SUPERVISIÓN"}[contrato]
+    texto = "obra" if contrato == "obra" else "servicios de supervisión"
+    caption = f"Programa de {texto} de la semana del {_fmt_iso_dmy(ini.isoformat())} al {_fmt_iso_dmy(fin.isoformat())}"
+    n = PROGRAMA_FILAS_POR_GRAFICA
+    total = (len(filas) + n - 1) // n
+    out = []
+    for k in range(total):
+        pag = f" ({k + 1}/{total})" if total > 1 else ""
+        out.append((f"PROGRAMA DE {lbl}{pag}", caption,
+                    _grafica_programa_png(f"Programa de {texto} en barras", filas[k * n:(k + 1) * n], fin)))
+    return out
+
+
 def _avance_obra_graficas(res: dict, fin: date, contrato: str = "obra") -> List[tuple]:
     """[(heading, caption, png_bytes), ...] — gráfica física (% acumulado
     programado vs real) y financiera (importe acumulado programado, ganado y
@@ -16057,6 +16201,9 @@ async def _gather_modulos_export_data(
             if not (res_ao and (res_ao["real_pct"] or res_ao["programado_pct"])):
                 continue
             contratos_ao.append(contrato_ao)
+            for heading, caption, png in _programa_barras_graficas(conceptos_c, partidas_c, registros_c, ini_d, fin_d, contrato_ao):
+                jpg = await asyncio.to_thread(_png_bytes_to_jpeg_dataurl, png)
+                blocks_ao.append({"type": "imagen", "heading": heading, "imagen": jpg, "caption": caption})
             blocks_ao += _avance_obra_bloques(res_ao, ini_d, fin_d, contrato_ao)
             for heading, caption, png in _avance_obra_graficas(res_ao, fin_d, contrato_ao):
                 jpg = await asyncio.to_thread(_png_bytes_to_jpeg_dataurl, png)

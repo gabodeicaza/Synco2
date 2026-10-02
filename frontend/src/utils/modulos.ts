@@ -119,7 +119,7 @@ export const MODULOS: ModuloDef[] = [
   {
     key: 'avance_obra',
     label: 'Avance de Obra',
-    subtitle: 'Tabla de avance por partidas y gráficas físico-financieras (calculado del avance capturado)',
+    subtitle: 'Programa en barras, tabla de avance por partidas y gráficas (calculado del avance capturado)',
     icon: 'stats-chart-outline',
     area: 'Ingeniería',
   },
