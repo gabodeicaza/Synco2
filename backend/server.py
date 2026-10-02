@@ -6021,24 +6021,58 @@ class PendientePatch(BaseModel):
     resuelto: Optional[bool] = None
 
 
-def _pendientes_bloques(registros: List[dict]) -> List[dict]:
-    """Un bloque `list` por contrato con los pendientes VIGENTES (los
-    resueltos no se imprimen). Sin vigentes → sin bloque."""
+def _pendiente_resuelto_en(r: dict, desde: datetime, hasta: datetime) -> Optional[datetime]:
+    """Fecha de resolución de un pendiente resuelto si cae en [desde, hasta]
+    (None si no está resuelto o quedó fuera). Un pendiente resuelto antes de
+    que se guardara `resuelto_at` usa su última actualización como aproximación."""
+    if not r.get("resuelto"):
+        return None
+    cuando = r.get("resuelto_at") or r.get("updated_at")
+    if not isinstance(cuando, datetime):
+        return None
+    if cuando.tzinfo is None:
+        cuando = cuando.replace(tzinfo=timezone.utc)
+    return cuando if desde <= cuando <= hasta else None
+
+
+def _pendientes_bloques(
+    registros: List[dict], resueltos_desde: Optional[datetime] = None, resueltos_hasta: Optional[datetime] = None,
+) -> List[dict]:
+    """Un bloque `list` por contrato con los pendientes VIGENTES. Los resueltos
+    no se imprimen, salvo que se pida el rango (informes semanal y mensual):
+    entonces se agrega, por contrato, "RESUELTOS EN EL PERÍODO" con los que se
+    cerraron dentro del rango. Sin nada que imprimir → sin bloque."""
     bloques = []
+    con_rango = resueltos_desde is not None and resueltos_hasta is not None
     for contrato in PENDIENTES_AMBITOS:
+        propios = [r for r in registros if r.get("contrato", "obra") == contrato]
         vigentes = sorted(
-            (r for r in registros if r.get("contrato", "obra") == contrato and not r.get("resuelto")),
+            (r for r in propios if not r.get("resuelto")),
             key=lambda r: (r.get("orden", 0), str(r.get("created_at") or "")),
         )
-        if not vigentes:
+        if vigentes:
+            bloques.append({
+                "type": "list",
+                "heading": PENDIENTE_AMBITO_HEADING[contrato],
+                "items": [{"title": r["titulo"], "body": r.get("descripcion") or "", "extra": None, "meta": None}
+                          for r in vigentes],
+                "empty_text": "Sin pendientes.",
+            })
+        if not con_rango:
             continue
-        bloques.append({
-            "type": "list",
-            "heading": PENDIENTE_AMBITO_HEADING[contrato],
-            "items": [{"title": r["titulo"], "body": r.get("descripcion") or "", "extra": None, "meta": None}
-                      for r in vigentes],
-            "empty_text": "Sin pendientes.",
-        })
+        cerrados = sorted(
+            ((cuando, r) for r in propios if (cuando := _pendiente_resuelto_en(r, resueltos_desde, resueltos_hasta))),
+            key=lambda x: (x[0], x[1].get("orden", 0)),
+        )
+        if cerrados:
+            bloques.append({
+                "type": "list",
+                "heading": f"{PENDIENTE_AMBITO_HEADING[contrato]} · RESUELTOS EN EL PERÍODO",
+                "items": [{"title": r["titulo"], "body": r.get("descripcion") or "", "extra": None,
+                           "meta": f"Resuelto el {cuando.astimezone(MX_TZ).strftime('%d/%m/%Y')}"}
+                          for cuando, r in cerrados],
+                "empty_text": "Sin pendientes resueltos.",
+            })
     return bloques
 
 
@@ -6088,6 +6122,8 @@ async def update_pendiente_general(pid: str, rid: str, body: PendientePatch, use
         upd["orden"] = fields["orden"]
     if fields.get("resuelto") is not None:
         upd["resuelto"] = fields["resuelto"]
+        # Fecha de cierre: alimenta "resueltos en el período" de los informes.
+        upd["resuelto_at"] = datetime.now(timezone.utc) if fields["resuelto"] else None
     if upd:
         upd["updated_at"] = datetime.now(timezone.utc)
         await db.pendientes_generales.update_one({"id": rid}, {"$set": upd})
@@ -17080,7 +17116,12 @@ async def _gather_modulos_export_data(
             out["estimaciones"] = {"titulo": "CONCENTRADO DE ESTIMACIONES", "blocks": bloques_es}
 
     if activos.get("pendientes_generales"):
-        bloques_pg = _pendientes_bloques(await db.pendientes_generales.find({"project_id": pid}).to_list(length=500))
+        # Semanal y mensual además listan los pendientes cerrados en el período.
+        con_cierre = categoria in ("reportes_semanales", "reportes_mensuales")
+        bloques_pg = _pendientes_bloques(
+            await db.pendientes_generales.find({"project_id": pid}).to_list(length=500),
+            start_dt if con_cierre else None, end_dt if con_cierre else None,
+        )
         if bloques_pg:
             out["pendientes_generales"] = {"titulo": "PENDIENTES O REQUERIMIENTOS GENERALES", "blocks": bloques_pg}
 

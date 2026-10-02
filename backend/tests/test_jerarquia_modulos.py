@@ -125,3 +125,43 @@ def test_captura_nueva_nace_diaria_y_valida_la_jerarquia():
         p = await server.update_prueba_calidad("p1", p["id"], server.PruebaCalidadPatch(jerarquia="mensual"), COORD)
         assert p["jerarquia"] == "mensual"
     _con_db(go)
+
+
+# ── Pendientes generales: "resueltos en el período" (semanal y mensual) ────
+def test_pendientes_resueltos_en_el_periodo_bloque():
+    ini, fin = datetime(2026, 9, 21, tzinfo=timezone.utc), datetime(2026, 9, 27, tzinfo=timezone.utc)
+    regs = [
+        {"contrato": "obra", "titulo": "Abierto"},
+        {"contrato": "obra", "titulo": "Cerrado en la semana", "resuelto": True,
+         "resuelto_at": datetime(2026, 9, 23, 18, tzinfo=timezone.utc)},
+        {"contrato": "obra", "titulo": "Cerrado antes", "resuelto": True,
+         "resuelto_at": datetime(2026, 8, 1, tzinfo=timezone.utc)},
+        {"contrato": "supervision", "titulo": "Legado cerrado", "resuelto": True,
+         "updated_at": datetime(2026, 9, 25, tzinfo=timezone.utc)},
+    ]
+    obra, sup = server.PENDIENTE_AMBITO_HEADING["obra"], server.PENDIENTE_AMBITO_HEADING["supervision"]
+    assert [b["heading"] for b in server._pendientes_bloques(regs)] == [obra]  # sin rango: solo vigentes
+    titulos = {b["heading"]: b for b in server._pendientes_bloques(regs, ini, fin)}
+    sufijo = " · RESUELTOS EN EL PERÍODO"
+    assert [i["title"] for i in titulos[obra]["items"]] == ["Abierto"]
+    assert [i["title"] for i in titulos[obra + sufijo]["items"]] == ["Cerrado en la semana"]
+    assert titulos[obra + sufijo]["items"][0]["meta"] == "Resuelto el 23/09/2026"
+    assert [i["title"] for i in titulos[sup + sufijo]["items"]] == ["Legado cerrado"]
+
+
+def test_pendientes_resolver_guarda_fecha_y_el_export_solo_la_usa_en_semanal_mensual():
+    async def go(db):
+        mod = {c: {"pendientes_generales": True} for c in CATS}
+        await db.projects.insert_one({"id": "p1", "name": "Demo", "modulos": mod})
+        a = await server.create_pendiente_general("p1", server.PendienteIn(contrato="obra", titulo="A"), COORD)
+        await server.create_pendiente_general("p1", server.PendienteIn(contrato="obra", titulo="B"), COORD)
+        r = await server.update_pendiente_general("p1", a["id"], server.PendientePatch(resuelto=True), COORD)
+        assert r["resuelto_at"] is not None
+        for cat, esperado in (("reportes_diarios", False), ("reportes_semanales", True), ("reportes_mensuales", True)):
+            out = await _export(db, cat)
+            texto = repr(out["pendientes_generales"])
+            assert ("RESUELTOS EN EL PERÍODO" in texto) is esperado, cat
+            assert "'B'" in texto
+        r = await server.update_pendiente_general("p1", a["id"], server.PendientePatch(resuelto=False), COORD)
+        assert r["resuelto_at"] is None
+    _con_db(go)
