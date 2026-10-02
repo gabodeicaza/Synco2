@@ -17862,7 +17862,9 @@ async def export_reports_pptx(
                 # ver `_recuento_general_by_nodo`) el ancho se reparte en 3
                 # franjas (POSTE/desc/CANT.), sin ella en 2 (histórico).
                 if tiene_poste:
-                    poste_x0, name_x0, qty_x0 = 0.0, 0.30, 0.72
+                    # POSTE angosta, descripción ancha: "MAQUINARIA Y EQUIPO"
+                    # (13 pt, negritas) no cabe en menos y se partía en dos líneas.
+                    poste_x0, name_x0, qty_x0 = 0.0, 0.26, 0.78
                 else:
                     poste_x0, name_x0, qty_x0 = None, 0.0, 0.62
                 _wf_rect(slide, x, y_top, tbl_w, HEADER_H, fill_rgb=BRAND_RGB)
@@ -17940,7 +17942,7 @@ async def export_reports_pptx(
                 n_total = max(len(personal_rows_e), len(maquinaria_rows_e))
 
                 title_reserved = Cm(1.3) if not _emitted_recuento_general_title else Cm(0)
-                subtitle_reserved = Cm(1.0) + (Cm(0.55) if show_path else Cm(0))
+                subtitle_reserved = Cm(1.0) + (Cm(0.8) if show_path else Cm(0))
                 avail_h = (SH - BOTTOM_MARGIN) - TOP_MARGIN - title_reserved - subtitle_reserved - HEADER_H - TOTAL_H
                 rows_per_slide = max(1, int(avail_h / ROW_H))
 
@@ -17962,9 +17964,9 @@ async def export_reports_pptx(
                               size=18, bold=True, color=WF_TEXT_RGB, align=PP_ALIGN.CENTER)
                     y += Cm(1.0)
                     if show_path:
-                        add_text(slide, MARGIN_X, y, content_w, Cm(0.55), nodo_path,
+                        add_text(slide, MARGIN_X, y, content_w, Cm(0.65), nodo_path,
                                   size=11, color=WF_MUTED_RGB, align=PP_ALIGN.CENTER)
-                        y += Cm(0.55)
+                        y += Cm(0.8)  # aire bajo la ruta: el encabezado de la tabla la tapaba
 
                     chunk_end = min(idx + rows_per_slide, n_total)
                     is_last_chunk = chunk_end >= n_total
@@ -17976,8 +17978,9 @@ async def export_reports_pptx(
                     idx = chunk_end
 
         def _emit_resumen_frentes_slides() -> None:
-            """Slides "RESUMEN POR FRENTE" (formato del informe diario de
-            referencia, últimas diapositivas): a la izquierda FRENTE /
+            """Slides "RECURSOS GENERALES DE LA OBRA" (formato de los reportes de
+            referencia, últimas diapositivas), con los subtítulos FUERZA DE
+            TRABAJO y MAQUINARIA Y EQUIPO sobre cada tabla: a la izquierda FRENTE /
             CANTIDAD (personas) y a la derecha ESTACIÓN / MAQUINARIA Y
             EQUIPO / CANTIDAD, con una fila por Estación e Intertramo en el
             orden del árbol (incluidos los frentes sin actividad: "0
@@ -18018,7 +18021,7 @@ async def export_reports_pptx(
                 })
             if not any(f["personas"] or f["equipos_qty"] for f in filas):
                 return  # sin actividad en ningún frente: no se imprime una hoja en blanco
-            _indice_mark("resumen_frentes", "Resumen por frente")
+            _indice_mark("resumen_frentes", "Recursos generales de la obra")
 
             MARGIN_X = Cm(1.5)
             content_w = SW - 2 * MARGIN_X
@@ -18029,7 +18032,8 @@ async def export_reports_pptx(
             ROW_H = Cm(1.0)
             TOTAL_H = Cm(1.0)
             title_h = Cm(1.6)
-            avail_h = (SH - BOTTOM_MARGIN) - TOP_MARGIN - title_h - HEADER_H - TOTAL_H
+            SUB_H = Cm(1.3)  # subtítulo con ícono sobre cada tabla
+            avail_h = (SH - BOTTOM_MARGIN) - TOP_MARGIN - title_h - SUB_H - HEADER_H - TOTAL_H
             rows_per_slide = max(1, int(avail_h / ROW_H))
             total_personas = sum(f["personas"] for f in filas)
             total_equipos = sum(f["equipos_qty"] for f in filas)
@@ -18044,11 +18048,22 @@ async def export_reports_pptx(
                 slide = _clone_membrete()
                 y0 = TOP_MARGIN
                 add_text(slide, MARGIN_X, y0, content_w, Cm(1.3),
-                         "RESUMEN POR FRENTE" + ("" if pi == 0 else " (continúa)"),
+                         "RECURSOS GENERALES DE LA OBRA" + ("" if pi == 0 else " (continúa)"),
                          size=28, bold=True, color=READABLE_BRAND_RGB, align=PP_ALIGN.CENTER)
                 y = y0 + title_h
                 lx, rx = MARGIN_X, MARGIN_X + left_w + gutter
-                e_w, m_w, q_w = int(right_w * 0.14), int(right_w * 0.72), right_w - int(right_w * 0.14) - int(right_w * 0.72)
+                icon_r = int(Cm(0.45))
+                for ix, titulo_tbl, es_persona in ((lx, "FUERZA DE TRABAJO", True), (rx, "MAQUINARIA Y EQUIPO", False)):
+                    if es_persona:
+                        _wf_person_icon(slide, ix + icon_r, y + icon_r, icon_r)
+                    else:
+                        _wf_gear_icon(slide, ix + icon_r, y + icon_r, icon_r)
+                    add_text(slide, ix + 2 * icon_r + Cm(0.25), y + Cm(0.05), (left_w if es_persona else right_w) - 2 * icon_r - Cm(0.25),
+                             Cm(0.9), titulo_tbl, size=14, bold=True, color=READABLE_BRAND_RGB)
+                y += SUB_H
+                # La columna CANTIDAD necesita ≥16% del ancho: a 14% "CANTIDAD" se partía en dos líneas.
+                e_w, m_w = int(right_w * 0.14), int(right_w * 0.70)
+                q_w = right_w - e_w - m_w
                 _cell(slide, lx, y, int(left_w * 0.45), HEADER_H, "FRENTE", bold=True, fill=BRAND_RGB, color=HEADER_TEXT_RGB, size=12)
                 _cell(slide, lx + int(left_w * 0.45), y, left_w - int(left_w * 0.45), HEADER_H, "CANTIDAD",
                       bold=True, fill=BRAND_RGB, color=HEADER_TEXT_RGB, size=12)
@@ -18056,7 +18071,7 @@ async def export_reports_pptx(
                 _cell(slide, rx + e_w, y, m_w, HEADER_H, "MAQUINARIA Y EQUIPO", bold=True, fill=BRAND_RGB,
                       color=HEADER_TEXT_RGB, size=12)
                 _cell(slide, rx + e_w + m_w, y, q_w, HEADER_H, "CANTIDAD", bold=True, fill=BRAND_RGB,
-                      color=HEADER_TEXT_RGB, size=12)
+                      color=HEADER_TEXT_RGB, size=11)
                 y += HEADER_H
                 for f in pagina:
                     lw1 = int(left_w * 0.45)

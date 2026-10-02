@@ -103,3 +103,12 @@ def test_sin_ningun_reporte_no_se_imprimen_diapositivas_de_sin_actividad():
     slides = _slides(con_reportes=False)
     assert not _idx(slides, "Sin actividad", "ACCESO AL PREDIO")
     assert any("Sin reportes en el período" in t for t in slides)
+
+
+def test_recursos_generales_de_la_obra_con_subtitulos_y_sin_el_titulo_anterior():
+    slides = _slides(con_reportes=True)
+    (i,) = _idx(slides, "RECURSOS GENERALES DE LA OBRA", "FRENTE")
+    assert "FUERZA DE TRABAJO" in slides[i] and "MAQUINARIA Y EQUIPO" in slides[i]
+    assert not any("RESUMEN POR FRENTE" in t for t in slides)
+    indice = slides[1]
+    assert "Recursos generales de la obra" in indice and "Resumen por frente" not in indice
