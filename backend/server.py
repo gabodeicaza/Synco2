@@ -7201,6 +7201,7 @@ class PresentacionSeccionIn(BaseModel):
         "portada", "mapa_general", "divisor", "financiero",
         "seguimiento_estudios", "croquis_estacion", "informacion_particular",
         "avance_grafico", "reportes_semana", "cierre",
+        "ambiental", "social", "seguridad",
     ]
     orden: int = 0
     titulo: Optional[str] = None  # "divisor" (ej. "FINANCIERO"); libre, no atado a Área
@@ -7228,6 +7229,33 @@ class PresentacionIn(BaseModel):
     plantilla: Optional[Literal["semanal"]] = None
 
 
+# Secciones AUTOMÁTICAS de la presentación: se arman en vivo con los mismos
+# bloques que el informe semanal imprime para esos módulos (ver
+# `_gather_modulos_export_data`). Clave de sección → claves de `out` que agrupa.
+_PRES_AUTO_MODULOS = {
+    "ambiental": ("supervision_ambiental", "ambiental"),
+    "social": ("aspectos_sociales",),
+    "seguridad": ("indicadores_seguridad", "seguridad"),
+}
+
+
+async def _presentacion_modulos_auto(pid: str, proj: dict, fecha_iso: str, tipos) -> dict:
+    """{tipo: [(titulo_modulo, bloques)]} para las secciones automáticas
+    pedidas. Usa la ventana semanal (fecha − 6 días .. fecha) y el interruptor
+    de módulos del informe SEMANAL: un módulo apagado ahí no aparece."""
+    try:
+        end_d = date.fromisoformat(fecha_iso)
+    except ValueError:
+        return {}
+    start_dt = datetime.combine(end_d - timedelta(days=6), datetime.min.time(), tzinfo=MX_TZ)
+    end_dt = datetime.combine(end_d, datetime.max.time(), tzinfo=MX_TZ)
+    data = await _gather_modulos_export_data(pid, proj, start_dt, end_dt, "reportes_semanales")
+    return {
+        t: [(data[k]["titulo"], data[k]["blocks"]) for k in _PRES_AUTO_MODULOS[t] if data.get(k) and data[k].get("blocks")]
+        for t in tipos
+    }
+
+
 def _secciones_plantilla_semanal() -> List[dict]:
     """Esqueleto del informe semanal (ver PDF de referencia "Informe de
     Actividades"). Cada entrada se completa luego con el contenido EN VIVO
@@ -7238,6 +7266,9 @@ def _secciones_plantilla_semanal() -> List[dict]:
         ("divisor", "ESTUDIOS Y ANÁLISIS"), ("seguimiento_estudios", None),
         ("divisor", "AVANCE DE OBRA"),
         ("reportes_semana", None),
+        ("divisor", "AMBIENTAL"), ("ambiental", None),
+        ("divisor", "SOCIAL / IMPACTO URBANO"), ("social", None),
+        ("divisor", "SEGURIDAD"), ("seguridad", None),
         ("cierre", None),
     ]
     return [
@@ -7380,6 +7411,28 @@ async def list_reportes_semana_presentacion(pid: str, pres_id: str, user: dict =
             "fecha": r["created_at"].isoformat() if r.get("created_at") else None,
             "n_fotos": len(r.get("images") or []),
         })
+    return out
+
+
+@api.get("/projects/{pid}/presentaciones/{pres_id}/modulo-auto/{tipo}")
+async def preview_presentacion_modulo_auto(pid: str, pres_id: str, tipo: str, user: dict = Depends(current_user)):
+    """Esquema (sin imágenes) de lo que traerá una sección automática, para
+    que el preview muestre qué láminas saldrán al exportar."""
+    await ensure_project_access(user, pid)
+    if tipo not in _PRES_AUTO_MODULOS:
+        raise HTTPException(404, "Tipo de sección automática desconocido")
+    proj = await db.projects.find_one({"id": pid})
+    pres = await db.presentaciones.find_one({"id": pres_id, "project_id": pid}, {"fecha": 1})
+    if not proj or not pres:
+        raise HTTPException(404, "Presentación no existe")
+    auto = (await _presentacion_modulos_auto(pid, proj, pres["fecha"], [tipo])).get(tipo, [])
+    out = []
+    for titulo, bloques in auto:
+        out.append({"modulo": titulo, "bloques": [{
+            "type": b.get("type"),
+            "heading": b.get("heading") or b.get("subtitulo") or b.get("text"),
+            "n": len(b.get("rows") or b.get("items") or []),
+        } for b in bloques]})
     return out
 
 
@@ -7606,6 +7659,9 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
     if _rids:
         async for r_ in db.reports.find({"id": {"$in": _rids}, "project_id": pid}):
             reports_by_id[r_["id"]] = r_
+
+    _tipos_auto = sorted({s_.get("tipo") for s_ in secciones} & set(_PRES_AUTO_MODULOS))
+    modulos_auto: dict = await _presentacion_modulos_auto(pid, proj, pres["fecha"], _tipos_auto) if _tipos_auto else {}
 
     contrato_bloques: list = []
     estimaciones_bloques: list = []
@@ -8110,8 +8166,151 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                         _foto_grid(slide, chunk, right_x, TOP_MARGIN, right_w, int(SH - TOP_MARGIN - BOTTOM_MARGIN),
                                    cols=1 if len(chunk) == 1 else 2)
 
-        for s in secciones:
+        # ---- Secciones automáticas (Ambiental / Social / Seguridad) --------
+        # Cada una pinta, bloque por bloque, lo mismo que el informe semanal
+        # imprime para esos módulos (`_gather_modulos_export_data`): una
+        # lámina por tabla / gráfica / lista / comparativa de fotos.
+        def _add_picture_fit(slide, b64_str, x, y, w, h):
+            """Como add_picture_b64 pero conservando la proporción de la imagen
+            (las gráficas generadas no deben deformarse al caber en la lámina)."""
+            if not b64_str:
+                return
+            try:
+                from PIL import Image as _PILImage
+                raw = _b64.b64decode(_strip_b64_prefix(b64_str))
+                iw, ih = _PILImage.open(io.BytesIO(raw)).size
+                scale = min(w / iw, h / ih)
+                pw, ph = int(iw * scale), int(ih * scale)
+                slide.shapes.add_picture(io.BytesIO(raw), int(x + (w - pw) / 2), int(y + (h - ph) / 2), width=pw, height=ph)
+            except Exception:
+                pass
+
+        def _auto_titulo(slide, texto, color=None):
+            if texto:
+                add_text(slide, MARGIN_X, TOP_MARGIN, content_w, _Cm(0.9), texto, size=14, bold=True, color=color or BRAND_RGB)
+
+        def _slides_bloques(modulo_titulo, bloques):
+            last = None
+            for b in bloques:
+                t = b.get("type")
+                heading = b.get("heading")
+                body_y = int(TOP_MARGIN + (_Cm(1.1) if heading else 0))
+                body_h = int(SH - BOTTOM_MARGIN - body_y)
+                if t == "summary":
+                    txt = b.get("text") or ""
+                    if last is None:
+                        last = _clone_membrete()
+                        _encabezado(last, modulo_titulo)
+                    add_text(last, MARGIN_X, int(SH - BOTTOM_MARGIN - _Cm(1.0)), content_w, _Cm(0.9), txt,
+                             size=12, bold=True, color=BRAND_RGB)
+                elif t == "table":
+                    headers, rows = b.get("headers") or [], b.get("rows") or []
+                    fr = b.get("col_widths") or [1.0] * len(headers)
+                    for k in range(0, max(len(rows), 1), 12):
+                        last = _clone_membrete()
+                        _encabezado(last, modulo_titulo)
+                        _auto_titulo(last, heading)
+                        chunk = rows[k:k + 12]
+                        if not chunk:
+                            add_text(last, MARGIN_X, body_y, content_w, _Cm(1), b.get("empty_text") or "Sin registros.",
+                                     size=12, color=MUTED_RGB, align=_PP_ALIGN.CENTER)
+                        else:
+                            _tabla(last, MARGIN_X, body_y, content_w, headers, chunk, fr, size=9, row_h=_Cm(0.9), head_h=_Cm(1.0))
+                elif t == "imagen":
+                    last = _clone_membrete()
+                    _encabezado(last, modulo_titulo)
+                    _auto_titulo(last, heading)
+                    cap = b.get("caption") or ""
+                    _add_picture_fit(last, b.get("imagen"), MARGIN_X, body_y, content_w, int(body_h - (_Cm(1.0) if cap else 0)))
+                    if cap:
+                        add_text(last, MARGIN_X, int(SH - BOTTOM_MARGIN - _Cm(0.9)), content_w, _Cm(0.8), cap,
+                                 size=10, color=MUTED_RGB, align=_PP_ALIGN.CENTER)
+                elif t == "list":
+                    items = b.get("items") or []
+                    hcol = {"good": GREEN_RGB, "bad": RED_RGB}.get(b.get("heading_color"), BRAND_RGB)
+                    for k in range(0, max(len(items), 1), 7):
+                        last = _clone_membrete()
+                        _encabezado(last, modulo_titulo)
+                        _auto_titulo(last, heading, hcol)
+                        chunk = items[k:k + 7]
+                        if not chunk:
+                            add_text(last, MARGIN_X, body_y, content_w, _Cm(1), b.get("empty_text") or "Sin registros.",
+                                     size=12, color=MUTED_RGB, align=_PP_ALIGN.CENTER)
+                            continue
+                        tb = last.shapes.add_textbox(MARGIN_X, body_y, content_w, body_h)
+                        tf = tb.text_frame
+                        tf.word_wrap = True
+                        for li, it in enumerate(chunk):
+                            par = tf.paragraphs[0] if li == 0 else tf.add_paragraph()
+                            par.space_after = _Pt(6)
+                            r1 = par.add_run()
+                            r1.text = "• " + ((it.get("title") + ": ") if it.get("title") else "") + (it.get("body") or "")
+                            r1.font.size = _Pt(11)
+                            r1.font.color.rgb = _PRGBColor(*TEXT_RGB)
+                            if it.get("meta"):
+                                r2 = par.add_run()
+                                r2.text = "  (" + it["meta"] + ")"
+                                r2.font.size = _Pt(9)
+                                r2.font.color.rgb = _PRGBColor(*MUTED_RGB)
+                elif t == "fotos_comparativa":
+                    for it in b.get("items") or []:
+                        last = _clone_membrete()
+                        _encabezado(last, modulo_titulo)
+                        _auto_titulo(last, it.get("titulo"))
+                        gap = _Cm(0.4)
+                        hay_b = bool(it.get("actual"))
+                        pw = int((content_w - gap) / 2) if hay_b else content_w
+                        ph = int(body_h - _Cm(1.6))
+                        _add_picture_fit(last, it.get("original"), MARGIN_X, body_y, pw, ph)
+                        add_text(last, MARGIN_X, int(body_y + ph + _Cm(0.1)), pw, _Cm(1.3),
+                                 " · ".join(x for x in [it.get("desc_original"), it.get("etiqueta_original")] if x),
+                                 size=10, color=TEXT_RGB, align=_PP_ALIGN.CENTER)
+                        if hay_b:
+                            bx = int(MARGIN_X + pw + gap)
+                            _add_picture_fit(last, it.get("actual"), bx, body_y, pw, ph)
+                            add_text(last, bx, int(body_y + ph + _Cm(0.1)), pw, _Cm(1.3),
+                                     " · ".join(x for x in [it.get("desc_actual"), it.get("etiqueta_actual")] if x),
+                                     size=10, color=TEXT_RGB, align=_PP_ALIGN.CENTER)
+                elif t == "seguridad_accidentes":
+                    rows = [[r.get("fecha") or "", r.get("trabajador") or "", r.get("contratista") or "", r.get("registro") or "",
+                             r.get("ubicacion") or "", r.get("descripcion") or "", r.get("seguimiento") or ""]
+                            for r in (b.get("rows") or [])]
+                    for k in range(0, max(len(rows), 1), 8):
+                        last = _clone_membrete()
+                        _encabezado(last, modulo_titulo)
+                        _auto_titulo(last, heading or "REGISTRO DE ACCIDENTES")
+                        _tabla(last, MARGIN_X, body_y if heading else int(TOP_MARGIN + _Cm(1.1)), content_w,
+                               ["FECHA", "TRABAJADOR", "CONTRATISTA", "REGISTRO", "UBICACIÓN", "DESCRIPCIÓN", "SEGUIMIENTO"],
+                               rows[k:k + 8], [0.09, 0.13, 0.12, 0.11, 0.14, 0.24, 0.17], size=8, row_h=_Cm(1.6), head_h=_Cm(1.0))
+                elif t == "seguridad_indicadores":
+                    last = _clone_membrete()
+                    _encabezado(last, modulo_titulo)
+                    _auto_titulo(last, b.get("subtitulo") or "ACCIONES CORRECTIVAS PENDIENTES")
+                    items = b.get("items") or []
+                    tb = last.shapes.add_textbox(MARGIN_X, int(TOP_MARGIN + _Cm(1.1)), content_w, int(SH - BOTTOM_MARGIN - TOP_MARGIN - _Cm(1.1)))
+                    tf = tb.text_frame
+                    tf.word_wrap = True
+                    for li, txt in enumerate(items[:18]):
+                        par = tf.paragraphs[0] if li == 0 else tf.add_paragraph()
+                        par.space_after = _Pt(4)
+                        r1 = par.add_run()
+                        r1.text = "• " + str(txt)
+                        r1.font.size = _Pt(11)
+                        r1.font.color.rgb = _PRGBColor(*TEXT_RGB)
+
+        def slide_auto(tipo):
+            for modulo_titulo, bloques in (modulos_auto.get(tipo) or []):
+                _slides_bloques(modulo_titulo, bloques)
+
+        _auto_tipos = set(_PRES_AUTO_MODULOS)
+
+        for s_idx, s in enumerate(secciones):
             tipo = s.get("tipo")
+            if tipo == "divisor":
+                # No imprime un divisor cuya sección automática siguiente no trae nada.
+                sig = secciones[s_idx + 1].get("tipo") if s_idx + 1 < len(secciones) else None
+                if sig in _auto_tipos and not modulos_auto.get(sig):
+                    continue
             if tipo == "portada":
                 slide_portada()
             elif tipo == "mapa_general":
@@ -8132,6 +8331,8 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                 slide_reportes_semana(s)
             elif tipo == "cierre":
                 slide_cierre()
+            elif tipo in _auto_tipos:
+                slide_auto(tipo)
 
         # Borra las slides ORIGINALES de la plantilla (solo sirvieron de
         # semilla para clonar vía `_clone_slide` — nunca deben aparecer en
