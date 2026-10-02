@@ -4612,6 +4612,27 @@ PENDIENTE_AMBITO_HEADING = {
 }
 
 
+# Estatus que, de no caber completos en la tabla de postes, se abrevian a una
+# sola línea antes de recortar filas con "+N más".
+_ESTATUS_CORTO = {"Cambio de trayectoria": "Cambio tray."}
+
+
+def _estacion_titulos(ordinal: Optional[int], nombre: str) -> tuple:
+    """(título chico, título grande) de la página/diapositiva resumen de una
+    Estación. Formato de referencia: "ESTACIÓN 5." (chico) y "CEFORMA"
+    (grande). Si el nombre del nodo ya empieza con "Estación N" (mismo N que el
+    ordinal), ese prefijo se quita del grande para no imprimirlo dos veces; si
+    el nombre ES solo "Estación N", se omite el chico. Pura."""
+    grande = (nombre or "").strip()
+    if ordinal is None:
+        return None, grande
+    m = re.match(r"(?is)^\s*estaci[oó]n\s*(?:n[°o.]*\s*)?(\d+)\s*[.\-:]?\s*(.*)$", grande)
+    if m and int(m.group(1)) == ordinal:
+        resto = m.group(2).strip()
+        return (f"ESTACIÓN {ordinal}.", resto) if resto else (None, grande)
+    return f"ESTACIÓN {ordinal}.", grande
+
+
 def _pptx_texto_lineas(texto: str, ancho_emu: int, size_pt: float) -> int:
     """Líneas que ocupa `texto` en una celda de `ancho_emu` a `size_pt`
     (estimación conservadora: ancho medio de carácter ≈ 0.55 em, descontando
@@ -11389,14 +11410,7 @@ def _normalize_area_name(
     user_role: Optional[str] = None,
     user_area: Optional[str] = None,
 ) -> str:
-    # [Regla dura] Sub-coordinador exportando → usa su disciplina asignada;
-    # si no tiene, cae al fallback histórico "OBRA CIVIL".
-    if user_role == ROLE_SUB:
-        assigned = (user_area or "").strip()
-        return assigned.upper() if assigned else "OBRA CIVIL"
     raw = (area_name or "").strip()
-    if not raw:
-        return "SIN ÁREA"
     _lower = raw.lower()
     # Normalizar tildes y colapsar espacios/guiones
     import unicodedata as _ud
@@ -11405,12 +11419,21 @@ def _normalize_area_name(
     )
     _flat = _flat.replace("-", " ").replace("_", " ")
     _flat = " ".join(_flat.split())  # colapsa espacios múltiples
-    # Cubre: "sub supervisor", "sub supervisores", "subsupervisor",
-    # "subsupervisores", "sub-supervisor", etc.
-    if _flat in ("sub supervisor", "sub supervisores",
-                 "subsupervisor", "subsupervisores"):
-        return "OBRA CIVIL"
-    if _flat.startswith("sub supervisor") or _flat.startswith("subsupervisor"):
+    # Nombre HISTÓRICO genérico del área de los Sub-coordinadores. Cubre:
+    # "sub supervisor", "sub supervisores", "subsupervisor", "sub-supervisor"…
+    es_legado = _flat in ("sub supervisor", "sub supervisores", "subsupervisor", "subsupervisores") \
+        or _flat.startswith("sub supervisor") or _flat.startswith("subsupervisor")
+    # Sub-coordinador exportando: SOLO lo que no tiene un área real (vacío o el
+    # nombre genérico histórico) toma su disciplina asignada, y si no tiene,
+    # "OBRA CIVIL". Antes esta regla pisaba TODAS las áreas: con 5 reportes de
+    # seguridad todas las portadillas decían "OBRA CIVIL" (y áreas distintas
+    # se mezclaban en una sola).
+    if user_role == ROLE_SUB and (not raw or es_legado):
+        assigned = (user_area or "").strip()
+        return assigned.upper() if assigned else "OBRA CIVIL"
+    if not raw:
+        return "SIN ÁREA"
+    if es_legado:
         return "OBRA CIVIL"
     # Canonicaliza mayúsculas/espacios/guiones (sin tocar acentos) para que
     # "Calidad" y "CALIDAD" caigan en el mismo bucket de portadilla en vez
@@ -13970,12 +13993,13 @@ async def export_reports_pdf(
             _ordinal = _subtramo_ordinal.get((subtramo_node or {}).get("id"))
             _draw_badge_icon(left_x + BADGE_R, y - BADGE_R - 0.05 * cm, BADGE_R, "structure")
             c.setFillColor(BRAND)
-            if _ordinal is not None:
+            _chico, _grande = _estacion_titulos(_ordinal, subtramo_name)
+            if _chico:
                 c.setFont("Helvetica-Bold", 10.5)
                 c.drawString(left_x + 2 * BADGE_R + 0.3 * cm, y - BADGE_R - 0.05 * cm - 10.5 * 0.32 + 0.16 * cm,
-                             f"ESTACIÓN {_ordinal}.")
+                             _chico)
             c.setFont("Helvetica-Bold", 15)
-            title_txt = subtramo_name.upper()
+            title_txt = _grande.upper()
             while c.stringWidth(title_txt, "Helvetica-Bold", 15) > col_w - (2 * BADGE_R + 0.3 * cm) and len(title_txt) > 8:
                 title_txt = title_txt[:-2] + "…"
             c.drawString(left_x + 2 * BADGE_R + 0.3 * cm, y - BADGE_R - 0.05 * cm - 15 * 0.32 - 0.42 * cm, title_txt)
@@ -14403,75 +14427,86 @@ async def export_reports_pdf(
             POSTE_COLS = ["POSTE", "UBICACIÓN", "PILAS", "CABEZAL", "FUSTE", "POSTE"]
             POSTE_FRACS = [0.14, 0.17, 0.17, 0.17, 0.17, 0.18]  # 1ª columna: que "Poste S4" no se parta
             poste_col_w = [col_w * f for f in POSTE_FRACS]
-            POSTE_HEADER_H = 16
-            POSTE_ROW_H = 13
-            POSTE_FONT_SIZE = 7.3
             # Reserva mínima para "Se supervisa las siguientes actividades",
-            # que sigue debajo de esta tabla EN LA MISMA COLUMNA IZQUIERDA —
-            # la tabla de postes usa el resto y solo se trunca con "+N más"
-            # si de plano el Intertramo tiene más postes de los que caben.
-            MIN_BOTTOM_RESERVE = 2.6 * cm
-            postes_avail_h = max(POSTE_HEADER_H + POSTE_ROW_H, (y - bottom_y) - MIN_BOTTOM_RESERVE)
-            max_rows = max(1, int((postes_avail_h - POSTE_HEADER_H) / POSTE_ROW_H))
-            postes_shown = postes[:max_rows]
-            postes_overflow = 0
-            if len(postes) > max_rows:
-                postes_shown = postes[:max(1, max_rows - 1)]
-                postes_overflow = len(postes) - len(postes_shown)
+            # que sigue debajo de esta tabla EN LA MISMA COLUMNA IZQUIERDA.
+            MIN_BOTTOM_RESERVE = (1.9 if len(actividades or []) <= 1 else 2.6) * cm
+            postes_avail_h = max(2.0 * cm, (y - bottom_y) - MIN_BOTTOM_RESERVE)
 
             _raw_brand_hex = _sanitize_color_hex(project_color) or "#003366"
             POSTE_HEADER_BG = HexColor(_raw_brand_hex)
             POSTE_HEADER_FG = WHITE if _hex_luminance(_raw_brand_hex) <= 0.6 else HexColor("#1A1A1A")
             LINE_GRAY = HexColor("#D0D0D0")
 
-            POSTE_HEADER_STYLE = ParagraphStyle(
-                "PosteHeader", fontName="Helvetica-Bold", fontSize=POSTE_FONT_SIZE,
-                leading=POSTE_FONT_SIZE * 1.2, textColor=POSTE_HEADER_FG, alignment=TA_CENTER,
-            )
-            POSTE_CELL_STYLE = ParagraphStyle(
-                "PosteCell", fontName="Helvetica", fontSize=POSTE_FONT_SIZE,
-                leading=POSTE_FONT_SIZE * 1.2, textColor=HexColor("#333333"), alignment=TA_CENTER,
-            )
-            POSTE_OVERFLOW_STYLE = ParagraphStyle(
-                "PosteOverflow", fontName="Helvetica-Oblique", fontSize=POSTE_FONT_SIZE,
-                leading=POSTE_FONT_SIZE * 1.2, textColor=MUTED,
-            )
-
-            poste_data = [[Paragraph(h, POSTE_HEADER_STYLE) for h in POSTE_COLS]]
-            for p in postes_shown:
-                estatus = [
+            def _poste_fila(p: dict) -> list:
+                return [
+                    p.get("name") or "—", p.get("ubicacion") or "—",
                     _POSTE_ESTATUS_LABEL.get(p.get("estatus_pilas"), "Sin iniciar"),
                     _POSTE_ESTATUS_LABEL.get(p.get("estatus_cabezal"), "Sin iniciar"),
                     _POSTE_ESTATUS_LABEL.get(p.get("estatus_fuste"), "Sin iniciar"),
                     _POSTE_ESTATUS_LABEL.get(p.get("estatus_poste"), "Sin iniciar"),
                 ]
-                poste_data.append([
-                    Paragraph(_xml_escape(p.get("name") or "—"), POSTE_CELL_STYLE),
-                    Paragraph(_xml_escape(p.get("ubicacion") or "—"), POSTE_CELL_STYLE),
-                    *[Paragraph(e, POSTE_CELL_STYLE) for e in estatus],
-                ])
-            if postes_overflow > 0:
-                poste_data.append([Paragraph(f"+ {postes_overflow} más…", POSTE_OVERFLOW_STYLE)] + [""] * 5)
-            if len(poste_data) == 1:
-                poste_data.append([Paragraph("Sin postes registrados", POSTE_OVERFLOW_STYLE)] + [""] * 5)
 
-            n_data_rows = len(poste_data) - 1
-            poste_tbl = Table(
-                poste_data, colWidths=poste_col_w,
-                rowHeights=[POSTE_HEADER_H] + [POSTE_ROW_H] * n_data_rows,
-            )
-            poste_tbl.setStyle(TableStyle([
-                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-                ("TOPPADDING", (0, 0), (-1, -1), 2),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-                ("LEFTPADDING", (0, 0), (-1, -1), 3),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 3),
-                ("BACKGROUND", (0, 0), (-1, 0), POSTE_HEADER_BG),
-                ("BOX", (0, 0), (-1, -1), 0.5, LINE_GRAY),
-                ("INNERGRID", (0, 0), (-1, -1), 0.5, LINE_GRAY),
-            ]))
-            _, poste_tbl_h = poste_tbl.wrapOn(c, col_w, postes_avail_h)
+            def _build_poste_tbl(size: float, filas: list, overflow: int):
+                """Tabla de postes con la letra `size`: la altura de cada fila
+                sale del texto (un estatus largo como "Cambio de trayectoria"
+                ocupa 2 líneas y la fila crece, ya no se encima con la
+                siguiente)."""
+                lead = size * 1.2
+                # Encabezado a lo más 8.5 pt: "UBICACIÓN" en negritas no cabe en su columna con letra grande.
+                h_size = min(size, 8.5)
+                h_style = ParagraphStyle("PosteHeader", fontName="Helvetica-Bold", fontSize=h_size, leading=h_size * 1.2,
+                                         textColor=POSTE_HEADER_FG, alignment=TA_CENTER)
+                c_style = ParagraphStyle("PosteCell", fontName="Helvetica", fontSize=size, leading=lead,
+                                         textColor=HexColor("#333333"), alignment=TA_CENTER)
+                o_style = ParagraphStyle("PosteOverflow", fontName="Helvetica-Oblique", fontSize=size, leading=lead,
+                                         textColor=MUTED)
+                data = [[Paragraph(h, h_style) for h in POSTE_COLS]]
+                for fila in filas:
+                    data.append([Paragraph(_xml_escape(str(t)), c_style) for t in fila])
+                spans = []
+                if overflow > 0:
+                    data.append([Paragraph(f"+ {overflow} más…", o_style)] + [""] * 5)
+                    spans.append(("SPAN", (0, len(data) - 1), (-1, len(data) - 1)))
+                if len(data) == 1:
+                    data.append([Paragraph("Sin postes registrados", o_style)] + [""] * 5)
+                    spans.append(("SPAN", (0, 1), (-1, 1)))
+                tbl = Table(data, colWidths=poste_col_w)
+                tbl.setStyle(TableStyle([
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                    ("TOPPADDING", (0, 0), (-1, -1), 4),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 3),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+                    ("BACKGROUND", (0, 0), (-1, 0), POSTE_HEADER_BG),
+                    ("BOX", (0, 0), (-1, -1), 0.5, LINE_GRAY),
+                    ("INNERGRID", (0, 0), (-1, -1), 0.5, LINE_GRAY),
+                ] + spans))
+                return tbl
+
+            # La letra más grande en la que TODOS los postes caben; si ni a
+            # la mínima caben, se recorta con "+N más" (nunca se encima).
+            filas_postes = [_poste_fila(p) for p in postes]
+            filas_cortas = [[_ESTATUS_CORTO.get(t, t) for t in f] for f in filas_postes]
+            poste_tbl = None
+            # Primero los estatus completos con letra grande; si no caben, los
+            # abreviados ("Cambio tray.", una sola línea) y recién al final se
+            # recorta con "+N más".
+            for _size, _cortas in ((10.5, False), (9.5, False), (8.5, False),
+                                   (10.5, True), (9.5, True), (8.5, True), (7.5, True)):
+                _cand = _build_poste_tbl(_size, filas_cortas if _cortas else filas_postes, 0)
+                if _cand.wrap(col_w, 10 ** 6)[1] <= postes_avail_h:
+                    poste_tbl = _cand
+                    break
+            if poste_tbl is None:
+                for _n in range(len(filas_cortas) - 1, 0, -1):
+                    _cand = _build_poste_tbl(7.5, filas_cortas[:_n], len(filas_cortas) - _n)
+                    if _cand.wrap(col_w, 10 ** 6)[1] <= postes_avail_h:
+                        poste_tbl = _cand
+                        break
+                if poste_tbl is None:
+                    poste_tbl = _build_poste_tbl(7.5, filas_cortas[:1], max(len(filas_cortas) - 1, 0))
+            _, poste_tbl_h = poste_tbl.wrap(col_w, 10 ** 6)
             poste_tbl.drawOn(c, left_x, y - poste_tbl_h)
             table_bottom_y = y - poste_tbl_h - 0.3 * cm
 
@@ -14501,12 +14536,13 @@ async def export_reports_pdf(
             WF_HEADER_TEXT = POSTE_HEADER_FG
             CONTENT_GRAY = HexColor("#333333")
             MIN_ROWS = 14
-            TABLE_HEADER_H = 22
-            BASE_ROW_H = 18
-            TOTAL_ROW_H = 22
-            ROW_FONT_SIZE = 9
+            TABLE_HEADER_H = 26
+            BASE_ROW_H = 21
+            TOTAL_ROW_H = 26
+            ROW_FONT_SIZE = 10.5
+            HEADER_FONT_SIZE = 9  # el encabezado "CANTIDAD" a 10.5 se partía en dos líneas
             NAME_PAD_L, NAME_PAD_R = 6, 4
-            NAME_COL_FRAC, QTY_COL_FRAC = 0.70, 0.30
+            NAME_COL_FRAC, QTY_COL_FRAC = 0.66, 0.34
 
             NAME_STYLE = ParagraphStyle(
                 "IntWFRowName", fontName="Helvetica", fontSize=ROW_FONT_SIZE,
@@ -14517,8 +14553,8 @@ async def export_reports_pdf(
                 leading=ROW_FONT_SIZE * 1.3, textColor=CONTENT_GRAY, alignment=TA_CENTER,
             )
             HEADER_STYLE = ParagraphStyle(
-                "IntWFHeader", fontName="Helvetica-Bold", fontSize=ROW_FONT_SIZE,
-                leading=11, textColor=WF_HEADER_TEXT, alignment=TA_CENTER,
+                "IntWFHeader", fontName="Helvetica-Bold", fontSize=HEADER_FONT_SIZE,
+                leading=HEADER_FONT_SIZE * 1.25, textColor=WF_HEADER_TEXT, alignment=TA_CENTER,
             )
             TOTAL_LABEL_STYLE = ParagraphStyle(
                 "IntWFTotalLabel", fontName="Helvetica-Bold", fontSize=ROW_FONT_SIZE,
@@ -15099,7 +15135,9 @@ async def export_reports_pdf(
                                     y_photo + EXEC_PHOTO_H / 2,
                                     "(sin imagen)")
             # Caption debajo de la foto
-            caption_top = y_photo - 0.35 * cm
+            # `drawString` pinta en la LÍNEA BASE: sin bajar el tamaño de la
+            # letra, la 1ª línea del pie se encimaba con el borde de la foto.
+            caption_top = y_photo - 0.35 * cm - EXEC_CAPTION_SIZE
             font = "Helvetica"
             wrapped = _wrap_lines(caption or "—",
                                   EXEC_PHOTO_W,
@@ -17497,13 +17535,14 @@ async def export_reports_pptx(
             _ordinal = _subtramo_ordinal.get((subtramo_node or {}).get("id"))
             cx, cy = left_x + BADGE_R, y + BADGE_R
             _wf_structure_icon(slide, cx, cy, BADGE_R)
-            if _ordinal is not None:
+            _chico, _grande = _estacion_titulos(_ordinal, subtramo_name)
+            if _chico:
                 add_text(slide, left_x + 2 * BADGE_R + Cm(0.3), y + int(BADGE_R * 0.1),
                          col_w - 2 * BADGE_R - Cm(0.3), Cm(0.5),
-                         f"ESTACIÓN {_ordinal}.", size=12, bold=True, color=READABLE_BRAND_RGB)
+                         _chico, size=12, bold=True, color=READABLE_BRAND_RGB)
             add_text(slide, left_x + 2 * BADGE_R + Cm(0.3), y + int(BADGE_R * 0.35) + Cm(0.42),
                      col_w - 2 * BADGE_R - Cm(0.3), Cm(0.8),
-                     subtramo_name.upper(), size=17, bold=True, color=READABLE_BRAND_RGB)
+                     _grande.upper(), size=17, bold=True, color=READABLE_BRAND_RGB)
             y += Cm(1.8)
             _wf_rect(slide, left_x, y, col_w, Pt(1.6), fill_rgb=BRAND_RGB)
             y += Cm(0.35)
@@ -17702,29 +17741,11 @@ async def export_reports_pptx(
             POSTE_COLS = ["POSTE", "UBICACIÓN", "PILAS", "CABEZAL", "FUSTE", "POSTE"]
             POSTE_FRACS = [0.14, 0.17, 0.17, 0.17, 0.17, 0.18]  # 1ª columna: que "Poste S4" no se parta
             poste_col_w = [int(col_w * f) for f in POSTE_FRACS]
-            POSTE_HEADER_H = Cm(0.5)
-            POSTE_ROW_H = Cm(0.42)
-            POSTE_FONT_SIZE = 7.5
             # Reserva mínima para "Se supervisa las siguientes actividades",
             # que sigue debajo de esta tabla EN LA MISMA COLUMNA IZQUIERDA.
-            MIN_BOTTOM_RESERVE = Cm(2.6)
-            postes_avail_h = max(POSTE_HEADER_H + POSTE_ROW_H, (bottom_y - y) - MIN_BOTTOM_RESERVE)
-            max_rows = max(1, int((postes_avail_h - POSTE_HEADER_H) / POSTE_ROW_H))
-            postes_shown = postes[:max_rows]
-            postes_overflow = 0
-            if len(postes) > max_rows:
-                postes_shown = postes[:max(1, max_rows - 1)]
-                postes_overflow = len(postes) - len(postes_shown)
-
-            table_top = y
-            xx = left_x
-            for i, h in enumerate(POSTE_COLS):
-                _wf_rect(slide, xx, table_top, poste_col_w[i], POSTE_HEADER_H, fill_rgb=BRAND_RGB,
-                         line_rgb=WF_BORDER_RGB, line_pt=0.5)
-                add_text(slide, xx, table_top, poste_col_w[i], POSTE_HEADER_H, h,
-                         size=POSTE_FONT_SIZE, bold=True, color=HEADER_TEXT_RGB, align=PP_ALIGN.CENTER)
-                xx += poste_col_w[i]
-            yy = table_top + POSTE_HEADER_H
+            MIN_BOTTOM_RESERVE = Cm(1.9) if len(actividades or []) <= 1 else Cm(2.6)
+            postes_avail_h = max(Cm(2.0), (bottom_y - y) - MIN_BOTTOM_RESERVE)
+            POSTE_PAD = int(Cm(0.07))
 
             def _poste_row_vals(p: dict) -> list:
                 return [
@@ -17735,7 +17756,47 @@ async def export_reports_pptx(
                     _POSTE_ESTATUS_LABEL_PPTX.get(p.get("estatus_poste"), "Sin iniciar"),
                 ]
 
-            rows_to_draw = [_poste_row_vals(p) for p in postes_shown]
+            def _poste_layout(size: float, filas: list, con_extra: bool) -> tuple:
+                """(alto del encabezado, [alto de cada fila], alto total) con la
+                letra `size`: cada fila crece con su texto más largo (un
+                "Cambio de trayectoria" ocupa 2 líneas) y no se encima."""
+                lead = int(size * 1.2 * 12700)
+                header_h = lead + 2 * POSTE_PAD
+                hs = [max(_pptx_texto_lineas(t, w, size) for t, w in zip(f, poste_col_w)) * lead + 2 * POSTE_PAD
+                      for f in filas]
+                extra = (lead + 2 * POSTE_PAD) if (con_extra or not filas) else 0
+                return header_h, hs, header_h + sum(hs) + extra
+
+            filas_postes = [_poste_row_vals(p) for p in postes]
+            filas_cortas = [[_ESTATUS_CORTO.get(t, t) for t in f] for f in filas_postes]
+            POSTE_FONT_SIZE, rows_to_draw, postes_overflow = 7.5, filas_cortas, 0
+            # Estatus completos con letra grande; si no caben, abreviados
+            # ("Cambio tray.", una línea); recién al final se recorta con "+N más".
+            for _size, _cortas in ((11, False), (10, False), (9, False), (11, True), (10, True), (9, True),
+                                   (8, True), (7.5, True)):
+                _filas = filas_cortas if _cortas else filas_postes
+                if _poste_layout(_size, _filas, False)[2] <= postes_avail_h:
+                    POSTE_FONT_SIZE, rows_to_draw = _size, _filas
+                    break
+            else:
+                _n = len(filas_cortas)
+                while _n > 1 and _poste_layout(7.5, filas_cortas[:_n], True)[2] > postes_avail_h:
+                    _n -= 1
+                rows_to_draw = filas_cortas[:max(_n, 1)]
+                postes_overflow = len(filas_cortas) - len(rows_to_draw)
+            POSTE_HEADER_H, _row_hs, _ = _poste_layout(POSTE_FONT_SIZE, rows_to_draw, postes_overflow > 0)
+            POSTE_ROW_H = int(POSTE_FONT_SIZE * 1.2 * 12700) + 2 * POSTE_PAD  # fila de una línea
+
+            table_top = y
+            xx = left_x
+            for i, h in enumerate(POSTE_COLS):
+                _wf_rect(slide, xx, table_top, poste_col_w[i], POSTE_HEADER_H, fill_rgb=BRAND_RGB,
+                         line_rgb=WF_BORDER_RGB, line_pt=0.5)
+                add_text(slide, xx, table_top, poste_col_w[i], POSTE_HEADER_H, h,
+                         size=min(POSTE_FONT_SIZE, 9), bold=True, color=HEADER_TEXT_RGB, align=PP_ALIGN.CENTER)
+                xx += poste_col_w[i]
+            yy = table_top + POSTE_HEADER_H
+
             if not rows_to_draw:
                 # Un solo renglón a todo lo ancho (partido en 6 celdas el
                 # mensaje se encajonaba en la 1ª columna y pisaba el título de abajo).
@@ -17744,15 +17805,16 @@ async def export_reports_pptx(
                          italic=True, color=WF_MUTED_RGB, align=PP_ALIGN.CENTER)
                 yy += POSTE_ROW_H
             for ridx, vals in enumerate(rows_to_draw):
+                row_h = _row_hs[ridx]
                 if ridx % 2 == 1:
-                    _wf_rect(slide, left_x, yy, col_w, POSTE_ROW_H, fill_rgb=WF_ZEBRA_TINT_RGB)
+                    _wf_rect(slide, left_x, yy, col_w, row_h, fill_rgb=WF_ZEBRA_TINT_RGB)
                 xx = left_x
                 for i, val in enumerate(vals):
-                    _wf_rect(slide, xx, yy, poste_col_w[i], POSTE_ROW_H, line_rgb=WF_BORDER_RGB, line_pt=0.5)
-                    add_text(slide, xx, yy, poste_col_w[i], POSTE_ROW_H, val, size=POSTE_FONT_SIZE, color=WF_TEXT_RGB,
+                    _wf_rect(slide, xx, yy, poste_col_w[i], row_h, line_rgb=WF_BORDER_RGB, line_pt=0.5)
+                    add_text(slide, xx, yy, poste_col_w[i], row_h, val, size=POSTE_FONT_SIZE, color=WF_TEXT_RGB,
                              align=PP_ALIGN.CENTER)
                     xx += poste_col_w[i]
-                yy += POSTE_ROW_H
+                yy += row_h
             if postes_overflow > 0:
                 add_text(slide, left_x, yy, col_w, POSTE_ROW_H, f"+ {postes_overflow} más…",
                          size=POSTE_FONT_SIZE, italic=True, color=WF_MUTED_RGB)
