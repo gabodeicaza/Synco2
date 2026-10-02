@@ -1,0 +1,9 @@
+[
+  {
+    "nombre": "Estación CDMX Centro",
+    "lat": 19.4284,
+    "lon": -99.1276,
+    "project_id": "REEMPLAZAR_CON_ID_DE_PROYECTO_EN_SYNCO",
+    "node_id": "REEMPLAZAR_CON_ID_DE_NODO_ESTACION_EN_SYNCO"
+  }
+]
