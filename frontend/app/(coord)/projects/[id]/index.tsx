@@ -21,7 +21,7 @@ import { WeatherWidget } from '@/src/components/WeatherWidget';
 import { HistoryCalendarModal } from '@/src/components/HistoryCalendarModal';
 import { ReportPreviewSheet } from '@/src/components/ReportPreviewSheet';
 import { fmtDateTimeCDMX } from '@/src/utils/tz';
-import { moduloActivo } from '@/src/utils/modulos';
+import { agruparModulosPorArea, modulosActivos, ModuloDef, SIN_AREA_ID } from '@/src/utils/modulos';
 import { DatosContratoModal } from '@/src/components/DatosContratoModal';
 
 // Limite cliente coherente con backend (20 MB). Evita subidas que el servidor rechazaria.
@@ -292,6 +292,8 @@ export default function ProjectDetailScreen() {
   const [nodes, setNodes] = useState<string[]>([]);
   const [flatNodes, setFlatNodes] = useState<LocationNode[]>([]);
   const [areas, setAreas] = useState<string[]>([]);
+  const [areasFull, setAreasFull] = useState<{ id: string; name: string; color?: string }[]>([]);
+  const [modulosAreaCerrada, setModulosAreaCerrada] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     if (!pid) return;
@@ -304,8 +306,12 @@ export default function ProjectDetailScreen() {
       })
       .catch(() => { if (alive) { setFlatNodes([]); setNodes([]); } });
     api.listAreas(pid)
-      .then((list) => { if (alive) setAreas((list || []).map((a) => a.name).filter(Boolean)); })
-      .catch(() => { if (alive) setAreas([]); });
+      .then((list) => {
+        if (!alive) return;
+        setAreas((list || []).map((a) => a.name).filter(Boolean));
+        setAreasFull((list || []).map((a) => ({ id: a.id, name: a.name, color: a.color })));
+      })
+      .catch(() => { if (alive) { setAreas([]); setAreasFull([]); } });
     return () => { alive = false; };
   }, [pid]);
 
@@ -1077,6 +1083,17 @@ export default function ProjectDetailScreen() {
     return list;
   }, [reports, debouncedSearch, selectedStatusFilter]);
 
+  const gruposModulos = agruparModulosPorArea(modulosActivos(project?.modulos), project?.modulos_areas, areasFull);
+  const tileModulo = (m: ModuloDef) => (
+    <ActionTile
+      key={m.key}
+      icon={m.icon}
+      title={m.label}
+      subtitle={m.subtitle}
+      onPress={() => router.push({ pathname: `/(coord)/projects/[id]/${m.screen}` as any, params: { id: pid } })}
+    />
+  );
+
   return (
     <View style={[styles.flex, { paddingTop: insets.top }]}>
       <View style={styles.header}>
@@ -1437,150 +1454,31 @@ export default function ProjectDetailScreen() {
                   aparecen si el Coordinador los encendió para este proyecto
                   (ver pestaña Configuracion > Módulos). */}
               <View style={{ gap: spacing.sm, marginBottom: spacing.md }}>
-                {moduloActivo(project?.modulos, 'forestal_arbolado') ? (
-                  <ActionTile
-                    icon="leaf-outline"
-                    title="Forestal y Arbolado"
-                    subtitle="Podas, trasplantes y derribos por estación"
-                    onPress={() => router.push({ pathname: '/(coord)/projects/[id]/forestal-arbolado' as any, params: { id: pid } })}
-                  />
-                ) : null}
-                {moduloActivo(project?.modulos, 'seguridad_higiene') ? (
-                  <ActionTile
-                    icon="shield-checkmark-outline"
-                    title="Seguridad e Higiene"
-                    subtitle="Reporte de accidentes y checklist preventivo/correctivo"
-                    onPress={() => router.push({ pathname: '/(coord)/projects/[id]/seguridad-higiene' as any, params: { id: pid } })}
-                  />
-                ) : null}
-                {moduloActivo(project?.modulos, 'gestion_riesgos') ? (
-                  <ActionTile
-                    icon="warning-outline"
-                    title="Gestión de Riesgos"
-                    subtitle="Matriz de riesgos por estación/poste y propuesta de control"
-                    onPress={() => router.push({ pathname: '/(coord)/projects/[id]/gestion-riesgos' as any, params: { id: pid } })}
-                  />
-                ) : null}
-                {moduloActivo(project?.modulos, 'estudios_proyecto') ? (
-                  <ActionTile
-                    icon="document-text-outline"
-                    title="Estudios y Proyecto Ejecutivo"
-                    subtitle="Avance por disciplina y bitácora de campo"
-                    onPress={() => router.push({ pathname: '/(coord)/projects/[id]/estudios-proyecto' as any, params: { id: pid } })}
-                  />
-                ) : null}
-                {moduloActivo(project?.modulos, 'impacto_ambiental') ? (
-                  <ActionTile
-                    icon="earth-outline"
-                    title="Impacto Ambiental"
-                    subtitle="Auditoría de cumplimientos e incumplimientos"
-                    onPress={() => router.push({ pathname: '/(coord)/projects/[id]/impacto-ambiental' as any, params: { id: pid } })}
-                  />
-                ) : null}
-                {moduloActivo(project?.modulos, 'tabla_resumen') ? (
-                  <ActionTile
-                    icon="grid-outline"
-                    title="Tabla Resumen"
-                    subtitle="Avance acumulado por estación e inter-tramos (%), armable desde cero"
-                    onPress={() => router.push({ pathname: '/(coord)/projects/[id]/tabla-resumen' as any, params: { id: pid } })}
-                  />
-                ) : null}
-                {moduloActivo(project?.modulos, 'fotos_lidar') ? (
-                  <ActionTile
-                    icon="images-outline"
-                    title="Fotos LiDAR"
-                    subtitle="Foto original y foto actual por frente, reemplazables"
-                    onPress={() => router.push({ pathname: '/(coord)/projects/[id]/fotos-lidar' as any, params: { id: pid } })}
-                  />
-                ) : null}
-                {moduloActivo(project?.modulos, 'pruebas_calidad') ? (
-                  <ActionTile
-                    icon="flask-outline"
-                    title="Pruebas de Calidad"
-                    subtitle="Concentrado de pruebas por frente: elemento, muestra, tipo y observaciones"
-                    onPress={() => router.push({ pathname: '/(coord)/projects/[id]/pruebas-calidad' as any, params: { id: pid } })}
-                  />
-                ) : null}
-                {moduloActivo(project?.modulos, 'control_calidad') ? (
-                  <ActionTile
-                    icon="camera-outline"
-                    title="Control de Calidad"
-                    subtitle="Fotos de actividades de control de calidad con descripción y pie de foto"
-                    onPress={() => router.push({ pathname: '/(coord)/projects/[id]/control-calidad' as any, params: { id: pid } })}
-                  />
-                ) : null}
-                {moduloActivo(project?.modulos, 'actividades_particulares') ? (
-                  <ActionTile
-                    icon="list-circle-outline"
-                    title="Actividades particulares"
-                    subtitle="Actividades por estación, con categorías y subcategorías editables"
-                    onPress={() => router.push({ pathname: '/(coord)/projects/[id]/actividades-particulares' as any, params: { id: pid } })}
-                  />
-                ) : null}
-                {moduloActivo(project?.modulos, 'supervision_ambiental') ? (
-                  <ActionTile
-                    icon="leaf-outline"
-                    title="Supervisión Ambiental"
-                    subtitle="Informes, autorizaciones, arbolado, resarcimiento y estudios (todo editable)"
-                    onPress={() => router.push({ pathname: '/(coord)/projects/[id]/supervision-ambiental' as any, params: { id: pid } })}
-                  />
-                ) : null}
-                {moduloActivo(project?.modulos, 'estimaciones') ? (
-                  <ActionTile
-                    icon="cash-outline"
-                    title="Estimaciones"
-                    subtitle="Concentrado de estimaciones de obra y de supervisión"
-                    onPress={() => router.push({ pathname: '/(coord)/projects/[id]/estimaciones' as any, params: { id: pid } })}
-                  />
-                ) : null}
-                {moduloActivo(project?.modulos, 'pendientes_generales') ? (
-                  <ActionTile
-                    icon="list-outline"
-                    title="Pendientes Generales"
-                    subtitle="Pendientes o requerimientos generales de obra y de supervisión"
-                    onPress={() => router.push({ pathname: '/(coord)/projects/[id]/pendientes-generales' as any, params: { id: pid } })}
-                  />
-                ) : null}
-                {moduloActivo(project?.modulos, 'aspectos_sociales') ? (
-                  <ActionTile
-                    icon="people-outline"
-                    title="Aspectos Sociales"
-                    subtitle="Dictámenes y fe notarial, y salvamento arqueológico (con gráficas)"
-                    onPress={() => router.push({ pathname: '/(coord)/projects/[id]/aspectos-sociales' as any, params: { id: pid } })}
-                  />
-                ) : null}
-                {moduloActivo(project?.modulos, 'indicadores_seguridad') ? (
-                  <ActionTile
-                    icon="speedometer-outline"
-                    title="Indicadores de Seguridad"
-                    subtitle="Cumplimiento en campo, documental y PIPC (con medidor y gráficas)"
-                    onPress={() => router.push({ pathname: '/(coord)/projects/[id]/indicadores-seguridad' as any, params: { id: pid } })}
-                  />
-                ) : null}
-                {moduloActivo(project?.modulos, 'tapial') ? (
-                  <ActionTile
-                    icon="git-branch-outline"
-                    title="Tapial"
-                    subtitle="Avance de tapial por tramos sobre plano (con discontinuidades)"
-                    onPress={() => router.push({ pathname: '/(coord)/projects/[id]/tapial' as any, params: { id: pid } })}
-                  />
-                ) : null}
-                {moduloActivo(project?.modulos, 'estado_tiempo') ? (
-                  <ActionTile
-                    icon="partly-sunny-outline"
-                    title="Estado del Tiempo"
-                    subtitle="Temperatura, viento, precipitación y calidad del aire por estación"
-                    onPress={() => router.push({ pathname: '/(coord)/projects/[id]/estado-tiempo' as any, params: { id: pid } })}
-                  />
-                ) : null}
-                {moduloActivo(project?.modulos, 'control_obra') ? (
-                  <ActionTile
-                    icon="construct-outline"
-                    title="Control de Obra"
-                    subtitle="Avance de postes, cimentación y perforadoras"
-                    onPress={() => router.push({ pathname: '/(coord)/projects/[id]/control-obra' as any, params: { id: pid } })}
-                  />
-                ) : null}
+                {/* Los módulos se agrupan por el Área que el Coordinador les
+                    asignó en Configuración > Módulos (project.modulos_areas),
+                    igual que el hub de Módulos de Sub-Coordinador/Especialista.
+                    Sin áreas asignadas queda la lista plana de siempre. */}
+                {gruposModulos.length === 1 && gruposModulos[0].areaId === SIN_AREA_ID ? (
+                  gruposModulos[0].modulos.map(tileModulo)
+                ) : (
+                  gruposModulos.map((g) => {
+                    const cerrado = !!modulosAreaCerrada[g.areaId];
+                    return (
+                      <View key={g.areaId} style={{ gap: spacing.sm }}>
+                        <Pressable
+                          onPress={() => setModulosAreaCerrada((c) => ({ ...c, [g.areaId]: !c[g.areaId] }))}
+                          style={styles.moduloAreaHeader}
+                        >
+                          <View style={[styles.moduloAreaDot, { backgroundColor: g.color || colors.primary }]} />
+                          <Text style={styles.moduloAreaTitle} numberOfLines={1}>{g.nombre}</Text>
+                          <Text style={styles.moduloAreaCount}>{g.modulos.length}</Text>
+                          <Ionicons name={cerrado ? 'chevron-down' : 'chevron-up'} size={16} color={colors.textMuted} />
+                        </Pressable>
+                        {cerrado ? null : g.modulos.map(tileModulo)}
+                      </View>
+                    );
+                  })
+                )}
                 {/* Fuerza de Trabajo no es un módulo apagable (MODULOS_KEYS) —
                     siempre disponible, con la misma presentación de tile que
                     los módulos de arriba en vez de quedar siempre expandida
@@ -3164,6 +3062,13 @@ const styles = StyleSheet.create({
   rowLabel: { fontSize: 11, color: colors.textMuted, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.4 },
   rowValue: { fontSize: 14, color: colors.text, fontWeight: '700' },
   sectionTitle: { fontSize: 13, fontWeight: '800', color: colors.textBody, textTransform: 'uppercase', letterSpacing: 0.5, marginTop: spacing.sm },
+  moduloAreaHeader: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    paddingHorizontal: 4, paddingTop: spacing.xs,
+  },
+  moduloAreaDot: { width: 10, height: 10, borderRadius: 5 },
+  moduloAreaTitle: { flex: 1, fontSize: 13, fontWeight: '800', color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.5 },
+  moduloAreaCount: { fontSize: 12, fontWeight: '700', color: colors.textMuted },
   tile: {
     flexDirection: 'row', alignItems: 'center', gap: 12,
     backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.md,
