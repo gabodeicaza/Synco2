@@ -26,6 +26,7 @@ import {
 import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
 import { Button } from '@/src/components/Button';
 import { confirm } from '@/src/utils/confirm';
+import { fechaTecleadaOk, FECHA_AYUDA } from '@/src/utils/fecha';
 import { useAuth } from '@/src/auth-context';
 import { ROLE_COORD, ROLE_SUB, ROLE_JEFE } from '@/src/utils/roles';
 
@@ -130,9 +131,8 @@ export default function AspectosSocialesScreen({ projectId }: { projectId: strin
       Alert.alert('Falta información', 'Indica el punto o poste (ej. "UNIVERSIDAD PS2" o "S2").');
       return;
     }
-    const fecha = /^\d{4}-\d{2}-\d{2}$/;
-    if (!fecha.test(salvDraft.inicio.trim()) || (salvDraft.liberacion.trim() && !fecha.test(salvDraft.liberacion.trim()))) {
-      Alert.alert('Fecha inválida', 'Usa el formato AAAA-MM-DD (ej. 2026-05-13).');
+    if (!fechaTecleadaOk(salvDraft.inicio) || (salvDraft.liberacion.trim() && !fechaTecleadaOk(salvDraft.liberacion))) {
+      Alert.alert('Fecha inválida', FECHA_AYUDA);
       return;
     }
     try {

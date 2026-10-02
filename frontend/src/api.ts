@@ -827,6 +827,9 @@ export interface Project {
   // Mensual). Ver MODULOS_KEYS en server.py — claves no reconocidas ahí
   // nunca llegan aquí.
   modulos?: ModulosConfig;
+  // Área (de `/projects/{pid}/areas`) a la que el Coordinador asignó cada
+  // módulo: {clave_de_módulo: area_id}. El hub de módulos agrupa por ella.
+  modulos_areas?: Record<string, string>;
   created_by: string;
   created_at: string;
   archived?: boolean;
@@ -2213,6 +2216,9 @@ export const api = {
   // categoria(s) que cambiaron (ver server.py set_project_modulos).
   setProjectModulos: (pid: string, body: Partial<ModulosConfig>) =>
     request<Project>('PUT', `/projects/${pid}/modulos`, body),
+  // Asigna (area_id) o quita (null) el Área de cada módulo; parcial por clave.
+  setProjectModulosAreas: (pid: string, body: Record<string, string | null>) =>
+    request<Project>('PUT', `/projects/${pid}/modulos-areas`, body),
 
   // Indice editable de PDF/PPTX: una config independiente por periodo.
   getIndiceConfig: (pid: string, periodo: IndicePeriodo) =>

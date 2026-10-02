@@ -1671,6 +1671,7 @@ async def list_projects(user: dict = Depends(current_user)):
         it.setdefault("contratos_list", [])
         it.setdefault("minuta_code_prefix", None)
         it["modulos"] = _sanitize_modulos(it.get("modulos"))
+        it["modulos_areas"] = _sanitize_modulos_areas(it.get("modulos_areas"))
     return items
 
 
@@ -1752,6 +1753,7 @@ async def get_project(pid: str, user: dict = Depends(current_user)):
     p.setdefault("cadencia_reporte", "MENSUAL")
     p.setdefault("dia_inicio_semana", "LUNES")
     p["modulos"] = _sanitize_modulos(p.get("modulos"))
+    p["modulos_areas"] = _sanitize_modulos_areas(p.get("modulos_areas"))
     return p
 
 
@@ -1894,6 +1896,7 @@ def _project_public(p: dict) -> dict:
     p.setdefault("cadencia_reporte", "MENSUAL")
     p.setdefault("dia_inicio_semana", "LUNES")
     p["modulos"] = _sanitize_modulos(p.get("modulos"))
+    p["modulos_areas"] = _sanitize_modulos_areas(p.get("modulos_areas"))
     return p
 
 
@@ -1956,6 +1959,51 @@ async def set_project_modulos(
     return _project_public(p)
 
 
+def _sanitize_modulos_areas(value, claves_validas=None) -> dict:
+    """{clave_de_módulo: area_id} — solo claves de módulo conocidas con un id de
+    texto no vacío. El id apunta a una Área del proyecto (`/projects/{pid}/areas`)."""
+    claves = set(claves_validas) if claves_validas is not None else set(MODULOS_KEYS)
+    out: dict = {}
+    if isinstance(value, dict):
+        for k, v in value.items():
+            if k in claves and isinstance(v, str) and v.strip():
+                out[k] = v.strip()
+    return out
+
+
+@api.put("/projects/{pid}/modulos-areas")
+async def set_project_modulos_areas(
+    pid: str,
+    body: dict,
+    user: dict = Depends(require_role(ROLE_COORD)),
+):
+    """Asigna (o quita) el Área a la que pertenece cada módulo. El hub de
+    módulos de Sub-Coordinador/Especialista agrupa por estas Áreas: primero
+    ven las áreas y, adentro, las herramientas (módulos) de cada una.
+
+    Actualización PARCIAL: solo se tocan las claves que vienen en el body;
+    `null` o "" quita la asignación (el módulo cae en "General")."""
+    existing = await db.projects.find_one({"id": pid})
+    if not existing:
+        raise HTTPException(404, "Proyecto no existe")
+    if not isinstance(body, dict):
+        raise HTTPException(400, "Cuerpo inválido")
+    areas_ids = {a["id"] async for a in db.areas.find({"project_id": pid}, {"id": 1})}
+    merged = _sanitize_modulos_areas(existing.get("modulos_areas"))
+    for clave, area_id in body.items():
+        if clave not in MODULOS_KEYS:
+            raise HTTPException(400, f"Módulo desconocido: {clave}")
+        if area_id in (None, ""):
+            merged.pop(clave, None)
+            continue
+        if not isinstance(area_id, str) or area_id not in areas_ids:
+            raise HTTPException(400, "El área no existe en este proyecto")
+        merged[clave] = area_id
+    await db.projects.update_one({"id": pid}, {"$set": {"modulos_areas": merged}})
+    p = await db.projects.find_one({"id": pid})
+    return _project_public(p)
+
+
 @api.delete("/projects/{pid}")
 async def archive_project(pid: str, user: dict = Depends(require_role(ROLE_COORD))):
     await db.projects.update_one({"id": pid}, {"$set": {"archived": True}})
@@ -1990,6 +2038,24 @@ async def set_reference_files(
 # "¿está prendido este módulo?" ya lo resuelve el menú del frontend — aquí
 # sólo se valida en servidor por si un cliente viejo/desincronizado intenta
 # escribir en un módulo que el Coordinador apagó para este proyecto.
+def _fecha_flexible(valor) -> date:
+    """Fecha tecleada a mano → date. Acepta AAAA-MM-DD, DD/MM/AAAA, DD-MM-AAAA,
+    DD.MM.AAAA (año de 2 dígitos = 20AA) y AAAA/MM/DD. ValueError si no es una
+    fecha real. Antes los módulos de captura exigían AAAA-MM-DD estricto y
+    rechazaban lo que el usuario copiaba de su Excel ("08/12/2025")."""
+    v = str(valor or "").strip()
+    if re.match(r"\d{4}-\d{2}-\d{2}[T ]", v):  # ISO con hora: solo la fecha
+        v = v[:10]
+    m = re.fullmatch(r"(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})", v)
+    if m:
+        return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    m = re.fullmatch(r"(\d{1,2})[-/.](\d{1,2})[-/.](\d{2}|\d{4})", v)
+    if m:
+        anio = int(m.group(3))
+        return date(anio + 2000 if anio < 100 else anio, int(m.group(2)), int(m.group(1)))
+    raise ValueError(f"fecha inválida: {valor!r}")
+
+
 def _ensure_modulo_activo(project: dict, clave: str) -> None:
     """El módulo se considera activo (captura permitida) si está encendido
     en AL MENOS UNA de las 3 categorías de informe — un módulo puede estar
@@ -2809,9 +2875,9 @@ def _seguridad_validar_fecha(fecha: Optional[str]) -> str:
     if not fecha:
         return datetime.now(MX_TZ).date().isoformat()
     try:
-        return date.fromisoformat(fecha[:10]).isoformat()
+        return _fecha_flexible(fecha).isoformat()
     except ValueError:
-        raise HTTPException(400, "Fecha inválida: usa el formato AAAA-MM-DD")
+        raise HTTPException(400, "Fecha inválida: usa AAAA-MM-DD o DD/MM/AAAA")
 
 
 class SeguridadReporteIn(BaseModel):
@@ -4223,9 +4289,9 @@ async def set_foto_lidar_foto(
         raise HTTPException(404, "Registro no existe")
     fecha = body.fecha or datetime.now(MX_TZ).date().isoformat()
     try:
-        date.fromisoformat(fecha)
+        fecha = _fecha_flexible(fecha).isoformat()
     except ValueError:
-        raise HTTPException(400, "fecha debe ser YYYY-MM-DD")
+        raise HTTPException(400, "fecha inválida: usa AAAA-MM-DD o DD/MM/AAAA")
     foto = await asyncio.to_thread(_normalize_photo_b64, body.image)
     thumb = await asyncio.to_thread(_compress_image_b64, foto)
     now = datetime.now(timezone.utc)
@@ -4311,10 +4377,9 @@ async def _validate_node_in_project(pid: str, node_id: Optional[str]) -> None:
 def _prueba_calidad_fecha(value: Optional[str]) -> str:
     fecha = (value or "").strip() or datetime.now(MX_TZ).date().isoformat()
     try:
-        date.fromisoformat(fecha)
+        return _fecha_flexible(fecha).isoformat()
     except ValueError:
-        raise HTTPException(400, "fecha debe ser YYYY-MM-DD")
-    return fecha
+        raise HTTPException(400, "fecha inválida: usa AAAA-MM-DD o DD/MM/AAAA")
 
 
 def _pruebas_calidad_bloques(registros: List[dict], nombre_nodo: dict) -> List[dict]:
@@ -5086,6 +5151,11 @@ class EstimacionPatch(BaseModel):
 _ESTIMACION_IMPORTES = ("obra_ejecutada", "amortizacion", "pct_amortizacion_anticipo", "total_deducciones", "iva", "total_neto")
 _ESTIMACION_TEXTOS = ("estatus", "fecha_pago")
 _ESTIMACION_FECHAS = ("periodo_inicio", "periodo_fin")
+_ESTIMACION_ROTULO = {
+    "obra_ejecutada": "Obra ejecutada", "amortizacion": "Amortización",
+    "pct_amortizacion_anticipo": "% amortización del anticipo", "total_deducciones": "Total deducciones",
+    "iva": "IVA", "total_neto": "Total neto", "periodo_inicio": "Periodo: inicio", "periodo_fin": "Periodo: fin",
+}
 
 
 def _estimacion_valor(campo: str, value: Optional[str]) -> Optional[str]:
@@ -5095,15 +5165,26 @@ def _estimacion_valor(campo: str, value: Optional[str]) -> Optional[str]:
         return None
     v = str(value).strip()
     if campo in _ESTIMACION_IMPORTES:
+        limpio = re.sub(r"[\s$,%]", "", v)
+        if limpio in ("-", "--", "—", "N/A", "n/a", "NA", "S/D"):  # "sin dato" pegado de Excel = vacío
+            return None
         try:
-            return dec_to_str(to_decimal(v.replace("$", "").replace(",", "").replace("%", "").strip()))
+            d = to_decimal(limpio)
+            if not d.is_finite():
+                raise ValueError
+            return dec_to_str(d)
         except Exception:
-            raise HTTPException(400, f"{campo} debe ser un número")
+            raise HTTPException(400, f"{_ESTIMACION_ROTULO.get(campo, campo)} debe ser un número (ej. 5978451.30)")
     if campo in _ESTIMACION_FECHAS:
         try:
-            date.fromisoformat(v)
+            return _fecha_flexible(v).isoformat()
         except ValueError:
-            raise HTTPException(400, f"{campo} debe ser YYYY-MM-DD")
+            raise HTTPException(400, f"{_ESTIMACION_ROTULO.get(campo, campo)} inválida: usa AAAA-MM-DD o DD/MM/AAAA")
+    if campo == "fecha_pago":  # fecha real si lo es; si no ("Por pagar") se guarda el texto
+        try:
+            return _fecha_flexible(v).isoformat()
+        except ValueError:
+            return v
     return v
 
 
@@ -5489,10 +5570,9 @@ class SalvamentoPatch(BaseModel):
 
 def _salvamento_fecha(value: Optional[str], campo: str) -> str:
     try:
-        date.fromisoformat((value or "").strip())
+        return _fecha_flexible(value).isoformat()
     except ValueError:
-        raise HTTPException(400, f"{campo} debe ser YYYY-MM-DD")
-    return value.strip()
+        raise HTTPException(400, f"{campo} inválida: usa AAAA-MM-DD o DD/MM/AAAA")
 
 
 def _salvamento_validar_rango(inicio: str, liberacion: Optional[str]) -> None:
@@ -5653,9 +5733,9 @@ def _seg_pct(valor: Optional[float]) -> float:
 
 def _seg_fecha(valor: Optional[str], campo: str) -> date:
     try:
-        return date.fromisoformat((valor or "").strip())
+        return _fecha_flexible(valor)
     except ValueError:
-        raise HTTPException(400, f"{campo} debe ser YYYY-MM-DD")
+        raise HTTPException(400, f"{campo} inválida: usa AAAA-MM-DD o DD/MM/AAAA")
 
 
 def _indicador_normalizar(body: IndicadorIn) -> tuple:

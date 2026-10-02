@@ -213,7 +213,7 @@ def test_validaciones_y_permisos():
                 ambito="poste", etiqueta="S9", fecha_inicio="2026-05-10", fecha_liberacion="2026-05-01"), SOCIAL)
         with pytest.raises(HTTPException):  # fecha mal formada
             await server.create_salvamento_arqueologico("p1", server.SalvamentoIn(
-                ambito="poste", etiqueta="S9", fecha_inicio="10/05/2026"), SOCIAL)
+                ambito="poste", etiqueta="S9", fecha_inicio="31/02/2026"), SOCIAL)
         with pytest.raises(HTTPException) as e2:  # Jefe solo lee
             await server.set_levantamiento_social(
                 "p1", server.LevantamientoIn(tipo="fe_notarial", ambito="poste", total_requerido=1, realizados=0), JEFE)

@@ -191,6 +191,32 @@ export function moduloActivo(modulos: ModulosConfig | null | undefined, key: str
   return CATEGORIA_ORDEN.some((categoria) => !!modulos?.[categoria]?.[key]);
 }
 
+export const SIN_AREA_ID = '__general__';
+
+export type GrupoModulos = { areaId: string; nombre: string; color?: string; modulos: ModuloDef[] };
+
+/** Agrupa los módulos activos con captura por el Área que el Coordinador les
+ * asignó (`project.modulos_areas`). Solo salen las áreas que tienen módulos;
+ * los que no tienen área (o cuya área ya se borró) van en "General", al final. */
+export function agruparModulosPorArea(
+  activos: ModuloDef[],
+  asignaciones: Record<string, string> | null | undefined,
+  areas: { id: string; name: string; color?: string }[],
+): GrupoModulos[] {
+  const porId = new Map(areas.map((a) => [a.id, a]));
+  const grupos = new Map<string, GrupoModulos>();
+  for (const m of activos) {
+    const aid = asignaciones?.[m.key];
+    const area = aid ? porId.get(aid) : undefined;
+    const id = area ? area.id : SIN_AREA_ID;
+    if (!grupos.has(id)) grupos.set(id, { areaId: id, nombre: area ? area.name : 'General', color: area?.color, modulos: [] });
+    grupos.get(id)!.modulos.push(m);
+  }
+  const lista = Array.from(grupos.values());
+  lista.sort((a, b) => (a.areaId === SIN_AREA_ID ? 1 : b.areaId === SIN_AREA_ID ? -1 : a.nombre.localeCompare(b.nombre, 'es')));
+  return lista;
+}
+
 /** Plantillas ENCENDIDAS (en cualquier categoría) para un proyecto, en una
  * sola lista plana (orden del catálogo `MODULOS`) — sin agrupar por área.
  * Usado por el menú hamburguesa (ver HeaderMenu.tsx) para que Especialista/

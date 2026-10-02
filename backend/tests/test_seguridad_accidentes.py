@@ -184,7 +184,7 @@ def test_validaciones_del_alta():
             assert e1.value.status_code == 400
             with pytest.raises(HTTPException) as e2:  # fecha inválida
                 await server.create_seguridad_reporte("p1", server.SeguridadReporteIn(
-                    fecha="31/12/2026", descripcion="x", tipo_registro="grave"), USER)
+                    fecha="31/13/2026", descripcion="x", tipo_registro="grave"), USER)
             assert e2.value.status_code == 400
             # formato anterior (solo severidad): sigue funcionando
             r = await server.create_seguridad_reporte("p1", server.SeguridadReporteIn(

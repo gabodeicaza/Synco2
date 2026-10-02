@@ -49,7 +49,7 @@ def test_normalizar_cada_tipo():
 @pytest.mark.parametrize("body", [
     dict(tipo="campo", fecha="2026-06-27", porcentaje=101),
     dict(tipo="campo", fecha="2026-06-27", porcentaje=None),
-    dict(tipo="campo", fecha="27/06/2026", porcentaje=10),
+    dict(tipo="campo", fecha="27/13/2026", porcentaje=10),
     dict(tipo="campo", fecha="2026-06-27", porcentaje=10, dias_sin_accidentes=-1),
     dict(tipo="doc_mensual", mes="2026-13", porcentaje=10),
     dict(tipo="doc_mensual", mes="mayo", porcentaje=10),

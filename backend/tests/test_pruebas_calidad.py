@@ -28,7 +28,7 @@ def test_fecha_valida_y_default():
     assert _prueba_calidad_fecha("2026-06-26") == "2026-06-26"
     assert len(_prueba_calidad_fecha(None)) == 10
     with pytest.raises(HTTPException):
-        _prueba_calidad_fecha("26/06/2026")
+        _prueba_calidad_fecha("ayer")
 
 
 def test_bloques_agrupan_por_nodo_o_grupo_y_formatean_fila():
