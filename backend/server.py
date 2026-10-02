@@ -157,7 +157,7 @@ MODULOS_KEYS = {
     "tabla_resumen", "estado_tiempo", "control_obra",
     "fotos_lidar", "tapial", "pruebas_calidad", "control_calidad",
     "avance_obra", "estimaciones", "pendientes_generales", "aspectos_sociales",
-    "indicadores_seguridad",
+    "indicadores_seguridad", "juntas_trabajo",
 }
 MODULOS_DIARIOS = MODULOS_KEYS
 MODULOS_SEMANALES = MODULOS_KEYS
@@ -192,6 +192,7 @@ _DATOS_CONTRATO_BLOQUES = ("obra", "supervision")
 _DATOS_CONTRATO_CAMPOS = (
     "objeto", "empresa", "contrato", "ubicacion", "inicio", "fin",
     "monto", "iva", "monto_con_iva", "anticipo_label", "anticipo",
+    "superintendente",  # solo se usa en SUPERVISIÓN: firma de la hoja final del informe
 )
 
 
@@ -239,7 +240,7 @@ def _contrato_bloques(proj: dict) -> list:
         obra["fin"] = _fmt_iso_dmy(proj["end_date"])
     bloques = []
     for etq, d in (("OBRA", obra), ("SUPERVISIÓN", sup)):
-        if not any(d.values()):
+        if not any(v for k, v in d.items() if k != "superintendente"):
             continue
         lineas = []
         if d.get("objeto"):
@@ -2054,6 +2055,75 @@ def _fecha_flexible(valor) -> date:
         anio = int(m.group(3))
         return date(anio + 2000 if anio < 100 else anio, int(m.group(2)), int(m.group(1)))
     raise ValueError(f"fecha inválida: {valor!r}")
+
+
+_MES_CORTO = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"]
+
+
+def _junta_consecutivo(codigo: Optional[str]) -> str:
+    """Código de minuta "CL4 OBRA 260921-A" → consecutivo del reporte
+    "CL4-OBRA-260921A". Si no tiene ese formato se imprime tal cual."""
+    c = (codigo or "").strip()
+    m = re.fullmatch(r"(.*?)\s*(\d{6})-([A-Z]+)", c)
+    if not m:
+        return c
+    prefijo = re.sub(r"\s+", "-", m.group(1).strip())
+    return f"{prefijo}-{m.group(2)}{m.group(3)}" if prefijo else f"{m.group(2)}{m.group(3)}"
+
+
+def _fecha_corta_es(iso: Optional[str]) -> str:
+    """'2026-09-21' → '21-sep-26'."""
+    try:
+        d = date.fromisoformat((iso or "")[:10])
+    except ValueError:
+        return iso or "-"
+    return f"{d.day:02d}-{_MES_CORTO[d.month - 1]}-{d:%y}"
+
+
+def _juntas_bloques(minutas: List[dict]) -> List[dict]:
+    """Bloque `table` "RELACIÓN DE JUNTAS DE TRABAJO" (N°, consecutivo, fecha,
+    asunto) a partir de las minutas del período, en orden cronológico."""
+    if not minutas:
+        return []
+    ordenadas = sorted(minutas, key=lambda m: (m.get("fecha_reunion") or "", str(m.get("created_at") or ""), m.get("codigo") or ""))
+    rows = [[str(i), _junta_consecutivo(m.get("codigo")), _fecha_corta_es(m.get("fecha_reunion")), (m.get("titulo") or "").strip() or "-"]
+            for i, m in enumerate(ordenadas, start=1)]
+    return [{
+        "type": "table", "heading": None, "headers": ["N°", "CONSECUTIVO", "FECHA", "ASUNTO"],
+        "rows": rows, "col_widths": [0.06, 0.22, 0.12, 0.60], "empty_text": "Sin juntas de trabajo.",
+    }]
+
+
+_CIERRE_CARGO = "SUPERINTENDENTE DE SUPERVISIÓN EXTERNA"
+
+
+def _periodo_texto_cierre(ini: date, fin: date) -> str:
+    """'DEL 21 AL 26 DE SEPTIEMBRE DEL 2026' (mismo mes), 'DEL 28 DE SEPTIEMBRE
+    AL 03 DE OCTUBRE DEL 2026' (otro mes) o, de un solo día, '21 DE SEPTIEMBRE DEL 2026'."""
+    mes = lambda d: _SEGURIDAD_MESES[d.month - 1].upper()  # noqa: E731
+    if ini == fin:
+        return f"{ini.day:02d} DE {mes(ini)} DEL {ini.year}"
+    if ini.year != fin.year:
+        return f"DEL {ini.day:02d} DE {mes(ini)} DE {ini.year} AL {fin.day:02d} DE {mes(fin)} DE {fin.year}"
+    if ini.month != fin.month:
+        return f"DEL {ini.day:02d} DE {mes(ini)} AL {fin.day:02d} DE {mes(fin)} DEL {fin.year}"
+    return f"DEL {ini.day:02d} AL {fin.day:02d} DE {mes(fin)} DEL {fin.year}"
+
+
+def _cierre_firma(proj: dict, categoria: str, start_dt: datetime, end_dt: datetime) -> Optional[dict]:
+    """Hoja final del informe: tipo de reporte, periodo y el superintendente de
+    supervisión (se captura en Datos de contrato > Supervisión). None si no hay
+    nombre capturado: sin firma no se imprime una hoja vacía."""
+    sup = _sanitize_datos_contrato((proj or {}).get("datos_contrato")).get("supervision") or {}
+    nombre = (sup.get("superintendente") or "").strip()
+    if not nombre:
+        return None
+    tipo = {"reportes_diarios": "DIARIO", "reportes_semanales": "SEMANAL", "reportes_mensuales": "MENSUAL"}.get(categoria, "")
+    ini, fin = start_dt.astimezone(MX_TZ).date(), end_dt.astimezone(MX_TZ).date()
+    periodo = _periodo_texto_cierre(ini, fin)
+    return {"titulo": f"REPORTE {tipo}".strip(),
+            "periodo": periodo if ini == fin else f"PERIODO {periodo}",
+            "nombre": nombre, "cargo": _CIERRE_CARGO}
 
 
 def _ensure_modulo_activo(project: dict, clave: str) -> None:
@@ -12580,6 +12650,7 @@ async def export_reports_pdf(
     # _build_pdf_blocking.
     modulos_categoria = _modulos_categoria_para_export(period_type, period)
     modulos_data = await _gather_modulos_export_data(pid, proj, start_dt, end_dt, modulos_categoria)
+    firma_cierre = _cierre_firma(proj, modulos_categoria, start_dt, end_dt)
 
     # ========================================================================
     # DIMENSIONES DINÁMICAS DEL CANVAS
@@ -15555,6 +15626,21 @@ async def export_reports_pdf(
         # Higiene, al final de todo — solo si están encendidos.
         _draw_modulos_closing_pages()
 
+        if firma_cierre:
+            c.setFillColor(HexColor(_readable_dark_hex(project_color)))
+            c.setFont("Helvetica-Bold", 36)
+            c.drawCentredString(PW / 2, PH * 0.62, firma_cierre["titulo"])
+            c.setFillColor(TEXT)
+            c.setFont("Helvetica-Bold", 16)
+            c.drawCentredString(PW / 2, PH * 0.62 - 1.6 * cm, firma_cierre["periodo"])
+            c.setFont("Helvetica-Bold", 20)
+            c.drawCentredString(PW / 2, PH * 0.62 - 4.6 * cm, firma_cierre["nombre"])
+            c.setFillColor(MUTED)
+            c.setFont("Helvetica-Bold", 13)
+            c.drawCentredString(PW / 2, PH * 0.62 - 5.6 * cm, firma_cierre["cargo"])
+            c.showPage()
+            page_num += 1
+
         c.save()
         return buf.getvalue(), section_page_indices, area_page_indices, _gd_page_count, _indice_marks
 
@@ -15967,7 +16053,7 @@ async def _gather_modulos_export_data(
         "tabla_resumen": None, "fotos_lidar": None, "tapial": None,
         "pruebas_calidad": None, "control_calidad": None,
         "avance_obra": None, "estimaciones": None, "pendientes_generales": None,
-        "aspectos_sociales": None, "indicadores_seguridad": None,
+        "aspectos_sociales": None, "indicadores_seguridad": None, "juntas_trabajo": None,
     }
     date_q = {"created_at": {"$gte": start_dt, "$lte": end_dt}}
     # Riesgos y Estudios son matrices mutables (el % de avance se actualiza
@@ -16354,6 +16440,18 @@ async def _gather_modulos_export_data(
         if blocks_as:
             out["aspectos_sociales"] = {"titulo": "ASPECTOS SOCIALES", "blocks": blocks_as}
 
+    if activos.get("juntas_trabajo"):
+        # CALCULADO de las minutas (sin captura propia): las juntas del período
+        # por fecha de reunión, con el consecutivo de la minuta.
+        d_ini_jt = start_dt.astimezone(MX_TZ).date().isoformat()
+        d_fin_jt = end_dt.astimezone(MX_TZ).date().isoformat()
+        minutas_jt = await db.minutas.find(
+            {"project_id": pid, "fecha_reunion": {"$gte": d_ini_jt, "$lte": d_fin_jt}}
+        ).to_list(length=2000)
+        bloques_jt = _juntas_bloques(minutas_jt)
+        if bloques_jt:
+            out["juntas_trabajo"] = {"titulo": "RELACIÓN DE JUNTAS DE TRABAJO", "blocks": bloques_jt}
+
     if activos.get("indicadores_seguridad"):
         corte_is = end_dt.astimezone(MX_TZ).date()
         bloques_is, graficas_is, bloques_pipc = _indicadores_seguridad_graficas(
@@ -16436,6 +16534,7 @@ async def export_reports_docx(
     # para este proyecto — ver _gather_modulos_export_data.
     modulos_categoria = _modulos_categoria_para_export(period_type, period)
     modulos_data = await _gather_modulos_export_data(pid, proj, start_dt, end_dt, modulos_categoria)
+    firma_cierre = _cierre_firma(proj, modulos_categoria, start_dt, end_dt)
 
     def _build_docx_blocking() -> bytes:
         """Motor DOCX estrictamente MONOCROMÁTICO, enfocado a LECTURA
@@ -17114,6 +17213,21 @@ async def export_reports_docx(
             for block in _mod_data["blocks"]:
                 _MOD_BLOCK_RENDERERS[block["type"]](block)
 
+        if firma_cierre:
+            doc.add_page_break()
+            for _txt, _sz, _color, _gap in (
+                (firma_cierre["titulo"], 26, BRAND_RGB, 60), (firma_cierre["periodo"], 13, None, 8),
+                (firma_cierre["nombre"], 15, None, 70), (firma_cierre["cargo"], 11, MUTED_RGB, 0),
+            ):
+                _p = doc.add_paragraph()
+                _p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                _p.paragraph_format.space_before = Pt(_gap)
+                _r = _p.add_run(_txt)
+                _r.bold = True
+                _r.font.size = Pt(_sz)
+                if _color is not None:
+                    _r.font.color.rgb = _color
+
         buf = io.BytesIO()
         doc.save(buf)
         return buf.getvalue()
@@ -17271,6 +17385,7 @@ async def export_reports_pptx(
     # para este proyecto — ver _gather_modulos_export_data.
     modulos_categoria = _modulos_categoria_para_export(period_type, period)
     modulos_data = await _gather_modulos_export_data(pid, proj, start_dt, end_dt, modulos_categoria)
+    firma_cierre = _cierre_firma(proj, modulos_categoria, start_dt, end_dt)
 
     # Título ejecutivo dependiendo del tipo de reporte.
     _report_title_map = {
@@ -19491,6 +19606,20 @@ async def export_reports_pptx(
                      "Sin reportes en el período seleccionado.",
                      size=20, italic=True, color=TEXT_MUTED,
                      align=PP_ALIGN.CENTER)
+
+        # Hoja final: tipo de reporte, periodo y superintendente de supervisión
+        # (Datos de contrato > Supervisión). Sin nombre capturado no se imprime.
+        if firma_cierre:
+            _fs = _clone_membrete()
+            _fw = SW - Cm(3.0)
+            add_text(_fs, Cm(1.5), SH * 0.28, _fw, Cm(2.0), firma_cierre["titulo"],
+                     size=44, bold=True, color=READABLE_BRAND_RGB, align=PP_ALIGN.CENTER)
+            add_text(_fs, Cm(1.5), SH * 0.28 + Cm(2.3), _fw, Cm(1.2), firma_cierre["periodo"],
+                     size=20, bold=True, color=WF_TEXT_RGB, align=PP_ALIGN.CENTER)
+            add_text(_fs, Cm(1.5), SH * 0.28 + Cm(5.6), _fw, Cm(1.2), firma_cierre["nombre"],
+                     size=24, bold=True, color=WF_TEXT_RGB, align=PP_ALIGN.CENTER)
+            add_text(_fs, Cm(1.5), SH * 0.28 + Cm(6.9), _fw, Cm(1.0), firma_cierre["cargo"],
+                     size=16, bold=True, color=WF_MUTED_RGB, align=PP_ALIGN.CENTER)
 
         # === [BLOQUE LEGACY PURGADO 2026-07-04] Layout viejo con tablas y 
         # 'Notas y noticias' eliminado tras refactor P0 → Layout Ejecutivo.

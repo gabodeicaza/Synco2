@@ -156,6 +156,13 @@ export const MODULOS: ModuloDef[] = [
     area: 'Seguridad',
   },
   {
+    key: 'juntas_trabajo',
+    label: 'Relación de Juntas de Trabajo',
+    subtitle: 'Consecutivo, fecha y asunto de las minutas del periodo (calculado de Minutas)',
+    icon: 'people-circle-outline',
+    area: 'Ingeniería',
+  },
+  {
     key: 'estado_tiempo',
     label: 'Estado del Tiempo',
     subtitle: 'Temperatura, viento, precipitación y calidad del aire por estación',

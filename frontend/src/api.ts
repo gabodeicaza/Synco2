@@ -762,6 +762,8 @@ export interface DatosContratoBloque {
   monto_con_iva?: string;
   anticipo_label?: string;
   anticipo?: string;
+  // Solo bloque SUPERVISIÓN: nombre que firma la hoja final del informe.
+  superintendente?: string;
 }
 
 export interface DatosContrato {
