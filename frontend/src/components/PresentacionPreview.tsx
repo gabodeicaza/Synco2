@@ -10,7 +10,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import {
-  api, AnalisisPeriodo, EstudioDisciplinaAvance, LocationNode, PlanoAvance, Presentacion, Project,
+  api, AnalisisPeriodo, EstudioDisciplinaAvance, LocationNode, PlanoAvance, Presentacion, Project, Report,
 } from '@/src/api';
 import { colors, radius, spacing, contrastText } from '@/src/theme';
 import { SlidePortada } from '@/src/components/presentacion/SlidePortada';
@@ -21,6 +21,8 @@ import { SlideSeguimientoEstudios } from '@/src/components/presentacion/SlideSeg
 import { SlideCroquisEstacion } from '@/src/components/presentacion/SlideCroquisEstacion';
 import { SlideInformacionParticular } from '@/src/components/presentacion/SlideInformacionParticular';
 import { SlideAvanceGrafico } from '@/src/components/presentacion/SlideAvanceGrafico';
+import { SlideReportesSemana } from '@/src/components/presentacion/SlideReportesSemana';
+import { SlideCierre } from '@/src/components/presentacion/SlideCierre';
 
 /** `fecha - 6 días` en calendario puro (sin zona horaria) — ventana semanal
  * que cierra en la fecha del reporte, para las tarjetas de Financiero. */
@@ -44,6 +46,7 @@ export default function PresentacionPreview({ projectId, presentacionId }: { pro
   const [analisis, setAnalisis] = useState<AnalisisPeriodo | null>(null);
   const [presupuestoTotal, setPresupuestoTotal] = useState<string | null>(null);
   const [generalImages, setGeneralImages] = useState<string[]>([]);
+  const [reportsById, setReportsById] = useState<Record<string, Report>>({});
   const [exporting, setExporting] = useState(false);
 
   const headerColor = project?.color_institucional || project?.color_tema || colors.primary;
@@ -88,6 +91,16 @@ export default function PresentacionPreview({ projectId, presentacionId }: { pro
         ]);
         setAnalisis(an);
         setPresupuestoTotal(pt?.presupuesto_total ?? null);
+      }
+
+      const reportIds = Array.from(new Set(secciones.filter((s) => s.tipo === 'reportes_semana').flatMap((s) => s.report_ids || [])));
+      if (reportIds.length) {
+        const reps = await Promise.all(reportIds.map((id) => api.getReport(id).catch(() => null)));
+        const rById: Record<string, Report> = {};
+        reps.forEach((r) => { if (r) rById[r.id] = r; });
+        setReportsById(rById);
+      } else {
+        setReportsById({});
       }
 
       if (secciones.some((s) => s.tipo === 'mapa_general')) {
@@ -182,6 +195,14 @@ export default function PresentacionPreview({ projectId, presentacionId }: { pro
                   <SlideInformacionParticular seccion={item} nodesById={nodesById} />
                 ) : item.tipo === 'avance_grafico' ? (
                   <SlideAvanceGrafico plano={item.plano_id ? planosById[item.plano_id] || null : null} />
+                ) : item.tipo === 'reportes_semana' ? (
+                  <SlideReportesSemana
+                    reportes={(item.report_ids || []).map((id) => reportsById[id]).filter(Boolean)}
+                    colorTema={headerColor}
+                    pendientes={false}
+                  />
+                ) : item.tipo === 'cierre' ? (
+                  <SlideCierre leyenda={project?.objeto_contrato || project?.name || ''} colorTema={headerColor} />
                 ) : null}
               </View>
             </View>

@@ -7200,12 +7200,13 @@ class PresentacionSeccionIn(BaseModel):
     tipo: Literal[
         "portada", "mapa_general", "divisor", "financiero",
         "seguimiento_estudios", "croquis_estacion", "informacion_particular",
-        "avance_grafico",
+        "avance_grafico", "reportes_semana", "cierre",
     ]
     orden: int = 0
     titulo: Optional[str] = None  # "divisor" (ej. "FINANCIERO"); libre, no atado a Área
     node_id: Optional[str] = None  # "croquis_estacion"
     plano_id: Optional[str] = None  # "avance_grafico"
+    report_ids: List[str] = Field(default_factory=list)  # "reportes_semana": reportes elegidos por el usuario
     bloques: List[InformacionParticularBloqueIn] = Field(default_factory=list)  # "informacion_particular"
 
 
@@ -7214,12 +7215,36 @@ class PresentacionSeccionPatch(BaseModel):
     titulo: Optional[str] = None
     node_id: Optional[str] = None
     plano_id: Optional[str] = None
+    report_ids: Optional[List[str]] = None
 
 
 class PresentacionIn(BaseModel):
     project_id: str
     fecha: str  # ISO date, mostrada en la Portada
     titulo: str = "INFORME DE ACTIVIDADES"
+    # "semanal": precarga la estructura del informe semanal de referencia
+    # (portada, mapa, FINANCIERO, ESTUDIOS Y ANÁLISIS, AVANCE DE OBRA,
+    # reportes de la semana, cierre). Sin valor: presentación vacía.
+    plantilla: Optional[Literal["semanal"]] = None
+
+
+def _secciones_plantilla_semanal() -> List[dict]:
+    """Esqueleto del informe semanal (ver PDF de referencia "Informe de
+    Actividades"). Cada entrada se completa luego con el contenido EN VIVO
+    al exportar; `reportes_semana` arranca vacía hasta que el usuario elija."""
+    tipos = [
+        ("portada", None), ("mapa_general", None),
+        ("divisor", "FINANCIERO"), ("financiero", None),
+        ("divisor", "ESTUDIOS Y ANÁLISIS"), ("seguimiento_estudios", None),
+        ("divisor", "AVANCE DE OBRA"),
+        ("reportes_semana", None),
+        ("cierre", None),
+    ]
+    return [
+        {"id": str(uuid.uuid4()), "tipo": t, "orden": i, "titulo": titulo, "node_id": None,
+         "plano_id": None, "bloques": [], "report_ids": []}
+        for i, (t, titulo) in enumerate(tipos)
+    ]
 
 
 class PresentacionPatch(BaseModel):
@@ -7240,7 +7265,7 @@ async def create_presentacion(pid: str, body: PresentacionIn, user: dict = Depen
         "project_id": pid,
         "fecha": body.fecha,
         "titulo": titulo,
-        "secciones": [],
+        "secciones": _secciones_plantilla_semanal() if body.plantilla == "semanal" else [],
         "created_by": user["id"],
         "created_by_name": user["name"],
         "created_at": now,
@@ -7322,6 +7347,42 @@ async def _validate_presentacion_seccion_refs(pid: str, body) -> None:
             raise HTTPException(404, "plano_id no existe en este proyecto")
 
 
+@api.get("/projects/{pid}/presentaciones/{pres_id}/reportes-semana")
+async def list_reportes_semana_presentacion(pid: str, pres_id: str, user: dict = Depends(current_user)):
+    """Reportes capturados en la ventana semanal de la presentación
+    (`fecha - 6 días` .. `fecha`), en formato ligero (sin imágenes) para que
+    el usuario elija cuáles destacar en el informe."""
+    await ensure_project_access(user, pid)
+    pres = await db.presentaciones.find_one({"id": pres_id, "project_id": pid}, {"fecha": 1})
+    if not pres:
+        raise HTTPException(404, "Presentación no existe")
+    try:
+        end_d = date.fromisoformat(pres["fecha"])
+    except ValueError:
+        raise HTTPException(400, "La presentación tiene una fecha inválida")
+    desde = datetime.combine(end_d - timedelta(days=6), datetime.min.time(), tzinfo=timezone.utc)
+    hasta = datetime.combine(end_d + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc)
+    proj = {"_id": 0, "id": 1, "title": 1, "created_at": 1, "node_path_names": 1, "area_name": 1,
+            "severidad": 1, "captured_by_name": 1, "images": 1, "actividades": 1}
+    items = await db.reports.find(
+        {"project_id": pid, "created_at": {"$gte": desde, "$lt": hasta}}, proj,
+    ).sort("created_at", -1).to_list(length=1000)
+    out = []
+    for r in items:
+        path = r.get("node_path_names") or []
+        out.append({
+            "id": r["id"],
+            "titulo": (r.get("title") or "").strip() or (r.get("actividades") or "").strip()[:80] or "Reporte sin título",
+            "ubicacion": " › ".join(path[-2:]) if path else "",
+            "area": r.get("area_name"),
+            "severidad": _normalize_severidad_list(r.get("severidad")),
+            "capturado_por": r.get("captured_by_name"),
+            "fecha": r["created_at"].isoformat() if r.get("created_at") else None,
+            "n_fotos": len(r.get("images") or []),
+        })
+    return out
+
+
 @api.post("/projects/{pid}/presentaciones/{pres_id}/secciones")
 async def create_presentacion_seccion(
     pid: str, pres_id: str, body: PresentacionSeccionIn, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB)),
@@ -7345,6 +7406,7 @@ async def create_presentacion_seccion(
         "node_id": body.node_id,
         "plano_id": body.plano_id,
         "bloques": [b.model_dump() for b in body.bloques] if body.tipo == "informacion_particular" else [],
+        "report_ids": list(dict.fromkeys(body.report_ids)) if body.tipo == "reportes_semana" else [],
     }
     await db.presentaciones.update_one(
         {"id": pres_id}, {"$push": {"secciones": seccion}, "$set": {"updated_at": now}},
@@ -7374,6 +7436,10 @@ async def update_presentacion_seccion(
         seccion["node_id"] = body.node_id
     if body.plano_id is not None:
         seccion["plano_id"] = body.plano_id
+    if body.report_ids is not None:
+        if seccion.get("tipo") != "reportes_semana":
+            raise HTTPException(400, "report_ids solo aplica a secciones 'reportes_semana'")
+        seccion["report_ids"] = list(dict.fromkeys(body.report_ids))
     now = datetime.now(timezone.utc)
     await db.presentaciones.update_one(
         {"id": pres_id, "secciones.id": sec_id},
@@ -7535,6 +7601,18 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
         gproj = await db.projects.find_one({"id": pid}, {"general_data_images": 1})
         general_images = (gproj or {}).get("general_data_images") or []
 
+    reports_by_id: dict = {}
+    _rids = [rid for s_ in secciones if s_.get("tipo") == "reportes_semana" for rid in (s_.get("report_ids") or [])]
+    if _rids:
+        async for r_ in db.reports.find({"id": {"$in": _rids}, "project_id": pid}):
+            reports_by_id[r_["id"]] = r_
+
+    contrato_bloques: list = []
+    estimaciones_bloques: list = []
+    if any(s_.get("tipo") == "financiero" for s_ in secciones):
+        contrato_bloques = _contrato_bloques(proj)
+        estimaciones_bloques = _estimaciones_bloques(await db.estimaciones.find({"project_id": pid}).to_list(length=500))
+
     project_color = proj.get("color_institucional") or proj.get("color_tema") or "#1E40AF"
 
     def _build_presentacion_pptx_blocking() -> bytes:
@@ -7667,33 +7745,160 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
         MUTED_RGB = (0x64, 0x74, 0x8B)
         WHITE_RGB = (0xFF, 0xFF, 0xFF)
 
+        # Fondo de color de marca vs. blanco: con plantilla (membrete/portada
+        # institucional) los textos de portada/divisor/cierre van en blanco
+        # sobre el fondo vino del membrete; sin plantilla, en color de marca.
+        COVER_FG = WHITE_RGB if tpl_cover_slide else BRAND_RGB
+        GREEN_RGB = (0x16, 0xA3, 0x4A)
+        RED_RGB = (0xDC, 0x26, 0x26)
+
+        def _tint(rgb, f=0.55):
+            return tuple(int(c + (255 - c) * f) for c in rgb)
+
+        def _fecha_larga(iso: str) -> str:
+            try:
+                d = date.fromisoformat(iso)
+                return f"{d.day} {_SEGURIDAD_MESES[d.month - 1].upper()} DE {d.year}"
+            except Exception:
+                return iso or ""
+
+        def _encabezado(slide, texto):
+            """Nombre de la sección en la franja superior del membrete (como
+            "DATOS GENERALES"/"CROQUIS GENERAL" en el informe de referencia).
+            Solo con plantilla: sin ella no hay franja donde colocarlo."""
+            if tpl_master_slide is None or not texto:
+                return
+            add_text(slide, int(SW * 0.355), _Cm(0.35), int(SW * 0.5), _Cm(1.0), texto,
+                     size=12, bold=True, color=WHITE_RGB)
+
+        def _tabla(slide, x, y, w, headers, rows, fracs, *, size=8, row_h=_Cm(0.7), head_h=_Cm(1.2)):
+            """Tabla nativa (python-pptx): encabezado en color de marca,
+            filas blancas con borde. `fracs` = ancho relativo por columna."""
+            n_rows = len(rows) + 1
+            gs = slide.shapes.add_table(n_rows, len(headers), x, y, w, head_h + row_h * len(rows))
+            tbl = gs.table
+            tot = float(sum(fracs))
+            for ci, fr in enumerate(fracs):
+                tbl.columns[ci].width = int(w * fr / tot)
+            tbl.rows[0].height = head_h
+            for ri in range(1, n_rows):
+                tbl.rows[ri].height = row_h
+
+            def _cell(cell, text, *, bold, fg, bg):
+                cell.fill.solid()
+                cell.fill.fore_color.rgb = _PRGBColor(*bg)
+                cell.margin_left = cell.margin_right = _Cm(0.08)
+                cell.margin_top = cell.margin_bottom = _Cm(0.04)
+                tf = cell.text_frame
+                tf.word_wrap = True
+                para = tf.paragraphs[0]
+                para.alignment = _PP_ALIGN.CENTER
+                run = para.add_run()
+                run.text = str(text)
+                run.font.size = _Pt(size)
+                run.font.bold = bold
+                run.font.color.rgb = _PRGBColor(*fg)
+
+            for ci, h in enumerate(headers):
+                _cell(tbl.cell(0, ci), h, bold=True, fg=WHITE_RGB, bg=BRAND_RAW_RGB)
+            for ri, row in enumerate(rows, start=1):
+                for ci, v in enumerate(row):
+                    _cell(tbl.cell(ri, ci), v, bold=False, fg=TEXT_RGB,
+                          bg=WHITE_RGB if ri % 2 else (0xF8, 0xF1, 0xF4))
+            return tbl
+
         def slide_portada():
             slide = _clone_cover_bg()
-            add_text(slide, MARGIN_X, SH / 2 - _Cm(1.4), content_w, _Cm(1.6), pres.get("titulo") or "INFORME DE ACTIVIDADES",
-                     size=28, bold=True, color=BRAND_RGB, align=_PP_ALIGN.CENTER)
-            add_text(slide, MARGIN_X, SH / 2 + _Cm(0.3), content_w, _Cm(0.8), pres.get("fecha") or "",
-                     size=14, color=MUTED_RGB, align=_PP_ALIGN.CENTER)
+            add_text(slide, _Cm(1.8), int(SH * 0.30), int(SW * 0.62), _Cm(3.2),
+                     pres.get("titulo") or "INFORME DE ACTIVIDADES", size=40, bold=True, color=COVER_FG)
+            add_text(slide, _Cm(1.8), int(SH * 0.30) + _Cm(3.3), int(SW * 0.62), _Cm(1.2),
+                     _fecha_larga(pres.get("fecha") or ""), size=22, bold=True, color=COVER_FG)
+            objeto = (proj.get("objeto_contrato") or proj.get("name") or "").strip().upper()
+            if objeto:
+                add_text(slide, _Cm(1.8), int(SH * 0.30) + _Cm(5.2), int(SW * 0.62), _Cm(2.2),
+                         objeto, size=11, bold=True, color=COVER_FG)
 
         def slide_divisor(titulo):
-            slide = _clone_membrete()
-            add_text(slide, MARGIN_X, SH / 2 - _Cm(0.8), content_w, _Cm(1.6), (titulo or "").upper(),
-                     size=26, bold=True, color=BRAND_RGB, align=_PP_ALIGN.CENTER)
+            slide = _clone_cover_bg()
+            add_text(slide, _Cm(1.5), int(SH / 2 - _Cm(1.2)), int(SW - _Cm(3.0)), _Cm(2.4), (titulo or "").upper(),
+                     size=40, bold=True, color=COVER_FG, align=_PP_ALIGN.CENTER)
+
+        def slide_cierre():
+            slide = _clone_cover_bg()
+            add_text(slide, _Cm(1.5), int(SH * 0.55), int(SW - _Cm(3.0)), _Cm(2.4), "Gracias",
+                     size=40, bold=True, color=COVER_FG, align=_PP_ALIGN.CENTER)
+            objeto = (proj.get("objeto_contrato") or proj.get("name") or "").strip().upper()
+            if objeto:
+                add_text(slide, _Cm(2.5), int(SH * 0.55) + _Cm(2.6), int(SW - _Cm(5.0)), _Cm(2.0), objeto,
+                         size=11, bold=True, color=COVER_FG, align=_PP_ALIGN.CENTER)
 
         def slide_mapa_general():
             slide = _clone_membrete()
+            _encabezado(slide, "TRAZO")
             if general_images:
                 add_picture_b64(slide, general_images[0], MARGIN_X, TOP_MARGIN, content_w, SH - TOP_MARGIN - BOTTOM_MARGIN)
             else:
                 add_text(slide, MARGIN_X, TOP_MARGIN, content_w, _Cm(1), "Sin imagen de mapa general configurada.",
                          size=13, color=MUTED_RGB, align=_PP_ALIGN.CENTER)
 
-        def slide_financiero():
+        def _slide_contrato():
             slide = _clone_membrete()
+            _encabezado(slide, "DATOS GENERALES")
+            n = len(contrato_bloques)
+            gap = _Cm(1.2)
+            col_w = int((content_w - gap * (n - 1)) / n)
+            for bi, blq in enumerate(contrato_bloques):
+                x = int(MARGIN_X + bi * (col_w + gap))
+                y = TOP_MARGIN
+                add_text(slide, x, y, col_w, _Cm(0.9), f"DATOS DE CONTRATO ({blq['etiqueta']})",
+                         size=14, bold=True, color=BRAND_RGB)
+                tb = slide.shapes.add_textbox(x, int(y + _Cm(1.0)), col_w, _Cm(7.0))
+                tf = tb.text_frame
+                tf.word_wrap = True
+                for li, (lbl, val) in enumerate(blq["lineas"]):
+                    par = tf.paragraphs[0] if li == 0 else tf.add_paragraph()
+                    par.space_after = _Pt(5)
+                    r1 = par.add_run()
+                    r1.text = "• " + lbl + " "
+                    r1.font.size = _Pt(10)
+                    r1.font.bold = True
+                    r1.font.color.rgb = _PRGBColor(*TEXT_RGB)
+                    r2 = par.add_run()
+                    r2.text = val
+                    r2.font.size = _Pt(10)
+                    r2.font.color.rgb = _PRGBColor(*TEXT_RGB)
+                if blq["filas"]:
+                    rows = [[lbl, v1, v2] for lbl, v1, v2, _u in blq["filas"]]
+                    tbl = _tabla(slide, x, int(y + _Cm(8.2)), col_w, ["", "Inicio", "Fin"], rows, [0.4, 0.3, 0.3],
+                                 size=9, row_h=_Cm(0.8), head_h=_Cm(0.8))
+                    for ri, (_l, _v1, _v2, unida) in enumerate(blq["filas"], start=1):
+                        if unida:
+                            tbl.cell(ri, 1).merge(tbl.cell(ri, 2))
+
+        def _slides_estimaciones():
+            for blq in estimaciones_bloques:
+                headers, rows, fr = blq["headers"], blq["rows"], blq["col_widths"]
+                per_slide = 14
+                for k in range(0, max(len(rows), 1), per_slide):
+                    slide = _clone_membrete()
+                    _encabezado(slide, blq["heading"])
+                    chunk = rows[k:k + per_slide]
+                    _tabla(slide, MARGIN_X, TOP_MARGIN, content_w, headers, chunk, fr,
+                           size=8, row_h=_Cm(0.95), head_h=_Cm(1.6))
+
+        def slide_financiero():
+            if contrato_bloques:
+                _slide_contrato()
+            if estimaciones_bloques:
+                _slides_estimaciones()
+            if contrato_bloques or estimaciones_bloques:
+                return
+            # Sin datos de contrato ni estimaciones: cae al resumen EVM de la semana.
+            slide = _clone_membrete()
+            _encabezado(slide, "FINANCIERO")
             y = TOP_MARGIN
-            add_text(slide, MARGIN_X, y, content_w, _Cm(0.9), "FINANCIERO", size=20, bold=True, color=BRAND_RGB, align=_PP_ALIGN.CENTER)
-            y += _Cm(1.1)
             if not analisis:
-                add_text(slide, MARGIN_X, y, content_w, _Cm(1), "Sin datos financieros (EVM) disponibles para este periodo.",
+                add_text(slide, MARGIN_X, y, content_w, _Cm(1), "Sin datos financieros disponibles para este periodo.",
                          size=13, color=MUTED_RGB, align=_PP_ALIGN.CENTER)
                 return
             kpis = [
@@ -7721,34 +7926,55 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
 
         def slide_seguimiento_estudios():
             slide = _clone_membrete()
-            y = TOP_MARGIN
-            add_text(slide, MARGIN_X, y, content_w, _Cm(0.9), "SEGUIMIENTO A ESTUDIOS Y ANÁLISIS",
-                     size=18, bold=True, color=BRAND_RGB, align=_PP_ALIGN.CENTER)
-            y = int(y + _Cm(1.0))
+            _encabezado(slide, "SEGUIMIENTO A ESTUDIOS Y ANÁLISIS")
             por_disciplina = {r["disciplina"]: r for r in disciplina_rows if r.get("node_id") is None}
-            n_rows = len(ESTUDIO_DISCIPLINA_AVANCE_KEYS)
-            row_h = int((SH - BOTTOM_MARGIN - y) / n_rows)
-            for i, k in enumerate(ESTUDIO_DISCIPLINA_AVANCE_KEYS):
+            keys = list(ESTUDIO_DISCIPLINA_AVANCE_KEYS)
+            n = max(len(keys), 1)
+            gap = _Cm(0.25)
+            col_w = int((content_w - gap * (n - 1)) / n)
+            base_y = int(SH * 0.30)
+            line_y = int(SH * 0.80)
+            _rect(slide, MARGIN_X, line_y + _Cm(0.4), content_w, _Pt(1.5), fill_rgb=_tint(BRAND_RAW_RGB, 0.4))
+            for i, k in enumerate(keys):
                 pct = (por_disciplina.get(k) or {}).get("porcentaje", 0) or 0
-                yy = y + i * row_h
-                add_text(slide, MARGIN_X, yy, _Cm(4.5), row_h, ESTUDIO_DISCIPLINA_AVANCE_LABEL[k], size=10, bold=True, color=TEXT_RGB)
-                bar_x = int(MARGIN_X + _Cm(4.7))
-                bar_w = int(content_w - _Cm(4.7) - _Cm(1.3))
-                bar_y = int(yy + row_h * 0.3)
-                bar_h = max(1, int(row_h * 0.4))
-                _rect(slide, bar_x, bar_y, bar_w, bar_h, fill_rgb=(0xE2, 0xE8, 0xF0))
-                fill_w = int(bar_w * (pct / 100.0))
-                if fill_w > 0:
-                    _rect(slide, bar_x, bar_y, fill_w, bar_h, fill_rgb=BRAND_RAW_RGB)
-                add_text(slide, bar_x + bar_w + _Cm(0.1), yy, _Cm(1.2), row_h, f"{pct}%", size=10, bold=True, color=TEXT_RGB, align=_PP_ALIGN.RIGHT)
+                done = pct >= 100
+                x = int(MARGIN_X + i * (col_w + gap))
+                add_text(slide, x, base_y - _Cm(2.6), col_w, _Cm(1.0), f"{pct:g}%", size=13, bold=True,
+                         color=GREEN_RGB if done else TEXT_RGB, align=_PP_ALIGN.CENTER)
+                add_text(slide, x, base_y - _Cm(1.5), col_w, _Cm(1.0), "TERMINADO" if done else "EN PROCESO",
+                         size=7, bold=True, color=GREEN_RGB if done else MUTED_RGB, align=_PP_ALIGN.CENTER)
+                _rect(slide, x, base_y, col_w, _Cm(3.6), fill_rgb=_tint(BRAND_RAW_RGB, 0.55) if done else BRAND_RAW_RGB)
+                add_text(slide, x, base_y + _Cm(1.0), col_w, _Cm(2.4), ESTUDIO_DISCIPLINA_AVANCE_LABEL[k],
+                         size=8, bold=True, color=WHITE_RGB, align=_PP_ALIGN.CENTER)
+                d = _Cm(0.9)
+                dot = slide.shapes.add_shape(_MSO_SHAPE.OVAL, int(x + col_w / 2 - d / 2), line_y, d, d)
+                dot.shadow.inherit = False
+                dot.fill.solid()
+                dot.fill.fore_color.rgb = _PRGBColor(*WHITE_RGB)
+                dot.line.color.rgb = _PRGBColor(*BRAND_RAW_RGB)
+                add_text(slide, int(x + col_w / 2 - d / 2), line_y + _Cm(0.1), d, d, f"{i + 1:02d}",
+                         size=7, bold=True, color=BRAND_RGB, align=_PP_ALIGN.CENTER)
 
         def slide_croquis_estacion(node_id):
             slide = _clone_membrete()
+            _encabezado(slide, "CROQUIS GENERAL")
             node = nodes_by_id.get(node_id) or {}
             add_picture_b64(slide, node.get("cover_image"), MARGIN_X, TOP_MARGIN, content_w, SH - TOP_MARGIN - BOTTOM_MARGIN)
             _rect(slide, MARGIN_X, SH - BOTTOM_MARGIN - _Cm(1.0), content_w, _Cm(1.0), fill_rgb=(0x0F, 0x17, 0x2A))
             add_text(slide, MARGIN_X + _Cm(0.2), SH - BOTTOM_MARGIN - _Cm(0.9), content_w - _Cm(0.4), _Cm(0.8),
                      node.get("name") or "Estación", size=16, bold=True, color=WHITE_RGB)
+
+        def _foto_cell(slide, f, cx, cy, cell_w, cell_h):
+            add_picture_b64(slide, f.get("photo"), cx, cy, cell_w, cell_h)
+            if f.get("destacado"):
+                _rect(slide, cx, cy, cell_w, _Cm(0.5), fill_rgb=(0xFE, 0xF3, 0xC7))
+                add_text(slide, cx + _Cm(0.05), cy, cell_w - _Cm(0.1), _Cm(0.45),
+                         f.get("destacado_label") or "Destacado", size=7, bold=True, color=(0x92, 0x40, 0x0E), align=_PP_ALIGN.CENTER)
+            cap = f.get("caption") or ""
+            if cap:
+                cap_y = int(cy + cell_h - _Cm(0.5))
+                _rect(slide, cx, cap_y, cell_w, _Cm(0.5), fill_rgb=BRAND_RAW_RGB)
+                add_text(slide, cx + _Cm(0.05), cap_y, cell_w - _Cm(0.1), _Cm(0.45), cap, size=7, color=WHITE_RGB, align=_PP_ALIGN.CENTER)
 
         def _foto_grid(slide, fotos, x, y, w, h, cols):
             if not fotos:
@@ -7758,60 +7984,68 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
             cell_w = int((w - gap * (cols - 1)) / cols)
             cell_h = int((h - gap * (rows - 1)) / rows)
             for i, f in enumerate(fotos):
-                col, row = i % cols, i // cols
-                cx = int(x + col * (cell_w + gap))
-                cy = int(y + row * (cell_h + gap))
-                add_picture_b64(slide, f.get("photo"), cx, cy, cell_w, cell_h)
-                if f.get("destacado"):
-                    _rect(slide, cx, cy, cell_w, _Cm(0.5), fill_rgb=(0xFE, 0xF3, 0xC7))
-                    add_text(slide, cx + _Cm(0.05), cy, cell_w - _Cm(0.1), _Cm(0.45),
-                             f.get("destacado_label") or "Destacado", size=7, bold=True, color=(0x92, 0x40, 0x0E), align=_PP_ALIGN.CENTER)
-                cap = f.get("caption") or ""
-                if cap:
-                    cap_y = int(cy + cell_h - _Cm(0.5))
-                    _rect(slide, cx, cap_y, cell_w, _Cm(0.5), fill_rgb=(0x0F, 0x17, 0x2A))
-                    add_text(slide, cx + _Cm(0.05), cap_y, cell_w - _Cm(0.1), _Cm(0.45), cap, size=7, color=WHITE_RGB, align=_PP_ALIGN.CENTER)
+                _foto_cell(slide, f, int(x + (i % cols) * (cell_w + gap)), int(y + (i // cols) * (cell_h + gap)), cell_w, cell_h)
+
+        def _foto_hero_grid(slide, fotos, x, y, w, h):
+            """Foto principal grande arriba (vuelo de dron en el informe de
+            referencia) y el resto en una fila de 3 debajo."""
+            if not fotos:
+                return
+            rest = fotos[1:]
+            if not rest:
+                _foto_cell(slide, fotos[0], x, y, w, h)
+                return
+            gap = _Cm(0.2)
+            hero_h = int(h * 0.5)
+            _foto_cell(slide, fotos[0], x, y, w, hero_h)
+            _foto_grid(slide, rest, x, int(y + hero_h + gap), w, int(h - hero_h - gap), cols=3)
 
         def slide_informacion_particular(seccion):
             bloques = seccion.get("bloques") or []
             if not bloques:
                 slide = _clone_membrete()
+                _encabezado(slide, "INFORMACIÓN PARTICULAR")
                 add_text(slide, MARGIN_X, TOP_MARGIN, content_w, _Cm(1), "Sección sin contenido todavía.",
                          size=13, color=MUTED_RGB, align=_PP_ALIGN.CENTER)
                 return
             for bloque in bloques:
                 slide = _clone_membrete()
+                _encabezado(slide, "INFORMACIÓN PARTICULAR")
                 y = TOP_MARGIN
-                add_text(slide, MARGIN_X, y, content_w, _Cm(0.8), bloque.get("titulo") or "", size=18, bold=True, color=BRAND_RGB)
-                y = int(y + _Cm(0.9))
+                add_text(slide, MARGIN_X, y, int(content_w * 0.42), _Cm(1.6), bloque.get("titulo") or "", size=16, bold=True, color=BRAND_RGB)
+                y = int(y + _Cm(1.7))
                 node = nodes_by_id.get(bloque.get("node_id")) if bloque.get("node_id") else None
                 left_w = int(content_w * 0.42)
                 yy = y
                 if node and (node.get("acceso_predio") or node.get("situacion_social")):
+                    acceso = (node.get("acceso_predio") or "").strip()
+                    low = acceso.lower()
+                    bar = GREEN_RGB if acceso and not (low.startswith("no") or low.startswith("sin")) else (RED_RGB if acceso else (0x94, 0xA3, 0xB8))
                     add_text(slide, MARGIN_X, yy, left_w, _Cm(0.5), "ACCESO AL PREDIO", size=10, bold=True, color=BRAND_RGB)
                     yy = int(yy + _Cm(0.5))
-                    _rect(slide, MARGIN_X, yy, left_w, _Cm(0.7), fill_rgb=(0x94, 0xA3, 0xB8))
-                    add_text(slide, MARGIN_X, yy, left_w, _Cm(0.7), (node.get("acceso_predio") or "Sin especificar").upper(),
+                    _rect(slide, MARGIN_X, yy, left_w, _Cm(0.7), fill_rgb=bar)
+                    add_text(slide, MARGIN_X, yy, left_w, _Cm(0.7), (acceso or "Sin especificar").upper(),
                              size=11, bold=True, color=WHITE_RGB, align=_PP_ALIGN.CENTER)
-                    yy = int(yy + _Cm(0.9))
-                    add_text(slide, MARGIN_X, yy, left_w, _Cm(0.5), "SITUACIÓN SOCIAL", size=10, bold=True, color=BRAND_RGB)
-                    yy = int(yy + _Cm(0.5))
-                    add_text(slide, MARGIN_X, yy, left_w, _Cm(2.0), node.get("situacion_social") or "Sin información registrada",
+                    yy = int(yy + _Cm(1.0))
+                    add_text(slide, MARGIN_X, yy, left_w, _Cm(0.5), "SITUACIÓN SOCIAL-LIBERACIÓN FÍSICA DEL PREDIO", size=9, bold=True, color=BRAND_RGB)
+                    yy = int(yy + _Cm(0.6))
+                    add_text(slide, MARGIN_X, yy, left_w, _Cm(2.0), "• " + (node.get("situacion_social") or "Sin información registrada"),
                              size=9, color=TEXT_RGB)
                     yy = int(yy + _Cm(2.1))
                 add_text(slide, MARGIN_X, yy, left_w, _Cm(0.5), "ACTIVIDADES", size=10, bold=True, color=BRAND_RGB)
-                yy = int(yy + _Cm(0.5))
+                yy = int(yy + _Cm(0.6))
                 acts = bloque.get("actividades") or []
                 acts_text = "\n".join(f"• {a}" for a in acts) if acts else "Sin actividades capturadas"
                 add_text(slide, MARGIN_X, yy, left_w, int(SH - BOTTOM_MARGIN - yy), acts_text, size=9, color=TEXT_RGB)
 
-                fotos = bloque.get("fotos") or []
+                fotos = (bloque.get("fotos") or [])[:7]
                 right_x = int(MARGIN_X + left_w + _Cm(0.4))
                 right_w = int(content_w - left_w - _Cm(0.4))
-                _foto_grid(slide, fotos, right_x, y, right_w, int(SH - BOTTOM_MARGIN - y), cols=3 if len(fotos) > 4 else 2)
+                _foto_hero_grid(slide, fotos, right_x, TOP_MARGIN, right_w, int(SH - TOP_MARGIN - BOTTOM_MARGIN))
 
         def slide_avance_grafico(plano_id):
             slide = _clone_membrete()
+            _encabezado(slide, "AVANCE GRÁFICO")
             plano = planos_by_id.get(plano_id)
             if not plano:
                 add_text(slide, MARGIN_X, TOP_MARGIN, content_w, _Cm(1), "Plano no encontrado.",
@@ -7824,6 +8058,57 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                 slide.shapes.add_picture(io.BytesIO(snap), MARGIN_X, TOP_MARGIN, width=content_w, height=int(SH - TOP_MARGIN - BOTTOM_MARGIN))
             except Exception:
                 add_picture_b64(slide, plano.get("imagen"), MARGIN_X, TOP_MARGIN, content_w, int(SH - TOP_MARGIN - BOTTOM_MARGIN))
+
+        def slide_reportes_semana(seccion):
+            """Una lámina por reporte elegido por el usuario: título, ubicación,
+            texto (actividades/observaciones/incidencias) y fotos con pie."""
+            for rid in (seccion.get("report_ids") or []):
+                r = reports_by_id.get(rid)
+                if not r:
+                    continue
+                titulo = (r.get("title") or "").strip() or "Reporte"
+                path = r.get("node_path_names") or []
+                fecha_r = r.get("created_at")
+                meta = " · ".join(x for x in [
+                    " › ".join(path[-2:]) if path else "",
+                    fecha_r.strftime("%d/%m/%Y") if hasattr(fecha_r, "strftime") else "",
+                    r.get("area_name") or "",
+                ] if x)
+                partes = []
+                for rot, key in (("ACTIVIDADES", "actividades"), ("AVANCE", "avance"),
+                                 ("OBSERVACIONES", "observaciones"), ("INCIDENCIAS", "incidencias")):
+                    if (r.get(key) or "").strip():
+                        partes.append((rot, r[key].strip()))
+                caps = r.get("photo_captions") or []
+                fotos = [{"photo": im, "caption": (caps[i] if i < len(caps) else "")}
+                         for i, im in enumerate(r.get("images") or [])]
+                chunks = [fotos[k:k + 4] for k in range(0, len(fotos), 4)] or [[]]
+                for ci, chunk in enumerate(chunks):
+                    slide = _clone_membrete()
+                    _encabezado(slide, "ACTIVIDADES DE LA SEMANA")
+                    left_w = int(content_w * 0.42) if chunk else content_w
+                    y = TOP_MARGIN
+                    add_text(slide, MARGIN_X, y, left_w, _Cm(1.4), titulo + (" (cont.)" if ci else ""),
+                             size=16, bold=True, color=BRAND_RGB)
+                    y = int(y + _Cm(1.5))
+                    if meta:
+                        add_text(slide, MARGIN_X, y, left_w, _Cm(0.8), meta, size=9, color=MUTED_RGB)
+                        y = int(y + _Cm(0.9))
+                    if ci == 0:
+                        for rot, txt in partes:
+                            add_text(slide, MARGIN_X, y, left_w, _Cm(0.5), rot, size=10, bold=True, color=BRAND_RGB)
+                            y = int(y + _Cm(0.55))
+                            lineas_t = [ln.strip() for ln in txt.splitlines() if ln.strip()]
+                            body_txt = "\n".join(f"• {ln}" for ln in lineas_t) if len(lineas_t) > 1 else txt
+                            n_lines = sum(max(1, math.ceil(len(ln) / 55)) for ln in (lineas_t or [txt]))
+                            h_t = int(min(_Cm(0.42) * n_lines + _Cm(0.2), SH - BOTTOM_MARGIN - y))
+                            add_text(slide, MARGIN_X, y, left_w, h_t, body_txt, size=9, color=TEXT_RGB)
+                            y = int(y + h_t + _Cm(0.15))
+                    if chunk:
+                        right_x = int(MARGIN_X + left_w + _Cm(0.4))
+                        right_w = int(content_w - left_w - _Cm(0.4))
+                        _foto_grid(slide, chunk, right_x, TOP_MARGIN, right_w, int(SH - TOP_MARGIN - BOTTOM_MARGIN),
+                                   cols=1 if len(chunk) == 1 else 2)
 
         for s in secciones:
             tipo = s.get("tipo")
@@ -7843,6 +8128,10 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                 slide_informacion_particular(s)
             elif tipo == "avance_grafico":
                 slide_avance_grafico(s.get("plano_id"))
+            elif tipo == "reportes_semana":
+                slide_reportes_semana(s)
+            elif tipo == "cierre":
+                slide_cierre()
 
         # Borra las slides ORIGINALES de la plantilla (solo sirvieron de
         # semilla para clonar vía `_clone_slide` — nunca deben aparecer en
