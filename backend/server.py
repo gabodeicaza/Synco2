@@ -4731,21 +4731,21 @@ def _grafica_lineas_png(titulo: str, etiquetas: List[str], series: List[tuple], 
     return out.getvalue()
 
 
-def _avance_obra_bloques(res: dict, ini: date, fin: date) -> List[dict]:
+def _avance_obra_bloques(res: dict, ini: date, fin: date, contrato: str = "obra") -> List[dict]:
     filas = res["filas"]
     rows = [[str(f["numero"]), f["partida"], _pct_fmt(f["semanal"]), _pct_fmt(f["acumulado"])] for f in filas]
     rows.append(["", "TOTAL", _pct_fmt(res["total_semanal"]), _pct_fmt(res["total_acumulado"])])
     bloques: List[dict] = [
         {"type": "summary",
          "text": f"AVANCE  ·  PROGRAMADO {_pct_fmt(res['programado_pct'])}  ·  REAL {_pct_fmt(res['real_pct'])}"},
-        {"type": "table", "heading": "TABLA DE AVANCE POR PARTIDAS (OBRA)",
+        {"type": "table", "heading": f"TABLA DE AVANCE POR PARTIDAS ({CONTRATO_FIN_LABEL[contrato]})",
          "headers": ["N°", "PARTIDAS", "AVANCE SEMANAL (%)", "AVANCE ACUMULADO (%)"],
          "rows": rows, "col_widths": [0.07, 0.55, 0.19, 0.19], "empty_text": "Sin partidas."},
     ]
     return bloques
 
 
-def _avance_obra_graficas(res: dict, fin: date) -> List[tuple]:
+def _avance_obra_graficas(res: dict, fin: date, contrato: str = "obra") -> List[tuple]:
     """[(heading, caption, png_bytes), ...] — gráfica física (% acumulado
     programado vs real) y financiera (importe acumulado programado, ganado y
     real, en millones)."""
@@ -4765,12 +4765,13 @@ def _avance_obra_graficas(res: dict, fin: date) -> List[tuple]:
         "Físico-financiero acumulado (millones de pesos)", etiquetas,
         [("Programado", "#2563EB", [v / Decimal("1000000") for v in c["pv"]]),
          ("Ganado (avance)", "#16A34A", [v / Decimal("1000000") for v in c["ev"]]),
-         ("Gasto real", "#DC2626", [v / Decimal("1000000") for v in c["ac"]])],
+         ("Gasto real", "#DC2626", [v / Decimal("1000000") for v in c["ac"]])][: 3 if any(c["ac"]) else 2],
         lambda v: f"{v:,.0f} M",
     )
     corte = f"al {_fmt_iso_dmy(fin.isoformat())}"
-    return [("GRÁFICA DE AVANCE (OBRA)", f"Avance físico acumulado {corte}", fisica),
-            ("FÍSICO – FINANCIERO (OBRA)", f"Gráfica físico–financiera {corte}", fin_png)]
+    lbl = CONTRATO_FIN_LABEL[contrato]
+    return [(f"GRÁFICA DE AVANCE ({lbl})", f"Avance físico acumulado {corte}", fisica),
+            (f"FÍSICO – FINANCIERO ({lbl})", f"Gráfica físico–financiera {corte}", fin_png)]
 
 
 class EstimacionIn(BaseModel):
@@ -5747,11 +5748,11 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
         try:
             end_d = date.fromisoformat(pres["fecha"])
             start_d = end_d - timedelta(days=6)
-            conceptos = await db.conceptos.find({"project_id": pid, "activo": True}).to_list(length=100000)
+            conceptos, _pertenece_obra = await _conceptos_activos_contrato(pid, "obra")
             pv_total = sum((_prorrateo_concepto_en_ventana(c, start_d, end_d) for c in conceptos), start=Decimal("0"))
             ev_total = Decimal("0")
             async for a in db.registros_avance.find({"project_id": pid, "fecha": {"$gte": start_d.isoformat(), "$lte": end_d.isoformat()}}):
-                if a.get("importe_ganado_congelado") is not None:
+                if _pertenece_obra(a.get("concepto_id")) and a.get("importe_ganado_congelado") is not None:
                     ev_total += to_decimal(a["importe_ganado_congelado"])
             ac_total = Decimal("0")
             async for g in db.gastos_reales.find({"project_id": pid, "fecha": {"$gte": start_d.isoformat(), "$lte": end_d.isoformat()}}):
@@ -15264,23 +15265,34 @@ async def _gather_modulos_export_data(
 
     if activos.get("avance_obra"):
         # Estado acumulado al corte del informe (no un log): se calcula del
-        # motor EVM, sin captura propia. Sin presupuesto o sin avance ni
-        # programa → no se imprime.
+        # motor EVM, sin captura propia — una sección por contrato (obra y
+        # supervisión) que tenga presupuesto y avance o programa.
         ini_d = start_dt.astimezone(MX_TZ).date()
         fin_d = end_dt.astimezone(MX_TZ).date()
-        res_ao = _avance_obra_resumen(
-            await db.conceptos.find({"project_id": pid, "activo": True}).to_list(length=100000),
+        por_contrato = _split_por_contrato(
+            await db.conceptos.find({"project_id": pid}).to_list(length=100000),
             await db.partidas.find({"project_id": pid}).to_list(length=5000),
             await db.registros_avance.find({"project_id": pid}).to_list(length=200000),
-            await db.gastos_reales.find({"project_id": pid}).to_list(length=100000),
-            ini_d, fin_d,
         )
-        if res_ao and (res_ao["real_pct"] or res_ao["programado_pct"]):
-            blocks_ao = _avance_obra_bloques(res_ao, ini_d, fin_d)
-            for heading, caption, png in _avance_obra_graficas(res_ao, fin_d):
+        gastos_ao = await db.gastos_reales.find({"project_id": pid}).to_list(length=100000)
+        blocks_ao: List[dict] = []
+        contratos_ao: List[str] = []
+        for contrato_ao in CONTRATOS_FIN:
+            conceptos_c, partidas_c, registros_c = por_contrato[contrato_ao]
+            res_ao = _avance_obra_resumen(
+                conceptos_c, partidas_c, registros_c, gastos_ao if contrato_ao == "obra" else [], ini_d, fin_d,
+            )
+            if not (res_ao and (res_ao["real_pct"] or res_ao["programado_pct"])):
+                continue
+            contratos_ao.append(contrato_ao)
+            blocks_ao += _avance_obra_bloques(res_ao, ini_d, fin_d, contrato_ao)
+            for heading, caption, png in _avance_obra_graficas(res_ao, fin_d, contrato_ao):
                 jpg = await asyncio.to_thread(_png_bytes_to_jpeg_dataurl, png)
                 blocks_ao.append({"type": "imagen", "heading": heading, "imagen": jpg, "caption": caption})
-            out["avance_obra"] = {"titulo": "AVANCE DE OBRA", "blocks": blocks_ao}
+        if blocks_ao:
+            titulo_ao = ("AVANCE DE OBRA Y SUPERVISIÓN" if len(contratos_ao) == 2
+                         else f"AVANCE DE {CONTRATO_FIN_LABEL[contratos_ao[0]]}")
+            out["avance_obra"] = {"titulo": titulo_ao, "blocks": blocks_ao}
 
     if activos.get("estimaciones"):
         bloques_es = _estimaciones_bloques(await db.estimaciones.find({"project_id": pid}).to_list(length=500))
@@ -20981,6 +20993,9 @@ class PartidaIn(BaseModel):
     # aquí (se captura después de crear la partida), pero se admite por
     # completitud de la API.
     peso_manual: Optional[str] = None
+    # Contrato al que pertenece el árbol (obra / supervisión). Solo aplica a
+    # partidas RAÍZ — las subpartidas heredan el de su raíz. None = obra.
+    contrato: Optional[Literal["obra", "supervision"]] = None
 
     @field_validator("peso_manual")
     @classmethod
@@ -21020,6 +21035,8 @@ class PartidaPatch(BaseModel):
     # silencio.
     peso_manual: Optional[str] = None
     quitar_peso_manual: bool = False
+    # Solo para partidas RAÍZ (ver PartidaIn.contrato). None = no tocar.
+    contrato: Optional[Literal["obra", "supervision"]] = None
 
     @field_validator("peso_manual")
     @classmethod
@@ -21051,6 +21068,8 @@ class PartidaOut(BaseModel):
     # leer peso_manual/importe_contratado_partida por separado para eso.
     peso_efectivo: str = "0"
     peso_es_manual: bool = False
+    # Contrato EFECTIVO: el de su partida raíz (las subpartidas heredan).
+    contrato: Literal["obra", "supervision"] = "obra"
 
 
 class ConceptoIn(BaseModel):
@@ -21529,6 +21548,64 @@ async def _partida_subtree_ids_en_proyecto(project_id: str, partida_id: str) -> 
     return _partida_subtree_ids(partida_id, _partida_children_by_parent(all_partidas))
 
 
+def _mapa_contrato_partidas(partidas: List[dict]) -> Dict[str, str]:
+    """partida_id → contrato EFECTIVO ("obra" / "supervision"): el de su raíz.
+    Una raíz sin marca (todo lo anterior a este campo) es "obra", así que un
+    proyecto sin árbol de supervisión se comporta exactamente como antes."""
+    por_id = {pa["id"]: pa for pa in partidas}
+    out: Dict[str, str] = {}
+    for pa in partidas:
+        cur, vistos = pa, set()
+        while cur.get("partida_padre_id") and cur["partida_padre_id"] in por_id and cur["id"] not in vistos:
+            vistos.add(cur["id"])
+            cur = por_id[cur["partida_padre_id"]]
+        out[pa["id"]] = "supervision" if cur.get("contrato") == "supervision" else "obra"
+    return out
+
+
+async def _filtro_contrato(pid: str, contrato: str) -> Callable[[Optional[str]], bool]:
+    """Predicado sobre `concepto_id` para quedarse con un contrato. Obra es el
+    COMPLEMENTO de supervisión (no "lo que tiene partida de obra"): así un
+    registro de avance de un concepto ya borrado, o sin partida, sigue
+    contando como obra igual que antes de existir la separación."""
+    if contrato not in CONTRATOS_FIN:
+        raise HTTPException(400, "contrato debe ser 'obra' o 'supervision'")
+    partidas = await db.partidas.find({"project_id": pid}).to_list(length=10000)
+    mapa = _mapa_contrato_partidas(partidas)
+    sup_partidas = {pid_ for pid_, c in mapa.items() if c == "supervision"}
+    sup_ids: set = set()
+    if sup_partidas:
+        async for c in db.conceptos.find({"project_id": pid, "partida_id": {"$in": list(sup_partidas)}}, {"id": 1}):
+            sup_ids.add(c["id"])
+    if contrato == "supervision":
+        return lambda cid: cid in sup_ids
+    return lambda cid: cid not in sup_ids
+
+
+async def _conceptos_activos_contrato(pid: str, contrato: str):
+    """(conceptos activos del contrato, predicado de pertenencia por concepto_id)."""
+    pertenece = await _filtro_contrato(pid, contrato)
+    todos = await db.conceptos.find({"project_id": pid, "activo": True}).to_list(length=100000)
+    return [c for c in todos if pertenece(c["id"])], pertenece
+
+
+def _split_por_contrato(conceptos_all: List[dict], partidas: List[dict], registros: List[dict]) -> Dict[str, tuple]:
+    """{contrato: (conceptos activos, partidas, registros de avance)} — cada
+    contrato solo con lo suyo. Los conceptos se clasifican por su partida y
+    los registros por su concepto (un registro de un concepto borrado va a
+    obra, ver `_filtro_contrato`)."""
+    mapa = _mapa_contrato_partidas(partidas)
+    contrato_concepto = {c["id"]: mapa.get(c.get("partida_id"), "obra") for c in conceptos_all}
+    out: Dict[str, tuple] = {}
+    for contrato in CONTRATOS_FIN:
+        out[contrato] = (
+            [c for c in conceptos_all if c.get("activo", True) and contrato_concepto[c["id"]] == contrato],
+            [pa for pa in partidas if mapa[pa["id"]] == contrato],
+            [r for r in registros if contrato_concepto.get(r.get("concepto_id"), "obra") == contrato],
+        )
+    return out
+
+
 async def _partida_out(doc: dict, all_partidas: List[dict]) -> PartidaOut:
     # El total/porcentaje/conteo de una partida incluye TODA su subtree (las
     # subpartidas anidadas dentro), no solo sus conceptos directos — una
@@ -21583,6 +21660,7 @@ async def _partida_out(doc: dict, all_partidas: List[dict]) -> PartidaOut:
         peso_manual=peso_manual,
         peso_efectivo=dec_to_str(peso_efectivo),
         peso_es_manual=peso_es_manual,
+        contrato=_mapa_contrato_partidas(all_partidas + ([doc] if all(pa["id"] != doc["id"] for pa in all_partidas) else [])).get(doc["id"], "obra"),
     )
 
 
@@ -21610,6 +21688,8 @@ async def create_partida(body: PartidaIn, user: dict = Depends(require_role(ROLE
         padre = await db.partidas.find_one({"id": partida_padre_id, "project_id": body.project_id})
         if not padre:
             raise HTTPException(404, "La partida padre no existe en este proyecto")
+        if body.contrato is not None:
+            raise HTTPException(400, "El contrato se define en la partida raíz; las subpartidas lo heredan")
     pid = str(uuid.uuid4())
     doc = {
         "id": pid,
@@ -21620,6 +21700,7 @@ async def create_partida(body: PartidaIn, user: dict = Depends(require_role(ROLE
         "activo": True,
         "partida_padre_id": partida_padre_id,
         "peso_manual": body.peso_manual,
+        "contrato": None if partida_padre_id else (body.contrato or "obra"),
         "created_at": datetime.now(timezone.utc),
         "created_by": user["id"],
     }
@@ -21663,6 +21744,11 @@ async def update_partida(partida_id: str, body: PartidaPatch, user: dict = Depen
         upd["peso_manual"] = None
     elif body.peso_manual is not None:
         upd["peso_manual"] = body.peso_manual
+    if body.contrato is not None:
+        sera_raiz = (upd["partida_padre_id"] is None) if "partida_padre_id" in upd else not partida.get("partida_padre_id")
+        if not sera_raiz:
+            raise HTTPException(400, "El contrato se define en la partida raíz; las subpartidas lo heredan")
+        upd["contrato"] = body.contrato
     if upd:
         await db.partidas.update_one({"id": partida_id}, {"$set": upd})
     updated = await db.partidas.find_one({"id": partida_id})
@@ -24009,7 +24095,7 @@ class CurvaSOut(BaseModel):
 
 
 @api.get("/projects/{pid}/analisis_periodo", response_model=AnalisisPeriodoOut)
-async def analisis_periodo(pid: str, start: str, end: str, user: dict = Depends(current_user)):
+async def analisis_periodo(pid: str, start: str, end: str, contrato: str = "obra", user: dict = Depends(current_user)):
     """Motor EVM: PV analítico (nunca se guarda un prorrateo día por día en
     Mongo, ver _prorrateo_concepto_en_ventana), EV desde lo ya CONGELADO en
     cada RegistroAvance (nunca se recalcula con el precio de hoy — ver
@@ -24023,7 +24109,7 @@ async def analisis_periodo(pid: str, start: str, end: str, user: dict = Depends(
     if ventana_fin < ventana_ini:
         raise HTTPException(400, "end no puede ser anterior a start")
 
-    conceptos = await db.conceptos.find({"project_id": pid, "activo": True}).to_list(length=100000)
+    conceptos, pertenece = await _conceptos_activos_contrato(pid, contrato)
     pv_total = sum(
         (_prorrateo_concepto_en_ventana(c, ventana_ini, ventana_fin) for c in conceptos),
         start=Decimal("0"),
@@ -24031,6 +24117,8 @@ async def analisis_periodo(pid: str, start: str, end: str, user: dict = Depends(
 
     ev_total = Decimal("0")
     async for a in db.registros_avance.find({"project_id": pid, "fecha": {"$gte": start, "$lte": end}}):
+        if not pertenece(a.get("concepto_id")):
+            continue
         if a.get("importe_ganado_congelado") is not None:
             ev_total += to_decimal(a["importe_ganado_congelado"])
         # Avances capturados ANTES de la congelación (sin
@@ -24038,7 +24126,8 @@ async def analisis_periodo(pid: str, start: str, end: str, user: dict = Depends(
         # precio histórico confiable que inventarles.
 
     ac_total = Decimal("0")
-    async for g in db.gastos_reales.find({"project_id": pid, "fecha": {"$gte": start, "$lte": end}}):
+    # Los gastos reales no distinguen contrato: se atribuyen a la obra.
+    async for g in db.gastos_reales.find({"project_id": pid, "fecha": {"$gte": start, "$lte": end}} if contrato == "obra" else {"_id": None}):
         ac_total += to_decimal(g["monto"])
 
     # SPI/CPI son índices de desempeño, no dinero — se muestran a 4
@@ -24061,7 +24150,7 @@ async def analisis_periodo(pid: str, start: str, end: str, user: dict = Depends(
 
 
 @api.get("/projects/{pid}/analisis_periodo/presupuesto_total")
-async def analisis_periodo_presupuesto_total(pid: str, user: dict = Depends(current_user)):
+async def analisis_periodo_presupuesto_total(pid: str, contrato: str = "obra", user: dict = Depends(current_user)):
     """Presupuesto total del proyecto (suma del importe efectivo de todos
     los conceptos activos) — NO depende de start/end como AnalisisPeriodoOut,
     por eso vive en su propio endpoint en vez de sumarse a ese modelo.
@@ -24071,19 +24160,19 @@ async def analisis_periodo_presupuesto_total(pid: str, user: dict = Depends(curr
     sumen correctamente por igual — sumar importe_total_editable a secas
     dejaría en $0 cualquier concepto que no haya migrado a Etapa EVM."""
     await ensure_project_access(user, pid)
-    conceptos = await db.conceptos.find({"project_id": pid, "activo": True}).to_list(length=100000)
+    conceptos, _ = await _conceptos_activos_contrato(pid, contrato)
     total = sum((_concepto_importe_efectivo(c) for c in conceptos), start=Decimal("0"))
     return {"project_id": pid, "presupuesto_total": dec_to_str(round_money(total))}
 
 
 @api.get("/projects/{pid}/analisis_periodo/curva_s", response_model=CurvaSOut)
-async def analisis_periodo_curva_s(pid: str, user: dict = Depends(current_user)):
+async def analisis_periodo_curva_s(pid: str, contrato: str = "obra", user: dict = Depends(current_user)):
     """Curva S completa del proyecto (todos los meses que tocan sus
     conceptos EVM), para el gráfico de 3 líneas del dashboard — no depende
     de start/end porque la curva se ve completa, la ventana de
     start/end es solo para las tarjetas de analisis_periodo."""
     await ensure_project_access(user, pid)
-    conceptos = await db.conceptos.find({"project_id": pid, "activo": True}).to_list(length=100000)
+    conceptos, pertenece = await _conceptos_activos_contrato(pid, contrato)
 
     planeado_por_mes: Dict[str, Decimal] = {}
     for c in conceptos:
@@ -24092,13 +24181,13 @@ async def analisis_periodo_curva_s(pid: str, user: dict = Depends(current_user))
 
     ganado_por_mes: Dict[str, Decimal] = {}
     async for a in db.registros_avance.find({"project_id": pid}):
-        if a.get("importe_ganado_congelado") is None or not a.get("fecha"):
+        if a.get("importe_ganado_congelado") is None or not a.get("fecha") or not pertenece(a.get("concepto_id")):
             continue
         mes = a["fecha"][:7]  # "YYYY-MM-DD" -> "YYYY-MM"
         ganado_por_mes[mes] = ganado_por_mes.get(mes, Decimal("0")) + to_decimal(a["importe_ganado_congelado"])
 
     real_por_mes: Dict[str, Decimal] = {}
-    async for g in db.gastos_reales.find({"project_id": pid}):
+    async for g in db.gastos_reales.find({"project_id": pid} if contrato == "obra" else {"_id": None}):
         mes = g["fecha"][:7]
         real_por_mes[mes] = real_por_mes.get(mes, Decimal("0")) + to_decimal(g["monto"])
 
@@ -24117,7 +24206,7 @@ async def analisis_periodo_curva_s(pid: str, user: dict = Depends(current_user))
 
 
 @api.get("/projects/{pid}/analisis_periodo/excepciones", response_model=List[ExcepcionEvmOut])
-async def analisis_periodo_excepciones(pid: str, user: dict = Depends(current_user)):
+async def analisis_periodo_excepciones(pid: str, contrato: str = "obra", user: dict = Depends(current_user)):
     """Lista por excepción del dashboard (Tarea 4): conceptos con avances
     fuera de su ventana fecha_inicio/fecha_fin, cuyo acumulado ejecutado
     superó meta_cantidad, o cuya fecha_fin YA PASÓ sin haber alcanzado la
@@ -24129,7 +24218,7 @@ async def analisis_periodo_excepciones(pid: str, user: dict = Depends(current_us
     await ensure_project_access(user, pid)
     project = await db.projects.find_one({"id": pid})
     modo_avance = (project or {}).get("modo_avance", "CANTIDAD")
-    conceptos = await db.conceptos.find({"project_id": pid, "activo": True}).to_list(length=100000)
+    conceptos, _ = await _conceptos_activos_contrato(pid, contrato)
     conceptos_por_id = {c["id"]: c for c in conceptos}
     hoy = datetime.now(MX_TZ).date()
 
@@ -24204,7 +24293,7 @@ class ActividadesEvmOut(BaseModel):
 
 
 @api.get("/projects/{pid}/analisis_periodo/actividades", response_model=ActividadesEvmOut)
-async def analisis_periodo_actividades(pid: str, user: dict = Depends(current_user)):
+async def analisis_periodo_actividades(pid: str, contrato: str = "obra", user: dict = Depends(current_user)):
     """3 categorías de control del dashboard (Tarea 5): actividades
     PENDIENTES (ya venció su fecha_fin y no alcanzó la meta), ACTUALES (hoy
     cae dentro de su ventana) y POR VENIR (su ventana todavía no empieza —
@@ -24219,7 +24308,7 @@ async def analisis_periodo_actividades(pid: str, user: dict = Depends(current_us
     project = await db.projects.find_one({"id": pid})
     modo_avance = (project or {}).get("modo_avance", "CANTIDAD")
     hoy = datetime.now(MX_TZ).date()
-    conceptos = await db.conceptos.find({"project_id": pid, "activo": True}).to_list(length=100000)
+    conceptos, _ = await _conceptos_activos_contrato(pid, contrato)
 
     pendientes: List[ActividadEvmOut] = []
     actuales: List[ActividadEvmOut] = []
