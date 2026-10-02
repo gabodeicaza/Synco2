@@ -156,6 +156,14 @@ export const MODULOS: ModuloDef[] = [
     area: 'Seguridad',
   },
   {
+    key: 'supervision_ambiental',
+    label: 'Supervisión Ambiental',
+    subtitle: 'Informes de cumplimiento, autorizaciones, arbolado, resarcimiento y estudios (todo editable)',
+    icon: 'leaf-outline',
+    screen: 'supervision-ambiental',
+    area: 'Ambiental',
+  },
+  {
     key: 'juntas_trabajo',
     label: 'Relación de Juntas de Trabajo',
     subtitle: 'Consecutivo, fecha y asunto de las minutas del periodo (calculado de Minutas)',

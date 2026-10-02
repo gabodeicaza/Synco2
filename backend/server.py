@@ -157,7 +157,7 @@ MODULOS_KEYS = {
     "tabla_resumen", "estado_tiempo", "control_obra",
     "fotos_lidar", "tapial", "pruebas_calidad", "control_calidad",
     "avance_obra", "estimaciones", "pendientes_generales", "aspectos_sociales",
-    "indicadores_seguridad", "juntas_trabajo",
+    "indicadores_seguridad", "juntas_trabajo", "supervision_ambiental",
 }
 MODULOS_DIARIOS = MODULOS_KEYS
 MODULOS_SEMANALES = MODULOS_KEYS
@@ -4722,6 +4722,284 @@ async def delete_control_calidad(pid: str, rid: str, user: dict = Depends(curren
         raise HTTPException(403, "Solo puedes eliminar los registros que tú capturaste")
     await db.control_calidad.delete_one({"id": rid, "project_id": pid})
     return {"ok": True}
+
+
+# === SUPERVISIÓN AMBIENTAL =================================================
+# Sección "AMBIENTAL" del reporte semanal integral, TODA editable (nada fijo):
+#  - informe: informes de cumplimiento (trimestral/semestral...) con su % de
+#    avance y fecha de cierre → donas.
+#  - autorizacion: oficios / acuerdos / MIA que amparan la intervención.
+#  - arbolado: un grupo por autorización o afectación (ej. "MIA-E", "Nueva
+#    afectación, en proceso de autorización") con podas/trasplantes/derribos
+#    AUTORIZADOS y EJECUTADOS → donas "39 / 143".
+#  - resarcimiento: plantaciones de reposición (lugar, cantidad, foto, pie).
+#  - avance_estudio: "TABLA RESUMEN GENERAL" (actividad + % de avance).
+# Más una configuración por proyecto: la resolución/referencia de las medidas
+# y el total de árboles a restituir. Una sola colección (`ambiental`, campo
+# `seccion`) y un CRUD genérico; el export arma bloques `imagen`/`table`/
+# `fotos_comparativa` que los 3 motores ya dibujan.
+_AMBIENTAL_SECCIONES = {
+    "informe": {"req": "nombre", "textos": ("nombre",), "numeros": ("avance",), "fechas": ("fecha_cierre",)},
+    "autorizacion": {"req": "folio", "textos": ("tipo", "folio")},
+    "arbolado": {"req": "nombre", "textos": ("nombre",),
+                 "enteros": ("poda_aut", "trasplante_aut", "derribo_aut", "poda_ej", "trasplante_ej", "derribo_ej")},
+    "resarcimiento": {"req": "lugar", "textos": ("lugar", "pie"), "enteros": ("cantidad",), "foto": True},
+    "avance_estudio": {"req": "actividad", "textos": ("actividad",), "numeros": ("avance",)},
+}
+_AMBIENTAL_ROTULO = {
+    "nombre": "El nombre", "folio": "El folio", "lugar": "El lugar", "actividad": "La actividad",
+    "avance": "El avance", "fecha_cierre": "La fecha de cierre", "cantidad": "La cantidad",
+}
+
+
+class _AmbientalCampos(BaseModel):
+    nombre: Optional[str] = None
+    tipo: Optional[str] = None
+    folio: Optional[str] = None
+    lugar: Optional[str] = None
+    pie: Optional[str] = None
+    actividad: Optional[str] = None
+    avance: Optional[float] = None
+    fecha_cierre: Optional[str] = None
+    cantidad: Optional[int] = None
+    poda_aut: Optional[int] = None
+    trasplante_aut: Optional[int] = None
+    derribo_aut: Optional[int] = None
+    poda_ej: Optional[int] = None
+    trasplante_ej: Optional[int] = None
+    derribo_ej: Optional[int] = None
+    orden: Optional[int] = None
+    image: Optional[str] = None  # resarcimiento: foto (base64 / data URL)
+
+
+class AmbientalIn(_AmbientalCampos):
+    seccion: Literal["informe", "autorizacion", "arbolado", "resarcimiento", "avance_estudio"]
+
+
+class AmbientalPatch(_AmbientalCampos):
+    pass
+
+
+class AmbientalConfigIn(BaseModel):
+    referencia: Optional[str] = None  # resolución / acuerdo de las medidas de impacto ambiental
+    total_a_restituir: Optional[int] = None
+
+
+def _ambiental_normalizar(seccion: str, fields: dict) -> dict:
+    """Valida y limpia SOLO los campos de la sección que vengan en `fields`."""
+    spec = _AMBIENTAL_SECCIONES[seccion]
+    upd: dict = {}
+    for campo in spec.get("textos", ()):
+        if campo in fields:
+            upd[campo] = (fields[campo] or "").strip() or None
+    for campo in spec.get("numeros", ()):
+        if campo in fields:
+            v = fields[campo]
+            if v is not None and not (0 <= v <= 100):
+                raise HTTPException(400, f"{_AMBIENTAL_ROTULO.get(campo, campo)} debe estar entre 0 y 100")
+            upd[campo] = None if v is None else round(float(v), 2)
+    for campo in spec.get("enteros", ()):
+        if campo in fields:
+            v = fields[campo]
+            if v is not None and v < 0:
+                raise HTTPException(400, f"{_AMBIENTAL_ROTULO.get(campo, campo)} no puede ser negativa")
+            upd[campo] = v
+    for campo in spec.get("fechas", ()):
+        if campo in fields:
+            v = (fields[campo] or "").strip()
+            if not v:
+                upd[campo] = None
+                continue
+            try:
+                upd[campo] = _fecha_flexible(v).isoformat()
+            except ValueError:
+                raise HTTPException(400, f"{_AMBIENTAL_ROTULO.get(campo, campo)} inválida: usa AAAA-MM-DD o DD/MM/AAAA")
+    if "orden" in fields and fields["orden"] is not None:
+        upd["orden"] = fields["orden"]
+    return upd
+
+
+def _ambiental_public(doc: dict) -> dict:
+    return {k: v for k, v in doc.items() if k not in ("_id", "foto")}
+
+
+@api.get("/projects/{pid}/ambiental")
+async def list_ambiental(pid: str, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    cursor = db.ambiental.find({"project_id": pid}, {"foto": 0}).sort([("seccion", 1), ("orden", 1), ("created_at", 1)])
+    cfg = await db.ambiental_config.find_one({"project_id": pid}) or {}
+    return {"items": [_ambiental_public(d) for d in await cursor.to_list(length=2000)],
+            "config": {"referencia": cfg.get("referencia"), "total_a_restituir": cfg.get("total_a_restituir")}}
+
+
+@api.put("/projects/{pid}/ambiental-config")
+async def set_ambiental_config(pid: str, body: AmbientalConfigIn, user: dict = Depends(current_user)):
+    _assert_write_allowed(user)
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "supervision_ambiental")
+    fields = body.model_dump(exclude_unset=True)
+    upd: dict = {}
+    if "referencia" in fields:
+        upd["referencia"] = (fields["referencia"] or "").strip() or None
+    if "total_a_restituir" in fields:
+        t = fields["total_a_restituir"]
+        if t is not None and t < 0:
+            raise HTTPException(400, "El total a restituir no puede ser negativo")
+        upd["total_a_restituir"] = t
+    if upd:
+        await db.ambiental_config.update_one({"project_id": pid}, {"$set": upd}, upsert=True)
+    cfg = await db.ambiental_config.find_one({"project_id": pid}) or {}
+    return {"referencia": cfg.get("referencia"), "total_a_restituir": cfg.get("total_a_restituir")}
+
+
+@api.post("/projects/{pid}/ambiental")
+async def create_ambiental(pid: str, body: AmbientalIn, user: dict = Depends(current_user)):
+    _assert_write_allowed(user)
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "supervision_ambiental")
+    spec = _AMBIENTAL_SECCIONES[body.seccion]
+    fields = body.model_dump(exclude_unset=True)
+    doc = {"id": str(uuid.uuid4()), "project_id": pid, "seccion": body.seccion}
+    doc.update(_ambiental_normalizar(body.seccion, fields))
+    if not doc.get(spec["req"]):
+        raise HTTPException(400, f"{_AMBIENTAL_ROTULO.get(spec['req'], spec['req'])} es obligatorio")
+    if "orden" not in doc:
+        ultimo = await db.ambiental.find({"project_id": pid, "seccion": body.seccion}, {"orden": 1}).sort("orden", -1).limit(1).to_list(length=1)
+        doc["orden"] = (ultimo[0].get("orden") or 0) + 1 if ultimo else 1
+    if spec.get("foto") and body.image:
+        doc["foto"] = await asyncio.to_thread(_normalize_photo_b64, body.image)
+        doc["thumb"] = await asyncio.to_thread(_compress_image_b64, doc["foto"])
+    now = datetime.now(timezone.utc)
+    doc.update({"created_by": user["id"], "created_by_name": user["name"], "created_at": now, "updated_at": now})
+    await db.ambiental.insert_one(doc)
+    return _ambiental_public(doc)
+
+
+@api.patch("/projects/{pid}/ambiental/{rid}")
+async def update_ambiental(pid: str, rid: str, body: AmbientalPatch, user: dict = Depends(current_user)):
+    _assert_write_allowed(user)
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "supervision_ambiental")
+    doc = await db.ambiental.find_one({"id": rid, "project_id": pid}, {"foto": 0, "thumb": 0})
+    if not doc:
+        raise HTTPException(404, "Registro no existe")
+    spec = _AMBIENTAL_SECCIONES[doc["seccion"]]
+    fields = body.model_dump(exclude_unset=True)
+    upd = _ambiental_normalizar(doc["seccion"], fields)
+    if spec["req"] in upd and not upd[spec["req"]]:
+        raise HTTPException(400, f"{_AMBIENTAL_ROTULO.get(spec['req'], spec['req'])} es obligatorio")
+    if spec.get("foto") and fields.get("image"):
+        upd["foto"] = await asyncio.to_thread(_normalize_photo_b64, fields["image"])
+        upd["thumb"] = await asyncio.to_thread(_compress_image_b64, upd["foto"])
+    if upd:
+        upd["updated_at"] = datetime.now(timezone.utc)
+        await db.ambiental.update_one({"id": rid}, {"$set": upd})
+    return _ambiental_public(await db.ambiental.find_one({"id": rid}))
+
+
+@api.delete("/projects/{pid}/ambiental/{rid}")
+async def delete_ambiental(pid: str, rid: str, user: dict = Depends(current_user)):
+    """Coordinador/Sub-Coordinador borran cualquiera; el resto solo lo suyo."""
+    _assert_write_allowed(user)
+    await ensure_project_access(user, pid)
+    doc = await db.ambiental.find_one({"id": rid, "project_id": pid}, {"created_by": 1})
+    if not doc:
+        raise HTTPException(404, "Registro no existe")
+    if user.get("role") not in (ROLE_COORD, ROLE_SUB) and doc.get("created_by") != user["id"]:
+        raise HTTPException(403, "Solo puedes eliminar los registros que tú capturaste")
+    await db.ambiental.delete_one({"id": rid, "project_id": pid})
+    return {"ok": True}
+
+
+def _fecha_larga_es(iso: Optional[str]) -> str:
+    """'2026-09-17' → '17 de septiembre de 2026'."""
+    try:
+        d = date.fromisoformat((iso or "")[:10])
+    except ValueError:
+        return iso or "-"
+    return f"{d.day} de {_SEGURIDAD_MESES[d.month - 1].lower()} de {d.year}"
+
+
+def _fmt_pct_amb(v) -> str:
+    return f"{float(v):g}%"
+
+
+async def _ambiental_bloques(items: List[dict], config: dict) -> List[dict]:
+    """Bloques de la sección SUPERVISIÓN AMBIENTAL a partir de lo capturado.
+    Una sección vacía no imprime nada; sin ningún dato → []."""
+    por = {sec: sorted((i for i in items if i.get("seccion") == sec),
+                       key=lambda i: (i.get("orden") or 0, str(i.get("created_at") or "")))
+           for sec in _AMBIENTAL_SECCIONES}
+    bloques: List[dict] = []
+
+    async def _donas(titulo: str, filas: List[tuple], detalles: List[str]) -> str:
+        it = iter(detalles)
+        png = await asyncio.to_thread(_grafica_donas_png, titulo, filas, lambda r, t: next(it))
+        return await asyncio.to_thread(_png_bytes_to_jpeg_dataurl, png)
+
+    informes = por["informe"]
+    for i in range(0, len(informes), 4):
+        trozo = informes[i:i + 4]
+        filas = [(r["nombre"], float(r.get("avance") or 0), 100) for r in trozo]
+        detalles = [("Fecha de cierre: " + _fecha_larga_es(r["fecha_cierre"])) if r.get("fecha_cierre") else "" for r in trozo]
+        bloques.append({
+            "type": "imagen",
+            "heading": "SEGUIMIENTO AL CUMPLIMIENTO DE LAS MEDIDAS DE IMPACTO AMBIENTAL" if i == 0 else None,
+            "imagen": await _donas("Avance de informes", filas, detalles),
+            "caption": (config.get("referencia") or "") if i == 0 else "",
+        })
+    if por["autorizacion"]:
+        bloques.append({
+            "type": "table", "heading": "INTERVENCIÓN DE ARBOLADO – AUTORIZACIONES",
+            "headers": ["TIPO", "FOLIO / OFICIO"],
+            "rows": [[r.get("tipo") or "-", r["folio"]] for r in por["autorizacion"]],
+            "col_widths": [0.35, 0.65], "empty_text": "Sin autorizaciones.",
+        })
+    for g in por["arbolado"]:
+        filas = [(rot, g.get(f"{k}_ej") or 0, g.get(f"{k}_aut") or 0)
+                 for rot, k in (("PODAS", "poda"), ("TRASPLANTES", "trasplante"), ("DERRIBOS", "derribo"))]
+        detalles = [f"{ej} / {aut}" for _, ej, aut in filas]
+        bloques.append({
+            "type": "imagen", "heading": f"INTERVENCIÓN DE ARBOLADO · {g['nombre'].upper()}",
+            "imagen": await _donas(g["nombre"], filas, detalles),
+            "caption": "Ejecutado / autorizado",
+        })
+    resarc = por["resarcimiento"]
+    if resarc:
+        restituidos = sum(r.get("cantidad") or 0 for r in resarc)
+        a_restituir = config.get("total_a_restituir")
+        bloques.append({
+            "type": "table", "heading": "RESARCIMIENTO DE ARBOLADO",
+            "headers": ["PLANTACIÓN", "CANTIDAD"],
+            "rows": [[r["lugar"], str(r.get("cantidad") if r.get("cantidad") is not None else "-")] for r in resarc],
+            "col_widths": [0.8, 0.2], "empty_text": "Sin plantaciones.",
+        })
+        bloques.append({
+            "type": "summary",
+            "text": (f"Total a restituir: {a_restituir} · " if a_restituir is not None else "") + f"Total restituidos: {restituidos}",
+        })
+        con_foto = [r for r in resarc if r.get("foto")]
+        pares = []
+        for i in range(0, len(con_foto), 2):
+            a = con_foto[i]
+            b = con_foto[i + 1] if i + 1 < len(con_foto) else None
+            pares.append({
+                "titulo": "RESARCIMIENTO DE ARBOLADO", "original": a["foto"], "actual": b["foto"] if b else None,
+                "desc_encabezado": "RESARCIMIENTO DE ARBOLADO",
+                "desc_original": a["lugar"], "desc_actual": (b or {}).get("lugar") or "",
+                "etiqueta_original": a.get("pie") or "", "etiqueta_actual": (b or {}).get("pie") or "",
+                "sin_placeholder": True,
+            })
+        if pares:
+            bloques.append({"type": "fotos_comparativa", "items": pares})
+    if por["avance_estudio"]:
+        bloques.append({
+            "type": "table", "heading": "TABLA RESUMEN GENERAL", "headers": ["ACTIVIDAD", "AVANCE SEMANAL (%)"],
+            "rows": [[r["actividad"], _fmt_pct_amb(r["avance"]) if r.get("avance") is not None else "-"]
+                     for r in por["avance_estudio"]],
+            "col_widths": [0.75, 0.25], "empty_text": "Sin actividades.",
+        })
+    return bloques
 
 
 # === CAPA FINANCIERA DEL REPORTE SEMANAL ===================================
@@ -16054,6 +16332,7 @@ async def _gather_modulos_export_data(
         "pruebas_calidad": None, "control_calidad": None,
         "avance_obra": None, "estimaciones": None, "pendientes_generales": None,
         "aspectos_sociales": None, "indicadores_seguridad": None, "juntas_trabajo": None,
+        "supervision_ambiental": None,
     }
     date_q = {"created_at": {"$gte": start_dt, "$lte": end_dt}}
     # Riesgos y Estudios son matrices mutables (el % de avance se actualiza
@@ -16439,6 +16718,14 @@ async def _gather_modulos_export_data(
             blocks_as.append({"type": "imagen", "heading": heading, "imagen": jpg, "caption": caption})
         if blocks_as:
             out["aspectos_sociales"] = {"titulo": "ASPECTOS SOCIALES", "blocks": blocks_as}
+
+    if activos.get("supervision_ambiental"):
+        # Estado vigente (no un log): lo capturado/editado a mano en el módulo.
+        items_amb = await db.ambiental.find({"project_id": pid}).to_list(length=2000)
+        cfg_amb = await db.ambiental_config.find_one({"project_id": pid}) or {}
+        bloques_amb = await _ambiental_bloques(items_amb, cfg_amb)
+        if bloques_amb:
+            out["supervision_ambiental"] = {"titulo": "SUPERVISIÓN AMBIENTAL", "blocks": bloques_amb}
 
     if activos.get("juntas_trabajo"):
         # CALCULADO de las minutas (sin captura propia): las juntas del período

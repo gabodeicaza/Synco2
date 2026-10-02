@@ -120,6 +120,7 @@ export default function SubCoordLayout() {
         <Tabs.Screen name="pruebas-calidad" options={{ href: null }} />
         <Tabs.Screen name="control-calidad" options={{ href: null }} />
         <Tabs.Screen name="estimaciones" options={{ href: null }} />
+        <Tabs.Screen name="supervision-ambiental" options={{ href: null }} />
         <Tabs.Screen name="pendientes-generales" options={{ href: null }} />
         <Tabs.Screen name="aspectos-sociales" options={{ href: null }} />
         <Tabs.Screen name="indicadores-seguridad" options={{ href: null }} />
