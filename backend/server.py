@@ -157,7 +157,8 @@ MODULOS_KEYS = {
     "tabla_resumen", "estado_tiempo", "control_obra",
     "fotos_lidar", "tapial", "pruebas_calidad", "control_calidad",
     "avance_obra", "estimaciones", "pendientes_generales", "aspectos_sociales",
-    "indicadores_seguridad",
+    "indicadores_seguridad", "juntas_trabajo", "supervision_ambiental",
+    "actividades_particulares",
 }
 MODULOS_DIARIOS = MODULOS_KEYS
 MODULOS_SEMANALES = MODULOS_KEYS
@@ -192,6 +193,7 @@ _DATOS_CONTRATO_BLOQUES = ("obra", "supervision")
 _DATOS_CONTRATO_CAMPOS = (
     "objeto", "empresa", "contrato", "ubicacion", "inicio", "fin",
     "monto", "iva", "monto_con_iva", "anticipo_label", "anticipo",
+    "superintendente",  # solo se usa en SUPERVISIÓN: firma de la hoja final del informe
 )
 
 
@@ -239,7 +241,7 @@ def _contrato_bloques(proj: dict) -> list:
         obra["fin"] = _fmt_iso_dmy(proj["end_date"])
     bloques = []
     for etq, d in (("OBRA", obra), ("SUPERVISIÓN", sup)):
-        if not any(d.values()):
+        if not any(v for k, v in d.items() if k != "superintendente"):
             continue
         lineas = []
         if d.get("objeto"):
@@ -2054,6 +2056,75 @@ def _fecha_flexible(valor) -> date:
         anio = int(m.group(3))
         return date(anio + 2000 if anio < 100 else anio, int(m.group(2)), int(m.group(1)))
     raise ValueError(f"fecha inválida: {valor!r}")
+
+
+_MES_CORTO = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"]
+
+
+def _junta_consecutivo(codigo: Optional[str]) -> str:
+    """Código de minuta "CL4 OBRA 260921-A" → consecutivo del reporte
+    "CL4-OBRA-260921A". Si no tiene ese formato se imprime tal cual."""
+    c = (codigo or "").strip()
+    m = re.fullmatch(r"(.*?)\s*(\d{6})-([A-Z]+)", c)
+    if not m:
+        return c
+    prefijo = re.sub(r"\s+", "-", m.group(1).strip())
+    return f"{prefijo}-{m.group(2)}{m.group(3)}" if prefijo else f"{m.group(2)}{m.group(3)}"
+
+
+def _fecha_corta_es(iso: Optional[str]) -> str:
+    """'2026-09-21' → '21-sep-26'."""
+    try:
+        d = date.fromisoformat((iso or "")[:10])
+    except ValueError:
+        return iso or "-"
+    return f"{d.day:02d}-{_MES_CORTO[d.month - 1]}-{d:%y}"
+
+
+def _juntas_bloques(minutas: List[dict]) -> List[dict]:
+    """Bloque `table` "RELACIÓN DE JUNTAS DE TRABAJO" (N°, consecutivo, fecha,
+    asunto) a partir de las minutas del período, en orden cronológico."""
+    if not minutas:
+        return []
+    ordenadas = sorted(minutas, key=lambda m: (m.get("fecha_reunion") or "", str(m.get("created_at") or ""), m.get("codigo") or ""))
+    rows = [[str(i), _junta_consecutivo(m.get("codigo")), _fecha_corta_es(m.get("fecha_reunion")), (m.get("titulo") or "").strip() or "-"]
+            for i, m in enumerate(ordenadas, start=1)]
+    return [{
+        "type": "table", "heading": None, "headers": ["N°", "CONSECUTIVO", "FECHA", "ASUNTO"],
+        "rows": rows, "col_widths": [0.06, 0.22, 0.12, 0.60], "empty_text": "Sin juntas de trabajo.",
+    }]
+
+
+_CIERRE_CARGO = "SUPERINTENDENTE DE SUPERVISIÓN EXTERNA"
+
+
+def _periodo_texto_cierre(ini: date, fin: date) -> str:
+    """'DEL 21 AL 26 DE SEPTIEMBRE DEL 2026' (mismo mes), 'DEL 28 DE SEPTIEMBRE
+    AL 03 DE OCTUBRE DEL 2026' (otro mes) o, de un solo día, '21 DE SEPTIEMBRE DEL 2026'."""
+    mes = lambda d: _SEGURIDAD_MESES[d.month - 1].upper()  # noqa: E731
+    if ini == fin:
+        return f"{ini.day:02d} DE {mes(ini)} DEL {ini.year}"
+    if ini.year != fin.year:
+        return f"DEL {ini.day:02d} DE {mes(ini)} DE {ini.year} AL {fin.day:02d} DE {mes(fin)} DE {fin.year}"
+    if ini.month != fin.month:
+        return f"DEL {ini.day:02d} DE {mes(ini)} AL {fin.day:02d} DE {mes(fin)} DEL {fin.year}"
+    return f"DEL {ini.day:02d} AL {fin.day:02d} DE {mes(fin)} DEL {fin.year}"
+
+
+def _cierre_firma(proj: dict, categoria: str, start_dt: datetime, end_dt: datetime) -> Optional[dict]:
+    """Hoja final del informe: tipo de reporte, periodo y el superintendente de
+    supervisión (se captura en Datos de contrato > Supervisión). None si no hay
+    nombre capturado: sin firma no se imprime una hoja vacía."""
+    sup = _sanitize_datos_contrato((proj or {}).get("datos_contrato")).get("supervision") or {}
+    nombre = (sup.get("superintendente") or "").strip()
+    if not nombre:
+        return None
+    tipo = {"reportes_diarios": "DIARIO", "reportes_semanales": "SEMANAL", "reportes_mensuales": "MENSUAL"}.get(categoria, "")
+    ini, fin = start_dt.astimezone(MX_TZ).date(), end_dt.astimezone(MX_TZ).date()
+    periodo = _periodo_texto_cierre(ini, fin)
+    return {"titulo": f"REPORTE {tipo}".strip(),
+            "periodo": periodo if ini == fin else f"PERIODO {periodo}",
+            "nombre": nombre, "cargo": _CIERRE_CARGO}
 
 
 def _ensure_modulo_activo(project: dict, clave: str) -> None:
@@ -4652,6 +4723,593 @@ async def delete_control_calidad(pid: str, rid: str, user: dict = Depends(curren
         raise HTTPException(403, "Solo puedes eliminar los registros que tú capturaste")
     await db.control_calidad.delete_one({"id": rid, "project_id": pid})
     return {"ok": True}
+
+
+# === SUPERVISIÓN AMBIENTAL =================================================
+# Sección "AMBIENTAL" del reporte semanal integral, TODA editable (nada fijo):
+#  - informe: informes de cumplimiento (trimestral/semestral...) con su % de
+#    avance y fecha de cierre → donas.
+#  - autorizacion: oficios / acuerdos / MIA que amparan la intervención.
+#  - arbolado: un grupo por autorización o afectación (ej. "MIA-E", "Nueva
+#    afectación, en proceso de autorización") con podas/trasplantes/derribos
+#    AUTORIZADOS y EJECUTADOS → donas "39 / 143".
+#  - resarcimiento: plantaciones de reposición (lugar, cantidad, foto, pie).
+#  - avance_estudio: "TABLA RESUMEN GENERAL" (actividad + % de avance).
+# Más una configuración por proyecto: la resolución/referencia de las medidas
+# y el total de árboles a restituir. Una sola colección (`ambiental`, campo
+# `seccion`) y un CRUD genérico; el export arma bloques `imagen`/`table`/
+# `fotos_comparativa` que los 3 motores ya dibujan.
+_AMBIENTAL_SECCIONES = {
+    "informe": {"req": "nombre", "textos": ("nombre",), "numeros": ("avance",), "fechas": ("fecha_cierre",)},
+    "autorizacion": {"req": "folio", "textos": ("tipo", "folio")},
+    "arbolado": {"req": "nombre", "textos": ("nombre",),
+                 "enteros": ("poda_aut", "trasplante_aut", "derribo_aut", "poda_ej", "trasplante_ej", "derribo_ej")},
+    "resarcimiento": {"req": "lugar", "textos": ("lugar", "pie"), "enteros": ("cantidad",), "foto": True},
+    "avance_estudio": {"req": "actividad", "textos": ("actividad",), "numeros": ("avance",)},
+}
+_AMBIENTAL_ROTULO = {
+    "nombre": "El nombre", "folio": "El folio", "lugar": "El lugar", "actividad": "La actividad",
+    "avance": "El avance", "fecha_cierre": "La fecha de cierre", "cantidad": "La cantidad",
+}
+
+
+class _AmbientalCampos(BaseModel):
+    nombre: Optional[str] = None
+    tipo: Optional[str] = None
+    folio: Optional[str] = None
+    lugar: Optional[str] = None
+    pie: Optional[str] = None
+    actividad: Optional[str] = None
+    avance: Optional[float] = None
+    fecha_cierre: Optional[str] = None
+    cantidad: Optional[int] = None
+    poda_aut: Optional[int] = None
+    trasplante_aut: Optional[int] = None
+    derribo_aut: Optional[int] = None
+    poda_ej: Optional[int] = None
+    trasplante_ej: Optional[int] = None
+    derribo_ej: Optional[int] = None
+    orden: Optional[int] = None
+    image: Optional[str] = None  # resarcimiento: foto (base64 / data URL)
+
+
+class AmbientalIn(_AmbientalCampos):
+    seccion: Literal["informe", "autorizacion", "arbolado", "resarcimiento", "avance_estudio"]
+
+
+class AmbientalPatch(_AmbientalCampos):
+    pass
+
+
+class AmbientalConfigIn(BaseModel):
+    referencia: Optional[str] = None  # resolución / acuerdo de las medidas de impacto ambiental
+    total_a_restituir: Optional[int] = None
+
+
+def _ambiental_normalizar(seccion: str, fields: dict) -> dict:
+    """Valida y limpia SOLO los campos de la sección que vengan en `fields`."""
+    spec = _AMBIENTAL_SECCIONES[seccion]
+    upd: dict = {}
+    for campo in spec.get("textos", ()):
+        if campo in fields:
+            upd[campo] = (fields[campo] or "").strip() or None
+    for campo in spec.get("numeros", ()):
+        if campo in fields:
+            v = fields[campo]
+            if v is not None and not (0 <= v <= 100):
+                raise HTTPException(400, f"{_AMBIENTAL_ROTULO.get(campo, campo)} debe estar entre 0 y 100")
+            upd[campo] = None if v is None else round(float(v), 2)
+    for campo in spec.get("enteros", ()):
+        if campo in fields:
+            v = fields[campo]
+            if v is not None and v < 0:
+                raise HTTPException(400, f"{_AMBIENTAL_ROTULO.get(campo, campo)} no puede ser negativa")
+            upd[campo] = v
+    for campo in spec.get("fechas", ()):
+        if campo in fields:
+            v = (fields[campo] or "").strip()
+            if not v:
+                upd[campo] = None
+                continue
+            try:
+                upd[campo] = _fecha_flexible(v).isoformat()
+            except ValueError:
+                raise HTTPException(400, f"{_AMBIENTAL_ROTULO.get(campo, campo)} inválida: usa AAAA-MM-DD o DD/MM/AAAA")
+    if "orden" in fields and fields["orden"] is not None:
+        upd["orden"] = fields["orden"]
+    return upd
+
+
+def _ambiental_public(doc: dict) -> dict:
+    return {k: v for k, v in doc.items() if k not in ("_id", "foto")}
+
+
+@api.get("/projects/{pid}/ambiental")
+async def list_ambiental(pid: str, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    cursor = db.ambiental.find({"project_id": pid}, {"foto": 0}).sort([("seccion", 1), ("orden", 1), ("created_at", 1)])
+    cfg = await db.ambiental_config.find_one({"project_id": pid}) or {}
+    return {"items": [_ambiental_public(d) for d in await cursor.to_list(length=2000)],
+            "config": {"referencia": cfg.get("referencia"), "total_a_restituir": cfg.get("total_a_restituir")}}
+
+
+@api.put("/projects/{pid}/ambiental-config")
+async def set_ambiental_config(pid: str, body: AmbientalConfigIn, user: dict = Depends(current_user)):
+    _assert_write_allowed(user)
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "supervision_ambiental")
+    fields = body.model_dump(exclude_unset=True)
+    upd: dict = {}
+    if "referencia" in fields:
+        upd["referencia"] = (fields["referencia"] or "").strip() or None
+    if "total_a_restituir" in fields:
+        t = fields["total_a_restituir"]
+        if t is not None and t < 0:
+            raise HTTPException(400, "El total a restituir no puede ser negativo")
+        upd["total_a_restituir"] = t
+    if upd:
+        await db.ambiental_config.update_one({"project_id": pid}, {"$set": upd}, upsert=True)
+    cfg = await db.ambiental_config.find_one({"project_id": pid}) or {}
+    return {"referencia": cfg.get("referencia"), "total_a_restituir": cfg.get("total_a_restituir")}
+
+
+@api.post("/projects/{pid}/ambiental")
+async def create_ambiental(pid: str, body: AmbientalIn, user: dict = Depends(current_user)):
+    _assert_write_allowed(user)
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "supervision_ambiental")
+    spec = _AMBIENTAL_SECCIONES[body.seccion]
+    fields = body.model_dump(exclude_unset=True)
+    doc = {"id": str(uuid.uuid4()), "project_id": pid, "seccion": body.seccion}
+    doc.update(_ambiental_normalizar(body.seccion, fields))
+    if not doc.get(spec["req"]):
+        raise HTTPException(400, f"{_AMBIENTAL_ROTULO.get(spec['req'], spec['req'])} es obligatorio")
+    if "orden" not in doc:
+        ultimo = await db.ambiental.find({"project_id": pid, "seccion": body.seccion}, {"orden": 1}).sort("orden", -1).limit(1).to_list(length=1)
+        doc["orden"] = (ultimo[0].get("orden") or 0) + 1 if ultimo else 1
+    if spec.get("foto") and body.image:
+        doc["foto"] = await asyncio.to_thread(_normalize_photo_b64, body.image)
+        doc["thumb"] = await asyncio.to_thread(_compress_image_b64, doc["foto"])
+    now = datetime.now(timezone.utc)
+    doc.update({"created_by": user["id"], "created_by_name": user["name"], "created_at": now, "updated_at": now})
+    await db.ambiental.insert_one(doc)
+    return _ambiental_public(doc)
+
+
+@api.patch("/projects/{pid}/ambiental/{rid}")
+async def update_ambiental(pid: str, rid: str, body: AmbientalPatch, user: dict = Depends(current_user)):
+    _assert_write_allowed(user)
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "supervision_ambiental")
+    doc = await db.ambiental.find_one({"id": rid, "project_id": pid}, {"foto": 0, "thumb": 0})
+    if not doc:
+        raise HTTPException(404, "Registro no existe")
+    spec = _AMBIENTAL_SECCIONES[doc["seccion"]]
+    fields = body.model_dump(exclude_unset=True)
+    upd = _ambiental_normalizar(doc["seccion"], fields)
+    if spec["req"] in upd and not upd[spec["req"]]:
+        raise HTTPException(400, f"{_AMBIENTAL_ROTULO.get(spec['req'], spec['req'])} es obligatorio")
+    if spec.get("foto") and fields.get("image"):
+        upd["foto"] = await asyncio.to_thread(_normalize_photo_b64, fields["image"])
+        upd["thumb"] = await asyncio.to_thread(_compress_image_b64, upd["foto"])
+    if upd:
+        upd["updated_at"] = datetime.now(timezone.utc)
+        await db.ambiental.update_one({"id": rid}, {"$set": upd})
+    return _ambiental_public(await db.ambiental.find_one({"id": rid}))
+
+
+@api.delete("/projects/{pid}/ambiental/{rid}")
+async def delete_ambiental(pid: str, rid: str, user: dict = Depends(current_user)):
+    """Coordinador/Sub-Coordinador borran cualquiera; el resto solo lo suyo."""
+    _assert_write_allowed(user)
+    await ensure_project_access(user, pid)
+    doc = await db.ambiental.find_one({"id": rid, "project_id": pid}, {"created_by": 1})
+    if not doc:
+        raise HTTPException(404, "Registro no existe")
+    if user.get("role") not in (ROLE_COORD, ROLE_SUB) and doc.get("created_by") != user["id"]:
+        raise HTTPException(403, "Solo puedes eliminar los registros que tú capturaste")
+    await db.ambiental.delete_one({"id": rid, "project_id": pid})
+    return {"ok": True}
+
+
+def _fecha_larga_es(iso: Optional[str]) -> str:
+    """'2026-09-17' → '17 de septiembre de 2026'."""
+    try:
+        d = date.fromisoformat((iso or "")[:10])
+    except ValueError:
+        return iso or "-"
+    return f"{d.day} de {_SEGURIDAD_MESES[d.month - 1].lower()} de {d.year}"
+
+
+def _fmt_pct_amb(v) -> str:
+    return f"{float(v):g}%"
+
+
+async def _ambiental_bloques(items: List[dict], config: dict) -> List[dict]:
+    """Bloques de la sección SUPERVISIÓN AMBIENTAL a partir de lo capturado.
+    Una sección vacía no imprime nada; sin ningún dato → []."""
+    por = {sec: sorted((i for i in items if i.get("seccion") == sec),
+                       key=lambda i: (i.get("orden") or 0, str(i.get("created_at") or "")))
+           for sec in _AMBIENTAL_SECCIONES}
+    bloques: List[dict] = []
+
+    async def _donas(titulo: str, filas: List[tuple], detalles: List[str]) -> str:
+        it = iter(detalles)
+        png = await asyncio.to_thread(_grafica_donas_png, titulo, filas, lambda r, t: next(it))
+        return await asyncio.to_thread(_png_bytes_to_jpeg_dataurl, png)
+
+    informes = por["informe"]
+    for i in range(0, len(informes), 4):
+        trozo = informes[i:i + 4]
+        filas = [(r["nombre"], float(r.get("avance") or 0), 100) for r in trozo]
+        detalles = [("Fecha de cierre: " + _fecha_larga_es(r["fecha_cierre"])) if r.get("fecha_cierre") else "" for r in trozo]
+        bloques.append({
+            "type": "imagen",
+            "heading": "SEGUIMIENTO AL CUMPLIMIENTO DE LAS MEDIDAS DE IMPACTO AMBIENTAL" if i == 0 else None,
+            "imagen": await _donas("Avance de informes", filas, detalles),
+            "caption": (config.get("referencia") or "") if i == 0 else "",
+        })
+    if por["autorizacion"]:
+        bloques.append({
+            "type": "table", "heading": "INTERVENCIÓN DE ARBOLADO – AUTORIZACIONES",
+            "headers": ["TIPO", "FOLIO / OFICIO"],
+            "rows": [[r.get("tipo") or "-", r["folio"]] for r in por["autorizacion"]],
+            "col_widths": [0.35, 0.65], "empty_text": "Sin autorizaciones.",
+        })
+    for g in por["arbolado"]:
+        filas = [(rot, g.get(f"{k}_ej") or 0, g.get(f"{k}_aut") or 0)
+                 for rot, k in (("PODAS", "poda"), ("TRASPLANTES", "trasplante"), ("DERRIBOS", "derribo"))]
+        detalles = [f"{ej} / {aut}" for _, ej, aut in filas]
+        bloques.append({
+            "type": "imagen", "heading": f"INTERVENCIÓN DE ARBOLADO · {g['nombre'].upper()}",
+            "imagen": await _donas(g["nombre"], filas, detalles),
+            "caption": "Ejecutado / autorizado",
+        })
+    resarc = por["resarcimiento"]
+    if resarc:
+        restituidos = sum(r.get("cantidad") or 0 for r in resarc)
+        a_restituir = config.get("total_a_restituir")
+        bloques.append({
+            "type": "table", "heading": "RESARCIMIENTO DE ARBOLADO",
+            "headers": ["PLANTACIÓN", "CANTIDAD"],
+            "rows": [[r["lugar"], str(r.get("cantidad") if r.get("cantidad") is not None else "-")] for r in resarc],
+            "col_widths": [0.8, 0.2], "empty_text": "Sin plantaciones.",
+        })
+        bloques.append({
+            "type": "summary",
+            "text": (f"Total a restituir: {a_restituir} · " if a_restituir is not None else "") + f"Total restituidos: {restituidos}",
+        })
+        con_foto = [r for r in resarc if r.get("foto")]
+        pares = []
+        for i in range(0, len(con_foto), 2):
+            a = con_foto[i]
+            b = con_foto[i + 1] if i + 1 < len(con_foto) else None
+            pares.append({
+                "titulo": "RESARCIMIENTO DE ARBOLADO", "original": a["foto"], "actual": b["foto"] if b else None,
+                "desc_encabezado": "RESARCIMIENTO DE ARBOLADO",
+                "desc_original": a["lugar"], "desc_actual": (b or {}).get("lugar") or "",
+                "etiqueta_original": a.get("pie") or "", "etiqueta_actual": (b or {}).get("pie") or "",
+                "sin_placeholder": True,
+            })
+        if pares:
+            bloques.append({"type": "fotos_comparativa", "items": pares})
+    if por["avance_estudio"]:
+        bloques.append({
+            "type": "table", "heading": "TABLA RESUMEN GENERAL", "headers": ["ACTIVIDAD", "AVANCE SEMANAL (%)"],
+            "rows": [[r["actividad"], _fmt_pct_amb(r["avance"]) if r.get("avance") is not None else "-"]
+                     for r in por["avance_estudio"]],
+            "col_widths": [0.75, 0.25], "empty_text": "Sin actividades.",
+        })
+    return bloques
+
+
+# === ACTIVIDADES PARTICULARES ==============================================
+# "ACTIVIDADES DESGLOSADAS" de cada estación/intertramo en el reporte semanal
+# integral: lo que la supervisión hizo en ese punto, ordenado por CATEGORÍA
+# (Estudios y análisis, Proyecto ejecutivo, Obras inducidas...) y
+# SUBCATEGORÍA (Mecánica de suelos, Topografía...). El catálogo de categorías
+# es EDITABLE por proyecto (`act_part_cat`; hay una carga de sugeridas, las del
+# reporte de referencia, que se pueden cambiar/quitar/ampliar). Cada registro
+# (`actividades_particulares`) es UNA viñeta: estación + categoría +
+# subcategoría + texto + fecha. El export imprime una tabla por estación con
+# TODAS las categorías del catálogo; las que no tuvieron registros dicen
+# "Sin actividades ésta semana".
+ACT_PART_SUGERIDAS = [
+    ("ESTUDIOS Y ANÁLISIS", ["Mecánica de Suelos", "Topografía", "Hidrológico",
+                             "Levantamiento de instalaciones municipales (OI)", "Movilidad", "Ambiental", "Urbano", "Riesgos"]),
+    ("PROYECTO EJECUTIVO", ["General", "Proyecto Arquitectónico", "Proyecto Estructural", "Proyecto Geotécnico", "Señalización de Obra"]),
+    ("OBRAS INDUCIDAS", []),
+    ("COADYUVAR EN LA LIBERACIÓN DEL DERECHO DE VÍA", ["Atención de vecinos"]),
+    ("CONSTRUCCIÓN DE OBRA CIVIL", []),
+    ("SISTEMA ELECTROMECÁNICO", []),
+    ("ACABADOS E INSTALACIONES", []),
+    ("INSTALACIONES ESPECIALES", []),
+    ("CERTIFICACIÓN", []),
+]
+ACT_PART_SIN_ACTIVIDAD = "Sin actividades ésta semana"
+
+
+def _act_part_subcats(valores) -> List[str]:
+    out: List[str] = []
+    for v in (valores or []):
+        t = str(v or "").strip()[:120]
+        if t and t not in out:
+            out.append(t)
+    return out[:60]
+
+
+class ActPartCatIn(BaseModel):
+    nombre: str
+    subcategorias: List[str] = Field(default_factory=list)
+    orden: Optional[int] = None
+
+
+class ActPartCatPatch(BaseModel):
+    nombre: Optional[str] = None
+    subcategorias: Optional[List[str]] = None
+    orden: Optional[int] = None
+
+
+class ActPartIn(BaseModel):
+    node_id: str
+    categoria_id: str
+    subcategoria: Optional[str] = None
+    texto: str
+    fecha: Optional[str] = None
+
+
+class ActPartPatch(BaseModel):
+    node_id: Optional[str] = None
+    categoria_id: Optional[str] = None
+    subcategoria: Optional[str] = None
+    texto: Optional[str] = None
+    fecha: Optional[str] = None
+
+
+def _act_part_public(doc: dict) -> dict:
+    return {k: v for k, v in doc.items() if k != "_id"}
+
+
+@api.get("/projects/{pid}/actividades-particulares/catalogo")
+async def list_act_part_cat(pid: str, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    items = await db.act_part_cat.find({"project_id": pid}).sort("orden", 1).to_list(length=200)
+    return [_act_part_public(d) for d in items]
+
+
+@api.post("/projects/{pid}/actividades-particulares/catalogo")
+async def create_act_part_cat(pid: str, body: ActPartCatIn, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB))):
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "actividades_particulares")
+    nombre = body.nombre.strip()
+    if not nombre:
+        raise HTTPException(400, "El nombre de la categoría es obligatorio")
+    if await db.act_part_cat.find_one({"project_id": pid, "nombre": nombre}, {"id": 1}):
+        raise HTTPException(409, "Ya existe una categoría con ese nombre")
+    ultimo = await db.act_part_cat.find({"project_id": pid}, {"orden": 1}).sort("orden", -1).limit(1).to_list(length=1)
+    doc = {"id": str(uuid.uuid4()), "project_id": pid, "nombre": nombre,
+           "subcategorias": _act_part_subcats(body.subcategorias),
+           "orden": body.orden if body.orden is not None else ((ultimo[0].get("orden") or 0) + 1 if ultimo else 1),
+           "created_at": datetime.now(timezone.utc)}
+    await db.act_part_cat.insert_one(doc)
+    return _act_part_public(doc)
+
+
+@api.post("/projects/{pid}/actividades-particulares/catalogo/sugeridas")
+async def cargar_act_part_sugeridas(pid: str, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB))):
+    """Agrega las categorías del reporte de referencia que aún no existan (por
+    nombre). No toca ni borra nada de lo ya capturado/editado."""
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "actividades_particulares")
+    existentes = {d["nombre"] async for d in db.act_part_cat.find({"project_id": pid}, {"nombre": 1})}
+    ultimo = await db.act_part_cat.find({"project_id": pid}, {"orden": 1}).sort("orden", -1).limit(1).to_list(length=1)
+    orden = (ultimo[0].get("orden") or 0) if ultimo else 0
+    nuevas = 0
+    for nombre, subs in ACT_PART_SUGERIDAS:
+        if nombre in existentes:
+            continue
+        orden += 1
+        nuevas += 1
+        await db.act_part_cat.insert_one({"id": str(uuid.uuid4()), "project_id": pid, "nombre": nombre,
+                                          "subcategorias": list(subs), "orden": orden, "created_at": datetime.now(timezone.utc)})
+    items = await db.act_part_cat.find({"project_id": pid}).sort("orden", 1).to_list(length=200)
+    return {"agregadas": nuevas, "items": [_act_part_public(d) for d in items]}
+
+
+@api.patch("/projects/{pid}/actividades-particulares/catalogo/{cid}")
+async def update_act_part_cat(pid: str, cid: str, body: ActPartCatPatch, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB))):
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "actividades_particulares")
+    doc = await db.act_part_cat.find_one({"id": cid, "project_id": pid})
+    if not doc:
+        raise HTTPException(404, "Categoría no existe")
+    fields = body.model_dump(exclude_unset=True)
+    upd: dict = {}
+    if "nombre" in fields:
+        nombre = (fields["nombre"] or "").strip()
+        if not nombre:
+            raise HTTPException(400, "El nombre de la categoría es obligatorio")
+        if nombre != doc["nombre"] and await db.act_part_cat.find_one({"project_id": pid, "nombre": nombre}, {"id": 1}):
+            raise HTTPException(409, "Ya existe una categoría con ese nombre")
+        upd["nombre"] = nombre
+    if "subcategorias" in fields and fields["subcategorias"] is not None:
+        upd["subcategorias"] = _act_part_subcats(fields["subcategorias"])
+    if fields.get("orden") is not None:
+        upd["orden"] = fields["orden"]
+    if upd:
+        await db.act_part_cat.update_one({"id": cid}, {"$set": upd})
+        if "nombre" in upd:  # los registros guardan el nombre vigente de su categoría
+            await db.actividades_particulares.update_many({"project_id": pid, "categoria_id": cid},
+                                                          {"$set": {"categoria_nombre": upd["nombre"]}})
+    return _act_part_public(await db.act_part_cat.find_one({"id": cid}))
+
+
+@api.delete("/projects/{pid}/actividades-particulares/catalogo/{cid}")
+async def delete_act_part_cat(pid: str, cid: str, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB))):
+    await ensure_project_access(user, pid)
+    if not await db.act_part_cat.find_one({"id": cid, "project_id": pid}, {"id": 1}):
+        raise HTTPException(404, "Categoría no existe")
+    usados = await db.actividades_particulares.count_documents({"project_id": pid, "categoria_id": cid})
+    if usados:
+        raise HTTPException(409, f"La categoría tiene {usados} actividad(es) capturada(s): cámbialas de categoría o elimínalas primero")
+    await db.act_part_cat.delete_one({"id": cid, "project_id": pid})
+    return {"ok": True}
+
+
+async def _act_part_validar(pid: str, node_id: Optional[str], categoria_id: Optional[str]) -> Optional[dict]:
+    if node_id is not None:
+        await _validate_node_in_project(pid, node_id)
+    if categoria_id is not None:
+        cat = await db.act_part_cat.find_one({"id": categoria_id, "project_id": pid})
+        if not cat:
+            raise HTTPException(400, "La categoría no existe en este proyecto")
+        return cat
+    return None
+
+
+@api.get("/projects/{pid}/actividades-particulares")
+async def list_act_part(pid: str, desde: Optional[str] = None, hasta: Optional[str] = None,
+                        node_id: Optional[str] = None, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    q: dict = {"project_id": pid}
+    rango: dict = {}
+    for clave, valor in (("$gte", desde), ("$lte", hasta)):
+        if valor:
+            rango[clave] = _prueba_calidad_fecha(valor)
+    if rango:
+        q["fecha"] = rango
+    if node_id:
+        q["node_id"] = node_id
+    items = await db.actividades_particulares.find(q).sort([("fecha", -1), ("created_at", -1)]).to_list(length=3000)
+    return [_act_part_public(d) for d in items]
+
+
+@api.post("/projects/{pid}/actividades-particulares")
+async def create_act_part(pid: str, body: ActPartIn, user: dict = Depends(current_user)):
+    _assert_write_allowed(user)
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "actividades_particulares")
+    texto = body.texto.strip()
+    if not texto:
+        raise HTTPException(400, "Escribe la actividad realizada")
+    cat = await _act_part_validar(pid, body.node_id, body.categoria_id)
+    now = datetime.now(timezone.utc)
+    doc = {"id": str(uuid.uuid4()), "project_id": pid, "node_id": body.node_id, "categoria_id": body.categoria_id,
+           "categoria_nombre": cat["nombre"], "subcategoria": (body.subcategoria or "").strip() or None,
+           "texto": texto, "fecha": _prueba_calidad_fecha(body.fecha),
+           "created_by": user["id"], "created_by_name": user["name"], "created_at": now, "updated_at": now}
+    await db.actividades_particulares.insert_one(doc)
+    return _act_part_public(doc)
+
+
+@api.patch("/projects/{pid}/actividades-particulares/{rid}")
+async def update_act_part(pid: str, rid: str, body: ActPartPatch, user: dict = Depends(current_user)):
+    _assert_write_allowed(user)
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "actividades_particulares")
+    if not await db.actividades_particulares.find_one({"id": rid, "project_id": pid}, {"id": 1}):
+        raise HTTPException(404, "Registro no existe")
+    fields = body.model_dump(exclude_unset=True)
+    upd: dict = {}
+    if fields.get("node_id") is not None:
+        await _validate_node_in_project(pid, fields["node_id"])
+        upd["node_id"] = fields["node_id"]
+    if fields.get("categoria_id") is not None:
+        cat = await _act_part_validar(pid, None, fields["categoria_id"])
+        upd["categoria_id"], upd["categoria_nombre"] = fields["categoria_id"], cat["nombre"]
+    if "subcategoria" in fields:
+        upd["subcategoria"] = (fields["subcategoria"] or "").strip() or None
+    if "texto" in fields:
+        texto = (fields["texto"] or "").strip()
+        if not texto:
+            raise HTTPException(400, "Escribe la actividad realizada")
+        upd["texto"] = texto
+    if "fecha" in fields:
+        upd["fecha"] = _prueba_calidad_fecha(fields["fecha"])
+    if upd:
+        upd["updated_at"] = datetime.now(timezone.utc)
+        await db.actividades_particulares.update_one({"id": rid}, {"$set": upd})
+    return _act_part_public(await db.actividades_particulares.find_one({"id": rid}))
+
+
+@api.delete("/projects/{pid}/actividades-particulares/{rid}")
+async def delete_act_part(pid: str, rid: str, user: dict = Depends(current_user)):
+    """Coordinador/Sub-Coordinador borran cualquiera; el resto solo lo suyo."""
+    _assert_write_allowed(user)
+    await ensure_project_access(user, pid)
+    doc = await db.actividades_particulares.find_one({"id": rid, "project_id": pid}, {"created_by": 1})
+    if not doc:
+        raise HTTPException(404, "Registro no existe")
+    if user.get("role") not in (ROLE_COORD, ROLE_SUB) and doc.get("created_by") != user["id"]:
+        raise HTTPException(403, "Solo puedes eliminar las actividades que tú capturaste")
+    await db.actividades_particulares.delete_one({"id": rid, "project_id": pid})
+    return {"ok": True}
+
+
+def _orden_arbol(nodos: List[dict]) -> dict:
+    """{node_id: posición} recorriendo el árbol de ubicaciones en profundidad
+    (hermanos por `order`): el mismo orden del árbol, para imprimir estaciones
+    e intertramos tal como están en el proyecto."""
+    hijos: dict = {}
+    for n in nodos:
+        hijos.setdefault(n.get("parent_id"), []).append(n)
+    for lst in hijos.values():
+        lst.sort(key=lambda n: (n.get("order") or 0, n.get("name") or ""))
+    orden: dict = {}
+
+    def visita(padre) -> None:
+        for n in hijos.get(padre, []):
+            orden[n["id"]] = len(orden)
+            visita(n["id"])
+    visita(None)
+    for n in nodos:  # nodos huérfanos al final
+        orden.setdefault(n["id"], len(orden))
+    return orden
+
+
+def _actividades_particulares_bloques(registros: List[dict], catalogo: List[dict], nodos: List[dict]) -> List[dict]:
+    """Una tabla `table` por estación/intertramo con registros en el período:
+    categoría / subcategoría / actividad (una viñeta por renglón). Se listan
+    TODAS las categorías del catálogo; sin registros dicen "Sin actividades
+    ésta semana". Registros de una categoría que ya no está en el catálogo se
+    imprimen al final con el nombre que guardaron."""
+    nombre_nodo = {n["id"]: n.get("name") or "" for n in nodos}
+    orden_nodo = _orden_arbol(nodos)
+    por_nodo: dict = {}
+    for r in registros:
+        if r.get("node_id") in nombre_nodo:
+            por_nodo.setdefault(r["node_id"], []).append(r)
+    bloques = []
+    for nid in sorted(por_nodo, key=lambda i: orden_nodo.get(i, 10 ** 9)):
+        regs = sorted(por_nodo[nid], key=lambda r: (r.get("fecha") or "", str(r.get("created_at") or "")))
+        cats = [(c["id"], c["nombre"], c.get("subcategorias") or []) for c in catalogo]
+        conocidas = {c[0] for c in cats}
+        for r in regs:  # categoría borrada del catálogo: se conserva con su nombre
+            if r.get("categoria_id") not in conocidas:
+                conocidas.add(r.get("categoria_id"))
+                cats.append((r.get("categoria_id"), r.get("categoria_nombre") or "Otras", []))
+        rows: List[list] = []
+        for cid, cnombre, subs in cats:
+            recs = [r for r in regs if r.get("categoria_id") == cid]
+            if not recs:
+                rows.append([cnombre, "", ACT_PART_SIN_ACTIVIDAD])
+                continue
+            claves = [None] + list(subs)
+            for r in recs:
+                if r.get("subcategoria") and r["subcategoria"] not in claves:
+                    claves.append(r["subcategoria"])
+            primera_cat = True
+            for sub in claves:
+                grupo = [r for r in recs if (r.get("subcategoria") or None) == sub]
+                for j, r in enumerate(grupo):
+                    rows.append([cnombre if primera_cat else "", (sub or "") if j == 0 else "", "• " + r["texto"]])
+                    primera_cat = False
+        bloques.append({
+            "type": "table", "heading": f"{nombre_nodo[nid].upper()} · ACTIVIDADES DESGLOSADAS",
+            "headers": ["CATEGORÍA", "SUBCATEGORÍA", "ACTIVIDADES"], "rows": rows,
+            "col_widths": [0.22, 0.2, 0.58], "empty_text": ACT_PART_SIN_ACTIVIDAD,
+        })
+    return bloques
 
 
 # === CAPA FINANCIERA DEL REPORTE SEMANAL ===================================
@@ -12580,6 +13238,7 @@ async def export_reports_pdf(
     # _build_pdf_blocking.
     modulos_categoria = _modulos_categoria_para_export(period_type, period)
     modulos_data = await _gather_modulos_export_data(pid, proj, start_dt, end_dt, modulos_categoria)
+    firma_cierre = _cierre_firma(proj, modulos_categoria, start_dt, end_dt)
 
     # ========================================================================
     # DIMENSIONES DINÁMICAS DEL CANVAS
@@ -15555,6 +16214,21 @@ async def export_reports_pdf(
         # Higiene, al final de todo — solo si están encendidos.
         _draw_modulos_closing_pages()
 
+        if firma_cierre:
+            c.setFillColor(HexColor(_readable_dark_hex(project_color)))
+            c.setFont("Helvetica-Bold", 36)
+            c.drawCentredString(PW / 2, PH * 0.62, firma_cierre["titulo"])
+            c.setFillColor(TEXT)
+            c.setFont("Helvetica-Bold", 16)
+            c.drawCentredString(PW / 2, PH * 0.62 - 1.6 * cm, firma_cierre["periodo"])
+            c.setFont("Helvetica-Bold", 20)
+            c.drawCentredString(PW / 2, PH * 0.62 - 4.6 * cm, firma_cierre["nombre"])
+            c.setFillColor(MUTED)
+            c.setFont("Helvetica-Bold", 13)
+            c.drawCentredString(PW / 2, PH * 0.62 - 5.6 * cm, firma_cierre["cargo"])
+            c.showPage()
+            page_num += 1
+
         c.save()
         return buf.getvalue(), section_page_indices, area_page_indices, _gd_page_count, _indice_marks
 
@@ -15967,7 +16641,8 @@ async def _gather_modulos_export_data(
         "tabla_resumen": None, "fotos_lidar": None, "tapial": None,
         "pruebas_calidad": None, "control_calidad": None,
         "avance_obra": None, "estimaciones": None, "pendientes_generales": None,
-        "aspectos_sociales": None, "indicadores_seguridad": None,
+        "aspectos_sociales": None, "indicadores_seguridad": None, "juntas_trabajo": None,
+        "supervision_ambiental": None, "actividades_particulares": None,
     }
     date_q = {"created_at": {"$gte": start_dt, "$lte": end_dt}}
     # Riesgos y Estudios son matrices mutables (el % de avance se actualiza
@@ -16354,6 +17029,39 @@ async def _gather_modulos_export_data(
         if blocks_as:
             out["aspectos_sociales"] = {"titulo": "ASPECTOS SOCIALES", "blocks": blocks_as}
 
+    if activos.get("actividades_particulares"):
+        d_ini_ap = start_dt.astimezone(MX_TZ).date().isoformat()
+        d_fin_ap = end_dt.astimezone(MX_TZ).date().isoformat()
+        regs_ap = await db.actividades_particulares.find(
+            {"project_id": pid, "fecha": {"$gte": d_ini_ap, "$lte": d_fin_ap}}
+        ).to_list(length=5000)
+        if regs_ap:
+            cat_ap = await db.act_part_cat.find({"project_id": pid}).sort("orden", 1).to_list(length=200)
+            nodos_ap = await db.location_nodes.find({"project_id": pid}).to_list(length=20000)
+            bloques_ap = _actividades_particulares_bloques(regs_ap, cat_ap, nodos_ap)
+            if bloques_ap:
+                out["actividades_particulares"] = {"titulo": "ACTIVIDADES PARTICULARES", "blocks": bloques_ap}
+
+    if activos.get("supervision_ambiental"):
+        # Estado vigente (no un log): lo capturado/editado a mano en el módulo.
+        items_amb = await db.ambiental.find({"project_id": pid}).to_list(length=2000)
+        cfg_amb = await db.ambiental_config.find_one({"project_id": pid}) or {}
+        bloques_amb = await _ambiental_bloques(items_amb, cfg_amb)
+        if bloques_amb:
+            out["supervision_ambiental"] = {"titulo": "SUPERVISIÓN AMBIENTAL", "blocks": bloques_amb}
+
+    if activos.get("juntas_trabajo"):
+        # CALCULADO de las minutas (sin captura propia): las juntas del período
+        # por fecha de reunión, con el consecutivo de la minuta.
+        d_ini_jt = start_dt.astimezone(MX_TZ).date().isoformat()
+        d_fin_jt = end_dt.astimezone(MX_TZ).date().isoformat()
+        minutas_jt = await db.minutas.find(
+            {"project_id": pid, "fecha_reunion": {"$gte": d_ini_jt, "$lte": d_fin_jt}}
+        ).to_list(length=2000)
+        bloques_jt = _juntas_bloques(minutas_jt)
+        if bloques_jt:
+            out["juntas_trabajo"] = {"titulo": "RELACIÓN DE JUNTAS DE TRABAJO", "blocks": bloques_jt}
+
     if activos.get("indicadores_seguridad"):
         corte_is = end_dt.astimezone(MX_TZ).date()
         bloques_is, graficas_is, bloques_pipc = _indicadores_seguridad_graficas(
@@ -16436,6 +17144,7 @@ async def export_reports_docx(
     # para este proyecto — ver _gather_modulos_export_data.
     modulos_categoria = _modulos_categoria_para_export(period_type, period)
     modulos_data = await _gather_modulos_export_data(pid, proj, start_dt, end_dt, modulos_categoria)
+    firma_cierre = _cierre_firma(proj, modulos_categoria, start_dt, end_dt)
 
     def _build_docx_blocking() -> bytes:
         """Motor DOCX estrictamente MONOCROMÁTICO, enfocado a LECTURA
@@ -17114,6 +17823,21 @@ async def export_reports_docx(
             for block in _mod_data["blocks"]:
                 _MOD_BLOCK_RENDERERS[block["type"]](block)
 
+        if firma_cierre:
+            doc.add_page_break()
+            for _txt, _sz, _color, _gap in (
+                (firma_cierre["titulo"], 26, BRAND_RGB, 60), (firma_cierre["periodo"], 13, None, 8),
+                (firma_cierre["nombre"], 15, None, 70), (firma_cierre["cargo"], 11, MUTED_RGB, 0),
+            ):
+                _p = doc.add_paragraph()
+                _p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                _p.paragraph_format.space_before = Pt(_gap)
+                _r = _p.add_run(_txt)
+                _r.bold = True
+                _r.font.size = Pt(_sz)
+                if _color is not None:
+                    _r.font.color.rgb = _color
+
         buf = io.BytesIO()
         doc.save(buf)
         return buf.getvalue()
@@ -17271,6 +17995,7 @@ async def export_reports_pptx(
     # para este proyecto — ver _gather_modulos_export_data.
     modulos_categoria = _modulos_categoria_para_export(period_type, period)
     modulos_data = await _gather_modulos_export_data(pid, proj, start_dt, end_dt, modulos_categoria)
+    firma_cierre = _cierre_firma(proj, modulos_categoria, start_dt, end_dt)
 
     # Título ejecutivo dependiendo del tipo de reporte.
     _report_title_map = {
@@ -19491,6 +20216,20 @@ async def export_reports_pptx(
                      "Sin reportes en el período seleccionado.",
                      size=20, italic=True, color=TEXT_MUTED,
                      align=PP_ALIGN.CENTER)
+
+        # Hoja final: tipo de reporte, periodo y superintendente de supervisión
+        # (Datos de contrato > Supervisión). Sin nombre capturado no se imprime.
+        if firma_cierre:
+            _fs = _clone_membrete()
+            _fw = SW - Cm(3.0)
+            add_text(_fs, Cm(1.5), SH * 0.28, _fw, Cm(2.0), firma_cierre["titulo"],
+                     size=44, bold=True, color=READABLE_BRAND_RGB, align=PP_ALIGN.CENTER)
+            add_text(_fs, Cm(1.5), SH * 0.28 + Cm(2.3), _fw, Cm(1.2), firma_cierre["periodo"],
+                     size=20, bold=True, color=WF_TEXT_RGB, align=PP_ALIGN.CENTER)
+            add_text(_fs, Cm(1.5), SH * 0.28 + Cm(5.6), _fw, Cm(1.2), firma_cierre["nombre"],
+                     size=24, bold=True, color=WF_TEXT_RGB, align=PP_ALIGN.CENTER)
+            add_text(_fs, Cm(1.5), SH * 0.28 + Cm(6.9), _fw, Cm(1.0), firma_cierre["cargo"],
+                     size=16, bold=True, color=WF_MUTED_RGB, align=PP_ALIGN.CENTER)
 
         # === [BLOQUE LEGACY PURGADO 2026-07-04] Layout viejo con tablas y 
         # 'Notas y noticias' eliminado tras refactor P0 → Layout Ejecutivo.

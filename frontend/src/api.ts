@@ -594,6 +594,42 @@ export interface ControlCalidadInput {
   pie?: string;
   fecha?: string;
 }
+// === Supervisión ambiental (todo editable) ================================
+export type AmbientalSeccion = 'informe' | 'autorizacion' | 'arbolado' | 'resarcimiento' | 'avance_estudio';
+export interface AmbientalItem {
+  id: string;
+  seccion: AmbientalSeccion;
+  orden?: number;
+  nombre?: string | null; // informe / arbolado (grupo)
+  tipo?: string | null; // autorizacion
+  folio?: string | null;
+  lugar?: string | null; // resarcimiento
+  pie?: string | null;
+  actividad?: string | null; // avance_estudio
+  avance?: number | null; // informe / avance_estudio (0-100)
+  fecha_cierre?: string | null;
+  cantidad?: number | null;
+  poda_aut?: number | null; trasplante_aut?: number | null; derribo_aut?: number | null;
+  poda_ej?: number | null; trasplante_ej?: number | null; derribo_ej?: number | null;
+  thumb?: string | null; // miniatura base64 SIN prefijo data:
+  created_by: string;
+}
+export interface AmbientalConfig { referencia: string | null; total_a_restituir: number | null }
+export interface AmbientalData { items: AmbientalItem[]; config: AmbientalConfig }
+// === Actividades particulares (catálogo de categorías editable) ===========
+export interface ActPartCategoria { id: string; nombre: string; subcategorias: string[]; orden: number }
+export interface ActPartRegistro {
+  id: string;
+  node_id: string;
+  categoria_id: string;
+  categoria_nombre?: string | null;
+  subcategoria?: string | null;
+  texto: string;
+  fecha: string; // YYYY-MM-DD
+  created_by: string;
+  created_by_name: string;
+}
+export interface ActPartInput { node_id: string; categoria_id: string; subcategoria?: string | null; texto: string; fecha?: string }
 // === Capa financiera del reporte semanal =================================
 export type ContratoFin = 'obra' | 'supervision';
 export interface Estimacion {
@@ -762,6 +798,8 @@ export interface DatosContratoBloque {
   monto_con_iva?: string;
   anticipo_label?: string;
   anticipo?: string;
+  // Solo bloque SUPERVISIÓN: nombre que firma la hoja final del informe.
+  superintendente?: string;
 }
 
 export interface DatosContrato {
@@ -2327,6 +2365,30 @@ export const api = {
     request<SalvamentoArqueologico>('PATCH', `/projects/${pid}/salvamento-arqueologico/${rid}`, body),
   deleteSalvamentoArqueologico: (pid: string, rid: string) =>
     request<{ ok: boolean }>('DELETE', `/projects/${pid}/salvamento-arqueologico/${rid}`),
+  listActPartCatalogo: (pid: string) => request<ActPartCategoria[]>('GET', `/projects/${pid}/actividades-particulares/catalogo`),
+  createActPartCategoria: (pid: string, body: { nombre: string; subcategorias?: string[] }) =>
+    request<ActPartCategoria>('POST', `/projects/${pid}/actividades-particulares/catalogo`, body),
+  updateActPartCategoria: (pid: string, cid: string, body: { nombre?: string; subcategorias?: string[]; orden?: number }) =>
+    request<ActPartCategoria>('PATCH', `/projects/${pid}/actividades-particulares/catalogo/${cid}`, body),
+  deleteActPartCategoria: (pid: string, cid: string) =>
+    request<{ ok: boolean }>('DELETE', `/projects/${pid}/actividades-particulares/catalogo/${cid}`),
+  cargarActPartSugeridas: (pid: string) =>
+    request<{ agregadas: number; items: ActPartCategoria[] }>('POST', `/projects/${pid}/actividades-particulares/catalogo/sugeridas`),
+  listActPart: (pid: string) => request<ActPartRegistro[]>('GET', `/projects/${pid}/actividades-particulares`),
+  createActPart: (pid: string, body: ActPartInput) =>
+    request<ActPartRegistro>('POST', `/projects/${pid}/actividades-particulares`, body),
+  updateActPart: (pid: string, rid: string, body: Partial<ActPartInput>) =>
+    request<ActPartRegistro>('PATCH', `/projects/${pid}/actividades-particulares/${rid}`, body),
+  deleteActPart: (pid: string, rid: string) =>
+    request<{ ok: boolean }>('DELETE', `/projects/${pid}/actividades-particulares/${rid}`),
+  getAmbiental: (pid: string) => request<AmbientalData>('GET', `/projects/${pid}/ambiental`),
+  createAmbiental: (pid: string, body: Record<string, any>) =>
+    request<AmbientalItem>('POST', `/projects/${pid}/ambiental`, body),
+  updateAmbiental: (pid: string, rid: string, body: Record<string, any>) =>
+    request<AmbientalItem>('PATCH', `/projects/${pid}/ambiental/${rid}`, body),
+  deleteAmbiental: (pid: string, rid: string) => request<{ ok: boolean }>('DELETE', `/projects/${pid}/ambiental/${rid}`),
+  setAmbientalConfig: (pid: string, body: { referencia?: string | null; total_a_restituir?: number | null }) =>
+    request<AmbientalConfig>('PUT', `/projects/${pid}/ambiental-config`, body),
   listControlCalidad: (pid: string) => request<ControlCalidad[]>('GET', `/projects/${pid}/control-calidad`),
   getControlCalidad: (pid: string, rid: string) =>
     request<ControlCalidad>('GET', `/projects/${pid}/control-calidad/${rid}`),

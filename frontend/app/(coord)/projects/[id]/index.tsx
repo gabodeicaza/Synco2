@@ -1509,6 +1509,22 @@ export default function ProjectDetailScreen() {
                     onPress={() => router.push({ pathname: '/(coord)/projects/[id]/control-calidad' as any, params: { id: pid } })}
                   />
                 ) : null}
+                {moduloActivo(project?.modulos, 'actividades_particulares') ? (
+                  <ActionTile
+                    icon="list-circle-outline"
+                    title="Actividades particulares"
+                    subtitle="Actividades por estación, con categorías y subcategorías editables"
+                    onPress={() => router.push({ pathname: '/(coord)/projects/[id]/actividades-particulares' as any, params: { id: pid } })}
+                  />
+                ) : null}
+                {moduloActivo(project?.modulos, 'supervision_ambiental') ? (
+                  <ActionTile
+                    icon="leaf-outline"
+                    title="Supervisión Ambiental"
+                    subtitle="Informes, autorizaciones, arbolado, resarcimiento y estudios (todo editable)"
+                    onPress={() => router.push({ pathname: '/(coord)/projects/[id]/supervision-ambiental' as any, params: { id: pid } })}
+                  />
+                ) : null}
                 {moduloActivo(project?.modulos, 'estimaciones') ? (
                   <ActionTile
                     icon="cash-outline"

@@ -18,7 +18,7 @@ import { Button } from '@/src/components/Button';
 type Bloque = 'obra' | 'supervision';
 type Campo = keyof DatosContratoBloque;
 
-const CAMPOS: { key: Campo; label: string; placeholder: string; multiline?: boolean }[] = [
+const CAMPOS: { key: Campo; label: string; placeholder: string; multiline?: boolean; solo?: Bloque }[] = [
   { key: 'objeto', label: 'Objeto / nombre del contrato', placeholder: 'PROYECTO INTEGRAL A PRECIO ALZADO…', multiline: true },
   { key: 'empresa', label: 'Empresa', placeholder: 'Razón social' },
   { key: 'contrato', label: 'Número de contrato', placeholder: 'DGOT-LP-F-4-017-2025' },
@@ -30,6 +30,7 @@ const CAMPOS: { key: Campo; label: string; placeholder: string; multiline?: bool
   { key: 'monto_con_iva', label: 'Monto con IVA', placeholder: '$136,128,560.18' },
   { key: 'anticipo_label', label: 'Etiqueta del anticipo', placeholder: 'Anticipo (10%) 2025' },
   { key: 'anticipo', label: 'Anticipo', placeholder: '$519,794.75' },
+  { key: 'superintendente', label: 'Superintendente de supervisión (firma de la hoja final)', placeholder: 'Ing. Nombre Apellido', solo: 'supervision' },
 ];
 
 const BLOQUE_LABEL: Record<Bloque, string> = { obra: 'OBRA', supervision: 'SUPERVISIÓN' };
@@ -107,7 +108,7 @@ export function DatosContratoModal({
           </View>
 
           <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ paddingBottom: spacing.lg }}>
-            {CAMPOS.map((c) => (
+            {CAMPOS.filter((c) => !c.solo || c.solo === bloque).map((c) => (
               <View key={c.key} style={{ marginTop: spacing.sm }}>
                 <Text style={styles.label}>{c.label}</Text>
                 <TextInput

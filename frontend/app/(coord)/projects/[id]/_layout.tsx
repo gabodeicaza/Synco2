@@ -28,6 +28,8 @@ export default function ProjectLayout() {
       <Stack.Screen name="pruebas-calidad" />
       <Stack.Screen name="control-calidad" />
       <Stack.Screen name="estimaciones" />
+      <Stack.Screen name="supervision-ambiental" />
+      <Stack.Screen name="actividades-particulares" />
       <Stack.Screen name="pendientes-generales" />
       <Stack.Screen name="aspectos-sociales" />
       <Stack.Screen name="indicadores-seguridad" />
