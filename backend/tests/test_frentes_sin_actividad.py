@@ -112,3 +112,14 @@ def test_recursos_generales_de_la_obra_con_subtitulos_y_sin_el_titulo_anterior()
     assert not any("RESUMEN POR FRENTE" in t for t in slides)
     indice = slides[1]
     assert "Recursos generales de la obra" in indice and "Resumen por frente" not in indice
+
+
+def test_no_se_imprime_portadilla_por_nodo():
+    """Una diapositiva cuyo único texto es la ruta del nodo ("TRAMO I › ESTACIÓN 1…") es la
+    portadilla por nodo, que se quitó a pedido del usuario. La portadilla de Área ("OBRA CIVIL") sí se conserva."""
+    slides = _slides(con_reportes=True)
+    rutas = {"TRAMO I › ESTACIÓN 1. UNIVERSIDAD", "TRAMO I › INTERTRAMO E1-E2 › Poste S3"}
+    assert not [t for t in slides if t.strip() in rutas]
+    assert any(t.strip() == "OBRA CIVIL" for t in slides)
+    indice = slides[1]
+    assert "TRAMO I › ESTACIÓN 1. UNIVERSIDAD · Obra Civil" in indice  # el índice sigue apuntando al bloque del nodo

@@ -19161,58 +19161,16 @@ async def export_reports_pptx(
             if not node_reps_all:
                 continue
             _emit_frentes_sin_actividad(n_subtramo_id)
-            # FIX (2026-09): ver la misma nota en export_reports_pdf —
-            # `cover_meta_pptx` es None cuando ningún ancestro tiene
-            # `cover_image`, lo cual NO debe borrar el nodo entero (fotos y
-            # actividades con la severidad correcta para el informe). El
-            # bloque de abajo ya tolera `cover_image` vacío (título sin
-            # imagen), así que solo se omite la imagen, nunca el nodo.
-            cover_meta_pptx = cover_ancestor_by_node.get(n["id"]) or {}
             any_data = True
             node_path = path_cache.get(n["id"]) or n.get("name", "")
 
-            # === Portadilla de nodo: cover_image grande + TÍTULO ===========
-            # Marca provisional: se completa con la 1ª Área del nodo (abajo) para
-            # que el índice apunte a la portadilla del nodo.
+            # SIN portadilla por nodo (a pedido del usuario, igual que en el PDF
+            # desde 77b5000): el nodo ya no imprime su propia diapositiva de
+            # título/imagen. La marca provisional del índice se completa con la
+            # 1ª Área del nodo (abajo) y apunta a la primera diapositiva que
+            # sigue, que es la portadilla de Área.
             _node_mark_i = len(_indice_marks)
             _indice_mark("area-pendiente", node_path)
-            s = _clone_membrete()
-            _title_h = Cm(1.8)
-            _title_gap = Cm(0.5)
-            _cov_b64_p = _strip_b64_prefix(cover_meta_pptx.get("cover_image") or "")
-            _cw = Cm(0)
-            _ch2 = Cm(0)
-            _cy = TOP_MARGIN
-            if _cov_b64_p:
-                try:
-                    _avail_w = SW - Cm(2.0)
-                    _avail_h = SH - TOP_MARGIN - BOTTOM_MARGIN - _title_h - _title_gap
-                    _target_ratio = 4.0 / 3.0
-                    _w_from_h = _avail_h * _target_ratio
-                    if _w_from_h <= _avail_w:
-                        _cw = _w_from_h
-                        _ch2 = _avail_h
-                    else:
-                        _cw = _avail_w
-                        _ch2 = _avail_w / _target_ratio
-                    _cx = (SW - _cw) // 2
-                    _cy = TOP_MARGIN + (_avail_h - _ch2) // 2
-                    s.shapes.add_picture(
-                        io.BytesIO(base64.b64decode(_cov_b64_p)),
-                        _cx, _cy, width=_cw, height=_ch2,
-                    )
-                except Exception:
-                    _ch2 = Cm(0)
-            _title_y = (
-                _cy + _ch2 + _title_gap
-                if _ch2 and _ch2 > Cm(0)
-                else TOP_MARGIN + (SH - TOP_MARGIN - BOTTOM_MARGIN) // 2 - _title_h // 2
-            )
-            add_text(
-                s, Cm(1.0), _title_y, SW - Cm(2.0), _title_h,
-                node_path,
-                size=28, bold=True, color=NODE_TITLE_COLOR, align=PP_ALIGN.CENTER,
-            )
 
             # === Sub-bucle por Área/Disciplina (bucket normalizado) ========
             # "Sub supervisores" → "OBRA CIVIL". Áreas con tildes/plurales

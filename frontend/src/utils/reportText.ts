@@ -46,18 +46,17 @@ export function buildReportShareText(report: ReportTextSource, opts: ReportTextO
     ? dayjs().tz(CDMX_TZ).format('D [de] MMMM [de] YYYY')
     : dayjs.utc(report.created_at || undefined).tz(CDMX_TZ).format('D [de] MMMM [de] YYYY');
 
+  // La ubicación es SOLO el nombre del frente/nodo elegido (ej. "Estación 7"):
+  // sin la ruta del tramo ("Tramo 2: …") ni coordenadas ("Ubicacion: 0, 0 _ Z 0").
   const pathNames = report.node_path_names || [];
-  const pathPart = pathNames.slice(0, -1).join(' / ');
   const leafPart = pathNames[pathNames.length - 1] || '';
-  const loc = report.location;
-  const locStr = `Ubicacion: ${loc?.lat ?? '0'}, ${loc?.lon ?? '0'} _ Z ${loc?.elev ?? '0'}`;
 
   const activitiesText = report.actividades || report.activities || '';
 
   const sections: string[] = [];
   sections.push(`${fecha}.\n${authorName || ''}\n${authorPuesto || ''}`);
   sections.push(`Constructora: ${project?.constructora || ''}\nNo de contrato: ${project?.contract_number || ''}`);
-  sections.push(`${pathPart}: ${leafPart} ${locStr}`);
+  if (leafPart) sections.push(leafPart);
 
   if (activitiesText) sections.push(`*Actividades:*\n${activitiesText}`);
 
