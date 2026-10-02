@@ -21,6 +21,7 @@ import { EstacionPicker } from '@/src/components/EstacionPicker';
 import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
 import { Button } from '@/src/components/Button';
 import { confirm } from '@/src/utils/confirm';
+import { fechaTecleadaOk, FECHA_AYUDA } from '@/src/utils/fecha';
 import { useAuth } from '@/src/auth-context';
 import { ROLE_COORD, ROLE_SUB, ROLE_JEFE } from '@/src/utils/roles';
 
@@ -151,8 +152,8 @@ export default function ControlCalidadScreen({ projectId }: { projectId: string 
       Alert.alert('Falta la foto', 'Toma o elige una foto de la actividad.');
       return;
     }
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(draft.fecha.trim())) {
-      Alert.alert('Fecha inválida', 'Usa el formato AAAA-MM-DD (ej. 2026-06-26).');
+    if (!fechaTecleadaOk(draft.fecha)) {
+      Alert.alert('Fecha inválida', FECHA_AYUDA);
       return;
     }
     const texto = { node_id: draft.node_id, grupo: draft.grupo, descripcion: draft.descripcion, pie: draft.pie, fecha: draft.fecha.trim() };

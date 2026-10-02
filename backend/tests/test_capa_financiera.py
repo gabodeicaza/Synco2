@@ -110,7 +110,7 @@ def test_estimacion_valor_normaliza_y_valida():
     assert _estimacion_valor("estatus", "  LIBERADA ") == "LIBERADA"
     assert _estimacion_valor("iva", "  ") is None
     with pytest.raises(HTTPException):
-        _estimacion_valor("periodo_fin", "31/12/2025")
+        _estimacion_valor("periodo_fin", "nunca")
     with pytest.raises(HTTPException):
         _estimacion_valor("iva", "mucho")
 

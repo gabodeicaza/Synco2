@@ -21,6 +21,7 @@ import { EstacionPicker } from '@/src/components/EstacionPicker';
 import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
 import { Button } from '@/src/components/Button';
 import { confirm } from '@/src/utils/confirm';
+import { fechaTecleadaOk, FECHA_AYUDA } from '@/src/utils/fecha';
 import { useAuth } from '@/src/auth-context';
 import { ROLE_COORD, ROLE_SUB } from '@/src/utils/roles';
 
@@ -135,8 +136,8 @@ export default function FotosLidarScreen({ projectId }: { projectId: string }) {
   async function pickAndUpload(source: 'camera' | 'library') {
     if (!viewer) return;
     const fecha = fechaDraft.trim();
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha)) {
-      Alert.alert('Fecha inválida', 'Usa el formato AAAA-MM-DD (ej. 2026-09-29).');
+    if (!fechaTecleadaOk(fecha)) {
+      Alert.alert('Fecha inválida', FECHA_AYUDA);
       return;
     }
     try {

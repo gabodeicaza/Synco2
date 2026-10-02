@@ -40,8 +40,8 @@ type Draft = { id: string | null; contrato: ContratoFin } & Record<Campo, string
 
 const CAMPOS: { key: Campo; label: string; placeholder: string; numeric?: boolean }[] = [
   { key: 'numero', label: 'No. de estimación', placeholder: '1', numeric: true },
-  { key: 'periodo_inicio', label: 'Periodo: inicio (AAAA-MM-DD)', placeholder: '2025-12-08' },
-  { key: 'periodo_fin', label: 'Periodo: fin (AAAA-MM-DD)', placeholder: '2025-12-31' },
+  { key: 'periodo_inicio', label: 'Periodo: inicio (AAAA-MM-DD o DD/MM/AAAA)', placeholder: '2025-12-08' },
+  { key: 'periodo_fin', label: 'Periodo: fin (AAAA-MM-DD o DD/MM/AAAA)', placeholder: '2025-12-31' },
   { key: 'estatus', label: 'Estatus general', placeholder: 'LIBERADA / NO LIBERADA' },
   { key: 'obra_ejecutada', label: 'Obra ejecutada ($)', placeholder: '5978451.30', numeric: true },
   { key: 'amortizacion', label: 'Amortización ($)', placeholder: '3734140.68', numeric: true },

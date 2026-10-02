@@ -19,6 +19,7 @@ import { EstacionPicker } from '@/src/components/EstacionPicker';
 import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
 import { Button } from '@/src/components/Button';
 import { confirm } from '@/src/utils/confirm';
+import { fechaTecleadaOk, FECHA_AYUDA } from '@/src/utils/fecha';
 import { useAuth } from '@/src/auth-context';
 import { ROLE_COORD, ROLE_SUB, ROLE_JEFE } from '@/src/utils/roles';
 
@@ -113,8 +114,8 @@ export default function PruebasCalidadScreen({ projectId }: { projectId: string 
       Alert.alert('Falta información', 'Indica el frente (ej. "Poste S-2" o "Banqueta adecuación").');
       return;
     }
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(draft.fecha.trim())) {
-      Alert.alert('Fecha inválida', 'Usa el formato AAAA-MM-DD (ej. 2026-06-26).');
+    if (!fechaTecleadaOk(draft.fecha)) {
+      Alert.alert('Fecha inválida', FECHA_AYUDA);
       return;
     }
     const body = {
