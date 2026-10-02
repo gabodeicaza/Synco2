@@ -157,6 +157,7 @@ MODULOS_KEYS = {
     "tabla_resumen", "estado_tiempo", "control_obra",
     "fotos_lidar", "tapial", "pruebas_calidad", "control_calidad",
     "avance_obra", "estimaciones", "pendientes_generales", "aspectos_sociales",
+    "indicadores_seguridad",
 }
 MODULOS_DIARIOS = MODULOS_KEYS
 MODULOS_SEMANALES = MODULOS_KEYS
@@ -1189,6 +1190,8 @@ async def startup_event():
     await db.estimaciones.create_index([("project_id", 1), ("contrato", 1), ("numero", 1)])
     await db.pendientes_generales.create_index("id", unique=True)
     await db.pendientes_generales.create_index([("project_id", 1), ("contrato", 1), ("orden", 1)])
+    await db.seguridad_indicadores.create_index("id", unique=True)
+    await db.seguridad_indicadores.create_index([("project_id", 1), ("clave", 1)], unique=True)
     await db.levantamientos_sociales.create_index("id", unique=True)
     await db.levantamientos_sociales.create_index([("project_id", 1), ("tipo", 1), ("ambito", 1)], unique=True)
     await db.salvamento_arqueologico.create_index("id", unique=True)
@@ -4600,11 +4603,12 @@ CONTRATO_FIN_LABEL = {"obra": "OBRA", "supervision": "SUPERVISIÓN"}
 # Los pendientes generales también existen para Aspectos Sociales (liberaciones
 # de postes y predios). El campo sigue llamándose `contrato` por compatibilidad,
 # pero aquí es un ÁMBITO: obra, supervisión o aspectos sociales.
-PENDIENTES_AMBITOS = ("obra", "supervision", "sociales")
+PENDIENTES_AMBITOS = ("obra", "supervision", "sociales", "seguridad")
 PENDIENTE_AMBITO_HEADING = {
     "obra": "PENDIENTES O REQUERIMIENTOS GENERALES (OBRA)",
     "supervision": "PENDIENTES O REQUERIMIENTOS GENERALES (SUPERVISIÓN)",
     "sociales": "PENDIENTES GENERALES (ASPECTOS SOCIALES)",
+    "seguridad": "PENDIENTES ADMINISTRATIVOS (SEGURIDAD E HIGIENE)",
 }
 
 
@@ -5035,7 +5039,7 @@ async def delete_estimacion(pid: str, eid: str, user: dict = Depends(require_rol
 
 
 class PendienteIn(BaseModel):
-    contrato: Literal["obra", "supervision", "sociales"] = "obra"
+    contrato: Literal["obra", "supervision", "sociales", "seguridad"] = "obra"
     titulo: str
     descripcion: Optional[str] = None
     orden: int = 0
@@ -5189,7 +5193,7 @@ def _levantamientos_graficas(registros: List[dict]) -> List[tuple]:
     return out
 
 
-def _grafica_donas_png(titulo: str, items: List[tuple]) -> bytes:
+def _grafica_donas_png(titulo: str, items: List[tuple], detalle: Optional[Callable] = None, decimales: int = 0) -> bytes:
     """Una dona por item `(nombre, realizados, total)`: verde = realizado,
     gris = pendiente, con el % al centro. Dibujada con Pillow."""
     from PIL import Image as _I
@@ -5208,9 +5212,10 @@ def _grafica_donas_png(titulo: str, items: List[tuple]) -> bytes:
         hueco = r * 0.58
         d.ellipse([cx - hueco, cy - hueco, cx + hueco, cy + hueco], fill="white")
         pct = real / total * 100 if total else 0
-        d.text((cx, cy), f"{pct:.0f}%", fill="#0F172A", font=f_big, anchor="mm")
+        d.text((cx, cy), f"{pct:.{decimales}f}%", fill="#0F172A", font=f_big, anchor="mm")
         d.text((cx, cy + r + 45), nombre, fill="#0F172A", font=f_txt, anchor="mm")
-        d.text((cx, cy + r + 80), f"{real} de {total} realizados", fill="#475569", font=f_txt, anchor="mm")
+        d.text((cx, cy + r + 80), detalle(real, total) if detalle else f"{real} de {total} realizados",
+               fill="#475569", font=f_txt, anchor="mm")
     out = io.BytesIO()
     img.save(out, format="PNG")
     return out.getvalue()
@@ -5432,6 +5437,338 @@ async def delete_salvamento_arqueologico(pid: str, rid: str, user: dict = Depend
     if user.get("role") not in (ROLE_COORD, ROLE_SUB) and doc.get("created_by") != user["id"]:
         raise HTTPException(403, "Solo puedes eliminar los registros que tú capturaste")
     await db.salvamento_arqueologico.delete_one({"id": rid, "project_id": pid})
+    return {"ok": True}
+
+
+# === INDICADORES DE SEGURIDAD E HIGIENE (reporte semanal) ===================
+# "Cumplimiento seguridad e higiene" del reporte: cumplimiento en campo (%
+# actual vs anterior y días sin accidentes), cumplimiento documental (mensual
+# y por semana en Seguridad / Protección civil / Higiene y salud) y
+# cumplimiento del PIPC (Programa Interno de Protección Civil, modalidad
+# Estudio de Riesgo Obra y Demolición) por estación. Los porcentajes los
+# calcula la supervisión de seguridad y aquí solo se capturan; los DÍAS SIN
+# ACCIDENTES se derivan del registro de accidentes (o se fijan a mano).
+# Los pendientes administrativos salen de Pendientes Generales (ámbito
+# "seguridad").
+SEG_CATEGORIAS = {"seguridad": "Seguridad", "proteccion_civil": "Protección civil", "higiene_salud": "Higiene y salud"}
+# Tipos de registro que REINICIAN el contador de días sin accidentes: los
+# que lesionan con baja o gravedad. Un accidente leve (primeros auxilios) no
+# lo reinicia — criterio asumido, ver `_seg_dias_sin_accidentes`.
+SEG_TIPOS_QUE_REINICIAN = ("incapacitante", "grave")
+PIPC_PASOS = [
+    ("ELABORACIÓN", "El Responsable Oficial de Protección Civil (ROPC) elabora el Estudio de Riesgo", 70),
+    ("CAPTURA DIGITAL", "La información se ingresa en la Plataforma Digital compartida entre la Secretaría y las Alcaldías.", 10),
+    ("OBTENCIÓN DE FOLIO", "El sistema otorga un folio de captura único al finalizar la carga de datos.", 10),
+    ("REGISTRO", "Una vez cumplidos los requisitos, la Secretaría emite la Constancia de registro, documento oficial "
+                 "que ampara la legalidad de la obra en materia de protección civil.", 10),
+]
+PIPC_NOTA = ("El paso de Elaboración corresponde a 70 puntos del cumplimiento total. La captura digital, la obtención "
+             "del folio y el registro, a los 30 puntos restantes. Para tener el 100% es necesario completar los cuatro pasos.")
+
+
+class IndicadorIn(BaseModel):
+    tipo: Literal["campo", "doc_mensual", "doc_semanal", "pipc", "nota_pipc"]
+    fecha: Optional[str] = None  # campo: fecha del corte (YYYY-MM-DD)
+    mes: Optional[str] = None  # doc_mensual: YYYY-MM
+    semana: Optional[str] = None  # doc_semanal: cualquier fecha de la semana (se normaliza al lunes)
+    categoria: Optional[Literal["seguridad", "proteccion_civil", "higiene_salud"]] = None
+    porcentaje: Optional[float] = None
+    dias_sin_accidentes: Optional[int] = None  # campo: fija a mano el contador (opcional)
+    etiqueta: Optional[str] = None  # pipc: "E1"…
+    orden: int = 0
+    puntos: Optional[List[float]] = None  # pipc: puntos de los 4 pasos
+    texto: Optional[str] = None  # nota_pipc
+
+
+def _seg_pct(valor: Optional[float]) -> float:
+    if valor is None or not (0 <= valor <= 100):
+        raise HTTPException(400, "porcentaje debe estar entre 0 y 100")
+    return round(float(valor), 2)
+
+
+def _seg_fecha(valor: Optional[str], campo: str) -> date:
+    try:
+        return date.fromisoformat((valor or "").strip())
+    except ValueError:
+        raise HTTPException(400, f"{campo} debe ser YYYY-MM-DD")
+
+
+def _indicador_normalizar(body: IndicadorIn) -> tuple:
+    """(clave natural, campos a guardar) de un indicador, validados. Pura. La
+    clave es la que hace que capturar dos veces el mismo corte lo REEMPLACE."""
+    t = body.tipo
+    if t == "campo":
+        f = _seg_fecha(body.fecha, "fecha")
+        if body.dias_sin_accidentes is not None and body.dias_sin_accidentes < 0:
+            raise HTTPException(400, "dias_sin_accidentes no puede ser negativo")
+        return f"campo|{f.isoformat()}", {"fecha": f.isoformat(), "porcentaje": _seg_pct(body.porcentaje),
+                                          "dias_sin_accidentes": body.dias_sin_accidentes}
+    if t == "doc_mensual":
+        mes = (body.mes or "").strip()
+        if not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", mes):
+            raise HTTPException(400, "mes debe ser AAAA-MM")
+        return f"doc_mensual|{mes}", {"mes": mes, "porcentaje": _seg_pct(body.porcentaje)}
+    if t == "doc_semanal":
+        if body.categoria is None:
+            raise HTTPException(400, "categoria es requerida")
+        f = _seg_fecha(body.semana, "semana")
+        lunes = (f - timedelta(days=f.weekday())).isoformat()
+        return f"doc_semanal|{lunes}|{body.categoria}", {"semana": lunes, "categoria": body.categoria,
+                                                         "porcentaje": _seg_pct(body.porcentaje)}
+    if t == "pipc":
+        etiqueta = (body.etiqueta or "").strip()
+        if not etiqueta or len(etiqueta) > 30:
+            raise HTTPException(400, "etiqueta es requerida (máx. 30 caracteres)")
+        puntos = body.puntos
+        if puntos is None or len(puntos) != len(PIPC_PASOS):
+            raise HTTPException(400, f"puntos debe traer {len(PIPC_PASOS)} valores (uno por paso)")
+        puntos = [round(float(v), 2) for v in puntos]
+        if any(v < 0 for v in puntos):
+            raise HTTPException(400, "Los puntos no pueden ser negativos")
+        if puntos[0] > PIPC_PASOS[0][2]:
+            raise HTTPException(400, f"La elaboración vale máximo {PIPC_PASOS[0][2]} puntos")
+        if sum(puntos[1:]) > 100 - PIPC_PASOS[0][2]:
+            raise HTTPException(400, f"Los pasos 2 a 4 valen máximo {100 - PIPC_PASOS[0][2]} puntos en total")
+        return f"pipc|{etiqueta.upper()}", {"etiqueta": etiqueta, "orden": body.orden, "puntos": puntos}
+    texto = (body.texto or "").strip()
+    return "nota_pipc", {"texto": texto}
+
+
+def _seg_campo_resumen(registros: List[dict], corte: date) -> Optional[dict]:
+    """Cumplimiento en campo al corte: el último registro con fecha <= corte
+    es el ACTUAL y el inmediato anterior es el ANTERIOR."""
+    vigentes = sorted((r for r in registros if r.get("tipo") == "campo" and (r.get("fecha") or "") <= corte.isoformat()),
+                      key=lambda r: r["fecha"])
+    if not vigentes:
+        return None
+    actual = vigentes[-1]
+    return {"actual": actual["porcentaje"], "fecha": actual["fecha"],
+            "anterior": vigentes[-2]["porcentaje"] if len(vigentes) > 1 else None,
+            "dias_manual": actual.get("dias_sin_accidentes")}
+
+
+def _seg_dias_sin_accidentes(reportes: List[dict], corte: date, manual: Optional[int] = None) -> Optional[int]:
+    """Días transcurridos desde el último accidente que reinicia el contador
+    (`SEG_TIPOS_QUE_REINICIAN`) hasta el corte. Sin ninguno: días desde el
+    primer registro de cualquier tipo; sin registros: None. `manual`, si
+    viene, manda — el criterio de cada obra puede ser distinto."""
+    if manual is not None:
+        return manual
+    fechas_all, fechas_acc = [], []
+    for r in reportes:
+        try:
+            f = date.fromisoformat((r.get("fecha") or "")[:10])
+        except ValueError:
+            continue
+        if f > corte:
+            continue
+        fechas_all.append(f)
+        if _seguridad_tipo_efectivo(r) in SEG_TIPOS_QUE_REINICIAN:
+            fechas_acc.append(f)
+    ref = max(fechas_acc) if fechas_acc else (min(fechas_all) if fechas_all else None)
+    return (corte - ref).days if ref else None
+
+
+def _seg_doc_mensual(registros: List[dict], corte: date) -> Optional[dict]:
+    """Cumplimiento documental mensual: el último mes <= el del corte y el
+    mes anterior capturado (para comparar, "42%: Abril / 67.37%: Mayo")."""
+    tope = f"{corte.year:04d}-{corte.month:02d}"
+    meses = sorted((r for r in registros if r.get("tipo") == "doc_mensual" and (r.get("mes") or "") <= tope),
+                   key=lambda r: r["mes"])
+    if not meses:
+        return None
+    return {"actual": meses[-1], "anterior": meses[-2] if len(meses) > 1 else None}
+
+
+def _mes_label(mes: str) -> str:
+    return f"{_SEGURIDAD_MESES[int(mes[5:7]) - 1]} {mes[:4]}"
+
+
+def _seg_doc_semanal(registros: List[dict], corte: date) -> Optional[dict]:
+    """Las dos últimas semanas capturadas (<= corte) con el % por categoría."""
+    semanas = sorted({r["semana"] for r in registros if r.get("tipo") == "doc_semanal" and r["semana"] <= corte.isoformat()})[-2:]
+    if not semanas:
+        return None
+    valores = {(r["semana"], r["categoria"]): r["porcentaje"] for r in registros if r.get("tipo") == "doc_semanal"}
+    return {"semanas": [{"fecha": sm, "label": f"SEMANA {date.fromisoformat(sm).isocalendar()[1]}"} for sm in semanas],
+            "categorias": [{"clave": c, "label": lbl, "valores": [valores.get((sm, c)) for sm in semanas]}
+                           for c, lbl in SEG_CATEGORIAS.items()]}
+
+
+def _pipc_total(puntos: List[float]) -> float:
+    return min(round(sum(puntos), 2), 100.0)
+
+
+def _pipc_bloques(registros: List[dict]) -> List[dict]:
+    """Tabla de cumplimiento del PIPC: un renglón por paso y una columna por
+    estación (en puntos), más el total por estación, y las notas de avance."""
+    estaciones = sorted((r for r in registros if r.get("tipo") == "pipc"), key=lambda r: (r.get("orden", 0), r.get("etiqueta", "")))
+    if not estaciones:
+        return []
+
+    def num(v: float) -> str:
+        return f"{v:g}"
+
+    filas = [[str(i), nombre, concepto] + [num(e["puntos"][i - 1]) for e in estaciones]
+             for i, (nombre, concepto, _max) in enumerate(PIPC_PASOS, start=1)]
+    totales = [_pipc_total(e["puntos"]) for e in estaciones]
+    filas.append(["", "CUMPLIMIENTO TOTAL", f"Promedio de las estaciones: {num(round(sum(totales) / len(totales), 2))}%"]
+                 + [f"{num(t)}%" for t in totales])
+    n = len(estaciones)
+    resto = 0.54 / n
+    bloques: List[dict] = [{
+        "type": "table", "heading": "CUMPLIMIENTO DEL PIPC MODALIDAD ESTUDIO DE RIESGO OBRA Y DEMOLICIÓN (EROD)",
+        "headers": ["N°", "PASOS - ETAPAS", "CONCEPTO"] + [e["etiqueta"] for e in estaciones],
+        "rows": filas, "col_widths": [0.04, 0.12, 0.30] + [resto] * n, "empty_text": "Sin datos del PIPC.",
+    }, {"type": "list", "heading": None, "items": [{"title": None, "body": PIPC_NOTA, "extra": None, "meta": None}],
+        "empty_text": ""}]
+    nota = next((r for r in registros if r.get("tipo") == "nota_pipc"), None)
+    lineas = [ln.strip() for ln in (nota or {}).get("texto", "").splitlines() if ln.strip()]
+    if lineas:
+        bloques.append({"type": "list", "heading": "Notas de avance",
+                        "items": [{"title": None, "body": ln, "extra": None, "meta": None} for ln in lineas],
+                        "empty_text": ""})
+    return bloques
+
+
+def _grafica_gauge_png(titulo: str, porcentaje: float, detalle: str) -> bytes:
+    """Medidor semicircular del % de cumplimiento (rojo < 40, ámbar < 70,
+    verde desde 70), con el valor al centro. Dibujado con Pillow."""
+    from PIL import Image as _I
+    W, H = 1800, 800
+    img = _I.new("RGB", (W, H), "white")
+    d, (f_txt, f_tit, f_big) = _chart_canvas(img, 26, 32, 110)
+    d.text((W / 2, 50), titulo, fill="#0F172A", font=f_tit, anchor="mm")
+    cx, cy, r = W / 2, 560, 380
+    bbox = [cx - r, cy - r, cx + r, cy + r]
+    d.pieslice(bbox, 180, 360, fill="#E2E8F0")
+    pct = max(0.0, min(float(porcentaje), 100.0))
+    color = "#DC2626" if pct < 40 else "#F59E0B" if pct < 70 else "#16A34A"
+    if pct > 0:
+        d.pieslice(bbox, 180, 180 + 180 * pct / 100, fill=color)
+    hueco = r * 0.62
+    d.ellipse([cx - hueco, cy - hueco, cx + hueco, cy + hueco], fill="white")
+    d.rectangle([cx - r - 5, cy, cx + r + 5, cy + 60], fill="white")
+    d.text((cx, cy - 90), f"{pct:g}%", fill="#0F172A", font=f_big, anchor="mm")
+    d.text((cx - r + (r - hueco) / 2, cy + 30), "0%", fill="#475569", font=f_txt, anchor="mm")
+    d.text((cx + r - (r - hueco) / 2, cy + 30), "100%", fill="#475569", font=f_txt, anchor="mm")
+    if detalle:
+        d.text((cx, cy + 110), detalle, fill="#475569", font=f_txt, anchor="mm")
+    out = io.BytesIO()
+    img.save(out, format="PNG")
+    return out.getvalue()
+
+
+def _grafica_barras_png(titulo: str, categorias: List[str], series: List[tuple]) -> bytes:
+    """Barras agrupadas (una barra por serie dentro de cada categoría) con el
+    valor sobre cada barra. `series` = [(nombre, "#RRGGBB", [valores 0-100 o None])]."""
+    from PIL import Image as _I
+    W, H = 1800, 800
+    img = _I.new("RGB", (W, H), "white")
+    d, (f_txt, f_tit) = _chart_canvas(img, 24, 32)
+    d.text((W / 2, 45), titulo, fill="#0F172A", font=f_tit, anchor="mm")
+    x0, x1, y0, y1 = 140, W - 60, 110, H - 170
+    for i in range(6):
+        y = y1 - (y1 - y0) * i / 5
+        d.line([(x0, y), (x1, y)], fill="#E2E8F0", width=1)
+        d.text((x0 - 12, y), f"{20 * i}%", fill="#475569", font=f_txt, anchor="rm")
+    d.line([(x0, y0), (x0, y1), (x1, y1)], fill="#475569", width=2)
+    ancho_grupo = (x1 - x0) / max(len(categorias), 1)
+    ancho_barra = min(ancho_grupo * 0.8 / max(len(series), 1), 160)
+    for gi, cat in enumerate(categorias):
+        gx = x0 + ancho_grupo * (gi + 0.5)
+        d.text((gx, y1 + 22), cat, fill="#0F172A", font=f_txt, anchor="mt")
+        for si, (_nombre, color, valores) in enumerate(series):
+            v = valores[gi]
+            if v is None:
+                continue
+            bx = gx + (si - (len(series) - 1) / 2) * (ancho_barra + 10)
+            top = y1 - (y1 - y0) * min(float(v), 100.0) / 100
+            d.rectangle([bx - ancho_barra / 2, top, bx + ancho_barra / 2, y1], fill=color)
+            d.text((bx, top - 8), f"{v:g}%", fill="#0F172A", font=f_txt, anchor="mb")
+    lx = x0
+    for nombre, color, _v in series:
+        d.rectangle([lx, H - 60, lx + 28, H - 40], fill=color)
+        d.text((lx + 38, H - 50), nombre, fill="#0F172A", font=f_txt, anchor="lm")
+        lx += 70 + int(d.textlength(nombre, font=f_txt)) + 40
+    out = io.BytesIO()
+    img.save(out, format="PNG")
+    return out.getvalue()
+
+
+def _indicadores_seguridad_graficas(registros: List[dict], reportes: List[dict], corte: date) -> tuple:
+    """([bloques ANTES de las gráficas], [(heading, caption, png)], [bloques
+    DESPUÉS]) del cumplimiento de seguridad e higiene al corte, en el orden del
+    reporte: días sin accidentes → medidor de campo → documental → PIPC. Cada
+    parte se omite si no hay datos."""
+    bloques: List[dict] = []
+    graficas: List[tuple] = []
+    campo = _seg_campo_resumen(registros, corte)
+    if campo:
+        dias = _seg_dias_sin_accidentes(reportes, corte, campo["dias_manual"])
+        previo = f"{campo['anterior']:g}%" if campo["anterior"] is not None else "sin dato"
+        detalle = f"Porcentaje actual {campo['actual']:g}%  ·  Porcentaje anterior {previo}"
+        if dias is not None:
+            bloques.append({"type": "summary", "text": f"DÍAS SIN ACCIDENTES: {dias}"})
+        graficas.append(("CUMPLIMIENTO EN CAMPO", detalle,
+                         _grafica_gauge_png("Cumplimiento en campo", campo["actual"], "")))
+    mensual = _seg_doc_mensual(registros, corte)
+    if mensual:
+        a, b = mensual["actual"], mensual["anterior"]
+        comp = f"  ·  {b['porcentaje']:g}%: {_SEGURIDAD_MESES[int(b['mes'][5:7]) - 1]}" if b else ""
+        cap = f"Porcentaje de cumplimiento documental mensual · Periodo {_mes_label(a['mes'])}{comp}  ·  {a['porcentaje']:g}%: {_SEGURIDAD_MESES[int(a['mes'][5:7]) - 1]}"
+        graficas.append(("CUMPLIMIENTO DOCUMENTAL", cap, _grafica_donas_png(
+            f"Cumplimiento documental · {_mes_label(a['mes'])}", [("Completo", a["porcentaje"], 100)],
+            detalle=lambda real, total: f"Faltante {100 - real:g}%", decimales=2)))
+    semanal = _seg_doc_semanal(registros, corte)
+    if semanal:
+        colores = ["#9CA3AF", "#2563EB"]
+        series = [(sm["label"], colores[i % 2], [c["valores"][i] for c in semanal["categorias"]])
+                  for i, sm in enumerate(semanal["semanas"])]
+        graficas.append(("PORCENTAJE DE CUMPLIMIENTO POR ÁREA", "Cumplimiento documental por semana en Seguridad, Protección civil e Higiene y salud",
+                         _grafica_barras_png("Porcentaje de cumplimiento", [c["label"] for c in semanal["categorias"]], series)))
+    return bloques, graficas, _pipc_bloques(registros)
+
+
+@api.get("/projects/{pid}/seguridad-indicadores")
+async def list_seguridad_indicadores(pid: str, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    items = await db.seguridad_indicadores.find({"project_id": pid}).to_list(length=5000)
+    items.sort(key=lambda r: (r.get("tipo", ""), r.get("fecha") or r.get("mes") or r.get("semana") or "", r.get("orden", 0)))
+    return [{k: v for k, v in d.items() if k != "_id"} for d in items]
+
+
+@api.put("/projects/{pid}/seguridad-indicadores")
+async def set_seguridad_indicador(pid: str, body: IndicadorIn, user: dict = Depends(current_user)):
+    """Crea o REEMPLAZA un indicador por su clave natural (mismo corte, mes,
+    semana+categoría o estación)."""
+    _assert_write_allowed(user)
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "indicadores_seguridad")
+    clave, campos = _indicador_normalizar(body)
+    now = datetime.now(timezone.utc)
+    await db.seguridad_indicadores.update_one(
+        {"project_id": pid, "clave": clave},
+        {"$set": {**campos, "tipo": body.tipo, "updated_at": now, "updated_by": user["id"]},
+         "$setOnInsert": {"id": str(uuid.uuid4()), "created_at": now, "created_by": user["id"],
+                          "created_by_name": user["name"]}},
+        upsert=True,
+    )
+    doc = await db.seguridad_indicadores.find_one({"project_id": pid, "clave": clave})
+    return {k: v for k, v in doc.items() if k != "_id"}
+
+
+@api.delete("/projects/{pid}/seguridad-indicadores/{rid}")
+async def delete_seguridad_indicador(pid: str, rid: str, user: dict = Depends(current_user)):
+    """Coordinador/Sub-Coordinador borran cualquiera; el resto solo lo suyo."""
+    _assert_write_allowed(user)
+    await ensure_project_access(user, pid)
+    doc = await db.seguridad_indicadores.find_one({"id": rid, "project_id": pid}, {"created_by": 1})
+    if not doc:
+        raise HTTPException(404, "Registro no existe")
+    if user.get("role") not in (ROLE_COORD, ROLE_SUB) and doc.get("created_by") != user["id"]:
+        raise HTTPException(403, "Solo puedes eliminar los registros que tú capturaste")
+    await db.seguridad_indicadores.delete_one({"id": rid, "project_id": pid})
     return {"ok": True}
 
 
@@ -15368,7 +15705,7 @@ async def _gather_modulos_export_data(
         "tabla_resumen": None, "fotos_lidar": None, "tapial": None,
         "pruebas_calidad": None, "control_calidad": None,
         "avance_obra": None, "estimaciones": None, "pendientes_generales": None,
-        "aspectos_sociales": None,
+        "aspectos_sociales": None, "indicadores_seguridad": None,
     }
     date_q = {"created_at": {"$gte": start_dt, "$lte": end_dt}}
     # Riesgos y Estudios son matrices mutables (el % de avance se actualiza
@@ -15751,6 +16088,20 @@ async def _gather_modulos_export_data(
             blocks_as.append({"type": "imagen", "heading": heading, "imagen": jpg, "caption": caption})
         if blocks_as:
             out["aspectos_sociales"] = {"titulo": "ASPECTOS SOCIALES", "blocks": blocks_as}
+
+    if activos.get("indicadores_seguridad"):
+        corte_is = end_dt.astimezone(MX_TZ).date()
+        bloques_is, graficas_is, bloques_pipc = _indicadores_seguridad_graficas(
+            await db.seguridad_indicadores.find({"project_id": pid}).to_list(length=5000),
+            await db.seguridad_reportes.find({"project_id": pid}).to_list(length=20000),
+            corte_is,
+        )
+        for heading, caption, png in graficas_is:
+            jpg = await asyncio.to_thread(_png_bytes_to_jpeg_dataurl, png)
+            bloques_is.append({"type": "imagen", "heading": heading, "imagen": jpg, "caption": caption})
+        bloques_is += bloques_pipc
+        if bloques_is:
+            out["indicadores_seguridad"] = {"titulo": "CUMPLIMIENTO SEGURIDAD E HIGIENE", "blocks": bloques_is}
 
     return out
 
