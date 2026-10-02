@@ -663,6 +663,25 @@ export interface Estimacion {
   fecha_pago?: string | null; // fecha o texto libre ("Por pagar")
   updated_at: string;
 }
+// === Electromecánica (Sistema Electromecánico del informe) ================
+export type ElectromecEstatus = 'recibido' | 'en_revision' | 'pendiente' | 'emitido';
+export interface ElectromecDocumento { id?: string | null; titulo: string; estatus?: ElectromecEstatus | null; nota?: string | null }
+export interface ElectromecObservacion { id?: string | null; titulo?: string | null; texto: string }
+export interface ElectromecIn {
+  /** {componente: {etapa: % 0-100 | null}} — componentes: estaciones, pilonas, cable, garage, cabinas. */
+  avance: Record<string, Record<string, number | null>>;
+  avance_general?: number | null;
+  pilonas_total?: number | null;
+  pilonas_suministradas?: number | null;
+  patio_nota?: string | null;
+  documentos: ElectromecDocumento[];
+  observaciones: ElectromecObservacion[];
+}
+export interface Electromecanica extends ElectromecIn {
+  avance_general_calculado?: number | null;
+  updated_at?: string;
+}
+
 // === Aspectos sociales (reporte semanal) ==================================
 export type LevantamientoTipo = 'dictamen_estructural' | 'fe_notarial';
 export type SocialAmbito = 'estacion' | 'poste';
@@ -765,7 +784,7 @@ export type PresentacionSeccionTipo =
   | 'portada' | 'mapa_general' | 'divisor' | 'financiero'
   | 'seguimiento_estudios' | 'croquis_estacion' | 'informacion_particular' | 'avance_grafico'
   | 'reportes_semana' | 'cierre' | 'ambiental' | 'social' | 'seguridad'
-  | 'proyecto' | 'calidad' | 'pendientes';
+  | 'proyecto' | 'calidad' | 'pendientes' | 'electromecanico';
 
 export interface PresentacionSeccion {
   id: string;
@@ -791,7 +810,7 @@ export interface ReporteSemanaItem {
   n_fotos: number;
 }
 
-export type PresentacionSeccionTipoAuto = 'ambiental' | 'social' | 'seguridad' | 'proyecto' | 'calidad' | 'pendientes';
+export type PresentacionSeccionTipoAuto = 'ambiental' | 'social' | 'seguridad' | 'proyecto' | 'calidad' | 'pendientes' | 'electromecanico';
 
 /** Esquema de una sección automática (Ambiental/Social/Seguridad) para el preview. */
 export interface ModuloAutoOutline {
@@ -2394,6 +2413,9 @@ export const api = {
     request<SeguridadIndicador>('PUT', `/projects/${pid}/seguridad-indicadores`, body),
   deleteSeguridadIndicador: (pid: string, rid: string) =>
     request<{ ok: boolean }>('DELETE', `/projects/${pid}/seguridad-indicadores/${rid}`),
+  getElectromecanica: (pid: string) => request<Electromecanica>('GET', `/projects/${pid}/electromecanica`),
+  setElectromecanica: (pid: string, body: ElectromecIn) =>
+    request<Electromecanica>('PUT', `/projects/${pid}/electromecanica`, body),
   listLevantamientosSociales: (pid: string) =>
     request<LevantamientoSocial[]>('GET', `/projects/${pid}/levantamientos-sociales`),
   setLevantamientoSocial: (pid: string, body: { tipo: LevantamientoTipo; ambito: SocialAmbito; total_requerido: number; realizados: number }) =>

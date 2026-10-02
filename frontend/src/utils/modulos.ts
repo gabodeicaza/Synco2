@@ -148,6 +148,14 @@ export const MODULOS: ModuloDef[] = [
     area: 'Social',
   },
   {
+    key: 'electromecanica',
+    label: 'Electromecánica',
+    subtitle: 'Avance de fabricación, suministro y montaje, documentación, pilonas y observaciones',
+    icon: 'hardware-chip-outline',
+    screen: 'electromecanica',
+    area: 'Electromecánica',
+  },
+  {
     key: 'indicadores_seguridad',
     label: 'Indicadores de Seguridad',
     subtitle: 'Cumplimiento en campo, documental y PIPC (con medidor y gráficas)',

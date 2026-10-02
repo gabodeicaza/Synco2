@@ -27,7 +27,7 @@ import { SlideModuloAuto } from '@/src/components/presentacion/SlideModuloAuto';
 
 const AUTO_TITULO: Record<PresentacionSeccionTipoAuto, string> = {
   ambiental: 'Ambiental', social: 'Social / Impacto urbano', seguridad: 'Seguridad',
-  proyecto: 'Estudios y proyecto ejecutivo', calidad: 'Calidad', pendientes: 'Pendientes generales',
+  proyecto: 'Estudios y proyecto ejecutivo', calidad: 'Calidad', pendientes: 'Pendientes generales', electromecanico: 'Sistema electromecánico',
 };
 const isAuto = (t: string): t is PresentacionSeccionTipoAuto => t in AUTO_TITULO;
 
