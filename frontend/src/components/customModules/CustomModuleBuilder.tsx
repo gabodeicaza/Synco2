@@ -85,12 +85,23 @@ export function CustomModuleBuilder({
     onClose();
   }
 
-  async function guardar() {
+  // Paso previo a guardar: se valida y se abre la confirmación con la vista previa.
+  const [confirmando, setConfirmando] = useState(false);
+
+  function pedirConfirmacion() {
     const problema = validarDefinicion(d);
     if (problema) { Alert.alert('Revisa el módulo', problema); return; }
+    // Arranca en el primer informe donde el módulo SÍ se imprime.
+    const primero = CM_CATEGORIAS.find(({ cat }) => d.salida![cat].modo !== 'oculto');
+    setCatPrev(primero ? primero.cat : 'reportes_semanales');
+    setConfirmando(true);
+  }
+
+  async function guardar() {
     try {
       setSaving(true);
       const m = moduleId ? await api.updateCustomModule(projectId, moduleId, d) : await api.createCustomModule(projectId, d);
+      setConfirmando(false);
       onSaved(m);
     } catch (e: any) {
       Alert.alert('No se pudo guardar', e?.message || 'Inténtalo nuevamente.');
@@ -166,7 +177,7 @@ export function CustomModuleBuilder({
   // borrador se aplican con «Actualizar vista previa» (cargarPreview cambia en cada edición).
   const cargarPreviewRef = useRef(cargarPreview);
   cargarPreviewRef.current = cargarPreview;
-  useEffect(() => { if (tab === 'vista') cargarPreviewRef.current(); }, [tab, catPrev, prevMuestra]);
+  useEffect(() => { if (tab === 'vista' || confirmando) cargarPreviewRef.current(); }, [tab, confirmando, catPrev, prevMuestra]);
 
   const nombreArea = areas.find((a) => a.id === d.area_id)?.name;
 
@@ -176,7 +187,7 @@ export function CustomModuleBuilder({
         <View style={[styles.header, { backgroundColor: headerColor, paddingTop: insets.top + spacing.xs }]}>
           <Pressable onPress={cerrar} hitSlop={10} style={styles.hBtn}><Ionicons name="close" size={22} color={fg} /></Pressable>
           <Text style={[styles.hTitle, { color: fg }]} numberOfLines={1}>{moduleId ? 'Editar módulo' : 'Nuevo módulo'}</Text>
-          <Pressable onPress={guardar} disabled={saving} hitSlop={10} style={styles.hBtn}>
+          <Pressable onPress={pedirConfirmacion} disabled={saving} hitSlop={10} style={styles.hBtn}>
             {saving ? <ActivityIndicator size="small" color={fg} /> : <Text style={[styles.hSave, { color: fg }]}>Guardar</Text>}
           </Pressable>
         </View>
@@ -460,6 +471,45 @@ export function CustomModuleBuilder({
         </ScrollView>
       </KeyboardAvoidingView>
 
+      <Modal visible={confirmando} transparent animationType="slide" onRequestClose={() => setConfirmando(false)}>
+        <View style={styles.confBackdrop}>
+          <View style={[styles.confSheet, { paddingBottom: insets.bottom + spacing.md }]}>
+            <Text style={styles.confTitle}>Revisa cómo saldrá en el informe</Text>
+            <Text style={styles.hint}>
+              {salida && CM_CATEGORIAS.every(({ cat }) => salida[cat].modo === 'oculto')
+                ? 'Ahora mismo el módulo no se imprime en ningún informe (solo se captura).'
+                : 'Esta es la vista previa con tu configuración. Si algo no te convence, vuelve a editar.'}
+            </Text>
+            <View style={{ height: spacing.sm }} />
+            <ChipRow>
+              {CM_CATEGORIAS.map(({ cat, label }) => (
+                <Chip key={cat} label={`${label}${salida[cat].modo === 'oculto' ? ' · no imprime' : ''}`} on={catPrev === cat} onPress={() => setCatPrev(cat)} />
+              ))}
+            </ChipRow>
+            <ScrollView style={{ marginTop: spacing.sm }} contentContainerStyle={{ paddingBottom: spacing.md }}>
+              {prevLoading ? <ActivityIndicator color={colors.primary} style={{ marginVertical: spacing.lg }} /> : null}
+              {prevError ? <Text style={styles.error}>{prevError}</Text> : null}
+              {!prevLoading && prev ? (
+                prev.seccion ? (
+                  <>
+                    {prev.muestra ? <Text style={styles.sampleTag}>Datos de ejemplo — no son registros reales</Text> : null}
+                    <BloquesPreview titulo={prev.seccion.titulo} blocks={prev.seccion.blocks} />
+                  </>
+                ) : (
+                  <Text style={styles.emptyTxt}>
+                    {prev.modo === 'oculto' ? 'En este informe el módulo está en «No imprimir».' : 'No se imprimiría nada: no hay registros en el período.'}
+                  </Text>
+                )
+              ) : null}
+            </ScrollView>
+            <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm }}>
+              <Button label="Volver a editar" variant="secondary" onPress={() => setConfirmando(false)} style={{ flex: 1 }} />
+              <Button label={moduleId ? 'Guardar cambios' : 'Crear módulo'} loading={saving} onPress={guardar} style={{ flex: 1 }} />
+            </View>
+          </View>
+        </View>
+      </Modal>
+
       <FieldEditorModal
         campo={editando?.campo || null} esNuevo={!!editando?.nuevo}
         todos={editando?.nuevo ? [...campos, editando.campo] : campos}
@@ -506,6 +556,9 @@ const styles = StyleSheet.create({
   modoCard: { flexGrow: 1, minWidth: '30%', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 10, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.bg },
   modoCardOn: { backgroundColor: colors.primary, borderColor: colors.primary },
   modoTxt: { fontSize: 12, fontWeight: '800', color: colors.text },
+  confBackdrop: { flex: 1, backgroundColor: 'rgba(15,23,42,0.45)', justifyContent: 'flex-end' },
+  confSheet: { backgroundColor: colors.surface, borderTopLeftRadius: radius.lg, borderTopRightRadius: radius.lg, padding: spacing.lg, maxHeight: '90%', width: '100%' },
+  confTitle: { fontSize: 16, fontWeight: '800', color: colors.text, marginBottom: 4 },
   sep: { height: 1, backgroundColor: colors.border, marginVertical: spacing.sm },
   error: { color: colors.error, fontSize: 13, fontWeight: '700', marginVertical: spacing.sm },
   sampleTag: { alignSelf: 'flex-start', backgroundColor: colors.warningBg, color: '#92400E', fontSize: 11, fontWeight: '800', paddingHorizontal: 8, paddingVertical: 3, borderRadius: radius.sm, marginBottom: 4, overflow: 'hidden' },
