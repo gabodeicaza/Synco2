@@ -6,3 +6,9 @@ export const FECHA_AYUDA = 'Usa AAAA-MM-DD o DD/MM/AAAA (ej. 2026-06-26 o 26/06/
 export function fechaTecleadaOk(texto: string): boolean {
   return /^(\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|\d{1,2}[-/.]\d{1,2}[-/.](\d{2}|\d{4}))$/.test((texto || '').trim());
 }
+
+/** '2026-09-29' → '29/09/2026'; cualquier otra cosa se devuelve tal cual. */
+export function fechaCorta(iso?: string | null): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso || '');
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : String(iso || '');
+}

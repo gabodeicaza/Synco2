@@ -18,6 +18,8 @@ export default function ProjectLayout() {
       <Stack.Screen name="actividades-generales" />
       <Stack.Screen name="dashboard" />
       <Stack.Screen name="modulos" />
+      <Stack.Screen name="modulos-personalizados" />
+      <Stack.Screen name="modulo-personalizado" />
       <Stack.Screen name="forestal-arbolado" />
       <Stack.Screen name="seguridad-higiene" />
       <Stack.Screen name="gestion-riesgos" />

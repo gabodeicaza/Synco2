@@ -17,9 +17,11 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { api, Area, Project } from '@/src/api';
+import { api, Area, CustomModule, Project } from '@/src/api';
 import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
-import { agruparModulosPorArea, modulosActivos, ModuloDef, SIN_AREA_ID } from '@/src/utils/modulos';
+import {
+  agruparModulosPorArea, asignacionesConPersonalizados, modulosActivos, modulosPersonalizadosDef, ModuloDef, SIN_AREA_ID,
+} from '@/src/utils/modulos';
 
 export default function ModulosHubScreen({
   projectId, basePath,
@@ -31,15 +33,21 @@ export default function ModulosHubScreen({
   const [loading, setLoading] = useState(true);
   const [project, setProject] = useState<Project | null>(null);
   const [areas, setAreas] = useState<Area[]>([]);
+  const [personalizados, setPersonalizados] = useState<CustomModule[]>([]);
   const [areaSel, setAreaSel] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!projectId) { setLoading(false); return; }
     try {
       setLoading(true);
-      const [p, a] = await Promise.all([api.getProject(projectId), api.listAreas(projectId).catch(() => [] as Area[])]);
+      const [p, a, cm] = await Promise.all([
+        api.getProject(projectId),
+        api.listAreas(projectId).catch(() => [] as Area[]),
+        api.listCustomModules(projectId).catch(() => [] as CustomModule[]),
+      ]);
       setProject(p);
       setAreas(a);
+      setPersonalizados(cm);
     } catch (e: any) {
       Alert.alert('Error', e?.message || 'No se pudo cargar el proyecto.');
     } finally {
@@ -49,8 +57,9 @@ export default function ModulosHubScreen({
 
   useEffect(() => { load(); }, [load]);
 
-  const activos = modulosActivos(project?.modulos || null);
-  const grupos = agruparModulosPorArea(activos, project?.modulos_areas, areas);
+  // Plantillas fijas encendidas + módulos creados con el Creador de módulos.
+  const activos = [...modulosActivos(project?.modulos || null), ...modulosPersonalizadosDef(personalizados)];
+  const grupos = agruparModulosPorArea(activos, asignacionesConPersonalizados(project?.modulos_areas, personalizados), areas);
   // Sin áreas asignadas = un solo grupo "General": lista plana, sin nivel extra.
   const plano = grupos.length === 1 && grupos[0].areaId === SIN_AREA_ID;
   const grupoSel = !plano && areaSel ? grupos.find((g) => g.areaId === areaSel) || null : null;
@@ -70,7 +79,10 @@ export default function ModulosHubScreen({
   }, [grupoSel]);
 
   const abrir = (m: ModuloDef) =>
-    router.push({ pathname: `${basePath}/${m.screen}` as any, params: { project_id: projectId } });
+    router.push({
+      pathname: `${basePath}/${m.screen}` as any,
+      params: m.customId ? { project_id: projectId, mid: m.customId } : { project_id: projectId },
+    });
 
   const tarjetaModulo = (m: ModuloDef) => (
     <Pressable key={m.key} style={styles.card} onPress={() => abrir(m)}>

@@ -748,6 +748,107 @@ export interface PendienteGeneral {
   created_by_name?: string;
   updated_at: string;
 }
+// === Creador de módulos (módulos personalizados) ===========================
+// Espejo de `_cm_*` en backend/server.py. Cada módulo define sus CAMPOS y, por
+// informe (Diario/Semanal/Mensual), cómo se imprime: texto, tabla, resumen,
+// fotos u oculto. Ver src/utils/customModules.ts y CustomModuleBuilder.tsx.
+export type CustomCampoTipo =
+  | 'texto' | 'texto_largo' | 'numero' | 'moneda' | 'porcentaje' | 'fecha'
+  | 'seleccion' | 'multiseleccion' | 'interruptor' | 'foto' | 'calculado';
+export type CustomModo = 'oculto' | 'texto' | 'tabla' | 'resumen' | 'fotos';
+export type CustomPeriodo = 'periodo' | 'acumulado' | 'ultimo';
+export type CustomAgregacion = 'ninguna' | 'suma' | 'promedio' | 'minimo' | 'maximo' | 'conteo';
+
+export interface CustomCampo {
+  id: string;
+  etiqueta: string;
+  tipo: CustomCampoTipo;
+  requerido: boolean;
+  en_informe: boolean;
+  ayuda?: string;
+  unidad?: string;
+  decimales?: number | null;
+  minimo?: number | null;
+  maximo?: number | null;
+  opciones?: string[];
+  formula?: string;
+  formato?: 'numero' | 'moneda' | 'porcentaje';
+  agregacion?: CustomAgregacion;
+  valor_defecto?: any;
+  visible_si?: { campo: string; igual: string | boolean } | null;
+}
+
+export interface CustomSalidaCategoria { modo: CustomModo; periodo: CustomPeriodo }
+export type CustomSalida = Record<ModuloCategoria, CustomSalidaCategoria>;
+
+export interface CustomOpciones {
+  titulo: string;
+  intro: string;
+  nota_pie: string;
+  plantilla_texto: string;
+  texto_vacio: string;
+  mostrar_fecha: boolean;
+  mostrar_autor: boolean;
+  mostrar_totales: boolean;
+  numerar: boolean;
+  incluir_fotos: boolean;
+  imprimir_vacio: boolean;
+  orden: 'asc' | 'desc';
+  limite: number;
+  agrupar_por: string | null;
+}
+
+export interface CustomModule {
+  id: string;
+  key: string;
+  project_id: string;
+  nombre: string;
+  descripcion: string;
+  icono: string;
+  area_id: string | null;
+  activo: boolean;
+  usar_jerarquia: boolean;
+  solo_coordinacion: boolean;
+  orden: number;
+  campos: CustomCampo[];
+  salida: CustomSalida;
+  opciones: CustomOpciones;
+  n_registros?: number;
+}
+
+// Lo editable de una definición (el backend rellena/sanea el resto).
+export type CustomModuleInput = Partial<Omit<CustomModule, 'id' | 'key' | 'project_id' | 'orden' | 'n_registros'>>;
+
+export interface CustomRecord {
+  id: string;
+  project_id: string;
+  module_id: string;
+  fecha: string;
+  valores: Record<string, any>;
+  thumbs?: Record<string, string>;
+  tiene_fotos?: string[];
+  fotos?: Record<string, string>;
+  jerarquia?: JerarquiaInforme | null;
+  created_by?: string;
+  created_by_name?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export type CustomBloque =
+  | { type: 'summary'; text: string }
+  | { type: 'table'; heading?: string | null; headers: string[]; rows: string[][]; col_widths?: number[]; empty_text?: string }
+  | { type: 'list'; heading?: string | null; items: { title?: string; body?: string; extra?: string | null; meta?: string }[]; empty_text?: string }
+  | { type: 'fotos_comparativa'; items: any[] };
+
+export interface CustomPreview {
+  seccion: { titulo: string; blocks: CustomBloque[] } | null;
+  muestra: boolean;
+  modo: CustomModo;
+  periodo: { desde: string; hasta: string };
+  n_registros: number;
+}
+
 export type PruebaCalidadInput = Partial<Omit<PruebaCalidad, 'id' | 'project_id' | 'created_by' | 'created_by_name' | 'updated_at' | 'frente' | 'jerarquia'>> & {
   jerarquia?: JerarquiaInforme;
   frente: string;
@@ -2409,6 +2510,33 @@ export const api = {
     request<PendienteGeneral>('PATCH', `/projects/${pid}/pendientes-generales/${rid}`, body),
   deletePendienteGeneral: (pid: string, rid: string) =>
     request<{ ok: boolean }>('DELETE', `/projects/${pid}/pendientes-generales/${rid}`),
+  // Creador de módulos (módulos personalizados).
+  listCustomModules: (pid: string, todos = false) =>
+    request<CustomModule[]>('GET', `/projects/${pid}/custom-modules${todos ? '?todos=true' : ''}`),
+  getCustomModule: (pid: string, mid: string) =>
+    request<CustomModule>('GET', `/projects/${pid}/custom-modules/${mid}`),
+  createCustomModule: (pid: string, body: CustomModuleInput) =>
+    request<CustomModule>('POST', `/projects/${pid}/custom-modules`, body),
+  updateCustomModule: (pid: string, mid: string, body: CustomModuleInput) =>
+    request<CustomModule>('PATCH', `/projects/${pid}/custom-modules/${mid}`, body),
+  duplicateCustomModule: (pid: string, mid: string, destinoProjectId?: string) =>
+    request<CustomModule>('POST', `/projects/${pid}/custom-modules/${mid}/duplicar`, destinoProjectId ? { destino_project_id: destinoProjectId } : {}),
+  deleteCustomModule: (pid: string, mid: string, confirmar = false) =>
+    request<{ ok: boolean; registros_borrados: number }>('DELETE', `/projects/${pid}/custom-modules/${mid}${confirmar ? '?confirmar=true' : ''}`),
+  reorderCustomModules: (pid: string, ids: string[]) =>
+    request<{ ok: boolean }>('PUT', `/projects/${pid}/custom-modules-orden`, { ids }),
+  previewCustomModule: (pid: string, body: { definicion?: CustomModuleInput; module_id?: string; categoria: ModuloCategoria; fecha?: string; muestra?: boolean }) =>
+    request<CustomPreview>('POST', `/projects/${pid}/custom-modules/preview`, body),
+  listCustomRecords: (pid: string, mid: string) =>
+    request<CustomRecord[]>('GET', `/projects/${pid}/custom-modules/${mid}/records`),
+  getCustomRecord: (pid: string, mid: string, rid: string) =>
+    request<CustomRecord>('GET', `/projects/${pid}/custom-modules/${mid}/records/${rid}`),
+  createCustomRecord: (pid: string, mid: string, body: { fecha?: string; valores: Record<string, any>; jerarquia?: JerarquiaInforme }) =>
+    request<CustomRecord>('POST', `/projects/${pid}/custom-modules/${mid}/records`, body),
+  updateCustomRecord: (pid: string, mid: string, rid: string, body: { fecha?: string; valores?: Record<string, any>; jerarquia?: JerarquiaInforme }) =>
+    request<CustomRecord>('PATCH', `/projects/${pid}/custom-modules/${mid}/records/${rid}`, body),
+  deleteCustomRecord: (pid: string, mid: string, rid: string) =>
+    request<{ ok: boolean }>('DELETE', `/projects/${pid}/custom-modules/${mid}/records/${rid}`),
   listSeguridadIndicadores: (pid: string) =>
     request<SeguridadIndicador[]>('GET', `/projects/${pid}/seguridad-indicadores`),
   setSeguridadIndicador: (pid: string, body: SeguridadIndicadorInput) =>
