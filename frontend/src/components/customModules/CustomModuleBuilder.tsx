@@ -22,6 +22,7 @@ import {
 } from '@/src/utils/customModules';
 import { Chip, ChipRow, FieldLabel, Section, SwitchRow, inputStyle } from './ui';
 import { FieldEditorModal } from './FieldEditorModal';
+import { GraficasEditor } from './GraficasEditor';
 import { BloquesPreview } from './BloquesPreview';
 
 type Tab = 'general' | 'campos' | 'informes' | 'vista';
@@ -39,6 +40,7 @@ function normaliza(m: CustomModuleInput | CustomModule): CustomModuleInput {
     salida: { ...v.salida!, ...(m.salida || {}) },
     opciones: { ...OPCIONES_DEFAULT, ...(m.opciones || {}) },
     campos: (m.campos || []).map((c) => ({ ...c })),
+    graficas: (m.graficas || []).map((g) => ({ ...g })),
   };
 }
 
@@ -75,7 +77,8 @@ export function CustomModuleBuilder({
   const hayTexto = modosUsados.has('texto');
   const hayFotos = campos.some((c) => c.tipo === 'foto');
   const hayTotales = campos.some((c) => (c.agregacion || 'ninguna') !== 'ninguna');
-  const camposAgrupables = campos.filter((c) => ['texto', 'seleccion', 'interruptor', 'fecha'].includes(c.tipo));
+  const hayEstatus = campos.some((c) => c.estatus);
+  const camposAgrupables = campos.filter((c) => ['texto', 'seleccion', 'interruptor', 'fecha', 'ubicacion'].includes(c.tipo));
 
   async function cerrar() {
     if (JSON.stringify(d) !== inicialJson.current) {
@@ -121,6 +124,7 @@ export function CustomModuleBuilder({
       if (c.visible_si?.campo === id) out.push(`«${c.etiqueta}» (condición de visibilidad)`);
     }
     if (op.agrupar_por === id) out.push('Agrupar por (pestaña Informes)');
+    if ((d.graficas || []).some((g) => g.categoria === id || g.valor === id)) out.push('una gráfica (pestaña Informes)');
     return out;
   }
 
@@ -247,6 +251,39 @@ export function CustomModuleBuilder({
                   label="Solo la coordinación captura" value={!!d.solo_coordinacion} onChange={(v) => set({ solo_coordinacion: v })}
                   hint="Coordinador y Sub-Coordinador capturan; el resto solo consulta."
                 />
+              </Section>
+
+              <Section title="Folio automático" hint="Un consecutivo por registro (p. ej. SEG-0042) para citarlo en minutas y reportes. Aplica a los registros nuevos.">
+                <SwitchRow label="Asignar folio a cada registro" value={op.folio_activo} onChange={(v) => setOp({ folio_activo: v })} />
+                {op.folio_activo ? (
+                  <>
+                    <FieldLabel>Prefijo (opcional)</FieldLabel>
+                    <TextInput
+                      value={op.folio_prefijo} onChangeText={(t) => setOp({ folio_prefijo: t.replace(/\s/g, '').slice(0, 12) })}
+                      autoCapitalize="characters" placeholder="Ej. SEG-" placeholderTextColor={colors.textMuted} style={inputStyle}
+                    />
+                    <View style={{ flexDirection: 'row', gap: spacing.sm }}>
+                      <View style={{ flex: 1 }}>
+                        <FieldLabel>Dígitos</FieldLabel>
+                        <TextInput
+                          value={String(op.folio_digitos)} keyboardType="number-pad" placeholderTextColor={colors.textMuted} style={inputStyle}
+                          onChangeText={(t) => { const n = parseInt(t.replace(/\D/g, ''), 10); setOp({ folio_digitos: Number.isFinite(n) ? Math.min(8, Math.max(1, n)) : 4 }); }}
+                        />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <FieldLabel>Empezar en</FieldLabel>
+                        <TextInput
+                          value={String(op.folio_inicio)} keyboardType="number-pad" placeholderTextColor={colors.textMuted} style={inputStyle}
+                          onChangeText={(t) => { const n = parseInt(t.replace(/\D/g, ''), 10); setOp({ folio_inicio: Number.isFinite(n) ? Math.min(999999, Math.max(1, n)) : 1 }); }}
+                        />
+                      </View>
+                    </View>
+                    <Text style={styles.hint}>
+                      Ejemplo: {op.folio_prefijo}{String(op.folio_inicio).padStart(op.folio_digitos, '0')}
+                    </Text>
+                    <SwitchRow label="Mostrar el folio en el informe" value={op.mostrar_folio} onChange={(v) => setOp({ mostrar_folio: v })} />
+                  </>
+                ) : null}
               </Section>
             </>
           ) : null}
@@ -388,6 +425,13 @@ export function CustomModuleBuilder({
                   </>
                 ) : null}
 
+                {hayEstatus ? (
+                  <SwitchRow
+                    label="Ocultar los registros cerrados" value={op.ocultar_cerrados} onChange={(v) => setOp({ ocultar_cerrados: v })}
+                    hint="Un registro cerrado solo sale en el informe del período en que se cerró; los abiertos siempre salen."
+                  />
+                ) : null}
+
                 <View style={styles.sep} />
                 <FieldLabel>Orden de los registros</FieldLabel>
                 <ChipRow>
@@ -409,6 +453,10 @@ export function CustomModuleBuilder({
                     <Text style={styles.hint}>Cada grupo sale como su propia tabla o lista, con su encabezado.</Text>
                   </>
                 ) : null}
+              </Section>
+
+              <Section title="Gráficas" hint="Imágenes con barras, pastel o línea que acompañan al módulo en el informe.">
+                <GraficasEditor campos={campos} graficas={d.graficas || []} onChange={(g) => set({ graficas: g })} />
               </Section>
 
               {(hayTexto || modosUsados.has('fotos') || op.incluir_fotos) ? (

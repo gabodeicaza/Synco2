@@ -9,11 +9,11 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { api, Area, CustomModule, CustomModuleInput, Project } from '@/src/api';
+import { api, Area, CustomModule, CustomModuleInput, CustomTemplate, Project } from '@/src/api';
 import { colors, radius, shadow, spacing } from '@/src/theme';
 import { Button } from '@/src/components/Button';
 import { confirm } from '@/src/utils/confirm';
-import { PLANTILLAS, resumenSalida } from '@/src/utils/customModules';
+import { PLANTILLAS, moduloDesdePlantilla, resumenSalida } from '@/src/utils/customModules';
 import { Header } from './ui';
 import { CustomModuleBuilder } from './CustomModuleBuilder';
 
@@ -28,6 +28,7 @@ export default function CustomModulesAdminScreen({ projectId }: { projectId: str
   const [copiando, setCopiando] = useState<CustomModule | null>(null);
   const [proyectos, setProyectos] = useState<Project[]>([]);
   const [ocupado, setOcupado] = useState<string | null>(null);
+  const [propias, setPropias] = useState<CustomTemplate[]>([]); // biblioteca de plantillas propias
 
   const headerColor = project?.color_institucional || project?.color_tema || colors.primary;
 
@@ -94,6 +95,40 @@ export default function CustomModulesAdminScreen({ projectId }: { projectId: str
     }
   }
 
+  async function abrirSelector() {
+    setEligiendo(true);
+    try { setPropias(await api.listCustomTemplates()); } catch { /* solo se ofrecen las de inicio */ }
+  }
+
+  async function guardarPlantilla(m: CustomModule) {
+    const ok = await confirm(
+      'Guardar como plantilla',
+      `Se guardará la definición de «${m.nombre}» (campos, reglas de impresión y gráficas, sin registros) en tu biblioteca para usarla en cualquier proyecto.`,
+      { confirmText: 'Guardar' },
+    );
+    if (!ok) return;
+    try {
+      setOcupado(m.id);
+      await api.createCustomTemplate({ project_id: projectId, module_id: m.id, nombre: m.nombre });
+      Alert.alert('Listo', 'Plantilla guardada. La verás al crear un módulo nuevo, en «Mis plantillas».');
+    } catch (e: any) {
+      Alert.alert('No se pudo guardar', e?.message || 'Inténtalo nuevamente.');
+    } finally {
+      setOcupado(null);
+    }
+  }
+
+  async function borrarPlantilla(t: CustomTemplate) {
+    const ok = await confirm('Borrar plantilla', `¿Borrar «${t.nombre}» de tu biblioteca? Los módulos ya creados con ella no cambian.`, { confirmText: 'Borrar', destructive: true });
+    if (!ok) return;
+    try {
+      await api.deleteCustomTemplate(t.id);
+      setPropias((l) => l.filter((x) => x.id !== t.id));
+    } catch (e: any) {
+      Alert.alert('No se pudo borrar', e?.message || 'Inténtalo nuevamente.');
+    }
+  }
+
   async function borrar(m: CustomModule) {
     const n = m.n_registros || 0;
     const detalle = n > 0
@@ -124,7 +159,7 @@ export default function CustomModulesAdminScreen({ projectId }: { projectId: str
           imprime. Los módulos activos aparecen en el menú de Módulos de tu equipo.
         </Text>
 
-        <Button label="Nuevo módulo" icon={<Ionicons name="add" size={18} color="#fff" />} onPress={() => setEligiendo(true)} />
+        <Button label="Nuevo módulo" icon={<Ionicons name="add" size={18} color="#fff" />} onPress={abrirSelector} />
         <View style={{ height: spacing.md }} />
 
         {items.length === 0 ? (
@@ -155,6 +190,7 @@ export default function CustomModulesAdminScreen({ projectId }: { projectId: str
               <Action icon="list-outline" label="Registros" onPress={() => router.push({ pathname: '/(coord)/projects/[id]/modulo-personalizado' as any, params: { id: projectId, mid: m.id } })} />
               <Action icon="create-outline" label="Editar" onPress={() => setBuilder({ inicial: m, id: m.id, n: m.n_registros || 0 })} />
               <Action icon="copy-outline" label="Copiar" onPress={() => abrirCopiar(m)} />
+              <Action icon="bookmark-outline" label="Plantilla" onPress={() => guardarPlantilla(m)} />
               {ocupado === m.id ? <ActivityIndicator size="small" color={colors.primary} /> : (
                 <Pressable hitSlop={8} onPress={() => borrar(m)}><Ionicons name="trash-outline" size={18} color={colors.error} /></Pressable>
               )}
@@ -180,6 +216,20 @@ export default function CustomModulesAdminScreen({ projectId }: { projectId: str
                     <Text style={styles.meta}>{p.descripcion}</Text>
                   </View>
                   <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+                </Pressable>
+              ))}
+              {propias.length > 0 ? <Text style={styles.secTitle}>Mis plantillas</Text> : null}
+              {propias.map((t) => (
+                <Pressable
+                  key={t.id} style={styles.plantilla}
+                  onPress={() => { setEligiendo(false); setBuilder({ inicial: moduloDesdePlantilla(t), id: null, n: 0 }); }}
+                >
+                  <View style={[styles.icon, { backgroundColor: colors.success }]}><Ionicons name="bookmark" size={20} color="#fff" /></View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.name}>{t.nombre}</Text>
+                    <Text style={styles.meta} numberOfLines={2}>{t.descripcion || `${(t.definicion.campos || []).length} campos`}</Text>
+                  </View>
+                  <Pressable hitSlop={8} onPress={() => borrarPlantilla(t)}><Ionicons name="trash-outline" size={18} color={colors.error} /></Pressable>
                 </Pressable>
               ))}
             </ScrollView>
@@ -246,6 +296,7 @@ const styles = StyleSheet.create({
   actionTxt: { fontSize: 12, fontWeight: '700', color: colors.primary },
   backdrop: { flex: 1, backgroundColor: 'rgba(15,23,42,0.45)', justifyContent: 'center', padding: spacing.lg },
   sheet: { backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.lg },
+  secTitle: { fontSize: 12, fontWeight: '800', color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.5, marginTop: spacing.md, marginBottom: 2 },
   sheetTitle: { fontSize: 15, fontWeight: '800', color: colors.text, marginBottom: spacing.sm },
   plantilla: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, borderTopWidth: 1, borderTopColor: colors.border },
 });

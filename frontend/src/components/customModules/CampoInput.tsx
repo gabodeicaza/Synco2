@@ -2,13 +2,14 @@
 import React from 'react';
 import { View, Text, TextInput, Image, StyleSheet } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import type { CustomCampo } from '@/src/api';
+import type { CustomCampo, LocationNode } from '@/src/api';
+import { EstacionPicker } from '@/src/components/EstacionPicker';
 import { colors, radius, spacing } from '@/src/theme';
 import { esNumerico, fmtValor } from '@/src/utils/customModules';
 import { Chip, ChipRow, SwitchRow, inputStyle } from './ui';
 
 export function CampoInput({
-  campo, value, onChange, fotoUri, onPickFoto, onClearFoto, editable = true,
+  campo, value, onChange, fotoUri, onPickFoto, onClearFoto, editable = true, nodos,
 }: {
   campo: CustomCampo;
   value: any;
@@ -17,6 +18,7 @@ export function CampoInput({
   onPickFoto?: (source: 'camera' | 'library') => void;
   onClearFoto?: () => void;
   editable?: boolean;
+  nodos?: LocationNode[]; // árbol de ubicaciones del proyecto (campos de tipo ubicación)
 }) {
   const t = campo.tipo;
   const titulo = (
@@ -60,6 +62,23 @@ export function CampoInput({
             {fotoUri ? <Chip label="Quitar" tone="danger" icon="trash-outline" onPress={() => onClearFoto?.()} /> : null}
           </ChipRow>
         ) : null}
+        {ayuda}
+      </View>
+    );
+  }
+
+  if (t === 'ubicacion') {
+    const actual = value && typeof value === 'object' ? value.id : value || null;
+    return (
+      <View style={styles.wrap}>
+        {titulo}
+        {(nodos || []).length === 0 ? (
+          <Text style={styles.ayuda}>Este proyecto aún no tiene estaciones registradas.</Text>
+        ) : editable ? (
+          <EstacionPicker nodes={nodos || []} value={actual} onChange={(id) => onChange(id)} />
+        ) : (
+          <Text style={styles.calcTxt}>{fmtValor(campo, value) || '—'}</Text>
+        )}
         {ayuda}
       </View>
     );

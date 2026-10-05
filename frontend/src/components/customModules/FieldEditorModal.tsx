@@ -82,7 +82,7 @@ export function FieldEditorModal({
 
   const aggOpciones = esNumericoOCalc(tipo)
     ? CM_AGREGACIONES
-    : ['texto', 'seleccion', 'interruptor', 'fecha'].includes(tipo)
+    : ['texto', 'seleccion', 'interruptor', 'fecha', 'ubicacion'].includes(tipo)
       ? CM_AGREGACIONES.filter((a) => a.agg === 'ninguna' || a.agg === 'conteo')
       : [];
 
@@ -143,6 +143,33 @@ export function FieldEditorModal({
                   </View>
                 ))}
                 <Chip label="Agregar opción" icon="add" onPress={() => set({ opciones: [...(d.opciones || []), ''] })} />
+                {tipo === 'seleccion' ? (
+                  <>
+                    <View style={styles.sep} />
+                    <SwitchRow
+                      label="Es un estatus de seguimiento"
+                      hint="Guarda la fecha en que un registro pasa a «cerrado», muestra su avance en la lista y permite ocultar los cerrados del informe."
+                      value={!!d.estatus}
+                      onChange={(v) => set({ estatus: v, cierre: v ? (d.cierre?.length ? d.cierre : (d.opciones || []).slice(-1)) : [] })}
+                    />
+                    {d.estatus ? (
+                      <>
+                        <FieldLabel>Opciones que cuentan como «cerrado»</FieldLabel>
+                        <ChipRow>
+                          {(d.opciones || []).filter((o) => o.trim()).map((o) => {
+                            const on = (d.cierre || []).includes(o);
+                            return (
+                              <Chip
+                                key={o} label={o} on={on} icon={on ? 'checkmark' : undefined}
+                                onPress={() => set({ cierre: on ? (d.cierre || []).filter((x) => x !== o) : [...(d.cierre || []), o] })}
+                              />
+                            );
+                          })}
+                        </ChipRow>
+                      </>
+                    ) : null}
+                  </>
+                ) : null}
               </>
             ) : null}
 

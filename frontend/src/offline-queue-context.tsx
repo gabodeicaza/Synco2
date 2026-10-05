@@ -10,10 +10,16 @@ import NetInfo from '@react-native-community/netinfo';
 import {
   QueuedReport, flushQueue, listQueuedReports, removeQueuedReport, subscribeQueueChanges,
 } from '@/src/utils/offlineQueue';
+import {
+  QueuedCustomRecord, flushCustomQueue, listQueuedCustomRecords, removeQueuedCustomRecord, subscribeCustomQueueChanges,
+} from '@/src/utils/customRecordQueue';
 import { showToast } from '@/src/utils/toast';
 
 interface OfflineQueueCtx {
   items: QueuedReport[];
+  /** Registros de módulos personalizados esperando conexión (Creador de módulos). */
+  customItems: QueuedCustomRecord[];
+  discardCustomItem: (clientId: string) => Promise<void>;
   pendingCount: number;
   isOnline: boolean | null;
   isFlushing: boolean;
@@ -28,10 +34,12 @@ const AUTO_FLUSH_INTERVAL_MS = 60_000;
 
 export function OfflineQueueProvider({ children }: { children: React.ReactNode }) {
   const [items, setItems] = useState<QueuedReport[]>([]);
+  const [customItems, setCustomItems] = useState<QueuedCustomRecord[]>([]);
   const [isOnline, setIsOnline] = useState<boolean | null>(null);
   const [isFlushing, setIsFlushing] = useState(false);
 
-  const pendingCount = items.filter((i) => i.status === 'pending' || i.status === 'failed').length;
+  const pendientes = (l: { status: string }[]) => l.filter((i) => i.status === 'pending' || i.status === 'failed').length;
+  const pendingCount = pendientes(items) + pendientes(customItems);
   const pendingCountRef = useRef(pendingCount);
   pendingCountRef.current = pendingCount;
 
@@ -42,15 +50,24 @@ export function OfflineQueueProvider({ children }: { children: React.ReactNode }
     } catch {
       /* noop: si el archivo esta inaccesible, dejamos el estado tal cual */
     }
+    try {
+      setCustomItems(await listQueuedCustomRecords());
+    } catch {
+      /* noop */
+    }
   }, []);
 
   const runFlush = useCallback(async (manual: boolean) => {
     const result = await flushQueue({ manual }).catch(() => null);
+    const custom = await flushCustomQueue({ manual }).catch(() => null);
     await refreshQueue();
-    if (!result) return;
-    if (result.synced > 0) {
-      showToast(`${result.synced} reporte${result.synced > 1 ? 's' : ''} sincronizado${result.synced > 1 ? 's' : ''}`);
-    } else if (manual && result.remaining > 0 && !result.skippedOffline) {
+    const synced = (result?.synced || 0) + (custom?.synced || 0);
+    const remaining = (result?.remaining || 0) + (custom?.remaining || 0);
+    const skippedOffline = !!(result?.skippedOffline || custom?.skippedOffline);
+    if (!result && !custom) return;
+    if (synced > 0) {
+      showToast(`${synced} elemento${synced > 1 ? 's' : ''} sincronizado${synced > 1 ? 's' : ''}`);
+    } else if (manual && remaining > 0 && !skippedOffline) {
       showToast('No se pudo sincronizar. Revisa tu conexion.');
     }
   }, [refreshQueue]);
@@ -66,6 +83,11 @@ export function OfflineQueueProvider({ children }: { children: React.ReactNode }
 
   const discardItem = useCallback(async (clientId: string) => {
     await removeQueuedReport(clientId);
+    await refreshQueue();
+  }, [refreshQueue]);
+
+  const discardCustomItem = useCallback(async (clientId: string) => {
+    await removeQueuedCustomRecord(clientId);
     await refreshQueue();
   }, [refreshQueue]);
 
@@ -86,6 +108,7 @@ export function OfflineQueueProvider({ children }: { children: React.ReactNode }
   // abajo (NetInfo/AppState/intervalo) nunca se activaban porque dependen de
   // que `pendingCount` ya sea > 0 en el estado de React.
   useEffect(() => subscribeQueueChanges(() => { refreshQueue(); }), [refreshQueue]);
+  useEffect(() => subscribeCustomQueueChanges(() => { refreshQueue(); }), [refreshQueue]);
 
   // Reconexion de red -> intento automatico de sincronizar.
   useEffect(() => {
@@ -122,7 +145,7 @@ export function OfflineQueueProvider({ children }: { children: React.ReactNode }
   }, [pendingCount, runFlush]);
 
   const value: OfflineQueueCtx = {
-    items, pendingCount, isOnline, isFlushing, refreshQueue, flushNow, discardItem,
+    items, customItems, discardCustomItem, pendingCount, isOnline, isFlushing, refreshQueue, flushNow, discardItem,
   };
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

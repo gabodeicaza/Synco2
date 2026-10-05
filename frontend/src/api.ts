@@ -6,6 +6,7 @@ import { storage } from '@/src/utils/storage';
 import { BACKEND_URL, BASE, ApiError, setAuthTokenCache, request, safeJson, getToken, authHeader } from '@/src/httpClient';
 import { generateClientId, enqueueReport, isLikelyOnline } from '@/src/utils/offlineQueue';
 import { generateAvanceClientId, enqueueAvance, isAvanceLikelyOnline } from '@/src/utils/avanceQueue';
+import { enqueueCustomRecord, generateCustomClientId, isCustomLikelyOnline } from '@/src/utils/customRecordQueue';
 
 // [DIAG 2026-07-08] Toggle para mostrar Alert diagnostico en dispositivo
 // cuando falla un upload. Poner en `false` cuando termine la investigacion.
@@ -27,6 +28,16 @@ async function _downloadErrorMessage(res: Response, fallback: string): Promise<s
     // noop: nos quedamos con el fallback
   }
   return `${fallback} (HTTP ${res.status})`;
+}
+
+// Descarga autenticada de un archivo binario (Excel/CSV): {blob, filename}.
+async function _downloadFile(url: string, filenameFallback: string, errorFallback: string): Promise<{ blob: Blob; filename: string }> {
+  const tok = await getToken();
+  const res = await fetch(url, { method: 'GET', headers: tok ? { Authorization: `Bearer ${tok}` } : {} });
+  if (!res.ok) throw new ApiError(res.status, await _downloadErrorMessage(res, errorFallback));
+  const cd = res.headers.get('Content-Disposition') || '';
+  const m = cd.match(/filename="?([^"]+)"?/);
+  return { blob: await res.blob(), filename: (m && m[1]) || filenameFallback };
 }
 
 // Re-exports: `BACKEND_URL`/`BASE`/`ApiError`/`setAuthTokenCache` vivian aqui
@@ -754,7 +765,7 @@ export interface PendienteGeneral {
 // fotos u oculto. Ver src/utils/customModules.ts y CustomModuleBuilder.tsx.
 export type CustomCampoTipo =
   | 'texto' | 'texto_largo' | 'numero' | 'moneda' | 'porcentaje' | 'fecha'
-  | 'seleccion' | 'multiseleccion' | 'interruptor' | 'foto' | 'calculado';
+  | 'seleccion' | 'multiseleccion' | 'interruptor' | 'foto' | 'calculado' | 'ubicacion';
 export type CustomModo = 'oculto' | 'texto' | 'tabla' | 'resumen' | 'fotos';
 export type CustomPeriodo = 'periodo' | 'acumulado' | 'ultimo';
 export type CustomAgregacion = 'ninguna' | 'suma' | 'promedio' | 'minimo' | 'maximo' | 'conteo';
@@ -773,6 +784,10 @@ export interface CustomCampo {
   opciones?: string[];
   formula?: string;
   formato?: 'numero' | 'moneda' | 'porcentaje';
+  // Lista de una opción usada como estatus de seguimiento: `cierre` = opciones
+  // que cuentan como «cerrado» (se guarda la fecha de cierre).
+  estatus?: boolean;
+  cierre?: string[];
   agregacion?: CustomAgregacion;
   valor_defecto?: any;
   visible_si?: { campo: string; igual: string | boolean } | null;
@@ -782,6 +797,12 @@ export interface CustomSalidaCategoria { modo: CustomModo; periodo: CustomPeriod
 export type CustomSalida = Record<ModuloCategoria, CustomSalidaCategoria>;
 
 export interface CustomOpciones {
+  folio_activo: boolean;
+  folio_prefijo: string;
+  folio_digitos: number;
+  folio_inicio: number;
+  mostrar_folio: boolean;
+  ocultar_cerrados: boolean;
   titulo: string;
   intro: string;
   nota_pie: string;
@@ -796,6 +817,17 @@ export interface CustomOpciones {
   orden: 'asc' | 'desc';
   limite: number;
   agrupar_por: string | null;
+}
+
+export type CustomGraficaTipo = 'barras' | 'barras_h' | 'pastel' | 'linea';
+export interface CustomGrafica {
+  id: string;
+  titulo: string;
+  tipo: CustomGraficaTipo;
+  categoria: string; // id de campo, o '__fecha' (por fecha del registro)
+  valor: string | null; // id de campo numérico; null = contar registros
+  agregacion: 'suma' | 'promedio' | 'conteo';
+  informes: ModuloCategoria[];
 }
 
 export interface CustomModule {
@@ -813,6 +845,8 @@ export interface CustomModule {
   campos: CustomCampo[];
   salida: CustomSalida;
   opciones: CustomOpciones;
+  graficas: CustomGrafica[];
+  folio_contador?: number;
   n_registros?: number;
 }
 
@@ -829,17 +863,57 @@ export interface CustomRecord {
   tiene_fotos?: string[];
   fotos?: Record<string, string>;
   jerarquia?: JerarquiaInforme | null;
+  folio?: string | null;
+  cierres?: Record<string, string>;
+  n_ediciones?: number;
+  historial?: CustomHistorial[];
   created_by?: string;
   created_by_name?: string;
   created_at?: string;
   updated_at?: string;
+  /** false = guardado solo en este dispositivo, esperando conexión. */
+  sincronizado?: boolean;
+}
+
+export interface CustomHistorial {
+  at: string;
+  by: string;
+  by_name: string;
+  accion: 'creado' | 'editado' | 'importado';
+  cambios: { campo: string; antes: string; despues: string }[];
+}
+
+export interface CustomBorrado {
+  id: string;
+  record_id: string;
+  folio?: string | null;
+  fecha: string;
+  valores: Record<string, any>;
+  created_by_name?: string;
+  deleted_by_name: string;
+  deleted_at: string;
+}
+
+export interface CustomTemplate {
+  id: string;
+  nombre: string;
+  descripcion: string;
+  definicion: CustomModuleInput;
+  created_at: string;
+}
+
+export interface CustomImportFila { fila: number; fecha?: any; valores: Record<string, any> }
+export interface CustomImportResult {
+  total: number; validas: number; n_errores: number; importados: number;
+  errores: { fila: number; mensaje: string }[];
 }
 
 export type CustomBloque =
   | { type: 'summary'; text: string }
   | { type: 'table'; heading?: string | null; headers: string[]; rows: string[][]; col_widths?: number[]; empty_text?: string }
   | { type: 'list'; heading?: string | null; items: { title?: string; body?: string; extra?: string | null; meta?: string }[]; empty_text?: string }
-  | { type: 'fotos_comparativa'; items: any[] };
+  | { type: 'fotos_comparativa'; items: any[] }
+  | { type: 'imagen'; heading?: string | null; imagen: string; caption?: string };
 
 export interface CustomPreview {
   seccion: { titulo: string; blocks: CustomBloque[] } | null;
@@ -2531,10 +2605,73 @@ export const api = {
     request<CustomRecord[]>('GET', `/projects/${pid}/custom-modules/${mid}/records`),
   getCustomRecord: (pid: string, mid: string, rid: string) =>
     request<CustomRecord>('GET', `/projects/${pid}/custom-modules/${mid}/records/${rid}`),
-  createCustomRecord: (pid: string, mid: string, body: { fecha?: string; valores: Record<string, any>; jerarquia?: JerarquiaInforme }) =>
-    request<CustomRecord>('POST', `/projects/${pid}/custom-modules/${mid}/records`, body),
-  updateCustomRecord: (pid: string, mid: string, rid: string, body: { fecha?: string; valores?: Record<string, any>; jerarquia?: JerarquiaInforme }) =>
-    request<CustomRecord>('PATCH', `/projects/${pid}/custom-modules/${mid}/records/${rid}`, body),
+  // Offline-first (como createReport/createAvance): sin señal, o con un error
+  // de red crudo, el registro se encola en customRecordQueue.ts y el backend lo
+  // recibe después por /custom-records/sync (idempotente por client_id).
+  // `etiqueta` es solo el texto con que se ve en la lista de pendientes.
+  createCustomRecord: async (
+    pid: string, mid: string,
+    body: { fecha?: string; valores: Record<string, any>; jerarquia?: JerarquiaInforme },
+    etiqueta = 'Registro',
+  ): Promise<CustomRecord> => {
+    const client_id = generateCustomClientId();
+    const captured_at = new Date().toISOString();
+    const payload = { ...body, client_id, captured_at };
+    const eco = (createdAt: string): CustomRecord => ({
+      id: `local-${client_id}`, project_id: pid, module_id: mid, fecha: body.fecha || captured_at.slice(0, 10),
+      valores: body.valores, jerarquia: body.jerarquia || null, created_at: createdAt, sincronizado: false,
+    });
+    const encolar = async () => {
+      const q = await enqueueCustomRecord({ ...payload, op: 'create', project_id: pid, module_id: mid, etiqueta });
+      return eco(q.created_at);
+    };
+    if (!(await isCustomLikelyOnline())) return encolar();
+    try {
+      return await request<CustomRecord>('POST', `/projects/${pid}/custom-modules/${mid}/records`, payload);
+    } catch (e: any) {
+      if (!(e instanceof ApiError)) return encolar();
+      throw e;
+    }
+  },
+  updateCustomRecord: async (
+    pid: string, mid: string, rid: string,
+    body: { fecha?: string; valores?: Record<string, any>; jerarquia?: JerarquiaInforme },
+    etiqueta = 'Edición de registro',
+  ): Promise<CustomRecord> => {
+    const encolar = async () => {
+      const q = await enqueueCustomRecord({ ...body, op: 'update', record_id: rid, project_id: pid, module_id: mid, etiqueta });
+      return { id: rid, project_id: pid, module_id: mid, fecha: body.fecha || '', valores: body.valores || {}, created_at: q.created_at, sincronizado: false } as CustomRecord;
+    };
+    if (rid.startsWith('local-') || !(await isCustomLikelyOnline())) {
+      if (rid.startsWith('local-')) throw new ApiError(0, 'Este registro aún no se sincroniza; espera a tener conexión para editarlo.');
+      return encolar();
+    }
+    try {
+      return await request<CustomRecord>('PATCH', `/projects/${pid}/custom-modules/${mid}/records/${rid}`, body);
+    } catch (e: any) {
+      if (!(e instanceof ApiError)) return encolar();
+      throw e;
+    }
+  },
+  listCustomBorrados: (pid: string, mid: string) =>
+    request<CustomBorrado[]>('GET', `/projects/${pid}/custom-modules/${mid}/borrados`),
+  listCustomTemplates: () => request<CustomTemplate[]>('GET', '/custom-module-templates'),
+  createCustomTemplate: (body: { project_id: string; module_id: string; nombre?: string; descripcion?: string }) =>
+    request<CustomTemplate>('POST', '/custom-module-templates', body),
+  deleteCustomTemplate: (tid: string) => request<{ ok: boolean }>('DELETE', `/custom-module-templates/${tid}`),
+  importCustomRecords: (pid: string, mid: string, body: { filas: CustomImportFila[]; simular?: boolean; importar_validas?: boolean }) =>
+    request<CustomImportResult>('POST', `/projects/${pid}/custom-modules/${mid}/import`, body),
+  // Descargas (Excel / CSV de registros, y plantilla de importación).
+  downloadCustomExport: async (
+    pid: string, mid: string, formato: 'xlsx' | 'csv', opts: { desde?: string; hasta?: string } = {},
+  ): Promise<{ blob: Blob; filename: string }> => {
+    const qs = new URLSearchParams({ formato });
+    if (opts.desde) qs.set('desde', opts.desde);
+    if (opts.hasta) qs.set('hasta', opts.hasta);
+    return _downloadFile(`${BASE}/projects/${pid}/custom-modules/${mid}/export?${qs.toString()}`, `modulo.${formato}`, 'Error al exportar el módulo');
+  },
+  downloadCustomPlantilla: (pid: string, mid: string) =>
+    _downloadFile(`${BASE}/projects/${pid}/custom-modules/${mid}/plantilla`, 'plantilla.xlsx', 'Error al descargar la plantilla'),
   deleteCustomRecord: (pid: string, mid: string, rid: string) =>
     request<{ ok: boolean }>('DELETE', `/projects/${pid}/custom-modules/${mid}/records/${rid}`),
   listSeguridadIndicadores: (pid: string) =>

@@ -4,8 +4,8 @@
 // la fuente de verdad al guardar; aquí solo se usa para mostrar en vivo).
 import type { Ionicons } from '@expo/vector-icons';
 import type {
-  CustomAgregacion, CustomCampo, CustomCampoTipo, CustomModo, CustomModuleInput, CustomOpciones,
-  CustomPeriodo, CustomRecord, CustomSalida, ModuloCategoria,
+  CustomAgregacion, CustomCampo, CustomCampoTipo, CustomGrafica, CustomImportFila, CustomModo, CustomModuleInput,
+  CustomOpciones, CustomPeriodo, CustomRecord, CustomSalida, CustomTemplate, ModuloCategoria,
 } from '@/src/api';
 import { fechaCorta } from '@/src/utils/fecha';
 
@@ -22,6 +22,7 @@ export const CM_TIPOS: { tipo: CustomCampoTipo; label: string; descripcion: stri
   { tipo: 'multiseleccion', label: 'Lista (varias opciones)', descripcion: 'Marcas todas las opciones que apliquen', icon: 'checkbox-outline' },
   { tipo: 'interruptor', label: 'Interruptor Sí / No', descripcion: 'Cumple / no cumple, aplica / no aplica', icon: 'toggle-outline' },
   { tipo: 'foto', label: 'Foto', descripcion: 'Evidencia fotográfica (cámara o galería)', icon: 'camera-outline' },
+  { tipo: 'ubicacion', label: 'Estación / ubicación', descripcion: 'Se elige una estación del árbol de ubicaciones del proyecto', icon: 'location-outline' },
   { tipo: 'calculado', label: 'Calculado', descripcion: 'Se calcula solo con una fórmula de otros campos numéricos', icon: 'git-compare-outline' },
 ];
 
@@ -84,6 +85,7 @@ export function campoNuevo(tipo: CustomCampoTipo, etiqueta = ''): CustomCampo {
 }
 
 export const OPCIONES_DEFAULT: CustomOpciones = {
+  folio_activo: false, folio_prefijo: '', folio_digitos: 4, folio_inicio: 1, mostrar_folio: true, ocultar_cerrados: false,
   titulo: '', intro: '', nota_pie: '', plantilla_texto: '', texto_vacio: 'Sin registros en el período.',
   mostrar_fecha: true, mostrar_autor: false, mostrar_totales: true, numerar: false, incluir_fotos: false,
   imprimir_vacio: false, orden: 'asc', limite: 0, agrupar_por: null,
@@ -101,7 +103,43 @@ export function salidaDefault(modos: Partial<Record<ModuloCategoria, CustomModo>
 export function moduloVacio(): CustomModuleInput {
   return {
     nombre: '', descripcion: '', icono: 'cube-outline', area_id: null, activo: true, usar_jerarquia: false,
-    solo_coordinacion: false, campos: [], salida: salidaDefault(), opciones: { ...OPCIONES_DEFAULT },
+    solo_coordinacion: false, campos: [], salida: salidaDefault(), opciones: { ...OPCIONES_DEFAULT }, graficas: [],
+  };
+}
+
+/** Campo de lista usado como estatus de seguimiento (Abierto / En proceso / Cerrado). */
+export function campoEstatus(etiqueta = 'Estatus'): CustomCampo {
+  return {
+    ...campoNuevo('seleccion', etiqueta), opciones: ['Abierto', 'En proceso', 'Cerrado'], estatus: true, cierre: ['Cerrado'],
+    valor_defecto: 'Abierto', requerido: true,
+  };
+}
+
+export function graficaNueva(campos: CustomCampo[]): CustomGrafica {
+  const cat = campos.find((c) => c.estatus) || campos.find((c) => ['seleccion', 'ubicacion', 'texto', 'interruptor'].includes(c.tipo));
+  return {
+    id: 'g' + Math.random().toString(16).slice(2, 10).padEnd(8, '0'), titulo: '', tipo: 'barras',
+    categoria: cat ? cat.id : '__fecha', valor: null, agregacion: 'conteo', informes: ['reportes_semanales'],
+  };
+}
+
+export const GRAFICA_TIPOS: { tipo: CustomGrafica['tipo']; label: string; icon: IconName }[] = [
+  { tipo: 'barras', label: 'Barras', icon: 'bar-chart-outline' },
+  { tipo: 'barras_h', label: 'Barras horizontales', icon: 'reorder-three-outline' },
+  { tipo: 'pastel', label: 'Pastel', icon: 'pie-chart-outline' },
+  { tipo: 'linea', label: 'Línea', icon: 'trending-up-outline' },
+];
+
+/** Definición lista para el constructor a partir de una plantilla propia guardada. */
+export function moduloDesdePlantilla(t: CustomTemplate): CustomModuleInput {
+  const d = t.definicion || {};
+  const v = moduloVacio();
+  return {
+    ...v, ...d, area_id: null, activo: true,
+    salida: { ...v.salida!, ...(d.salida || {}) },
+    opciones: { ...OPCIONES_DEFAULT, ...(d.opciones || {}) },
+    campos: (d.campos || []).map((c) => ({ ...c })),
+    graficas: (d.graficas || []).map((g) => ({ ...g })),
   };
 }
 
@@ -128,6 +166,20 @@ export const PLANTILLAS: Plantilla[] = [
       c('responsable', 'Responsable', 'texto'),
       c('foto', 'Foto', 'foto'),
     ], { salida: salidaDefault({ reportes_semanales: 'texto' }), opciones: { ...OPCIONES_DEFAULT, incluir_fotos: true } }),
+  },
+  {
+    clave: 'seguimiento', nombre: 'Seguimiento con folio y estatus', descripcion: 'Folio automático, estación, estatus Abierto/En proceso/Cerrado y gráfica', icon: 'flag-outline',
+    crear: () => base('Seguimiento', 'Pendientes y hallazgos con folio y estatus de atención', 'flag-outline', [
+      c('asunto', 'Asunto', 'texto', { requerido: true }),
+      c('estacion', 'Estación', 'ubicacion'),
+      c('detalle', 'Detalle', 'texto_largo'),
+      { ...campoEstatus(), id: 'estatus' },
+      c('foto', 'Foto', 'foto'),
+    ], {
+      salida: salidaDefault({ reportes_semanales: 'tabla', reportes_mensuales: 'resumen' }),
+      opciones: { ...OPCIONES_DEFAULT, folio_activo: true, folio_prefijo: 'SEG-', ocultar_cerrados: true },
+      graficas: [{ id: 'g_estatus', titulo: 'Registros por estatus', tipo: 'pastel', categoria: 'estatus', valor: null, agregacion: 'conteo', informes: ['reportes_semanales', 'reportes_mensuales'] }],
+    }),
   },
   {
     clave: 'materiales', nombre: 'Control de materiales', descripcion: 'Cantidad × precio = importe, con totales', icon: 'cube-outline',
@@ -188,6 +240,7 @@ export function fmtNumeroCampo(campo: CustomCampo, val: number): string {
 export function fmtValor(campo: CustomCampo, val: any): string {
   if (campo.tipo === 'interruptor') return val ? 'Sí' : 'No';
   if (val === null || val === undefined || val === '' || (Array.isArray(val) && val.length === 0)) return '';
+  if (campo.tipo === 'ubicacion') return typeof val === 'object' ? String(val.nombre || '') : String(val);
   if (esNumericoOCalc(campo.tipo)) {
     const n = Number(val);
     return Number.isFinite(n) ? fmtNumeroCampo(campo, n) : String(val);
@@ -393,4 +446,121 @@ export function resumenSalida(salida: CustomSalida | undefined): string {
     .filter(({ cat }) => salida[cat]?.modo && salida[cat].modo !== 'oculto')
     .map(({ cat, label }) => `${label}: ${MODO_LABEL[salida[cat].modo]}`);
   return partes.length ? partes.join(' · ') : 'No se imprime en ningún informe';
+}
+
+// --- Estatus ------------------------------------------------------------------
+export function campoEstatusDe(campos: CustomCampo[]): CustomCampo | undefined {
+  return campos.find((c) => c.estatus);
+}
+
+export function estaCerrado(campos: CustomCampo[], r: CustomRecord): boolean {
+  const e = campoEstatusDe(campos);
+  return !!e && (e.cierre || []).includes(String(r.valores[e.id] ?? ''));
+}
+
+// --- Filtros de la lista de registros ---------------------------------------------
+export type FiltrosRegistros = {
+  texto: string;
+  desde: string; // AAAA-MM-DD o ''
+  hasta: string;
+  autor: string | null; // nombre exacto del autor
+  estatus: string | null; // opción del campo estatus
+  soloAbiertos: boolean;
+  campoId: string | null; // filtro por el valor de un campo de lista / interruptor
+  campoValor: string | null; // opción, o 'si' / 'no' para interruptores
+};
+
+export const FILTROS_VACIOS: FiltrosRegistros = {
+  texto: '', desde: '', hasta: '', autor: null, estatus: null, soloAbiertos: false, campoId: null, campoValor: null,
+};
+
+export function hayFiltros(f: FiltrosRegistros): boolean {
+  return !!(f.desde || f.hasta || f.autor || f.estatus || f.soloAbiertos || (f.campoId && f.campoValor));
+}
+
+/** Fecha tecleada (AAAA-MM-DD o DD/MM/AAAA) → ISO, o '' si no es válida. */
+export function fechaIso(txt: string): string {
+  const t = (txt || '').trim();
+  let m = /^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/.exec(t);
+  if (m) return `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
+  m = /^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2}|\d{4})$/.exec(t);
+  if (m) return `${m[3].length === 2 ? `20${m[3]}` : m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+  return '';
+}
+
+export function filtrarRegistros(lista: CustomRecord[], campos: CustomCampo[], f: FiltrosRegistros): CustomRecord[] {
+  const q = f.texto.trim().toLowerCase();
+  const desde = fechaIso(f.desde);
+  const hasta = fechaIso(f.hasta);
+  const est = campoEstatusDe(campos);
+  const campoSel = f.campoId ? campos.find((c) => c.id === f.campoId) : undefined;
+  return lista.filter((r) => {
+    if (desde && r.fecha < desde) return false;
+    if (hasta && r.fecha > hasta) return false;
+    if (f.autor && r.created_by_name !== f.autor) return false;
+    if (est && f.estatus && r.valores[est.id] !== f.estatus) return false;
+    if (f.soloAbiertos && estaCerrado(campos, r)) return false;
+    if (campoSel && f.campoValor) {
+      const v = r.valores[campoSel.id];
+      if (campoSel.tipo === 'interruptor') { if (!!v !== (f.campoValor === 'si')) return false; }
+      else if (Array.isArray(v) ? !v.includes(f.campoValor) : v !== f.campoValor) return false;
+    }
+    if (q) {
+      const txt = `${r.folio || ''} ${tituloRegistro(campos, r)} ${detalleRegistro(campos, r, 30)} ${r.created_by_name || ''} ${fechaCorta(r.fecha)}`.toLowerCase();
+      if (!txt.includes(q)) return false;
+    }
+    return true;
+  });
+}
+
+// --- Importación desde Excel ------------------------------------------------------
+const normaliza = (s: any) => String(s ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\*/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+
+/** Campos que se pueden llenar desde Excel (sin foto ni calculados). */
+export const camposImportables = (campos: CustomCampo[]) => campos.filter((c) => c.tipo !== 'foto' && c.tipo !== 'calculado');
+
+/** Columna del Excel → id de campo ('fecha' para la columna Fecha, null = se ignora).
+ * Se empareja por el nombre del encabezado (sin acentos, mayúsculas ni el « *»). */
+export function mapearColumnas(encabezados: any[], campos: CustomCampo[]): (string | null)[] {
+  const usados = new Set<string>();
+  return encabezados.map((h) => {
+    const n = normaliza(h);
+    if (!n) return null;
+    if (n === 'fecha' && !usados.has('fecha')) { usados.add('fecha'); return 'fecha'; }
+    const c = camposImportables(campos).find((x) => normaliza(x.etiqueta) === n && !usados.has(x.id));
+    if (c) usados.add(c.id);
+    return c ? c.id : null;
+  });
+}
+
+/** Valor de celda → algo que el backend entienda (fechas de Excel → AAAA-MM-DD). */
+export function valorCelda(v: any): any {
+  if (v instanceof Date && !isNaN(v.getTime())) {
+    // Las celdas de fecha de SheetJS llegan en UTC a medianoche local del archivo.
+    return `${v.getUTCFullYear()}-${String(v.getUTCMonth() + 1).padStart(2, '0')}-${String(v.getUTCDate()).padStart(2, '0')}`;
+  }
+  if (typeof v === 'string') return v.trim();
+  return v;
+}
+
+/** Filas de la hoja (primera = encabezados) → filas para `importCustomRecords`.
+ * Las filas totalmente vacías se descartan; `fila` es el número real de la hoja. */
+export function filasParaImportar(rows: any[][], campos: CustomCampo[]): { filas: CustomImportFila[]; columnasIgnoradas: string[]; mapeo: (string | null)[] } {
+  if (!rows.length) return { filas: [], columnasIgnoradas: [], mapeo: [] };
+  const mapeo = mapearColumnas(rows[0], campos);
+  const columnasIgnoradas = rows[0].filter((h, i) => mapeo[i] === null && normaliza(h)).map((h) => String(h));
+  const filas: CustomImportFila[] = [];
+  rows.slice(1).forEach((row, idx) => {
+    const valores: Record<string, any> = {};
+    let fecha: any;
+    let alguno = false;
+    mapeo.forEach((id, col) => {
+      const v = valorCelda(row?.[col]);
+      if (id === null || v === undefined || v === null || v === '') return;
+      alguno = true;
+      if (id === 'fecha') fecha = v; else valores[id] = v;
+    });
+    if (alguno) filas.push({ fila: idx + 2, ...(fecha !== undefined ? { fecha } : {}), valores });
+  });
+  return { filas, columnasIgnoradas, mapeo };
 }

@@ -21,15 +21,25 @@ function statusLabel(status: QueuedReport['status']): string {
 export default function OfflineQueueDetailModal({
   visible, onClose,
 }: { visible: boolean; onClose: () => void }) {
-  const { items, isFlushing, flushNow, discardItem } = useOfflineQueue();
+  const { items: reportes, customItems, isFlushing, flushNow, discardItem, discardCustomItem } = useOfflineQueue();
 
-  const onDiscard = (item: QueuedReport) => {
+  // Reportes + registros de módulos personalizados, en una sola lista.
+  const items = [
+    ...reportes.map((r) => ({ ...r, kind: 'reporte' as const, titulo: r.payload?.title || 'Reporte sin nombre' })),
+    ...customItems.map((r) => ({ ...r, kind: 'registro' as const, titulo: r.payload?.etiqueta || 'Registro de módulo' })),
+  ];
+  type Fila = (typeof items)[number];
+
+  const onDiscard = (item: Fila) => {
     Alert.alert(
-      'Descartar reporte',
-      `¿Eliminar "${item.payload?.title || 'Reporte sin nombre'}" de la cola? Se perdera permanentemente (no se envio al servidor).`,
+      item.kind === 'reporte' ? 'Descartar reporte' : 'Descartar registro',
+      `¿Eliminar "${item.titulo}" de la cola? Se perdera permanentemente (no se envio al servidor).`,
       [
         { text: 'Cancelar', style: 'cancel' },
-        { text: 'Eliminar', style: 'destructive', onPress: () => discardItem(item.client_id) },
+        {
+          text: 'Eliminar', style: 'destructive',
+          onPress: () => (item.kind === 'reporte' ? discardItem(item.client_id) : discardCustomItem(item.client_id)),
+        },
       ],
     );
   };
@@ -40,14 +50,14 @@ export default function OfflineQueueDetailModal({
         <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
         <View style={styles.sheet}>
           <View style={styles.header}>
-            <Text style={styles.title}>Reportes pendientes ({items.length})</Text>
+            <Text style={styles.title}>Pendientes de enviar ({items.length})</Text>
             <Pressable onPress={onClose} hitSlop={12}>
               <Ionicons name="close" size={22} color={colors.text} />
             </Pressable>
           </View>
 
           {items.length === 0 ? (
-            <Text style={styles.emptyTxt}>No hay reportes esperando conexion.</Text>
+            <Text style={styles.emptyTxt}>No hay nada esperando conexion.</Text>
           ) : (
             <FlatList
               data={items}
@@ -57,7 +67,7 @@ export default function OfflineQueueDetailModal({
                 <View style={styles.row}>
                   <View style={{ flex: 1 }}>
                     <Text style={styles.rowTitle} numberOfLines={1}>
-                      {item.payload?.title || 'Reporte sin nombre'}
+                      {item.titulo}
                     </Text>
                     <Text style={styles.rowMeta}>
                       {dayjs(item.created_at).tz(CDMX_TZ).format('DD MMM YYYY, HH:mm')} {'_'} {statusLabel(item.status)}
