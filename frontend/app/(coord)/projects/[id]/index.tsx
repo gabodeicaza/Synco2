@@ -10,7 +10,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { api, ApiError, Project, ReferenceFile, FeedItem, LocationNode } from '@/src/api';
+import { api, ApiError, CustomModule, Project, ReferenceFile, FeedItem, LocationNode } from '@/src/api';
 import { colors, radius, shadow, spacing } from '@/src/theme';
 import { Button } from '@/src/components/Button';
 import { confirm } from '@/src/utils/confirm';
@@ -21,7 +21,9 @@ import { WeatherWidget } from '@/src/components/WeatherWidget';
 import { HistoryCalendarModal } from '@/src/components/HistoryCalendarModal';
 import { ReportPreviewSheet } from '@/src/components/ReportPreviewSheet';
 import { fmtDateTimeCDMX } from '@/src/utils/tz';
-import { agruparModulosPorArea, modulosActivos, ModuloDef, SIN_AREA_ID } from '@/src/utils/modulos';
+import {
+  agruparModulosPorArea, asignacionesConPersonalizados, modulosActivos, modulosPersonalizadosDef, ModuloDef, SIN_AREA_ID,
+} from '@/src/utils/modulos';
 import { DatosContratoModal } from '@/src/components/DatosContratoModal';
 
 // Limite cliente coherente con backend (20 MB). Evita subidas que el servidor rechazaria.
@@ -263,11 +265,15 @@ export default function ProjectDetailScreen() {
   // Color del texto de observaciones (pie de foto) en reportes ejecutivos.
   const [reportTextColorDraft, setReportTextColorDraft] = useState('#0F172A');
 
+  // Módulos creados con el Creador de módulos (se refrescan al volver a la pantalla).
+  const [customModulos, setCustomModulos] = useState<CustomModule[]>([]);
+
   const load = useCallback(async () => {
     try {
       setError(null);
       const p = await api.getProject(pid);
       setProject(p);
+      api.listCustomModules(pid, true).then(setCustomModulos).catch(() => setCustomModulos([]));
     } catch (e: any) {
       setError(e?.message || 'Error al cargar');
     } finally {
@@ -1090,14 +1096,22 @@ export default function ProjectDetailScreen() {
     return list;
   }, [reports, debouncedSearch, selectedStatusFilter]);
 
-  const gruposModulos = agruparModulosPorArea(modulosActivos(project?.modulos), project?.modulos_areas, areasFull);
+  // Plantillas fijas encendidas + módulos del Creador de módulos (activos).
+  const gruposModulos = agruparModulosPorArea(
+    [...modulosActivos(project?.modulos), ...modulosPersonalizadosDef(customModulos)],
+    asignacionesConPersonalizados(project?.modulos_areas, customModulos),
+    areasFull,
+  );
   const tileModulo = (m: ModuloDef) => (
     <ActionTile
       key={m.key}
       icon={m.icon}
       title={m.label}
       subtitle={m.subtitle}
-      onPress={() => router.push({ pathname: `/(coord)/projects/[id]/${m.screen}` as any, params: { id: pid } })}
+      onPress={() => router.push({
+        pathname: `/(coord)/projects/[id]/${m.screen}` as any,
+        params: m.customId ? { id: pid, mid: m.customId } : { id: pid },
+      })}
     />
   );
 
@@ -1578,6 +1592,12 @@ export default function ProjectDetailScreen() {
                 title="Módulos"
                 subtitle="Enciende/apaga Forestal y Arbolado, Seguridad e Higiene y demás plantillas"
                 onPress={() => router.push({ pathname: '/(coord)/projects/[id]/modulos' as any, params: { id: pid } })}
+              />
+              <ActionTile
+                icon="construct-outline"
+                title="Creador de módulos"
+                subtitle="Crea tus propios módulos: campos, interruptores y cómo se imprimen en cada informe"
+                onPress={() => router.push({ pathname: '/(coord)/projects/[id]/modulos-personalizados' as any, params: { id: pid } })}
               />
               <ActionTile
                 icon="git-network-outline"

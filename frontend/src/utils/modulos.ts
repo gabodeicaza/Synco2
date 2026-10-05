@@ -18,7 +18,7 @@
 // `modulosActivos` — una sola sección plana, sin encabezados por área);
 // se conserva por si alguna pantalla lo necesita para otra cosa.
 import type { Ionicons } from '@expo/vector-icons';
-import type { ModuloCategoria, ModulosConfig } from '@/src/api';
+import type { CustomModule, ModuloCategoria, ModulosConfig } from '@/src/api';
 
 export type ModuloDef = {
   key: string;
@@ -33,6 +33,9 @@ export type ModuloDef = {
   // Área temática fija de la plantilla (ver nota arriba) — informativa,
   // ya no determina agrupación en ninguna pantalla.
   area: string;
+  // Solo en módulos creados con el Creador de módulos: id del módulo
+  // personalizado (su pantalla es siempre `modulo-personalizado` + este id).
+  customId?: string;
 };
 
 export const MODULOS: ModuloDef[] = [
@@ -256,4 +259,28 @@ export function agruparModulosPorArea(
  * (index.tsx), que tampoco los separa por área. */
 export function modulosActivos(modulos: ModulosConfig | null | undefined): ModuloDef[] {
   return MODULOS.filter((m) => !!m.screen && moduloActivo(modulos, m.key));
+}
+
+/** Módulos creados con el Creador de módulos → tarjetas del hub/Operación, con
+ * la misma forma que las plantillas fijas (`ModuloDef`). Solo los ACTIVOS. */
+export function modulosPersonalizadosDef(lista: CustomModule[] | null | undefined): ModuloDef[] {
+  return (lista || []).filter((m) => m.activo).map((m) => ({
+    key: m.key,
+    label: m.nombre,
+    subtitle: m.descripcion || `${m.campos.length} campos`,
+    icon: (m.icono || 'cube-outline') as ModuloDef['icon'],
+    screen: 'modulo-personalizado',
+    area: 'Personalizado',
+    customId: m.id,
+  }));
+}
+
+/** `project.modulos_areas` + el área elegida en cada módulo personalizado. */
+export function asignacionesConPersonalizados(
+  asignaciones: Record<string, string> | null | undefined,
+  lista: CustomModule[] | null | undefined,
+): Record<string, string> {
+  const out = { ...(asignaciones || {}) };
+  for (const m of lista || []) if (m.area_id) out[m.key] = m.area_id;
+  return out;
 }

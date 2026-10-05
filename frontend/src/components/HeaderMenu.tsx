@@ -34,6 +34,7 @@ export function HeaderMenu({ basePath, projectId }: HeaderMenuProps) {
   // header. Si falla o el proyecto no tiene nada configurado, ningún módulo
   // piloto aparece (nunca se asume "encendido" por default).
   const [modulos, setModulos] = useState<ModulosConfig | null>(null);
+  const [hayPersonalizados, setHayPersonalizados] = useState(false); // módulos del Creador de módulos
   const fetchedForRef = useRef<string | null>(null);
   useEffect(() => {
     if (!open || !projectId) return;
@@ -42,6 +43,9 @@ export function HeaderMenu({ basePath, projectId }: HeaderMenuProps) {
     api.getProject(projectId)
       .then((p) => setModulos(p.modulos || null))
       .catch(() => setModulos(null));
+    api.listCustomModules(projectId)
+      .then((l) => setHayPersonalizados(l.length > 0))
+      .catch(() => setHayPersonalizados(false));
   }, [open, projectId]);
 
   function goTo(
@@ -133,7 +137,7 @@ export function HeaderMenu({ basePath, projectId }: HeaderMenuProps) {
                 Coordinador encendió AL MENOS un módulo para este proyecto
                 (ver `modulos` en GET /projects/{pid} y src/utils/modulos.ts)
                 — nunca se asume "encendido" por default. */}
-            {modulosActivos(modulos).length > 0 ? (
+            {modulosActivos(modulos).length > 0 || hayPersonalizados ? (
               <MenuItem icon="apps-outline" label="Módulos" onPress={() => goTo('modulos')} />
             ) : null}
 

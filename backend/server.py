@@ -38,7 +38,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo.errors import DuplicateKeyError, BulkWriteError
-from pymongo import InsertOne, UpdateOne
+from pymongo import InsertOne, UpdateOne, ReturnDocument
 from pydantic import BaseModel, Field, EmailStr, field_validator, model_validator
 
 ROOT_DIR = Path(__file__).parent
@@ -1229,6 +1229,10 @@ async def startup_event():
     await db.control_calidad.create_index([("project_id", 1), ("fecha", -1)])
     await db.estimaciones.create_index("id", unique=True)
     await db.estimaciones.create_index([("project_id", 1), ("contrato", 1), ("numero", 1)])
+    await db.custom_modules.create_index("id", unique=True)
+    await db.custom_modules.create_index([("project_id", 1), ("orden", 1)])
+    await db.custom_module_records.create_index("id", unique=True)
+    await db.custom_module_records.create_index([("project_id", 1), ("module_id", 1), ("fecha", -1)])
     await db.pendientes_generales.create_index("id", unique=True)
     await db.pendientes_generales.create_index([("project_id", 1), ("contrato", 1), ("orden", 1)])
     await db.seguridad_indicadores.create_index("id", unique=True)
@@ -17423,6 +17427,1824 @@ def _modulos_categoria_para_export(period_type: Optional[str], period: str) -> s
     return "reportes_diarios"
 
 
+# === CREADOR DE MÓDULOS (módulos personalizados) ===========================
+# El Coordinador General arma sus propios módulos sin tocar código: define
+# CAMPOS (texto, número, moneda, %, fecha, selección, interruptor, foto,
+# calculado...) y decide, POR INFORME (Diario/Semanal/Mensual), cómo se
+# imprime: como texto, como tabla, como resumen (conteos/totales), como
+# fotos, o NO se imprime. Los registros se capturan desde el menú Módulos
+# como cualquier otro módulo.
+#
+# Se enchufa al sistema de bloques genérico (ver `_gather_modulos_export_data`):
+# cada módulo personalizado genera {"titulo", "blocks"} con summary/table/list/
+# fotos_comparativa, así que PDF/DOCX/PPTX lo imprimen sin cambios.
+#
+# Colecciones:
+#  - custom_modules: la DEFINICIÓN (campos, salida por informe, opciones).
+#  - custom_module_records: los registros capturados (`valores` por id de
+#    campo; las fotos van aparte en `fotos`/`thumbs` para no engordar listas).
+CM_TIPOS = (
+    "texto", "texto_largo", "numero", "moneda", "porcentaje", "fecha",
+    "seleccion", "multiseleccion", "interruptor", "foto", "calculado", "ubicacion",
+)
+CM_TIPOS_NUMERICOS = ("numero", "moneda", "porcentaje", "calculado")
+CM_MODOS = ("oculto", "texto", "tabla", "resumen", "fotos")
+CM_PERIODOS = ("periodo", "acumulado", "ultimo")
+CM_AGREGACIONES = ("ninguna", "suma", "promedio", "minimo", "maximo", "conteo")
+CM_AGREGACION_ROTULO = {
+    "suma": "Total", "promedio": "Prom.", "minimo": "Mín.", "maximo": "Máx.", "conteo": "Cuenta",
+}
+CM_ICONOS = {
+    "cube-outline", "apps-outline", "clipboard-outline", "document-text-outline", "list-outline",
+    "checkbox-outline", "construct-outline", "hammer-outline", "build-outline", "flask-outline",
+    "leaf-outline", "water-outline", "flame-outline", "flash-outline", "car-outline", "bus-outline",
+    "people-outline", "person-outline", "shield-checkmark-outline", "warning-outline", "alert-circle-outline",
+    "camera-outline", "images-outline", "map-outline", "location-outline", "calendar-outline",
+    "time-outline", "stats-chart-outline", "bar-chart-outline", "pie-chart-outline", "trending-up-outline",
+    "cash-outline", "card-outline", "pricetag-outline", "cart-outline", "archive-outline", "folder-outline",
+    "bookmark-outline", "flag-outline", "star-outline", "bulb-outline", "build", "speedometer-outline",
+    "thermometer-outline", "rainy-outline", "sunny-outline", "cloud-outline", "business-outline",
+    "home-outline", "trail-sign-outline", "navigate-outline", "settings-outline", "mail-outline",
+}
+CM_ICONO_DEFAULT = "cube-outline"
+CM_MAX_CAMPOS = 40
+CM_MAX_OPCIONES = 60
+CM_MAX_MODULOS_POR_PROYECTO = 60
+CM_MAX_FOTOS_EXPORT = 200
+CM_MAX_GRAFICAS = 6
+CM_MAX_FILAS_IMPORT = 1000
+CM_GRAFICA_TIPOS = ("barras", "barras_h", "pastel", "linea")
+CM_PALETA = ["#2563EB", "#16A34A", "#F59E0B", "#DC2626", "#7C3AED", "#0891B2", "#DB2777", "#65A30D", "#EA580C", "#475569"]
+CM_CATEGORIAS = tuple(MODULOS_CATALOG.keys())
+CM_ID_RE = re.compile(r"^[a-z0-9_]{1,40}$")
+CM_TOKEN_RE = re.compile(r"\{([a-z0-9_]{1,40})\}|(\d+(?:\.\d+)?)|([+\-*/()])|(\s+)")
+
+
+def _cm_texto(v, n: int) -> str:
+    """Texto de una sola línea (espacios colapsados), recortado a `n`."""
+    return " ".join(str(v or "").split())[:n]
+
+
+def _cm_parrafo(v, n: int) -> str:
+    """Texto multilínea (conserva saltos), recortado a `n`."""
+    return str(v or "").strip()[:n]
+
+
+def _cm_num(raw) -> Optional[float]:
+    """Número tecleado a mano ("$1,234.50", "12%", "3,5") → float; None si vacío;
+    ValueError si no es número. Rechaza NaN/inf."""
+    if isinstance(raw, bool):
+        raise ValueError("número inválido")
+    if raw is None:
+        return None
+    if isinstance(raw, (int, float)):
+        val = float(raw)
+    else:
+        s = str(raw).strip().replace("$", "").replace("%", "").replace(" ", "")
+        if not s:
+            return None
+        if re.fullmatch(r"-?\d+,\d{1,2}", s):
+            s = s.replace(",", ".")  # coma decimal
+        else:
+            s = s.replace(",", "")
+        val = float(s)
+    if math.isnan(val) or math.isinf(val):
+        raise ValueError("número inválido")
+    return val
+
+
+# --- Fórmulas de campos calculados ---------------------------------------
+# Solo + - * / paréntesis, números y referencias {id_de_campo}: un parser
+# propio (descenso recursivo), nunca eval().
+def _cm_formula_tokens(formula: str) -> List[tuple]:
+    out: List[tuple] = []
+    pos = 0
+    formula = formula or ""
+    while pos < len(formula):
+        m = CM_TOKEN_RE.match(formula, pos)
+        if not m:
+            raise ValueError(f"carácter no permitido en la fórmula: {formula[pos]!r}")
+        pos = m.end()
+        if m.group(1):
+            out.append(("ref", m.group(1)))
+        elif m.group(2):
+            out.append(("num", float(m.group(2))))
+        elif m.group(3):
+            out.append(("op", m.group(3)))
+    return out
+
+
+def _cm_formula_eval(formula: str, valores: dict) -> Optional[float]:
+    """Evalúa `formula` con `valores` {id: número|None}. Referencias vacías
+    cuentan como 0; división entre cero → None. ValueError si la sintaxis
+    es inválida."""
+    toks = _cm_formula_tokens(formula)
+    if not toks:
+        raise ValueError("fórmula vacía")
+    pos = [0]
+
+    def peek():
+        return toks[pos[0]] if pos[0] < len(toks) else None
+
+    def take():
+        t = toks[pos[0]]
+        pos[0] += 1
+        return t
+
+    def expr():
+        v = term()
+        while peek() and peek()[0] == "op" and peek()[1] in "+-":
+            op = take()[1]
+            r = term()
+            v = None if v is None or r is None else (v + r if op == "+" else v - r)
+        return v
+
+    def term():
+        v = factor()
+        while peek() and peek()[0] == "op" and peek()[1] in "*/":
+            op = take()[1]
+            r = factor()
+            if v is None or r is None:
+                v = None
+            elif op == "*":
+                v = v * r
+            else:
+                v = None if r == 0 else v / r
+        return v
+
+    def factor():
+        t = peek()
+        if t is None:
+            raise ValueError("la fórmula termina antes de tiempo")
+        if t == ("op", "-"):
+            take()
+            v = factor()
+            return None if v is None else -v
+        if t[0] == "num":
+            take()
+            return t[1]
+        if t[0] == "ref":
+            take()
+            v = valores.get(t[1])
+            return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else 0.0
+        if t == ("op", "("):
+            take()
+            v = expr()
+            if peek() != ("op", ")"):
+                raise ValueError("falta cerrar un paréntesis")
+            take()
+            return v
+        raise ValueError("fórmula inválida")
+
+    res = expr()
+    if pos[0] != len(toks):
+        raise ValueError("fórmula inválida")
+    if res is not None and (math.isnan(res) or math.isinf(res)):
+        return None
+    return res
+
+
+# --- Sanitización de la definición ---------------------------------------
+def _cm_nuevo_id(prefijo: str = "c") -> str:
+    return prefijo + uuid.uuid4().hex[:8]
+
+
+def _cm_valor_defecto(campo: dict, raw):
+    """Valor por defecto normalizado al tipo del campo (None si no aplica)."""
+    t = campo["tipo"]
+    if raw is None or raw == "" or t in ("foto", "calculado"):
+        return None
+    try:
+        if t in ("texto", "texto_largo"):
+            return _cm_parrafo(raw, 500)
+        if t in ("numero", "moneda", "porcentaje"):
+            return _cm_num(raw)
+        if t == "interruptor":
+            return raw is True or str(raw).strip().lower() in ("1", "true", "si", "sí")
+        if t == "seleccion":
+            return raw if raw in campo.get("opciones", []) else None
+        if t == "multiseleccion":
+            return [o for o in raw if o in campo.get("opciones", [])] if isinstance(raw, list) else None
+        if t == "fecha":
+            return str(raw) if str(raw).strip().lower() == "hoy" else _fecha_flexible(raw).isoformat()
+    except (ValueError, TypeError):
+        return None
+    return None
+
+
+def _cm_sanitize_campos(value) -> List[dict]:
+    """Normaliza la lista de campos; HTTP 400 con mensaje claro si algo es
+    inválido (etiqueta vacía, tipo desconocido, selección sin opciones,
+    fórmula mal formada...)."""
+    if not isinstance(value, list):
+        raise HTTPException(400, "campos debe ser una lista")
+    if len(value) > CM_MAX_CAMPOS:
+        raise HTTPException(400, f"Máximo {CM_MAX_CAMPOS} campos por módulo")
+    out: List[dict] = []
+    ids: set = set()
+    for raw in value:
+        if not isinstance(raw, dict):
+            continue
+        etiqueta = _cm_texto(raw.get("etiqueta"), 80)
+        if not etiqueta:
+            raise HTTPException(400, "Cada campo necesita una etiqueta")
+        tipo = raw.get("tipo")
+        if tipo not in CM_TIPOS:
+            raise HTTPException(400, f"Tipo de campo inválido en «{etiqueta}»")
+        fid = raw.get("id") if isinstance(raw.get("id"), str) and CM_ID_RE.match(raw.get("id")) else None
+        if not fid or fid in ids:
+            fid = _cm_nuevo_id()
+        ids.add(fid)
+        campo: dict = {
+            "id": fid, "etiqueta": etiqueta, "tipo": tipo,
+            "requerido": bool(raw.get("requerido")) and tipo not in ("calculado", "interruptor"),
+            "en_informe": raw.get("en_informe") is not False,
+            "ayuda": _cm_texto(raw.get("ayuda"), 200),
+        }
+        if tipo in ("numero", "moneda", "porcentaje", "calculado"):
+            campo["unidad"] = _cm_texto(raw.get("unidad"), 20)
+            dec = raw.get("decimales")
+            campo["decimales"] = int(dec) if isinstance(dec, (int, float)) and not isinstance(dec, bool) and 0 <= int(dec) <= 6 else None
+            minimo, maximo = None, None
+            try:
+                minimo, maximo = _cm_num(raw.get("minimo")), _cm_num(raw.get("maximo"))
+            except ValueError:
+                pass
+            if tipo != "calculado":
+                campo["minimo"], campo["maximo"] = minimo, maximo
+        if tipo in ("seleccion", "multiseleccion"):
+            opciones: List[str] = []
+            for o in (raw.get("opciones") or []):
+                o = _cm_texto(o, 80)
+                if o and o not in opciones:
+                    opciones.append(o)
+            if not opciones:
+                raise HTTPException(400, f"«{etiqueta}» necesita al menos una opción")
+            campo["opciones"] = opciones[:CM_MAX_OPCIONES]
+            # Estatus de seguimiento (solo listas de una opción): qué opciones
+            # cuentan como "cerrado" (se registra la fecha de cierre).
+            campo["estatus"] = bool(raw.get("estatus")) and tipo == "seleccion"
+            if campo["estatus"]:
+                campo["cierre"] = [o for o in (raw.get("cierre") or []) if o in campo["opciones"]]
+        if tipo == "calculado":
+            formula = _cm_texto(raw.get("formula"), 300)
+            try:
+                refs = [t[1] for t in _cm_formula_tokens(formula) if t[0] == "ref"]
+                _cm_formula_eval(formula, {r: 1.0 for r in refs})
+            except ValueError as e:
+                raise HTTPException(400, f"Fórmula de «{etiqueta}»: {e}")
+            campo["formula"] = formula
+            campo["formato"] = raw.get("formato") if raw.get("formato") in ("numero", "moneda", "porcentaje") else "numero"
+        agg = raw.get("agregacion")
+        if tipo in CM_TIPOS_NUMERICOS:
+            campo["agregacion"] = agg if agg in CM_AGREGACIONES else "ninguna"
+        elif tipo in ("interruptor", "seleccion", "texto", "fecha", "ubicacion"):
+            campo["agregacion"] = "conteo" if agg == "conteo" else "ninguna"
+        else:
+            campo["agregacion"] = "ninguna"
+        campo["valor_defecto"] = _cm_valor_defecto(campo, raw.get("valor_defecto"))
+        vis = raw.get("visible_si")
+        campo["visible_si"] = vis if isinstance(vis, dict) else None
+        out.append(campo)
+    # Segunda pasada: referencias de fórmulas y condiciones de visibilidad
+    # solo pueden apuntar a campos que existen.
+    por_id = {c["id"]: c for c in out}
+    for i, c in enumerate(out):
+        if c["tipo"] == "calculado":
+            for t in _cm_formula_tokens(c["formula"]):
+                if t[0] == "ref" and (t[1] not in por_id or por_id[t[1]]["tipo"] not in ("numero", "moneda", "porcentaje")):
+                    raise HTTPException(400, f"La fórmula de «{c['etiqueta']}» solo puede usar campos numéricos, de moneda o porcentaje")
+        vis = c["visible_si"]
+        if vis:
+            ref = vis.get("campo")
+            if ref in por_id and ref != c["id"] and por_id[ref]["tipo"] in ("interruptor", "seleccion", "multiseleccion"):
+                igual = vis.get("igual")
+                c["visible_si"] = {"campo": ref, "igual": bool(igual) if por_id[ref]["tipo"] == "interruptor" else _cm_texto(igual, 80)}
+            else:
+                c["visible_si"] = None
+    return out
+
+
+def _cm_sanitize_salida(value) -> dict:
+    out: dict = {}
+    value = value if isinstance(value, dict) else {}
+    for cat in CM_CATEGORIAS:
+        s = value.get(cat) if isinstance(value.get(cat), dict) else {}
+        out[cat] = {
+            "modo": s.get("modo") if s.get("modo") in CM_MODOS else "oculto",
+            "periodo": s.get("periodo") if s.get("periodo") in CM_PERIODOS else "periodo",
+        }
+    return out
+
+
+def _cm_sanitize_opciones(value, campos: List[dict]) -> dict:
+    v = value if isinstance(value, dict) else {}
+    por_id = {c["id"]: c for c in campos}
+    agrupar = v.get("agrupar_por")
+    if agrupar not in por_id or por_id[agrupar]["tipo"] not in ("texto", "seleccion", "interruptor", "fecha", "ubicacion"):
+        agrupar = None
+    limite = v.get("limite")
+    limite = int(limite) if isinstance(limite, (int, float)) and not isinstance(limite, bool) and 0 <= limite <= 500 else 0
+
+    def flag(k: str, default: bool) -> bool:
+        return v[k] if isinstance(v.get(k), bool) else default
+
+    def entero(k: str, default: int, lo: int, hi: int) -> int:
+        x = v.get(k)
+        return int(x) if isinstance(x, (int, float)) and not isinstance(x, bool) and lo <= x <= hi else default
+
+    return {
+        "folio_activo": flag("folio_activo", False),
+        "folio_prefijo": _cm_texto(v.get("folio_prefijo"), 12).replace(" ", ""),
+        "folio_digitos": entero("folio_digitos", 4, 1, 8),
+        "folio_inicio": entero("folio_inicio", 1, 1, 999999),
+        "mostrar_folio": flag("mostrar_folio", True),
+        "ocultar_cerrados": flag("ocultar_cerrados", False),
+        "titulo": _cm_texto(v.get("titulo"), 120),
+        "intro": _cm_parrafo(v.get("intro"), 1000),
+        "nota_pie": _cm_parrafo(v.get("nota_pie"), 1000),
+        "plantilla_texto": _cm_parrafo(v.get("plantilla_texto"), 500),
+        "texto_vacio": _cm_texto(v.get("texto_vacio"), 200) or "Sin registros en el período.",
+        "mostrar_fecha": flag("mostrar_fecha", True),
+        "mostrar_autor": flag("mostrar_autor", False),
+        "mostrar_totales": flag("mostrar_totales", True),
+        "numerar": flag("numerar", False),
+        "incluir_fotos": flag("incluir_fotos", False),
+        "imprimir_vacio": flag("imprimir_vacio", False),
+        "orden": "desc" if v.get("orden") == "desc" else "asc",
+        "limite": limite,
+        "agrupar_por": agrupar,
+    }
+
+
+def _cm_sanitize_graficas(value, campos: List[dict]) -> List[dict]:
+    """Gráficas del módulo: cada una agrupa los registros por un campo (o por
+    fecha) y suma / promedia / cuenta; `informes` = en cuáles informes sale."""
+    if not isinstance(value, list):
+        return []
+    por_id = {c["id"]: c for c in campos}
+    out: List[dict] = []
+    for raw in value[:CM_MAX_GRAFICAS]:
+        if not isinstance(raw, dict):
+            continue
+        cat = raw.get("categoria")
+        if cat != "__fecha" and (cat not in por_id or por_id[cat]["tipo"] not in (
+                "texto", "seleccion", "interruptor", "fecha", "ubicacion")):
+            continue
+        val = raw.get("valor")
+        if val not in por_id or por_id[val]["tipo"] not in CM_TIPOS_NUMERICOS:
+            val = None
+        agg = raw.get("agregacion") if raw.get("agregacion") in ("suma", "promedio", "conteo") else "conteo"
+        if not val:
+            agg = "conteo"
+        gid = raw.get("id") if isinstance(raw.get("id"), str) and CM_ID_RE.match(raw.get("id")) else _cm_nuevo_id("g")
+        out.append({
+            "id": gid, "titulo": _cm_texto(raw.get("titulo"), 120),
+            "tipo": raw.get("tipo") if raw.get("tipo") in CM_GRAFICA_TIPOS else "barras",
+            "categoria": cat, "valor": val, "agregacion": agg,
+            "informes": [c for c in (raw.get("informes") or []) if c in CM_CATEGORIAS],
+        })
+    return out
+
+
+async def _cm_sanitize_modulo(pid: str, body: dict, *, parcial_de: Optional[dict] = None) -> dict:
+    """Definición completa saneada. `parcial_de` = documento existente: los
+    campos que no vienen en `body` conservan su valor."""
+    base = parcial_de or {}
+
+    def pick(k, default=None):
+        return body[k] if k in body else base.get(k, default)
+
+    nombre = _cm_texto(pick("nombre"), 80)
+    if not nombre:
+        raise HTTPException(400, "El módulo necesita un nombre")
+    campos = _cm_sanitize_campos(pick("campos", []))
+    icono = pick("icono")
+    area_id = pick("area_id")
+    if isinstance(area_id, str) and area_id.strip():
+        if not await db.areas.find_one({"id": area_id.strip(), "project_id": pid}, {"id": 1}):
+            raise HTTPException(400, "El área no existe en este proyecto")
+        area_id = area_id.strip()
+    else:
+        area_id = None
+
+    def flag(k: str, default: bool) -> bool:
+        v = pick(k, default)
+        return v if isinstance(v, bool) else default
+
+    return {
+        "nombre": nombre,
+        "descripcion": _cm_parrafo(pick("descripcion"), 300),
+        "icono": icono if icono in CM_ICONOS else CM_ICONO_DEFAULT,
+        "area_id": area_id,
+        "activo": flag("activo", True),
+        "usar_jerarquia": flag("usar_jerarquia", False),
+        "solo_coordinacion": flag("solo_coordinacion", False),
+        "campos": campos,
+        "salida": _cm_sanitize_salida(pick("salida")),
+        "opciones": _cm_sanitize_opciones(pick("opciones"), campos),
+        "graficas": _cm_sanitize_graficas(pick("graficas", []), campos),
+    }
+
+
+def _cm_public(doc: dict) -> dict:
+    out = {k: v for k, v in doc.items() if k != "_id"}
+    out["key"] = f"custom_{doc['id']}"
+    return out
+
+
+async def _cm_get_modulo(pid: str, mid: str) -> dict:
+    doc = await db.custom_modules.find_one({"id": mid, "project_id": pid})
+    if not doc:
+        raise HTTPException(404, "El módulo no existe")
+    return doc
+
+
+# --- Valores y registros --------------------------------------------------
+def _cm_campo_visible(campo: dict, valores: dict) -> bool:
+    vis = campo.get("visible_si")
+    if not vis:
+        return True
+    actual = valores.get(vis.get("campo"))
+    igual = vis.get("igual")
+    if isinstance(actual, list):
+        return igual in actual
+    if isinstance(igual, bool):
+        return bool(actual) == igual
+    return actual == igual
+
+
+def _cm_normaliza_valor(campo: dict, raw):
+    """Valor de captura → forma almacenada (None = vacío). ValueError con
+    mensaje listo para el usuario."""
+    t = campo["tipo"]
+    et = campo["etiqueta"]
+    if t in ("texto", "texto_largo"):
+        txt = _cm_parrafo(raw, 5000 if t == "texto_largo" else 500)
+        return txt or None
+    if t in ("numero", "moneda", "porcentaje"):
+        try:
+            val = _cm_num(raw)
+        except (ValueError, TypeError):
+            raise ValueError(f"«{et}»: escribe un número válido")
+        if val is not None:
+            if campo.get("minimo") is not None and val < campo["minimo"]:
+                raise ValueError(f"«{et}»: el mínimo permitido es {campo['minimo']:g}")
+            if campo.get("maximo") is not None and val > campo["maximo"]:
+                raise ValueError(f"«{et}»: el máximo permitido es {campo['maximo']:g}")
+        return val
+    if t == "fecha":
+        if raw in (None, ""):
+            return None
+        try:
+            return _fecha_flexible(raw).isoformat()
+        except ValueError:
+            raise ValueError(f"«{et}»: usa AAAA-MM-DD o DD/MM/AAAA")
+    if t == "seleccion":
+        if raw in (None, ""):
+            return None
+        if raw not in campo["opciones"]:
+            raise ValueError(f"«{et}»: elige una de las opciones")
+        return raw
+    if t == "multiseleccion":
+        if not raw:
+            return None
+        if not isinstance(raw, list) or any(o not in campo["opciones"] for o in raw):
+            raise ValueError(f"«{et}»: opciones inválidas")
+        return [o for o in campo["opciones"] if o in raw]
+    if t == "interruptor":
+        return raw is True or str(raw).strip().lower() in ("1", "true", "si", "sí")
+    if t == "ubicacion":
+        if raw in (None, ""):
+            return None
+        if isinstance(raw, dict) and raw.get("id"):
+            return {"id": str(raw["id"]), "nombre": _cm_texto(raw.get("nombre"), 200)}
+        raise ValueError(f"«{et}»: elige una ubicación del proyecto")
+    return None
+
+
+def _cm_recalcula(campos: List[dict], valores: dict) -> None:
+    """Rellena in situ los campos `calculado` a partir de los demás."""
+    for c in campos:
+        if c["tipo"] != "calculado":
+            continue
+        if not _cm_campo_visible(c, valores):
+            valores.pop(c["id"], None)
+            continue
+        try:
+            res = _cm_formula_eval(c["formula"], valores)
+        except ValueError:
+            res = None
+        valores[c["id"]] = None if res is None else round(res, 6)
+
+
+async def _cm_construye_registro(
+    modulo: dict, body: dict, existente: Optional[dict],
+) -> Tuple[dict, dict, dict]:
+    """(valores, fotos, thumbs) de un registro a partir de `body["valores"]`.
+    En una edición (`existente`), los campos que no vienen conservan su valor;
+    una foto se reemplaza al mandar un data URL y se quita al mandar null."""
+    entrada = dict(body.get("valores")) if isinstance(body.get("valores"), dict) else {}
+    # Ubicaciones: el cliente manda el id (o el nombre, al importar); se valida
+    # contra los nodos del proyecto y se guarda {id, nombre}.
+    for c in modulo["campos"]:
+        if c["tipo"] == "ubicacion" and c["id"] in entrada and isinstance(entrada[c["id"]], (str, dict)):
+            ref = entrada[c["id"]].get("id") if isinstance(entrada[c["id"]], dict) else entrada[c["id"]]
+            ref = str(ref or "").strip()
+            if not ref:
+                entrada[c["id"]] = None
+                continue
+            nodo = await db.location_nodes.find_one({"id": ref, "project_id": modulo["project_id"]}, {"id": 1, "name": 1})
+            if not nodo:
+                nodo = await db.location_nodes.find_one(
+                    {"project_id": modulo["project_id"], "name": {"$regex": f"^{re.escape(ref)}$", "$options": "i"}}, {"id": 1, "name": 1})
+            if not nodo:
+                raise HTTPException(400, f"«{c['etiqueta']}»: la ubicación no existe en este proyecto")
+            entrada[c["id"]] = {"id": nodo["id"], "nombre": nodo["name"]}
+    previos = dict((existente or {}).get("valores") or {})
+    fotos = dict((existente or {}).get("fotos") or {})
+    thumbs = dict((existente or {}).get("thumbs") or {})
+    valores: dict = {}
+    for c in modulo["campos"]:
+        fid = c["id"]
+        if c["tipo"] == "calculado":
+            continue
+        if c["tipo"] == "foto":
+            if fid in entrada:
+                raw = entrada[fid]
+                if isinstance(raw, str) and raw.strip():
+                    fotos[fid] = await asyncio.to_thread(_normalize_photo_b64, raw)
+                    thumbs[fid] = await asyncio.to_thread(_compress_image_b64, fotos[fid])
+                elif raw in (None, ""):
+                    fotos.pop(fid, None)
+                    thumbs.pop(fid, None)
+            continue
+        raw = entrada[fid] if fid in entrada else previos.get(fid)
+        try:
+            valores[fid] = _cm_normaliza_valor(c, raw)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+    # Visibilidad condicional: lo oculto no se guarda (ni se exige).
+    for c in modulo["campos"]:
+        if c["tipo"] == "calculado":
+            continue
+        if not _cm_campo_visible(c, valores):
+            valores.pop(c["id"], None)
+            fotos.pop(c["id"], None)
+            thumbs.pop(c["id"], None)
+            continue
+        if c["requerido"]:
+            vacio = (c["id"] not in fotos) if c["tipo"] == "foto" else valores.get(c["id"]) in (None, "", [])
+            if vacio:
+                raise HTTPException(400, f"Falta llenar «{c['etiqueta']}»")
+    _cm_recalcula(modulo["campos"], valores)
+    return valores, fotos, thumbs
+
+
+def _cm_registro_public(doc: dict) -> dict:
+    out = {k: v for k, v in doc.items() if k not in ("_id", "fotos", "historial")}
+    out["tiene_fotos"] = sorted((doc.get("fotos") or {}).keys())
+    return out
+
+
+def _cm_cierres(modulo: dict, valores: dict, previos: Optional[dict], now: datetime) -> dict:
+    """{id_campo_estatus: fecha de cierre}. Un registro cuyo estatus pasa a una
+    opción de cierre guarda la fecha; si se reabre, se quita; si sigue cerrado
+    conserva la fecha original."""
+    out: dict = {}
+    for c in modulo["campos"]:
+        if c.get("estatus") and valores.get(c["id"]) in (c.get("cierre") or []):
+            out[c["id"]] = (previos or {}).get(c["id"]) or now
+    return out
+
+
+def _cm_diff(modulo: dict, antes: dict, valores: dict, fotos: dict, fecha: str) -> List[dict]:
+    """Cambios legibles entre el registro guardado y la edición (historial)."""
+    cambios: List[dict] = []
+    if fecha != antes.get("fecha"):
+        cambios.append({"campo": "Fecha", "antes": _fmt_iso_dmy(antes.get("fecha")), "despues": _fmt_iso_dmy(fecha)})
+    prev_v = antes.get("valores") or {}
+    prev_f = antes.get("fotos") or {}
+    for c in modulo["campos"]:
+        if c["tipo"] == "foto":
+            a, d = prev_f.get(c["id"]), fotos.get(c["id"])
+            if a != d:
+                cambios.append({"campo": c["etiqueta"], "antes": "Con foto" if a else "Sin foto",
+                                "despues": "Foto reemplazada" if a and d else ("Foto agregada" if d else "Foto quitada")})
+            continue
+        a, d = _cm_fmt_valor(c, prev_v.get(c["id"])), _cm_fmt_valor(c, valores.get(c["id"]))
+        if a != d:
+            cambios.append({"campo": c["etiqueta"], "antes": a or "—", "despues": d or "—"})
+    return cambios[:40]
+
+
+# --- Formato e impresión --------------------------------------------------
+def _cm_fmt_numero(campo: dict, val: float) -> str:
+    t = campo.get("formato", "numero") if campo["tipo"] == "calculado" else campo["tipo"]
+    dec = campo.get("decimales")
+    if dec is None:
+        dec = 2 if t == "moneda" else None
+    if dec is not None:
+        txt = f"{val:,.{dec}f}"
+    elif float(val).is_integer():
+        txt = f"{int(val):,}"
+    else:
+        txt = f"{val:,.4f}".rstrip("0").rstrip(".")
+    if t == "moneda":
+        return ("-$" + txt[1:]) if txt.startswith("-") else "$" + txt
+    if t == "porcentaje":
+        return txt + "%"
+    unidad = campo.get("unidad")
+    return f"{txt} {unidad}" if unidad else txt
+
+
+def _cm_fmt_valor(campo: dict, val) -> str:
+    """Valor almacenado → texto imprimible ("" si vacío)."""
+    t = campo["tipo"]
+    if t == "interruptor":
+        return "Sí" if val else "No"
+    if val in (None, "", []):
+        return ""
+    if t == "ubicacion":
+        return str(val.get("nombre") or "") if isinstance(val, dict) else str(val)
+    if t in ("numero", "moneda", "porcentaje", "calculado"):
+        try:
+            return _cm_fmt_numero(campo, float(val))
+        except (TypeError, ValueError):
+            return str(val)
+    if t == "fecha":
+        return _fmt_iso_dmy(val)
+    if t == "multiseleccion":
+        return ", ".join(val) if isinstance(val, list) else str(val)
+    return str(val)
+
+
+def _cm_agregar(campo: dict, registros: List[dict]) -> Optional[float]:
+    agg = campo.get("agregacion")
+    if not agg or agg == "ninguna":
+        return None
+    vals = [(r.get("valores") or {}).get(campo["id"]) for r in registros]
+    if agg == "conteo":
+        if campo["tipo"] == "interruptor":
+            return float(sum(1 for v in vals if v))
+        return float(sum(1 for v in vals if v not in (None, "", [])))
+    nums = [float(v) for v in vals if isinstance(v, (int, float)) and not isinstance(v, bool)]
+    if not nums:
+        return None
+    return {"suma": sum(nums), "promedio": sum(nums) / len(nums), "minimo": min(nums), "maximo": max(nums)}[agg]
+
+
+def _cm_fmt_agregado(campo: dict, val: Optional[float]) -> str:
+    if val is None:
+        return ""
+    if campo.get("agregacion") == "conteo":
+        return str(int(val))
+    return _cm_fmt_numero(campo, val)
+
+
+def _cm_norm(s: str) -> str:
+    s = unicodedata.normalize("NFKD", str(s or "")).encode("ascii", "ignore").decode()
+    return re.sub(r"\s+", " ", s).strip().lower()
+
+
+def _cm_render_plantilla(plantilla: str, campos: List[dict], registro: dict) -> str:
+    """Reemplaza {Etiqueta} (sin distinguir mayúsculas/acentos) por el valor;
+    {Folio} es el folio del registro."""
+    por_etiqueta = {_cm_norm(c["etiqueta"]): c for c in campos}
+    valores = registro.get("valores") or {}
+
+    def sub(m):
+        clave = _cm_norm(m.group(1))
+        if clave == "folio":
+            return registro.get("folio") or ""
+        c = por_etiqueta.get(clave)
+        return _cm_fmt_valor(c, valores.get(c["id"])) if c else m.group(0)
+
+    return re.sub(r"\{([^{}]{1,80})\}", sub, plantilla).strip()
+
+
+def _cm_meta(modulo: dict, registro: dict) -> str:
+    op = modulo["opciones"]
+    partes = []
+    if op["mostrar_fecha"]:
+        partes.append(_fmt_iso_dmy(registro.get("fecha")))
+    if op["mostrar_autor"] and registro.get("created_by_name"):
+        partes.append(f"Registró: {registro['created_by_name']}")
+    return " · ".join(p for p in partes if p)
+
+
+def _cm_folio_txt(modulo: dict, registro: dict) -> str:
+    op = modulo["opciones"]
+    return (registro.get("folio") or "") if op.get("folio_activo") and op.get("mostrar_folio") else ""
+
+
+def _cm_campos_imprimibles(modulo: dict) -> List[dict]:
+    """Campos con `en_informe`, sin fotos (esas van en bloques aparte)."""
+    return [c for c in modulo["campos"] if c["en_informe"] and c["tipo"] != "foto"]
+
+
+def _cm_bloques_texto(modulo: dict, registros: List[dict]) -> List[dict]:
+    op = modulo["opciones"]
+    campos = _cm_campos_imprimibles(modulo)
+    titulo_campo = next((c for c in campos if c["tipo"] == "texto"), None)
+
+    def item(r: dict) -> dict:
+        valores = r.get("valores") or {}
+        meta = _cm_meta(modulo, r)
+        folio = _cm_folio_txt(modulo, r)
+        if op["plantilla_texto"]:
+            return {"title": folio, "body": _cm_render_plantilla(op["plantilla_texto"], modulo["campos"], r),
+                    "extra": None, "meta": meta}
+        titulo = _cm_fmt_valor(titulo_campo, valores.get(titulo_campo["id"])) if titulo_campo else ""
+        lineas = []
+        for c in campos:
+            if c is titulo_campo and titulo:
+                continue
+            if not _cm_campo_visible(c, valores):
+                continue
+            txt = _cm_fmt_valor(c, valores.get(c["id"]))
+            if txt:
+                lineas.append(f"{c['etiqueta']}: {txt}")
+        return {"title": (f"{folio} · {titulo}" if folio and titulo else folio or titulo)[:90],
+                "body": "  ·  ".join(lineas), "extra": None, "meta": meta}
+
+    return _cm_agrupa(modulo, registros, lambda rows, heading: {
+        "type": "list", "heading": heading, "items": [item(r) for r in rows], "empty_text": op["texto_vacio"],
+    })
+
+
+def _cm_bloques_tabla(modulo: dict, registros: List[dict]) -> List[dict]:
+    op = modulo["opciones"]
+    campos = _cm_campos_imprimibles(modulo)
+    con_folio = bool(op.get("folio_activo") and op.get("mostrar_folio"))
+    if not campos and not op["mostrar_fecha"] and not con_folio:
+        return []
+    peso = {"texto_largo": 2.6, "texto": 1.7, "multiseleccion": 1.7, "seleccion": 1.3, "fecha": 1.0, "ubicacion": 1.6,
+            "numero": 1.0, "moneda": 1.1, "porcentaje": 0.9, "calculado": 1.0, "interruptor": 0.7}
+
+    headers: List[str] = []
+    pesos: List[float] = []
+    if op["numerar"]:
+        headers.append("No.")
+        pesos.append(0.5)
+    if con_folio:
+        headers.append("FOLIO")
+        pesos.append(1.0)
+    if op["mostrar_fecha"]:
+        headers.append("FECHA")
+        pesos.append(1.0)
+    for c in campos:
+        headers.append(c["etiqueta"].upper())
+        pesos.append(peso.get(c["tipo"], 1.0))
+    if op["mostrar_autor"]:
+        headers.append("REGISTRÓ")
+        pesos.append(1.4)
+    total_peso = sum(pesos) or 1.0
+    col_widths = [round(p / total_peso, 4) for p in pesos]
+    n_prefijo = int(op["numerar"]) + int(con_folio) + int(op["mostrar_fecha"])
+
+    def tabla(rows: List[dict], heading: Optional[str]) -> dict:
+        filas = []
+        for i, r in enumerate(rows, 1):
+            valores = r.get("valores") or {}
+            fila: List[str] = []
+            if op["numerar"]:
+                fila.append(str(i))
+            if con_folio:
+                fila.append(r.get("folio") or "")
+            if op["mostrar_fecha"]:
+                fila.append(_fmt_iso_dmy(r.get("fecha")))
+            for c in campos:
+                fila.append(_cm_fmt_valor(c, valores.get(c["id"])) if _cm_campo_visible(c, valores) else "")
+            if op["mostrar_autor"]:
+                fila.append(r.get("created_by_name") or "")
+            filas.append(fila)
+        if op["mostrar_totales"] and any(c.get("agregacion", "ninguna") != "ninguna" for c in campos):
+            fila_t: List[str] = [""] * n_prefijo
+            for c in campos:
+                agg = c.get("agregacion", "ninguna")
+                txt = _cm_fmt_agregado(c, _cm_agregar(c, rows)) if agg != "ninguna" else ""
+                fila_t.append(f"{CM_AGREGACION_ROTULO[agg]}: {txt}" if txt else "")
+            if op["mostrar_autor"]:
+                fila_t.append("")
+            if len(fila_t) > 0 and not fila_t[0]:
+                fila_t[0] = "TOTALES"
+            filas.append(fila_t)
+        return {"type": "table", "heading": heading, "headers": headers, "rows": filas,
+                "col_widths": col_widths, "empty_text": op["texto_vacio"]}
+
+    return _cm_agrupa(modulo, registros, tabla)
+
+
+def _cm_bloques_resumen(modulo: dict, registros: List[dict]) -> List[dict]:
+    n = len(registros)
+    bloques: List[dict] = [{"type": "summary", "text": f"{n} registro{'s' if n != 1 else ''} en el período"}]
+    filas = []
+    for c in modulo["campos"]:
+        if not c["en_informe"] or c.get("agregacion", "ninguna") == "ninguna":
+            continue
+        txt = _cm_fmt_agregado(c, _cm_agregar(c, registros))
+        if txt:
+            filas.append([f"{CM_AGREGACION_ROTULO[c['agregacion']]} · {c['etiqueta']}", txt])
+    if filas:
+        bloques.append({"type": "table", "heading": None, "headers": ["INDICADOR", "VALOR"], "rows": filas,
+                        "col_widths": [0.65, 0.35], "empty_text": ""})
+    # Distribución de cada estatus de seguimiento (abiertos / en proceso / cerrados...).
+    for c in modulo["campos"]:
+        if not c.get("estatus") or not c["en_informe"]:
+            continue
+        cuentas = {o: 0 for o in c["opciones"]}
+        for r in registros:
+            v = (r.get("valores") or {}).get(c["id"])
+            if v in cuentas:
+                cuentas[v] += 1
+        bloques.append({"type": "table", "heading": f"ESTATUS · {c['etiqueta'].upper()}",
+                        "headers": ["ESTATUS", "REGISTROS"], "rows": [[o, str(k)] for o, k in cuentas.items()],
+                        "col_widths": [0.65, 0.35], "empty_text": ""})
+    return bloques
+
+
+def _cm_bloques_fotos(modulo: dict, registros: List[dict], usar_thumbs: bool = False) -> List[dict]:
+    op = modulo["opciones"]
+    campos_foto = [c for c in modulo["campos"] if c["tipo"] == "foto" and c["en_informe"]]
+    if not campos_foto:
+        return []
+    titulo_campo = next((c for c in modulo["campos"] if c["tipo"] == "texto" and c["en_informe"]), None)
+    pie_base = modulo["nombre"].upper()
+    fotos: List[dict] = []
+    for r in registros:
+        valores = r.get("valores") or {}
+        for c in campos_foto:
+            src = (r.get("thumbs") if usar_thumbs else r.get("fotos")) or {}
+            img = src.get(c["id"])
+            if not img:
+                continue
+            if usar_thumbs and not str(img).startswith("data:"):
+                img = f"data:image/jpeg;base64,{img}"
+            if op["plantilla_texto"]:
+                desc = _cm_render_plantilla(op["plantilla_texto"], modulo["campos"], r)
+            else:
+                desc = _cm_fmt_valor(titulo_campo, valores.get(titulo_campo["id"])) if titulo_campo else ""
+            pie = " · ".join(p for p in (c["etiqueta"] if len(campos_foto) > 1 else "", _cm_folio_txt(modulo, r), _cm_meta(modulo, r)) if p)
+            fotos.append({"foto": img, "desc": desc, "pie": pie})
+            if len(fotos) >= CM_MAX_FOTOS_EXPORT:
+                break
+        if len(fotos) >= CM_MAX_FOTOS_EXPORT:
+            break
+    if not fotos:
+        return []
+    items = []
+    for i in range(0, len(fotos), 2):
+        a = fotos[i]
+        b = fotos[i + 1] if i + 1 < len(fotos) else None
+        items.append({
+            "titulo": pie_base, "original": a["foto"], "actual": b["foto"] if b else None,
+            "desc_encabezado": pie_base, "desc_original": a["desc"], "desc_actual": b["desc"] if b else "",
+            "etiqueta_original": a["pie"], "etiqueta_actual": b["pie"] if b else "", "sin_placeholder": True,
+        })
+    return [{"type": "fotos_comparativa", "items": items}]
+
+
+def _cm_agrupa(modulo: dict, registros: List[dict], construir: Callable) -> List[dict]:
+    """Un bloque por grupo (`agrupar_por`) o uno solo si no se agrupa."""
+    gid = modulo["opciones"].get("agrupar_por")
+    if not gid:
+        return [construir(registros, None)]
+    campo = next((c for c in modulo["campos"] if c["id"] == gid), None)
+    grupos: Dict[str, List[dict]] = {}
+    for r in registros:
+        txt = _cm_fmt_valor(campo, (r.get("valores") or {}).get(gid)) if campo else ""
+        grupos.setdefault(txt or "Sin especificar", []).append(r)
+    return [construir(rows, f"{campo['etiqueta'].upper()}: {g.upper()}" if campo else g.upper())
+            for g, rows in grupos.items()]
+
+
+# --- Gráficas ---------------------------------------------------------------
+def _cm_fmt_corto(v: float, moneda: bool = False) -> str:
+    txt = f"{v:,.0f}" if abs(v) >= 100 or float(v).is_integer() else f"{v:,.2f}"
+    return "$" + txt if moneda else txt
+
+
+def _cm_datos_grafica(modulo: dict, registros: List[dict], g: dict) -> Tuple[List[str], List[float]]:
+    """(etiquetas, valores) de una gráfica: agrupa los registros por la
+    categoría y suma / promedia / cuenta."""
+    campos = {c["id"]: c for c in modulo["campos"]}
+    cat, val, agg = g["categoria"], g.get("valor"), g.get("agregacion", "conteo")
+    cronologico = cat == "__fecha" or campos.get(cat, {}).get("tipo") == "fecha"
+    grupos: Dict[str, dict] = {}
+    for r in registros:
+        valores = r.get("valores") or {}
+        if cat == "__fecha":
+            clave, etiqueta = r.get("fecha") or "", _fmt_iso_dmy(r.get("fecha"))
+        else:
+            crudo = valores.get(cat)
+            etiqueta = _cm_fmt_valor(campos[cat], crudo) or "Sin especificar"
+            clave = str(crudo) if cronologico and crudo else etiqueta
+        x = valores.get(val) if val else None
+        nodo = grupos.setdefault(clave, {"etiqueta": etiqueta, "n": 0, "nums": []})
+        nodo["n"] += 1
+        if isinstance(x, (int, float)) and not isinstance(x, bool):
+            nodo["nums"].append(float(x))
+    filas = []
+    for clave, nodo in grupos.items():
+        if not val or agg == "conteo":
+            v = float(nodo["n"])
+        elif agg == "promedio":
+            v = sum(nodo["nums"]) / len(nodo["nums"]) if nodo["nums"] else 0.0
+        else:
+            v = sum(nodo["nums"])
+        filas.append((clave, nodo["etiqueta"], v))
+    filas.sort(key=(lambda f: f[0]) if cronologico else (lambda f: -f[2]))
+    limite = 8 if g["tipo"] == "pastel" else 14 if g["tipo"] == "barras_h" else 12
+    if not cronologico and len(filas) > limite:
+        resto = sum(f[2] for f in filas[limite - 1:])
+        filas = filas[:limite - 1] + [("~otros", "Otros", resto)]
+    elif len(filas) > 31:
+        filas = filas[-31:]
+    return [f[1] for f in filas], [f[2] for f in filas]
+
+
+def _cm_grafica_png(tipo: str, titulo: str, etiquetas: List[str], valores: List[float], moneda: bool = False) -> bytes:
+    """Gráfica de barras / barras horizontales / pastel / línea dibujada con
+    Pillow (mismo estilo que el resto de las gráficas de los informes)."""
+    from PIL import Image as _I
+    fmt = lambda v: _cm_fmt_corto(v, moneda)  # noqa: E731
+    if tipo == "linea":
+        return _grafica_lineas_png(titulo, etiquetas, [("", CM_PALETA[0], valores)], fmt)
+    W, H = 1800, 800
+    img = _I.new("RGB", (W, H), "white")
+    d, (f_txt, f_tit) = _chart_canvas(img, 24, 30)
+    d.text((W / 2, 38), titulo, fill="#0F172A", font=f_tit, anchor="mm")
+    n = len(valores)
+    vmax = max(valores + [0.0]) or 1.0
+    color = lambda i: CM_PALETA[i % len(CM_PALETA)]  # noqa: E731
+    if tipo == "pastel":
+        total = sum(v for v in valores if v > 0) or 1.0
+        cx, cy, r = 520, 440, 290
+        ang = -90.0
+        for i, v in enumerate(valores):
+            if v <= 0:
+                continue
+            barrido = 360 * v / total
+            d.pieslice([cx - r, cy - r, cx + r, cy + r], ang, ang + barrido, fill=color(i), outline="white", width=3)
+            ang += barrido
+        ly = 130
+        for i, (et, v) in enumerate(zip(etiquetas, valores)):
+            d.rectangle([980, ly, 1012, ly + 30], fill=color(i))
+            d.text((1030, ly + 15), f"{et[:34]}  ·  {fmt(v)}  ({v / total * 100:.0f}%)", fill="#0F172A", font=f_txt, anchor="lm")
+            ly += 54
+    elif tipo == "barras_h":
+        x0, x1, y0, y1 = 430, W - 170, 90, H - 40
+        alto = (y1 - y0) / max(n, 1)
+        barra = min(alto * 0.7, 70)
+        d.line([(x0, y0), (x0, y1)], fill="#475569", width=2)
+        for i, (et, v) in enumerate(zip(etiquetas, valores)):
+            yc = y0 + alto * (i + 0.5)
+            d.text((x0 - 14, yc), et[:34], fill="#0F172A", font=f_txt, anchor="rm")
+            w = (x1 - x0) * max(v, 0) / vmax
+            d.rectangle([x0, yc - barra / 2, x0 + max(w, 2), yc + barra / 2], fill=color(0))
+            d.text((x0 + w + 12, yc), fmt(v), fill="#0F172A", font=f_txt, anchor="lm")
+    else:
+        x0, x1, y0, y1 = 150, W - 60, 100, H - 150
+        tope = vmax * 1.1
+        for i in range(6):
+            y = y1 - (y1 - y0) * i / 5
+            d.line([(x0, y), (x1, y)], fill="#E2E8F0", width=1)
+            d.text((x0 - 12, y), fmt(tope * i / 5), fill="#475569", font=f_txt, anchor="rm")
+        d.line([(x0, y0), (x0, y1), (x1, y1)], fill="#475569", width=2)
+        grupo = (x1 - x0) / max(n, 1)
+        ancho = min(grupo * 0.6, 140)
+        maxc = max(4, int(grupo / 13))
+        for i, (et, v) in enumerate(zip(etiquetas, valores)):
+            gx = x0 + grupo * (i + 0.5)
+            top = y1 - (y1 - y0) * max(v, 0) / tope
+            d.rectangle([gx - ancho / 2, top, gx + ancho / 2, y1], fill=color(0))
+            d.text((gx, top - 8), fmt(v), fill="#0F172A", font=f_txt, anchor="mb")
+            d.text((gx, y1 + 18), et if len(et) <= maxc else et[:maxc - 1] + "…", fill="#0F172A", font=f_txt, anchor="mt")
+    out = io.BytesIO()
+    img.save(out, format="PNG")
+    return out.getvalue()
+
+
+def _cm_bloques_graficas(modulo: dict, registros: List[dict], categoria: str) -> List[dict]:
+    bloques: List[dict] = []
+    campos = {c["id"]: c for c in modulo["campos"]}
+    for g in modulo.get("graficas") or []:
+        if categoria not in (g.get("informes") or []):
+            continue
+        etiquetas, valores = _cm_datos_grafica(modulo, registros, g)
+        if not valores or not any(valores):
+            continue
+        val = campos.get(g.get("valor") or "")
+        moneda = bool(val and (val["tipo"] == "moneda" or (val["tipo"] == "calculado" and val.get("formato") == "moneda")))
+        titulo = g.get("titulo") or modulo["nombre"]
+        png = _cm_grafica_png(g["tipo"], titulo, etiquetas, valores, moneda)
+        bloques.append({"type": "imagen", "heading": titulo, "imagen": _png_bytes_to_jpeg_dataurl(png), "caption": ""})
+    return bloques
+
+
+def _cm_aware(dt):
+    return dt if getattr(dt, "tzinfo", None) else dt.replace(tzinfo=timezone.utc)
+
+
+def _cm_construye_seccion(
+    modulo: dict, registros: List[dict], categoria: str, *, usar_thumbs: bool = False,
+    ventana: Optional[Tuple[datetime, datetime]] = None,
+) -> Optional[dict]:
+    """Sección imprimible {"titulo", "blocks"} de UN módulo personalizado para
+    el informe `categoria`, o None si no debe imprimirse (modo "oculto", o sin
+    registros y sin `imprimir_vacio`). `registros` ya viene filtrado por período."""
+    cfg = (modulo.get("salida") or {}).get(categoria) or {}
+    modo = cfg.get("modo", "oculto")
+    if modo == "oculto":
+        return None
+    op = modulo["opciones"]
+    # Con «ocultar cerrados», un registro cerrado solo sale en el informe donde
+    # se cerró (dentro de `ventana`); los abiertos siempre.
+    est = next((c for c in modulo["campos"] if c.get("estatus")), None)
+    if op.get("ocultar_cerrados") and est:
+        def vigente(r: dict) -> bool:
+            if (r.get("valores") or {}).get(est["id"]) not in (est.get("cierre") or []):
+                return True
+            cierre = (r.get("cierres") or {}).get(est["id"])
+            return bool(ventana and cierre and ventana[0] <= _cm_aware(cierre) <= ventana[1])
+        registros = [r for r in registros if vigente(r)]
+    if not registros and not op["imprimir_vacio"]:
+        return None
+    # Orden: se recorta a los `limite` más recientes y se presenta en `orden`.
+    ordenados = sorted(registros, key=lambda r: (r.get("fecha") or "", str(r.get("created_at") or "")), reverse=True)
+    if cfg.get("periodo") == "ultimo":
+        ordenados = ordenados[:1]
+    if op["limite"]:
+        ordenados = ordenados[:op["limite"]]
+    if op["orden"] == "asc":
+        ordenados.reverse()
+
+    bloques: List[dict] = []
+    if op["intro"]:
+        bloques.append({"type": "summary", "text": op["intro"]})
+    if not ordenados:
+        bloques.append({"type": "summary", "text": op["texto_vacio"]})
+    elif modo == "texto":
+        bloques += _cm_bloques_texto(modulo, ordenados)
+    elif modo == "tabla":
+        bloques += _cm_bloques_tabla(modulo, ordenados)
+    elif modo == "resumen":
+        bloques += _cm_bloques_resumen(modulo, ordenados)
+    if ordenados and (modo == "fotos" or (op["incluir_fotos"] and modo in ("texto", "tabla"))):
+        bloques += _cm_bloques_fotos(modulo, ordenados, usar_thumbs)
+    if ordenados:
+        bloques += _cm_bloques_graficas(modulo, ordenados, categoria)
+    if op["nota_pie"]:
+        bloques.append({"type": "summary", "text": op["nota_pie"]})
+    if not any(b["type"] != "summary" for b in bloques) and not op["imprimir_vacio"] and not (op["intro"] or op["nota_pie"]):
+        return None  # p. ej. modo "fotos" sin ninguna foto capturada
+    return {"titulo": (op["titulo"] or modulo["nombre"]).upper(), "blocks": bloques}
+
+
+async def _cm_refresca_ubicaciones(pid: str, modulo: dict, registros: List[dict]) -> None:
+    """Pone el nombre ACTUAL de cada ubicación (por si el nodo se renombró)."""
+    campos = [c["id"] for c in modulo["campos"] if c["tipo"] == "ubicacion"]
+    if not campos or not registros:
+        return
+    ids = {(r.get("valores") or {}).get(f, {}).get("id") for r in registros for f in campos
+           if isinstance((r.get("valores") or {}).get(f), dict)}
+    ids.discard(None)
+    if not ids:
+        return
+    nodos = {n["id"]: n["name"] async for n in db.location_nodes.find({"project_id": pid, "id": {"$in": list(ids)}}, {"id": 1, "name": 1})}
+    for r in registros:
+        for f in campos:
+            v = (r.get("valores") or {}).get(f)
+            if isinstance(v, dict) and v.get("id") in nodos:
+                v["nombre"] = nodos[v["id"]]
+
+
+async def _cm_registros_periodo(
+    pid: str, modulo: dict, categoria: str, d_ini: str, d_fin: str, *, con_fotos: bool = True,
+) -> List[dict]:
+    periodo = ((modulo.get("salida") or {}).get(categoria) or {}).get("periodo", "periodo")
+    q: dict = {"project_id": pid, "module_id": modulo["id"]}
+    cond_fecha = {"$gte": d_ini, "$lte": d_fin} if periodo == "periodo" else {"$lte": d_fin}
+    est = next((c for c in modulo["campos"] if c.get("estatus")), None)
+    if modulo["opciones"].get("ocultar_cerrados") and est and periodo == "periodo":
+        # También los cerrados DENTRO del período aunque se hayan capturado antes.
+        ini_dt = datetime.combine(date.fromisoformat(d_ini), datetime.min.time(), tzinfo=MX_TZ)
+        fin_dt = datetime.combine(date.fromisoformat(d_fin), datetime.max.time(), tzinfo=MX_TZ)
+        q["$or"] = [{"fecha": cond_fecha}, {f"cierres.{est['id']}": {"$gte": ini_dt, "$lte": fin_dt}}]
+    else:
+        q["fecha"] = cond_fecha
+    if modulo.get("usar_jerarquia"):
+        q.update(_jerarquia_q(categoria))
+    proj = {"historial": 0} if con_fotos else {"fotos": 0, "historial": 0}
+    regs = await db.custom_module_records.find(q, proj).to_list(length=5000)
+    await _cm_refresca_ubicaciones(pid, modulo, regs)
+    return regs
+
+
+async def _cm_secciones_export(
+    pid: str, categoria: str, start_dt: datetime, end_dt: datetime,
+) -> Dict[str, dict]:
+    """{"custom_<id>": sección} de los módulos personalizados activos que se
+    imprimen en `categoria`. Un módulo "oculto" o sin registros no aparece."""
+    d_ini = start_dt.astimezone(MX_TZ).date().isoformat()
+    d_fin = end_dt.astimezone(MX_TZ).date().isoformat()
+    out: Dict[str, dict] = {}
+    cursor = db.custom_modules.find({"project_id": pid, "activo": True}).sort([("orden", 1), ("created_at", 1)])
+    for modulo in await cursor.to_list(length=CM_MAX_MODULOS_POR_PROYECTO):
+        modo = ((modulo.get("salida") or {}).get(categoria) or {}).get("modo", "oculto")
+        if modo == "oculto":
+            continue
+        regs = await _cm_registros_periodo(pid, modulo, categoria, d_ini, d_fin, con_fotos=modo == "fotos" or modulo["opciones"].get("incluir_fotos", False))
+        seccion = await asyncio.to_thread(_cm_construye_seccion, modulo, regs, categoria, ventana=(start_dt, end_dt))
+        if seccion:
+            out[f"custom_{modulo['id']}"] = seccion
+    return out
+
+
+# --- Endpoints: definiciones ----------------------------------------------
+@api.get("/projects/{pid}/custom-modules")
+async def list_custom_modules(pid: str, todos: bool = False, user: dict = Depends(current_user)):
+    """Definiciones del proyecto. Coordinador/Jefe ven también los apagados
+    (`todos=true`); el resto solo los activos."""
+    await ensure_project_access(user, pid)
+    q: dict = {"project_id": pid}
+    if not (todos and user.get("role") in (ROLE_COORD, ROLE_JEFE)):
+        q["activo"] = True
+    items = await db.custom_modules.find(q).sort([("orden", 1), ("created_at", 1)]).to_list(length=CM_MAX_MODULOS_POR_PROYECTO)
+    conteos: Dict[str, int] = {}
+    async for g in db.custom_module_records.aggregate([
+        {"$match": {"project_id": pid}}, {"$group": {"_id": "$module_id", "n": {"$sum": 1}}},
+    ]):
+        conteos[g["_id"]] = g["n"]
+    out = []
+    for it in items:
+        pub = _cm_public(it)
+        pub["n_registros"] = conteos.get(it["id"], 0)
+        out.append(pub)
+    return out
+
+
+@api.get("/projects/{pid}/custom-modules/{mid}")
+async def get_custom_module(pid: str, mid: str, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    doc = await _cm_get_modulo(pid, mid)
+    if not doc.get("activo") and user.get("role") not in (ROLE_COORD, ROLE_JEFE):
+        raise HTTPException(404, "El módulo no existe")
+    return _cm_public(doc)
+
+
+@api.post("/projects/{pid}/custom-modules")
+async def create_custom_module(pid: str, body: dict, user: dict = Depends(require_role(ROLE_COORD))):
+    await ensure_project_access(user, pid)
+    if await db.custom_modules.count_documents({"project_id": pid}) >= CM_MAX_MODULOS_POR_PROYECTO:
+        raise HTTPException(400, f"Máximo {CM_MAX_MODULOS_POR_PROYECTO} módulos personalizados por proyecto")
+    datos = await _cm_sanitize_modulo(pid, body or {})
+    now = datetime.now(timezone.utc)
+    ultimo = await db.custom_modules.find({"project_id": pid}).sort("orden", -1).limit(1).to_list(length=1)
+    doc = {"id": str(uuid.uuid4()), "project_id": pid, **datos,
+           "orden": (ultimo[0].get("orden", 0) + 1) if ultimo else 0, "folio_contador": 0,
+           "created_by": user["id"], "created_by_name": user["name"], "created_at": now, "updated_at": now}
+    await db.custom_modules.insert_one(doc)
+    return _cm_public(doc)
+
+
+@api.put("/projects/{pid}/custom-modules-orden")
+async def reorder_custom_modules(pid: str, body: dict, user: dict = Depends(require_role(ROLE_COORD))):
+    """Guarda el orden de los módulos: `{"ids": [id, id, ...]}`."""
+    await ensure_project_access(user, pid)
+    ids = body.get("ids") if isinstance(body, dict) else None
+    if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
+        raise HTTPException(400, "ids debe ser una lista de ids")
+    for pos, mid in enumerate(ids):
+        await db.custom_modules.update_one({"id": mid, "project_id": pid}, {"$set": {"orden": pos}})
+    return {"ok": True}
+
+
+@api.patch("/projects/{pid}/custom-modules/{mid}")
+async def update_custom_module(pid: str, mid: str, body: dict, user: dict = Depends(require_role(ROLE_COORD))):
+    """Edición parcial de la definición. Cambiar/quitar campos NO borra los
+    registros ya capturados: sus valores se conservan por id de campo y solo
+    se imprimen los campos que sigan existiendo."""
+    await ensure_project_access(user, pid)
+    existente = await _cm_get_modulo(pid, mid)
+    datos = await _cm_sanitize_modulo(pid, body or {}, parcial_de=existente)
+    datos["updated_at"] = datetime.now(timezone.utc)
+    await db.custom_modules.update_one({"id": mid}, {"$set": datos})
+    return _cm_public(await db.custom_modules.find_one({"id": mid}))
+
+
+@api.post("/projects/{pid}/custom-modules/{mid}/duplicar")
+async def duplicate_custom_module(pid: str, mid: str, body: Optional[dict] = None, user: dict = Depends(require_role(ROLE_COORD))):
+    """Copia la definición (sin registros) como módulo APAGADO, en este
+    proyecto o en otro (`destino_project_id`) al que el Coordinador tenga acceso."""
+    await ensure_project_access(user, pid)
+    src = await _cm_get_modulo(pid, mid)
+    destino = ((body or {}).get("destino_project_id") or pid).strip()
+    if destino != pid:
+        await ensure_project_access(user, destino)
+    if await db.custom_modules.count_documents({"project_id": destino}) >= CM_MAX_MODULOS_POR_PROYECTO:
+        raise HTTPException(400, f"Máximo {CM_MAX_MODULOS_POR_PROYECTO} módulos personalizados por proyecto")
+    now = datetime.now(timezone.utc)
+    copia = {k: v for k, v in src.items() if k not in ("_id", "id", "project_id", "created_at", "updated_at", "created_by", "created_by_name", "folio_contador")}
+    copia["nombre"] = _cm_texto(f"{src['nombre']} (copia)", 80) if destino == pid else src["nombre"]
+    copia["activo"] = False
+    if destino != pid:
+        copia["area_id"] = None
+    ultimo = await db.custom_modules.find({"project_id": destino}).sort("orden", -1).limit(1).to_list(length=1)
+    copia.update({"id": str(uuid.uuid4()), "project_id": destino, "orden": (ultimo[0].get("orden", 0) + 1) if ultimo else 0,
+                  "folio_contador": 0, "created_by": user["id"], "created_by_name": user["name"], "created_at": now, "updated_at": now})
+    await db.custom_modules.insert_one(copia)
+    return _cm_public(copia)
+
+
+@api.delete("/projects/{pid}/custom-modules/{mid}")
+async def delete_custom_module(pid: str, mid: str, confirmar: bool = False, user: dict = Depends(require_role(ROLE_COORD))):
+    """Borra el módulo. Si ya tiene registros exige `confirmar=true` (y los
+    borra con él); sin esa confirmación explícita responde 409 con el conteo
+    — apagarlo (`activo=false`) lo oculta sin perder datos."""
+    await ensure_project_access(user, pid)
+    await _cm_get_modulo(pid, mid)
+    n = await db.custom_module_records.count_documents({"project_id": pid, "module_id": mid})
+    if n and not confirmar:
+        raise HTTPException(409, f"El módulo tiene {n} registro(s). Confirma para borrarlo junto con sus datos, o apágalo para conservarlos.")
+    if n:
+        await db.custom_module_records.delete_many({"project_id": pid, "module_id": mid})
+    await db.custom_module_borrados.delete_many({"project_id": pid, "module_id": mid})
+    await db.custom_modules.delete_one({"id": mid, "project_id": pid})
+    return {"ok": True, "registros_borrados": n}
+
+
+# --- Plantillas propias (biblioteca del Coordinador, válida en todos sus proyectos) ---
+@api.get("/custom-module-templates")
+async def list_custom_module_templates(user: dict = Depends(require_role(ROLE_COORD))):
+    items = await db.custom_module_templates.find({"owner_id": user["id"]}).sort("created_at", -1).to_list(length=200)
+    return [{k: v for k, v in it.items() if k != "_id"} for it in items]
+
+
+@api.post("/custom-module-templates")
+async def create_custom_module_template(body: dict, user: dict = Depends(require_role(ROLE_COORD))):
+    """Guarda la DEFINICIÓN de un módulo (sin registros) como plantilla propia:
+    `{project_id, module_id, nombre?, descripcion?}`."""
+    pid, mid = str((body or {}).get("project_id") or ""), str((body or {}).get("module_id") or "")
+    await ensure_project_access(user, pid)
+    modulo = await _cm_get_modulo(pid, mid)
+    if await db.custom_module_templates.count_documents({"owner_id": user["id"]}) >= 100:
+        raise HTTPException(400, "Máximo 100 plantillas propias")
+    definicion = {k: modulo[k] for k in ("nombre", "descripcion", "icono", "usar_jerarquia", "solo_coordinacion",
+                                         "campos", "salida", "opciones", "graficas") if k in modulo}
+    doc = {"id": str(uuid.uuid4()), "owner_id": user["id"],
+           "nombre": _cm_texto(body.get("nombre"), 80) or modulo["nombre"],
+           "descripcion": _cm_parrafo(body.get("descripcion"), 300) or modulo.get("descripcion", ""),
+           "definicion": definicion, "created_at": datetime.now(timezone.utc)}
+    await db.custom_module_templates.insert_one(doc)
+    return {k: v for k, v in doc.items() if k != "_id"}
+
+
+@api.delete("/custom-module-templates/{tid}")
+async def delete_custom_module_template(tid: str, user: dict = Depends(require_role(ROLE_COORD))):
+    res = await db.custom_module_templates.delete_one({"id": tid, "owner_id": user["id"]})
+    if not res.deleted_count:
+        raise HTTPException(404, "La plantilla no existe")
+    return {"ok": True}
+
+
+# --- Endpoints: registros ---------------------------------------------------
+def _cm_assert_puede_capturar(modulo: dict, user: dict) -> None:
+    _assert_write_allowed(user)
+    if not modulo.get("activo"):
+        raise HTTPException(403, "Este módulo está apagado")
+    if modulo.get("solo_coordinacion") and user.get("role") not in (ROLE_COORD, ROLE_SUB):
+        raise HTTPException(403, "Este módulo solo lo captura la coordinación")
+
+
+def _cm_assert_puede_editar(existente: dict, user: dict) -> None:
+    if user.get("role") not in (ROLE_COORD, ROLE_SUB) and existente.get("created_by") != user["id"]:
+        raise HTTPException(403, "Solo puedes editar los registros que tú capturaste")
+
+
+async def _cm_siguiente_folio(modulo: dict) -> Optional[str]:
+    """Folio consecutivo (atómico) si el módulo lo tiene activado."""
+    op = modulo["opciones"]
+    if not op.get("folio_activo"):
+        return None
+    doc = await db.custom_modules.find_one_and_update(
+        {"id": modulo["id"]}, {"$inc": {"folio_contador": 1}}, return_document=ReturnDocument.AFTER)
+    n = int((doc or {}).get("folio_contador", 1)) + max(0, int(op.get("folio_inicio", 1)) - 1)
+    return f"{op.get('folio_prefijo', '')}{str(n).zfill(int(op.get('folio_digitos', 4)))}"
+
+
+def _cm_captured_at(raw) -> Optional[datetime]:
+    """Hora real de captura (dispositivo) si es creíble: entre hace 30 días y
+    10 minutos en el futuro; si no, None (se usa la hora del servidor)."""
+    try:
+        dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    dt = _cm_aware(dt)
+    ahora = datetime.now(timezone.utc)
+    return dt if ahora - timedelta(days=30) <= dt <= ahora + timedelta(minutes=10) else None
+
+
+async def _cm_alta_registro(pid: str, modulo: dict, body: dict, user: dict, client_id: Optional[str] = None) -> dict:
+    """Crea un registro. Con `client_id` es idempotente (reintentos de la cola
+    offline no duplican)."""
+    if client_id:
+        ya = await db.custom_module_records.find_one(
+            {"project_id": pid, "module_id": modulo["id"], "client_id": client_id}, {"fotos": 0, "historial": 0})
+        if ya:
+            return _cm_registro_public(ya)
+    valores, fotos, thumbs = await _cm_construye_registro(modulo, body, None)
+    now = datetime.now(timezone.utc)
+    creado = _cm_captured_at(body.get("captured_at")) or now
+    doc = {
+        "id": str(uuid.uuid4()), "project_id": pid, "module_id": modulo["id"],
+        "fecha": _prueba_calidad_fecha(body.get("fecha")),
+        "valores": valores, "fotos": fotos, "thumbs": thumbs,
+        "jerarquia": _jerarquia_modulo(body.get("jerarquia")) if modulo.get("usar_jerarquia") else None,
+        "folio": await _cm_siguiente_folio(modulo), "client_id": client_id,
+        "cierres": _cm_cierres(modulo, valores, None, creado),
+        "n_ediciones": 0,
+        "historial": [{"at": creado, "by": user["id"], "by_name": user["name"], "accion": "creado", "cambios": []}],
+        "created_by": user["id"], "created_by_name": user["name"], "created_at": creado, "updated_at": now,
+    }
+    await db.custom_module_records.insert_one(doc)
+    return _cm_registro_public(doc)
+
+
+async def _cm_edita_registro(pid: str, modulo: dict, existente: dict, body: dict, user: dict) -> dict:
+    upd: dict = {"updated_at": datetime.now(timezone.utc)}
+    valores, fotos, thumbs = existente.get("valores") or {}, existente.get("fotos") or {}, existente.get("thumbs") or {}
+    if "valores" in body:
+        valores, fotos, thumbs = await _cm_construye_registro(modulo, body, existente)
+        upd.update({"valores": valores, "fotos": fotos, "thumbs": thumbs})
+    fecha = _prueba_calidad_fecha(body.get("fecha")) if "fecha" in body else existente.get("fecha")
+    upd["fecha"] = fecha
+    if "jerarquia" in body and modulo.get("usar_jerarquia"):
+        upd["jerarquia"] = _jerarquia_modulo(body.get("jerarquia"))
+    cambios = _cm_diff(modulo, existente, valores, fotos, fecha)
+    if cambios:
+        ahora = upd["updated_at"]
+        hist = list(existente.get("historial") or [])[-99:]
+        hist.append({"at": ahora, "by": user["id"], "by_name": user["name"], "accion": "editado", "cambios": cambios})
+        upd["historial"] = hist
+        upd["n_ediciones"] = int(existente.get("n_ediciones", 0)) + 1
+    upd["cierres"] = _cm_cierres(modulo, valores, existente.get("cierres"), upd["updated_at"])
+    await db.custom_module_records.update_one({"id": existente["id"]}, {"$set": upd})
+    return _cm_registro_public(await db.custom_module_records.find_one({"id": existente["id"]}))
+
+
+@api.get("/projects/{pid}/custom-modules/{mid}/records")
+async def list_custom_module_records(
+    pid: str, mid: str, desde: Optional[str] = None, hasta: Optional[str] = None, user: dict = Depends(current_user),
+):
+    await ensure_project_access(user, pid)
+    modulo = await _cm_get_modulo(pid, mid)
+    if not modulo.get("activo") and user.get("role") not in (ROLE_COORD, ROLE_JEFE):
+        raise HTTPException(404, "El módulo no existe")
+    q: dict = {"project_id": pid, "module_id": mid}
+    if desde or hasta:
+        q["fecha"] = {}
+        if desde:
+            q["fecha"]["$gte"] = _prueba_calidad_fecha(desde)
+        if hasta:
+            q["fecha"]["$lte"] = _prueba_calidad_fecha(hasta)
+    cursor = db.custom_module_records.find(q, {"fotos": 0, "historial": 0}).sort([("fecha", -1), ("created_at", -1)])
+    return [_cm_registro_public(d) for d in await cursor.to_list(length=2000)]
+
+
+@api.get("/projects/{pid}/custom-modules/{mid}/records/{rid}")
+async def get_custom_module_record(pid: str, mid: str, rid: str, user: dict = Depends(current_user)):
+    """Un registro CON sus fotos completas (`fotos`: {id_campo: data URL}) y su
+    historial de cambios."""
+    await ensure_project_access(user, pid)
+    doc = await db.custom_module_records.find_one({"id": rid, "project_id": pid, "module_id": mid})
+    if not doc:
+        raise HTTPException(404, "El registro no existe")
+    out = _cm_registro_public(doc)
+    out["fotos"] = doc.get("fotos") or {}
+    out["historial"] = doc.get("historial") or []
+    return out
+
+
+@api.post("/projects/{pid}/custom-modules/{mid}/records")
+async def create_custom_module_record(pid: str, mid: str, body: dict, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    modulo = await _cm_get_modulo(pid, mid)
+    _cm_assert_puede_capturar(modulo, user)
+    body = body or {}
+    return await _cm_alta_registro(pid, modulo, body, user, client_id=str(body.get("client_id") or "")[:80] or None)
+
+
+@api.patch("/projects/{pid}/custom-modules/{mid}/records/{rid}")
+async def update_custom_module_record(pid: str, mid: str, rid: str, body: dict, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    modulo = await _cm_get_modulo(pid, mid)
+    _cm_assert_puede_capturar(modulo, user)
+    existente = await db.custom_module_records.find_one({"id": rid, "project_id": pid, "module_id": mid})
+    if not existente:
+        raise HTTPException(404, "El registro no existe")
+    _cm_assert_puede_editar(existente, user)
+    return await _cm_edita_registro(pid, modulo, existente, body or {}, user)
+
+
+@api.post("/custom-records/sync")
+async def sync_custom_record(body: dict, user: dict = Depends(current_user)):
+    """Destino de la cola offline de la app: `{client_id, project_id, module_id,
+    op: create|update, record_id?, fecha, valores, jerarquia?, captured_at?}`.
+    Idempotente por `client_id` (un reintento nunca duplica el registro)."""
+    body = body or {}
+    pid, mid = str(body.get("project_id") or ""), str(body.get("module_id") or "")
+    await ensure_project_access(user, pid)
+    modulo = await _cm_get_modulo(pid, mid)
+    _cm_assert_puede_capturar(modulo, user)
+    if body.get("op") == "update":
+        existente = await db.custom_module_records.find_one({"id": str(body.get("record_id") or ""), "project_id": pid, "module_id": mid})
+        if not existente:
+            raise HTTPException(404, "El registro no existe")
+        _cm_assert_puede_editar(existente, user)
+        return await _cm_edita_registro(pid, modulo, existente, body, user)
+    return await _cm_alta_registro(pid, modulo, body, user, client_id=str(body.get("client_id") or "")[:80] or None)
+
+
+@api.delete("/projects/{pid}/custom-modules/{mid}/records/{rid}")
+async def delete_custom_module_record(pid: str, mid: str, rid: str, user: dict = Depends(current_user)):
+    _assert_write_allowed(user)
+    await ensure_project_access(user, pid)
+    doc = await db.custom_module_records.find_one({"id": rid, "project_id": pid, "module_id": mid}, {"fotos": 0, "thumbs": 0, "historial": 0})
+    if not doc:
+        raise HTTPException(404, "El registro no existe")
+    if user.get("role") not in (ROLE_COORD, ROLE_SUB) and doc.get("created_by") != user["id"]:
+        raise HTTPException(403, "Solo puedes eliminar los registros que tú capturaste")
+    await db.custom_module_records.delete_one({"id": rid, "project_id": pid})
+    # Bitácora de eliminados (auditoría): qué se borró, quién y cuándo. Sin fotos.
+    await db.custom_module_borrados.insert_one({
+        "id": str(uuid.uuid4()), "project_id": pid, "module_id": mid, "record_id": rid,
+        "folio": doc.get("folio"), "fecha": doc.get("fecha"), "valores": doc.get("valores") or {},
+        "created_by_name": doc.get("created_by_name"), "deleted_by": user["id"], "deleted_by_name": user["name"],
+        "deleted_at": datetime.now(timezone.utc),
+    })
+    return {"ok": True}
+
+
+@api.get("/projects/{pid}/custom-modules/{mid}/borrados")
+async def list_custom_module_deleted(pid: str, mid: str, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB, ROLE_JEFE))):
+    await ensure_project_access(user, pid)
+    await _cm_get_modulo(pid, mid)
+    items = await db.custom_module_borrados.find({"project_id": pid, "module_id": mid}).sort("deleted_at", -1).to_list(length=200)
+    return [{k: v for k, v in it.items() if k != "_id"} for it in items]
+
+
+# --- Excel / CSV: exportar, plantilla e importar -----------------------------
+def _cm_nombre_archivo(txt: str, ext: str) -> str:
+    base = re.sub(r"[^A-Za-z0-9_-]+", "_", unicodedata.normalize("NFKD", txt or "modulo").encode("ascii", "ignore").decode()).strip("_")
+    return f"{base or 'modulo'}.{ext}"
+
+
+def _cm_celda(campo: dict, val):
+    """Valor almacenado → (valor de celda, formato numérico|None)."""
+    t = campo["tipo"]
+    if t in ("numero", "moneda", "porcentaje", "calculado"):
+        fm = campo.get("formato", "numero") if t == "calculado" else t
+        dec = campo.get("decimales")
+        if dec is None:
+            dec = 2 if fm == "moneda" else (1 if fm == "porcentaje" else None)
+        base = "#,##0" + ("" if dec == 0 else "." + ("0" * dec if dec else "####"))
+        fmt = f'"$"{base}' if fm == "moneda" else f'{base}"%"' if fm == "porcentaje" else base
+        return (float(val) if isinstance(val, (int, float)) and not isinstance(val, bool) else None), fmt
+    if t == "fecha":
+        try:
+            return date.fromisoformat(str(val)[:10]), "DD/MM/YYYY"
+        except (ValueError, TypeError):
+            return None, None
+    return _cm_fmt_valor(campo, val), None
+
+
+@api.get("/projects/{pid}/custom-modules/{mid}/export")
+async def export_custom_module_records(
+    pid: str, mid: str, formato: str = "xlsx", desde: Optional[str] = None, hasta: Optional[str] = None,
+    user: dict = Depends(current_user),
+):
+    """Concentrado de registros del módulo en Excel (`xlsx`) o CSV, con el
+    mismo filtro de fechas de la lista y una fila de totales."""
+    await ensure_project_access(user, pid)
+    modulo = await _cm_get_modulo(pid, mid)
+    if not modulo.get("activo") and user.get("role") not in (ROLE_COORD, ROLE_JEFE):
+        raise HTTPException(404, "El módulo no existe")
+    if formato not in ("xlsx", "csv"):
+        raise HTTPException(400, "formato debe ser xlsx o csv")
+    q: dict = {"project_id": pid, "module_id": mid}
+    if desde or hasta:
+        q["fecha"] = {}
+        if desde:
+            q["fecha"]["$gte"] = _prueba_calidad_fecha(desde)
+        if hasta:
+            q["fecha"]["$lte"] = _prueba_calidad_fecha(hasta)
+    regs = await db.custom_module_records.find(q, {"fotos": 0, "historial": 0}).sort([("fecha", 1), ("created_at", 1)]).to_list(length=20000)
+    await _cm_refresca_ubicaciones(pid, modulo, regs)
+    campos = modulo["campos"]
+    con_folio = bool(modulo["opciones"].get("folio_activo"))
+    estatus = [c for c in campos if c.get("estatus")]
+    headers = (["Folio"] if con_folio else []) + ["Fecha"] + [c["etiqueta"] for c in campos] \
+        + [f"Cierre · {c['etiqueta']}" for c in estatus] + ["Registró", "Capturado el"]
+    filas: List[list] = []
+    for r in regs:
+        v = r.get("valores") or {}
+        fila: list = ([r.get("folio") or ""] if con_folio else [])
+        fila.append(_cm_celda({"tipo": "fecha"}, r.get("fecha")))
+        for c in campos:
+            if c["tipo"] == "foto":
+                fila.append(("Sí" if c["id"] in (r.get("thumbs") or {}) else "", None))
+            else:
+                fila.append(_cm_celda(c, v.get(c["id"])) if _cm_campo_visible(c, v) else ("", None))
+        for c in estatus:
+            cierre = (r.get("cierres") or {}).get(c["id"])
+            fila.append((_cm_aware(cierre).astimezone(MX_TZ).date() if cierre else None, "DD/MM/YYYY"))
+        creado = r.get("created_at")
+        fila += [(r.get("created_by_name") or "", None),
+                 (_cm_aware(creado).astimezone(MX_TZ).replace(tzinfo=None) if creado else None, "DD/MM/YYYY HH:MM")]
+        filas.append(fila)
+    nombre = _cm_nombre_archivo(modulo["nombre"], formato)
+    if formato == "csv":
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(headers)
+        for fila in filas:
+            w.writerow(["" if c[0] is None else (c[0].strftime("%d/%m/%Y") if isinstance(c[0], (date, datetime)) else c[0]) for c in
+                        [x if isinstance(x, tuple) else (x, None) for x in fila]])
+        data = ("﻿" + buf.getvalue()).encode("utf-8")
+        return StreamingResponse(io.BytesIO(data), media_type="text/csv; charset=utf-8",
+                                 headers={"Content-Disposition": f'attachment; filename="{nombre}"'})
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = _cm_texto(modulo["nombre"], 28).replace("/", "-").replace("\\", "-").replace("*", "").replace("?", "").replace(":", "").replace("[", "").replace("]", "") or "Registros"
+    ws.append(headers)
+    for c in ws[1]:
+        c.font = Font(bold=True, color="FFFFFF")
+        c.fill = PatternFill("solid", fgColor="1E40AF")
+        c.alignment = Alignment(wrap_text=True, vertical="center")
+    for fila in filas:
+        ws.append([x[0] if isinstance(x, tuple) else x for x in fila])
+        for i, x in enumerate(fila, start=1):
+            if isinstance(x, tuple) and x[1]:
+                ws.cell(row=ws.max_row, column=i).number_format = x[1]
+    # Fila de totales (solo campos que el módulo totaliza).
+    off = (1 if con_folio else 0) + 1
+    if filas and any(c.get("agregacion", "ninguna") != "ninguna" for c in campos):
+        fila_t = [""] * len(headers)
+        fila_t[0] = "TOTALES"
+        for i, c in enumerate(campos):
+            if c.get("agregacion", "ninguna") == "ninguna":
+                continue
+            val = _cm_agregar(c, regs)
+            if val is not None:
+                fila_t[off + i] = val
+        ws.append(fila_t)
+        for cel in ws[ws.max_row]:
+            cel.font = Font(bold=True)
+        for i, c in enumerate(campos):
+            if c.get("agregacion", "ninguna") != "ninguna":
+                _, fmt = _cm_celda(c, 0)
+                if fmt and c["tipo"] != "interruptor" and c.get("agregacion") != "conteo":
+                    ws.cell(row=ws.max_row, column=off + i + 1).number_format = fmt
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}{max(1, len(filas) + 1)}"
+    for i, h in enumerate(headers, start=1):
+        largo = max([len(str(h))] + [len(str(f[i - 1][0] if isinstance(f[i - 1], tuple) else f[i - 1])) for f in filas[:200]])
+        ws.column_dimensions[get_column_letter(i)].width = min(max(12, largo + 2), 48)
+    out = io.BytesIO()
+    wb.save(out)
+    return StreamingResponse(io.BytesIO(out.getvalue()), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                             headers={"Content-Disposition": f'attachment; filename="{nombre}"'})
+
+
+def _cm_campos_importables(modulo: dict) -> List[dict]:
+    return [c for c in modulo["campos"] if c["tipo"] not in ("foto", "calculado")]
+
+
+@api.get("/projects/{pid}/custom-modules/{mid}/plantilla")
+async def custom_module_import_template(pid: str, mid: str, user: dict = Depends(current_user)):
+    """Excel vacío con los encabezados del módulo (y listas desplegables) para
+    llenar y luego importar."""
+    await ensure_project_access(user, pid)
+    modulo = await _cm_get_modulo(pid, mid)
+    from openpyxl.styles import Font, PatternFill
+    from openpyxl.worksheet.datavalidation import DataValidation
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Datos"
+    campos = _cm_campos_importables(modulo)
+    ws.append(["Fecha"] + [c["etiqueta"] + (" *" if c["requerido"] else "") for c in campos])
+    for c in ws[1]:
+        c.font = Font(bold=True, color="FFFFFF")
+        c.fill = PatternFill("solid", fgColor="1E40AF")
+    for i, c in enumerate(campos, start=2):
+        letra = openpyxl.utils.get_column_letter(i)
+        ws.column_dimensions[letra].width = max(14, len(c["etiqueta"]) + 4)
+        lista = None
+        if c["tipo"] in ("seleccion",):
+            lista = c["opciones"]
+        elif c["tipo"] == "interruptor":
+            lista = ["Sí", "No"]
+        if lista and len(",".join(lista)) < 250:
+            dv = DataValidation(type="list", formula1='"' + ",".join(o.replace('"', "") for o in lista) + '"', allow_blank=True)
+            ws.add_data_validation(dv)
+            dv.add(f"{letra}2:{letra}1000")
+    ws.column_dimensions["A"].width = 14
+    ws.freeze_panes = "A2"
+    ins = wb.create_sheet("Instrucciones")
+    ins.append(["Columna", "Tipo", "Obligatorio", "Valores permitidos / formato"])
+    for c in ins[1]:
+        c.font = Font(bold=True)
+    ins.append(["Fecha", "fecha", "No", "DD/MM/AAAA o AAAA-MM-DD. Vacía = hoy."])
+    nombres_tipo = {t: t for t in CM_TIPOS}
+    for c in campos:
+        if c["tipo"] in ("seleccion", "multiseleccion"):
+            ayuda = "Una de: " + ", ".join(c["opciones"]) + (" (varias separadas por coma)" if c["tipo"] == "multiseleccion" else "")
+        elif c["tipo"] == "interruptor":
+            ayuda = "Sí / No"
+        elif c["tipo"] == "fecha":
+            ayuda = "DD/MM/AAAA o AAAA-MM-DD"
+        elif c["tipo"] in ("numero", "moneda", "porcentaje"):
+            ayuda = "Número (sin letras)" + (f" en {c['unidad']}" if c.get("unidad") else "")
+        elif c["tipo"] == "ubicacion":
+            ayuda = "Nombre exacto de la estación / ubicación del proyecto"
+        else:
+            ayuda = "Texto libre"
+        ins.append([c["etiqueta"], nombres_tipo[c["tipo"]], "Sí" if c["requerido"] else "No", ayuda])
+    ins.column_dimensions["A"].width = 28
+    ins.column_dimensions["D"].width = 70
+    out = io.BytesIO()
+    wb.save(out)
+    return StreamingResponse(io.BytesIO(out.getvalue()), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                             headers={"Content-Disposition": f'attachment; filename="{_cm_nombre_archivo("plantilla_" + modulo["nombre"], "xlsx")}"'})
+
+
+def _cm_coerce_import(campo: dict, raw):
+    """Valor tal como viene de Excel → forma que entiende la captura. ValueError
+    con mensaje para el usuario si no se puede interpretar."""
+    t, et = campo["tipo"], campo["etiqueta"]
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return None
+    if t == "interruptor":
+        s = _cm_norm(raw)
+        if s in ("si", "s", "x", "true", "1", "verdadero", "yes", "y", "cumple"):
+            return True
+        if s in ("no", "n", "false", "0", "falso", "no cumple"):
+            return False
+        raise ValueError(f"«{et}»: usa Sí o No")
+    if t == "seleccion":
+        for o in campo["opciones"]:
+            if _cm_norm(o) == _cm_norm(raw):
+                return o
+        raise ValueError(f"«{et}»: «{raw}» no está en la lista ({', '.join(campo['opciones'][:6])}…)")
+    if t == "multiseleccion":
+        partes = [p for p in re.split(r"[,;|]", str(raw)) if p.strip()]
+        out = []
+        for p in partes:
+            o = next((o for o in campo["opciones"] if _cm_norm(o) == _cm_norm(p)), None)
+            if o is None:
+                raise ValueError(f"«{et}»: «{p.strip()}» no está en la lista")
+            out.append(o)
+        return out
+    if t == "fecha":
+        if isinstance(raw, (int, float)) and not isinstance(raw, bool):  # serie de Excel
+            return (date(1899, 12, 30) + timedelta(days=int(raw))).isoformat()
+        return str(raw)
+    if t in ("texto", "texto_largo"):
+        return str(int(raw)) if isinstance(raw, float) and raw.is_integer() else str(raw)
+    return raw
+
+
+@api.post("/projects/{pid}/custom-modules/{mid}/import")
+async def import_custom_module_records(
+    pid: str, mid: str, body: dict, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB)),
+):
+    """Importa registros desde filas ya leídas del Excel:
+    `{filas: [{fila?, fecha?, valores: {id_campo: valor}}], simular?, importar_validas?}`.
+    `simular` solo valida y devuelve los errores por fila. Sin `importar_validas`,
+    una sola fila con error cancela toda la importación."""
+    await ensure_project_access(user, pid)
+    modulo = await _cm_get_modulo(pid, mid)
+    _cm_assert_puede_capturar(modulo, user)
+    body = body or {}
+    filas = body.get("filas")
+    if not isinstance(filas, list) or not filas:
+        raise HTTPException(400, "No hay filas para importar")
+    if len(filas) > CM_MAX_FILAS_IMPORT:
+        raise HTTPException(400, f"Máximo {CM_MAX_FILAS_IMPORT} filas por importación")
+    importables = {c["id"]: c for c in _cm_campos_importables(modulo)}
+    validas: List[Tuple[str, dict]] = []
+    errores: List[dict] = []
+    for idx, f in enumerate(filas, start=1):
+        num = f.get("fila", idx) if isinstance(f, dict) else idx
+        try:
+            if not isinstance(f, dict):
+                raise ValueError("fila inválida")
+            crudos = f.get("valores") if isinstance(f.get("valores"), dict) else {}
+            entrada = {fid: _cm_coerce_import(importables[fid], v) for fid, v in crudos.items() if fid in importables}
+            valores, _, _ = await _cm_construye_registro(modulo, {"valores": entrada}, None)
+            fecha_raw = f.get("fecha")
+            if isinstance(fecha_raw, (int, float)) and not isinstance(fecha_raw, bool):  # serie de Excel
+                fecha_raw = (date(1899, 12, 30) + timedelta(days=int(fecha_raw))).isoformat()
+            validas.append((_prueba_calidad_fecha(str(fecha_raw) if fecha_raw is not None else None), valores))
+        except (ValueError, TypeError, OverflowError, HTTPException) as e:
+            errores.append({"fila": num, "mensaje": e.detail if isinstance(e, HTTPException) else str(e)})
+    resumen = {"total": len(filas), "validas": len(validas), "errores": errores[:200], "n_errores": len(errores), "importados": 0}
+    if body.get("simular") or not validas or (errores and not body.get("importar_validas")):
+        return resumen
+    now = datetime.now(timezone.utc)
+    docs = []
+    for fecha, valores in validas:
+        docs.append({
+            "id": str(uuid.uuid4()), "project_id": pid, "module_id": mid, "fecha": fecha,
+            "valores": valores, "fotos": {}, "thumbs": {},
+            "jerarquia": _jerarquia_modulo(None) if modulo.get("usar_jerarquia") else None,
+            "folio": await _cm_siguiente_folio(modulo), "client_id": None,
+            "cierres": _cm_cierres(modulo, valores, None, now), "n_ediciones": 0,
+            "historial": [{"at": now, "by": user["id"], "by_name": user["name"], "accion": "importado", "cambios": []}],
+            "created_by": user["id"], "created_by_name": user["name"], "created_at": now, "updated_at": now,
+        })
+    await db.custom_module_records.insert_many(docs)
+    resumen["importados"] = len(docs)
+    return resumen
+
+
+# --- Vista previa del informe ----------------------------------------------
+def _cm_registro_muestra(modulo: dict, n: int, hoy: date) -> dict:
+    """Registro inventado (solo para la vista previa de un módulo sin datos)."""
+    valores: dict = {}
+    for c in modulo["campos"]:
+        t = c["tipo"]
+        if t in ("texto", "texto_largo"):
+            valores[c["id"]] = f"{c['etiqueta']} de ejemplo {n}"
+        elif t in ("numero", "moneda", "porcentaje"):
+            valores[c["id"]] = float(10 * n + (n % 3) * 2.5)
+        elif t == "fecha":
+            valores[c["id"]] = (hoy - timedelta(days=n)).isoformat()
+        elif t == "seleccion":
+            valores[c["id"]] = c["opciones"][(n - 1) % len(c["opciones"])]
+        elif t == "multiseleccion":
+            valores[c["id"]] = c["opciones"][:max(1, min(2, len(c["opciones"])))]
+        elif t == "interruptor":
+            valores[c["id"]] = n % 2 == 1
+        elif t == "ubicacion":
+            valores[c["id"]] = {"id": f"x{n}", "nombre": f"Estación {n}"}
+    _cm_recalcula(modulo["campos"], valores)
+    op = modulo["opciones"]
+    folio = f"{op.get('folio_prefijo', '')}{str(n).zfill(int(op.get('folio_digitos', 4)))}" if op.get("folio_activo") else None
+    return {"id": f"muestra{n}", "fecha": (hoy - timedelta(days=n - 1)).isoformat(), "valores": valores, "folio": folio,
+            "created_by_name": "Nombre Apellido", "created_at": datetime.now(timezone.utc) - timedelta(hours=n)}
+
+
+def _cm_ventana(categoria: str, fin: date) -> Tuple[date, date]:
+    if categoria == "reportes_semanales":
+        return fin - timedelta(days=6), fin
+    if categoria == "reportes_mensuales":
+        return fin.replace(day=1), fin
+    return fin, fin
+
+
+@api.post("/projects/{pid}/custom-modules/preview")
+async def preview_custom_module(pid: str, body: dict, user: dict = Depends(require_role(ROLE_COORD))):
+    """Cómo saldría el módulo en un informe: `{definicion, module_id?, categoria,
+    fecha?, muestra?}`. Usa la definición SIN guardar (para ver el efecto de los
+    interruptores antes de aplicarlos) y los registros reales del `module_id`;
+    sin registros (o con `muestra=true`) usa datos de ejemplo."""
+    await ensure_project_access(user, pid)
+    body = body or {}
+    categoria = body.get("categoria")
+    if categoria not in CM_CATEGORIAS:
+        raise HTTPException(400, "categoria debe ser reportes_diarios, reportes_semanales o reportes_mensuales")
+    existente = None
+    if body.get("module_id"):
+        existente = await _cm_get_modulo(pid, str(body["module_id"]))
+    definicion = body.get("definicion") if isinstance(body.get("definicion"), dict) else {}
+    datos = await _cm_sanitize_modulo(pid, definicion, parcial_de=existente)
+    modulo = {**(existente or {}), **datos, "id": (existente or {}).get("id", "preview"), "project_id": pid}
+    try:
+        fin = _fecha_flexible(body.get("fecha") or datetime.now(MX_TZ).date().isoformat())
+    except ValueError:
+        raise HTTPException(400, "fecha inválida")
+    ini, fin = _cm_ventana(categoria, fin)
+    registros: List[dict] = []
+    usar_muestra = bool(body.get("muestra")) or not existente
+    if not usar_muestra:
+        registros = await _cm_registros_periodo(pid, modulo, categoria, ini.isoformat(), fin.isoformat())
+        if not registros and not await db.custom_module_records.count_documents({"project_id": pid, "module_id": modulo["id"]}):
+            usar_muestra = True
+    if usar_muestra:
+        registros = [_cm_registro_muestra(modulo, i, fin) for i in range(1, 4)]
+    muestra = usar_muestra
+    ventana = (datetime.combine(ini, datetime.min.time(), tzinfo=MX_TZ), datetime.combine(fin, datetime.max.time(), tzinfo=MX_TZ))
+    seccion = await asyncio.to_thread(_cm_construye_seccion, modulo, registros, categoria, usar_thumbs=True, ventana=ventana)
+    modo = (modulo["salida"].get(categoria) or {}).get("modo", "oculto")
+    return {"seccion": seccion, "muestra": muestra, "modo": modo,
+            "periodo": {"desde": ini.isoformat(), "hasta": fin.isoformat()}, "n_registros": len(registros)}
+
+
 # Sistema Multi-Proyecto Modular — esquema GENÉRICO de "bloques imprimibles".
 # Los 3 motores de exportación (PDF/DOCX/PPTX) NUNCA conocen el nombre de un
 # módulo ni su forma de datos particular: solo saben dibujar estos 3 tipos
@@ -17935,6 +19757,10 @@ async def _gather_modulos_export_data(
         bloques_is += bloques_pipc
         if bloques_is:
             out["indicadores_seguridad"] = {"titulo": "CUMPLIMIENTO SEGURIDAD E HIGIENE", "blocks": bloques_is}
+
+    # Creador de módulos: cada módulo personalizado trae su propio modo de impresión
+    # por informe (texto/tabla/resumen/fotos/oculto), ver `_cm_secciones_export`.
+    out.update(await _cm_secciones_export(pid, categoria, start_dt, end_dt))
 
     return out
 
