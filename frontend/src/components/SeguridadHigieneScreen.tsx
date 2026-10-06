@@ -8,7 +8,7 @@ import {
   View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, TextInput, Alert, Modal, KeyboardAvoidingView, Platform, Switch,
 } from 'react-native';
 import { Image } from 'expo-image';
-import * as ImagePicker from 'expo-image-picker';
+import { pickPhotoDataUrl } from '@/src/utils/photoPicker';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -185,20 +185,8 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
   const contratistas = (project?.contratistas_list || []).filter(Boolean);
 
   async function onPickFoto() {
-    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (perm.status !== 'granted') {
-      Alert.alert('Permiso requerido', 'Habilita el acceso a fotos para adjuntar evidencia.');
-      return;
-    }
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      base64: true,
-      quality: 0.5,
-    });
-    if (result.canceled || !result.assets?.[0]?.base64) return;
-    const asset = result.assets[0];
-    const mime = asset.mimeType || 'image/jpeg';
-    setFotoDraft(`data:${mime};base64,${asset.base64}`);
+    const dataUrl = await pickPhotoDataUrl('library', { maxDim: 1400, quality: 0.75 });
+    if (dataUrl) setFotoDraft(dataUrl);
   }
 
   async function onSaveReporte() {

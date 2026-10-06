@@ -7,7 +7,7 @@ import {
 import { router, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import * as ImagePicker from 'expo-image-picker';
+import { pickPhotoDataUrl, recoverPendingPhoto } from '@/src/utils/photoPicker';
 import * as Location from 'expo-location';
 import * as Clipboard from 'expo-clipboard';
 import * as Sharing from 'expo-sharing';
@@ -388,14 +388,16 @@ export default function NewReportScreen() {
   }
 
   async function onPickImage(mode: 'cam' | 'gal') {
-    const res = mode === 'cam'
-      ? await ImagePicker.launchCameraAsync({ quality: 0.7, base64: true })
-      : await ImagePicker.launchImageLibraryAsync({ quality: 0.7, base64: true });
-
-    if (!res.canceled && res.assets[0].base64) {
-      setImages([...images, `data:image/jpeg;base64,${res.assets[0].base64}`]);
-    }
+    const dataUrl = await pickPhotoDataUrl(mode === 'cam' ? 'camera' : 'library');
+    if (dataUrl) setImages((cur) => [...cur, dataUrl]);
   }
+
+  // Foto tomada justo antes de que Android cerrara la app por falta de memoria.
+  useEffect(() => {
+    recoverPendingPhoto().then((dataUrl) => {
+      if (dataUrl) setImages((cur) => [...cur, dataUrl]);
+    });
+  }, []);
 
   if (loading) return <View style={styles.center}><ActivityIndicator color={colors.primary} /></View>;
 
