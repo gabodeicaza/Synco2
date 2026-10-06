@@ -12,7 +12,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import * as ImagePicker from 'expo-image-picker';
+import { pickPhotoDataUrl } from '@/src/utils/photoPicker';
 import {
   api, InformacionParticularBloque, InformacionParticularFoto, LocationNode, PlanoAvance,
   Presentacion, PresentacionSeccion, PresentacionSeccionTipo, Project, ReporteSemanaItem,
@@ -333,17 +333,8 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
 
   async function addFotoToBloque(idx: number) {
     try {
-      if (Platform.OS !== 'web') {
-        const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-        if (!perm.granted) { Alert.alert('Sin permiso', 'No hay permiso para acceder a la galería.'); return; }
-      }
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images, base64: true, quality: 0.5,
-      });
-      if (result.canceled || !result.assets?.[0]?.base64) return;
-      const asset = result.assets[0];
-      const mime = asset.mimeType || 'image/jpeg';
-      const photo = `data:${mime};base64,${asset.base64}`;
+      const photo = await pickPhotoDataUrl('library', { maxDim: 1600, quality: 0.8 });
+      if (!photo) return;
       const nueva: InformacionParticularFoto = { photo, caption: '', destacado: false, destacado_label: null };
       setBloquesDraft((cur) => cur.map((b, i) => (i === idx ? { ...b, fotos: [...b.fotos, nueva] } : b)));
     } catch (e: any) {
