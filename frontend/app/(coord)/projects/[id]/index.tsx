@@ -264,6 +264,8 @@ export default function ProjectDetailScreen() {
   const [colorInstitucionalDraft, setColorInstitucionalDraft] = useState('#003366');
   // Color del texto de observaciones (pie de foto) en reportes ejecutivos.
   const [reportTextColorDraft, setReportTextColorDraft] = useState('#0F172A');
+  // Grupo de WhatsApp (Whapi.cloud) donde se publican los reportes de este proyecto.
+  const [whatsappGroupDraft, setWhatsappGroupDraft] = useState('');
 
   // Módulos creados con el Creador de módulos (se refrescan al volver a la pantalla).
   const [customModulos, setCustomModulos] = useState<CustomModule[]>([]);
@@ -601,6 +603,7 @@ export default function ProjectDetailScreen() {
     setColorDraft((project as any).color_tema || '#003366');
     setColorInstitucionalDraft((project as any).color_institucional || '#003366');
     setReportTextColorDraft((project as any).report_text_color || '#0F172A');
+    setWhatsappGroupDraft((project as any).whatsapp_group_id || '');
     setObjetoModalOpen(true);
   }
 
@@ -614,6 +617,8 @@ export default function ProjectDetailScreen() {
         color_tema: colorDraft.trim() || null,
         color_institucional: colorInstitucionalDraft.trim() || null,
         report_text_color: reportTextColorDraft.trim() || null,
+        // '' (no null): el backend ignora null; '' desactiva el envío.
+        whatsapp_group_id: whatsappGroupDraft.trim(),
       } as any);
       setProject((p) => ({ ...(p || ({} as any)), ...upd }));
       setObjetoModalOpen(false);
@@ -2474,6 +2479,23 @@ export default function ProjectDetailScreen() {
                   onChangeText={setClienteDraft}
                   placeholder="Ej. Gobierno de la Ciudad de Mexico - SOBSE"
                   placeholderTextColor={colors.textMuted}
+                  style={styles.catInput}
+                />
+              </View>
+
+              <View>
+                <Text style={styles.catLabel}>Grupo de WhatsApp (ID)</Text>
+                <Text style={styles.catHelper}>
+                  Grupo al que se envía cada reporte de obra publicado en este proyecto (foto + texto). Formato
+                  120363XXXXXXXXXX@g.us. Déjalo vacío para no enviar a WhatsApp.
+                </Text>
+                <TextInput
+                  value={whatsappGroupDraft}
+                  onChangeText={setWhatsappGroupDraft}
+                  placeholder="120363430765044545@g.us"
+                  placeholderTextColor={colors.textMuted}
+                  autoCapitalize="none"
+                  autoCorrect={false}
                   style={styles.catInput}
                 />
               </View>
