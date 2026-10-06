@@ -28,6 +28,19 @@ try:
 except Exception:  # pragma: no cover
     MX_TZ = timezone(timedelta(hours=-6))  # fallback CST
 
+# Fotos de celulares modernos: HEIC/HEIF (Realme/ColorOS, iPhone) no abren en Pillow sin
+# este plugin, y las de 200 MP superan el límite anti "decompression bomb" (~89 MP).
+try:
+    import pillow_heif as _pillow_heif
+    _pillow_heif.register_heif_opener()
+except Exception:  # pragma: no cover - plugin opcional
+    _pillow_heif = None
+try:
+    from PIL import Image as _PILImageLimit
+    _PILImageLimit.MAX_IMAGE_PIXELS = 450_000_000
+except Exception:  # pragma: no cover
+    pass
+
 import jwt
 import bcrypt
 import openpyxl
@@ -2278,7 +2291,7 @@ async def create_forestal_registro(pid: str, body: ForestalRegistroIn, user: dic
         "cantidad": body.cantidad,
         "fecha": body.fecha or datetime.now(MX_TZ).date().isoformat(),
         "notas": (body.notas or "").strip() or None,
-        "images": body.images[:10],
+        "images": await asyncio.to_thread(_normalize_images_b64, body.images[:10]),
         "jerarquia": _jerarquia_modulo(body.jerarquia),
         "captured_by": user["id"],
         "captured_by_name": user["name"],
@@ -3118,7 +3131,7 @@ async def create_seguridad_reporte(pid: str, body: SeguridadReporteIn, user: dic
         "severidad": (_SEGURIDAD_TIPO_A_SEVERIDAD[body.tipo_registro] if body.tipo_registro
                       else (body.severidad or "leve")),
         "jerarquia": _jerarquia_modulo(body.jerarquia),
-        "images": body.images[:10],
+        "images": await asyncio.to_thread(_normalize_images_b64, body.images[:10]),
         "captured_by": user["id"],
         "captured_by_name": user["name"],
         "created_at": datetime.now(timezone.utc),
@@ -3149,7 +3162,7 @@ async def update_seguridad_reporte(pid: str, rid: str, body: SeguridadReportePat
     if body.descripcion is not None:
         upd["descripcion"] = body.descripcion.strip()
     if body.images is not None:
-        upd["images"] = body.images[:10]
+        upd["images"] = await asyncio.to_thread(_normalize_images_b64, body.images[:10])
     if body.jerarquia is not None:
         upd["jerarquia"] = _jerarquia_modulo(body.jerarquia)
     tipo_final = upd.get("tipo_registro", row.get("tipo_registro"))
@@ -3897,7 +3910,7 @@ async def create_ambiental_auditoria(pid: str, body: AmbientalAuditoriaIn, user:
         "descripcion": descripcion,
         "fecha": body.fecha or datetime.now(MX_TZ).date().isoformat(),
         "notas": (body.notas or "").strip() or None,
-        "images": body.images[:10],
+        "images": await asyncio.to_thread(_normalize_images_b64, body.images[:10]),
         "jerarquia": _jerarquia_modulo(body.jerarquia),
         "captured_by": user["id"],
         "captured_by_name": user["name"],
@@ -9833,6 +9846,7 @@ async def create_report(body: ReportIn, user: dict = Depends(current_user)):
     # en el feed. Se calcula en un thread aparte por ser CPU-bound (Pillow).
     thumbnail_b64 = None
     if body.images:
+        body.images = await asyncio.to_thread(_normalize_images_b64, body.images)
         thumbnail_b64 = await asyncio.to_thread(_compress_image_b64, body.images[0])
 
     # [OFFLINE 2026-09-09] Si el cliente mandó `captured_at` (hora real de
@@ -10170,6 +10184,38 @@ async def list_reports(pid: str, user: dict = Depends(current_user)):
         it.pop("_id", None)
         it["severidad"] = _normalize_severidad_list(it.get("severidad"))
     return items
+
+
+def _normalize_report_photo_b64(b64_str, max_dim: int = 2000, quality: int = 85):
+    """Normaliza una foto (data URL o base64) a JPEG: abre HEIC/HEIF/WebP/PNG/JPEG de
+    cualquier tamaño, respeta la rotación EXIF y limita el lado mayor a `max_dim`.
+    Si la imagen no se puede procesar se devuelve tal cual (nunca se pierde la foto).
+    Bloqueante (CPU-bound): invocar vía asyncio.to_thread."""
+    if not isinstance(b64_str, str) or not b64_str.startswith("data:image/"):
+        return b64_str
+    try:
+        import base64 as _b64
+        from PIL import Image as _PILImage
+        from PIL.ImageOps import exif_transpose as _pil_exif_transpose
+        raw = _b64.b64decode(b64_str.split(",", 1)[-1])
+        img = _PILImage.open(io.BytesIO(raw))
+        try:
+            img.draft("RGB", (max_dim * 2, max_dim * 2))  # JPEG enormes: decodifica reducido
+        except Exception:
+            pass
+        img = _pil_exif_transpose(img) or img
+        img = img.convert("RGB")
+        img.thumbnail((max_dim, max_dim))
+        out = io.BytesIO()
+        img.save(out, format="JPEG", quality=quality, optimize=True)
+        return "data:image/jpeg;base64," + _b64.b64encode(out.getvalue()).decode("ascii")
+    except Exception:
+        log.warning("No se pudo normalizar la foto; se guarda el original", exc_info=True)
+        return b64_str
+
+
+def _normalize_images_b64(items):
+    return [_normalize_report_photo_b64(i) for i in (items or [])]
 
 
 # ---- FEED endpoint (Specialist Dashboard) ---------------------------------
