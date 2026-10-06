@@ -58,6 +58,10 @@ EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
 # API key vigente (404 "no longer available to new users"); Google exige
 # "gemini-3.6-flash" en su lugar, así que queda fijo explícitamente (no el
 # alias "gemini-flash-latest", para no depender de a qué apunte a futuro).
+# WhatsApp vía Whapi.cloud: credenciales del canal (globales). El grupo de
+# destino NO va aquí: es por proyecto (`whatsapp_group_id` en el proyecto).
+WHAPI_URL = os.environ.get("WHAPI_URL", "https://gate.whapi.cloud/")
+WHAPI_TOKEN = os.environ.get("WHAPI_TOKEN", "")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
 
@@ -464,6 +468,9 @@ class ProjectIn(BaseModel):
     # editable por Coordinador General; se antepone a fecha+letra en cada
     # minuta (ver `create_minuta`).
     minuta_code_prefix: Optional[str] = None
+    # ID del grupo de WhatsApp (ej. "120363...@g.us") al que se publican los
+    # reportes de obra de ESTE proyecto vía Whapi.cloud. Vacío = no se envía.
+    whatsapp_group_id: Optional[str] = None
     # === Configuración de Catálogo de Conceptos / avance (multiproyecto) ===
     # tipo_contrato y modo_avance son EJES INDEPENDIENTES — no se deriva uno
     # del otro. Defaults preservan el comportamiento de hoy para proyectos
@@ -534,6 +541,7 @@ class ProjectPatch(BaseModel):
     categorias_equipo: Optional[List[str]] = None
     constructora_logo: Optional[str] = None
     minuta_code_prefix: Optional[str] = None
+    whatsapp_group_id: Optional[str] = None
     tipo_contrato: Optional[Literal["PRECIO_ALZADO", "PRECIOS_UNITARIOS"]] = None
     modo_avance: Optional[Literal["CANTIDAD", "PORCENTAJE", "MATRIZ"]] = None
     nombres_niveles_partida: Optional[List[str]] = None
@@ -571,6 +579,7 @@ class ProjectOut(BaseModel):
     categorias_personal: List[str] = Field(default_factory=list)
     categorias_equipo: List[str] = Field(default_factory=list)
     minuta_code_prefix: Optional[str] = None
+    whatsapp_group_id: Optional[str] = None
     # Plantillas de exportación (rutas relativas dentro del backend). None si no hay.
     template_pdf: Optional[str] = None
     template_docx: Optional[str] = None
@@ -1708,6 +1717,20 @@ def _sanitize_color_hex(value: Optional[str]) -> Optional[str]:
     return "#" + s.upper()
 
 
+_WHATSAPP_GROUP_RE = re.compile(r"^\d+(-\d+)*@g\.us$")
+
+
+def _sanitize_whatsapp_group_id(value: Optional[str]) -> Optional[str]:
+    """Normaliza el ID de grupo de WhatsApp. Vacío => None (desactiva el envío).
+    Lanza 400 si no tiene el formato `<dígitos>@g.us` que exige Whapi."""
+    v = (value or "").strip()
+    if not v:
+        return None
+    if not _WHATSAPP_GROUP_RE.match(v):
+        raise HTTPException(400, "whatsapp_group_id inválido: debe tener el formato 1203634...@g.us")
+    return v
+
+
 @api.get("/projects")
 async def list_projects(user: dict = Depends(current_user)):
     # La lista solo pinta nombre/constructora/contrato — excluir binarios
@@ -1762,6 +1785,7 @@ async def create_project(body: ProjectIn, user: dict = Depends(require_role(ROLE
         "titulo_modulo_catalogo": (body.titulo_modulo_catalogo or "").strip(),
         "cadencia_reporte": body.cadencia_reporte,
         "dia_inicio_semana": body.dia_inicio_semana,
+        "whatsapp_group_id": _sanitize_whatsapp_group_id(body.whatsapp_group_id),
         "modulos": _sanitize_modulos(body.modulos),
         "created_by": user["id"],
         "created_at": datetime.now(timezone.utc),
@@ -1799,6 +1823,7 @@ async def get_project(pid: str, user: dict = Depends(current_user)):
     ]).to_list(length=1)
     p["general_data_images_count"] = count_doc[0]["n"] if count_doc else 0
     p.setdefault("minuta_code_prefix", None)
+    p.setdefault("whatsapp_group_id", None)
     p.setdefault("tipo_contrato", "PRECIOS_UNITARIOS")
     p.setdefault("modo_avance", "CANTIDAD")
     p.setdefault("nombres_niveles_partida", [])
@@ -1866,6 +1891,8 @@ async def update_project(pid: str, body: ProjectPatch, user: dict = Depends(requ
         upd["constructora_logo"] = body.constructora_logo or None
     if body.minuta_code_prefix is not None:
         upd["minuta_code_prefix"] = body.minuta_code_prefix.strip() or None
+    if body.whatsapp_group_id is not None:
+        upd["whatsapp_group_id"] = _sanitize_whatsapp_group_id(body.whatsapp_group_id)
 
     # modo_avance y tipo_contrato: ejes independientes, cada uno con su
     # propia bandera de confirmación — cambiarlos con datos ya capturados
@@ -1942,6 +1969,7 @@ def _project_public(p: dict) -> dict:
     p.setdefault("template_pptx", None)
     p.setdefault("template_map", None)
     p.setdefault("minuta_code_prefix", None)
+    p.setdefault("whatsapp_group_id", None)
     p.setdefault("tipo_contrato", "PRECIOS_UNITARIOS")
     p.setdefault("modo_avance", "CANTIDAD")
     p.setdefault("nombres_niveles_partida", [])
@@ -9908,7 +9936,104 @@ async def create_report(body: ReportIn, user: dict = Depends(current_user)):
     except Exception as exc:  # defensive: nunca rompemos el return del reporte.
         log.exception("[push] no se pudo agendar la notificación: %s", exc)
 
+    # WhatsApp (Whapi.cloud): grupo propio de cada proyecto, también en segundo plano.
+    try:
+        asyncio.create_task(_whatsapp_enviar_reporte(doc))
+    except Exception as exc:
+        log.exception("[whatsapp] no se pudo agendar el envío: %s", exc)
+
     return doc
+
+
+def _whatsapp_texto_reporte(doc: dict, project_name: str) -> str:
+    """Texto descriptivo del reporte para WhatsApp (formato *negrita* de WA)."""
+    partes = [f"*{project_name}*"]
+    titulo = doc.get("title")
+    if titulo:
+        partes.append(f"*{titulo}*")
+    ubic = " > ".join(doc.get("node_path_names") or [])
+    if ubic:
+        partes.append(f"Ubicación: {ubic}")
+    for etiqueta, clave in (
+        ("Actividades", "actividades"),
+        ("Avance", "avance"),
+        ("Observaciones", "observaciones"),
+        ("Incidencias", "incidencias"),
+        ("Notas", "notes"),
+    ):
+        if doc.get(clave):
+            partes.append(f"*{etiqueta}:* {doc[clave]}")
+    pie = f"Capturó: {doc.get('captured_by_name') or '-'}"
+    ts = doc.get("created_at")
+    if isinstance(ts, datetime):
+        pie += f" · {ts.astimezone(timezone.utc).strftime('%d/%m/%Y %H:%M')} UTC"
+    partes.append(pie)
+    return "\n".join(partes)[:4000]
+
+
+def _whatsapp_imagen_para_envio(b64_str: str) -> Optional[str]:
+    """Reduce la foto (JPEG, máx. 1600 px) y la devuelve como data URI. Bloqueante."""
+    try:
+        import base64 as _b64
+        from PIL import Image as _PILImage
+        from PIL.ImageOps import exif_transpose as _exif
+        raw = _b64.b64decode(b64_str.split(",", 1)[-1])
+        img = _PILImage.open(io.BytesIO(raw))
+        img = _exif(img) or img
+        img = img.convert("RGB")
+        img.thumbnail((1600, 1600))
+        out = io.BytesIO()
+        img.save(out, format="JPEG", quality=80, optimize=True)
+        return "data:image/jpeg;base64," + _b64.b64encode(out.getvalue()).decode("ascii")
+    except Exception:
+        log.warning("[whatsapp] no se pudo preparar la imagen", exc_info=True)
+        return None
+
+
+async def _whatsapp_enviar_reporte(doc: dict) -> None:
+    """Publica el reporte en el grupo de WhatsApp del proyecto (Whapi.cloud).
+
+    Foto + texto vía POST /messages/image; sin foto, POST /messages/text. Es
+    best-effort: cualquier fallo se loguea y nunca afecta el reporte. Si el
+    proyecto no tiene `whatsapp_group_id` (o faltan credenciales) no hace nada.
+    """
+    try:
+        if not WHAPI_TOKEN:
+            return
+        project = await db.projects.find_one(
+            {"id": doc["project_id"]}, {"_id": 0, "name": 1, "whatsapp_group_id": 1}
+        )
+        group_id = ((project or {}).get("whatsapp_group_id") or "").strip()
+        if not group_id:
+            return
+        texto = _whatsapp_texto_reporte(doc, (project or {}).get("name") or "Proyecto")
+        base = WHAPI_URL.rstrip("/")
+        headers = {"Authorization": f"Bearer {WHAPI_TOKEN}", "Accept": "application/json"}
+
+        media = None
+        images = doc.get("images") or []
+        if images:
+            media = await asyncio.to_thread(_whatsapp_imagen_para_envio, images[0])
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            if media:
+                resp = await client.post(
+                    f"{base}/messages/image",
+                    headers=headers,
+                    json={"to": group_id, "media": media, "caption": texto},
+                )
+            else:
+                resp = await client.post(
+                    f"{base}/messages/text",
+                    headers=headers,
+                    json={"to": group_id, "body": texto},
+                )
+        if resp.status_code >= 300:
+            log.warning("[whatsapp] Whapi respondió %s: %s", resp.status_code, resp.text[:300])
+        else:
+            log.info("[whatsapp] reporte %s enviado al grupo del proyecto %s", doc.get("id"), doc["project_id"])
+    except Exception as exc:
+        log.exception("[whatsapp] fallo enviando reporte: %s", exc)
 
 
 async def _notify_supervisors_new_report(

@@ -1067,6 +1067,7 @@ export interface Project {
   categorias_personal?: string[];
   categorias_equipo?: string[];
   minuta_code_prefix?: string | null;
+  whatsapp_group_id?: string | null;
   template_pdf?: string | null;
   template_docx?: string | null;
   template_pptx?: string | null;
