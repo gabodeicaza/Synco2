@@ -87,6 +87,17 @@ def test_con_foto_usa_messages_image_y_el_grupo_del_proyecto(whapi, monkeypatch)
     assert "Colado de losa" in body["caption"] and "Tramo 1 > Eje A" in body["caption"]
 
 
+def test_varias_fotos_se_mandan_todas(whapi, monkeypatch):
+    monkeypatch.setattr(server, "db", _FakeDb({"name": "Prueba", "whatsapp_group_id": _GRUPO}))
+    d = _doc([_PNG, _PNG, _PNG])
+    d["photo_captions"] = ["a", "foto dos", ""]
+    asyncio.run(server._whatsapp_enviar_reporte(d))
+    assert len(whapi.llamadas) == 3
+    assert all(u.endswith("/messages/image") and b["to"] == _GRUPO for u, _h, b in whapi.llamadas)
+    caps = [b["caption"] for _u, _h, b in whapi.llamadas]
+    assert "Colado de losa" in caps[0] and caps[1:] == ["foto dos", ""]
+
+
 def test_sin_foto_usa_messages_text(whapi, monkeypatch):
     monkeypatch.setattr(server, "db", _FakeDb({"name": "Prueba", "whatsapp_group_id": _GRUPO}))
     asyncio.run(server._whatsapp_enviar_reporte(_doc()))

@@ -9945,6 +9945,9 @@ async def create_report(body: ReportIn, user: dict = Depends(current_user)):
     return doc
 
 
+_WHATSAPP_MAX_FOTOS = 10  # tope por reporte para no saturar el grupo
+
+
 def _whatsapp_texto_reporte(doc: dict, project_name: str) -> str:
     """Texto descriptivo del reporte para WhatsApp (formato *negrita* de WA)."""
     partes = [f"*{project_name}*"]
@@ -10010,18 +10013,25 @@ async def _whatsapp_enviar_reporte(doc: dict) -> None:
         base = WHAPI_URL.rstrip("/")
         headers = {"Authorization": f"Bearer {WHAPI_TOKEN}", "Accept": "application/json"}
 
-        media = None
-        images = doc.get("images") or []
-        if images:
-            media = await asyncio.to_thread(_whatsapp_imagen_para_envio, images[0])
+        medias: List[str] = []
+        for img_b64 in (doc.get("images") or [])[:_WHATSAPP_MAX_FOTOS]:
+            m = await asyncio.to_thread(_whatsapp_imagen_para_envio, img_b64)
+            if m:
+                medias.append(m)
 
+        captions = doc.get("photo_captions") or []
         async with httpx.AsyncClient(timeout=30.0) as client:
-            if media:
-                resp = await client.post(
-                    f"{base}/messages/image",
-                    headers=headers,
-                    json={"to": group_id, "media": media, "caption": texto},
-                )
+            if medias:
+                # La 1.ª foto lleva el texto del reporte; las demás, su descripción individual.
+                for i, media in enumerate(medias):
+                    caption = texto if i == 0 else ((captions[i] if i < len(captions) else "") or "")
+                    resp = await client.post(
+                        f"{base}/messages/image",
+                        headers=headers,
+                        json={"to": group_id, "media": media, "caption": caption[:4000]},
+                    )
+                    if resp.status_code >= 300:
+                        break
             else:
                 resp = await client.post(
                     f"{base}/messages/text",
