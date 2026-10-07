@@ -94,6 +94,7 @@ export function HeaderMenu({ basePath, projectId }: HeaderMenuProps) {
             <MenuItem icon="calendar-outline" label="Calendario" onPress={() => goTo('calendario')} />
             <MenuItem icon="folder-open-outline" label="Archivos de consulta" onPress={() => goTo('archivos-consulta')} />
             <MenuItem icon="people-outline" label="Fuerza de trabajo" onPress={() => goTo('fuerza-de-trabajo')} />
+            <MenuItem icon="ribbon-outline" label="Capacidades de operadores" onPress={() => goTo('capacidades')} />
             {basePath === '/(subcoord)' ? (
               // Asistencia: derivada de los reportes (hora y ubicación), con
               // resúmenes semanal y mensual. Solo Sub-Coordinador (y el

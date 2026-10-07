@@ -85,6 +85,7 @@ export default function SpecLayout() {
         />
         {/* Fuerza de Trabajo y Archivos de consulta _ alcanzables via router.push (menu), sin tab visible. */}
         <Tabs.Screen name="fuerza-de-trabajo" options={{ href: null }} />
+        <Tabs.Screen name="capacidades" options={{ href: null }} />
         <Tabs.Screen name="archivos-consulta" options={{ href: null }} />
         {/* Mensajes y Calendario se movieron al menu hamburgues (HeaderMenu) _
             siguen alcanzables via router.push, ya no ocupan tab visible. */}
