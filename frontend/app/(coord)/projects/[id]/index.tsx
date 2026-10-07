@@ -603,7 +603,8 @@ export default function ProjectDetailScreen() {
     setColorDraft((project as any).color_tema || '#003366');
     setColorInstitucionalDraft((project as any).color_institucional || '#003366');
     setReportTextColorDraft((project as any).report_text_color || '#0F172A');
-    setWhatsappGroupDraft((project as any).whatsapp_group_id || '');
+    // Se guardan como "id1, id2"; en el editor se muestra uno por línea.
+    setWhatsappGroupDraft(((project as any).whatsapp_group_id || '').split(/[,;\s]+/).filter(Boolean).join('\n'));
     setObjetoModalOpen(true);
   }
 
@@ -2490,19 +2491,21 @@ export default function ProjectDetailScreen() {
               </View>
 
               <View>
-                <Text style={styles.catLabel}>Grupo de WhatsApp (ID)</Text>
+                <Text style={styles.catLabel}>Grupos de WhatsApp (IDs)</Text>
                 <Text style={styles.catHelper}>
-                  Grupo al que se envía cada reporte de obra publicado en este proyecto (foto + texto). Formato
-                  120363XXXXXXXXXX@g.us. Déjalo vacío para no enviar a WhatsApp.
+                  Grupos a los que se envía cada reporte de obra publicado en este proyecto (fotos + texto). Formato
+                  120363XXXXXXXXXX@g.us. Para varios grupos, escribe un ID por línea (o separados por coma).
+                  Déjalo vacío para no enviar a WhatsApp.
                 </Text>
                 <TextInput
                   value={whatsappGroupDraft}
                   onChangeText={setWhatsappGroupDraft}
-                  placeholder="120363430765044545@g.us"
+                  placeholder={'120363430765044545@g.us\n120363111111111111@g.us'}
                   placeholderTextColor={colors.textMuted}
                   autoCapitalize="none"
                   autoCorrect={false}
-                  style={styles.catInput}
+                  multiline
+                  style={[styles.catInput, { minHeight: 84, textAlignVertical: 'top' }]}
                 />
               </View>
 
