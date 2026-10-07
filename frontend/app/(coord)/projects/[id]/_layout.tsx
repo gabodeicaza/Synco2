@@ -37,6 +37,7 @@ export default function ProjectLayout() {
       <Stack.Screen name="electromecanica" />
       <Stack.Screen name="indicadores-seguridad" />
       <Stack.Screen name="tapial" />
+      <Stack.Screen name="asistencia" />
       <Stack.Screen name="estado-tiempo" />
       <Stack.Screen name="control-obra" />
       <Stack.Screen name="plano-avance" />

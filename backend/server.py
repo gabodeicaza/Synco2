@@ -1183,6 +1183,7 @@ async def startup_event():
     # [OFFLINE 2026-08-07] sparse=True: reportes sin client_id (clientes viejos)
     # no deben colisionar entre si en el índice único.
     await db.reports.create_index("client_id", unique=True, sparse=True)
+    await db.asistencia.create_index([("project_id", 1), ("fecha", 1), ("user_id", 1), ("tipo", 1)])
     await db.announcements.create_index([("project_id", 1), ("pinned", -1), ("created_at", -1)])
     # TTL: Mongo purga automaticamente noticias vencidas (expires_at en el pasado).
     await db.announcements.create_index("expires_at", expireAfterSeconds=0)
@@ -10215,6 +10216,161 @@ async def node_history(pid: str, nid: str, user: dict = Depends(current_user)):
             "notes": last.get("notes"),
         },
     }
+
+
+# === Asistencia (Coordinador / Sub-Coordinador) ============================
+# La asistencia del Especialista se DERIVA de los reportes: el primer reporte
+# del día (hora CDMX) marca su asistencia, con la hora y la ubicación donde
+# reportó. La del Sub-Coordinador sale igual de sus reportes, o bien él mismo
+# la registra (POST .../asistencia/registrar). Coordinador y Sub-Coordinador
+# pueden sobrescribir un día (p. ej. justificar una inasistencia) en
+# `db.asistencia`; la del Sub-Coordinador solo la edita él mismo (o el
+# Coordinador).
+ASISTENCIA_MAX_DIAS = 62
+
+
+class AsistenciaEditIn(BaseModel):
+    # "auto" quita la edición manual y vuelve a lo derivado de los reportes.
+    estado: Literal["asistio", "justificada", "falta", "auto"]
+    nota: Optional[str] = None
+
+
+class AsistenciaRegistrarIn(BaseModel):
+    lat: Optional[float] = None
+    lon: Optional[float] = None
+
+
+def _asistencia_parse_fecha(s: str) -> date:
+    try:
+        return date.fromisoformat(s)
+    except Exception:
+        raise HTTPException(400, "Fecha inválida (usa AAAA-MM-DD)")
+
+
+def _asistencia_ubicacion(r: dict) -> Tuple[Optional[str], Optional[float], Optional[float]]:
+    names = [n for n in (r.get("node_path_names") or []) if n]
+    mv = r.get("measurement_value") or {}
+    lat, lon = mv.get("lat"), mv.get("lon")
+    if not (isinstance(lat, (int, float)) and isinstance(lon, (int, float))) or (lat == 0 and lon == 0):
+        lat = lon = None
+    return (" › ".join(names) or None), lat, lon
+
+
+def _asistencia_hora(dt: Any) -> Tuple[Optional[str], Optional[str]]:
+    """(fecha ISO, 'HH:MM') en hora CDMX."""
+    if not isinstance(dt, datetime):
+        return None, None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    mx = dt.astimezone(MX_TZ)
+    return mx.date().isoformat(), mx.strftime("%H:%M")
+
+
+async def _asistencia_personas(pid: str) -> List[dict]:
+    users = await db.users.find(
+        {"project_ids": pid, "role": {"$in": [ROLE_ESPECIALISTA, ROLE_SUB]}},
+        {"_id": 0, "id": 1, "name": 1, "role": 1, "puesto": 1, "area_id": 1, "area": 1, "created_at": 1},
+    ).to_list(length=2000)
+    areas = {a["id"]: a.get("name") async for a in db.areas.find({"project_id": pid}, {"_id": 0, "id": 1, "name": 1})}
+    out = []
+    for u in users:
+        alta, _ = _asistencia_hora(u.get("created_at"))
+        out.append({
+            "id": u["id"], "name": u.get("name") or "", "role": u["role"], "puesto": u.get("puesto"),
+            "area_name": areas.get(u.get("area_id")) or u.get("area"),
+            "alta": alta,  # antes de esta fecha no se le cuenta falta
+        })
+    out.sort(key=lambda p: (0 if p["role"] == ROLE_SUB else 1, (p["name"] or "").lower()))
+    return out
+
+
+@api.get("/projects/{pid}/asistencia")
+async def get_asistencia(pid: str, desde: str, hasta: str, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB, ROLE_JEFE))):
+    await ensure_project_access(user, pid)
+    d0, d1 = _asistencia_parse_fecha(desde), _asistencia_parse_fecha(hasta)
+    if d1 < d0:
+        raise HTTPException(400, "'hasta' no puede ser anterior a 'desde'")
+    if (d1 - d0).days + 1 > ASISTENCIA_MAX_DIAS:
+        raise HTTPException(400, f"Rango máximo: {ASISTENCIA_MAX_DIAS} días")
+    personas = await _asistencia_personas(pid)
+    ids = [p["id"] for p in personas]
+
+    start = datetime.combine(d0, datetime.min.time(), tzinfo=MX_TZ).astimezone(timezone.utc)
+    end = datetime.combine(d1 + timedelta(days=1), datetime.min.time(), tzinfo=MX_TZ).astimezone(timezone.utc)
+    registros: Dict[str, dict] = {}
+    cursor = db.reports.find(
+        {"project_id": pid, "captured_by": {"$in": ids}, "created_at": {"$gte": start, "$lt": end}},
+        {"_id": 0, "captured_by": 1, "created_at": 1, "node_path_names": 1, "measurement_value": 1},
+    ).sort("created_at", 1)
+    async for r in cursor:
+        fecha, hora = _asistencia_hora(r.get("created_at"))
+        if not fecha:
+            continue
+        key = f"{r['captured_by']}|{fecha}"
+        if key in registros:
+            continue  # el primer reporte del día es el que marca la asistencia
+        ubic, lat, lon = _asistencia_ubicacion(r)
+        registros[key] = {"estado": "asistio", "hora": hora, "ubicacion": ubic, "lat": lat, "lon": lon, "fuente": "reporte"}
+
+    f0, f1 = d0.isoformat(), d1.isoformat()
+    async for a in db.asistencia.find({"project_id": pid, "fecha": {"$gte": f0, "$lte": f1}}, {"_id": 0}):
+        key = f"{a['user_id']}|{a['fecha']}"
+        base = registros.get(key)
+        if a.get("tipo") == "checkin":
+            # Auto-registro del Sub-Coordinador: gana el más temprano.
+            if base and base.get("hora") and base["hora"] <= (a.get("hora") or "99:99"):
+                continue
+            registros[key] = {"estado": "asistio", "hora": a.get("hora"), "ubicacion": a.get("ubicacion"),
+                              "lat": a.get("lat"), "lon": a.get("lon"), "fuente": "registro"}
+        else:  # edición manual (justificada / falta / asistio)
+            reg = dict(base or {"hora": None, "ubicacion": None, "lat": None, "lon": None})
+            reg.update({"estado": a["estado"], "fuente": "manual", "nota": a.get("nota"),
+                        "editado_por": a.get("by_name")})
+            registros[key] = reg
+    return {"desde": f0, "hasta": f1, "hoy": datetime.now(MX_TZ).date().isoformat(),
+            "personas": personas, "registros": registros}
+
+
+@api.put("/projects/{pid}/asistencia/{uid}/{fecha}")
+async def put_asistencia(pid: str, uid: str, fecha: str, body: AsistenciaEditIn,
+                         user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB))):
+    await ensure_project_access(user, pid)
+    f = _asistencia_parse_fecha(fecha)
+    if f > datetime.now(MX_TZ).date():
+        raise HTTPException(400, "No se puede editar la asistencia de un día futuro")
+    target = await db.users.find_one({"id": uid, "project_ids": pid, "role": {"$in": [ROLE_ESPECIALISTA, ROLE_SUB]}})
+    if not target:
+        raise HTTPException(404, "Persona no encontrada en este proyecto")
+    if target["role"] == ROLE_SUB and user["role"] == ROLE_SUB and user["id"] != uid:
+        raise HTTPException(403, "La asistencia de un Sub-Coordinador solo la edita él mismo o el Coordinador")
+    flt = {"project_id": pid, "user_id": uid, "fecha": f.isoformat(), "tipo": "edicion"}
+    if body.estado == "auto":
+        await db.asistencia.delete_one(flt)  # solo la edición manual; el auto-registro se conserva
+        return {"ok": True}
+    await db.asistencia.update_one(flt, {"$set": {
+        "estado": body.estado, "nota": (body.nota or "").strip()[:300] or None,
+        "by": user["id"], "by_name": user.get("name"), "updated_at": datetime.now(timezone.utc),
+    }, "$setOnInsert": {"id": str(uuid.uuid4())}}, upsert=True)
+    return {"ok": True}
+
+
+@api.post("/projects/{pid}/asistencia/registrar")
+async def registrar_asistencia(pid: str, body: AsistenciaRegistrarIn, user: dict = Depends(require_role(ROLE_SUB))):
+    """El Sub-Coordinador registra su propia asistencia de hoy (hora CDMX del servidor)."""
+    await ensure_project_access(user, pid)
+    now = datetime.now(MX_TZ)
+    flt = {"project_id": pid, "user_id": user["id"], "fecha": now.date().isoformat(), "tipo": "checkin"}
+    if await db.asistencia.find_one(flt):
+        return {"ok": True, "ya_registrada": True}
+    ubic = None
+    if body.lat is not None and body.lon is not None and not (body.lat == 0 and body.lon == 0):
+        ubic = f"{body.lat:.5f}, {body.lon:.5f}"
+    await db.asistencia.insert_one({
+        **flt, "id": str(uuid.uuid4()), "estado": "asistio", "hora": now.strftime("%H:%M"),
+        "lat": body.lat, "lon": body.lon, "ubicacion": ubic,
+        "by": user["id"], "by_name": user.get("name"), "updated_at": datetime.now(timezone.utc),
+    })
+    return {"ok": True, "ya_registrada": False}
 
 
 @api.get("/projects/{pid}/reports")

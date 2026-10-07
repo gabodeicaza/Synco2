@@ -1510,6 +1510,12 @@ export default function ProjectDetailScreen() {
                     los módulos de arriba en vez de quedar siempre expandida
                     en esta pantalla (ver fuerza-de-trabajo.tsx). */}
                 <ActionTile
+                  icon="checkbox-outline"
+                  title="Asistencia"
+                  subtitle="Quién reportó hoy, con hora y ubicación; resumen semanal y mensual"
+                  onPress={() => router.push({ pathname: '/(coord)/projects/[id]/asistencia' as any, params: { id: pid } })}
+                />
+                <ActionTile
                   icon="people-outline"
                   title="Fuerza de Trabajo"
                   subtitle="Personal y maquinaria derivados de los reportes"
