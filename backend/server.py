@@ -1199,6 +1199,11 @@ async def startup_event():
     await db.cap_certificaciones.create_index([("project_id", 1), ("persona_id", 1), ("cert_id", 1)])
     await db.cap_equipos.create_index([("project_id", 1), ("operador_id", 1)])
     await db.cap_historial.create_index([("project_id", 1), ("entidad_id", 1), ("fecha", -1)])
+    await db.cap_importaciones.create_index([("project_id", 1), ("archivo_id", 1), ("estado", 1)])
+    await db.cap_import_filas.create_index([("import_id", 1), ("n", 1)])
+    await db.cap_import_grupos.create_index([("import_id", 1), ("grupo", 1)])
+    await db.cap_import_cambios.create_index("import_id")
+    await db.cap_import_plantillas.create_index([("project_id", 1), ("tipo", 1), ("nombre", 1)], unique=True)
     await db.messages.create_index([("project_id", 1), ("created_at", -1)])
     await db.messages.create_index([("channel_id", 1), ("created_at", -1)])
     await db.events.create_index([("project_id", 1), ("start_at", 1)])
@@ -31606,6 +31611,709 @@ async def cap_historial(pid: str, entidad_id: Optional[str] = None, limit: int =
     if entidad_id:
         flt["entidad_id"] = entidad_id
     return [h async for h in db.cap_historial.find(flt, {"_id": 0}).sort("fecha", -1).limit(limit)]
+
+
+# ---- Importador masivo (Excel/CSV) con conciliación de nombres ---------------------
+# Flujo: analizar (hojas y columnas) -> previsualizar (concilia cada nombre contra
+# las personas ya grabadas, sin escribir nada) -> resolver dudosos -> confirmar
+# (escribe por lotes y registra cada cambio) -> deshacer (revierte solo lo que esa
+# importación creó o modificó). Las decisiones sobre un nombre se guardan como alias
+# de la persona, así el mismo nombre mal escrito se reconoce solo la siguiente vez.
+CAP_IMPORT_MAX_FILAS = 20000
+CAP_IMPORT_MAX_BYTES = 60 * 1024 * 1024  # los Excel con fotos incrustadas pesan mucho; solo se leen los datos
+CAP_IMPORT_UMBRAL_AUTO = 0.95   # similitud mínima para ligar sin preguntar
+CAP_IMPORT_UMBRAL_DUDOSO = 0.80  # entre este y el anterior, el usuario decide
+CAP_IMPORT_TIPOS = ("personal", "certificaciones", "equipos")
+_CAP_SINONIMOS: Dict[str, Dict[str, List[str]]] = {
+    "personal": {
+        "nombre": ["nombre del trabajador", "nombre completo", "nombre", "trabajador", "operador"],
+        "puesto": ["puesto", "cargo", "categoria", "oficio"],
+        "frente": ["frente", "estacion"],
+        "empresa": ["empresa", "proveedor", "contratista"],
+        "estatus": ["estatus", "estado"],
+    },
+    "certificaciones": {
+        "nombre": ["nombre del trabajador", "nombre completo", "nombre", "trabajador", "operador"],
+        "certificacion": ["curso", "certificacion", "capacitacion", "constancia"],
+        "folio": ["folio", "no de constancia"],
+        "emision": ["fecha de emision", "emision", "expedicion", "fecha de curso"],
+        "vencimiento": ["fecha de vencimiento", "vencimiento", "vigencia", "vence"],
+        "estado": ["dc3", "estatus", "estado"],
+    },
+    "equipos": {
+        "nombre": ["maquinaria equipo", "maquinaria", "equipo"],
+        "modelo": ["modelo identificacion", "modelo", "identificacion"],
+        "tipo": ["tipo"],
+        "ubicacion": ["estacion o intertramo", "estacion", "ubicacion", "intertramo"],
+        "estado": ["estado", "estatus"],
+        "operador": ["operador"],
+        "fecha_ingreso": ["fecha de ingreso", "ingreso"],
+        "fecha_salida": ["fecha de salida", "salida"],
+    },
+}
+
+
+def _cap_txt(v: Any) -> str:
+    if v is None:
+        return ""
+    if isinstance(v, datetime):
+        return v.date().isoformat()
+    if isinstance(v, date):
+        return v.isoformat()
+    if isinstance(v, float) and v.is_integer():
+        v = int(v)
+    return re.sub(r"\s+", " ", str(v)).strip()
+
+
+def _cap_fecha_flex(v: Any) -> Optional[str]:
+    """Acepta fechas de Excel, AAAA-MM-DD y DD/MM/AAAA; cualquier otro texto ("CONTINUA") es None."""
+    if isinstance(v, datetime):
+        return v.date().isoformat()
+    if isinstance(v, date):
+        return v.isoformat()
+    t = _cap_txt(v)
+    m = re.fullmatch(r"(\d{4})-(\d{1,2})-(\d{1,2})", t) or None
+    try:
+        if m:
+            return date(int(m[1]), int(m[2]), int(m[3])).isoformat()
+        m = re.fullmatch(r"(\d{1,2})[/-](\d{1,2})[/-](\d{4})", t)
+        if m:
+            return date(int(m[3]), int(m[2]), int(m[1])).isoformat()
+    except ValueError:
+        return None
+    return None
+
+
+def _cap_import_dir(pid: str) -> Path:
+    d = UPLOADS_DIR / pid / "capacidades" / "imports"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _cap_import_leer(path: Path) -> Dict[str, List[List[Any]]]:
+    """Lee todas las hojas (xlsx) o el CSV como una sola hoja. Máx. CAP_IMPORT_MAX_FILAS filas por hoja."""
+    if path.suffix.lower() == ".csv":
+        raw = path.read_bytes()
+        for enc in ("utf-8-sig", "cp1252"):
+            try:
+                texto = raw.decode(enc)
+                break
+            except UnicodeDecodeError:
+                continue
+        dialecto = csv.Sniffer().sniff(texto[:4096], delimiters=",;\t") if texto.strip() else csv.excel
+        return {"CSV": [list(r) for r in csv.reader(io.StringIO(texto), dialecto)][:CAP_IMPORT_MAX_FILAS]}
+    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    try:
+        out = {}
+        for ws in wb.worksheets:
+            filas = []
+            for r in ws.iter_rows(values_only=True):
+                filas.append(list(r))
+                if len(filas) >= CAP_IMPORT_MAX_FILAS:
+                    break
+            while filas and not any(c not in (None, "") for c in filas[-1]):
+                filas.pop()
+            out[ws.title] = filas
+        return out
+    finally:
+        wb.close()
+
+
+def _cap_detectar_encabezado(filas: List[List[Any]]) -> int:
+    """Fila (1-based) con más celdas de texto entre las primeras 15."""
+    mejor, mejor_n = 1, -1
+    for i, r in enumerate(filas[:15]):
+        n = sum(1 for c in r if isinstance(c, str) and c.strip())
+        if n > mejor_n:
+            mejor, mejor_n = i + 1, n
+    return mejor
+
+
+def _cap_sugerir_mapeo(tipo: str, columnas: List[str]) -> Dict[str, int]:
+    norm = [_cap_norm(c) for c in columnas]
+    usados: set = set()
+    out: Dict[str, int] = {}
+    for campo, sins in _CAP_SINONIMOS[tipo].items():
+        for s in sins:
+            hit = next((i for i, n in enumerate(norm) if n == s and i not in usados), None)
+            if hit is None:
+                hit = next((i for i, n in enumerate(norm) if n and s in n and i not in usados), None)
+            if hit is not None:
+                out[campo] = hit
+                usados.add(hit)
+                break
+    return out
+
+
+async def _cap_import_archivo(pid: str, archivo_id: str) -> Path:
+    if not re.fullmatch(r"[0-9a-f]{32}", archivo_id or ""):
+        raise HTTPException(400, "archivo_id inválido")
+    hit = next(iter(_cap_import_dir(pid).glob(f"{archivo_id}.*")), None)
+    if not hit:
+        raise HTTPException(404, "El archivo ya no está disponible; vuelve a subirlo")
+    return hit
+
+
+@api.post("/projects/{pid}/capacidades/importar/analizar")
+async def cap_import_analizar(pid: str, file: UploadFile = File(...), user: dict = Depends(require_role(*CAP_WRITE))):
+    """Paso 1: sube el archivo y devuelve sus hojas, la fila de encabezados detectada y un mapeo sugerido por tipo de dato."""
+    await ensure_project_access(user, pid)
+    ext = Path(file.filename or "").suffix.lower()
+    if ext not in (".xlsx", ".xlsm", ".csv"):
+        raise HTTPException(400, "Formato no soportado. Usa .xlsx o .csv (guarda los .xls como .xlsx)")
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(400, "Archivo vacío")
+    if len(raw) > CAP_IMPORT_MAX_BYTES:
+        raise HTTPException(413, f"Archivo demasiado grande. Máx {CAP_IMPORT_MAX_BYTES // 1024 // 1024} MB.")
+    archivo_id = uuid.uuid4().hex
+    path = _cap_import_dir(pid) / f"{archivo_id}{ext}"
+    path.write_bytes(raw)
+    try:
+        hojas_raw = _cap_import_leer(path)
+    except Exception as exc:
+        path.unlink(missing_ok=True)
+        raise HTTPException(400, f"No se pudo leer el archivo: {exc}")
+    hojas = []
+    for nombre, filas in hojas_raw.items():
+        if not filas:
+            continue
+        h = _cap_detectar_encabezado(filas)
+        cols = [_cap_txt(c) for c in filas[h - 1]]
+        while cols and not cols[-1]:
+            cols.pop()
+        hojas.append({
+            "nombre": nombre, "filas": max(0, len(filas) - h), "header_row": h,
+            "columnas": [{"idx": i, "nombre": c or f"(columna {i + 1})"} for i, c in enumerate(cols)],
+            "muestra": [[_cap_txt(c) for c in r[:len(cols)]] for r in filas[h:h + 5]],
+            "sugerido": {t: _cap_sugerir_mapeo(t, cols) for t in CAP_IMPORT_TIPOS},
+        })
+    if not hojas:
+        path.unlink(missing_ok=True)
+        raise HTTPException(400, "El archivo no tiene datos")
+    return {"archivo_id": archivo_id, "nombre": file.filename, "hojas": hojas}
+
+
+class CapImportPreviewIn(BaseModel):
+    archivo_id: str
+    hoja: str
+    tipo: Literal["personal", "certificaciones", "equipos"]
+    header_row: int = Field(default=1, ge=1)
+    mapeo: Dict[str, int]  # campo -> índice de columna (0-based); "extra:<clave>" para campos propios del proyecto
+    opciones: Dict[str, Any] = Field(default_factory=dict)
+    # Valores de texto libre (puestos, cursos, tipos) -> id del catálogo o "__crear__"
+    mapa_valores: Dict[str, Dict[str, str]] = Field(default_factory=dict)
+
+
+class _CapIndicePersonas:
+    """Índice en memoria para conciliar miles de nombres sin recorrer todas las personas por cada uno."""
+
+    def __init__(self, personas: List[dict]):
+        self.por_id = {p["id"]: p for p in personas}
+        self.por_key: Dict[str, dict] = {}
+        self.tokens: Dict[str, List[str]] = {}
+        for p in personas:
+            for k in {p.get("nombre_key") or "", *p.get("aliases_key", [])}:
+                if k:
+                    self.por_key.setdefault(k, p)
+                    for t in k.split():
+                        self.tokens.setdefault(t, []).append(p["id"])
+
+    def buscar(self, key: str, umbral_auto: float) -> Tuple[str, Optional[str], List[dict]]:
+        """-> (estado, persona_id, candidatos). estado: exacto | alto | dudoso | nuevo."""
+        p = self.por_key.get(key)
+        if p:
+            return "exacto", p["id"], []
+        cand: Dict[str, int] = {}
+        toks = sorted(set(key.split()), key=lambda t: len(self.tokens.get(t, [])))
+        for t in toks:
+            ids = self.tokens.get(t, [])
+            if len(ids) > 400 and cand:
+                continue  # token muy común (p. ej. "garcia"): solo si no hay nada más
+            for pid_ in ids[:400]:
+                cand[pid_] = cand.get(pid_, 0) + 1
+        top = sorted(cand, key=lambda i: -cand[i])[:60]
+        pun = []
+        for i in top:
+            pe = self.por_id[i]
+            s = max(_cap_similitud(key, k) for k in [pe.get("nombre_key", ""), *pe.get("aliases_key", [])] if k)
+            pun.append((s, pe))
+        pun.sort(key=lambda x: -x[0])
+        if not pun or pun[0][0] < CAP_IMPORT_UMBRAL_DUDOSO:
+            return "nuevo", None, []
+        cands = [{"persona_id": pe["id"], "nombre": pe["nombre"], "similitud": round(s, 2)}
+                 for s, pe in pun[:3] if s >= CAP_IMPORT_UMBRAL_DUDOSO]
+        if pun[0][0] >= umbral_auto and (len(pun) < 2 or pun[1][0] < pun[0][0] - 0.02):
+            return "alto", pun[0][1]["id"], cands
+        return "dudoso", None, cands
+
+
+def _cap_mapa_catalogo(items: List[dict]) -> Dict[str, str]:
+    m: Dict[str, str] = {}
+    for it in items:
+        for n in [it["nombre"], *it.get("aliases", [])]:
+            m.setdefault(_cap_norm(n), it["id"])
+    return m
+
+
+@api.post("/projects/{pid}/capacidades/importar/previsualizar")
+async def cap_import_previsualizar(pid: str, body: CapImportPreviewIn, user: dict = Depends(require_role(*CAP_WRITE))):
+    """Paso 2: analiza todo el archivo y concilia nombres. NO escribe en las colecciones de datos."""
+    await ensure_project_access(user, pid)
+    path = await _cap_import_archivo(pid, body.archivo_id)
+    hojas = _cap_import_leer(path)
+    if body.hoja not in hojas:
+        raise HTTPException(400, "Hoja inexistente")
+    filas_raw = hojas[body.hoja]
+    if body.header_row > len(filas_raw):
+        raise HTTPException(400, "La fila de encabezados está fuera del archivo")
+    if "nombre" not in body.mapeo:
+        raise HTTPException(400, "Indica qué columna contiene el nombre")
+    if body.tipo == "certificaciones" and "certificacion" not in body.mapeo:
+        raise HTTPException(400, "Indica qué columna contiene la certificación / curso")
+    op = body.opciones
+    umbral = float(op.get("umbral_auto") or CAP_IMPORT_UMBRAL_AUTO)
+
+    certs = [c async for c in db.cap_certs.find({"project_id": pid, "activo": {"$ne": False}}, {"_id": 0})]
+    tipos = [t async for t in db.cap_tipos.find({"project_id": pid, "activo": {"$ne": False}}, {"_id": 0})]
+    mapa_cert, mapa_tipo = _cap_mapa_catalogo(certs), _cap_mapa_catalogo(tipos)
+    campos_extra = {f"extra:{c.get('clave')}" for c in ((await db.cap_config.find_one({"project_id": pid}, {"_id": 0})) or {}).get("campos_extra", [])}
+    indice = _CapIndicePersonas([p async for p in db.cap_personas.find({"activo": {"$ne": False}}, {"_id": 0, "id": 1, "nombre": 1, "nombre_key": 1, "aliases_key": 1})])
+    estatus_cert = op.get("estatus_cert") or {}
+    omitir_si = {_cap_norm(v) for v in (op.get("omitir_si") or [])}
+
+    def celda(r: List[Any], campo: str) -> Any:
+        i = body.mapeo.get(campo)
+        return r[i] if i is not None and 0 <= i < len(r) else None
+
+    def resolver(norm: str, catalogo: Dict[str, str], clave: str) -> Tuple[Optional[str], bool]:
+        """-> (id | "__crear__" | None, es_valor_nuevo)"""
+        if norm in catalogo:
+            return catalogo[norm], False
+        elegido = (body.mapa_valores.get(clave) or {}).get(norm)
+        if elegido:
+            return elegido, False
+        if op.get("crear_catalogo_nuevo"):
+            return "__crear__", False
+        return None, True
+
+    filas, errores, nuevos = [], [], {"puestos": {}, "certificaciones": {}, "tipos": {}}
+    omitidas = 0
+    grupos: Dict[str, dict] = {}
+    for n, r in enumerate(filas_raw[body.header_row:], start=body.header_row + 1):
+        if not any(c not in (None, "") for c in r):
+            continue
+        nombre = _cap_txt(celda(r, "nombre"))
+        # Totales y pies ("TOTAL DE PERSONAL ENCONTRADO:") no son personas.
+        if _cap_key(nombre) and (":" in nombre or _cap_norm(nombre).startswith("total ")):
+            omitidas += 1
+            continue
+        if not _cap_key(nombre):
+            if any(_cap_txt(c) for k, c in ((k, celda(r, k)) for k in body.mapeo if k != "nombre")):
+                errores.append({"fila": n, "motivo": "Sin nombre"})
+            continue
+        d: Dict[str, Any] = {"nombre": nombre}
+        err = None
+        if body.tipo == "personal":
+            for c in ("puesto", "frente", "empresa", "estatus"):
+                d[c] = _cap_txt(celda(r, c)) or None
+            d["extras"] = {k.split(":", 1)[1]: _cap_txt(celda(r, k)) for k in body.mapeo if k in campos_extra and _cap_txt(celda(r, k))}
+            if d["puesto"]:
+                tid, nuevo = resolver(_cap_norm(d["puesto"]), mapa_tipo, "puestos")
+                d["tipo_ref"] = tid
+                if nuevo:
+                    nuevos["puestos"].setdefault(_cap_norm(d["puesto"]), {"valor": d["puesto"], "filas": 0})["filas"] += 1
+            if estatus_cert.get("cert_id") and _cap_norm(d.get("estatus")) in {_cap_norm(v) for v in estatus_cert.get("valores_ok", [])}:
+                d["cert_estatus"] = estatus_cert["cert_id"]
+        elif body.tipo == "certificaciones":
+            cert_txt = _cap_txt(celda(r, "certificacion"))
+            estado = _cap_norm(celda(r, "estado"))
+            if estado and estado in omitir_si:
+                continue  # p. ej. "SIN DC3": la persona no tiene la constancia
+            if not cert_txt or _cap_norm(cert_txt) in ("sin dc3", "sin especificar"):
+                err = "Sin certificación"
+            else:
+                cid, nuevo = resolver(_cap_norm(cert_txt), mapa_cert, "certificaciones")
+                d["cert_ref"] = cid
+                d["cert_texto"] = cert_txt
+                if nuevo:
+                    k = _cap_norm(cert_txt)
+                    nuevos["certificaciones"].setdefault(k, {"valor": cert_txt, "filas": 0})["filas"] += 1
+                    err = f"Certificación no reconocida: {cert_txt}"
+            d["folio"] = _cap_txt(celda(r, "folio")) or None
+            d["emision"] = _cap_fecha_flex(celda(r, "emision"))
+            d["vencimiento"] = _cap_fecha_flex(celda(r, "vencimiento"))
+        else:
+            d["modelo"] = _cap_txt(celda(r, "modelo")) or None
+            d["ubicacion"] = _cap_txt(celda(r, "ubicacion")) or None
+            d["estado"] = "inactivo" if _cap_norm(celda(r, "estado")).startswith("inactiv") else "activo"
+            d["fecha_ingreso"] = _cap_fecha_flex(celda(r, "fecha_ingreso"))
+            d["fecha_salida"] = _cap_fecha_flex(celda(r, "fecha_salida"))
+            tipo_txt = _cap_txt(celda(r, "tipo"))
+            if tipo_txt:
+                d["tipo_texto"] = tipo_txt
+                tid, nuevo = resolver(_cap_norm(tipo_txt), mapa_tipo, "tipos")
+                d["tipo_ref"] = tid
+                if nuevo:
+                    nuevos["tipos"].setdefault(_cap_norm(tipo_txt), {"valor": tipo_txt, "filas": 0})["filas"] += 1
+            # En equipos la columna "nombre" es el equipo; el operador se concilia aparte.
+            op_txt = _cap_txt(celda(r, "operador"))
+            d["operador_texto"] = op_txt if _cap_key(op_txt) and _cap_norm(op_txt) not in ("no aplica", "sin operador", "na", "n a") else None
+        if err:
+            errores.append({"fila": n, "motivo": err, "nombre": nombre})
+            continue
+        clave_persona = d["nombre"] if body.tipo != "equipos" else (d["operador_texto"] or "")
+        gk = _cap_key(clave_persona)
+        if body.tipo == "equipos":
+            d["equipo_nombre"] = d.pop("nombre")
+        if gk:
+            g = grupos.setdefault(gk, {"nombre_origen": clave_persona, "filas": 0})
+            g["filas"] += 1
+        filas.append({"n": n, "data": d, "grupo": gk or None})
+
+    # Conciliación por nombre distinto (no por fila)
+    for gk, g in grupos.items():
+        estado, persona_id, cands = indice.buscar(gk, umbral)
+        g.update(estado=estado, persona_id=persona_id, candidatos=cands)
+        if estado in ("exacto", "alto"):
+            g["decision"] = {"accion": "ligar", "persona_id": persona_id}
+        elif estado == "nuevo":
+            crear = body.tipo == "personal" or bool(op.get("crear_personas_faltantes"))
+            g["decision"] = {"accion": "crear" if crear else "omitir"}
+        else:
+            g["decision"] = None  # dudoso: el usuario debe decidir
+
+    # Reemplaza previsualizaciones anteriores del mismo archivo (siguen sin haber escrito nada)
+    viejas = [i["id"] async for i in db.cap_importaciones.find({"project_id": pid, "archivo_id": body.archivo_id, "estado": "previa"}, {"_id": 0, "id": 1})]
+    if viejas:
+        for col in ("cap_import_filas", "cap_import_grupos"):
+            await db[col].delete_many({"import_id": {"$in": viejas}})
+        await db.cap_importaciones.delete_many({"id": {"$in": viejas}})
+
+    iid = uuid.uuid4().hex
+    cuenta = {e: sum(1 for g in grupos.values() if g["estado"] == e) for e in ("exacto", "alto", "dudoso", "nuevo")}
+    resumen = {"filas_validas": len(filas), "errores": len(errores), "nombres_distintos": len(grupos), "filas_omitidas": omitidas, "por_estado": cuenta,
+               "dudosos_pendientes": cuenta["dudoso"]}
+    await db.cap_importaciones.insert_one({
+        "id": iid, "project_id": pid, "archivo_id": body.archivo_id, "hoja": body.hoja, "tipo": body.tipo,
+        "header_row": body.header_row, "mapeo": body.mapeo, "opciones": op, "estado": "previa", "resumen": resumen,
+        "encabezados": [_cap_txt(c) for c in filas_raw[body.header_row - 1]], "errores": errores[:300],
+        "valores_nuevos": {k: list(v.values()) for k, v in nuevos.items()},
+        "created_by": user.get("id"), "created_by_name": user.get("name"), "created_at": datetime.now(timezone.utc).isoformat()})
+    for i in range(0, len(filas), 1000):
+        await db.cap_import_filas.insert_many([{"import_id": iid, **f} for f in filas[i:i + 1000]])
+    if grupos:
+        await db.cap_import_grupos.insert_many([{"import_id": iid, "grupo": gk, **g} for gk, g in grupos.items()])
+    return {"import_id": iid, "resumen": resumen, "errores": errores[:100],
+            "valores_nuevos": {k: list(v.values()) for k, v in nuevos.items()}}
+
+
+async def _cap_imp_get(pid: str, iid: str) -> dict:
+    imp = await db.cap_importaciones.find_one({"project_id": pid, "id": iid}, {"_id": 0})
+    if not imp:
+        raise HTTPException(404, "Importación no encontrada")
+    return imp
+
+
+@api.get("/projects/{pid}/capacidades/importar/{iid}/grupos")
+async def cap_import_grupos(pid: str, iid: str, estado: Optional[Literal["exacto", "alto", "dudoso", "nuevo"]] = None,
+                            skip: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=500), user: dict = Depends(require_role(*CAP_WRITE))):
+    """Nombres distintos del archivo con su coincidencia, para revisar los dudosos y los nuevos."""
+    await ensure_project_access(user, pid)
+    await _cap_imp_get(pid, iid)
+    flt: dict = {"import_id": iid}
+    if estado:
+        flt["estado"] = estado
+    return {"total": await db.cap_import_grupos.count_documents(flt),
+            "items": [g async for g in db.cap_import_grupos.find(flt, {"_id": 0, "import_id": 0}).sort("nombre_origen", 1).skip(skip).limit(limit)]}
+
+
+class CapImportDecisionIn(BaseModel):
+    grupo: str
+    accion: Literal["ligar", "crear", "omitir"]
+    persona_id: Optional[str] = None
+    recordar_alias: bool = True
+
+
+@api.put("/projects/{pid}/capacidades/importar/{iid}/grupos")
+async def cap_import_resolver(pid: str, iid: str, decisiones: List[CapImportDecisionIn], user: dict = Depends(require_role(*CAP_WRITE))):
+    await ensure_project_access(user, pid)
+    imp = await _cap_imp_get(pid, iid)
+    if imp["estado"] != "previa":
+        raise HTTPException(409, "La importación ya fue aplicada")
+    for d in decisiones:
+        g = await db.cap_import_grupos.find_one({"import_id": iid, "grupo": d.grupo}, {"_id": 0})
+        if not g:
+            raise HTTPException(404, f"Nombre no encontrado en la importación: {d.grupo}")
+        if d.accion == "ligar":
+            if not d.persona_id or not await db.cap_personas.find_one({"id": d.persona_id, "activo": {"$ne": False}}, {"_id": 1}):
+                raise HTTPException(400, "Elige una persona existente para ligar")
+        await db.cap_import_grupos.update_one(
+            {"import_id": iid, "grupo": d.grupo},
+            {"$set": {"decision": {"accion": d.accion, "persona_id": d.persona_id if d.accion == "ligar" else None, "recordar_alias": d.recordar_alias}}})
+    pendientes = await db.cap_import_grupos.count_documents({"import_id": iid, "decision": None})
+    return {"dudosos_pendientes": pendientes}
+
+
+async def _cap_imp_asegurar_catalogo(pid: str, coleccion: str, nombre: str, cambios: list, cache: Dict[str, str]) -> str:
+    k = _cap_norm(nombre)
+    if k in cache:
+        return cache[k]
+    doc = {"id": uuid.uuid4().hex, "project_id": pid, "activo": True, "nombre": nombre.strip(), "aliases": [], "descripcion": "Creado por importación",
+           "created_at": datetime.now(timezone.utc).isoformat(), **({"cert_ids": []} if coleccion == "cap_tipos" else {"vigencia_meses": None, "obligatoria": False})}
+    await db[coleccion].insert_one(dict(doc))
+    cambios.append({"coleccion": coleccion, "doc_id": doc["id"], "accion": "crear"})
+    cache[k] = doc["id"]
+    return doc["id"]
+
+
+@api.post("/projects/{pid}/capacidades/importar/{iid}/confirmar")
+async def cap_import_confirmar(pid: str, iid: str, plantilla: Optional[str] = Query(None, max_length=80), user: dict = Depends(require_role(*CAP_WRITE))):
+    """Paso 4: escribe en lotes. Cada cambio queda registrado para poder deshacer la importación completa."""
+    await ensure_project_access(user, pid)
+    imp = await _cap_imp_get(pid, iid)
+    if imp["estado"] != "previa":
+        raise HTTPException(409, "Esta importación ya fue aplicada")
+    if await db.cap_import_grupos.count_documents({"import_id": iid, "decision": None}):
+        raise HTTPException(409, "Faltan nombres dudosos por resolver")
+    # Marca como aplicada primero: un segundo clic simultáneo no duplica datos.
+    r = await db.cap_importaciones.update_one({"id": iid, "estado": "previa"}, {"$set": {"estado": "aplicando"}})
+    if not r.modified_count:
+        raise HTTPException(409, "Esta importación ya se está aplicando")
+    tipo, ahora = imp["tipo"], datetime.now(timezone.utc).isoformat()
+    cambios: list = []
+    fallo = ""
+    # Las altas se acumulan y se escriben por lotes (insert_many) en vez de una ida a la base por fila.
+    buf: Dict[str, list] = {"cap_personas": [], "cap_miembros": [], "cap_certificaciones": [], "cap_equipos": []}
+    stats ={"personas_creadas": 0, "personas_ligadas": 0, "creados": 0, "actualizados": 0, "sin_cambios": 0, "omitidos": 0, "errores": 0}
+    try:
+        grupos = {g["grupo"]: g async for g in db.cap_import_grupos.find({"import_id": iid}, {"_id": 0})}
+        filas = [f async for f in db.cap_import_filas.find({"import_id": iid}, {"_id": 0}).sort("n", 1)]
+        pendientes: set = set()  # ids acumulados pero aún no escritos: sus cambios se aplican sobre el mismo dict
+        # 1) Persona de cada nombre distinto
+        persona_de: Dict[str, Optional[str]] = {}
+        for gk, g in grupos.items():
+            dec = g["decision"] or {}
+            if dec.get("accion") == "ligar" and dec.get("persona_id"):
+                persona_de[gk] = dec["persona_id"]
+                stats["personas_ligadas"] += 1
+                if g["estado"] == "dudoso" and dec.get("recordar_alias", True):
+                    # el nombre tal como viene en el archivo queda como alias para la próxima importación
+                    await db.cap_personas.update_one({"id": dec["persona_id"]}, {"$addToSet": {"aliases": g["nombre_origen"], "aliases_key": gk}})
+            elif dec.get("accion") == "crear":
+                p = {"id": uuid.uuid4().hex, "nombre": g["nombre_origen"].strip(), "nombre_norm": _cap_norm(g["nombre_origen"]), "nombre_key": gk,
+                     "aliases": [], "aliases_key": [], "activo": True, "created_at": ahora}
+                buf["cap_personas"].append(p)
+                cambios.append({"coleccion": "cap_personas", "doc_id": p["id"], "accion": "crear"})
+                persona_de[gk] = p["id"]
+                stats["personas_creadas"] += 1
+            else:
+                persona_de[gk] = None
+        # 2) Catálogos a crear (puestos -> tipos, cursos -> certificaciones)
+        cache_tipos = {_cap_norm(t["nombre"]): t["id"] async for t in db.cap_tipos.find({"project_id": pid, "activo": {"$ne": False}}, {"_id": 0, "id": 1, "nombre": 1})}
+        cache_certs = {_cap_norm(c["nombre"]): c["id"] async for c in db.cap_certs.find({"project_id": pid, "activo": {"$ne": False}}, {"_id": 0, "id": 1, "nombre": 1})}
+        # 3) Aplicar fila por fila
+        miembros = {m["persona_id"]: m async for m in db.cap_miembros.find({"project_id": pid}, {"_id": 0})}
+        equipos_existentes = {(_cap_norm(e["nombre"]), _cap_norm(e.get("modelo"))): e
+                              async for e in db.cap_equipos.find({"project_id": pid, "activo": {"$ne": False}}, {"_id": 0})}
+        consts: set = set()     # (persona, cert, folio, vencimiento) ya existentes
+        consts_pc: set = set()  # (persona, cert) ya existentes
+        async for k in db.cap_certificaciones.find({"project_id": pid, "activo": {"$ne": False}}, {"_id": 0, "persona_id": 1, "cert_id": 1, "folio": 1, "vencimiento": 1}):
+            consts.add((k["persona_id"], k["cert_id"], k.get("folio"), k.get("vencimiento")))
+            consts_pc.add((k["persona_id"], k["cert_id"]))
+        vigencias = {c["id"]: c.get("vigencia_meses") async for c in db.cap_certs.find({"project_id": pid}, {"_id": 0, "id": 1, "vigencia_meses": 1})}
+
+        async def asegurar_miembro(persona_id: str, extra: Optional[dict] = None) -> dict:
+            m = miembros.get(persona_id)
+            if m:
+                return m
+            m = {"id": uuid.uuid4().hex, "project_id": pid, "persona_id": persona_id, "puesto": None, "tipo_id": None, "frente": None,
+                 "empresa": None, "estatus": "activo", "notas": None, "extras": {}, "created_at": ahora, **(extra or {})}
+            buf["cap_miembros"].append(m)
+            pendientes.add(m["id"])
+            cambios.append({"coleccion": "cap_miembros", "doc_id": m["id"], "accion": "crear"})
+            miembros[persona_id] = m
+            return m
+
+        for f in filas:
+            d = f["data"]
+            pid_persona = persona_de.get(f["grupo"]) if f.get("grupo") else None
+            if tipo != "equipos" and not pid_persona:
+                stats["omitidos"] += 1
+                continue
+            if tipo == "personal":
+                tipo_id = d.get("tipo_ref")
+                if tipo_id == "__crear__" and d.get("puesto"):
+                    tipo_id = await _cap_imp_asegurar_catalogo(pid, "cap_tipos", d["puesto"], cambios, cache_tipos)
+                campos = {"puesto": d.get("puesto"), "tipo_id": tipo_id, "frente": d.get("frente"), "empresa": d.get("empresa")}
+                campos = {k: v for k, v in campos.items() if v}
+                m = miembros.get(pid_persona)
+                if m:
+                    nuevos = {k: v for k, v in {**campos, **({"extras": {**m.get("extras", {}), **d["extras"]}} if d.get("extras") else {})}.items() if m.get(k) != v}
+                    if nuevos:
+                        if m["id"] not in pendientes:
+                            cambios.append({"coleccion": "cap_miembros", "doc_id": m["id"], "accion": "actualizar", "antes": {k: m.get(k) for k in nuevos}})
+                            await db.cap_miembros.update_one({"id": m["id"]}, {"$set": nuevos})
+                        m.update(nuevos)
+                        stats["actualizados"] += 1
+                    else:
+                        stats["sin_cambios"] += 1
+                else:
+                    await asegurar_miembro(pid_persona, {**campos, "extras": d.get("extras", {})})
+                    stats["creados"] += 1
+                if d.get("cert_estatus"):  # p. ej. "VIGENTE" en SUA => constancia sin vencimiento
+                    if (pid_persona, d["cert_estatus"]) not in consts_pc:
+                        k = {"id": uuid.uuid4().hex, "project_id": pid, "persona_id": pid_persona, "cert_id": d["cert_estatus"], "folio": None,
+                             "emision": None, "vencimiento": None, "notas": f"Importado: {d.get('estatus')}", "archivo": None, "activo": True,
+                             "created_by": user.get("id"), "created_at": ahora}
+                        buf["cap_certificaciones"].append(k)
+                        consts_pc.add((pid_persona, d["cert_estatus"]))
+                        cambios.append({"coleccion": "cap_certificaciones", "doc_id": k["id"], "accion": "crear"})
+            elif tipo == "certificaciones":
+                cid = d.get("cert_ref")
+                if cid == "__crear__":
+                    cid = await _cap_imp_asegurar_catalogo(pid, "cap_certs", d.get("cert_texto") or d["nombre"], cambios, cache_certs)
+                if not cid:
+                    stats["errores"] += 1
+                    continue
+                await asegurar_miembro(pid_persona)
+                if (pid_persona, cid, d.get("folio"), d.get("vencimiento")) in consts:
+                    stats["sin_cambios"] += 1
+                    continue
+                venc = d.get("vencimiento")
+                if not venc and d.get("emision"):
+                    if vigencias.get(cid):
+                        venc = _cap_suma_meses(date.fromisoformat(d["emision"]), int(vigencias[cid])).isoformat()
+                k = {"id": uuid.uuid4().hex, "project_id": pid, "persona_id": pid_persona, "cert_id": cid, "folio": d.get("folio"),
+                     "emision": d.get("emision"), "vencimiento": venc, "notas": "Importado", "archivo": None, "activo": True,
+                     "created_by": user.get("id"), "created_at": ahora}
+                buf["cap_certificaciones"].append(k)
+                consts.add((pid_persona, cid, d.get("folio"), d.get("vencimiento")))
+                consts_pc.add((pid_persona, cid))
+                cambios.append({"coleccion": "cap_certificaciones", "doc_id": k["id"], "accion": "crear"})
+                stats["creados"] += 1
+            else:  # equipos
+                tipo_id = d.get("tipo_ref")
+                if tipo_id == "__crear__" and d.get("tipo_texto"):
+                    tipo_id = await _cap_imp_asegurar_catalogo(pid, "cap_tipos", d["tipo_texto"], cambios, cache_tipos)
+                op_id = None
+                if pid_persona:
+                    op_id = (await asegurar_miembro(pid_persona))["id"]
+                campos = {"nombre": d["equipo_nombre"], "modelo": d.get("modelo"), "tipo_id": tipo_id, "ubicacion": d.get("ubicacion"),
+                          "estado": d["estado"], "operador_id": op_id, "fecha_ingreso": d.get("fecha_ingreso"), "fecha_salida": d.get("fecha_salida")}
+                llave = (_cap_norm(d["equipo_nombre"]), _cap_norm(d.get("modelo")))
+                existente = equipos_existentes.get(llave)
+                if existente:
+                    nuevos = {k: v for k, v in campos.items() if v not in (None, "") and existente.get(k) != v}
+                    if nuevos:
+                        if existente["id"] not in pendientes:
+                            cambios.append({"coleccion": "cap_equipos", "doc_id": existente["id"], "accion": "actualizar", "antes": {k: existente.get(k) for k in nuevos}})
+                            await db.cap_equipos.update_one({"id": existente["id"]}, {"$set": nuevos})
+                        existente.update(nuevos)
+                        stats["actualizados"] += 1
+                    else:
+                        stats["sin_cambios"] += 1
+                else:
+                    e = {"id": uuid.uuid4().hex, "project_id": pid, "activo": True, "notas": None, "extras": {}, "created_at": ahora, **campos}
+                    buf["cap_equipos"].append(e)
+                    pendientes.add(e["id"])
+                    equipos_existentes[llave] = e
+                    cambios.append({"coleccion": "cap_equipos", "doc_id": e["id"], "accion": "crear"})
+                    stats["creados"] += 1
+    except Exception as exc:
+        fallo = str(exc)
+        log.exception("[capacidades] importación %s falló a la mitad: %s", iid, exc)
+    finally:
+        # Se vacían los lotes acumulados y se registra siempre lo escrito para que «Deshacer» pueda revertirlo.
+        for col, docs in buf.items():
+            for i in range(0, len(docs), 1000):
+                try:
+                    await db[col].insert_many([dict(x) for x in docs[i:i + 1000]], ordered=False)
+                except Exception as exc2:  # noqa: BLE001
+                    fallo = fallo or str(exc2)
+                    log.exception("[capacidades] no se pudo escribir un lote de %s: %s", col, exc2)
+        for i in range(0, len(cambios), 1000):
+            await db.cap_import_cambios.insert_many([{"import_id": iid, **c} for c in cambios[i:i + 1000]])
+        await db.cap_importaciones.update_one({"id": iid}, {"$set": {"estado": "parcial" if fallo else "aplicada", "stats": stats, "aplicada_en": ahora}})
+    if fallo:
+        raise HTTPException(500, f"La importación falló a la mitad ({fallo}). Usa «Deshacer» para revertir lo que alcanzó a escribir.")
+    if plantilla and plantilla.strip():
+        enc = imp.get("encabezados", [])
+        await db.cap_import_plantillas.update_one(
+            {"project_id": pid, "tipo": tipo, "nombre": plantilla.strip()},
+            {"$set": {"mapeo": {c: enc[i] for c, i in imp["mapeo"].items() if 0 <= i < len(enc)}, "header_row": imp["header_row"],
+                      "opciones": imp.get("opciones", {}), "updated_at": ahora}, "$setOnInsert": {"id": uuid.uuid4().hex}}, upsert=True)
+    await _cap_log(pid, "importacion", iid, "aplicar", user, {"tipo": tipo, **stats})
+    return {"import_id": iid, "estado": "aplicada", **stats}
+
+
+@api.post("/projects/{pid}/capacidades/importar/{iid}/deshacer")
+async def cap_import_deshacer(pid: str, iid: str, user: dict = Depends(require_role(*CAP_WRITE))):
+    """Revierte SOLO lo que esta importación creó o modificó (restaura los valores previos)."""
+    await ensure_project_access(user, pid)
+    imp = await _cap_imp_get(pid, iid)
+    if imp["estado"] not in ("aplicada", "parcial"):
+        raise HTTPException(409, "Solo se puede deshacer una importación aplicada")
+    cambios = [c async for c in db.cap_import_cambios.find({"import_id": iid}, {"_id": 0}).sort("_id", -1)]
+    rev = {"eliminados": 0, "restaurados": 0, "dados_de_baja": 0, "conservados": 0}
+    for c in cambios:
+        col, did = c["coleccion"], c["doc_id"]
+        if c["accion"] == "actualizar":
+            await db[col].update_one({"id": did}, {"$set": c.get("antes", {})})
+            rev["restaurados"] += 1
+        elif col in ("cap_certs", "cap_tipos"):
+            # catálogo creado por la importación: si algo ya lo usa, solo se da de baja
+            await db[col].update_one({"id": did}, {"$set": {"activo": False}})
+            rev["dados_de_baja"] += 1
+        elif col == "cap_certificaciones":
+            doc = await db.cap_certificaciones.find_one({"id": did}, {"_id": 0, "archivo": 1})
+            if doc and doc.get("archivo"):
+                await db.cap_certificaciones.update_one({"id": did}, {"$set": {"activo": False}})  # ya tiene constancia adjunta: no se pierde
+                rev["conservados"] += 1
+            else:
+                await db.cap_certificaciones.delete_one({"id": did})
+                rev["eliminados"] += 1
+        elif col == "cap_personas":
+            if await db.cap_miembros.find_one({"persona_id": did, "project_id": {"$ne": pid}}, {"_id": 1}) \
+                    or await db.cap_certificaciones.find_one({"persona_id": did}, {"_id": 1}):
+                rev["conservados"] += 1
+            else:
+                await db.cap_personas.delete_one({"id": did})
+                rev["eliminados"] += 1
+        elif col == "cap_miembros":
+            # las constancias que creó la importación ya se revirtieron (van después en el historial);
+            # si queda alguna, la persona tenía datos propios y solo se da de baja.
+            m = await db.cap_miembros.find_one({"id": did}, {"_id": 0, "persona_id": 1}) or {}
+            if await db.cap_certificaciones.find_one({"project_id": pid, "persona_id": m.get("persona_id"), "activo": {"$ne": False}}, {"_id": 1}):
+                await db.cap_miembros.update_one({"id": did}, {"$set": {"estatus": "baja"}})
+                rev["dados_de_baja"] += 1
+            else:
+                await db.cap_miembros.delete_one({"id": did})
+                rev["eliminados"] += 1
+        else:
+            await db[col].delete_one({"id": did})
+            rev["eliminados"] += 1
+    await db.cap_importaciones.update_one({"id": iid}, {"$set": {"estado": "deshecha", "deshecha_en": datetime.now(timezone.utc).isoformat()}})
+    await _cap_log(pid, "importacion", iid, "deshacer", user, rev)
+    return {"import_id": iid, "estado": "deshecha", **rev}
+
+
+@api.get("/projects/{pid}/capacidades/importar")
+async def cap_import_historial(pid: str, user: dict = Depends(require_role(*CAP_WRITE, ROLE_JEFE))):
+    await ensure_project_access(user, pid)
+    return [i async for i in db.cap_importaciones.find({"project_id": pid, "estado": {"$ne": "previa"}},
+                                                       {"_id": 0, "errores": 0, "encabezados": 0, "mapeo": 0}).sort("created_at", -1).limit(50)]
+
+
+@api.get("/projects/{pid}/capacidades/importar-plantillas")
+async def cap_import_plantillas(pid: str, tipo: Optional[Literal["personal", "certificaciones", "equipos"]] = None,
+                                user: dict = Depends(require_role(*CAP_WRITE))):
+    """Mapeos de columnas guardados (por nombre de encabezado) para repetir la importación el próximo mes."""
+    await ensure_project_access(user, pid)
+    flt: dict = {"project_id": pid}
+    if tipo:
+        flt["tipo"] = tipo
+    return [p async for p in db.cap_import_plantillas.find(flt, {"_id": 0}).sort("nombre", 1)]
 
 
 # === MOUNT ==================================================================
