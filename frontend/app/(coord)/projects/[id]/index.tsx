@@ -493,6 +493,9 @@ export default function ProjectDetailScreen() {
           `Actualizados: ${s.updated}`,
           `Omitidos (filas vacias): ${s.skipped}`,
         ];
+        if (s.leaves_configured) {
+          lines.push(`Hojas configuradas automaticamente: ${s.leaves_configured} (${s.coords_set || 0} con coordenadas)`);
+        }
         if (s.errors?.length) {
           lines.push('');
           lines.push(`Errores: ${s.errors.length}`);

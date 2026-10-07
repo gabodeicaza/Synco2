@@ -215,6 +215,11 @@ export default function TreeBuilderScreen() {
         `Actualizados: ${res.updated}`,
         `Omitidos (filas vacias): ${res.skipped}`,
       ];
+      if (res.leaves_configured) {
+        lines.push('');
+        lines.push(`Hojas configuradas automaticamente: ${res.leaves_configured}`);
+        lines.push(`Con coordenadas objetivo: ${res.coords_set || 0}`);
+      }
       if (res.metadata_columns?.length) {
         lines.push('');
         lines.push(`Metadatos guardados: ${res.metadata_columns.join(', ')}`);

@@ -8720,6 +8720,56 @@ def _coerce_cell(v):
     return v
 
 
+# Encabezados reconocidos para configurar los nodos hoja al importar (así el
+# Coordinador no tiene que abrir nodo por nodo). "Coordenada X/Y" sigue la
+# convención de la plantilla: X = latitud, Y = longitud.
+_NODE_LAT_COLS = {"latitud", "lat", "coordenada x", "coord x", "x"}
+_NODE_LON_COLS = {"longitud", "lon", "lng", "coordenada y", "coord y", "y"}
+_NODE_ELEV_COLS = {"elevacion", "elevacion (tn)", "elev", "elevacion tn", "altitud"}
+_NODE_MTYPE_COLS = {"tipo de medicion", "tipo medicion", "medicion", "measurement type"}
+_NODE_MTYPE_VALUES = {
+    "coord_latlon": "coord_latlon", "coordenadas": "coord_latlon", "coordenada": "coord_latlon",
+    "latlon": "coord_latlon", "gps": "coord_latlon",
+    "cadenamiento": "cadenamiento", "eje": "eje", "nivel": "nivel",
+}
+
+
+def _node_float(v) -> Optional[float]:
+    """Número desde una celda (acepta coma decimal); None si no es válido."""
+    if v is None or isinstance(v, bool):
+        return None
+    try:
+        return float(str(v).strip().replace(",", ".")) if isinstance(v, str) else float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _node_leaf_config(row_vals: dict, existing: Optional[dict]) -> dict:
+    """Campos de hoja inferidos de una fila (tipo de medición + coordenadas objetivo).
+
+    `row_vals` mapea encabezado normalizado -> valor ya limpio. No pisa un
+    `measurement_type` que el nodo ya tenga configurado.
+    """
+    def first(cands):
+        for c in cands:
+            if row_vals.get(c) is not None:
+                return row_vals[c]
+        return None
+
+    lat, lon = _node_float(first(_NODE_LAT_COLS)), _node_float(first(_NODE_LON_COLS))
+    if lat is not None and lon is not None and not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        lat = lon = None
+    elev = _node_float(first(_NODE_ELEV_COLS))
+    explicit = _NODE_MTYPE_VALUES.get(_normalize_col(str(first(_NODE_MTYPE_COLS) or "")))
+    mtype = (existing or {}).get("measurement_type") or explicit
+    if not mtype and lat is not None and lon is not None:
+        mtype = "coord_latlon"
+    cfg: dict = {"is_leaf": True, "measurement_type": mtype}
+    if mtype == "coord_latlon" and lat is not None and lon is not None:
+        cfg.update(target_lat=lat, target_lon=lon, target_elev=elev)
+    return cfg
+
+
 @api.get("/projects/{pid}/nodes/bulk-upload/template")
 async def bulk_upload_template(
     pid: str,
@@ -8903,6 +8953,7 @@ async def _process_nodes_bulk_upload(pid: str, raw: bytes, filename: str) -> dic
 
     # Procesamos en 2 pasadas para resolver referencias de padre forward.
     rows = df.to_dict(orient="records")
+    row_norm: dict = {}  # nombre-lower -> {encabezado normalizado: valor}
 
     async def upsert_row(row: dict, second_pass: bool = False):
         nonlocal next_order
@@ -8943,6 +8994,10 @@ async def _process_nodes_bulk_upload(pid: str, raw: bytes, filename: str) -> dic
             metadata[str(c)] = val
 
         key = name.lower()
+        row_norm[key] = {
+            _normalize_col(str(c)): _coerce_cell(row.get(c))
+            for c in cols if c != name_col and c != parent_col
+        }
         existing = by_name_lower.get(key)
         if existing:
             # Update: refrescamos metadata y parent_id (si vino padre)
@@ -9011,6 +9066,25 @@ async def _process_nodes_bulk_upload(pid: str, raw: bytes, filename: str) -> dic
             await upsert_row(row, second_pass=True)
         except Exception as e:
             summary["errors"].append({"row": idx + 2, "error": str(e)})
+
+    # Pasada 3: los nodos sin hijos son hojas; se les asigna tipo de medición y
+    # coordenadas objetivo desde el archivo para no configurarlos uno por uno.
+    parent_ids = {n.get("parent_id") for n in by_name_lower.values() if n.get("parent_id")}
+    summary["leaves_configured"] = 0
+    summary["coords_set"] = 0
+    for key, vals in row_norm.items():
+        node = by_name_lower.get(key)
+        if not node or node["id"] in parent_ids:
+            continue
+        try:
+            cfg = _node_leaf_config(vals, node)
+            await db.location_nodes.update_one({"id": node["id"]}, {"$set": cfg})
+            node.update(cfg)
+            summary["leaves_configured"] += 1
+            if "target_lat" in cfg:
+                summary["coords_set"] += 1
+        except Exception as e:
+            summary["errors"].append({"row": 0, "error": f"{node.get('name')}: {e}"})
 
     return summary
 
