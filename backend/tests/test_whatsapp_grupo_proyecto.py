@@ -45,17 +45,19 @@ class _FakeClient:
         return _Resp()
 
 
-class _FakeProjects:
-    def __init__(self, proyecto):
-        self.proyecto = proyecto
+class _Col:
+    def __init__(self, doc):
+        self.doc = doc
 
     async def find_one(self, *a, **k):
-        return self.proyecto
+        return self.doc
 
 
 class _FakeDb:
-    def __init__(self, proyecto):
-        self.projects = _FakeProjects(proyecto)
+    def __init__(self, proyecto, usuario=None, plantilla=None):
+        self.projects = _Col(proyecto)
+        self.users = _Col(usuario)
+        self.report_templates = _Col(plantilla)
 
 
 @pytest.fixture
@@ -67,43 +69,71 @@ def whapi(monkeypatch):
     return _FakeClient
 
 
+_PROYECTO = {"name": "Bdhd", "constructora": "Jeje", "contract_number": "Jruei", "whatsapp_group_id": _GRUPO}
+
+
 def _doc(images=None):
     return {
-        "id": "r1", "project_id": "p1", "title": "Colado de losa",
-        "node_path_names": ["Tramo 1", "Eje A"], "actividades": "Colado", "avance": "40%",
-        "captured_by_name": "Ana", "created_at": datetime(2026, 10, 6, 15, 30, tzinfo=timezone.utc),
+        "id": "r1", "project_id": "p1", "captured_by": "u1", "captured_by_name": "Gabriel",
+        "node_path_names": ["TRAMO 1", "Subtramo E2-E3", "C19"], "actividades": "Actividades",
+        "observaciones": "A ver si funciona", "personnel": ["1 ING. Civil"],
+        "equipment": ["1 Cortadora de varilla"],
+        # 6 oct 2026 20:00 UTC = 14:00 CDMX; y 7 oct 02:00 UTC = 6 oct 20:00 CDMX
+        "created_at": datetime(2026, 10, 7, 2, 0, tzinfo=timezone.utc),
         "images": images or [],
     }
 
 
-def test_con_foto_usa_messages_image_y_el_grupo_del_proyecto(whapi, monkeypatch):
-    monkeypatch.setattr(server, "db", _FakeDb({"name": "Prueba", "whatsapp_group_id": _GRUPO}))
-    asyncio.run(server._whatsapp_enviar_reporte(_doc([_PNG])))
-    (url, headers, body), = whapi.llamadas
-    assert url == "https://gate.whapi.cloud/messages/image"
-    assert headers["Authorization"] == "Bearer tok"
-    assert body["to"] == _GRUPO
-    assert body["media"].startswith("data:image/jpeg;base64,")
-    assert "Colado de losa" in body["caption"] and "Tramo 1 > Eje A" in body["caption"]
+def test_texto_identico_a_la_vista_previa():
+    t = server._whatsapp_texto_reporte(_doc(), _PROYECTO, None)
+    assert t == (
+        "6 de octubre de 2026.\nGabriel\n\n\n"
+        "Constructora: Jeje\nNo de contrato: Jruei\n\n"
+        "C19\n\n"
+        "*Actividades:*\nActividades\n\n"
+        "*Observaciones:*\nA ver si funciona\n\n"
+        "Personal:\n1 ING. Civil\n\n"
+        "Equipo:\n1 Cortadora de varilla"
+    )
 
 
-def test_varias_fotos_se_mandan_todas(whapi, monkeypatch):
-    monkeypatch.setattr(server, "db", _FakeDb({"name": "Prueba", "whatsapp_group_id": _GRUPO}))
-    d = _doc([_PNG, _PNG, _PNG])
-    d["photo_captions"] = ["a", "foto dos", ""]
-    asyncio.run(server._whatsapp_enviar_reporte(d))
+def test_texto_con_puesto_incidencias_y_datos_dinamicos():
+    d = _doc()
+    d.update(incidencias="Lluvia", personnel=[], equipment=[], dynamic_data={"k1": True, "k2": ["a", "b"], "k3": ""})
+    t = server._whatsapp_texto_reporte(d, _PROYECTO, "Residente", [{"key": "k1", "label": "Casco"}])
+    assert "Gabriel\nResidente" in t
+    assert "*Datos del reporte:*\nCasco: Sí\nk2: a, b\nk3: -" in t
+    assert "Incidencias:\nLluvia" in t and "Personal:\n-\n\nEquipo:\n-" in t
+
+
+def test_todas_las_fotos_y_el_texto_va_en_la_ultima(whapi, monkeypatch):
+    monkeypatch.setattr(server, "db", _FakeDb(_PROYECTO, {"puesto": "Residente"}))
+    asyncio.run(server._whatsapp_enviar_reporte(_doc([_PNG, _PNG, _PNG])))
     assert len(whapi.llamadas) == 3
-    assert all(u.endswith("/messages/image") and b["to"] == _GRUPO for u, _h, b in whapi.llamadas)
+    assert all(u == "https://gate.whapi.cloud/messages/image" and h["Authorization"] == "Bearer tok"
+               and b["to"] == _GRUPO and b["media"].startswith("data:image/jpeg;base64,")
+               for u, h, b in whapi.llamadas)
     caps = [b["caption"] for _u, _h, b in whapi.llamadas]
-    assert "Colado de losa" in caps[0] and caps[1:] == ["foto dos", ""]
+    assert caps[0] == "" and caps[1] == ""
+    assert caps[2].startswith("6 de octubre de 2026.\nGabriel\nResidente") and "Constructora: Jeje" in caps[2]
+
+
+def test_texto_largo_no_cabe_de_pie_de_foto_se_manda_aparte(whapi, monkeypatch):
+    monkeypatch.setattr(server, "db", _FakeDb(_PROYECTO))
+    d = _doc([_PNG, _PNG])
+    d["observaciones"] = "x" * 1500
+    asyncio.run(server._whatsapp_enviar_reporte(d))
+    assert [u.rsplit("/", 1)[1] for u, _h, _b in whapi.llamadas] == ["image", "image", "text"]
+    assert all(b["caption"] == "" for _u, _h, b in whapi.llamadas[:2])
+    assert "x" * 1500 in whapi.llamadas[2][2]["body"]
 
 
 def test_sin_foto_usa_messages_text(whapi, monkeypatch):
-    monkeypatch.setattr(server, "db", _FakeDb({"name": "Prueba", "whatsapp_group_id": _GRUPO}))
+    monkeypatch.setattr(server, "db", _FakeDb(_PROYECTO))
     asyncio.run(server._whatsapp_enviar_reporte(_doc()))
     (url, _h, body), = whapi.llamadas
     assert url == "https://gate.whapi.cloud/messages/text"
-    assert body["to"] == _GRUPO and "Avance:* 40%" in body["body"]
+    assert body["to"] == _GRUPO and body["body"].startswith("6 de octubre de 2026.")
 
 
 @pytest.mark.parametrize("proyecto", [{"name": "X"}, {"name": "X", "whatsapp_group_id": None}, None])
@@ -115,7 +145,7 @@ def test_sin_grupo_en_el_proyecto_no_envia(whapi, monkeypatch, proyecto):
 
 def test_sin_token_no_envia(whapi, monkeypatch):
     monkeypatch.setattr(server, "WHAPI_TOKEN", "")
-    monkeypatch.setattr(server, "db", _FakeDb({"name": "P", "whatsapp_group_id": _GRUPO}))
+    monkeypatch.setattr(server, "db", _FakeDb(_PROYECTO))
     asyncio.run(server._whatsapp_enviar_reporte(_doc()))
     assert whapi.llamadas == []
 
@@ -126,7 +156,7 @@ def test_error_de_whapi_no_propaga(whapi, monkeypatch):
             raise RuntimeError("red caída")
 
     monkeypatch.setattr(server.httpx, "AsyncClient", _Boom)
-    monkeypatch.setattr(server, "db", _FakeDb({"name": "P", "whatsapp_group_id": _GRUPO}))
+    monkeypatch.setattr(server, "db", _FakeDb(_PROYECTO))
     asyncio.run(server._whatsapp_enviar_reporte(_doc()))  # no lanza
 
 
