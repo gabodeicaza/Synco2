@@ -9960,32 +9960,66 @@ async def create_report(body: ReportIn, user: dict = Depends(current_user)):
 
 
 _WHATSAPP_MAX_FOTOS = 10  # tope por reporte para no saturar el grupo
+_WHATSAPP_MAX_CAPTION = 1000  # límite de WhatsApp para el pie de foto (~1024)
 
 
-def _whatsapp_texto_reporte(doc: dict, project_name: str) -> str:
-    """Texto descriptivo del reporte para WhatsApp (formato *negrita* de WA)."""
-    partes = [f"*{project_name}*"]
-    titulo = doc.get("title")
-    if titulo:
-        partes.append(f"*{titulo}*")
-    ubic = " > ".join(doc.get("node_path_names") or [])
-    if ubic:
-        partes.append(f"Ubicación: {ubic}")
-    for etiqueta, clave in (
-        ("Actividades", "actividades"),
-        ("Avance", "avance"),
-        ("Observaciones", "observaciones"),
-        ("Incidencias", "incidencias"),
-        ("Notas", "notes"),
-    ):
-        if doc.get(clave):
-            partes.append(f"*{etiqueta}:* {doc[clave]}")
-    pie = f"Capturó: {doc.get('captured_by_name') or '-'}"
+_WHATSAPP_MESES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
+             "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
+
+
+def _whatsapp_valor_dinamico(v: Any) -> str:
+    if v is None or v == "":
+        return "-"
+    if isinstance(v, bool):
+        return "Sí" if v else "No"
+    if isinstance(v, list):
+        return ", ".join(str(x) for x in v) if v else "-"
+    return str(v)
+
+
+def _whatsapp_texto_reporte(
+    doc: dict,
+    project: Optional[dict] = None,
+    autor_puesto: Optional[str] = None,
+    template_fields: Optional[List[dict]] = None,
+) -> str:
+    """Texto del reporte para WhatsApp: MISMO formato que la vista previa de la
+    app (frontend/src/utils/reportText.ts, `buildReportShareText`). Si cambia
+    uno, cambiar el otro."""
+    project = project or {}
     ts = doc.get("created_at")
-    if isinstance(ts, datetime):
-        pie += f" · {ts.astimezone(timezone.utc).strftime('%d/%m/%Y %H:%M')} UTC"
-    partes.append(pie)
-    return "\n".join(partes)[:4000]
+    if not isinstance(ts, datetime):
+        ts = datetime.now(timezone.utc)
+    elif ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    ts = ts.astimezone(MX_TZ)
+    fecha = f"{ts.day} de {_WHATSAPP_MESES[ts.month - 1]} de {ts.year}"
+
+    path_names = doc.get("node_path_names") or []
+    hoja = path_names[-1] if path_names else ""
+
+    secciones: List[str] = [
+        f"{fecha}.\n{doc.get('captured_by_name') or ''}\n{autor_puesto or ''}",
+        f"Constructora: {project.get('constructora') or ''}\nNo de contrato: {project.get('contract_number') or ''}",
+    ]
+    if hoja:
+        secciones.append(hoja)
+    if doc.get("actividades"):
+        secciones.append(f"*Actividades:*\n{doc['actividades']}")
+
+    dyn = doc.get("dynamic_data") or {}
+    if dyn:
+        label = {f.get("key"): f.get("label") for f in (template_fields or [])}
+        lineas = [f"{label.get(k) or k}: {_whatsapp_valor_dinamico(v)}" for k, v in dyn.items()]
+        secciones.append("*Datos del reporte:*\n" + "\n".join(lineas))
+
+    if doc.get("observaciones"):
+        secciones.append(f"*Observaciones:*\n{doc['observaciones']}")
+    if doc.get("incidencias"):
+        secciones.append(f"Incidencias:\n{doc['incidencias']}")
+    secciones.append("Personal:\n" + ("\n".join(doc.get("personnel") or []) or "-"))
+    secciones.append("Equipo:\n" + ("\n".join(doc.get("equipment") or []) or "-"))
+    return "\n\n".join(secciones)
 
 
 def _whatsapp_imagen_para_envio(b64_str: str) -> Optional[str]:
@@ -10010,7 +10044,8 @@ def _whatsapp_imagen_para_envio(b64_str: str) -> Optional[str]:
 async def _whatsapp_enviar_reporte(doc: dict) -> None:
     """Publica el reporte en el grupo de WhatsApp del proyecto (Whapi.cloud).
 
-    Foto + texto vía POST /messages/image; sin foto, POST /messages/text. Es
+    Todas las fotos vía POST /messages/image (el texto en la última); sin foto
+    (o si el texto no cabe como pie de foto), POST /messages/text. Es
     best-effort: cualquier fallo se loguea y nunca afecta el reporte. Si el
     proyecto no tiene `whatsapp_group_id` (o faltan credenciales) no hace nada.
     """
@@ -10018,12 +10053,18 @@ async def _whatsapp_enviar_reporte(doc: dict) -> None:
         if not WHAPI_TOKEN:
             return
         project = await db.projects.find_one(
-            {"id": doc["project_id"]}, {"_id": 0, "name": 1, "whatsapp_group_id": 1}
+            {"id": doc["project_id"]},
+            {"_id": 0, "name": 1, "constructora": 1, "contract_number": 1, "whatsapp_group_id": 1},
         )
         group_id = ((project or {}).get("whatsapp_group_id") or "").strip()
         if not group_id:
             return
-        texto = _whatsapp_texto_reporte(doc, (project or {}).get("name") or "Proyecto")
+        autor = await db.users.find_one({"id": doc.get("captured_by")}, {"_id": 0, "puesto": 1})
+        tpl_fields = None
+        if doc.get("template_id"):
+            tpl = await db.report_templates.find_one({"id": doc["template_id"]}, {"_id": 0, "fields": 1})
+            tpl_fields = (tpl or {}).get("fields")
+        texto = _whatsapp_texto_reporte(doc, project, (autor or {}).get("puesto"), tpl_fields)
         base = WHAPI_URL.rstrip("/")
         headers = {"Authorization": f"Bearer {WHAPI_TOKEN}", "Accept": "application/json"}
 
@@ -10033,20 +10074,22 @@ async def _whatsapp_enviar_reporte(doc: dict) -> None:
             if m:
                 medias.append(m)
 
-        captions = doc.get("photo_captions") or []
+        # WhatsApp limita el pie de foto (~1024 caracteres): si el texto cabe,
+        # va en la ÚLTIMA foto; si no, las fotos van solas y el texto después.
+        texto_en_ultima = bool(medias) and len(texto) <= _WHATSAPP_MAX_CAPTION
+        resp = None
         async with httpx.AsyncClient(timeout=30.0) as client:
-            if medias:
-                # La 1.ª foto lleva el texto del reporte; las demás, su descripción individual.
-                for i, media in enumerate(medias):
-                    caption = texto if i == 0 else ((captions[i] if i < len(captions) else "") or "")
-                    resp = await client.post(
-                        f"{base}/messages/image",
-                        headers=headers,
-                        json={"to": group_id, "media": media, "caption": caption[:4000]},
-                    )
-                    if resp.status_code >= 300:
-                        break
-            else:
+            for i, media in enumerate(medias):
+                es_ultima = i == len(medias) - 1
+                resp = await client.post(
+                    f"{base}/messages/image",
+                    headers=headers,
+                    json={"to": group_id, "media": media,
+                          "caption": texto if (es_ultima and texto_en_ultima) else ""},
+                )
+                if resp.status_code >= 300:
+                    break
+            if not texto_en_ultima and (resp is None or resp.status_code < 300):
                 resp = await client.post(
                     f"{base}/messages/text",
                     headers=headers,
