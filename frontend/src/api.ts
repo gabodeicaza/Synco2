@@ -44,6 +44,21 @@ async function _downloadFile(url: string, filenameFallback: string, errorFallbac
 // antes de moverse a `httpClient.ts` (para que `offlineQueue.ts` pueda usar
 // `request`/`ApiError` sin generar un import circular). Se re-exportan para
 // que auth-context.tsx y coordinators.tsx no necesiten cambiar su import.
+// Asistencia: una fila por persona del proyecto y un registro por "userId|AAAA-MM-DD".
+export type AsistenciaEstado = 'asistio' | 'justificada' | 'falta';
+export type AsistenciaPersona = {
+  id: string; name: string; role: string; puesto?: string | null; area_name?: string | null;
+  alta?: string | null; // fecha de alta: antes de ella no cuenta falta
+};
+export type AsistenciaRegistro = {
+  estado: AsistenciaEstado; hora?: string | null; ubicacion?: string | null;
+  lat?: number | null; lon?: number | null;
+  fuente: 'reporte' | 'registro' | 'manual'; nota?: string | null; editado_por?: string | null;
+};
+export type AsistenciaResp = {
+  desde: string; hasta: string; hoy: string;
+  personas: AsistenciaPersona[]; registros: Record<string, AsistenciaRegistro>;
+};
 export { BACKEND_URL, BASE, ApiError, setAuthTokenCache };
 
 /**
@@ -2585,6 +2600,13 @@ export const api = {
     request<PendienteGeneral>('PATCH', `/projects/${pid}/pendientes-generales/${rid}`, body),
   deletePendienteGeneral: (pid: string, rid: string) =>
     request<{ ok: boolean }>('DELETE', `/projects/${pid}/pendientes-generales/${rid}`),
+  // Asistencia (Coordinador / Sub-Coordinador): derivada de los reportes.
+  getAsistencia: (pid: string, desde: string, hasta: string) =>
+    request<AsistenciaResp>('GET', `/projects/${pid}/asistencia?desde=${desde}&hasta=${hasta}`),
+  setAsistencia: (pid: string, uid: string, fecha: string, body: { estado: AsistenciaEstado | 'auto'; nota?: string }) =>
+    request<{ ok: boolean }>('PUT', `/projects/${pid}/asistencia/${uid}/${fecha}`, body),
+  registrarMiAsistencia: (pid: string, body: { lat?: number | null; lon?: number | null }) =>
+    request<{ ok: boolean; ya_registrada: boolean }>('POST', `/projects/${pid}/asistencia/registrar`, body),
   // Creador de módulos (módulos personalizados).
   listCustomModules: (pid: string, todos = false) =>
     request<CustomModule[]>('GET', `/projects/${pid}/custom-modules${todos ? '?todos=true' : ''}`),
