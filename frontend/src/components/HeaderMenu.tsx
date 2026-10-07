@@ -3,7 +3,7 @@
 // sueltos en cada dashboard: Archivos de consulta, Fuerza de trabajo y
 // Cerrar sesion.
 import React, { useEffect, useRef, useState } from 'react';
-import { Alert, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, Modal, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -23,6 +23,7 @@ type HeaderMenuProps = {
 
 export function HeaderMenu({ basePath, projectId }: HeaderMenuProps) {
   const insets = useSafeAreaInsets();
+  const { height: winH } = useWindowDimensions();
   const { logout } = useAuth();
   const [open, setOpen] = useState(false);
   const [borrando, setBorrando] = useState(false);
@@ -87,7 +88,8 @@ export function HeaderMenu({ basePath, projectId }: HeaderMenuProps) {
 
       <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
         <Pressable style={styles.backdrop} onPress={() => setOpen(false)}>
-          <View style={[styles.menuCard, { top: insets.top + 56 }]}>
+          <View style={[styles.menuCard, { top: insets.top + 56, maxHeight: winH - insets.top - insets.bottom - 64 }]}>
+            <ScrollView showsVerticalScrollIndicator={false} bounces={false}>
             {/* Mensajes y Calendario vivian como tabs de la barra inferior
                 (subcoord y spec); se movieron aqui para liberar espacio. */}
             <MenuItem icon="chatbubbles-outline" label="Mensajes" onPress={() => goTo('mensajes')} />
@@ -165,6 +167,7 @@ export function HeaderMenu({ basePath, projectId }: HeaderMenuProps) {
             />
             <MenuItem icon="log-out-outline" label="Cerrar sesion" onPress={onLogout} destructive />
             <MenuItem icon="trash-outline" label="Eliminar mi cuenta" onPress={() => { setOpen(false); setBorrando(true); }} destructive />
+            </ScrollView>
           </View>
         </Pressable>
       </Modal>
@@ -189,7 +192,7 @@ function MenuItem({
       onPress={onPress}
       style={({ pressed }) => [styles.menuItem, pressed && { backgroundColor: colors.bg }]}
     >
-      <Ionicons name={icon} size={19} color={destructive ? colors.error : colors.primary} />
+      <Ionicons name={icon} size={18} color={destructive ? colors.error : colors.primary} />
       <Text style={[styles.menuItemTxt, destructive && { color: colors.error }]}>{label}</Text>
     </Pressable>
   );
@@ -222,18 +225,18 @@ const styles = StyleSheet.create({
   menuItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    gap: 10,
     paddingHorizontal: spacing.md,
-    paddingVertical: 12,
+    paddingVertical: 8,
   },
   menuItemTxt: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '700',
     color: colors.text,
   },
   divider: {
     height: 1,
     backgroundColor: colors.border,
-    marginVertical: spacing.xs,
+    marginVertical: 2,
   },
 });
