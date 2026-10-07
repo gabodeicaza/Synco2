@@ -59,6 +59,50 @@ export type AsistenciaResp = {
   desde: string; hasta: string; hoy: string;
   personas: AsistenciaPersona[]; registros: Record<string, AsistenciaRegistro>;
 };
+// Capacidades de operadores: catálogos por proyecto, operadores con constancias y semáforo de aptitud.
+export type CapSemaforo = 'verde' | 'amarillo' | 'rojo' | 'sin_reglas';
+export type CapEstadoCert = 'vigente' | 'por_vencer' | 'vencida' | 'faltante';
+export type CapCert = {
+  id: string; nombre: string; aliases: string[]; vigencia_meses?: number | null;
+  obligatoria: boolean; descripcion?: string | null; activo?: boolean;
+};
+export type CapTipo = {
+  id: string; nombre: string; aliases: string[]; cert_ids: string[]; descripcion?: string | null; activo?: boolean;
+};
+export type CapCertDetalle = {
+  cert_id: string; nombre: string; requerida: boolean; estado: CapEstadoCert;
+  constancia_id?: string | null; folio?: string | null; vencimiento?: string | null; tiene_archivo: boolean;
+};
+export type CapEquipoMini = { id: string; nombre: string; modelo?: string | null; ubicacion?: string | null };
+export type CapConstancia = {
+  id: string; cert_id: string; folio?: string | null; emision?: string | null; vencimiento?: string | null;
+  notas?: string | null; archivo?: { nombre: string; mime_type: string; size: number } | null;
+};
+export type CapOperador = {
+  id: string; persona_id: string; nombre: string; aliases: string[];
+  puesto?: string | null; tipo_id?: string | null; tipo?: string | null;
+  frente?: string | null; empresa?: string | null; estatus: 'activo' | 'baja'; notas?: string | null;
+  extras: Record<string, any>; equipos: CapEquipoMini[];
+  semaforo: CapSemaforo; faltantes: string[]; vencidas: string[]; por_vencer: string[];
+  certificaciones: CapCertDetalle[];
+  constancias?: CapConstancia[];
+};
+export type CapEquipo = {
+  id: string; nombre: string; modelo?: string | null; tipo_id?: string | null; tipo?: string | null;
+  ubicacion?: string | null; estado: 'activo' | 'inactivo'; operador_id?: string | null;
+  fecha_ingreso?: string | null; fecha_salida?: string | null; notas?: string | null;
+  operador?: { id: string; nombre: string; semaforo: CapSemaforo; faltantes: string[]; vencidas: string[] } | null;
+};
+export type CapResumen = {
+  total_activos: number; alerta_dias: number;
+  por_semaforo: Record<CapSemaforo, number>;
+  por_frente: Record<string, Record<CapSemaforo, number>>;
+  brechas: { id: string; nombre: string; frente?: string | null; faltantes: string[]; vencidas: string[] }[];
+  vencimientos: { id: string; nombre: string; cert: string; vencimiento?: string | null; estado: string }[];
+};
+export type CapConfig = { alerta_dias: number; campos_extra: { clave: string; etiqueta: string }[] };
+export type CapPersonaCoincidencia = { persona_id: string; nombre: string; similitud: number; operador_id?: string | null };
+
 export { BACKEND_URL, BASE, ApiError, setAuthTokenCache };
 
 /**
@@ -2607,6 +2651,62 @@ export const api = {
     request<{ ok: boolean }>('PUT', `/projects/${pid}/asistencia/${uid}/${fecha}`, body),
   registrarMiAsistencia: (pid: string, body: { lat?: number | null; lon?: number | null }) =>
     request<{ ok: boolean; ya_registrada: boolean }>('POST', `/projects/${pid}/asistencia/registrar`, body),
+  // Capacidades de operadores (lectura: todos los roles del proyecto; edición: Coordinador / Sub-Coordinador).
+  capConfig: (pid: string) => request<CapConfig>('GET', `/projects/${pid}/capacidades/config`),
+  capResumen: (pid: string) => request<CapResumen>('GET', `/projects/${pid}/capacidades/resumen`),
+  capListCerts: (pid: string) => request<CapCert[]>('GET', `/projects/${pid}/capacidades/certificaciones`),
+  capSaveCert: (pid: string, id: string | null, body: Partial<CapCert>) =>
+    id ? request<CapCert>('PUT', `/projects/${pid}/capacidades/certificaciones/${id}`, body)
+       : request<CapCert>('POST', `/projects/${pid}/capacidades/certificaciones`, body),
+  capDeleteCert: (pid: string, id: string) => request<{ ok: boolean }>('DELETE', `/projects/${pid}/capacidades/certificaciones/${id}`),
+  capListTipos: (pid: string) => request<CapTipo[]>('GET', `/projects/${pid}/capacidades/tipos`),
+  capSaveTipo: (pid: string, id: string | null, body: Partial<CapTipo>) =>
+    id ? request<CapTipo>('PUT', `/projects/${pid}/capacidades/tipos/${id}`, body)
+       : request<CapTipo>('POST', `/projects/${pid}/capacidades/tipos`, body),
+  capDeleteTipo: (pid: string, id: string) => request<{ ok: boolean }>('DELETE', `/projects/${pid}/capacidades/tipos/${id}`),
+  capCopiarCatalogos: (pid: string, origen: string) =>
+    request<{ certificaciones_nuevas: number; tipos_nuevos: number }>('POST', `/projects/${pid}/capacidades/catalogos/copiar?origen_project_id=${origen}`),
+  capListOperadores: (pid: string, f: { q?: string; frente?: string; tipo_id?: string; semaforo?: CapSemaforo; estatus?: string; cert_id?: string; skip?: number; limit?: number }) => {
+    const qs = Object.entries(f).filter(([, v]) => v !== undefined && v !== '' && v !== null)
+      .map(([k, v]) => `${k}=${encodeURIComponent(String(v))}`).join('&');
+    return request<{ total: number; items: CapOperador[] }>('GET', `/projects/${pid}/capacidades/operadores${qs ? `?${qs}` : ''}`);
+  },
+  capGetOperador: (pid: string, id: string) => request<CapOperador>('GET', `/projects/${pid}/capacidades/operadores/${id}`),
+  capCreateOperador: (pid: string, body: Record<string, any>) => request<CapOperador>('POST', `/projects/${pid}/capacidades/operadores`, body),
+  capUpdateOperador: (pid: string, id: string, body: Record<string, any>) => request<CapOperador>('PUT', `/projects/${pid}/capacidades/operadores/${id}`, body),
+  capBajaOperador: (pid: string, id: string) => request<{ ok: boolean }>('DELETE', `/projects/${pid}/capacidades/operadores/${id}`),
+  capBuscarPersonas: (pid: string, q: string) =>
+    request<CapPersonaCoincidencia[]>('GET', `/projects/${pid}/capacidades/personas/buscar?q=${encodeURIComponent(q)}`),
+  capAddConstancia: (pid: string, mid: string, body: { cert_id: string; folio?: string; emision?: string; vencimiento?: string; notas?: string }) =>
+    request<CapConstancia>('POST', `/projects/${pid}/capacidades/operadores/${mid}/constancias`, body),
+  capUpdateConstancia: (pid: string, cid: string, body: { cert_id: string; folio?: string; emision?: string; vencimiento?: string; notas?: string }) =>
+    request<CapConstancia>('PUT', `/projects/${pid}/capacidades/constancias/${cid}`, body),
+  capDeleteConstancia: (pid: string, cid: string) => request<{ ok: boolean }>('DELETE', `/projects/${pid}/capacidades/constancias/${cid}`),
+  capUploadConstanciaArchivo: async (pid: string, cid: string, file: { uri: string; name: string; mimeType?: string | null }) => {
+    const fileName = file.name || 'constancia.pdf';
+    const mime = file.mimeType || 'application/pdf';
+    const url = `${BASE}/projects/${pid}/capacidades/constancias/${cid}/archivo`;
+    if (Platform.OS !== 'web') return nativeMultipartUpload<{ nombre: string; size: number }>(url, file.uri, fileName, mime, 'constancia');
+    const form = new FormData();
+    const blob = await (await fetch(file.uri)).blob();
+    form.append('file', new File([blob], fileName, { type: mime }));
+    const res = await fetch(url, { method: 'POST', headers: await authHeader(), body: form as any });
+    const text = await res.text();
+    const data = text ? safeJson(text) : null;
+    if (!res.ok) {
+      const msg = (data && (data as any).detail) || `HTTP ${res.status}`;
+      throw new ApiError(res.status, typeof msg === 'string' ? msg : JSON.stringify(msg));
+    }
+    return data as { nombre: string; size: number };
+  },
+  capDownloadConstancia: (pid: string, cid: string) =>
+    _downloadFile(`${BASE}/projects/${pid}/capacidades/constancias/${cid}/archivo`, 'constancia', 'No se pudo descargar la constancia'),
+  capListEquipos: (pid: string, q?: string) =>
+    request<CapEquipo[]>('GET', `/projects/${pid}/capacidades/equipos${q ? `?q=${encodeURIComponent(q)}` : ''}`),
+  capSaveEquipo: (pid: string, id: string | null, body: Partial<CapEquipo>) =>
+    id ? request<CapEquipo>('PUT', `/projects/${pid}/capacidades/equipos/${id}`, body)
+       : request<CapEquipo>('POST', `/projects/${pid}/capacidades/equipos`, body),
+  capBajaEquipo: (pid: string, id: string) => request<{ ok: boolean }>('DELETE', `/projects/${pid}/capacidades/equipos/${id}`),
   // Creador de módulos (módulos personalizados).
   listCustomModules: (pid: string, todos = false) =>
     request<CustomModule[]>('GET', `/projects/${pid}/custom-modules${todos ? '?todos=true' : ''}`),

@@ -1517,6 +1517,12 @@ export default function ProjectDetailScreen() {
                   onPress={() => router.push({ pathname: '/(coord)/projects/[id]/asistencia' as any, params: { id: pid } })}
                 />
                 <ActionTile
+                  icon="ribbon-outline"
+                  title="Capacidades de Operadores"
+                  subtitle="Certificaciones, constancias y aptitud de cada operador y equipo"
+                  onPress={() => router.push({ pathname: '/(coord)/projects/[id]/capacidades' as any, params: { id: pid } })}
+                />
+                <ActionTile
                   icon="people-outline"
                   title="Fuerza de Trabajo"
                   subtitle="Personal y maquinaria derivados de los reportes"
