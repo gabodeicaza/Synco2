@@ -103,6 +103,41 @@ export type CapResumen = {
 export type CapConfig = { alerta_dias: number; campos_extra: { clave: string; etiqueta: string }[] };
 export type CapPersonaCoincidencia = { persona_id: string; nombre: string; similitud: number; operador_id?: string | null };
 
+// Importador masivo de capacidades (Excel/CSV con conciliación de nombres).
+export type CapImportTipo = 'personal' | 'certificaciones' | 'equipos';
+export type CapImportHoja = {
+  nombre: string; filas: number; header_row: number;
+  columnas: { idx: number; nombre: string }[]; muestra: string[][];
+  sugerido: Record<CapImportTipo, Record<string, number>>;
+};
+export type CapImportAnalisis = { archivo_id: string; nombre: string; hojas: CapImportHoja[] };
+export type CapImportValorNuevo = { valor: string; filas: number };
+export type CapImportPreview = {
+  import_id: string;
+  resumen: {
+    filas_validas: number; errores: number; nombres_distintos: number; filas_omitidas: number;
+    por_estado: { exacto: number; alto: number; dudoso: number; nuevo: number }; dudosos_pendientes: number;
+  };
+  errores: { fila: number; motivo: string; nombre?: string }[];
+  valores_nuevos: { puestos: CapImportValorNuevo[]; certificaciones: CapImportValorNuevo[]; tipos: CapImportValorNuevo[] };
+};
+export type CapImportGrupo = {
+  grupo: string; nombre_origen: string; filas: number; estado: 'exacto' | 'alto' | 'dudoso' | 'nuevo';
+  persona_id?: string | null; candidatos: { persona_id: string; nombre: string; similitud: number }[];
+  decision: { accion: 'ligar' | 'crear' | 'omitir'; persona_id?: string | null } | null;
+};
+export type CapImportResultado = {
+  import_id: string; estado: string; personas_creadas: number; personas_ligadas: number;
+  creados: number; actualizados: number; sin_cambios: number; omitidos: number; errores: number;
+};
+export type CapImportHistorial = {
+  id: string; tipo: CapImportTipo; hoja: string; estado: string; created_at: string; created_by_name?: string;
+  stats?: Partial<CapImportResultado>;
+};
+export type CapImportPlantilla = {
+  id: string; nombre: string; tipo: CapImportTipo; mapeo: Record<string, string>; header_row: number; opciones: Record<string, any>;
+};
+
 export { BACKEND_URL, BASE, ApiError, setAuthTokenCache };
 
 /**
@@ -2707,6 +2742,40 @@ export const api = {
     id ? request<CapEquipo>('PUT', `/projects/${pid}/capacidades/equipos/${id}`, body)
        : request<CapEquipo>('POST', `/projects/${pid}/capacidades/equipos`, body),
   capBajaEquipo: (pid: string, id: string) => request<{ ok: boolean }>('DELETE', `/projects/${pid}/capacidades/equipos/${id}`),
+  // Importador masivo de capacidades (solo Coordinador / Sub-Coordinador).
+  capImportAnalizar: async (pid: string, file: { uri: string; name: string; mimeType?: string | null }) => {
+    const fileName = file.name || 'importacion.xlsx';
+    const mime = file.mimeType || 'application/octet-stream';
+    const url = `${BASE}/projects/${pid}/capacidades/importar/analizar`;
+    if (Platform.OS !== 'web') return nativeMultipartUpload<CapImportAnalisis>(url, file.uri, fileName, mime, 'capimport');
+    const form = new FormData();
+    const blob = await (await fetch(file.uri)).blob();
+    form.append('file', new File([blob], fileName, { type: mime }));
+    const res = await fetch(url, { method: 'POST', headers: await authHeader(), body: form as any });
+    const text = await res.text();
+    const data = text ? safeJson(text) : null;
+    if (!res.ok) {
+      const msg = (data && (data as any).detail) || `HTTP ${res.status}`;
+      throw new ApiError(res.status, typeof msg === 'string' ? msg : JSON.stringify(msg));
+    }
+    return data as CapImportAnalisis;
+  },
+  capImportPreview: (pid: string, body: {
+    archivo_id: string; hoja: string; tipo: CapImportTipo; header_row: number; mapeo: Record<string, number>;
+    opciones: Record<string, any>; mapa_valores?: Record<string, Record<string, string>>;
+  }) => request<CapImportPreview>('POST', `/projects/${pid}/capacidades/importar/previsualizar`, body),
+  capImportGrupos: (pid: string, iid: string, estado?: string, skip = 0, limit = 100) =>
+    request<{ total: number; items: CapImportGrupo[] }>('GET',
+      `/projects/${pid}/capacidades/importar/${iid}/grupos?skip=${skip}&limit=${limit}${estado ? `&estado=${estado}` : ''}`),
+  capImportResolver: (pid: string, iid: string, decisiones: { grupo: string; accion: 'ligar' | 'crear' | 'omitir'; persona_id?: string | null }[]) =>
+    request<{ dudosos_pendientes: number }>('PUT', `/projects/${pid}/capacidades/importar/${iid}/grupos`, decisiones),
+  capImportConfirmar: (pid: string, iid: string, plantilla?: string) =>
+    request<CapImportResultado>('POST', `/projects/${pid}/capacidades/importar/${iid}/confirmar${plantilla ? `?plantilla=${encodeURIComponent(plantilla)}` : ''}`),
+  capImportDeshacer: (pid: string, iid: string) =>
+    request<Record<string, any>>('POST', `/projects/${pid}/capacidades/importar/${iid}/deshacer`),
+  capImportHistorial: (pid: string) => request<CapImportHistorial[]>('GET', `/projects/${pid}/capacidades/importar`),
+  capImportPlantillas: (pid: string, tipo?: CapImportTipo) =>
+    request<CapImportPlantilla[]>('GET', `/projects/${pid}/capacidades/importar-plantillas${tipo ? `?tipo=${tipo}` : ''}`),
   // Creador de módulos (módulos personalizados).
   listCustomModules: (pid: string, todos = false) =>
     request<CustomModule[]>('GET', `/projects/${pid}/custom-modules${todos ? '?todos=true' : ''}`),

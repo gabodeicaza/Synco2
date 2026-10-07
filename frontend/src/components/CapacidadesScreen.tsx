@@ -17,6 +17,7 @@ import {
   api, CapCert, CapEquipo, CapOperador, CapPersonaCoincidencia, CapResumen, CapSemaforo, CapTipo,
 } from '@/src/api';
 import { useAuth } from '@/src/auth-context';
+import { ImportarCapacidadesModal } from '@/src/components/ImportarCapacidadesModal';
 import { colors, radius, spacing } from '@/src/theme';
 import { ROLE_COORD, ROLE_SUB } from '@/src/utils/roles';
 import { confirm } from '@/src/utils/confirm';
@@ -141,6 +142,7 @@ export function CapacidadesScreen({ projectId }: { projectId: string }) {
   const [formEq, setFormEq] = useState<{ eq: CapEquipo | null } | null>(null);
   const [formCert, setFormCert] = useState<{ cert: CapCert | null } | null>(null);
   const [formTipo, setFormTipo] = useState<{ tipo: CapTipo | null } | null>(null);
+  const [importando, setImportando] = useState(false);
 
   useEffect(() => {
     const t = setTimeout(() => setQAplicada(q.trim()), 300);
@@ -372,7 +374,11 @@ export function CapacidadesScreen({ projectId }: { projectId: string }) {
           <Ionicons name="chevron-back" size={24} color={colors.text} />
         </Pressable>
         <Text style={st.title} numberOfLines={1}>Capacidades de Operadores</Text>
-        <View style={{ width: 32 }} />
+        {puedeEditar ? (
+          <Pressable onPress={() => setImportando(true)} hitSlop={8} style={st.iconBtn} accessibilityLabel="Importar desde Excel">
+            <Ionicons name="cloud-upload-outline" size={22} color={colors.primary} />
+          </Pressable>
+        ) : <View style={{ width: 32 }} />}
       </View>
       <View style={st.tabs}>
         {TABS.map((t) => (
@@ -402,6 +408,13 @@ export function CapacidadesScreen({ projectId }: { projectId: string }) {
         </Pressable>
       ) : null}
 
+      {importando ? (
+        <ImportarCapacidadesModal
+          projectId={projectId} certs={certs}
+          onClose={() => { setImportando(false); cargar(true); }}
+          onDone={() => cargar(true)}
+        />
+      ) : null}
       {detalleId ? (
         <DetalleOperador
           projectId={projectId} id={detalleId} certs={certs} puedeEditar={puedeEditar}
