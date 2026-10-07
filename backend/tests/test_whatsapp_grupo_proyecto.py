@@ -167,3 +167,36 @@ def test_validacion_del_id_de_grupo():
     for malo in ("120363430765044545", "abc@g.us", "5215512345678@s.whatsapp.net"):
         with pytest.raises(HTTPException):
             s(malo)
+
+
+_GRUPO2 = "120363111111111111@g.us"
+_GRUPO3 = "120363222222222222-1234567@g.us"
+
+
+def test_varios_ids_se_normalizan_y_se_deduplican():
+    s = server._sanitize_whatsapp_group_id
+    assert s(f"{_GRUPO},{_GRUPO2}\n {_GRUPO};{_GRUPO3}") == f"{_GRUPO}, {_GRUPO2}, {_GRUPO3}"
+    with pytest.raises(HTTPException):
+        s(f"{_GRUPO}, basura")
+
+
+def test_se_envia_a_todos_los_grupos(whapi, monkeypatch):
+    proyecto = dict(_PROYECTO, whatsapp_group_id=f"{_GRUPO}, {_GRUPO2}")
+    monkeypatch.setattr(server, "db", _FakeDb(proyecto))
+    asyncio.run(server._whatsapp_enviar_reporte(_doc([_PNG, _PNG])))
+    assert [b["to"] for _u, _h, b in whapi.llamadas] == [_GRUPO, _GRUPO, _GRUPO2, _GRUPO2]
+    assert [bool(b["caption"]) for _u, _h, b in whapi.llamadas] == [False, True, False, True]
+
+
+def test_un_grupo_que_falla_no_impide_los_demas(whapi, monkeypatch):
+    class _Falla1(_FakeClient):
+        async def post(self, url, headers=None, json=None):
+            if json["to"] == _GRUPO:
+                raise RuntimeError("grupo inválido")
+            return await super().post(url, headers=headers, json=json)
+
+    monkeypatch.setattr(server.httpx, "AsyncClient", _Falla1)
+    proyecto = dict(_PROYECTO, whatsapp_group_id=f"{_GRUPO}, {_GRUPO2}")
+    monkeypatch.setattr(server, "db", _FakeDb(proyecto))
+    asyncio.run(server._whatsapp_enviar_reporte(_doc()))
+    assert [b["to"] for _u, _h, b in whapi.llamadas] == [_GRUPO2]

@@ -1734,15 +1734,27 @@ def _sanitize_color_hex(value: Optional[str]) -> Optional[str]:
 _WHATSAPP_GROUP_RE = re.compile(r"^\d+(-\d+)*@g\.us$")
 
 
+def _whatsapp_group_ids(value: Optional[str]) -> List[str]:
+    """Lista de IDs de grupo guardados en `whatsapp_group_id` (varios separados
+    por coma, punto y coma, espacio o salto de línea). Sin repetidos, en orden."""
+    out: List[str] = []
+    for g in re.split(r"[,;\s]+", value or ""):
+        if g and g not in out:
+            out.append(g)
+    return out
+
+
 def _sanitize_whatsapp_group_id(value: Optional[str]) -> Optional[str]:
-    """Normaliza el ID de grupo de WhatsApp. Vacío => None (desactiva el envío).
-    Lanza 400 si no tiene el formato `<dígitos>@g.us` que exige Whapi."""
-    v = (value or "").strip()
-    if not v:
+    """Normaliza el/los ID(s) de grupo de WhatsApp. Vacío => None (desactiva el
+    envío). Lanza 400 si algún ID no tiene el formato `<dígitos>@g.us` de Whapi.
+    Se guarda como texto "id1, id2" (compatible con proyectos de un solo ID)."""
+    ids = _whatsapp_group_ids(value)
+    if not ids:
         return None
-    if not _WHATSAPP_GROUP_RE.match(v):
-        raise HTTPException(400, "whatsapp_group_id inválido: debe tener el formato 1203634...@g.us")
-    return v
+    for g in ids:
+        if not _WHATSAPP_GROUP_RE.match(g):
+            raise HTTPException(400, f"whatsapp_group_id inválido: {g!r} debe tener el formato 1203634...@g.us")
+    return ", ".join(ids)
 
 
 @api.get("/projects")
@@ -10043,7 +10055,7 @@ def _whatsapp_imagen_para_envio(b64_str: str) -> Optional[str]:
 
 
 async def _whatsapp_enviar_reporte(doc: dict) -> None:
-    """Publica el reporte en el grupo de WhatsApp del proyecto (Whapi.cloud).
+    """Publica el reporte en el/los grupo(s) de WhatsApp del proyecto (Whapi.cloud).
 
     Todas las fotos vía POST /messages/image (el texto en la última); sin foto
     (o si el texto no cabe como pie de foto), POST /messages/text. Es
@@ -10057,8 +10069,8 @@ async def _whatsapp_enviar_reporte(doc: dict) -> None:
             {"id": doc["project_id"]},
             {"_id": 0, "name": 1, "constructora": 1, "contract_number": 1, "whatsapp_group_id": 1},
         )
-        group_id = ((project or {}).get("whatsapp_group_id") or "").strip()
-        if not group_id:
+        group_ids = _whatsapp_group_ids((project or {}).get("whatsapp_group_id"))
+        if not group_ids:
             return
         autor = await db.users.find_one({"id": doc.get("captured_by")}, {"_id": 0, "puesto": 1})
         tpl_fields = None
@@ -10078,8 +10090,9 @@ async def _whatsapp_enviar_reporte(doc: dict) -> None:
         # WhatsApp limita el pie de foto (~1024 caracteres): si el texto cabe,
         # va en la ÚLTIMA foto; si no, las fotos van solas y el texto después.
         texto_en_ultima = bool(medias) and len(texto) <= _WHATSAPP_MAX_CAPTION
-        resp = None
-        async with httpx.AsyncClient(timeout=30.0) as client:
+
+        async def _enviar_a_grupo(client: "httpx.AsyncClient", group_id: str) -> None:
+            resp = None
             for i, media in enumerate(medias):
                 es_ultima = i == len(medias) - 1
                 resp = await client.post(
@@ -10096,10 +10109,20 @@ async def _whatsapp_enviar_reporte(doc: dict) -> None:
                     headers=headers,
                     json={"to": group_id, "body": texto},
                 )
-        if resp.status_code >= 300:
-            log.warning("[whatsapp] Whapi respondió %s: %s", resp.status_code, resp.text[:300])
-        else:
-            log.info("[whatsapp] reporte %s enviado al grupo del proyecto %s", doc.get("id"), doc["project_id"])
+            if resp.status_code >= 300:
+                log.warning("[whatsapp] Whapi respondió %s para el grupo %s: %s",
+                            resp.status_code, group_id, resp.text[:300])
+            else:
+                log.info("[whatsapp] reporte %s enviado al grupo %s (proyecto %s)",
+                         doc.get("id"), group_id, doc["project_id"])
+
+        # Un grupo que falle (ID erróneo, sin permiso...) no impide el envío a los demás.
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            for group_id in group_ids:
+                try:
+                    await _enviar_a_grupo(client, group_id)
+                except Exception as exc:
+                    log.exception("[whatsapp] fallo enviando al grupo %s: %s", group_id, exc)
     except Exception as exc:
         log.exception("[whatsapp] fallo enviando reporte: %s", exc)
 
