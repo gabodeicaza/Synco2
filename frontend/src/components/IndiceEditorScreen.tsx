@@ -12,7 +12,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { api, IndiceConfig, IndicePeriodo, IndiceSeccion, Project } from '@/src/api';
+import { api, IndiceConfig, IndicePeriodo, IndicePreview, IndiceSeccion, Project } from '@/src/api';
 import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
 import {
   INDICE_CONFIG_DEFAULT, INDICE_PERIODOS, alternarOculta, moverSeccion, renombrarSeccion,
@@ -33,6 +33,23 @@ export default function IndiceEditorScreen({ projectId: pid }: { projectId: stri
 
   const actual = borradores[periodo];
 
+  // Vista previa: se pide al servidor con la config en edicion (sin guardar) cada vez
+  // que cambia el borrador o la estructura, con una pausa corta para no saturar.
+  const [preview, setPreview] = useState<IndicePreview | null>(null);
+  const [previewCargando, setPreviewCargando] = useState(false);
+  useEffect(() => {
+    if (!pid || !actual) { setPreview(null); return undefined; }
+    let vigente = true;
+    setPreviewCargando(true);
+    const t = setTimeout(() => {
+      api.previewIndice(pid, periodo, actual.config)
+        .then((r) => { if (vigente) setPreview(r); })
+        .catch(() => { if (vigente) setPreview(null); })
+        .finally(() => { if (vigente) setPreviewCargando(false); });
+    }, 400);
+    return () => { vigente = false; clearTimeout(t); };
+  }, [pid, periodo, actual?.config, actual?.estructura]);
+
   // Recalcula la estructura (secciones y titulos por defecto) con los datos
   // actuales del proyecto: asi el editor siempre refleja lo que el informe va
   // a imprimir (datos generales con sus nombres, areas, reportes con el titulo
@@ -43,7 +60,7 @@ export default function IndiceEditorScreen({ projectId: pid }: { projectId: stri
       const r = await api.refreshIndiceEstructura(pid, p);
       setBorradores((b) => (b[p] ? { ...b, [p]: { ...b[p]!, estructura: r.estructura } } : b));
     } catch (e: any) {
-      if (!silencioso) Alert.alert('No se pudo actualizar', e?.message || 'Intentalo nuevamente.');
+      if (!silencioso) Alert.alert('No se pudo actualizar', e?.message || 'Inténtalo nuevamente.');
     } finally {
       setRefreshing(false);
     }
@@ -90,7 +107,7 @@ export default function IndiceEditorScreen({ projectId: pid }: { projectId: stri
       const r = await api.putIndiceConfig(pid, periodo, actual.config);
       setBorradores((b) => ({ ...b, [periodo]: { ...actual, config: r.config, sucio: false } }));
     } catch (e: any) {
-      Alert.alert('No se pudo guardar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo guardar', e?.message || 'Inténtalo nuevamente.');
     } finally {
       setSaving(false);
     }
@@ -116,7 +133,7 @@ export default function IndiceEditorScreen({ projectId: pid }: { projectId: stri
           <Pressable accessibilityRole="button" accessibilityLabel="Volver" onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
             <Ionicons name="chevron-back" size={22} color={headerTextColor} />
           </Pressable>
-          <Text style={[styles.titleBar, { color: headerTextColor }]} numberOfLines={1}>Indice de informes</Text>
+          <Text style={[styles.titleBar, { color: headerTextColor }]} numberOfLines={1}>Índice de informes</Text>
           <View style={{ width: 32 }} />
         </View>
       </View>
@@ -126,9 +143,9 @@ export default function IndiceEditorScreen({ projectId: pid }: { projectId: stri
         keyboardShouldPersistTaps="handled"
       >
         <Text style={styles.helpTxt}>
-          El indice se inserta despues de la portada del PDF y del PowerPoint con los numeros de
-          pagina reales. El orden que definas aqui es el orden en que quedan las secciones en el
-          documento. Cada informe (Diario, Semanal, Mensual) tiene su propio indice.
+          El índice se inserta después de la portada del PDF y del PowerPoint con los números de
+          página reales. El orden que definas aquí es el orden en que quedan las secciones en el
+          documento. Cada informe (Diario, Semanal, Mensual) tiene su propio índice.
         </Text>
 
         <View style={styles.tabs}>
@@ -159,8 +176,8 @@ export default function IndiceEditorScreen({ projectId: pid }: { projectId: stri
             <View style={styles.card}>
               <View style={styles.row}>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.rowTitle}>Incluir indice</Text>
-                  <Text style={styles.rowSub}>Si lo apagas, el informe sale sin indice pero conserva el orden.</Text>
+                  <Text style={styles.rowTitle}>Incluir índice</Text>
+                  <Text style={styles.rowSub}>Si lo apagas, el informe sale sin índice pero conserva el orden.</Text>
                 </View>
                 <Switch
                   value={config.enabled}
@@ -170,11 +187,11 @@ export default function IndiceEditorScreen({ projectId: pid }: { projectId: stri
               </View>
               <View style={[styles.row, styles.rowBorder]}>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.rowTitle}>Titulo</Text>
+                  <Text style={styles.rowTitle}>Título</Text>
                   <TextInput
                     value={config.titulo}
                     onChangeText={(t) => editar((c) => ({ ...c, titulo: t }))}
-                    placeholder="INDICE"
+                    placeholder="ÍNDICE"
                     placeholderTextColor={colors.textMuted}
                     maxLength={80}
                     style={styles.input}
@@ -199,7 +216,7 @@ export default function IndiceEditorScreen({ projectId: pid }: { projectId: stri
 
             {secciones.length === 0 ? (
               <Text style={styles.empty}>
-                Aun no hay secciones. Toca "Actualizar estructura" (o genera un informe) para listarlas.
+                Aún no hay secciones. Toca "Actualizar estructura" (o genera un informe) para listarlas.
               </Text>
             ) : (
               <View style={styles.card}>
@@ -220,7 +237,7 @@ export default function IndiceEditorScreen({ projectId: pid }: { projectId: stri
                         onPress={() => editar((c) => alternarOculta(c, s.key))}
                         hitSlop={6}
                         style={styles.secBtn}
-                        accessibilityLabel={oculta ? 'Mostrar en el indice' : 'Ocultar del indice'}
+                        accessibilityLabel={oculta ? 'Mostrar en el índice' : 'Ocultar del índice'}
                       >
                         <Ionicons
                           name={oculta ? 'eye-off-outline' : 'eye-outline'}
@@ -233,7 +250,7 @@ export default function IndiceEditorScreen({ projectId: pid }: { projectId: stri
                         disabled={idx === 0}
                         hitSlop={6}
                         style={[styles.secBtn, idx === 0 && { opacity: 0.25 }]}
-                        accessibilityLabel="Subir seccion"
+                        accessibilityLabel="Subir sección"
                       >
                         <Ionicons name="chevron-up" size={20} color={colors.text} />
                       </Pressable>
@@ -242,7 +259,7 @@ export default function IndiceEditorScreen({ projectId: pid }: { projectId: stri
                         disabled={idx === secciones.length - 1}
                         hitSlop={6}
                         style={[styles.secBtn, idx === secciones.length - 1 && { opacity: 0.25 }]}
-                        accessibilityLabel="Bajar seccion"
+                        accessibilityLabel="Bajar sección"
                       >
                         <Ionicons name="chevron-down" size={20} color={colors.text} />
                       </Pressable>
@@ -252,6 +269,8 @@ export default function IndiceEditorScreen({ projectId: pid }: { projectId: stri
               </View>
             )}
 
+            <VistaPreviaIndice preview={preview} cargando={previewCargando} periodo={periodo} color={headerColor} />
+
             <Pressable accessibilityRole="button"
               onPress={guardar}
               disabled={saving || !actual.sucio}
@@ -260,7 +279,7 @@ export default function IndiceEditorScreen({ projectId: pid }: { projectId: stri
               {saving ? (
                 <ActivityIndicator color="#fff" />
               ) : (
-                <Text style={styles.saveTxt}>{actual.sucio ? 'Guardar indice' : 'Sin cambios'}</Text>
+                <Text style={styles.saveTxt}>{actual.sucio ? 'Guardar índice' : 'Sin cambios'}</Text>
               )}
             </Pressable>
           </>
@@ -270,7 +289,81 @@ export default function IndiceEditorScreen({ projectId: pid }: { projectId: stri
   );
 }
 
+const FILAS_PREVIEW = 14;
+
+// Hoja de indice tal como saldra en el PDF: titulo, entradas con su numero de pagina y
+// un resumen de paginas. Es un calculo del servidor, no una imagen: refleja el orden,
+// los titulos y las secciones ocultas que se estan editando, aunque aun no se guarden.
+function VistaPreviaIndice({ preview, cargando, periodo, color }: {
+  preview: IndicePreview | null; cargando: boolean; periodo: IndicePeriodo; color: string;
+}) {
+  return (
+    <View style={styles.previewWrap}>
+      <View style={styles.seccionesHead}>
+        <Text style={styles.sectionTitle}>Vista previa del índice</Text>
+        {cargando ? <ActivityIndicator size="small" color={colors.primary} /> : null}
+      </View>
+      {!preview ? (
+        <Text style={styles.empty}>
+          {cargando ? 'Calculando...' : 'No se pudo calcular la vista previa.'}
+        </Text>
+      ) : !preview.disponible ? (
+        <Text style={styles.empty}>
+          Toca "Actualizar estructura" para calcular las páginas de cada sección y ver la vista previa.
+        </Text>
+      ) : (
+        <>
+          <View style={styles.hoja}>
+            {preview.habilitado ? (
+              <>
+                <Text style={[styles.hojaTitulo, { color }]} numberOfLines={1}>{preview.titulo}</Text>
+                <Text style={styles.hojaSub}>Reporte {periodo}</Text>
+                <View style={[styles.hojaLinea, { backgroundColor: color }]} />
+                {(preview.entradas || []).slice(0, FILAS_PREVIEW).map((e, i) => (
+                  <View key={`${i}-${e.titulo}`} style={styles.hojaFila}>
+                    <Text style={styles.hojaTxt} numberOfLines={1}>{e.titulo}</Text>
+                    <View style={styles.hojaPuntos} />
+                    <Text style={styles.hojaPag}>{e.pagina}</Text>
+                  </View>
+                ))}
+                {(preview.entradas || []).length > FILAS_PREVIEW ? (
+                  <Text style={styles.hojaMas}>
+                    + {(preview.entradas || []).length - FILAS_PREVIEW} secciones más en las hojas siguientes
+                  </Text>
+                ) : null}
+                {(preview.entradas || []).length === 0 ? (
+                  <Text style={styles.hojaMas}>Todas las secciones están ocultas.</Text>
+                ) : null}
+              </>
+            ) : (
+              <Text style={styles.hojaMas}>El informe saldra sin índice (conserva el orden de las secciones).</Text>
+            )}
+          </View>
+          <Text style={styles.previewResumen}>
+            Portada: {preview.paginas_portada} pág. · Índice: {preview.paginas_indice} pág. · Total aprox.: {preview.total_paginas} pág.
+            {'\n'}Calculado con el último informe generado; las páginas se ajustan si cambian los reportes.
+          </Text>
+        </>
+      )}
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
+  previewWrap: { marginBottom: spacing.md },
+  hoja: {
+    backgroundColor: '#fff', borderRadius: radius.md, borderWidth: 1, borderColor: colors.border,
+    padding: spacing.md, ...shadow.card,
+  },
+  hojaTitulo: { fontSize: 18, fontWeight: '800', textAlign: 'center', letterSpacing: 1 },
+  hojaSub: { fontSize: 11, color: colors.textMuted, textAlign: 'center', marginTop: 2 },
+  hojaLinea: { height: 2, marginVertical: spacing.sm, borderRadius: 1 },
+  hojaFila: { flexDirection: 'row', alignItems: 'baseline', paddingVertical: 4, gap: 6 },
+  hojaTxt: { flexShrink: 1, fontSize: 12, color: '#0F172A' },
+  hojaPuntos: { flex: 1, borderBottomWidth: 1, borderStyle: 'dotted', borderColor: colors.border, marginBottom: 3 },
+  hojaPag: { fontSize: 12, fontWeight: '800', color: '#0F172A', minWidth: 22, textAlign: 'right' },
+  hojaMas: { fontSize: 11, color: colors.textMuted, fontStyle: 'italic', textAlign: 'center', marginTop: spacing.sm },
+  previewResumen: { fontSize: 11, color: colors.textMuted, marginTop: spacing.xs, lineHeight: 15 },
   headerWrap: { paddingHorizontal: spacing.md, paddingBottom: spacing.sm },
   headerTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   iconBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },

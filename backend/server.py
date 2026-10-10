@@ -16103,6 +16103,12 @@ def _indice_ranges(marks: List[tuple], total: int) -> List[dict]:
     return ranges
 
 
+def _indice_estructura_de(ranges: List[dict]) -> List[dict]:
+    """Estructura que ve el editor: clave y título de cada sección, más cuántas
+    páginas ocupa (`n`) y dónde empieza (`inicio`), que alimentan la vista previa."""
+    return [{"key": r["key"], "title": r["title"], "n": r["n"], "inicio": r["start"]} for r in ranges]
+
+
 def _indice_page_counts(n_entries: int, first_cap: int, next_cap: int) -> List[int]:
     """Cuántas entradas caben por cada página/diapositiva del índice."""
     counts: List[int] = []
@@ -16229,13 +16235,14 @@ def _pdf_apply_indice(pdf_bytes: bytes, marks: List[tuple], cfg: dict, *, templa
     reader = PdfReader(io.BytesIO(pdf_bytes))
     total = len(reader.pages)
     ranges = _indice_ranges(marks, total)
-    estructura = [{"key": r["key"], "title": r["title"]} for r in ranges]
+    estructura = _indice_estructura_de(ranges)
     if not ranges:
         return pdf_bytes, estructura
 
     page_w = float(reader.pages[0].mediabox.width)
     page_h = float(reader.pages[0].mediabox.height)
     first_cap, next_cap = _indice_pdf_caps(page_h, top_margin, bottom_margin)
+    estructura[0]["caps"] = [first_cap, next_cap]
     pre_count = ranges[0]["start"]
     plan = _indice_plan(ranges, cfg, pre_count, first_cap, next_cap)
 
@@ -16305,7 +16312,9 @@ def _pptx_apply_indice(prs, marks: List[tuple], cfg: dict, *, master_separate: b
     master_el = els[1] if (master_separate and len(els) > 1) else None
 
     ranges = _indice_ranges(marks, len(els))
-    estructura = [{"key": r["key"], "title": r["title"]} for r in ranges]
+    estructura = _indice_estructura_de(ranges)
+    if estructura:
+        estructura[0]["caps"] = [first_cap, next_cap]
     try:
         if not ranges:
             raise LookupError("sin secciones")
@@ -16376,6 +16385,38 @@ async def get_indice_config(pid: str, periodo: str, user: dict = Depends(require
         "periodo": periodo,
         "config": _sanitize_indice_config((proj.get("indice_config") or {}).get(periodo)),
         "estructura": (proj.get("indice_estructura") or {}).get(periodo) or [],
+    }
+
+
+@api.post("/projects/{pid}/indice/{periodo}/preview")
+async def preview_indice(pid: str, periodo: str, body: dict,
+                         user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB))):
+    """Vista previa del índice con la configuración EN EDICIÓN (sin guardarla):
+    qué entradas llevará y en qué página cae cada una, calculado con la misma
+    función (`_indice_plan`) y la última estructura conocida del informe."""
+    await ensure_project_access(user, pid)
+    if periodo not in INDICE_PERIODOS:
+        raise HTTPException(400, "periodo debe ser diario, semanal o mensual")
+    proj = await db.projects.find_one({"id": pid}, {"indice_estructura": 1})
+    if proj is None:
+        raise HTTPException(404, "Proyecto no existe")
+    estructura = (proj.get("indice_estructura") or {}).get(periodo) or []
+    if not estructura or any("n" not in s for s in estructura):
+        return {"disponible": False}
+    ranges = [{"key": s["key"], "title": s["title"], "start": s.get("inicio", 0), "n": s["n"]} for s in estructura]
+    first_cap, next_cap = (estructura[0].get("caps") or [20, 25])
+    cfg = _sanitize_indice_config(body)
+    pre_count = ranges[0]["start"]
+    plan = _indice_plan(ranges, cfg, pre_count, first_cap, next_cap)
+    paginas_indice = len(plan["counts"])
+    return {
+        "disponible": True,
+        "habilitado": cfg["enabled"],
+        "titulo": cfg["titulo"],
+        "entradas": [{"titulo": tit, "pagina": pag} for tit, pag in plan["entries"]],
+        "paginas_portada": pre_count,
+        "paginas_indice": paginas_indice,
+        "total_paginas": pre_count + paginas_indice + sum(r["n"] for r in ranges),
     }
 
 

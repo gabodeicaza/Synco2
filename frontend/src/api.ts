@@ -338,6 +338,16 @@ export interface IndiceSeccion {
   title: string;                 // título por defecto, calculado por el servidor
 }
 
+export interface IndicePreview {
+  disponible: boolean;
+  habilitado?: boolean;
+  titulo?: string;
+  entradas?: { titulo: string; pagina: number }[];
+  paginas_portada?: number;
+  paginas_indice?: number;
+  total_paginas?: number;
+}
+
 export interface IndiceResponse {
   periodo: IndicePeriodo;
   config: IndiceConfig;
@@ -2739,6 +2749,9 @@ export const api = {
     request<{ periodo: IndicePeriodo; config: IndiceConfig }>('PUT', `/projects/${pid}/indice/${periodo}`, config),
   // Recalcula la estructura de secciones con datos actuales (el servidor
   // arma el informe completo y solo devuelve la lista de secciones).
+  // Vista previa del indice con la config EN EDICION (no la guarda).
+  previewIndice: (pid: string, periodo: IndicePeriodo, config: IndiceConfig) =>
+    request<IndicePreview>('POST', `/projects/${pid}/indice/${periodo}/preview`, config),
   refreshIndiceEstructura: (pid: string, periodo: IndicePeriodo) =>
     request<{ periodo: IndicePeriodo; estructura: IndiceSeccion[] }>(
       'GET',
