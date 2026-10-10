@@ -3244,7 +3244,8 @@ def _cruz_layout(n_dias: int) -> List[tuple]:
     return out
 
 
-def _cruz_calcular(registros: list, anio: int, mes: int, hoy: date, fuerza_trabajo: Optional[int] = None) -> dict:
+def _cruz_calcular(registros: list, anio: int, mes: int, hoy: date, fuerza_trabajo: Optional[int] = None,
+                   parametros: Optional[list] = None, fuerza_heredada: bool = False) -> dict:
     """Datos de la Cruz de Seguridad de un mes. Pura — sin Mongo.
 
     `registros`: documentos de `seguridad_reportes` (cualquier fecha; aquí se
@@ -3309,7 +3310,8 @@ def _cruz_calcular(registros: list, anio: int, mes: int, hoy: date, fuerza_traba
         "dias": dias,
         "resumen": [{"tipo": t, "label": CRUZ_LABEL[t], "abrev": CRUZ_ABREV[t], "color": CRUZ_COLOR[t],
                      "cantidad": conteo[t], "porcentaje": _pct(conteo[t])} for t in CRUZ_TIPOS_ORDEN],
-        "fuerza_trabajo": {"personal": fuerza_trabajo},
+        "fuerza_trabajo": {"personal": fuerza_trabajo, "heredado": fuerza_heredada},
+        "parametros": parametros or [],
         "registros": bitacora,
     }
 
@@ -3329,11 +3331,35 @@ def _cruz_parse_mes(mes: Optional[str]) -> tuple:
         raise HTTPException(400, "mes debe tener el formato AAAA-MM")
 
 
+SEGURIDAD_PARAMETROS_DEFAULT = [{"id": "banderilleros", "nombre": "Banderilleros"}]
+
+
+async def _seguridad_parametros_def(pid: str) -> List[dict]:
+    """Parámetros numéricos que Seguridad reporta cada mes (por omisión,
+    banderilleros); los define el Coordinador General por proyecto."""
+    proj = await db.projects.find_one({"id": pid}, {"seguridad_parametros": 1})
+    lista = (proj or {}).get("seguridad_parametros")
+    return lista if isinstance(lista, list) else [dict(p) for p in SEGURIDAD_PARAMETROS_DEFAULT]
+
+
 async def _cruz_fetch(pid: str, mes: Optional[str]) -> dict:
     anio, m = _cruz_parse_mes(mes)
+    mes_key = f"{anio:04d}-{m:02d}"
     registros = await db.seguridad_reportes.find({"project_id": pid}).to_list(length=20000)
-    ft = await db.seguridad_fuerza_trabajo.find_one({"project_id": pid, "mes": f"{anio:04d}-{m:02d}"})
-    return _cruz_calcular(registros, anio, m, datetime.now(MX_TZ).date(), (ft or {}).get("personal"))
+    ft = await db.seguridad_fuerza_trabajo.find_one({"project_id": pid, "mes": mes_key})
+    personal = (ft or {}).get("personal")
+    heredado = False
+    if personal is None:
+        # Sin dato este mes: se muestra el último capturado (no hay que
+        # volver a escribirlo cada mes); al editarlo se guarda para el mes.
+        previo = await db.seguridad_fuerza_trabajo.find_one(
+            {"project_id": pid, "mes": {"$lt": mes_key}, "personal": {"$ne": None}}, sort=[("mes", -1)])
+        if previo:
+            personal, heredado = previo.get("personal"), True
+    valores = (ft or {}).get("parametros") or {}
+    parametros = [{"id": p["id"], "nombre": p["nombre"], "valor": valores.get(p["id"])}
+                  for p in await _seguridad_parametros_def(pid)]
+    return _cruz_calcular(registros, anio, m, datetime.now(MX_TZ).date(), personal, parametros, heredado)
 
 
 def _cruz_xlsx_bytes(data: dict, proyecto: str) -> bytes:
@@ -3463,6 +3489,17 @@ def _cruz_xlsx_bytes(data: dict, proyecto: str) -> bytes:
     ws.page_setup.fitToWidth = 1
     ws.page_setup.fitToHeight = 0
     ws.sheet_properties.pageSetUpPr.fitToPage = True
+    if data.get("parametros"):
+        wp = wb.create_sheet("PARÁMETROS")
+        wp.append([f"Parámetros de Seguridad · {data['mes_label']}"])
+        wp["A1"].font = Font(bold=True, size=12)
+        wp.append(["Parámetro", "Valor"])
+        for c in wp[2]:
+            c.font = Font(bold=True)
+        for p in data["parametros"]:
+            wp.append([p["nombre"], p["valor"]])
+        wp.column_dimensions["A"].width = 32
+        wp.column_dimensions["B"].width = 12
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
@@ -3501,6 +3538,75 @@ async def set_seguridad_fuerza_trabajo(pid: str, body: SeguridadFuerzaTrabajoIn,
         upsert=True,
     )
     return await _cruz_fetch(pid, mes)
+
+
+class SeguridadParametroIn(BaseModel):
+    id: Optional[str] = None
+    nombre: str
+
+
+class SeguridadParametrosIn(BaseModel):
+    parametros: List[SeguridadParametroIn]
+
+
+@api.get("/projects/{pid}/seguridad-parametros")
+async def get_seguridad_parametros(pid: str, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    return {"parametros": await _seguridad_parametros_def(pid)}
+
+
+@api.put("/projects/{pid}/seguridad-parametros")
+async def put_seguridad_parametros(pid: str, body: SeguridadParametrosIn,
+                                   user: dict = Depends(require_role(ROLE_COORD))):
+    """El Coordinador General define qué parámetros reporta Seguridad (p. ej.
+    banderilleros) y puede añadir más. Quitar uno solo lo oculta: los valores
+    ya capturados se conservan en la base."""
+    _assert_write_allowed(user)
+    await ensure_project_access(user, pid)
+    vistos, out = set(), []
+    for p in body.parametros:
+        nombre = (p.nombre or "").strip()
+        if not nombre:
+            continue
+        if len(nombre) > 60:
+            raise HTTPException(400, "Nombre máximo 60 caracteres")
+        if nombre.lower() in vistos:
+            raise HTTPException(400, f"Parámetro repetido: {nombre}")
+        vistos.add(nombre.lower())
+        out.append({"id": (p.id or "").strip() or uuid.uuid4().hex[:12], "nombre": nombre})
+    if len(out) > 30:
+        raise HTTPException(400, "Máximo 30 parámetros")
+    await db.projects.update_one({"id": pid}, {"$set": {"seguridad_parametros": out}})
+    return {"parametros": out}
+
+
+class SeguridadParametrosValoresIn(BaseModel):
+    mes: str  # AAAA-MM
+    valores: Dict[str, Optional[int]]
+
+
+@api.put("/projects/{pid}/seguridad-cruz/parametros")
+async def set_seguridad_parametros_valores(pid: str, body: SeguridadParametrosValoresIn,
+                                           user: dict = Depends(current_user)):
+    """Valores del mes de los parámetros de Seguridad (p. ej. banderilleros)."""
+    _assert_write_allowed(user)
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "seguridad_higiene")
+    anio, m = _cruz_parse_mes(body.mes)
+    validos = {p["id"] for p in await _seguridad_parametros_def(pid)}
+    sets = {"updated_by": user["id"], "updated_by_name": user["name"], "updated_at": datetime.now(timezone.utc)}
+    for pid_param, v in body.valores.items():
+        if pid_param not in validos:
+            raise HTTPException(400, "Parámetro desconocido")
+        if v is not None and not (0 <= v <= 100000):
+            raise HTTPException(400, "Valor fuera de rango")
+        sets[f"parametros.{pid_param}"] = v
+    await db.seguridad_fuerza_trabajo.update_one(
+        {"project_id": pid, "mes": f"{anio:04d}-{m:02d}"},
+        {"$set": sets, "$setOnInsert": {"id": str(uuid.uuid4())}},
+        upsert=True,
+    )
+    return await _cruz_fetch(pid, f"{anio:04d}-{m:02d}")
 
 
 @api.get("/projects/{pid}/seguridad-cruz.xlsx")
@@ -10403,6 +10509,10 @@ async def get_asistencia(pid: str, desde: str, hasta: str, user: dict = Depends(
         raise HTTPException(400, "'hasta' no puede ser anterior a 'desde'")
     if (d1 - d0).days + 1 > ASISTENCIA_MAX_DIAS:
         raise HTTPException(400, f"Rango máximo: {ASISTENCIA_MAX_DIAS} días")
+    return await _asistencia_calcular(pid, d0, d1)
+
+
+async def _asistencia_calcular(pid: str, d0: date, d1: date) -> dict:
     personas = await _asistencia_personas(pid)
     ids = [p["id"] for p in personas]
 
@@ -10440,6 +10550,159 @@ async def get_asistencia(pid: str, desde: str, hasta: str, user: dict = Depends(
             registros[key] = reg
     return {"desde": f0, "hasta": f1, "hoy": datetime.now(MX_TZ).date().isoformat(),
             "personas": personas, "registros": registros}
+
+
+_ASIST_CELDA_TXT = {"ok": "A", "just": "J", "no": "F", "pend": "·", "na": "–"}
+
+
+def _asistencia_celda(p: dict, fecha: str, data: dict) -> str:
+    """Misma regla que `celdaDe` del frontend: ok / just / no / pend / na."""
+    reg = data["registros"].get(f"{p['id']}|{fecha}")
+    if reg:
+        return "ok" if reg["estado"] == "asistio" else "just" if reg["estado"] == "justificada" else "no"
+    if fecha > data["hoy"]:
+        return "na"
+    if fecha == data["hoy"]:
+        return "pend"
+    if date.fromisoformat(fecha).weekday() == 6:  # domingo sin reporte: descanso
+        return "na"
+    if p.get("alta") and fecha < p["alta"]:
+        return "na"
+    return "no"
+
+
+@api.get("/projects/{pid}/asistencia/export.xlsx")
+async def export_asistencia_xlsx(
+    pid: str, vista: Literal["hoy", "semana", "mes", "total"], desde: Optional[str] = None, hasta: Optional[str] = None,
+    user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB, ROLE_JEFE)),
+):
+    """Excel de asistencia. `hoy`/`semana`/`mes` usan el rango pedido (el mismo
+    que ve la pantalla); `total` abarca desde el alta más antigua hasta hoy."""
+    await ensure_project_access(user, pid)
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    hoy = datetime.now(MX_TZ).date()
+    if vista == "total":
+        personas0 = await _asistencia_personas(pid)
+        altas = [p["alta"] for p in personas0 if p.get("alta")]
+        d0 = date.fromisoformat(min(altas)) if altas else hoy
+        d1 = hoy
+    else:
+        if not desde or not hasta:
+            raise HTTPException(400, "desde y hasta son requeridos")
+        d0, d1 = _asistencia_parse_fecha(desde), _asistencia_parse_fecha(hasta)
+        if d1 < d0:
+            raise HTTPException(400, "'hasta' no puede ser anterior a 'desde'")
+        if (d1 - d0).days + 1 > ASISTENCIA_MAX_DIAS:
+            raise HTTPException(400, f"Rango máximo: {ASISTENCIA_MAX_DIAS} días")
+    data = await _asistencia_calcular(pid, d0, d1)
+    personas = data["personas"]
+    dias_l = [(d0 + timedelta(days=i)).isoformat() for i in range((d1 - d0).days + 1)]
+
+    wb = Workbook()
+    ws = wb.active
+    head_fill = PatternFill("solid", fgColor="1F3864")
+    head_font = Font(bold=True, color="FFFFFF")
+
+    def _encabezado(hoja, fila: int):
+        for c in hoja[fila]:
+            if c.value is not None:
+                c.fill, c.font = head_fill, head_font
+                c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    def _totales(p: dict) -> tuple:
+        ok = just = no = 0
+        for f in dias_l:
+            c = _asistencia_celda(p, f, data)
+            if c == "ok":
+                ok += 1
+            elif c == "just":
+                just += 1
+            elif c == "no":
+                no += 1
+        return ok, just, no
+
+    def rol_txt(p: dict) -> str:
+        return "Sub-Coordinador" if p["role"] == ROLE_SUB else "Especialista"
+
+    if vista == "hoy":
+        ws.title = "Asistencia diaria"
+        ws.append([f"Asistencia del {d0.strftime('%d/%m/%Y')}"])
+        ws["A1"].font = Font(bold=True, size=13)
+        ws.append(["Persona", "Rol", "Puesto", "Área", "Estado", "Hora", "Ubicación", "Fuente", "Nota"])
+        _encabezado(ws, 2)
+        estado_txt = {"ok": "Asistió", "just": "Justificada", "no": "Falta", "pend": "Sin reporte", "na": "Descanso"}
+        for p in personas:
+            c = _asistencia_celda(p, d0.isoformat(), data)
+            reg = data["registros"].get(f"{p['id']}|{d0.isoformat()}") or {}
+            ws.append([p["name"], rol_txt(p), p.get("puesto") or "", p.get("area_name") or "", estado_txt[c],
+                       reg.get("hora") or "", reg.get("ubicacion") or "", reg.get("fuente") or "", reg.get("nota") or ""])
+        anchos = [28, 16, 20, 20, 14, 8, 36, 12, 36]
+    elif vista in ("semana", "mes"):
+        ws.title = "Asistencia semanal" if vista == "semana" else "Asistencia mensual"
+        ws.append([f"Asistencia del {d0.strftime('%d/%m/%Y')} al {d1.strftime('%d/%m/%Y')}  (A=Asistió, J=Justificada, F=Falta, ·=Pendiente, –=Descanso/No aplica)"])
+        ws["A1"].font = Font(bold=True, size=12)
+        ws.append(["Persona", "Rol", "Puesto"]
+                  + [f"{date.fromisoformat(f).day}\n{'LMMJVSD'[date.fromisoformat(f).weekday()]}" for f in dias_l]
+                  + ["Asistencias", "Justificadas", "Faltas", "% Asistencia"])
+        _encabezado(ws, 2)
+        for p in personas:
+            ok, just, no = _totales(p)
+            base = ok + just + no
+            ws.append([p["name"], rol_txt(p), p.get("puesto") or ""]
+                      + [_ASIST_CELDA_TXT[_asistencia_celda(p, f, data)] for f in dias_l]
+                      + [ok, just, no, round((ok + just) / base, 4) if base else None])
+            ws.cell(row=ws.max_row, column=ws.max_column).number_format = "0.0%"
+            for c in ws[ws.max_row][3:3 + len(dias_l)]:
+                c.alignment = Alignment(horizontal="center")
+        anchos = [28, 16, 20] + [4.5] * len(dias_l) + [12, 12, 8, 13]
+    else:
+        ws.title = "Total"
+        ws.append([f"Asistencia total del {d0.strftime('%d/%m/%Y')} al {d1.strftime('%d/%m/%Y')}"])
+        ws["A1"].font = Font(bold=True, size=13)
+        ws.append(["Persona", "Rol", "Puesto", "Área", "Alta", "Asistencias", "Justificadas", "Faltas", "% Asistencia"])
+        _encabezado(ws, 2)
+        for p in personas:
+            ok, just, no = _totales(p)
+            base = ok + just + no
+            ws.append([p["name"], rol_txt(p), p.get("puesto") or "", p.get("area_name") or "", p.get("alta") or "",
+                       ok, just, no, round((ok + just) / base, 4) if base else None])
+            ws.cell(row=ws.max_row, column=9).number_format = "0.0%"
+        anchos = [28, 16, 20, 20, 12, 12, 12, 8, 13]
+        # Hoja por mes: asistencias (incluye justificadas) y faltas de cada persona.
+        meses = sorted({f[:7] for f in dias_l})
+        wm = wb.create_sheet("Por mes")
+        wm.append(["Persona"] + [h for m in meses for h in (f"{m} Asist.", f"{m} Faltas")])
+        _encabezado(wm, 1)
+        for p in personas:
+            fila = [p["name"]]
+            for m in meses:
+                ok = no = 0
+                for f in (x for x in dias_l if x[:7] == m):
+                    c = _asistencia_celda(p, f, data)
+                    ok += c in ("ok", "just")
+                    no += c == "no"
+                fila += [ok, no]
+            wm.append(fila)
+        wm.column_dimensions["A"].width = 28
+        for i in range(2, 2 + 2 * len(meses)):
+            wm.column_dimensions[get_column_letter(i)].width = 13
+    for i, w in enumerate(anchos, start=1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+    ws.freeze_panes = "B3"
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    sufijo = {"hoy": d0.isoformat(), "semana": f"{d0.isoformat()}_{d1.isoformat()}",
+              "mes": d0.strftime("%Y-%m"), "total": f"total_{hoy.isoformat()}"}[vista]
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="asistencia_{sufijo}.xlsx"'},
+    )
 
 
 @api.put("/projects/{pid}/asistencia/{uid}/{fecha}")
@@ -23796,6 +24059,9 @@ class MinutaIn(BaseModel):
     # Requerido a nivel de negocio (validado en el endpoint), opcional en el modelo
     # para no romper minutas creadas antes del 2026-07 (backfill = null).
     ubicacion_id: Optional[str] = None
+    # Pendiente general (Hub de Pendientes) al que se vinculan los acuerdos de
+    # esta minuta: se escriben directamente en su descripción.
+    pendiente_id: Optional[str] = None
     acuerdos: List[AcuerdoIn] = Field(default_factory=list)
 
 
@@ -23861,6 +24127,13 @@ async def create_minuta(pid: str, body: MinutaIn, user: dict = Depends(current_u
             break
         _cur = await db.location_nodes.find_one({"project_id": pid, "id": parent_id})
         _guard += 1
+
+    # Pendiente vinculado (opcional): debe existir en este proyecto.
+    pendiente_doc = None
+    if (body.pendiente_id or "").strip():
+        pendiente_doc = await db.pendientes_generales.find_one({"id": body.pendiente_id.strip(), "project_id": pid})
+        if not pendiente_doc:
+            raise HTTPException(400, "Pendiente inválido")
 
     # Involucrados (opcional) — usuarios extra que ven la minuta en "Mis Minutas".
     involved_ids: List[str] = []
@@ -23988,10 +24261,24 @@ async def create_minuta(pid: str, body: MinutaIn, user: dict = Depends(current_u
         "author_name": user["name"],
         "author_role": user["role"],
         "acuerdos": acuerdos_out,
+        "pendiente_id": pendiente_doc["id"] if pendiente_doc else None,
+        "pendiente_titulo": pendiente_doc.get("titulo") if pendiente_doc else None,
         "created_at": now,
         "updated_at": now,
     }
     await db.minutas.insert_one(doc)
+    # Escribe los acuerdos de la minuta en el pendiente elegido (Hub de Pendientes).
+    if pendiente_doc and acuerdos_out:
+        lineas = [
+            f"• [{codigo or titulo}] {a['descripcion']} — {a['responsable_name']}, límite {a['fecha_limite']}"
+            for a in acuerdos_out
+        ]
+        previa = (pendiente_doc.get("descripcion") or "").strip()
+        nueva = (previa + "\n" if previa else "") + "\n".join(lineas)
+        await db.pendientes_generales.update_one(
+            {"id": pendiente_doc["id"]},
+            {"$set": {"descripcion": nueva, "updated_at": now}, "$addToSet": {"minuta_ids": doc["id"]}},
+        )
     return _minuta_out(doc)
 
 

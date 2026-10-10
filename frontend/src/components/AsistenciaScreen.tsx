@@ -18,6 +18,7 @@ import { useAuth } from '@/src/auth-context';
 import { colors, radius, spacing } from '@/src/theme';
 import { ROLE_COORD, ROLE_SUB } from '@/src/utils/roles';
 import { dayjs } from '@/src/utils/tz';
+import { downloadBlob } from '@/src/utils/downloadBlob';
 
 type Vista = 'hoy' | 'semana' | 'mes';
 type Celda = 'ok' | 'just' | 'no' | 'pend' | 'na';
@@ -100,6 +101,7 @@ export function AsistenciaScreen({ projectId }: { projectId: string }) {
   const [nota, setNota] = useState('');
   const [guardando, setGuardando] = useState(false);
   const [registrando, setRegistrando] = useState(false);
+  const [exportando, setExportando] = useState(false);
 
   const hoyLocal = ymd(dayjs());
   const { desde, hasta } = useMemo(() => rango(vista, ancla, data?.hoy || hoyLocal), [vista, ancla, data?.hoy, hoyLocal]);
@@ -154,6 +156,20 @@ export function AsistenciaScreen({ projectId }: { projectId: string }) {
     }
   }
 
+  // Excel del periodo en pantalla (hoy / semana / mes) o el acumulado total.
+  async function exportar(v: Vista | 'total') {
+    if (exportando) return;
+    setExportando(true);
+    try {
+      const { blob, filename } = await api.downloadAsistenciaXlsx(projectId, v, desde, hasta);
+      await downloadBlob(blob, filename, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    } catch (e: any) {
+      Alert.alert('No se pudo exportar', e?.message || 'Intenta de nuevo');
+    } finally {
+      setExportando(false);
+    }
+  }
+
   async function registrarMia() {
     if (registrando) return;
     setRegistrando(true);
@@ -191,7 +207,22 @@ export function AsistenciaScreen({ projectId }: { projectId: string }) {
           <Ionicons name="chevron-back" size={24} color={colors.text} />
         </Pressable>
         <Text style={styles.title} numberOfLines={1}>Asistencia</Text>
-        <View style={{ width: 32 }} />
+        {exportando ? <ActivityIndicator color={colors.primary} style={{ width: 32 }} /> : (
+          <Pressable onPress={() => exportar(vista)} hitSlop={8} style={styles.iconBtn}>
+            <Ionicons name="download-outline" size={22} color={colors.primary} />
+          </Pressable>
+        )}
+      </View>
+
+      <View style={styles.exportRow}>
+        <Pressable onPress={() => exportar(vista)} disabled={exportando} style={styles.exportBtn}>
+          <Ionicons name="document-text-outline" size={14} color={colors.primary} />
+          <Text style={styles.exportTxt}>Excel · {vista === 'hoy' ? 'diaria' : vista === 'semana' ? 'semanal' : 'mensual'}</Text>
+        </Pressable>
+        <Pressable onPress={() => exportar('total')} disabled={exportando} style={styles.exportBtn}>
+          <Ionicons name="documents-outline" size={14} color={colors.primary} />
+          <Text style={styles.exportTxt}>Excel · total</Text>
+        </Pressable>
       </View>
 
       <View style={styles.tabs}>
@@ -435,6 +466,12 @@ function BtnEstado({ txt, color, onPress, disabled }: { txt: string; color: stri
 }
 
 const styles = StyleSheet.create({
+  exportRow: { flexDirection: 'row', gap: spacing.sm, paddingHorizontal: spacing.md, paddingBottom: spacing.xs },
+  exportBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 6,
+    borderRadius: 999, borderWidth: 1, borderColor: colors.primary,
+  },
+  exportTxt: { color: colors.primary, fontSize: 12, fontWeight: '700' },
   flex: { flex: 1, backgroundColor: colors.bg },
   header: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',

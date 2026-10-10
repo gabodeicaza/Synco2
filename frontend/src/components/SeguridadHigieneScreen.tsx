@@ -19,6 +19,8 @@ import { JerarquiaInformePicker, JERARQUIA_DEFAULT } from '@/src/components/Jera
 import { downloadBlob } from '@/src/utils/downloadBlob';
 import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
 import { Button } from '@/src/components/Button';
+import { useAuth } from '@/src/auth-context';
+import { ROLE_COORD } from '@/src/utils/roles';
 
 type Tab = 'reportes' | 'cruz' | 'checklist';
 const CRUZ_CELDA = 30;                 // lado de cada casilla de la cruz (px)
@@ -63,6 +65,8 @@ function mesDe(fecha: string): string {
 
 export default function SeguridadHigieneScreen({ projectId }: { projectId: string }) {
   const insets = useSafeAreaInsets();
+  const { user } = useAuth();
+  const esCoord = user?.role === ROLE_COORD;
   const [tab, setTab] = useState<Tab>('reportes');
   const [loading, setLoading] = useState(true);
   const [project, setProject] = useState<Project | null>(null);
@@ -90,14 +94,25 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
   const [cruzExporting, setCruzExporting] = useState(false);
   // Fuerza de trabajo del mes: se captura directo (incluye contratistas y demas frentes).
   const [fuerzaDraft, setFuerzaDraft] = useState('');
+  // Parametros que Seguridad reporta (p. ej. banderilleros): valor del mes por parametro.
+  const [paramDrafts, setParamDrafts] = useState<Record<string, string>>({});
+  // Hub del Coordinador General: define que parametros reporta Seguridad.
+  const [paramHubOpen, setParamHubOpen] = useState(false);
+  const [paramHubDraft, setParamHubDraft] = useState<{ id?: string; nombre: string }[]>([]);
+  const [paramHubSaving, setParamHubSaving] = useState(false);
+
+  function aplicarCruz(data: SeguridadCruz) {
+    setCruz(data);
+    setFuerzaDraft(data.fuerza_trabajo.personal != null ? String(data.fuerza_trabajo.personal) : '');
+    setParamDrafts(Object.fromEntries((data.parametros || []).map((p) => [p.id, p.valor != null ? String(p.valor) : ''])));
+  }
 
   const loadCruz = useCallback(async () => {
     if (!projectId) return;
     try {
       setCruzLoading(true);
       const data = await api.getSeguridadCruz(projectId, cruzMes);
-      setCruz(data);
-      setFuerzaDraft(data.fuerza_trabajo.personal != null ? String(data.fuerza_trabajo.personal) : '');
+      aplicarCruz(data);
     } catch (e: any) {
       Alert.alert('Error', e?.message || 'No se pudo cargar la Cruz de Seguridad.');
     } finally {
@@ -106,6 +121,67 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
   }, [projectId, cruzMes]);
 
   useEffect(() => { if (tab === 'cruz') loadCruz(); }, [tab, loadCruz]);
+
+  // Autoguardado: onEndEditing no siempre dispara en Android (p. ej. al
+  // regresar con el boton atras), asi que el numero se guarda solo, poco
+  // despues de dejar de escribir.
+  useEffect(() => {
+    if (!cruz || fuerzaDraft.trim() === '') return;
+    const n = Number(fuerzaDraft);
+    if (!Number.isInteger(n) || n === (cruz.fuerza_trabajo.personal ?? null)) return;
+    const t = setTimeout(() => { onSaveFuerza(fuerzaDraft); }, 900);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fuerzaDraft]);
+
+  async function onSaveParametro(id: string, texto: string) {
+    const limpio = texto.trim();
+    const n = limpio === '' ? null : Number(limpio);
+    const actual = cruz?.parametros.find((p) => p.id === id)?.valor ?? null;
+    if (n !== null && (!Number.isInteger(n) || n < 0)) return;
+    if (n === actual) return;
+    try {
+      const data = await api.setSeguridadParametrosValores(projectId, cruzMes, { [id]: n });
+      setCruz(data);
+    } catch (e: any) {
+      Alert.alert('No se pudo guardar', e?.message || 'Intentalo nuevamente.');
+    }
+  }
+
+  useEffect(() => {
+    if (!cruz) return;
+    const t = setTimeout(() => {
+      for (const p of cruz.parametros) {
+        const txt = paramDrafts[p.id];
+        if (txt !== undefined && txt.trim() !== '' && Number(txt) !== (p.valor ?? null)) onSaveParametro(p.id, txt);
+      }
+    }, 900);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paramDrafts]);
+
+  async function abrirParamHub() {
+    try {
+      const r = await api.getSeguridadParametros(projectId);
+      setParamHubDraft(r.parametros.map((p) => ({ id: p.id, nombre: p.nombre })));
+      setParamHubOpen(true);
+    } catch (e: any) {
+      Alert.alert('Error', e?.message || 'No se pudieron cargar los parametros.');
+    }
+  }
+
+  async function guardarParamHub() {
+    setParamHubSaving(true);
+    try {
+      await api.putSeguridadParametros(projectId, paramHubDraft);
+      setParamHubOpen(false);
+      await loadCruz();
+    } catch (e: any) {
+      Alert.alert('No se pudo guardar', e?.message || 'Intentalo nuevamente.');
+    } finally {
+      setParamHubSaving(false);
+    }
+  }
 
   async function onSaveFuerza(texto: string) {
     const limpio = texto.trim();
@@ -370,8 +446,82 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
                 />
               </View>
               <Text style={styles.fieldHint}>
-                Personal del mes, de todos los frentes y contratistas: escríbelo directo (se guarda al terminar).
+                Personal del mes, de todos los frentes y contratistas: escríbelo directo (se guarda solo).
+                {cruz.fuerza_trabajo.heredado ? ' Se muestra el último valor capturado; edítalo si cambió.' : ''}
               </Text>
+
+              {cruz.parametros.length > 0 || esCoord ? (
+                <View style={{ marginTop: spacing.sm, gap: spacing.xs }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                    <Text style={[styles.sectionTitle, { flex: 1 }]}>Parámetros de Seguridad</Text>
+                    {esCoord ? (
+                      <Pressable onPress={abrirParamHub} hitSlop={8} style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                        <Ionicons name="settings-outline" size={16} color={colors.primary} />
+                        <Text style={{ color: colors.primary, fontWeight: '700', fontSize: 12 }}>Configurar</Text>
+                      </Pressable>
+                    ) : null}
+                  </View>
+                  {cruz.parametros.map((p) => (
+                    <View key={p.id} style={[styles.card, styles.cruzFuerza]}>
+                      <Text style={styles.cruzFuerzaTitulo}>{p.nombre}</Text>
+                      <TextInput
+                        value={paramDrafts[p.id] ?? ''}
+                        onChangeText={(t) => setParamDrafts((d) => ({ ...d, [p.id]: t.replace(/[^0-9]/g, '') }))}
+                        onEndEditing={(e) => onSaveParametro(p.id, e.nativeEvent.text)}
+                        placeholder="—"
+                        placeholderTextColor={colors.textMuted}
+                        keyboardType="number-pad"
+                        maxLength={6}
+                        style={[styles.input, styles.cruzFuerzaInput]}
+                      />
+                    </View>
+                  ))}
+                  {cruz.parametros.length === 0 ? (
+                    <Text style={styles.fieldHint}>Aún no hay parámetros. Toca Configurar para añadirlos.</Text>
+                  ) : null}
+                </View>
+              ) : null}
+
+              <Modal visible={paramHubOpen} transparent animationType="slide" onRequestClose={() => setParamHubOpen(false)}>
+                <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' }}>
+                  <View style={{ backgroundColor: colors.bg, padding: spacing.md, borderTopLeftRadius: 16, borderTopRightRadius: 16, maxHeight: '85%' }}>
+                    <Text style={styles.sectionTitle}>Parámetros que reporta Seguridad</Text>
+                    <Text style={styles.fieldHint}>
+                      Seguridad no reporta personal ni equipo; solo estos números (p. ej. banderilleros). Al quitar uno se
+                      oculta, pero sus valores ya capturados se conservan.
+                    </Text>
+                    <ScrollView keyboardShouldPersistTaps="handled" style={{ marginVertical: spacing.sm }}>
+                      {paramHubDraft.map((p, i) => (
+                        <View key={p.id || `n${i}`} style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                          <TextInput
+                            value={p.nombre}
+                            onChangeText={(t) => setParamHubDraft((l) => l.map((x, j) => (j === i ? { ...x, nombre: t } : x)))}
+                            placeholder="Nombre del parámetro"
+                            placeholderTextColor={colors.textMuted}
+                            maxLength={60}
+                            style={[styles.input, { flex: 1, marginTop: 0 }]}
+                          />
+                          <Pressable onPress={() => setParamHubDraft((l) => l.filter((_, j) => j !== i))} hitSlop={8}>
+                            <Ionicons name="trash-outline" size={20} color={colors.error} />
+                          </Pressable>
+                        </View>
+                      ))}
+                      <Pressable onPress={() => setParamHubDraft((l) => [...l, { nombre: '' }])} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 8 }}>
+                        <Ionicons name="add-circle-outline" size={20} color={colors.primary} />
+                        <Text style={{ color: colors.primary, fontWeight: '700' }}>Añadir parámetro</Text>
+                      </Pressable>
+                    </ScrollView>
+                    <View style={{ flexDirection: 'row', gap: 8 }}>
+                      <Pressable onPress={() => setParamHubOpen(false)} style={{ flex: 1, padding: 12, alignItems: 'center' }}>
+                        <Text style={{ color: colors.textMuted, fontWeight: '700' }}>Cancelar</Text>
+                      </Pressable>
+                      <Pressable onPress={guardarParamHub} disabled={paramHubSaving} style={{ flex: 1, padding: 12, alignItems: 'center', backgroundColor: colors.primary, borderRadius: 10 }}>
+                        {paramHubSaving ? <ActivityIndicator color="#fff" /> : <Text style={{ color: '#fff', fontWeight: '800' }}>Guardar</Text>}
+                      </Pressable>
+                    </View>
+                  </View>
+                </View>
+              </Modal>
 
               <Text style={[styles.sectionTitle, { marginTop: spacing.md }]}>Cruz de seguridad</Text>
               <View style={[styles.card, { alignItems: 'center', padding: spacing.md }]}>

@@ -35,7 +35,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as DocumentPicker from 'expo-document-picker';
-import { api, Area, LocationNode, Minuta, Project, User } from '@/src/api';
+import { api, Area, LocationNode, Minuta, PendienteGeneral, Project, User } from '@/src/api';
 import { useAuth } from '@/src/auth-context';
 import { ROLE_COORD, ROLE_JEFE, ROLE_SUB, ROLE_ESP } from '@/src/utils/roles';
 import { colors, radius, shadow, spacing } from '@/src/theme';
@@ -995,6 +995,15 @@ function CreateMinutaModal({
   const [ubicacionPickerOpen, setUbicacionPickerOpen] = useState(false);
   const [involvedIds, setInvolvedIds] = useState<string[]>([]);
   const [involvedPickerOpen, setInvolvedPickerOpen] = useState(false);
+  // Pendiente del Hub de Pendientes al que se escriben los acuerdos (opcional).
+  const [pendientes, setPendientes] = useState<PendienteGeneral[]>([]);
+  const [pendienteId, setPendienteId] = useState<string>('');
+  useEffect(() => {
+    if (!visible) return;
+    api.listPendientesGenerales(projectId)
+      .then((l) => setPendientes((l || []).filter((x) => !x.resuelto)))
+      .catch(() => setPendientes([]));
+  }, [visible, projectId]);
   const [acuerdos, setAcuerdos] = useState<DraftAcuerdo[]>([
     { descripcion: '', responsable_id: '', fecha_limite: todayISO() },
   ]);
@@ -1071,6 +1080,7 @@ function CreateMinutaModal({
         involved_ids: involvedIds,
         fecha_reunion: fechaReunion,
         ubicacion_id: ubicacionId,
+        pendiente_id: pendienteId || undefined,
         acuerdos: tipo === 'compromiso' ? acuerdos.map((a) => ({
           descripcion: a.descripcion.trim(),
           responsable_id: a.responsable_id,
@@ -1302,6 +1312,33 @@ function CreateMinutaModal({
                   <Ionicons name="attach-outline" size={16} color={colors.primary} />
                   <Text style={styles.pdfAttachTxt}>Seleccionar PDF (una hoja)</Text>
                 </Pressable>
+              )}
+
+              {tipo === 'compromiso' && pendientes.length > 0 && (
+                <>
+                  <View style={styles.sepRow}>
+                    <Text style={styles.label}>Vincular a pendiente (opcional)</Text>
+                  </View>
+                  <Text style={{ color: colors.textMuted, fontSize: 11, marginTop: -2, marginBottom: 6 }}>
+                    Los acuerdos se escribiran en el pendiente elegido del Hub de Pendientes.
+                  </Text>
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
+                    {pendientes.map((pg) => {
+                      const on = pendienteId === pg.id;
+                      return (
+                        <Pressable
+                          key={pg.id}
+                          onPress={() => setPendienteId(on ? '' : pg.id)}
+                          style={[styles.chip, on && { backgroundColor: colors.primary, borderColor: colors.primary }]}
+                        >
+                          <Text style={[styles.chipTxt, on && { color: '#fff', fontWeight: '800' }]} numberOfLines={1}>
+                            {pg.titulo}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                </>
               )}
 
               {tipo === 'compromiso' && (

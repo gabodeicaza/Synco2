@@ -531,7 +531,8 @@ export interface SeguridadCruz {
   dias_laborables: number;     // lunes a sabado transcurridos: base del porcentaje
   dias: CruzDia[];
   resumen: CruzResumen[];
-  fuerza_trabajo: { personal: number | null };
+  fuerza_trabajo: { personal: number | null; heredado?: boolean };
+  parametros: { id: string; nombre: string; valor: number | null }[];
   registros: CruzBitacora[];   // bitacora del ano, sin "Sin accidentes"
 }
 
@@ -1486,6 +1487,8 @@ export interface Minuta {
   ubicacion_id?: string | null;
   ubicacion_name?: string | null;
   ubicacion_path_names?: string[];
+  pendiente_id?: string | null;
+  pendiente_titulo?: string | null;
   author_id: string;
   author_name: string;
   author_role?: string;
@@ -2680,6 +2683,8 @@ export const api = {
   deletePendienteGeneral: (pid: string, rid: string) =>
     request<{ ok: boolean }>('DELETE', `/projects/${pid}/pendientes-generales/${rid}`),
   // Asistencia (Coordinador / Sub-Coordinador): derivada de los reportes.
+  downloadAsistenciaXlsx: (pid: string, vista: 'hoy' | 'semana' | 'mes' | 'total', desde: string, hasta: string) =>
+    _downloadFile(`${BASE}/projects/${pid}/asistencia/export.xlsx?vista=${vista}&desde=${desde}&hasta=${hasta}`, 'asistencia.xlsx', 'Error al exportar la asistencia'),
   getAsistencia: (pid: string, desde: string, hasta: string) =>
     request<AsistenciaResp>('GET', `/projects/${pid}/asistencia?desde=${desde}&hasta=${hasta}`),
   setAsistencia: (pid: string, uid: string, fecha: string, body: { estado: AsistenciaEstado | 'auto'; nota?: string }) =>
@@ -2993,6 +2998,12 @@ export const api = {
   // todos los frentes y contratistas). Devuelve la Cruz del mes recalculada.
   setSeguridadFuerzaTrabajo: (pid: string, mes: string, personal: number | null) =>
     request<SeguridadCruz>('PUT', `/projects/${pid}/seguridad-cruz/fuerza-trabajo`, { mes, personal }),
+  getSeguridadParametros: (pid: string) =>
+    request<{ parametros: { id?: string; nombre: string }[] }>('GET', `/projects/${pid}/seguridad-parametros`),
+  putSeguridadParametros: (pid: string, parametros: { id?: string; nombre: string }[]) =>
+    request<{ parametros: { id: string; nombre: string }[] }>('PUT', `/projects/${pid}/seguridad-parametros`, { parametros }),
+  setSeguridadParametrosValores: (pid: string, mes: string, valores: Record<string, number | null>) =>
+    request<SeguridadCruz>('PUT', `/projects/${pid}/seguridad-cruz/parametros`, { mes, valores }),
   // Excel con el formato de la hoja de referencia (cruz, resumen y bitacora).
   downloadSeguridadCruzXlsx: async (pid: string, mes?: string): Promise<{ blob: Blob; filename: string }> => {
     const tok = await getToken();
