@@ -12591,6 +12591,53 @@ def _root_id_for(node_id: str, nodes_by_id: dict) -> str:
     return cur["id"]
 
 
+def _lidar_separar_por_estacion(modulos_data: dict, nodes_by_id: dict) -> dict:
+    """Saca del módulo "Fotos LiDAR" los registros ligados a una Estación/
+    Intertramo y los devuelve agrupados por subtramo ({subtramo_id: [items]}),
+    para imprimirlos justo después de la hoja de esa estación en vez de todos
+    juntos al final. Los registros sin estación se quedan en el módulo."""
+    mod = modulos_data.get("fotos_lidar")
+    if not mod:
+        return {}
+    bloque = next((b for b in mod["blocks"] if b.get("type") == "fotos_comparativa"), None)
+    if not bloque:
+        return {}
+    por_sub: dict = {}
+    resto: list = []
+    for it in bloque.get("items") or []:
+        nid = it.get("node_id")
+        if nid and nid in nodes_by_id:
+            por_sub.setdefault(_subtramo_id_for(nid, nodes_by_id), []).append(it)
+        else:
+            resto.append(it)
+    if resto:
+        bloque["items"] = resto
+    else:
+        modulos_data["fotos_lidar"] = None
+    return por_sub
+
+
+def _lidar_devolver_restantes(modulos_data: dict, por_sub: dict) -> None:
+    """Registros LiDAR cuya estación no llegó a imprimirse (sin hoja en el
+    período): vuelven al módulo del final para no perderse."""
+    items = [it for lst in por_sub.values() for it in lst]
+    por_sub.clear()
+    if not items:
+        return
+    mod = modulos_data.get("fotos_lidar")
+    bloque = next((b for b in (mod or {}).get("blocks", []) if b.get("type") == "fotos_comparativa"), None)
+    if bloque:
+        bloque["items"] = list(bloque.get("items") or []) + items
+    else:
+        modulos_data["fotos_lidar"] = {"titulo": "FOTOS LIDAR",
+                                       "blocks": [{"type": "fotos_comparativa", "items": items}]}
+
+
+def _lidar_modulo_estacion(nombre: str, items: list) -> dict:
+    return {"titulo": f"VUELO LIDAR · {nombre}".upper(),
+            "blocks": [{"type": "fotos_comparativa", "items": items}]}
+
+
 def _subtramo_id_for(node_id: str, nodes_by_id: dict) -> str:
     """Sube por `parent_id` hasta el nodo a profundidad 1 (Subtramo — hijo
     directo de la raíz del proyecto) que contiene a `node_id`. Si `node_id`
@@ -14925,7 +14972,7 @@ async def export_reports_pdf(
         BOTTOM_MARGIN_PDF = 2.0 * cm
         total_reportes = sum(len(v) for v in reports_by_node.values())
 
-        def _draw_modulos_closing_pages():
+        def _draw_modulos_closing_pages(datos: Optional[dict] = None):
             """Sección de cierre GENÉRICA del sistema Multi-Proyecto Modular:
             recorre `modulos_data` (ver `_gather_modulos_export_data`) y
             dibuja cada módulo activo a partir de sus bloques declarativos
@@ -15587,17 +15634,21 @@ async def export_reports_pdf(
 
             # Resumen de actividades por Tramo: justo ANTES de la Tabla Resumen
             # (avance acumulado); si ese módulo no está activo, antes de los demás.
-            _resumen_tramo_pendiente = True
-            if modulos_data.get("tabla_resumen") is None:
+            # `datos` (opcional) = módulos sueltos que se imprimen en medio del
+            # documento (p. ej. Vuelo LiDAR de una estación): sin resumen de
+            # actividades y sin marca de índice propia (la pone quien llama).
+            _resumen_tramo_pendiente = datos is None
+            if datos is None and modulos_data.get("tabla_resumen") is None:
                 _draw_resumen_actividades_tramo()
                 _resumen_tramo_pendiente = False
-            for _mod_key, _mod_data in modulos_data.items():
+            for _mod_key, _mod_data in (datos if datos is not None else modulos_data).items():
                 if _mod_data is None:
                     continue
                 if _mod_key == "tabla_resumen" and _resumen_tramo_pendiente:
                     _draw_resumen_actividades_tramo()
                     _resumen_tramo_pendiente = False
-                _indice_mark(f"mod:{_mod_key}", _mod_data["titulo"])
+                if datos is None:
+                    _indice_mark(f"mod:{_mod_key}", _mod_data["titulo"])
                 _section_header(_mod_data["titulo"])
                 for block in _mod_data["blocks"]:
                     _BLOCK_RENDERERS[block["type"]](block)
@@ -17523,7 +17574,18 @@ async def export_reports_pdf(
         # durante el período (ver sección "ÁREAS SIN REPORTES" al cierre).
         printed_area_buckets: set = set()
 
+        lidar_por_sub = _lidar_separar_por_estacion(modulos_data, nodes_by_id)
+
         def _emit_subtramo_summary(subtramo_id: Optional[str]) -> None:
+            """Hoja de resumen de la estación y, justo después, su Vuelo LiDAR."""
+            _emit_subtramo_summary_core(subtramo_id)
+            items = lidar_por_sub.pop(subtramo_id, None) if subtramo_id else None
+            if items:
+                nombre = (nodes_by_id.get(subtramo_id) or {}).get("name") or "Estación"
+                _indice_mark(f"lidar:{subtramo_id}", f"Vuelo LiDAR · {nombre}")
+                _draw_modulos_closing_pages({"fotos_lidar_estacion": _lidar_modulo_estacion(nombre, items)})
+
+        def _emit_subtramo_summary_core(subtramo_id: Optional[str]) -> None:
             nonlocal page_num
             if not subtramo_id:
                 return
@@ -17815,6 +17877,7 @@ async def export_reports_pdf(
 
         # Sistema Multi-Proyecto Modular: Forestal y Arbolado / Seguridad e
         # Higiene, al final de todo — solo si están encendidos.
+        _lidar_devolver_restantes(modulos_data, lidar_por_sub)
         _draw_modulos_closing_pages()
 
         if firma_cierre:
@@ -20297,6 +20360,7 @@ async def _gather_modulos_export_data(
                 continue
             items.append({
                 "titulo": r.get("titulo") or "",
+                "node_id": r.get("node_id"),
                 "original": r.get("foto_original"),
                 "actual": r.get("foto_actual"),
                 "fecha_original": r.get("foto_original_fecha"),
@@ -21580,10 +21644,17 @@ async def export_reports_pptx(
             return None
 
         def add_text(slide, x, y, w, h, text, *, size=14, bold=False, color=(0x0F, 0x17, 0x2A),
-                     align=PP_ALIGN.LEFT, italic=False):
+                     align=PP_ALIGN.LEFT, italic=False, tight=False):
             tb = slide.shapes.add_textbox(x, y, w, h)
             tf = tb.text_frame
             tf.word_wrap = True
+            if tight:
+                # Celdas de tabla: sin márgenes internos y centrado vertical,
+                # para que el texto no se salga de su fila y lo tape la de abajo.
+                from pptx.enum.text import MSO_ANCHOR
+                tf.margin_top = tf.margin_bottom = 0
+                tf.margin_left = tf.margin_right = 0
+                tf.vertical_anchor = MSO_ANCHOR.MIDDLE
             p = tf.paragraphs[0]
             p.alignment = align
             run = p.add_run()
@@ -21870,8 +21941,8 @@ async def export_reports_pptx(
                                   col1_header: str = "RECURSO") -> None:
                 mini_r = int(Cm(0.4))
                 HEADER_H = Cm(0.75)
-                ROW_H = Cm(0.5)
-                TOTAL_H = Cm(0.65)
+                TOTAL_H = Cm(0.7)
+                MIN_ROW_H, MAX_ROW_H = Cm(0.55), Cm(0.8)
                 cx3, cy3 = x + mini_r, y_top + mini_r
                 if icon_kind == "person":
                     _wf_person_icon(slide, cx3, cy3, mini_r)
@@ -21881,39 +21952,52 @@ async def export_reports_pptx(
                          w - 2 * mini_r - Cm(0.2), Cm(0.6), title.upper(), size=10.5, bold=True, color=READABLE_BRAND_RGB)
                 yy = y_top + 2 * mini_r + Cm(0.15)
                 _wf_rect(slide, x, yy, w, HEADER_H, fill_rgb=BRAND_RGB)
-                add_text(slide, x + Cm(0.15), yy + Cm(0.08), int(w * 0.6), HEADER_H - Cm(0.1), col1_header,
-                         size=9, bold=True, color=HEADER_TEXT_RGB)
-                add_text(slide, x + int(w * 0.55), yy + Cm(0.08), int(w * 0.4), HEADER_H - Cm(0.1), "CANTIDAD",
-                         size=9, bold=True, color=HEADER_TEXT_RGB, align=PP_ALIGN.RIGHT)
+                pad = Cm(0.2)
+                name_w_cell = int(w * 0.68) - pad
+                qty_x = x + int(w * 0.68)
+                qty_w_cell = w - int(w * 0.68) - pad
+                add_text(slide, x + pad, yy, name_w_cell, HEADER_H, col1_header,
+                         size=9, bold=True, color=HEADER_TEXT_RGB, tight=True)
+                add_text(slide, qty_x, yy, qty_w_cell, HEADER_H, "CANTIDAD",
+                         size=9, bold=True, color=HEADER_TEXT_RGB, align=PP_ALIGN.RIGHT, tight=True)
                 yy += HEADER_H
                 total_qty = sum(r["qty"] for r in rows)
-                max_rows = max(1, int((tbl_avail_h - 2 * mini_r - Cm(0.15) - HEADER_H - TOTAL_H) / ROW_H))
-                shown = rows[:max_rows]
+                # La altura de fila se reparte en el espacio libre (entre el mínimo
+                # y el máximo) para que nada se amontone; si aun así no caben
+                # todas las filas, se corta con "+N más".
+                espacio = tbl_avail_h - 2 * mini_r - Cm(0.15) - HEADER_H - TOTAL_H
+                n_prev = max(1, len(rows))
+                ROW_H = int(max(MIN_ROW_H, min(MAX_ROW_H, espacio / n_prev)))
+                max_rows = max(1, int(espacio / ROW_H))
+                shown = rows[:max_rows - 1] if len(rows) > max_rows else rows
                 overflow = len(rows) - len(shown)
                 for idx, r in enumerate(shown):
                     if idx % 2 == 1:
                         _wf_rect(slide, x, yy, w, ROW_H, fill_rgb=WF_ZEBRA_TINT_RGB)
                     main, _ = _format_workforce_desc(r["desc"])
-                    add_text(slide, x + Cm(0.15), yy + Cm(0.05), int(w * 0.6), ROW_H - Cm(0.1),
-                             main or "—", size=9, color=WF_TEXT_RGB)
-                    add_text(slide, x + int(w * 0.55), yy + Cm(0.05), int(w * 0.4), ROW_H - Cm(0.1),
-                             str(r["qty"]), size=9, bold=True, color=READABLE_BRAND_RGB, align=PP_ALIGN.RIGHT)
+                    main = main or "—"
+                    # Nombres largos: se reduce la letra para que quepan en 1-2 líneas.
+                    chars_por_linea = name_w_cell / Cm(0.17)
+                    fs = 9 if len(main) <= chars_por_linea else 8 if len(main) <= chars_por_linea * 1.15 else 7
+                    add_text(slide, x + pad, yy, name_w_cell, ROW_H, main, size=fs, color=WF_TEXT_RGB, tight=True)
+                    add_text(slide, qty_x, yy, qty_w_cell, ROW_H, str(r["qty"]), size=9, bold=True,
+                             color=READABLE_BRAND_RGB, align=PP_ALIGN.RIGHT, tight=True)
                     _wf_rect(slide, x, yy + ROW_H - Pt(0.75), w, Pt(0.75), fill_rgb=WF_BORDER_RGB)
                     yy += ROW_H
                 if overflow > 0:
-                    add_text(slide, x + Cm(0.15), yy + Cm(0.05), w - Cm(0.3), ROW_H - Cm(0.1),
-                             f"+ {overflow} más…", size=8, italic=True, color=WF_MUTED_RGB)
+                    add_text(slide, x + pad, yy, w - 2 * pad, ROW_H, f"+ {overflow} más…", size=8, italic=True,
+                             color=WF_MUTED_RGB, tight=True)
                     yy += ROW_H
                 if not rows:
-                    add_text(slide, x + Cm(0.15), yy + Cm(0.05), w - Cm(0.3), ROW_H - Cm(0.1),
-                             "Sin registros", size=9, italic=True, color=WF_MUTED_RGB)
+                    add_text(slide, x + pad, yy, w - 2 * pad, ROW_H, "Sin registros", size=9, italic=True,
+                             color=WF_MUTED_RGB, tight=True)
                     yy += ROW_H
                 _wf_rect(slide, x, yy, w, TOTAL_H, fill_rgb=WF_TOTAL_TINT_RGB)
                 _wf_rect(slide, x, yy, w, Pt(1.6), fill_rgb=BRAND_RGB)
-                add_text(slide, x + Cm(0.15), yy + Cm(0.1), int(w * 0.5), TOTAL_H - Cm(0.15),
-                         "TOTAL", size=10, bold=True, color=READABLE_BRAND_RGB)
-                add_text(slide, x + int(w * 0.4), yy + Cm(0.1), int(w * 0.55), TOTAL_H - Cm(0.15),
-                         str(total_qty), size=10, bold=True, color=READABLE_BRAND_RGB, align=PP_ALIGN.RIGHT)
+                add_text(slide, x + pad, yy, int(w * 0.5), TOTAL_H, "TOTAL", size=10, bold=True,
+                         color=READABLE_BRAND_RGB, tight=True)
+                add_text(slide, qty_x, yy, qty_w_cell, TOTAL_H, str(total_qty), size=10, bold=True,
+                         color=READABLE_BRAND_RGB, align=PP_ALIGN.RIGHT, tight=True)
 
             _draw_mini_table(right_x, y, tbl_w, "Fuerza de Trabajo", personal_rows, "person", col1_header="PERSONAL")
             _draw_mini_table(right_x + tbl_w + tbl_gutter, y, tbl_w, "Maquinaria y Equipo", maquinaria_rows, "gear",
@@ -22084,11 +22168,11 @@ async def export_reports_pptx(
             tbl_avail_h = bottom_y - y3
 
             def _draw_mini_table2(x: int, y_top: int, w: int, title: str, rows: list, icon_kind: str,
-                                   col1_header: str = "RECURSO") -> None:
+                                  col1_header: str = "RECURSO") -> None:
                 mini_r = int(Cm(0.4))
                 HEADER_H = Cm(0.75)
-                ROW_H = Cm(0.5)
-                TOTAL_H = Cm(0.65)
+                TOTAL_H = Cm(0.7)
+                MIN_ROW_H, MAX_ROW_H = Cm(0.55), Cm(0.8)
                 cx3, cy3 = x + mini_r, y_top + mini_r
                 if icon_kind == "person":
                     _wf_person_icon(slide, cx3, cy3, mini_r)
@@ -22096,41 +22180,54 @@ async def export_reports_pptx(
                     _wf_gear_icon(slide, cx3, cy3, mini_r)
                 add_text(slide, x + 2 * mini_r + Cm(0.2), y_top + int(mini_r * 0.35),
                          w - 2 * mini_r - Cm(0.2), Cm(0.6), title.upper(), size=10.5, bold=True, color=READABLE_BRAND_RGB)
-                yy2 = y_top + 2 * mini_r + Cm(0.15)
-                _wf_rect(slide, x, yy2, w, HEADER_H, fill_rgb=BRAND_RGB)
-                add_text(slide, x + Cm(0.15), yy2 + Cm(0.08), int(w * 0.6), HEADER_H - Cm(0.1), col1_header,
-                         size=9, bold=True, color=HEADER_TEXT_RGB)
-                add_text(slide, x + int(w * 0.55), yy2 + Cm(0.08), int(w * 0.4), HEADER_H - Cm(0.1), "CANTIDAD",
-                         size=9, bold=True, color=HEADER_TEXT_RGB, align=PP_ALIGN.RIGHT)
-                yy2 += HEADER_H
+                yy = y_top + 2 * mini_r + Cm(0.15)
+                _wf_rect(slide, x, yy, w, HEADER_H, fill_rgb=BRAND_RGB)
+                pad = Cm(0.2)
+                name_w_cell = int(w * 0.68) - pad
+                qty_x = x + int(w * 0.68)
+                qty_w_cell = w - int(w * 0.68) - pad
+                add_text(slide, x + pad, yy, name_w_cell, HEADER_H, col1_header,
+                         size=9, bold=True, color=HEADER_TEXT_RGB, tight=True)
+                add_text(slide, qty_x, yy, qty_w_cell, HEADER_H, "CANTIDAD",
+                         size=9, bold=True, color=HEADER_TEXT_RGB, align=PP_ALIGN.RIGHT, tight=True)
+                yy += HEADER_H
                 total_qty = sum(r["qty"] for r in rows)
-                max_rows2 = max(1, int((tbl_avail_h - 2 * mini_r - Cm(0.15) - HEADER_H - TOTAL_H) / ROW_H))
-                shown = rows[:max_rows2]
+                # La altura de fila se reparte en el espacio libre (entre el mínimo
+                # y el máximo) para que nada se amontone; si aun así no caben
+                # todas las filas, se corta con "+N más".
+                espacio = tbl_avail_h - 2 * mini_r - Cm(0.15) - HEADER_H - TOTAL_H
+                n_prev = max(1, len(rows))
+                ROW_H = int(max(MIN_ROW_H, min(MAX_ROW_H, espacio / n_prev)))
+                max_rows = max(1, int(espacio / ROW_H))
+                shown = rows[:max_rows - 1] if len(rows) > max_rows else rows
                 overflow = len(rows) - len(shown)
                 for idx, r in enumerate(shown):
                     if idx % 2 == 1:
-                        _wf_rect(slide, x, yy2, w, ROW_H, fill_rgb=WF_ZEBRA_TINT_RGB)
+                        _wf_rect(slide, x, yy, w, ROW_H, fill_rgb=WF_ZEBRA_TINT_RGB)
                     main, _ = _format_workforce_desc(r["desc"])
-                    add_text(slide, x + Cm(0.15), yy2 + Cm(0.05), int(w * 0.6), ROW_H - Cm(0.1),
-                             main or "—", size=9, color=WF_TEXT_RGB)
-                    add_text(slide, x + int(w * 0.55), yy2 + Cm(0.05), int(w * 0.4), ROW_H - Cm(0.1),
-                             str(r["qty"]), size=9, bold=True, color=READABLE_BRAND_RGB, align=PP_ALIGN.RIGHT)
-                    _wf_rect(slide, x, yy2 + ROW_H - Pt(0.75), w, Pt(0.75), fill_rgb=WF_BORDER_RGB)
-                    yy2 += ROW_H
+                    main = main or "—"
+                    # Nombres largos: se reduce la letra para que quepan en 1-2 líneas.
+                    chars_por_linea = name_w_cell / Cm(0.17)
+                    fs = 9 if len(main) <= chars_por_linea else 8 if len(main) <= chars_por_linea * 1.15 else 7
+                    add_text(slide, x + pad, yy, name_w_cell, ROW_H, main, size=fs, color=WF_TEXT_RGB, tight=True)
+                    add_text(slide, qty_x, yy, qty_w_cell, ROW_H, str(r["qty"]), size=9, bold=True,
+                             color=READABLE_BRAND_RGB, align=PP_ALIGN.RIGHT, tight=True)
+                    _wf_rect(slide, x, yy + ROW_H - Pt(0.75), w, Pt(0.75), fill_rgb=WF_BORDER_RGB)
+                    yy += ROW_H
                 if overflow > 0:
-                    add_text(slide, x + Cm(0.15), yy2 + Cm(0.05), w - Cm(0.3), ROW_H - Cm(0.1),
-                             f"+ {overflow} más…", size=8, italic=True, color=WF_MUTED_RGB)
-                    yy2 += ROW_H
+                    add_text(slide, x + pad, yy, w - 2 * pad, ROW_H, f"+ {overflow} más…", size=8, italic=True,
+                             color=WF_MUTED_RGB, tight=True)
+                    yy += ROW_H
                 if not rows:
-                    add_text(slide, x + Cm(0.15), yy2 + Cm(0.05), w - Cm(0.3), ROW_H - Cm(0.1),
-                             "Sin registros", size=9, italic=True, color=WF_MUTED_RGB)
-                    yy2 += ROW_H
-                _wf_rect(slide, x, yy2, w, TOTAL_H, fill_rgb=WF_TOTAL_TINT_RGB)
-                _wf_rect(slide, x, yy2, w, Pt(1.6), fill_rgb=BRAND_RGB)
-                add_text(slide, x + Cm(0.15), yy2 + Cm(0.1), int(w * 0.5), TOTAL_H - Cm(0.15),
-                         "TOTAL", size=10, bold=True, color=READABLE_BRAND_RGB)
-                add_text(slide, x + int(w * 0.4), yy2 + Cm(0.1), int(w * 0.55), TOTAL_H - Cm(0.15),
-                         str(total_qty), size=10, bold=True, color=READABLE_BRAND_RGB, align=PP_ALIGN.RIGHT)
+                    add_text(slide, x + pad, yy, w - 2 * pad, ROW_H, "Sin registros", size=9, italic=True,
+                             color=WF_MUTED_RGB, tight=True)
+                    yy += ROW_H
+                _wf_rect(slide, x, yy, w, TOTAL_H, fill_rgb=WF_TOTAL_TINT_RGB)
+                _wf_rect(slide, x, yy, w, Pt(1.6), fill_rgb=BRAND_RGB)
+                add_text(slide, x + pad, yy, int(w * 0.5), TOTAL_H, "TOTAL", size=10, bold=True,
+                         color=READABLE_BRAND_RGB, tight=True)
+                add_text(slide, qty_x, yy, qty_w_cell, TOTAL_H, str(total_qty), size=10, bold=True,
+                         color=READABLE_BRAND_RGB, align=PP_ALIGN.RIGHT, tight=True)
 
             _draw_mini_table2(right_x, y3, tbl_w, "Fuerza de Trabajo", personal_rows, "person", col1_header="PERSONAL")
             _draw_mini_table2(right_x + tbl_w + tbl_gutter, y3, tbl_w, "Maquinaria y Equipo", maquinaria_rows, "gear",
@@ -22398,7 +22495,7 @@ async def export_reports_pptx(
                     _cell(slide, rx + e_w + m_w, y, q_w, TOTAL_H, str(total_equipos), bold=True,
                           fill=WF_TOTAL_TINT_RGB, size=12)
 
-        def _emit_modulos_closing_slides() -> None:
+        def _emit_modulos_closing_slides(datos: Optional[dict] = None) -> None:
             """Slides de cierre GENÉRICAS del sistema Multi-Proyecto Modular:
             recorre `modulos_data` (ver `_gather_modulos_export_data`) y
             arma cada módulo activo a partir de sus bloques declarativos
@@ -22970,11 +23067,12 @@ async def export_reports_pptx(
 
             # (El resumen de actividades va al INICIO del PPTX, ver
             # `_emit_resumen_actividades_frente_slides`.)
-            for _mod_key, _mod_data in modulos_data.items():
+            for _mod_key, _mod_data in (datos if datos is not None else modulos_data).items():
                 if _mod_data is None:
                     continue
                 titulo = _mod_data["titulo"]
-                _indice_mark(f"mod:{_mod_key}", titulo)
+                if datos is None:
+                    _indice_mark(f"mod:{_mod_key}", titulo)
                 state["slide"], state["y"] = _new_slide(titulo)
                 titulo_continua = f"{titulo} (continúa)"
                 for block in _mod_data["blocks"]:
@@ -22982,7 +23080,18 @@ async def export_reports_pptx(
 
         resumen_subtramos_emitidos: set = set()
 
+        lidar_por_sub = _lidar_separar_por_estacion(modulos_data, nodes_by_id)
+
         def _emit_subtramo_summary_slide(subtramo_id: Optional[str], forzar: bool = False) -> None:
+            """Slide de resumen de la estación y, justo después, su Vuelo LiDAR."""
+            _emit_subtramo_summary_slide_core(subtramo_id, forzar)
+            items = lidar_por_sub.pop(subtramo_id, None) if subtramo_id else None
+            if items:
+                nombre = (nodes_by_id.get(subtramo_id) or {}).get("name") or "Estación"
+                _indice_mark(f"lidar:{subtramo_id}", f"Vuelo LiDAR · {nombre}")
+                _emit_modulos_closing_slides({"fotos_lidar_estacion": _lidar_modulo_estacion(nombre, items)})
+
+        def _emit_subtramo_summary_slide_core(subtramo_id: Optional[str], forzar: bool = False) -> None:
             """Emite (si hay datos) la slide de resumen del Subtramo
             `subtramo_id` para todo el período exportado — al final de la
             sección de ese subtramo. Con `forzar=True` la emite aunque no haya
@@ -23623,6 +23732,7 @@ async def export_reports_pptx(
 
         # Sistema Multi-Proyecto Modular: Forestal y Arbolado / Seguridad e
         # Higiene, al final de todo — solo si están encendidos.
+        _lidar_devolver_restantes(modulos_data, lidar_por_sub)
         _emit_modulos_closing_slides()
 
         # ==============================================================
