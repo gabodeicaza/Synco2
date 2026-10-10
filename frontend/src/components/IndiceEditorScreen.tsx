@@ -7,12 +7,12 @@
 // "Actualizar estructura", que lo recalcula con los datos de hoy).
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  View, Text, StyleSheet, ScrollView, ActivityIndicator, Pressable, Alert, Switch, TextInput,
+  View, Text, StyleSheet, ScrollView, ActivityIndicator, Pressable, Alert, Switch, TextInput, Image,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { api, IndiceConfig, IndicePeriodo, IndicePreview, IndiceSeccion, Project } from '@/src/api';
+import { api, IndiceConfig, IndiceFormato, IndiceImagen, IndicePeriodo, IndicePreview, IndiceSeccion, Project } from '@/src/api';
 import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
 import {
   INDICE_CONFIG_DEFAULT, INDICE_PERIODOS, alternarOculta, moverSeccion, renombrarSeccion,
@@ -49,6 +49,23 @@ export default function IndiceEditorScreen({ projectId: pid }: { projectId: stri
     }, 400);
     return () => { vigente = false; clearTimeout(t); };
   }, [pid, periodo, actual?.config, actual?.estructura]);
+
+  // Imagen real de la hoja del indice como saldra en el PDF o en el PowerPoint.
+  const [formato, setFormato] = useState<IndiceFormato>('pdf');
+  const [imagen, setImagen] = useState<IndiceImagen | null>(null);
+  const [imagenCargando, setImagenCargando] = useState(false);
+  useEffect(() => {
+    if (!pid || !actual) { setImagen(null); return undefined; }
+    let vigente = true;
+    setImagenCargando(true);
+    const t = setTimeout(() => {
+      api.previewIndiceImagen(pid, periodo, formato, actual.config)
+        .then((r) => { if (vigente) setImagen(r); })
+        .catch(() => { if (vigente) setImagen(null); })
+        .finally(() => { if (vigente) setImagenCargando(false); });
+    }, 600);
+    return () => { vigente = false; clearTimeout(t); };
+  }, [pid, periodo, formato, actual?.config, actual?.estructura]);
 
   // Recalcula la estructura (secciones y titulos por defecto) con los datos
   // actuales del proyecto: asi el editor siempre refleja lo que el informe va
@@ -269,7 +286,10 @@ export default function IndiceEditorScreen({ projectId: pid }: { projectId: stri
               </View>
             )}
 
-            <VistaPreviaIndice preview={preview} cargando={previewCargando} periodo={periodo} color={headerColor} />
+            <VistaPreviaIndice
+              preview={preview} cargando={previewCargando} periodo={periodo} color={headerColor}
+              imagen={imagen} imagenCargando={imagenCargando} formato={formato} onFormato={setFormato}
+            />
 
             <Pressable accessibilityRole="button"
               onPress={guardar}
@@ -294,16 +314,53 @@ const FILAS_PREVIEW = 14;
 // Hoja de indice tal como saldra en el PDF: titulo, entradas con su numero de pagina y
 // un resumen de paginas. Es un calculo del servidor, no una imagen: refleja el orden,
 // los titulos y las secciones ocultas que se estan editando, aunque aun no se guarden.
-function VistaPreviaIndice({ preview, cargando, periodo, color }: {
+function VistaPreviaIndice({ preview, cargando, periodo, color, imagen, imagenCargando, formato, onFormato }: {
   preview: IndicePreview | null; cargando: boolean; periodo: IndicePeriodo; color: string;
+  imagen: IndiceImagen | null; imagenCargando: boolean; formato: IndiceFormato; onFormato: (f: IndiceFormato) => void;
 }) {
+  const hayImagen = !!imagen?.disponible && !!imagen.habilitado && !!imagen.paginas?.length;
   return (
     <View style={styles.previewWrap}>
       <View style={styles.seccionesHead}>
         <Text style={styles.sectionTitle}>Vista previa del índice</Text>
-        {cargando ? <ActivityIndicator size="small" color={colors.primary} /> : null}
+        {cargando || imagenCargando ? <ActivityIndicator size="small" color={colors.primary} /> : null}
       </View>
-      {!preview ? (
+      <View style={styles.formatoRow}>
+        {([['pdf', 'PDF'], ['pptx', 'PowerPoint']] as [IndiceFormato, string][]).map(([f, etiqueta]) => (
+          <Pressable
+            key={f}
+            accessibilityRole="button"
+            onPress={() => onFormato(f)}
+            style={[styles.formatoBtn, formato === f && styles.formatoBtnOn]}
+          >
+            <Text style={[styles.formatoTxt, formato === f && { color: '#fff' }]}>{etiqueta}</Text>
+          </Pressable>
+        ))}
+      </View>
+      {hayImagen ? (
+        <>
+          {imagen!.paginas!.map((uri, i) => (
+            <Image
+              key={`${formato}-${i}`}
+              source={{ uri }}
+              resizeMode="contain"
+              style={[styles.hojaImagen, { aspectRatio: (imagen!.ancho || 4) / (imagen!.alto || 3) }]}
+              accessibilityLabel={`Hoja ${i + 1} del índice en ${formato === 'pdf' ? 'PDF' : 'PowerPoint'}`}
+            />
+          ))}
+          <Text style={styles.previewResumen}>
+            {(imagen!.total_paginas_indice || 0) > imagen!.paginas!.length
+              ? `Se muestran ${imagen!.paginas!.length} de ${imagen!.total_paginas_indice} hojas del índice. `
+              : ''}
+            {formato === 'pdf'
+              ? 'Así se imprime en el PDF, con el fondo de tu plantilla.'
+              : 'Así se acomoda en la diapositiva (no incluye el fondo del membrete del PowerPoint).'}
+            {preview?.disponible ? ` Portada: ${preview.paginas_portada} pág. · Total aprox.: ${preview.total_paginas} pág.` : ''}
+          </Text>
+        </>
+      ) : imagen?.disponible && imagen.habilitado === false ? (
+        <Text style={styles.empty}>El informe saldrá sin índice (conserva el orden de las secciones).</Text>
+      ) : !preview ? (
         <Text style={styles.empty}>
           {cargando ? 'Calculando...' : 'No se pudo calcular la vista previa.'}
         </Text>
@@ -351,6 +408,17 @@ function VistaPreviaIndice({ preview, cargando, periodo, color }: {
 
 const styles = StyleSheet.create({
   previewWrap: { marginBottom: spacing.md },
+  formatoRow: { flexDirection: 'row', gap: 8, marginBottom: spacing.sm },
+  formatoBtn: {
+    minHeight: 36, paddingHorizontal: 14, borderRadius: 999, borderWidth: 1, borderColor: colors.primary,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  formatoBtnOn: { backgroundColor: colors.primary },
+  formatoTxt: { color: colors.primary, fontSize: 13, fontWeight: '700' },
+  hojaImagen: {
+    width: '100%', backgroundColor: '#fff', borderRadius: radius.md, borderWidth: 1, borderColor: colors.border,
+    marginBottom: spacing.sm,
+  },
   hoja: {
     backgroundColor: '#fff', borderRadius: radius.md, borderWidth: 1, borderColor: colors.border,
     padding: spacing.md, ...shadow.card,

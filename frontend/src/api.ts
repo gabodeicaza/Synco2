@@ -348,6 +348,18 @@ export interface IndicePreview {
   total_paginas?: number;
 }
 
+export type IndiceFormato = 'pdf' | 'pptx';
+
+export interface IndiceImagen {
+  disponible: boolean;
+  habilitado?: boolean;
+  formato?: IndiceFormato;
+  paginas?: string[];            // PNG (data URL) de las primeras hojas del indice
+  total_paginas_indice?: number;
+  ancho?: number;
+  alto?: number;
+}
+
 export interface IndiceResponse {
   periodo: IndicePeriodo;
   config: IndiceConfig;
@@ -2752,6 +2764,9 @@ export const api = {
   // Vista previa del indice con la config EN EDICION (no la guarda).
   previewIndice: (pid: string, periodo: IndicePeriodo, config: IndiceConfig) =>
     request<IndicePreview>('POST', `/projects/${pid}/indice/${periodo}/preview`, config),
+  // Imagen de la(s) hoja(s) del indice como saldran en el PDF o en el PowerPoint.
+  previewIndiceImagen: (pid: string, periodo: IndicePeriodo, formato: IndiceFormato, config: IndiceConfig) =>
+    request<IndiceImagen>('POST', `/projects/${pid}/indice/${periodo}/preview-imagen?formato=${formato}`, config),
   refreshIndiceEstructura: (pid: string, periodo: IndicePeriodo) =>
     request<{ periodo: IndicePeriodo; estructura: IndiceSeccion[] }>(
       'GET',

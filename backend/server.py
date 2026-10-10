@@ -16220,6 +16220,96 @@ def _render_indice_pdf(entries: List[tuple], counts: List[int], titulo: str, sub
     return buf.getvalue()
 
 
+def _indice_fondo_plantilla(index_pages: list, template_path: Optional[str]) -> list:
+    """Pone a cada página del índice el fondo de la plantilla PDF del proyecto:
+    el lienzo recurrente (página 2+, o la última disponible), mismo criterio que
+    el contenido normal. Sin plantilla, las páginas quedan como están."""
+    if not template_path:
+        return index_pages
+    from pypdf import PdfReader
+
+    tpl_bytes = Path(template_path).read_bytes()
+    tpl_count = len(PdfReader(io.BytesIO(tpl_bytes)).pages)
+    if not tpl_count:
+        return index_pages
+    base_idx = 2 if tpl_count >= 3 else (1 if tpl_count == 2 else 0)
+    merged: list = []
+    for ip in index_pages:
+        base = PdfReader(io.BytesIO(tpl_bytes)).pages[base_idx]
+        try:
+            base.merge_page(ip)
+            merged.append(base)
+        except Exception:
+            merged.append(ip)
+    return merged
+
+
+def _render_indice_pptx_maqueta(entries: List[tuple], counts: List[int], titulo: str, subtitulo: str,
+                                page_size: tuple, brand_hex: str) -> bytes:
+    """Hoja de índice con la MISMA geometría y tipografía que la diapositiva del
+    PowerPoint (márgenes de 2 cm, filas de 0.85 cm, texto de 14 pt, número en
+    negritas a la derecha y línea fina bajo cada fila), pero dibujada como PDF
+    para poder mostrarla como imagen. No lleva el fondo del membrete del .pptx."""
+    from reportlab.lib.colors import HexColor
+    from reportlab.lib.units import cm
+    from reportlab.pdfgen import canvas as _canvas
+
+    PW, PH = page_size
+    buf = io.BytesIO()
+    c = _canvas.Canvas(buf, pagesize=page_size)
+    left, right = 2.0 * cm, PW - 2.0 * cm
+    row_h, head_h, top = 0.85 * cm, 2.0 * cm, 3.5 * cm
+    texto, tenue, borde = HexColor("#0F172A"), HexColor("#64748B"), HexColor("#E2E8F0")
+    idx = 0
+    for pi, cnt in enumerate(counts):
+        y = PH - top
+        if pi == 0:
+            c.setFillColor(HexColor(_readable_dark_hex(brand_hex)))
+            c.setFont("Helvetica-Bold", 26)
+            c.drawCentredString(PW / 2, y - 26, titulo)
+            c.setFillColor(tenue)
+            c.setFont("Helvetica", 12)
+            c.drawCentredString(PW / 2, y - 1.1 * cm - 12, subtitulo)
+            y -= head_h
+        for text, page_no in entries[idx: idx + cnt]:
+            num = str(page_no)
+            c.setFont("Helvetica-Bold", 14)
+            num_w = c.stringWidth(num, "Helvetica-Bold", 14)
+            text = _indice_truncate(text, lambda s: c.stringWidth(s, "Helvetica", 14) <= (right - left) - num_w - 20)
+            base = y - row_h * 0.68
+            c.setFillColor(texto)
+            c.setFont("Helvetica", 14)
+            c.drawString(left, base, text)
+            c.setFont("Helvetica-Bold", 14)
+            c.drawRightString(right, base, num)
+            c.setStrokeColor(borde)
+            c.setLineWidth(0.75)
+            c.line(left, y - row_h, right, y - row_h)
+            y -= row_h
+        idx += cnt
+        c.showPage()
+    c.save()
+    return buf.getvalue()
+
+
+def _pdf_a_png_dataurls(pdf_bytes: bytes, max_paginas: int = 3, dpi: int = 90) -> tuple:
+    """Primeras páginas de un PDF como data URLs PNG → (lista, total de páginas)."""
+    import base64 as _b64
+    try:
+        import pymupdf as _fitz
+    except ImportError:  # instalaciones con el nombre anterior del paquete
+        import fitz as _fitz
+    doc = _fitz.open(stream=pdf_bytes, filetype="pdf")
+    try:
+        out = []
+        for i in range(min(len(doc), max_paginas)):
+            png = doc[i].get_pixmap(dpi=dpi).tobytes("png")
+            out.append("data:image/png;base64," + _b64.b64encode(png).decode("ascii"))
+        return out, len(doc)
+    finally:
+        doc.close()
+
+
 def _pdf_apply_indice(pdf_bytes: bytes, marks: List[tuple], cfg: dict, *, template_path: Optional[str],
                       brand_hex: str, subtitulo: str, top_margin: float, bottom_margin: float,
                       margin_x: float) -> tuple:
@@ -16253,23 +16343,7 @@ def _pdf_apply_indice(pdf_bytes: bytes, marks: List[tuple], cfg: dict, *, templa
             (page_w, page_h), brand_hex, top_margin, margin_x,
         )
         idx_reader = PdfReader(io.BytesIO(idx_bytes))
-        index_pages = list(idx_reader.pages)
-        if template_path:
-            # Fondo = lienzo recurrente de la plantilla (página 2+, o la
-            # última disponible) — mismo criterio que el contenido normal.
-            tpl_bytes = Path(template_path).read_bytes()
-            tpl_count = len(PdfReader(io.BytesIO(tpl_bytes)).pages)
-            if tpl_count:
-                base_idx = 2 if tpl_count >= 3 else (1 if tpl_count == 2 else 0)
-                merged: list = []
-                for ip in index_pages:
-                    base = PdfReader(io.BytesIO(tpl_bytes)).pages[base_idx]
-                    try:
-                        base.merge_page(ip)
-                        merged.append(base)
-                    except Exception:
-                        merged.append(ip)
-                index_pages = merged
+        index_pages = _indice_fondo_plantilla(list(idx_reader.pages), template_path)
 
     writer = PdfWriter()
     for i in range(pre_count):
@@ -16418,6 +16492,92 @@ async def preview_indice(pid: str, periodo: str, body: dict,
         "paginas_indice": paginas_indice,
         "total_paginas": pre_count + paginas_indice + sum(r["n"] for r in ranges),
     }
+
+
+@api.post("/projects/{pid}/indice/{periodo}/preview-imagen")
+async def preview_indice_imagen(
+    pid: str, periodo: str, body: dict, formato: Literal["pdf", "pptx"] = "pdf",
+    user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB)),
+):
+    """Imagen de la(s) hoja(s) del índice tal como saldrán en el informe, con la
+    configuración EN EDICIÓN (sin guardarla). `pdf` usa el mismo dibujo y el mismo
+    fondo de plantilla que el PDF real; `pptx` reproduce la diapositiva del
+    PowerPoint (sin el fondo del membrete). Devuelve hasta 3 hojas como PNG."""
+    proj = await ensure_project_access(user, pid)
+    if periodo not in INDICE_PERIODOS:
+        raise HTTPException(400, "periodo debe ser diario, semanal o mensual")
+    guardado = await db.projects.find_one({"id": pid}, {"indice_estructura": 1}) or {}
+    estructura = (guardado.get("indice_estructura") or {}).get(periodo) or []
+    if not estructura or any("n" not in s for s in estructura):
+        return {"disponible": False}
+    ranges = [{"key": s["key"], "title": s["title"], "start": s.get("inicio", 0), "n": s["n"]} for s in estructura]
+    cfg = _sanitize_indice_config(body)
+    if not cfg["enabled"]:
+        return {"disponible": True, "habilitado": False, "paginas": [], "ancho": 0, "alto": 0, "total_paginas_indice": 0}
+    color = _sanitize_color_hex(proj.get("color_institucional") or proj.get("color_tema")) or "#003366"
+    hoy = datetime.now(MX_TZ).date()
+    if periodo == "semanal":
+        ini, fin = _week_bounds_for(hoy)
+        etiqueta = f"{ini.strftime('%d/%m/%Y')} al {fin.strftime('%d/%m/%Y')}"
+    elif periodo == "mensual":
+        etiqueta = f"{_SEGURIDAD_MESES[hoy.month - 1]} {hoy.year}"
+    else:
+        etiqueta = hoy.strftime("%d/%m/%Y")
+    subtitulo = f"Reporte {periodo} · {etiqueta}"
+    pre_count = ranges[0]["start"]
+
+    def _construir() -> dict:
+        from pypdf import PdfReader, PdfWriter
+        from reportlab.lib.pagesizes import A4, landscape
+        from reportlab.lib.units import cm
+
+        if formato == "pdf":
+            tpl = _get_project_template(proj, "pdf")
+            size = landscape(A4)
+            if tpl:
+                try:
+                    pg = PdfReader(io.BytesIO(Path(tpl).read_bytes())).pages[0]
+                    w, h = float(pg.mediabox.width), float(pg.mediabox.height)
+                    if w > 0 and h > 0:
+                        size = (w, h)
+                except Exception:
+                    tpl = None
+            first_cap, next_cap = _indice_pdf_caps(size[1], 4.0 * cm, 2.0 * cm)
+            plan = _indice_plan(ranges, cfg, pre_count, first_cap, next_cap)
+            idx_bytes = _render_indice_pdf(
+                plan["entries"], plan["counts"], cfg["titulo"], subtitulo, size, color, 4.0 * cm, 2.0 * cm)
+            paginas = _indice_fondo_plantilla(list(PdfReader(io.BytesIO(idx_bytes)).pages), tpl)
+            w = PdfWriter()
+            for pg in paginas:
+                w.add_page(pg)
+            out = io.BytesIO()
+            w.write(out)
+            pdf_bytes = out.getvalue()
+        else:
+            size = (33.867 * cm, 19.05 * cm)  # 16:9, el formato de las diapositivas del informe
+            tpl_pptx = _get_project_template(proj, "pptx")
+            if tpl_pptx:
+                try:
+                    from pptx import Presentation as _Prs
+                    _p = _Prs(tpl_pptx)
+                    size = (float(_p.slide_width) / 12700.0, float(_p.slide_height) / 12700.0)  # EMU → pt
+                except Exception:
+                    pass
+            row_h, head_h = 0.85 * cm, 2.0 * cm
+            usable = size[1] - 3.5 * cm - 2.0 * cm
+            first_cap = max(1, int((usable - head_h) // row_h))
+            next_cap = max(1, int(usable // row_h))
+            plan = _indice_plan(ranges, cfg, pre_count, first_cap, next_cap)
+            pdf_bytes = _render_indice_pptx_maqueta(
+                plan["entries"], plan["counts"], cfg["titulo"], subtitulo, size, color)
+        imagenes, total = _pdf_a_png_dataurls(pdf_bytes)
+        return {"disponible": True, "habilitado": True, "formato": formato, "paginas": imagenes,
+                "total_paginas_indice": total, "ancho": size[0], "alto": size[1]}
+
+    try:
+        return await asyncio.to_thread(_construir)
+    except ImportError:
+        raise HTTPException(503, "El servidor no tiene instalado PyMuPDF para generar la imagen de la vista previa")
 
 
 @api.put("/projects/{pid}/indice/{periodo}")
