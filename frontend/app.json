@@ -6,7 +6,7 @@
         "foregroundImage": "./assets/images/app-icon.png"
       },
       "edgeToEdgeEnabled": true,
-      "package": "mx.apmapp.dirac",
+      "package": "syn.co",
       "permissions": [
         "CAMERA",
         "ACCESS_FINE_LOCATION",
