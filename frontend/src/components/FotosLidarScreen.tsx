@@ -196,7 +196,7 @@ export default function FotosLidarScreen({ projectId }: { projectId: string }) {
     const thumb = slot === 'original' ? it.thumb_original : it.thumb_actual;
     const fecha = slot === 'original' ? it.foto_original_fecha : it.foto_actual_fecha;
     return (
-      <Pressable style={styles.slot} onPress={() => openViewer(it, slot)}>
+      <Pressable accessibilityRole="button" style={styles.slot} onPress={() => openViewer(it, slot)}>
         <Text style={styles.slotLabel}>{SLOT_LABEL[slot]}</Text>
         {tiene && thumb ? (
           <Image source={{ uri: `data:image/jpeg;base64,${thumb}` }} style={styles.thumb} resizeMode="cover" />
@@ -223,7 +223,7 @@ export default function FotosLidarScreen({ projectId }: { projectId: string }) {
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <View style={[styles.headerWrap, { backgroundColor: headerColor, paddingTop: insets.top + spacing.xs }]}>
         <View style={styles.headerTopRow}>
-          <Pressable onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
+          <Pressable accessibilityRole="button" accessibilityLabel="Volver" onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
             <Ionicons name="chevron-back" size={22} color={headerTextColor} />
           </Pressable>
           <Text style={[styles.titleBar, { color: headerTextColor }]} numberOfLines={1}>Fotos LiDAR</Text>
@@ -235,7 +235,7 @@ export default function FotosLidarScreen({ projectId }: { projectId: string }) {
         <View style={styles.sectionHeaderRow}>
           <Text style={styles.sectionTitle}>Frentes</Text>
           {canEditEstructura ? (
-            <Pressable onPress={() => setNewOpen(true)} style={styles.addBtn}>
+            <Pressable accessibilityRole="button" onPress={() => setNewOpen(true)} style={styles.addBtn}>
               <Ionicons name="add" size={16} color={colors.primary} />
               <Text style={styles.addBtnTxt}>Nuevo registro</Text>
             </Pressable>
@@ -262,7 +262,7 @@ export default function FotosLidarScreen({ projectId }: { projectId: string }) {
                   ) : null}
                 </View>
                 {canEditEstructura ? (
-                  <Pressable hitSlop={8} onPress={() => onDelete(it)}>
+                  <Pressable accessibilityRole="button" accessibilityLabel="Eliminar" hitSlop={8} onPress={() => onDelete(it)}>
                     <Ionicons name="trash-outline" size={18} color={colors.error} />
                   </Pressable>
                 ) : null}

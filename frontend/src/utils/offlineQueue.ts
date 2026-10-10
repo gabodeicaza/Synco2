@@ -28,8 +28,8 @@ const engine = createOfflineQueueEngine<Record<string, any>>({
   maxAutoRetryAttempts: 10,
   logTag: 'offlineQueue',
   maxQueueItemsErrorMessage: (max) =>
-    `Ya hay ${max} reportes esperando conexion en este dispositivo. ` +
-    'Conectate y espera a que se sincronicen antes de capturar mas.',
+    `Ya hay ${max} reportes esperando conexión en este dispositivo. ` +
+    'Conéctate y espera a que se sincronicen antes de capturar mas.',
 });
 
 export const subscribeQueueChanges = engine.subscribeQueueChanges;

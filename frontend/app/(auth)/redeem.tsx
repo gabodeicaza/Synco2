@@ -1,4 +1,4 @@
-// SynCo v2.0 _ Canje de invitacion in-app.
+// Dirac · Canje de invitacion in-app.
 // Permite al usuario pegar el token alfanumerico recibido por WhatsApp/correo,
 // previsualizar a que proyecto/rol esta siendo invitado y crear su contrasena,
 // todo sin salir de la app (sin abrir URLs externas).
@@ -13,10 +13,12 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 
 import { Button } from '@/src/components/Button';
+import { ScreenHeader } from '@/src/components/ScreenHeader';
 import { useAuth } from '@/src/auth-context';
 import { api } from '@/src/api';
 import { homeRouteForRole, roleLabel } from '@/src/utils/roles';
 import { colors, radius, spacing } from '@/src/theme';
+import { a11y, t } from '@/src/i18n';
 
 type Stage = 'token' | 'password';
 
@@ -48,7 +50,7 @@ export default function RedeemInviteScreen() {
   }
 
   async function validateToken() {
-    if (!cleanToken) { setTokenError('Pega o escribe tu codigo de invitacion.'); return; }
+    if (!cleanToken) { setTokenError(t('canjeInvitacion.tokenVacio')); return; }
     setTokenError(null);
     setValidating(true);
     try {
@@ -56,7 +58,7 @@ export default function RedeemInviteScreen() {
       setPreview(p);
       setStage('password');
     } catch (e: any) {
-      setTokenError(e?.message || 'Codigo no valido o expirado. Pide uno nuevo a tu Coordinador.');
+      setTokenError(e?.message || t('canjeInvitacion.tokenInvalido'));
     } finally {
       setValidating(false);
     }
@@ -64,14 +66,14 @@ export default function RedeemInviteScreen() {
 
   async function submitPassword() {
     setSubmitError(null);
-    if (password.length < 6) { setSubmitError('La contrasena debe tener al menos 6 caracteres.'); return; }
-    if (password !== password2) { setSubmitError('Las contrasenas no coinciden.'); return; }
+    if (password.length < 6) { setSubmitError(t('canjeInvitacion.passwordCorta')); return; }
+    if (password !== password2) { setSubmitError(t('canjeInvitacion.passwordsDistintas')); return; }
     setBusy(true);
     try {
       const user = await acceptInvite(cleanToken, password);
       router.replace(homeRouteForRole(user.role) as any);
     } catch (e: any) {
-      setSubmitError(e?.message || 'No se pudo completar el registro.');
+      setSubmitError(e?.message || t('canjeInvitacion.registroFallo'));
     } finally {
       setBusy(false);
     }
@@ -90,43 +92,39 @@ export default function RedeemInviteScreen() {
 
   return (
     <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+      <ScreenHeader
+        title={t('canjeInvitacion.titulo')}
+        onBack={stage === 'password' ? backToToken : backToLogin}
+        fallbackHref="/(auth)/login"
+      />
       <ScrollView
         keyboardShouldPersistTaps="handled"
-        contentContainerStyle={[styles.scroll, { paddingTop: insets.top + 16, paddingBottom: insets.bottom + 24 }]}
+        contentContainerStyle={[styles.scroll, { paddingTop: 16, paddingBottom: insets.bottom + 24 }]}
       >
-        {/* Top bar */}
-        <View style={styles.topBar}>
-          <Pressable onPress={stage === 'password' ? backToToken : backToLogin} hitSlop={10} style={styles.backIconBtn}>
-            <Ionicons name="chevron-back" size={22} color={colors.text} />
-          </Pressable>
-          <Text style={styles.topTitle}>Unirme con codigo</Text>
-          <View style={{ width: 32 }} />
-        </View>
-
         {/* Hero */}
         <View style={styles.hero}>
           <View style={styles.heroIcon}>
             <Ionicons name={stage === 'token' ? 'mail-open-outline' : 'shield-checkmark'} size={28} color={colors.primary} />
           </View>
           <Text style={styles.heroTitle}>
-            {stage === 'token' ? 'Pega tu codigo de invitacion' : '!Listo! Configura tu acceso'}
+            {stage === 'token' ? t('canjeInvitacion.heroTokenTitulo') : t('canjeInvitacion.heroPasswordTitulo')}
           </Text>
           <Text style={styles.heroSubtitle}>
             {stage === 'token'
-              ? 'Tu Coordinador te envio un codigo alfanumerico por WhatsApp o correo. Pegalo abajo para entrar.'
-              : 'Crea una contrasena para acceder a tu cuenta.'}
+              ? t('canjeInvitacion.heroTokenSubtitulo')
+              : t('canjeInvitacion.heroPasswordSubtitulo')}
           </Text>
         </View>
 
         {stage === 'token' ? (
           <View style={styles.card}>
-            <Text style={styles.label}>Codigo de invitacion</Text>
+            <Text style={styles.label}>{t('canjeInvitacion.codigoEtiqueta')}</Text>
             <View style={styles.inputWrap}>
               <Ionicons name="key-outline" size={18} color={colors.textMuted} />
               <TextInput
                 value={token}
-                onChangeText={(t) => { setToken(t); setTokenError(null); }}
-                placeholder="Ej. KX9P-3M2J-7B1V_"
+                onChangeText={(v) => { setToken(v); setTokenError(null); }}
+                placeholder={t('canjeInvitacion.codigoEjemplo')}
                 placeholderTextColor={colors.textMuted}
                 autoCapitalize="characters"
                 autoCorrect={false}
@@ -137,9 +135,9 @@ export default function RedeemInviteScreen() {
                 multiline
               />
             </View>
-            <Pressable onPress={pasteFromClipboard} hitSlop={6} style={styles.pasteBtn}>
+            <Pressable accessibilityRole="button" onPress={pasteFromClipboard} hitSlop={6} style={styles.pasteBtn}>
               <Ionicons name="clipboard-outline" size={14} color={colors.primary} />
-              <Text style={styles.pasteText}>Pegar desde portapapeles</Text>
+              <Text style={styles.pasteText}>{t('canjeInvitacion.pegar')}</Text>
             </Pressable>
 
             {tokenError ? (
@@ -151,54 +149,54 @@ export default function RedeemInviteScreen() {
 
             <View style={{ height: spacing.md }} />
             <Button
-              label={validating ? 'Validando_' : 'Validar codigo'}
+              label={validating ? t('canjeInvitacion.validando') : t('canjeInvitacion.validar')}
               onPress={validateToken}
               loading={validating}
               disabled={!cleanToken || validating}
               fullWidth
               icon={<Ionicons name="arrow-forward" size={18} color="#fff" />}
             />
-            <Pressable onPress={backToLogin} hitSlop={8} style={styles.linkRow}>
-              <Text style={styles.linkText}>Volver a inicio de sesion</Text>
+            <Pressable accessibilityRole="button" onPress={backToLogin} hitSlop={8} style={styles.linkRow}>
+              <Text style={styles.linkText}>{t('canjeInvitacion.volverInicio')}</Text>
             </Pressable>
           </View>
         ) : (
           <>
             <View style={styles.card}>
-              <PreviewRow label="Proyecto" value={preview?.project_name || ''} icon="briefcase-outline" />
-              <PreviewRow label="Tu rol" value={roleLabel(preview?.role)} icon="shield-outline" />
-              <PreviewRow label="Tu correo" value={preview?.email || ''} icon="mail-outline" />
-              <PreviewRow label="Tu nombre" value={preview?.name || ''} icon="person-outline" />
-              {preview?.puesto ? <PreviewRow label="Puesto" value={preview.puesto} icon="hammer-outline" /> : null}
-              {preview?.area_name ? <PreviewRow label="Area / Disciplina" value={preview.area_name} icon="layers-outline" /> : null}
+              <PreviewRow label={t('canjeInvitacion.proyecto')} value={preview?.project_name || ''} icon="briefcase-outline" />
+              <PreviewRow label={t('canjeInvitacion.tuRol')} value={roleLabel(preview?.role)} icon="shield-outline" />
+              <PreviewRow label={t('canjeInvitacion.tuCorreo')} value={preview?.email || ''} icon="mail-outline" />
+              <PreviewRow label={t('canjeInvitacion.tuNombre')} value={preview?.name || ''} icon="person-outline" />
+              {preview?.puesto ? <PreviewRow label={t('canjeInvitacion.puesto')} value={preview.puesto} icon="hammer-outline" /> : null}
+              {preview?.area_name ? <PreviewRow label={t('canjeInvitacion.areaDisciplina')} value={preview.area_name} icon="layers-outline" /> : null}
             </View>
 
             <View style={styles.card}>
-              <Text style={styles.cardTitle}>Crear contrasena</Text>
-              <Text style={styles.label}>Nueva contrasena</Text>
+              <Text style={styles.cardTitle}>{t('canjeInvitacion.crearPassword')}</Text>
+              <Text style={styles.label}>{t('canjeInvitacion.nuevaPassword')}</Text>
               <View style={styles.inputWrap}>
                 <Ionicons name="lock-closed-outline" size={18} color={colors.textMuted} />
                 <TextInput
                   value={password}
                   onChangeText={setPassword}
-                  placeholder="Minimo 6 caracteres"
+                  placeholder={t('canjeInvitacion.minimo6')}
                   placeholderTextColor={colors.textMuted}
                   secureTextEntry={!showPwd}
                   style={styles.input}
                   editable={!busy}
                 />
-                <Pressable onPress={() => setShowPwd((v) => !v)} hitSlop={8}>
+                <Pressable accessibilityRole="button" accessibilityLabel={a11y(showPwd ? 'ocultarPassword' : 'mostrarPassword')} onPress={() => setShowPwd((v) => !v)} hitSlop={8}>
                   <Ionicons name={showPwd ? 'eye-off-outline' : 'eye-outline'} size={18} color={colors.textMuted} />
                 </Pressable>
               </View>
 
-              <Text style={[styles.label, { marginTop: spacing.md }]}>Repetir contrasena</Text>
+              <Text style={[styles.label, { marginTop: spacing.md }]}>{t('canjeInvitacion.repetirPassword')}</Text>
               <View style={styles.inputWrap}>
                 <Ionicons name="lock-closed-outline" size={18} color={colors.textMuted} />
                 <TextInput
                   value={password2}
                   onChangeText={setPassword2}
-                  placeholder="Repite la contrasena"
+                  placeholder={t('canjeInvitacion.repitePassword')}
                   placeholderTextColor={colors.textMuted}
                   secureTextEntry={!showPwd}
                   style={styles.input}
@@ -217,14 +215,14 @@ export default function RedeemInviteScreen() {
 
               <View style={{ height: spacing.md }} />
               <Button
-                label="Aceptar invitacion y entrar"
+                label={t('canjeInvitacion.aceptar')}
                 onPress={submitPassword}
                 loading={busy}
                 fullWidth
                 icon={<Ionicons name="checkmark" size={18} color="#fff" />}
               />
-              <Pressable onPress={backToToken} hitSlop={8} style={styles.linkRow}>
-                <Text style={styles.linkText}>Usar otro codigo</Text>
+              <Pressable accessibilityRole="button" onPress={backToToken} hitSlop={8} style={styles.linkRow}>
+                <Text style={styles.linkText}>{t('canjeInvitacion.otroCodigo')}</Text>
               </Pressable>
             </View>
           </>
@@ -249,9 +247,6 @@ function PreviewRow({ label, value, icon }: { label: string; value: string; icon
 const styles = StyleSheet.create({
   flex: { flex: 1, backgroundColor: colors.bg },
   scroll: { paddingHorizontal: spacing.lg, gap: spacing.md, flexGrow: 1 },
-  topBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: spacing.sm },
-  backIconBtn: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.surface },
-  topTitle: { fontSize: 15, fontWeight: '800', color: colors.text },
 
   hero: { alignItems: 'center', gap: 6, paddingVertical: spacing.md },
   heroIcon: {

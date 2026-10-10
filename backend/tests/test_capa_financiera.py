@@ -168,7 +168,7 @@ async def _sembrar(db, modulos):
     conceptos, partidas, registros, gastos = _datos()
     await db.conceptos.insert_many(conceptos)
     await db.partidas.insert_many([{**p, "project_id": "p1"} for p in partidas])
-    await db.registros_avance.insert_many([{**r, "project_id": "p1"} for r in registros])
+    await db.registros_avance.insert_many([{"id": f"r{i}", "cantidad_ejecutada": "1", "tipo": "normal", **r, "project_id": "p1"} for i, r in enumerate(registros)])
     await db.gastos_reales.insert_many([{**g, "project_id": "p1"} for g in gastos])
     await server.create_estimacion("p1", server.EstimacionIn(
         numero=1, periodo_inicio="2025-12-08", periodo_fin="2025-12-31", estatus="NO LIBERADA",

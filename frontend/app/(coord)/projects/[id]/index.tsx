@@ -11,7 +11,13 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { api, ApiError, CustomModule, Project, ReferenceFile, FeedItem, LocationNode } from '@/src/api';
-import { colors, radius, shadow, spacing } from '@/src/theme';
+import { ZONAS_HORARIAS_MX } from '@/src/utils/zonasHorarias';
+import { COLOR_IDENTIDAD_DEFECTO, COLOR_TEXTO_REPORTE_DEFECTO, colors, radius, shadow, spacing } from '@/src/theme';
+import { ColorInput } from '@/src/components/ColorInput';
+import { InlineError } from '@/src/components/InlineError';
+import { errorDeColor, normalizarColorHex } from '@/src/utils/color';
+import { esErrorDeRed } from '@/src/utils/errores';
+import { showToast } from '@/src/utils/toast';
 import { Button } from '@/src/components/Button';
 import { confirm } from '@/src/utils/confirm';
 import { ReportPeriod, periodToInformeType } from '@/src/components/PeriodSheet';
@@ -25,6 +31,27 @@ import {
   agruparModulosPorArea, asignacionesConPersonalizados, modulosActivos, modulosPersonalizadosDef, ModuloDef, SIN_AREA_ID,
 } from '@/src/utils/modulos';
 import { DatosContratoModal } from '@/src/components/DatosContratoModal';
+import { moduloActivo } from '@/src/utils/modulos';
+import { getMediaLibraryPermission, requestMediaLibraryPermission } from '@/src/utils/permissions';
+import { t, a11y } from '@/src/i18n';
+import { olvidarSeparadorDecimal } from '@/src/hooks/useSeparadorDecimal';
+import { ProgramaObraSection } from '@/src/components/ProgramaObraSection';
+import { ScreenHeader } from '@/src/components/ScreenHeader';
+import { useModalUnico } from '@/src/hooks/useModalUnico';
+import { usePestanaProyecto } from '@/src/hooks/usePestanaProyecto';
+import { SinReportesAviso } from '@/src/components/SinReportesAviso';
+import { ReportesVacio } from '@/src/components/ReportesVacio';
+import { verificarConteoExportacion } from '@/src/utils/conteoExportacion';
+import { validarNombreNivel, validarUnidadPersonalizada } from '@/src/utils/unidades';
+import { unir } from '@/src/utils/texto';
+import { useAuth } from '@/src/auth-context';
+import { ROLE_COORD } from '@/src/utils/roles';
+import { ResumenProyecto } from '@/src/components/ResumenProyecto';
+import { SelectorGeneroNivel } from '@/src/components/SelectorGeneroNivel';
+import { TipoObraProyectoModal } from '@/src/components/TipoObraProyectoModal';
+import {
+  claveDeConcepto, generoDe, generosParaGuardar, migrarGenero, normalizarGeneros, ponerGenero, type MapaGeneros,
+} from '@/src/utils/generoNiveles';
 
 // Limite cliente coherente con backend (20 MB). Evita subidas que el servidor rechazaria.
 const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
@@ -56,17 +83,17 @@ type ExportFormat = 'pdf' | 'docx' | 'pptx' | 'xlsx';
 type ExportStep = 'period' | 'area' | 'format';
 
 const PERIOD_OPTIONS: { value: ReportPeriod; label: string; sub: string; icon: keyof typeof Ionicons.glyphMap }[] = [
-  { value: 'today',     label: 'Hoy',         sub: 'Informe Diario · solo jerarquia "Diario"',  icon: 'today-outline' },
-  { value: 'yesterday', label: 'Ayer',        sub: 'Reportes del dia anterior', icon: 'calendar-clear-outline' },
-  { value: 'week',      label: 'Esta semana', sub: 'Informe Semanal · solo jerarquia "Semanal"',            icon: 'calendar-outline' },
-  { value: 'month',     label: 'Este mes',    sub: 'Informe Mensual · solo jerarquia "Mensual"',           icon: 'calendar-number-outline' },
+  { value: 'today',     label: t('proyectoPantalla.hoy'),         sub: t('proyectoPantalla.informeDiarioSoloJerarquiaDiario'),  icon: 'today-outline' },
+  { value: 'yesterday', label: t('proyectoPantalla.ayer'),        sub: t('proyectoPantalla.reportesDelDiaAnterior'), icon: 'calendar-clear-outline' },
+  { value: 'week',      label: t('proyectoPantalla.estaSemana'), sub: t('proyectoPantalla.informeSemanalSoloJerarquiaSemanal'),            icon: 'calendar-outline' },
+  { value: 'month',     label: t('proyectoPantalla.esteMes'),    sub: t('proyectoPantalla.informeMensualSoloJerarquiaMensual'),           icon: 'calendar-number-outline' },
 ];
 
 const FORMAT_OPTIONS: { value: ExportFormat; label: string; sub: string; icon: keyof typeof Ionicons.glyphMap; tint: string }[] = [
-  { value: 'pdf',  label: 'PDF',        sub: 'Documento horizontal listo para imprimir', icon: 'document-text', tint: '#DC2626' },
-  { value: 'docx', label: 'Word',       sub: 'Editable en Microsoft Word',                icon: 'document',      tint: '#1D4ED8' },
-  { value: 'pptx', label: 'PowerPoint', sub: 'Presentacion con portada DIRAC',            icon: 'easel',         tint: '#B45309' },
-  { value: 'xlsx', label: 'Excel',      sub: 'Sabana plana con jerarquia y coords',       icon: 'grid',          tint: '#059669' },
+  { value: 'pdf',  label: 'PDF',        sub: t('proyectoPantalla.documentoHorizontalListoParaImprimir'), icon: 'document-text', tint: '#DC2626' },
+  { value: 'docx', label: 'Word',       sub: t('proyectoPantalla.editableEnMicrosoftWord'),                icon: 'document',      tint: '#1D4ED8' },
+  { value: 'pptx', label: 'PowerPoint', sub: t('proyectoPantalla.presentacionConPortadaDirac'),            icon: 'easel',         tint: '#B45309' },
+  { value: 'xlsx', label: 'Excel',      sub: t('proyectoPantalla.sabanaPlanaConJerarquiaY'),       icon: 'grid',          tint: '#059669' },
 ];
 
 const ReportFeedItem = React.memo(function ReportFeedItem({ report, onPress }: { report: FeedItem; onPress: (r: FeedItem) => void }) {
@@ -86,7 +113,7 @@ const ReportFeedItem = React.memo(function ReportFeedItem({ report, onPress }: {
   const severidadRaw = (r as any).severidad;
   const severidadList: string[] = Array.isArray(severidadRaw) ? severidadRaw : severidadRaw ? [severidadRaw] : [];
   return (
-    <Pressable onPress={() => onPress(r)} style={({ pressed }) => [styles.feedCard, pressed && { opacity: 0.85 }]}>
+    <Pressable accessibilityRole="button" onPress={() => onPress(r)} style={({ pressed }) => [styles.feedCard, pressed && { opacity: 0.85 }]}>
       {thumb ? (
         <Image
           source={{ uri: thumb.startsWith('data:image') ? thumb : `data:image/jpeg;base64,${thumb}` }}
@@ -107,23 +134,23 @@ const ReportFeedItem = React.memo(function ReportFeedItem({ report, onPress }: {
       <View style={{ flex: 1, minWidth: 0, gap: 4 }}>
         {/* Nombre del reporte (estricto title, nombre, titulo, name, description) */}
         <Text style={styles.feedTitle} numberOfLines={1}>
-          {r.title || r.nombre || r.titulo || r.name || r.description || r.descripcion || 'Sin Título'}
+          {r.title || r.nombre || r.titulo || r.name || r.description || r.descripcion || t('proyectoPantalla.sinTitulo')}
         </Text>
         {(hasIncidencia || severidadList.includes('urgente') || severidadList.includes('importante')) && (
           <View style={styles.badgeRow}>
             {hasIncidencia && (
               <View style={[styles.badge, styles.badgeIncidencia]}>
-                <Text style={styles.badgeTxt}>Incidencia</Text>
+                <Text style={styles.badgeTxt}>{t('proyectoPantalla.incidencia')}</Text>
               </View>
             )}
             {severidadList.includes('urgente') && (
               <View style={[styles.badge, styles.badgeUrgente]}>
-                <Text style={styles.badgeTxt}>Urgente</Text>
+                <Text style={styles.badgeTxt}>{t('proyectoPantalla.urgente')}</Text>
               </View>
             )}
             {severidadList.includes('importante') && (
               <View style={[styles.badge, styles.badgeImportante]}>
-                <Text style={styles.badgeTxt}>Importante</Text>
+                <Text style={styles.badgeTxt}>{t('proyectoPantalla.importante')}</Text>
               </View>
             )}
           </View>
@@ -164,7 +191,15 @@ export default function ProjectDetailScreen() {
 
   // Reports para alimentar HistoryCalendarModal
   const [reports, setReports] = useState<FeedItem[]>([]);
-  const [calendarOpen, setCalendarOpen] = useState(false);
+  // K-06: un solo modal a la vez. Abrir uno cierra el anterior; las banderas de abajo
+  // conservan su nombre pero salen de este único estado.
+  const modal = useModalUnico<'calendario' | 'ia' | 'exportar' | 'catalogos' | 'catalogoConfig' | 'objeto' | 'plantillas' | 'generales' | 'tipoObra'>();
+  const { user } = useAuth();
+  const esCoordGeneral = user?.role === ROLE_COORD;
+  const tipoObraOpen = modal.visible('tipoObra');
+  const setTipoObraOpen = modal.ponerVisible('tipoObra');
+  const calendarOpen = modal.visible('calendario');
+  const setCalendarOpen = modal.ponerVisible('calendario');
 
   // Badge del Hub de Minutas (acuerdos asignados / urgentes al usuario).
   const [minutasBadge, setMinutasBadge] = useState<{ assigned_pending: number; urgent: number } | null>(null);
@@ -190,7 +225,8 @@ export default function ProjectDetailScreen() {
   }, [searchQuery]);
 
   // Resumen Ejecutivo con IA
-  const [aiOpen, setAiOpen] = useState(false);
+  const aiOpen = modal.visible('ia');
+  const setAiOpen = modal.ponerVisible('ia');
   const [aiBusy, setAiBusy] = useState(false);
   const [aiSummary, setAiSummary] = useState<string | null>(null);
   const [aiError, setAiError] = useState<string | null>(null);
@@ -198,21 +234,24 @@ export default function ProjectDetailScreen() {
   const [aiCopied, setAiCopied] = useState(false);
   const [aiPeriodo, setAiPeriodo] = useState<'diario' | 'semanal' | 'mensual'>('diario');
 
-  // Tabs: Reportes / Operacion / Configuracion
-  const [activeTab, setActiveTab] = useState<'reportes' | 'operacion' | 'configuracion'>('reportes');
+  // Tabs: Reportes / Operacion / Configuracion. P-04: la pestaña activa se recuerda por proyecto.
+  const [activeTab, setActiveTab] = usePestanaProyecto(pid);
 
   // Exportacion unificada (3 pasos: periodo -> area -> formato)
-  const [exportOpen, setExportOpen] = useState(false);
+  const exportOpen = modal.visible('exportar');
+  const setExportOpen = modal.ponerVisible('exportar');
   const [exportStep, setExportStep] = useState<ExportStep>('period');
   const [exportPeriod, setExportPeriod] = useState<ReportPeriod>('today');
   const [exportBusy, setExportBusy] = useState(false);
+  const [exportSinReportes, setExportSinReportes] = useState<{ fmt: ExportFormat; otros: number } | null>(null);
   // P0 Mega-Feature: filtro por Area para exportacion
   const [exportAreas, setExportAreas] = useState<{ id: string; name: string; color?: string }[]>([]);
   const [exportAreaId, setExportAreaId] = useState<string | null>(null); // null = "Todas"
 
   // Preview de reporte (tap en feed)
   const [previewItem, setPreviewItem] = useState<FeedItem | null>(null);
-  const handleFeedItemPress = useCallback((r: FeedItem) => setPreviewItem(r), []);
+  const cerrarModales = modal.cerrar;
+  const handleFeedItemPress = useCallback((r: FeedItem) => { cerrarModales(); setPreviewItem(r); }, [cerrarModales]);
 
   // Archivos de Consulta (Reference Files) - ahora via expo-document-picker.
   const [refBusy, setRefBusy] = useState(false);
@@ -220,7 +259,8 @@ export default function ProjectDetailScreen() {
   const [refOpeningId, setRefOpeningId] = useState<string | null>(null);   // file_id en descarga
 
   // P0 Mega-Feature: configuracion de Catalogos dinamicos (personal/equipo)
-  const [catModalOpen, setCatModalOpen] = useState(false);
+  const catModalOpen = modal.visible('catalogos');
+  const setCatModalOpen = modal.ponerVisible('catalogos');
   const [catSaving, setCatSaving] = useState(false);
   const [catPersonalList, setCatPersonalList] = useState<string[]>([]);
   const [catEquipoList, setCatEquipoList] = useState<{ nombre: string; marca?: string; modelo?: string; serie?: string }[]>([]);
@@ -231,39 +271,49 @@ export default function ProjectDetailScreen() {
   // modo_avance, nombres de nivel, unidades, titulo, cadencia) — Etapas 1 y
   // 4. Un solo modal, mismo criterio que el resto de esta pantalla: drafts
   // locales que solo se confirman al guardar.
-  const [catalogoConfigModalOpen, setCatalogoConfigModalOpen] = useState(false);
+  const catalogoConfigModalOpen = modal.visible('catalogoConfig');
+  const setCatalogoConfigModalOpen = modal.ponerVisible('catalogoConfig');
   const [catalogoConfigSaving, setCatalogoConfigSaving] = useState(false);
   const [tipoContratoDraft, setTipoContratoDraft] = useState<'PRECIOS_UNITARIOS' | 'PRECIO_ALZADO'>('PRECIOS_UNITARIOS');
   const [modoAvanceDraft, setModoAvanceDraft] = useState<'CANTIDAD' | 'PORCENTAJE' | 'MATRIZ'>('CANTIDAD');
   const [cadenciaDraft, setCadenciaDraft] = useState<'DIARIA' | 'SEMANAL' | 'MENSUAL'>('MENSUAL');
+  const [zonaHorariaDraft, setZonaHorariaDraft] = useState<string>('America/Mexico_City');
+  const [separadorDecimalDraft, setSeparadorDecimalDraft] = useState<'.' | ','>('.');
   const [diaInicioSemanaDraft, setDiaInicioSemanaDraft] = useState<
     'LUNES' | 'MARTES' | 'MIERCOLES' | 'JUEVES' | 'VIERNES' | 'SABADO' | 'DOMINGO'
   >('LUNES');
   const [nombresNivelesDraft, setNombresNivelesDraft] = useState<string[]>([]);
   const [nombreNivelPartidaDraft, setNombreNivelPartidaDraft] = useState('');
   const [nombreNivelConceptoDraft, setNombreNivelConceptoDraft] = useState('');
+  const [generosDraft, setGenerosDraft] = useState<MapaGeneros>({});
   const [unidadesPersonalizadasDraft, setUnidadesPersonalizadasDraft] = useState<string[]>([]);
   const [unidadPersonalizadaDraftTxt, setUnidadPersonalizadaDraftTxt] = useState('');
+  const [unidadPersonalizadaError, setUnidadPersonalizadaError] = useState<string | null>(null);
+  const [nombreNivelError, setNombreNivelError] = useState<string | null>(null);
   const [tituloModuloDraft, setTituloModuloDraft] = useState('');
 
   // P0 - Identidad institucional (objeto_contrato + cliente_principal + color_tema)
-  const [objetoModalOpen, setObjetoModalOpen] = useState(false);
+  const objetoModalOpen = modal.visible('objeto');
+  const setObjetoModalOpen = modal.ponerVisible('objeto');
   const [contratoModalOpen, setContratoModalOpen] = useState(false);
 
   // P0 Mega-Feature: Plantillas de exportacion (PDF/DOCX/PPTX)
-  const [tplModalOpen, setTplModalOpen] = useState(false);
+  const tplModalOpen = modal.visible('plantillas');
+  const setTplModalOpen = modal.ponerVisible('plantillas');
   const [tplBusyKind, setTplBusyKind] = useState<'pdf' | 'docx' | 'pptx' | null>(null);
-  const [gdModalOpen, setGdModalOpen] = useState(false);
+  const gdModalOpen = modal.visible('generales');
+  const setGdModalOpen = modal.ponerVisible('generales');
   const [objetoSaving, setObjetoSaving] = useState(false);
+  const [objetoError, setObjetoError] = useState<string | null>(null);
   const [objetoDraft, setObjetoDraft] = useState('');
   const [clienteDraft, setClienteDraft] = useState('');
   // color_tema: ACOTADO al título de portada del Informe PDF/PPTX exportado.
-  const [colorDraft, setColorDraft] = useState('#003366');
+  const [colorDraft, setColorDraft] = useState(COLOR_IDENTIDAD_DEFECTO);
   // color_institucional: color de marca real -- banners, tablas, botones y
   // acentos de toda la app y el resto de documentos exportados.
-  const [colorInstitucionalDraft, setColorInstitucionalDraft] = useState('#003366');
+  const [colorInstitucionalDraft, setColorInstitucionalDraft] = useState(COLOR_IDENTIDAD_DEFECTO);
   // Color del texto de observaciones (pie de foto) en reportes ejecutivos.
-  const [reportTextColorDraft, setReportTextColorDraft] = useState('#0F172A');
+  const [reportTextColorDraft, setReportTextColorDraft] = useState(COLOR_TEXTO_REPORTE_DEFECTO);
   // Grupo de WhatsApp (Whapi.cloud) donde se publican los reportes de este proyecto.
   const [whatsappGroupDraft, setWhatsappGroupDraft] = useState('');
 
@@ -277,7 +327,7 @@ export default function ProjectDetailScreen() {
       setProject(p);
       api.listCustomModules(pid, true).then(setCustomModulos).catch(() => setCustomModulos([]));
     } catch (e: any) {
-      setError(e?.message || 'Error al cargar');
+      setError(e?.message || t('proyectoPantalla.errorAlCargar'));
     } finally {
       setLoading(false);
     }
@@ -418,7 +468,7 @@ export default function ProjectDetailScreen() {
       setAiSummary(res.summary);
       setAiMeta({ reports_count: res.reports_count, period_hours: res.period_hours });
     } catch (e: any) {
-      setAiError(e?.message || 'No se pudo generar el resumen.');
+      setAiError(e?.message || t('proyectoPantalla.noSePudoGenerarEl'));
     } finally {
       setAiBusy(false);
     }
@@ -438,7 +488,7 @@ export default function ProjectDetailScreen() {
       setAiCopied(true);
       setTimeout(() => setAiCopied(false), 1800);
     } catch {
-      Alert.alert('No se pudo copiar', 'Intenta seleccionar el texto manualmente.');
+      Alert.alert(t('proyectoPantalla.noSePudoCopiar'), t('proyectoPantalla.intentaSeleccionarElTextoManualmente'));
     }
   }
 
@@ -448,7 +498,7 @@ export default function ProjectDetailScreen() {
       const res = await api.setProjectReferenceFiles(pid, next);
       setProject((p) => (p ? { ...p, reference_files: res.reference_files } : p));
     } catch (e: any) {
-      Alert.alert('No se pudo guardar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert(t('proyectoPantalla.noSePudoGuardar'), e?.message || t('proyectoPantalla.intentaloNuevamente'));
     } finally {
       setRefBusy(false);
     }
@@ -469,8 +519,8 @@ export default function ProjectDetailScreen() {
       // Validacion cliente del tamano (20 MB).
       if (asset.size && asset.size > MAX_UPLOAD_BYTES) {
         Alert.alert(
-          'Archivo demasiado grande',
-          `El archivo pesa ${formatBytes(asset.size)}. El maximo permitido es 20 MB para asegurar la subida en zonas con red baja.`,
+          t('proyectoPantalla.archivoDemasiadoGrande'),
+          t('proyectoPantalla.archivoPesaMax20', { tam: formatBytes(asset.size) }),
         );
         return;
       }
@@ -478,7 +528,7 @@ export default function ProjectDetailScreen() {
         setRefBusy(true);
         setRefUploadName(asset.name || 'archivo');
         if (!asset.uri) {
-          throw new Error('La URI del archivo seleccionado es nula o invalida.');
+          throw new Error('La URI del archivo seleccionado es nula o inválida.');
         }
         const res = await api.uploadProjectFile(pid, {
           uri: asset.uri,
@@ -500,18 +550,18 @@ export default function ProjectDetailScreen() {
           lines.push('');
           lines.push(`Errores: ${s.errors.length}`);
           for (const e of s.errors.slice(0, 5)) {
-            lines.push(`_ Fila ${e.row}: ${e.error}`);
+            lines.push(`• Fila ${e.row}: ${e.error}`);
           }
         }
-        Alert.alert('Nodos importados', lines.join('\n'));
+        Alert.alert(t('proyectoPantalla.nodosImportados'), lines.join('\n'));
       } else {
-        Alert.alert('Archivo subido', `"${res.filename}" se adjunto al proyecto.`);
+        Alert.alert(t('proyectoPantalla.archivoSubido'), t('proyectoPantalla.archivoAdjuntado', { nombre: res.filename }));
       }
 
       // Refrescar proyecto para reflejar reference_files actualizados.
       await load();
     } catch (e: any) {
-      Alert.alert('No se pudo subir', e?.message || 'Error desconocido al subir el archivo.');
+      Alert.alert(t('proyectoPantalla.noSePudoSubir'), e?.message || t('proyectoPantalla.errorDesconocidoAlSubirEl'));
     } finally {
       setRefBusy(false);
       setRefUploadName(null);
@@ -523,8 +573,8 @@ export default function ProjectDetailScreen() {
     const target = current[idx];
     if (!target) return;
     const ok = await confirm(
-      'Eliminar archivo',
-      `?Quitar "${target.name || 'archivo'}" del proyecto?`,
+      t('proyectoPantalla.eliminarArchivo'),
+      t('proyectoPantalla.quitarArchivoPregunta', { nombre: target.name || t('proyectoPantalla.archivoGenerico') }),
       { confirmText: 'Eliminar', destructive: true },
     );
     if (!ok) return;
@@ -546,7 +596,7 @@ export default function ProjectDetailScreen() {
         await persistRefs(next);
       }
     } catch (e: any) {
-      Alert.alert('No se pudo eliminar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert(t('proyectoPantalla.noSePudoEliminar'), e?.message || t('proyectoPantalla.intentaloNuevamente'));
     } finally {
       setRefBusy(false);
     }
@@ -568,10 +618,10 @@ export default function ProjectDetailScreen() {
       } else if (f.url) {
         await Linking.openURL(f.url);
       } else {
-        Alert.alert('Sin destino', 'El archivo no tiene URL asociada.');
+        Alert.alert(t('proyectoPantalla.sinDestino'), t('proyectoPantalla.elArchivoNoTieneUrl'));
       }
     } catch (e: any) {
-      Alert.alert('No se pudo abrir', e?.message || 'Revisa tu conexion e intentalo de nuevo.');
+      Alert.alert(t('proyectoPantalla.noSePudoAbrir'), e?.message || t('proyectoPantalla.revisaTuConexionEIntentalo'));
     } finally {
       setRefOpeningId(null);
     }
@@ -579,13 +629,13 @@ export default function ProjectDetailScreen() {
 
   async function onArchive() {
     const ok = await confirm(
-      'Archivar proyecto',
-      'El proyecto se ocultara pero sus datos se conservan. ?Continuar?',
+      t('proyectoPantalla.archivarProyecto'),
+      t('proyectoPantalla.elProyectoSeOcultaraPero'),
       { confirmText: 'Archivar', destructive: true },
     );
     if (!ok) return;
     try { await api.archiveProject(pid); router.back(); }
-    catch (e: any) { Alert.alert('Error', e?.message || 'No se pudo archivar'); }
+    catch (e: any) { Alert.alert(t('proyectoPantalla.error'), e?.message || t('proyectoPantalla.noSePudoArchivar')); }
   }
 
   // === Catalogos del proyecto: categorias personal/equipo ====================
@@ -603,9 +653,10 @@ export default function ProjectDetailScreen() {
     if (!project) return;
     setObjetoDraft((project as any).objeto_contrato || '');
     setClienteDraft((project as any).cliente_principal || '');
-    setColorDraft((project as any).color_tema || '#003366');
-    setColorInstitucionalDraft((project as any).color_institucional || '#003366');
-    setReportTextColorDraft((project as any).report_text_color || '#0F172A');
+    setColorDraft((project as any).color_tema || COLOR_IDENTIDAD_DEFECTO);
+    setColorInstitucionalDraft((project as any).color_institucional || COLOR_IDENTIDAD_DEFECTO);
+    setReportTextColorDraft((project as any).report_text_color || COLOR_TEXTO_REPORTE_DEFECTO);
+    setObjetoError(null);
     // Se guardan como "id1, id2"; en el editor se muestra uno por línea.
     setWhatsappGroupDraft(((project as any).whatsapp_group_id || '').split(/[,;\s]+/).filter(Boolean).join('\n'));
     setObjetoModalOpen(true);
@@ -613,22 +664,29 @@ export default function ProjectDetailScreen() {
 
   async function saveObjeto() {
     if (!pid || objetoSaving) return;
+    setObjetoError(null);
+    // P-02: un color inválido NO se sustituye en silencio: se avisa junto al campo y no se guarda.
+    if (errorDeColor(colorDraft) || errorDeColor(colorInstitucionalDraft) || errorDeColor(reportTextColorDraft)) {
+      setObjetoError(t('color.corrige'));
+      return;
+    }
     try {
       setObjetoSaving(true);
       const upd = await api.updateProject(pid, {
         objeto_contrato: objetoDraft.trim() || null,
         cliente_principal: clienteDraft.trim() || null,
-        color_tema: colorDraft.trim() || null,
-        color_institucional: colorInstitucionalDraft.trim() || null,
-        report_text_color: reportTextColorDraft.trim() || null,
+        color_tema: normalizarColorHex(colorDraft),
+        color_institucional: normalizarColorHex(colorInstitucionalDraft),
+        report_text_color: normalizarColorHex(reportTextColorDraft),
         // '' (no null): el backend ignora null; '' desactiva el envío.
         whatsapp_group_id: whatsappGroupDraft.trim(),
       } as any);
       setProject((p) => ({ ...(p || ({} as any)), ...upd }));
       setObjetoModalOpen(false);
-      Alert.alert('Guardado', 'La identidad institucional del proyecto se actualizo correctamente.');
+      showToast(t('proyectoPantalla.laIdentidadInstitucionalDelProyecto'));
     } catch (e: any) {
-      Alert.alert('No se pudo guardar', e?.message || 'Intentalo nuevamente.');
+      if (esErrorDeRed(e)) showToast(t('red.errorDeRed'));
+      else setObjetoError(e?.message || t('proyectoPantalla.noSePudoGuardarIntentalo'));
     } finally {
       setObjetoSaving(false);
     }
@@ -671,14 +729,14 @@ export default function ProjectDetailScreen() {
       const MAX = 25 * 1024 * 1024;
       if (size && size > MAX) {
         Alert.alert(
-          'Plantilla demasiado grande',
-          `El archivo pesa ${formatBytes(size)}. El maximo permitido es 25 MB.`,
+          t('proyectoPantalla.plantillaDemasiadoGrande'),
+          t('proyectoPantalla.archivoPesaMax25', { tam: formatBytes(size) }),
         );
         return;
       }
       setTplBusyKind(kind);
       if (!asset.uri) {
-        throw new Error('La URI de la plantilla seleccionada es nula o invalida.');
+        throw new Error('La URI de la plantilla seleccionada es nula o inválida.');
       }
       const upd = await api.uploadProjectTemplate(pid, kind, {
         uri: asset.uri,
@@ -687,11 +745,11 @@ export default function ProjectDetailScreen() {
       });
       setProject((p) => ({ ...(p || ({} as any)), ...upd }));
       Alert.alert(
-        'Plantilla cargada',
-        `La plantilla ${kind.toUpperCase()} se guardo y se usara como fondo al exportar.`,
+        t('proyectoPantalla.plantillaCargada'),
+        t('proyectoPantalla.plantillaGuardada', { tipo: kind.toUpperCase() }),
       );
     } catch (e: any) {
-      Alert.alert('No se pudo subir la plantilla', e?.message || 'Intentalo nuevamente.');
+      Alert.alert(t('proyectoPantalla.noSePudoSubirLa'), e?.message || t('proyectoPantalla.intentaloNuevamente'));
     } finally {
       setTplBusyKind(null);
     }
@@ -700,8 +758,8 @@ export default function ProjectDetailScreen() {
   async function onDeleteTemplate(kind: 'pdf' | 'docx' | 'pptx' | 'map') {
     if (tplBusyKind) return;
     const ok = await confirm(
-      'Eliminar plantilla',
-      `?Quitar la plantilla ${kind.toUpperCase()} del proyecto? Los reportes volveran al diseno DIRAC por defecto.`,
+      t('proyectoPantalla.eliminarPlantilla'),
+      t('proyectoPantalla.quitarPlantillaPregunta', { tipo: kind.toUpperCase() }),
       { confirmText: 'Eliminar', destructive: true },
     );
     if (!ok) return;
@@ -710,7 +768,7 @@ export default function ProjectDetailScreen() {
       const upd = await api.deleteProjectTemplate(pid, kind);
       setProject((p) => ({ ...(p || ({} as any)), ...upd }));
     } catch (e: any) {
-      Alert.alert('No se pudo eliminar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert(t('proyectoPantalla.noSePudoEliminar'), e?.message || t('proyectoPantalla.intentaloNuevamente'));
     } finally {
       setTplBusyKind(null);
     }
@@ -740,7 +798,7 @@ export default function ProjectDetailScreen() {
       setGdNames(res.general_data_names || []);
       setGdImagesFetched(true);
     } catch (e: any) {
-      Alert.alert('Error', e?.message || 'No se pudieron cargar las imagenes.');
+      Alert.alert(t('proyectoPantalla.error'), e?.message || t('proyectoPantalla.noSePudieronCargarLas'));
     } finally {
       setGdImagesLoading(false);
     }
@@ -749,18 +807,18 @@ export default function ProjectDetailScreen() {
   async function onAddGeneralDataImages() {
     if (gdBusy) return;
     try {
-      let perm = await ImagePicker.getMediaLibraryPermissionsAsync();
+      let perm = await getMediaLibraryPermission();
       if (perm.status !== 'granted') {
         if (!perm.canAskAgain) {
           const openIt = await confirm(
-            'Permiso requerido',
-            'Necesitamos acceso a tu galeria para subir imagenes de Datos Generales.',
+            t('proyectoPantalla.permisoRequerido'),
+            t('proyectoPantalla.necesitamosAccesoATuGaleria'),
             { confirmText: 'Abrir ajustes' },
           );
           if (openIt) Linking.openSettings();
           return;
         }
-        perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+        perm = await requestMediaLibraryPermission();
         if (perm.status !== 'granted') return;
       }
       // [P0 FIX] Subida multipart (no base64 en JSON). En movil se usa
@@ -810,23 +868,23 @@ export default function ProjectDetailScreen() {
         // mime enriquecidos por api.ts) para que el usuario pueda leerlos
         // en su dispositivo fisico.
         Alert.alert(
-          'Error de subida (Datos Generales)',
+          t('proyectoPantalla.errorDeSubidaDatosGenerales'),
           errors.slice(0, 3).map((e, i) => `#${i + 1}: ${e}`).join('\n\n'),
-          [{ text: 'OK' }],
+          [{ text: t('proyectoPantalla.ok') }],
         );
       } else if (errors.length > 0) {
         Alert.alert(
-          'Imagenes subidas con avisos',
+          t('proyectoPantalla.imagenesSubidasConAvisos'),
           `Se subieron ${uploaded}, pero ${errors.length} fallaron:\n\n` +
             errors.slice(0, 3).map((e, i) => `#${i + 1}: ${e}`).join('\n\n'),
-          [{ text: 'OK' }],
+          [{ text: t('proyectoPantalla.ok') }],
         );
       }
     } catch (e: any) {
       Alert.alert(
-        'Error de subida (Datos Generales)',
-        String(e?.message || 'Verifica que el archivo pese menos de 5 MB e intentalo nuevamente.'),
-        [{ text: 'OK' }],
+        t('proyectoPantalla.errorDeSubidaDatosGenerales'),
+        String(e?.message || 'Verifica que el archivo pese menos de 5 MB e inténtalo nuevamente.'),
+        [{ text: t('proyectoPantalla.ok') }],
       );
     } finally {
       setGdBusy(null);
@@ -849,8 +907,8 @@ export default function ProjectDetailScreen() {
   async function onDeleteGeneralDataImage(idx: number) {
     if (gdBusy !== null) return;
     const ok = await confirm(
-      'Eliminar imagen',
-      '?Quitar esta imagen de Datos Generales? El reporte dejara de incluirla.',
+      t('proyectoPantalla.eliminarImagen'),
+      t('proyectoPantalla.quitarEstaImagenDeDatos'),
       { confirmText: 'Eliminar', destructive: true },
     );
     if (!ok) return;
@@ -863,7 +921,7 @@ export default function ProjectDetailScreen() {
       setGdNames((upd as any).general_data_names || []);
       setGdImagesFetched(true);
     } catch (e: any) {
-      Alert.alert('No se pudo eliminar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert(t('proyectoPantalla.noSePudoEliminar'), e?.message || t('proyectoPantalla.intentaloNuevamente'));
     } finally {
       setGdBusy(null);
     }
@@ -901,9 +959,9 @@ export default function ProjectDetailScreen() {
       });
       setProject((p) => ({ ...(p || ({} as any)), ...upd2 }));
       setCatModalOpen(false);
-      Alert.alert('Guardado', 'La configuracion del proyecto se actualizo correctamente.');
+      Alert.alert(t('proyectoPantalla.guardado'), t('proyectoPantalla.laConfiguracionDelProyectoSe'));
     } catch (e: any) {
-      Alert.alert('No se pudo guardar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert(t('proyectoPantalla.noSePudoGuardar'), e?.message || t('proyectoPantalla.intentaloNuevamente'));
     } finally {
       setCatSaving(false);
     }
@@ -917,27 +975,40 @@ export default function ProjectDetailScreen() {
     setModoAvanceDraft(p.modo_avance || 'CANTIDAD');
     setCadenciaDraft(p.cadencia_reporte || 'MENSUAL');
     setDiaInicioSemanaDraft(p.dia_inicio_semana || 'LUNES');
+    setZonaHorariaDraft(p.zona_horaria || 'America/Mexico_City');
+    setSeparadorDecimalDraft(p.separador_decimal === ',' ? ',' : '.');
     setNombresNivelesDraft(p.nombres_niveles_partida || []);
     setNombreNivelPartidaDraft('');
     setNombreNivelConceptoDraft(p.nombre_nivel_concepto || '');
+    setGenerosDraft(normalizarGeneros(p.genero_niveles));
     setUnidadesPersonalizadasDraft(p.unidades_personalizadas || []);
     setUnidadPersonalizadaDraftTxt('');
+    setUnidadPersonalizadaError(null);
+    setNombreNivelError(null);
     setTituloModuloDraft(p.titulo_modulo_catalogo || '');
     setCatalogoConfigModalOpen(true);
   }
 
   function addNombreNivel() {
-    const t = nombreNivelPartidaDraft.trim();
-    if (!t) return;
-    setNombresNivelesDraft((arr) => [...arr, t]); // orden importa (nivel 1, nivel 2...) -- no dedupe/reordena
+    const r = validarNombreNivel(nombresNivelesDraft, nombreNivelPartidaDraft);
+    if (!r.ok) {
+      setNombreNivelError(t(r.motivo === 'vacio' ? 'catalogoForm.nombreNivelVacio' : 'catalogoForm.nombreNivelRepetido'));
+      return;
+    }
+    setNombresNivelesDraft((arr) => [...arr, r.nombre]); // orden importa (nivel 1, nivel 2...) -- no reordena
     setNombreNivelPartidaDraft('');
+    setNombreNivelError(null);
   }
 
   function addUnidadPersonalizada() {
-    const t = unidadPersonalizadaDraftTxt.trim().toUpperCase();
-    if (!t) return;
-    setUnidadesPersonalizadasDraft((arr) => Array.from(new Set([...arr, t])));
+    const r = validarUnidadPersonalizada(unidadesPersonalizadasDraft, unidadPersonalizadaDraftTxt);
+    if (!r.ok) {
+      setUnidadPersonalizadaError(t(r.motivo === 'vacia' ? 'catalogoForm.unidadPersonalizadaVacia' : 'catalogoForm.unidadPersonalizadaRepetida'));
+      return;
+    }
+    setUnidadesPersonalizadasDraft((arr) => [...arr, r.unidad]);
     setUnidadPersonalizadaDraftTxt('');
+    setUnidadPersonalizadaError(null);
   }
 
   // Cambiar tipo_contrato o modo_avance con datos ya cargados exige
@@ -954,27 +1025,31 @@ export default function ProjectDetailScreen() {
         modo_avance: modoAvanceDraft,
         cadencia_reporte: cadenciaDraft,
         dia_inicio_semana: diaInicioSemanaDraft,
+        zona_horaria: zonaHorariaDraft,
+        separador_decimal: separadorDecimalDraft,
         nombres_niveles_partida: nombresNivelesDraft,
         nombre_nivel_concepto: nombreNivelConceptoDraft.trim() || null,
+        genero_niveles: generosParaGuardar(generosDraft, nombresNivelesDraft, nombreNivelConceptoDraft),
         unidades_personalizadas: unidadesPersonalizadasDraft,
         titulo_modulo_catalogo: tituloModuloDraft.trim() || null,
         confirmar_cambio_tipo_contrato: !!confirmar?.tipoContrato,
         confirmar_cambio_modo_avance: !!confirmar?.modoAvance,
       } as any);
+      olvidarSeparadorDecimal(pid);
       setProject((p) => ({ ...(p || ({} as any)), ...upd }));
       setCatalogoConfigModalOpen(false);
-      Alert.alert('Guardado', 'La configuracion del catalogo se actualizo correctamente.');
+      Alert.alert(t('proyectoPantalla.guardado'), t('proyectoPantalla.laConfiguracionDelCatalogoSe'));
     } catch (e: any) {
       const status = e instanceof ApiError ? e.status : 0;
       const msg = e?.message || '';
       if (status === 400 && /tipo_contrato/i.test(msg) && !confirmar?.tipoContrato) {
-        const ok = await confirm('Cambiar tipo de contrato', msg);
+        const ok = await confirm(t('proyectoPantalla.cambiarTipoDeContrato'), msg);
         if (ok) { await saveCatalogoConfig({ ...confirmar, tipoContrato: true }); }
       } else if (status === 400 && /modo_avance/i.test(msg) && !confirmar?.modoAvance) {
-        const ok = await confirm('Cambiar modo de avance', msg);
+        const ok = await confirm(t('proyectoPantalla.cambiarModoDeAvance'), msg);
         if (ok) { await saveCatalogoConfig({ ...confirmar, modoAvance: true }); }
       } else {
-        Alert.alert('No se pudo guardar', msg || 'Intentalo nuevamente.');
+        Alert.alert(t('proyectoPantalla.noSePudoGuardar'), msg || t('proyectoPantalla.intentaloNuevamente'));
       }
     } finally {
       setCatalogoConfigSaving(false);
@@ -986,6 +1061,7 @@ export default function ProjectDetailScreen() {
     setExportStep('period');
     setExportPeriod('today');
     setExportAreaId(null);
+    setExportSinReportes(null);
     setExportOpen(true);
     // Cargar areas en paralelo
     if (pid) {
@@ -1010,13 +1086,15 @@ export default function ProjectDetailScreen() {
 
   function onPickArea(areaId: string | null) {
     setExportAreaId(areaId);
+    setExportSinReportes(null);
     setExportStep('format');
   }
 
-  async function onPickFormat(fmt: ExportFormat) {
+  async function onPickFormat(fmt: ExportFormat, forzar?: boolean) {
     if (!pid) return;
     try {
       setExportBusy(true);
+      setExportSinReportes(null);
       if (fmt === 'xlsx') {
         // Excel ignora periodo (sabana completa). Reusamos descarga existente.
         if (Platform.OS === 'web') {
@@ -1044,7 +1122,7 @@ export default function ProjectDetailScreen() {
               dialogTitle: 'Compartir reporte',
             });
           } else {
-            Alert.alert('Listo', `Archivo guardado en cache:\n${dest}`);
+            Alert.alert(t('proyectoPantalla.listo'), t('proyectoPantalla.archivoGuardadoCache', { destino: dest }));
           }
         }
       } else {
@@ -1052,6 +1130,13 @@ export default function ProjectDetailScreen() {
           ...(exportAreaId ? { area_id: exportAreaId } : {}),
           period_type: periodToInformeType(exportPeriod),
         };
+        if (!forzar) {
+          const conteo = await verificarConteoExportacion(pid, exportPeriod, opts);
+          if (conteo.vacio) {
+            setExportSinReportes({ fmt, otros: conteo.otros });
+            return;
+          }
+        }
         let blob: Blob; let filename: string; let mime: string;
         if (fmt === 'docx') {
           const r = await api.downloadReportsDocx(pid, exportPeriod, opts);
@@ -1072,8 +1157,8 @@ export default function ProjectDetailScreen() {
       setTimeout(() => setExportStep('period'), 200);
     } catch (e: any) {
       Alert.alert(
-        `No se pudo generar el ${fmt.toUpperCase()}`,
-        e?.message || 'Intentalo nuevamente.',
+        t('proyectoPantalla.noSePudoGenerar', { formato: fmt.toUpperCase() }),
+        e?.message || t('proyectoPantalla.intentaloNuevamente'),
       );
     } finally {
       setExportBusy(false);
@@ -1126,27 +1211,21 @@ export default function ProjectDetailScreen() {
 
   return (
     <View style={[styles.flex, { paddingTop: insets.top }]}>
-      <View style={styles.header}>
-        <Pressable onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
-          <Ionicons name="chevron-back" size={24} color={colors.text} />
-        </Pressable>
-        <Text style={styles.title} numberOfLines={1}>{project?.name || 'Proyecto'}</Text>
-        <View style={{ width: 32 }} />
-      </View>
+      <ScreenHeader title={project?.name || t('proyectoPantalla.proyecto')} fallbackHref="/(coord)" safeArea={false} />
 
       {loading ? (
         <View style={styles.center}><ActivityIndicator color={colors.primary} /></View>
       ) : error || !project ? (
         <View style={[styles.errorBox, { marginHorizontal: spacing.lg }]}>
           <Ionicons name="alert-circle" size={18} color={colors.error} />
-          <Text style={styles.errorText}>{error || 'Proyecto no disponible'}</Text>
+          <Text style={styles.errorText}>{error || t('proyectoPantalla.proyectoNoDisponible')}</Text>
         </View>
       ) : (
         <>
           {/* ===== Pestanas: Reportes / Operacion / Configuracion (justo debajo del header) ===== */}
           <View style={styles.tabBarWrap}>
             <View style={styles.tabBar}>
-              <Pressable
+              <Pressable accessibilityRole="button"
                 onPress={() => setActiveTab('reportes')}
                 style={[styles.tabBtn, activeTab === 'reportes' && styles.tabBtnActive]}
               >
@@ -1156,10 +1235,10 @@ export default function ProjectDetailScreen() {
                   color={activeTab === 'reportes' ? '#fff' : colors.text}
                 />
                 <Text style={[styles.tabTxt, activeTab === 'reportes' && styles.tabTxtActive]} numberOfLines={1}>
-                  Reportes
+                  {t('proyectoPantalla.reportes')}
                 </Text>
               </Pressable>
-              <Pressable
+              <Pressable accessibilityRole="button"
                 onPress={() => setActiveTab('operacion')}
                 style={[styles.tabBtn, activeTab === 'operacion' && styles.tabBtnActive]}
               >
@@ -1169,10 +1248,10 @@ export default function ProjectDetailScreen() {
                   color={activeTab === 'operacion' ? '#fff' : colors.text}
                 />
                 <Text style={[styles.tabTxt, activeTab === 'operacion' && styles.tabTxtActive]} numberOfLines={1}>
-                  Operacion
+                  {t('proyectoPantalla.operacion')}
                 </Text>
               </Pressable>
-              <Pressable
+              <Pressable accessibilityRole="button"
                 onPress={() => setActiveTab('configuracion')}
                 style={[styles.tabBtn, activeTab === 'configuracion' && styles.tabBtnActive]}
               >
@@ -1182,7 +1261,7 @@ export default function ProjectDetailScreen() {
                   color={activeTab === 'configuracion' ? '#fff' : colors.text}
                 />
                 <Text style={[styles.tabTxt, activeTab === 'configuracion' && styles.tabTxtActive]} numberOfLines={1}>
-                  Configuracion
+                  {t('proyectoPantalla.configuracion')}
                 </Text>
               </Pressable>
             </View>
@@ -1200,7 +1279,7 @@ export default function ProjectDetailScreen() {
               ListHeaderComponent={
                 <>
                   {/* Boton GRANDE: Exportar Reportes (PDF / Word / PPT / Excel) _ arriba de los filtros a peticion del Coord. General */}
-                  <Pressable
+                  <Pressable accessibilityRole="button"
                     onPress={openExportFlow}
                     disabled={exportBusy}
                     style={({ pressed }) => [
@@ -1216,9 +1295,9 @@ export default function ProjectDetailScreen() {
                       <Ionicons name="download-outline" size={22} color="#fff" />
                     )}
                     <View style={{ flex: 1 }}>
-                      <Text style={styles.exportMainTitle}>Exportar Reportes</Text>
+                      <Text style={styles.exportMainTitle}>{t('proyectoPantalla.exportarReportes')}</Text>
                       <Text style={styles.exportMainSub}>
-                        {exportBusy ? 'Generando archivo...' : 'PDF . Word . PowerPoint . Excel'}
+                        {exportBusy ? t('proyectoPantalla.generandoArchivo') : t('proyectoPantalla.pdfWordPowerpointExcel')}
                       </Text>
                     </View>
                     {!exportBusy && (
@@ -1227,7 +1306,7 @@ export default function ProjectDetailScreen() {
                   </Pressable>
 
                   {/* Killer Feature . Resumen Ejecutivo con IA */}
-                  <Pressable
+                  <Pressable accessibilityRole="button"
                     onPress={openAiSummary}
                     disabled={aiBusy}
                     style={({ pressed }) => [
@@ -1243,9 +1322,9 @@ export default function ProjectDetailScreen() {
                       <Ionicons name="sparkles" size={22} color="#fff" />
                     )}
                     <View style={{ flex: 1 }}>
-                      <Text style={styles.aiBtnTitle}>_ Generar Resumen Ejecutivo con IA</Text>
+                      <Text style={styles.aiBtnTitle}>{t('proyectoPantalla.generarResumenEjecutivoConIa')}</Text>
                       <Text style={styles.aiBtnSub}>
-                        {aiBusy ? 'Analizando reportes del dia...' : 'Avances, actividades, personal y noticias (ultimas 24h)'}
+                        {aiBusy ? t('proyectoPantalla.analizandoReportesDelDia') : t('proyectoPantalla.avancesActividadesPersonalYNoticias')}
                       </Text>
                     </View>
                     {!aiBusy && (
@@ -1256,7 +1335,7 @@ export default function ProjectDetailScreen() {
                   {(nodes.length > 0 || areas.length > 0 || reports.length > 0) ? (
                   <>
                     <View style={styles.chipWrap}>
-                      <Text style={styles.chipTitle}>Filtrar actividad</Text>
+                      <Text style={styles.chipTitle}>{t('proyectoPantalla.filtrarActividad')}</Text>
 
                       {/* Fila 1: Tiempo + Calendario */}
                       <ScrollView
@@ -1272,7 +1351,7 @@ export default function ProjectDetailScreen() {
                         ] as const).map((t) => {
                           const active = selectedTimeFilter === t.k && !selectedDate;
                           return (
-                            <Pressable
+                            <Pressable accessibilityRole="button"
                               key={t.k}
                               onPress={() => {
                                 setSelectedDate(null);
@@ -1293,7 +1372,7 @@ export default function ProjectDetailScreen() {
                         })}
 
                         {/* Boton Calendario */}
-                        <Pressable
+                        <Pressable accessibilityRole="button"
                           onPress={() => setCalendarOpen(true)}
                           style={[styles.chip, !!selectedDate && styles.chipActive]}
                         >
@@ -1303,10 +1382,10 @@ export default function ProjectDetailScreen() {
                             color={selectedDate ? '#fff' : colors.text}
                           />
                           <Text style={[styles.chipText, !!selectedDate && styles.chipTextActive]}>
-                            {selectedDate || 'Calendario'}
+                            {selectedDate || t('proyectoPantalla.calendario')}
                           </Text>
                           {selectedDate && (
-                            <Pressable hitSlop={8} onPress={() => setSelectedDate(null)} style={{ marginLeft: 4 }}>
+                            <Pressable accessibilityRole="button" accessibilityLabel={a11y('quitar')} hitSlop={8} onPress={() => setSelectedDate(null)} style={{ marginLeft: 4 }}>
                               <Ionicons name="close-circle" size={14} color="#fff" />
                             </Pressable>
                           )}
@@ -1315,7 +1394,7 @@ export default function ProjectDetailScreen() {
 
                       {/* Fila: Filtros rapidos por estatus */}
                       <View style={[styles.chipRow, { marginTop: 8 }]}>
-                        <Pressable
+                        <Pressable accessibilityRole="button"
                           onPress={() => setSelectedStatusFilter((s) => (s === 'incidencia' ? null : 'incidencia'))}
                           style={[styles.chip, selectedStatusFilter === 'incidencia' && styles.chipActive]}
                         >
@@ -1325,10 +1404,10 @@ export default function ProjectDetailScreen() {
                             color={selectedStatusFilter === 'incidencia' ? '#fff' : colors.text}
                           />
                           <Text style={[styles.chipText, selectedStatusFilter === 'incidencia' && styles.chipTextActive]}>
-                            Con Incidencia
+                            {t('proyectoPantalla.conIncidencia')}
                           </Text>
                         </Pressable>
-                        <Pressable
+                        <Pressable accessibilityRole="button"
                           onPress={() => setSelectedStatusFilter((s) => (s === 'avance' ? null : 'avance'))}
                           style={[styles.chip, selectedStatusFilter === 'avance' && styles.chipActive]}
                         >
@@ -1338,7 +1417,7 @@ export default function ProjectDetailScreen() {
                             color={selectedStatusFilter === 'avance' ? '#fff' : colors.text}
                           />
                           <Text style={[styles.chipText, selectedStatusFilter === 'avance' && styles.chipTextActive]}>
-                            Avance
+                            {t('proyectoPantalla.avance')}
                           </Text>
                         </Pressable>
                       </View>
@@ -1349,13 +1428,13 @@ export default function ProjectDetailScreen() {
                         <TextInput
                           value={searchQuery}
                           onChangeText={setSearchQuery}
-                          placeholder="Buscar por nodo o autor..."
+                          placeholder={t('proyectoPantalla.buscarPorNodoOAutor')}
                           placeholderTextColor="#6B7280"
                           style={styles.searchInput}
                           returnKeyType="search"
                         />
                         {!!searchQuery && (
-                          <Pressable onPress={() => setSearchQuery('')} hitSlop={8}>
+                          <Pressable accessibilityRole="button" accessibilityLabel={a11y('quitar')} onPress={() => setSearchQuery('')} hitSlop={8}>
                             <Ionicons name="close-circle" size={16} color="#6B7280" />
                           </Pressable>
                         )}
@@ -1368,7 +1447,7 @@ export default function ProjectDetailScreen() {
                           showsHorizontalScrollIndicator={false}
                           contentContainerStyle={[styles.chipRow, { marginTop: 8 }]}
                         >
-                          <Pressable
+                          <Pressable accessibilityRole="button"
                             onPress={() => setSelectedNodeFilter(null)}
                             style={[styles.chip, !selectedNodeFilter && styles.chipActive]}
                           >
@@ -1378,13 +1457,13 @@ export default function ProjectDetailScreen() {
                               color={!selectedNodeFilter ? '#fff' : colors.text}
                             />
                             <Text style={[styles.chipText, !selectedNodeFilter && styles.chipTextActive]}>
-                              Todos ({feedTotal})
+                              {t('proyectoPantalla.todosN', { n: feedTotal })}
                             </Text>
                           </Pressable>
                           {nodes.map((n) => {
                             const active = selectedNodeFilter === n;
                             return (
-                              <Pressable
+                              <Pressable accessibilityRole="button"
                                 key={`node-${n}`}
                                 onPress={() => setSelectedNodeFilter(active ? null : n)}
                                 style={[styles.chip, active && styles.chipActive]}
@@ -1410,7 +1489,7 @@ export default function ProjectDetailScreen() {
                           showsHorizontalScrollIndicator={false}
                           contentContainerStyle={[styles.chipRow, { marginTop: 8 }]}
                         >
-                          <Pressable
+                          <Pressable accessibilityRole="button"
                             onPress={() => setSelectedAreaFilter(null)}
                             style={[styles.chip, !selectedAreaFilter && styles.chipActive]}
                           >
@@ -1420,13 +1499,13 @@ export default function ProjectDetailScreen() {
                               color={!selectedAreaFilter ? '#fff' : colors.text}
                             />
                             <Text style={[styles.chipText, !selectedAreaFilter && styles.chipTextActive]}>
-                              Todas las Areas ({feedTotal})
+                              {t('proyectoPantalla.todasAreasN', { n: feedTotal })}
                             </Text>
                           </Pressable>
                           {areas.map((a) => {
                             const active = selectedAreaFilter === a;
                             return (
-                              <Pressable
+                              <Pressable accessibilityRole="button"
                                 key={`area-${a}`}
                                 onPress={() => setSelectedAreaFilter(active ? null : a)}
                                 style={[styles.chip, active && styles.chipActive]}
@@ -1446,7 +1525,7 @@ export default function ProjectDetailScreen() {
                       )}
                     </View>
 
-                    <Text style={styles.sectionTitle}>Reportes recientes</Text>
+                    <Text style={styles.sectionTitle}>{t('proyectoPantalla.reportesRecientes')}</Text>
                   </>
                   ) : null}
                 </>
@@ -1455,23 +1534,27 @@ export default function ProjectDetailScreen() {
                 feedInitialLoading ? (
                   <View style={styles.center}><ActivityIndicator color={colors.primary} /></View>
                 ) : (
-                  <View style={styles.feedEmptyState}>
-                    <View style={styles.feedEmptyIconWrap}>
-                      <Ionicons name="document-text-outline" size={28} color={colors.textMuted} />
-                    </View>
-                    <Text style={styles.feedEmptyTxt}>
-                      {debouncedSearch
-                        ? 'No hay reportes para este filtro.'
-                        : 'Aun no hay reportes capturados para este filtro.'}
-                    </Text>
-                  </View>
+                  <ReportesVacio
+                    variante="coord"
+                    hayFiltros={!!(selectedNodeFilter || selectedAreaFilter || selectedStatusFilter || selectedDate || selectedTimeFilter !== 'all')}
+                    busqueda={debouncedSearch}
+                    onQuitarFiltros={() => {
+                      setSelectedNodeFilter(null);
+                      setSelectedAreaFilter(null);
+                      setSelectedStatusFilter(null);
+                      setSelectedDate(null);
+                      setSelectedTimeFilter('all');
+                      setSearchQuery('');
+                    }}
+                    onInvitar={() => router.push({ pathname: '/(coord)/projects/[id]/invitations' as any, params: { id: pid } })}
+                  />
                 )
               }
               ListFooterComponent={
                 feedLoadingMore ? (
                   <View style={styles.center}><ActivityIndicator color={colors.primary} /></View>
                 ) : !feedHasMore && reports.length > 0 ? (
-                  <Text style={styles.feedMore}>Has llegado al final del historial.</Text>
+                  <Text style={styles.feedMore}>{t('proyectoPantalla.hasLlegadoAlFinalDel')}</Text>
                 ) : null
               }
             />
@@ -1495,7 +1578,7 @@ export default function ProjectDetailScreen() {
                     const cerrado = !!modulosAreaCerrada[g.areaId];
                     return (
                       <View key={g.areaId} style={{ gap: spacing.sm }}>
-                        <Pressable
+                        <Pressable accessibilityRole="button"
                           onPress={() => setModulosAreaCerrada((c) => ({ ...c, [g.areaId]: !c[g.areaId] }))}
                           style={styles.moduloAreaHeader}
                         >
@@ -1527,8 +1610,8 @@ export default function ProjectDetailScreen() {
                 />
                 <ActionTile
                   icon="people-outline"
-                  title="Fuerza de Trabajo"
-                  subtitle="Personal y maquinaria derivados de los reportes"
+                  title={t('proyectoPantalla.fuerzaDeTrabajo')}
+                  subtitle={t('proyectoPantalla.personalYMaquinariaDerivadosDe')}
                   onPress={() => router.push({ pathname: '/(coord)/projects/[id]/fuerza-de-trabajo' as any, params: { id: pid } })}
                 />
               </View>
@@ -1543,32 +1626,32 @@ export default function ProjectDetailScreen() {
               <View style={{ marginTop: spacing.md, gap: spacing.sm }}>
                 <ActionTile
                   icon="stats-chart-outline"
-                  title="Control de Costos (EVM)"
-                  subtitle="Valor Ganado: SPI, CPI, Curva S y excepciones"
+                  title={t('proyectoPantalla.controlDeCostosEvm')}
+                  subtitle={t('proyectoPantalla.valorGanadoSpiCpiCurva')}
                   onPress={() => router.push({ pathname: '/(coord)/projects/[id]/dashboard' as any, params: { id: pid } })}
                 />
                 <ActionTile
                   icon="create-outline"
-                  title="Registrar avance"
-                  subtitle="Captura diaria en campo — cuanto se ejecuto hoy"
+                  title={t('proyectoPantalla.registrarAvance')}
+                  subtitle={t('proyectoPantalla.capturaDiariaEnCampoCuanto')}
                   onPress={() => router.push({ pathname: '/(coord)/projects/[id]/registrar-avance' as any, params: { id: pid } })}
                 />
                 <ActionTile
                   icon="easel-outline"
-                  title="Presentación"
-                  subtitle="Informe de actividades semanal — preview y exportar a PPTX"
+                  title={t('proyectoPantalla.presentacion')}
+                  subtitle={t('proyectoPantalla.informeDeActividadesSemanalPreview')}
                   onPress={() => router.push({ pathname: '/(coord)/projects/[id]/presentacion' as any, params: { id: pid } })}
                 />
                 <ActionTile
                   icon="bar-chart-outline"
-                  title="Visualizar avance"
-                  subtitle="Reporte de avance por periodo"
+                  title={t('proyectoPantalla.visualizarAvance')}
+                  subtitle={t('proyectoPantalla.reporteDeAvancePorPeriodo')}
                   onPress={() => router.push({ pathname: '/(coord)/projects/[id]/visualizar-avance' as any, params: { id: pid } })}
                 />
                 <ActionTile
                   icon="map-outline"
-                  title="Plano de Avance"
-                  subtitle="Marcadores de estado sobre planos y blueprints"
+                  title={t('proyectoPantalla.planoDeAvance')}
+                  subtitle={t('proyectoPantalla.marcadoresDeEstadoSobrePlanos')}
                   onPress={() => router.push({ pathname: '/(coord)/projects/[id]/plano-avance' as any, params: { id: pid } })}
                 />
               </View>
@@ -1580,15 +1663,11 @@ export default function ProjectDetailScreen() {
               keyboardShouldPersistTaps="handled"
             >
               <View style={styles.card}>
-                <InfoRow icon="business-outline" label="Constructora" value={project.constructora} />
-                <InfoRow icon="document-text-outline" label="Contrato" value={project.contract_number} />
-                {project.start_date ? <InfoRow icon="calendar-outline" label="Inicio" value={project.start_date} /> : null}
-                {project.end_date ? <InfoRow icon="calendar-outline" label="Termino" value={project.end_date} /> : null}
-                {project.description ? <InfoRow icon="chatbox-ellipses-outline" label="Descripcion" value={project.description} /> : null}
+                <ResumenProyecto project={project} />
               </View>
 
               {/* Calendario historico */}
-              <Pressable
+              <Pressable accessibilityRole="button"
                 onPress={() => setCalendarOpen(true)}
                 style={({ pressed }) => [styles.calendarBtn, pressed && { opacity: 0.9 }]}
               >
@@ -1596,13 +1675,13 @@ export default function ProjectDetailScreen() {
                   <Ionicons name="calendar-outline" size={20} color={colors.primary} />
                 </View>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.tileTitle}>Calendario historico</Text>
-                  <Text style={styles.tileSub}>Explora actividad por dia (heatmap del proyecto)</Text>
+                  <Text style={styles.tileTitle}>{t('proyectoPantalla.calendarioHistorico')}</Text>
+                  <Text style={styles.tileSub}>{t('proyectoPantalla.exploraActividadPorDiaHeatmap')}</Text>
                 </View>
                 <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
               </Pressable>
 
-              <Text style={styles.sectionTitle}>Configuracion del proyecto</Text>
+              <Text style={styles.sectionTitle}>{t('proyectoPantalla.configuracionDelProyecto')}</Text>
 
               {/* Hub del sistema Multi-Proyecto Modular — primer tile a
                   propósito: es donde se encienden/apagan Forestal y
@@ -1610,10 +1689,18 @@ export default function ProjectDetailScreen() {
                   esto quedan invisibles en el menú de Sub-Coord/Especialista). */}
               <ActionTile
                 icon="apps-outline"
-                title="Módulos"
-                subtitle="Enciende/apaga Forestal y Arbolado, Seguridad e Higiene y demás plantillas"
+                title={t('proyectoPantalla.modulos')}
+                subtitle={t('proyectoPantalla.enciendeApagaForestalYArbolado')}
                 onPress={() => router.push({ pathname: '/(coord)/projects/[id]/modulos' as any, params: { id: pid } })}
               />
+              {esCoordGeneral ? (
+                <ActionTile
+                  icon="construct-outline"
+                  title={t('tipoObra.titulo')}
+                  subtitle={t('proyectoPantalla.tipoObraTileSub')}
+                  onPress={() => setTipoObraOpen(true)}
+                />
+              ) : null}
               <ActionTile
                 icon="construct-outline"
                 title="Creador de módulos"
@@ -1622,32 +1709,32 @@ export default function ProjectDetailScreen() {
               />
               <ActionTile
                 icon="git-network-outline"
-                title="Arbol de nodos"
-                subtitle="Estructura espacial recursiva (tramos, estaciones, hojas)"
+                title={t('proyectoPantalla.arbolDeNodos')}
+                subtitle={t('proyectoPantalla.estructuraEspacialRecursivaTramosEstaciones')}
                 onPress={() => router.push({ pathname: '/(coord)/projects/[id]/tree', params: { id: pid } })}
               />
               <ActionTile
                 icon="shield-checkmark-outline"
-                title="Acceso al Predio"
-                subtitle="Estatus de acceso y situacion social por subtramo"
+                title={t('proyectoPantalla.accesoAlPredio')}
+                subtitle={t('proyectoPantalla.estatusDeAccesoYSituacion')}
                 onPress={() => router.push({ pathname: '/(coord)/projects/[id]/acceso-predio', params: { id: pid } })}
               />
               <ActionTile
                 icon="color-palette-outline"
-                title="Areas / Disciplinas"
-                subtitle="Topografia, Geotecnia, Estructuras..."
+                title={t('proyectoPantalla.areasDisciplinas')}
+                subtitle={t('proyectoPantalla.topografiaGeotecniaEstructuras')}
                 onPress={() => router.push({ pathname: '/(coord)/projects/[id]/areas', params: { id: pid } })}
               />
               <ActionTile
                 icon="mail-outline"
-                title="Invitaciones"
-                subtitle="Genera tokens para Sub-Coord. y Especialistas"
+                title={t('proyectoPantalla.invitaciones')}
+                subtitle={t('proyectoPantalla.generaTokensParaSubCoord')}
                 onPress={() => router.push({ pathname: '/(coord)/projects/[id]/invitations', params: { id: pid } })}
               />
               <ActionTile
                 icon="color-palette-outline"
-                title="Identidad institucional"
-                subtitle="Objeto del contrato . Cliente principal . Color institucional"
+                title={t('proyectoPantalla.identidadInstitucional')}
+                subtitle={t('proyectoPantalla.objetoDelContratoClientePrincipal')}
                 onPress={openObjetoModal}
               />
               <ActionTile
@@ -1658,20 +1745,20 @@ export default function ProjectDetailScreen() {
               />
               <ActionTile
                 icon="people-outline"
-                title="Personal"
-                subtitle="Gestiona categorias y roles del personal de obra"
+                title={t('proyectoPantalla.personal')}
+                subtitle={t('proyectoPantalla.gestionaCategoriasYRolesDel')}
                 onPress={() => router.push({ pathname: '/(coord)/projects/[id]/personal', params: { id: pid } })}
               />
               <ActionTile
                 icon="construct-outline"
-                title="Equipo"
-                subtitle="Inventario detallado: marca, modelo, serie"
+                title={t('proyectoPantalla.equipo')}
+                subtitle={t('proyectoPantalla.inventarioDetalladoMarcaModeloSerie')}
                 onPress={() => router.push({ pathname: '/(coord)/projects/[id]/equipo', params: { id: pid } })}
               />
               <ActionTile
                 icon="document-attach-outline"
-                title="Plantillas de exportacion"
-                subtitle="PDF (recomendado) . Word . PowerPoint . Mapa"
+                title={t('proyectoPantalla.plantillasDeExportacion')}
+                subtitle={t('proyectoPantalla.pdfRecomendadoWordPowerpointMapa')}
                 onPress={() => setTplModalOpen(true)}
               />
               <ActionTile
@@ -1682,27 +1769,27 @@ export default function ProjectDetailScreen() {
               />
               <ActionTile
                 icon="images-outline"
-                title="Datos Generales"
+                title={t('proyectoPantalla.datosGenerales')}
                 subtitle={
                   gdCount > 0
-                    ? `${gdCount} imagen${gdCount === 1 ? '' : 'es'} . presupuesto, programa, planos...`
-                    : 'Sube imagenes (presupuesto, programa, planos, mapa...) que se incluiran al inicio del PDF/PPTX'
+                    ? gdCount === 1 ? t('proyectoPantalla.imagenUnaDetalle') : t('proyectoPantalla.imagenesDetalle', { n: gdCount })
+                    : t('proyectoPantalla.subeImagenesPresupuestoProgramaPlanos')
                 }
                 onPress={() => { setGdModalOpen(true); loadGeneralDataImages(); }}
               />
               <ActionTile
                 icon="calendar-outline"
-                title="Eventos del proyecto"
-                subtitle="Programa visitas, hitos y reuniones"
+                title={t('proyectoPantalla.eventosDelProyecto')}
+                subtitle={t('proyectoPantalla.programaVisitasHitosYReuniones')}
                 onPress={() => router.push({ pathname: '/(coord)/projects/[id]/events' as any, params: { id: pid } })}
               />
               <ActionTile
                 icon="clipboard-outline"
-                title="Hub de Minutas"
+                title={t('proyectoPantalla.hubDeMinutas')}
                 subtitle={
                   minutasBadge && (minutasBadge.urgent || minutasBadge.assigned_pending)
-                    ? `${minutasBadge.assigned_pending} asignados . ${minutasBadge.urgent} urgentes`
-                    : 'Acuerdos y seguimiento de reuniones'
+                    ? t('proyectoPantalla.minutasAsignadosUrgentes', { a: minutasBadge.assigned_pending, u: minutasBadge.urgent })
+                    : t('proyectoPantalla.acuerdosYSeguimientoDeReuniones')
                 }
                 badge={minutasBadge?.urgent || 0}
                 onPress={() => router.push({ pathname: '/(coord)/projects/[id]/minutas' as any, params: { id: pid } })}
@@ -1710,48 +1797,49 @@ export default function ProjectDetailScreen() {
 
               {/* ===== Catalogo de Conceptos (consulta/administracion — Registrar y
                   Visualizar avance viven en la pestaña Operacion, no aqui) ===== */}
-              <Text style={styles.sectionTitle}>Catalogo de Conceptos</Text>
+              <Text style={styles.sectionTitle}>{t('proyectoPantalla.catalogoDeConceptos')}</Text>
               <ActionTile
                 icon="albums-outline"
-                title="Catalogo de conceptos"
-                subtitle="Partidas y conceptos — consulta, administracion e importacion"
+                title={t('proyectoPantalla.catalogoDeConceptos2')}
+                subtitle={t('proyectoPantalla.partidasYConceptosConsultaAdministracion')}
                 onPress={() => router.push({ pathname: '/(coord)/projects/[id]/catalogo-conceptos' as any, params: { id: pid } })}
               />
               <ActionTile
                 icon="options-outline"
-                title="Configuracion del catalogo"
-                subtitle="Tipo de contrato, avance en %, nombres de nivel, cadencia de reporte"
+                title={t('proyectoPantalla.configuracionDelCatalogo')}
+                subtitle={t('proyectoPantalla.tipoDeContratoAvanceEn')}
                 onPress={openCatalogoConfigModal}
               />
+              <ProgramaObraSection projectId={pid} zona={project as any} />
 
               {/* ===== Actividades Generales: vista curada de las actividades ya
                   capturadas en reportes — Generales, o por Ubicacion (fusiona
                   los antiguos "Por Estacion"/"Por Poste") ===== */}
-              <Text style={styles.sectionTitle}>Actividades Generales</Text>
+              <Text style={styles.sectionTitle}>{t('proyectoPantalla.actividadesGenerales')}</Text>
               <ActionTile
                 icon="globe-outline"
-                title="Generales"
-                subtitle="Actividades sin nodo asociado (notas de area/proyecto)"
+                title={t('proyectoPantalla.generales')}
+                subtitle={t('proyectoPantalla.actividadesSinNodoAsociadoNotas')}
                 onPress={() => router.push({ pathname: '/(coord)/projects/[id]/actividades-generales' as any, params: { id: pid, nivel: 'GENERAL' } })}
               />
               <ActionTile
                 icon="location-outline"
-                title="Por Ubicacion"
-                subtitle="Agrupadas por Subtramo o nodo hoja"
+                title={t('proyectoPantalla.porUbicacion')}
+                subtitle={t('proyectoPantalla.agrupadasPorSubtramoONodo')}
                 onPress={() => router.push({ pathname: '/(coord)/projects/[id]/actividades-generales' as any, params: { id: pid, nivel: 'NODO' } })}
               />
 
               {/* ===== Archivos de Consulta ===== */}
-              <Text style={styles.sectionTitle}>Archivos de consulta</Text>
+              <Text style={styles.sectionTitle}>{t('proyectoPantalla.archivosDeConsulta')}</Text>
               <View style={styles.refCard}>
                 <Text style={styles.refHelp}>
-                  Sube documentos (Excel/CSV de nodos, PDF, Word) o planos visibles para todo el equipo. Si el archivo es Excel o CSV con coordenadas, se cargaran los nodos automaticamente. Maximo 20 MB por archivo.
+                  {t('proyectoPantalla.subeDocumentosExcelCsvDe')}
                 </Text>
 
                 {(project.reference_files || []).length === 0 ? (
                   <View style={styles.refEmpty}>
                     <Ionicons name="folder-open-outline" size={20} color={colors.textMuted} />
-                    <Text style={styles.refEmptyTxt}>Aun no hay archivos compartidos.</Text>
+                    <Text style={styles.refEmptyTxt}>{t('proyectoPantalla.aunNoHayArchivosCompartidos')}</Text>
                   </View>
                 ) : (
                   <View style={{ gap: 8 }}>
@@ -1759,7 +1847,7 @@ export default function ProjectDetailScreen() {
                       const key = f.file_id || `${f.url}-${idx}`;
                       const opening = !!(f.file_id && refOpeningId === f.file_id);
                       const subtitle = f.file_id
-                        ? [f.original_name || '', formatBytes(f.size)].filter(Boolean).join(' . ')
+                        ? unir([f.original_name, formatBytes(f.size)])
                         : f.url;
                       return (
                         <View key={key} style={styles.refItem}>
@@ -1774,12 +1862,12 @@ export default function ProjectDetailScreen() {
                               <Text style={styles.refItemUrl} numberOfLines={1}>{subtitle}</Text>
                             )}
                           </View>
-                          <Pressable
+                          <Pressable accessibilityRole="button"
                             onPress={() => onOpenRefFile(f)}
                             hitSlop={6}
                             style={styles.refIconBtn}
                             disabled={opening || refBusy}
-                            accessibilityLabel={`Abrir ${f.name}`}
+                            accessibilityLabel={t('proyectoPantalla.abrirArchivo', { nombre: f.name })}
                           >
                             {opening ? (
                               <ActivityIndicator size="small" color={colors.primary} />
@@ -1791,12 +1879,12 @@ export default function ProjectDetailScreen() {
                               />
                             )}
                           </Pressable>
-                          <Pressable
+                          <Pressable accessibilityRole="button"
                             onPress={() => onRemoveRefFile(idx)}
                             hitSlop={6}
                             style={styles.refIconBtn}
                             disabled={refBusy}
-                            accessibilityLabel={`Eliminar ${f.name}`}
+                            accessibilityLabel={t('proyectoPantalla.eliminarArchivo', { nombre: f.name })}
                           >
                             <Ionicons name="trash-outline" size={18} color={colors.error} />
                           </Pressable>
@@ -1815,30 +1903,30 @@ export default function ProjectDetailScreen() {
                     pressed && !refBusy && { opacity: 0.85 },
                   ]}
                   accessibilityRole="button"
-                  accessibilityLabel="Seleccionar archivo para subir"
+                  accessibilityLabel={t('proyectoPantalla.seleccionarArchivoParaSubir')}
                 >
                   {refBusy ? (
                     <>
                       <ActivityIndicator color="#fff" size="small" />
                       <Text style={styles.refAddBtnTxt} numberOfLines={1}>
-                        {refUploadName ? `Subiendo ${refUploadName}...` : 'Subiendo archivo...'}
+                        {refUploadName ? t('proyectoPantalla.subiendoNombre', { nombre: refUploadName }) : t('proyectoPantalla.subiendoArchivo')}
                       </Text>
                     </>
                   ) : (
                     <>
                       <Ionicons name="cloud-upload-outline" size={18} color="#fff" />
-                      <Text style={styles.refAddBtnTxt}>Seleccionar archivo</Text>
+                      <Text style={styles.refAddBtnTxt}>{t('proyectoPantalla.seleccionarArchivo')}</Text>
                     </>
                   )}
                 </Pressable>
                 <Text style={styles.refHint}>
-                  Formatos: Excel (.xlsx, .xls), CSV, PDF, Word (.doc, .docx). Tamano maximo 20 MB.
+                  {t('proyectoPantalla.formatosExcelXlsxXlsCsv')}
                 </Text>
               </View>
 
-              <Pressable onPress={onArchive} style={styles.archiveBtn}>
+              <Pressable accessibilityRole="button" onPress={onArchive} style={styles.archiveBtn}>
                 <Ionicons name="archive-outline" size={16} color={colors.error} />
-                <Text style={styles.archiveText}>Archivar proyecto</Text>
+                <Text style={styles.archiveText}>{t('proyectoPantalla.archivarProyecto')}</Text>
               </Pressable>
             </ScrollView>
           )}
@@ -1866,7 +1954,7 @@ export default function ProjectDetailScreen() {
               {exportStep === 'period' ? (
                 <View style={styles.exportBack} />
               ) : (
-                <Pressable
+                <Pressable accessibilityRole="button" accessibilityLabel={a11y('volver')}
                   onPress={() => {
                     if (exportBusy) return;
                     if (exportStep === 'format') setExportStep('area');
@@ -1881,20 +1969,20 @@ export default function ProjectDetailScreen() {
               <View style={{ flex: 1 }}>
                 <Text style={styles.exportTitle}>
                   {exportStep === 'period'
-                    ? 'Exportar Reportes'
+                    ? t('proyectoPantalla.exportarReportes')
                     : exportStep === 'area'
-                    ? 'Filtrar por Area'
-                    : 'Elegir formato'}
+                    ? t('proyectoPantalla.filtrarPorArea')
+                    : t('proyectoPantalla.elegirFormato')}
                 </Text>
                 <Text style={styles.exportSubtitle}>
                   {exportStep === 'period'
-                    ? 'Paso 1 de 3 . Selecciona el periodo'
+                    ? t('proyectoPantalla.paso1De3Selecciona')
                     : exportStep === 'area'
-                    ? `Paso 2 de 3 . Periodo: ${PERIOD_OPTIONS.find((p) => p.value === exportPeriod)?.label ?? ''}`
-                    : `Paso 3 de 3 . ${exportAreaId ? exportAreas.find((a) => a.id === exportAreaId)?.name ?? 'Area' : 'Todas las areas'}`}
+                    ? t('proyectoPantalla.paso2Periodo', { periodo: PERIOD_OPTIONS.find((p) => p.value === exportPeriod)?.label ?? '' })
+                    : t('proyectoPantalla.paso3Area', { area: exportAreaId ? exportAreas.find((a) => a.id === exportAreaId)?.name ?? t('proyectoPantalla.areaSola') : t('proyectoPantalla.todasLasAreas') })}
                 </Text>
               </View>
-              <Pressable
+              <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')}
                 onPress={closeExportFlow}
                 disabled={exportBusy}
                 hitSlop={10}
@@ -1927,7 +2015,7 @@ export default function ProjectDetailScreen() {
                 {PERIOD_OPTIONS.map((opt) => {
                   const active = exportPeriod === opt.value;
                   return (
-                    <Pressable
+                    <Pressable accessibilityRole="button"
                       key={opt.value}
                       onPress={() => onPickPeriod(opt.value)}
                       style={({ pressed }) => [
@@ -1950,7 +2038,7 @@ export default function ProjectDetailScreen() {
               </View>
             ) : exportStep === 'area' ? (
               <ScrollView contentContainerStyle={{ paddingHorizontal: spacing.md, paddingBottom: spacing.md }}>
-                <Pressable
+                <Pressable accessibilityRole="button"
                   onPress={() => onPickArea(null)}
                   style={({ pressed }) => [
                     styles.exportItem,
@@ -1962,18 +2050,18 @@ export default function ProjectDetailScreen() {
                     <Ionicons name="apps-outline" size={20} color="#1E3A8A" />
                   </View>
                   <View style={{ flex: 1 }}>
-                    <Text style={styles.exportItemTitle}>Todas las areas</Text>
-                    <Text style={styles.exportItemSub}>Incluye todos los reportes Importantes y Urgentes del proyecto</Text>
+                    <Text style={styles.exportItemTitle}>{t('proyectoPantalla.todasLasAreas2')}</Text>
+                    <Text style={styles.exportItemSub}>{t('proyectoPantalla.incluyeTodosLosReportesImportantes')}</Text>
                   </View>
                   <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
                 </Pressable>
                 {exportAreas.length === 0 ? (
                   <Text style={[styles.exportBusyHint, { marginTop: 12 }]}>
-                    Este proyecto aun no tiene areas configuradas. Se exportaran todos los reportes.
+                    {t('proyectoPantalla.esteProyectoAunNoTiene')}
                   </Text>
                 ) : (
                   exportAreas.map((a) => (
-                    <Pressable
+                    <Pressable accessibilityRole="button"
                       key={a.id}
                       onPress={() => onPickArea(a.id)}
                       style={({ pressed }) => [
@@ -1992,7 +2080,7 @@ export default function ProjectDetailScreen() {
                       </View>
                       <View style={{ flex: 1 }}>
                         <Text style={styles.exportItemTitle}>{a.name}</Text>
-                        <Text style={styles.exportItemSub}>Solo reportes del area seleccionada</Text>
+                        <Text style={styles.exportItemSub}>{t('proyectoPantalla.soloReportesDelAreaSeleccionada')}</Text>
                       </View>
                       <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
                     </Pressable>
@@ -2001,8 +2089,15 @@ export default function ProjectDetailScreen() {
               </ScrollView>
             ) : (
               <View style={{ paddingHorizontal: spacing.md, paddingBottom: spacing.md }}>
+                {exportSinReportes ? (
+                  <SinReportesAviso
+                    otros={exportSinReportes.otros}
+                    onCambiarPeriodo={() => { setExportSinReportes(null); setExportStep('period'); }}
+                    onExportarDeTodosModos={() => onPickFormat(exportSinReportes.fmt, true)}
+                  />
+                ) : null}
                 {FORMAT_OPTIONS.map((opt) => (
-                  <Pressable
+                  <Pressable accessibilityRole="button"
                     key={opt.value}
                     onPress={() => onPickFormat(opt.value)}
                     disabled={exportBusy}
@@ -2028,7 +2123,7 @@ export default function ProjectDetailScreen() {
                 ))}
                 {exportBusy ? (
                   <Text style={styles.exportBusyHint}>
-                    Generando archivo en el servidor... esto puede tardar unos segundos.
+                    {t('proyectoPantalla.generandoArchivoEnElServidor')}
                   </Text>
                 ) : null}
               </View>
@@ -2084,18 +2179,18 @@ export default function ProjectDetailScreen() {
           keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 24}
           style={styles.exportBackdrop}
         >
-          <Pressable style={StyleSheet.absoluteFill} onPress={() => !catSaving && setCatModalOpen(false)} />
+          <Pressable accessibilityRole="button" style={StyleSheet.absoluteFill} onPress={() => !catSaving && setCatModalOpen(false)} />
           <View style={[styles.exportSheet, styles.sheetSurface, { maxHeight: '85%' }]}>
             <View style={styles.exportHandle} />
             <View style={styles.exportHeader}>
               <View style={styles.exportBack} />
               <View style={{ flex: 1 }}>
-                <Text style={styles.exportTitle}>Contrato y Catalogos</Text>
+                <Text style={styles.exportTitle}>{t('proyectoPantalla.contratoYCatalogos')}</Text>
                 <Text style={styles.exportSubtitle}>
-                  Configura el objeto del contrato y las categorias que veran los especialistas al crear reportes.
+                  {t('proyectoPantalla.configuraElObjetoDelContrato')}
                 </Text>
               </View>
-              <Pressable
+              <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')}
                 onPress={() => !catSaving && setCatModalOpen(false)}
                 hitSlop={10}
                 style={styles.exportBack}
@@ -2108,15 +2203,15 @@ export default function ProjectDetailScreen() {
               contentContainerStyle={{ paddingHorizontal: spacing.md, paddingBottom: spacing.lg, gap: spacing.md }}
             >
               <View>
-                <Text style={styles.catLabel}>Categorias de personal</Text>
+                <Text style={styles.catLabel}>{t('proyectoPantalla.categoriasDePersonal')}</Text>
                 <Text style={styles.catHelper}>
-                  Roles disponibles al capturar un reporte (Topografo, Cadenero, Brigadista...).
+                  {t('proyectoPantalla.rolesDisponiblesAlCapturarUn')}
                 </Text>
                 <View style={styles.catChipsWrap}>
                   {catPersonalList.map((it, idx) => (
                     <View key={`${it}-${idx}`} style={styles.catChip}>
                       <Text style={styles.catChipTxt}>{it}</Text>
-                      <Pressable
+                      <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')}
                         onPress={() => setCatPersonalList((arr) => arr.filter((x) => x !== it))}
                         hitSlop={6}
                       >
@@ -2125,7 +2220,7 @@ export default function ProjectDetailScreen() {
                     </View>
                   ))}
                   {catPersonalList.length === 0 && (
-                    <Text style={styles.catEmpty}>Aun no hay categorias; agrega una abajo.</Text>
+                    <Text style={styles.catEmpty}>{t('proyectoPantalla.aunNoHayCategoriasAgrega')}</Text>
                   )}
                 </View>
                 <View style={styles.catInputRow}>
@@ -2133,27 +2228,27 @@ export default function ProjectDetailScreen() {
                     value={catPersonalDraft}
                     onChangeText={setCatPersonalDraft}
                     onSubmitEditing={addCatPersonal}
-                    placeholder="Nueva categoria de personal"
+                    placeholder={t('proyectoPantalla.nuevaCategoriaDePersonal')}
                     placeholderTextColor={colors.textMuted}
                     style={styles.catInput}
                     returnKeyType="done"
                   />
-                  <Pressable onPress={addCatPersonal} style={styles.catAddBtn}>
+                  <Pressable accessibilityRole="button" accessibilityLabel={a11y('agregar')} hitSlop={8} onPress={addCatPersonal} style={styles.catAddBtn}>
                     <Ionicons name="add" size={20} color="#fff" />
                   </Pressable>
                 </View>
               </View>
 
               <View>
-                <Text style={styles.catLabel}>Categorias de equipo</Text>
+                <Text style={styles.catLabel}>{t('proyectoPantalla.categoriasDeEquipo')}</Text>
                 <Text style={styles.catHelper}>
-                  Equipo disponible al capturar un reporte (Estacion total, GPS RTK, Nivel...).
+                  {t('proyectoPantalla.equipoDisponibleAlCapturarUn')}
                 </Text>
                 <View style={styles.catChipsWrap}>
                   {catEquipoList.map((it, idx) => (
                     <View key={`${it}-${idx}`} style={styles.catChip}>
                       <Text style={styles.catChipTxt}>{it}</Text>
-                      <Pressable
+                      <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')}
                         onPress={() => setCatEquipoList((arr) => arr.filter((x) => x !== it))}
                         hitSlop={6}
                       >
@@ -2162,7 +2257,7 @@ export default function ProjectDetailScreen() {
                     </View>
                   ))}
                   {catEquipoList.length === 0 && (
-                    <Text style={styles.catEmpty}>Aun no hay categorias; agrega una abajo.</Text>
+                    <Text style={styles.catEmpty}>{t('proyectoPantalla.aunNoHayCategoriasAgrega')}</Text>
                   )}
                 </View>
                 <View style={styles.catInputRow}>
@@ -2170,18 +2265,18 @@ export default function ProjectDetailScreen() {
                     value={catEquipoDraft}
                     onChangeText={setCatEquipoDraft}
                     onSubmitEditing={addCatEquipo}
-                    placeholder="Nueva categoria de equipo"
+                    placeholder={t('proyectoPantalla.nuevaCategoriaDeEquipo')}
                     placeholderTextColor={colors.textMuted}
                     style={styles.catInput}
                     returnKeyType="done"
                   />
-                  <Pressable onPress={addCatEquipo} style={styles.catAddBtn}>
+                  <Pressable accessibilityRole="button" accessibilityLabel={a11y('agregar')} hitSlop={8} onPress={addCatEquipo} style={styles.catAddBtn}>
                     <Ionicons name="add" size={20} color="#fff" />
                   </Pressable>
                 </View>
               </View>
 
-              <Pressable
+              <Pressable accessibilityRole="button"
                 onPress={saveCatalogos}
                 disabled={catSaving}
                 style={({ pressed }) => [
@@ -2195,7 +2290,7 @@ export default function ProjectDetailScreen() {
                 ) : (
                   <>
                     <Ionicons name="save-outline" size={18} color="#fff" />
-                    <Text style={styles.catSaveTxt}>Guardar configuracion</Text>
+                    <Text style={styles.catSaveTxt}>{t('proyectoPantalla.guardarConfiguracion')}</Text>
                   </>
                 )}
               </Pressable>
@@ -2216,7 +2311,7 @@ export default function ProjectDetailScreen() {
           keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 24}
           style={styles.exportBackdrop}
         >
-          <Pressable
+          <Pressable accessibilityRole="button"
             style={StyleSheet.absoluteFill}
             onPress={() => !catalogoConfigSaving && setCatalogoConfigModalOpen(false)}
           />
@@ -2225,12 +2320,12 @@ export default function ProjectDetailScreen() {
             <View style={styles.exportHeader}>
               <View style={styles.exportBack} />
               <View style={{ flex: 1 }}>
-                <Text style={styles.exportTitle}>Configuracion del catalogo</Text>
+                <Text style={styles.exportTitle}>{t('proyectoPantalla.configuracionDelCatalogo')}</Text>
                 <Text style={styles.exportSubtitle}>
-                  Tipo de contrato, forma de captura de avance, nombres de nivel y cadencia de reporte de este proyecto.
+                  {t('proyectoPantalla.tipoDeContratoFormaDe')}
                 </Text>
               </View>
-              <Pressable
+              <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')}
                 onPress={() => !catalogoConfigSaving && setCatalogoConfigModalOpen(false)}
                 hitSlop={10}
                 style={styles.exportBack}
@@ -2243,19 +2338,18 @@ export default function ProjectDetailScreen() {
               contentContainerStyle={{ paddingHorizontal: spacing.md, paddingBottom: spacing.lg, gap: spacing.md }}
             >
               <View>
-                <Text style={styles.catLabel}>Tipo de contrato</Text>
+                <Text style={styles.catLabel}>{t('proyectoPantalla.tipoDeContrato')}</Text>
                 <Text style={styles.catHelper}>
-                  Precio Alzado fija la cantidad en 1 y captura el avance en %, no en unidades fisicas. Cambiarlo con
-                  conceptos ya cargados pide confirmacion.
+                  {t('proyectoPantalla.precioAlzadoAyuda')}
                 </Text>
                 <View style={{ flexDirection: 'row', gap: 8 }}>
                   {([
-                    { v: 'PRECIOS_UNITARIOS' as const, label: 'Precios Unitarios' },
-                    { v: 'PRECIO_ALZADO' as const, label: 'Precio Alzado' },
+                    { v: 'PRECIOS_UNITARIOS' as const, label: t('proyectoPantalla.preciosUnitarios') },
+                    { v: 'PRECIO_ALZADO' as const, label: t('proyectoPantalla.precioAlzado') },
                   ]).map((o) => {
                     const active = tipoContratoDraft === o.v;
                     return (
-                      <Pressable key={o.v} onPress={() => setTipoContratoDraft(o.v)} style={[styles.chip, active && styles.chipActive]}>
+                      <Pressable accessibilityRole="button" key={o.v} onPress={() => setTipoContratoDraft(o.v)} style={[styles.chip, active && styles.chipActive]}>
                         <Text style={{ color: active ? '#fff' : colors.text, fontWeight: '700', fontSize: 12 }}>{o.label}</Text>
                       </Pressable>
                     );
@@ -2264,20 +2358,19 @@ export default function ProjectDetailScreen() {
               </View>
 
               <View>
-                <Text style={styles.catLabel}>Captura de avance</Text>
+                <Text style={styles.catLabel}>{t('proyectoPantalla.capturaDeAvance')}</Text>
                 <Text style={styles.catHelper}>
-                  Porcentaje: el residente reporta el estado al que llego el concepto (acumulativo, no incremental).
-                  Cambiarlo con avances ya capturados pide confirmacion.
+                  {t('proyectoPantalla.capturaPorcentajeAyuda')}
                 </Text>
                 <View style={{ flexDirection: 'row', gap: 8, flexWrap: 'wrap' }}>
                   {([
-                    { v: 'CANTIDAD' as const, label: 'Cantidad' },
-                    { v: 'PORCENTAJE' as const, label: 'Porcentaje' },
-                    { v: 'MATRIZ' as const, label: 'Matriz' },
+                    { v: 'CANTIDAD' as const, label: t('proyectoPantalla.cantidad') },
+                    { v: 'PORCENTAJE' as const, label: t('proyectoPantalla.porcentaje') },
+                    { v: 'MATRIZ' as const, label: t('proyectoPantalla.matriz') },
                   ]).map((o) => {
                     const active = modoAvanceDraft === o.v;
                     return (
-                      <Pressable key={o.v} onPress={() => setModoAvanceDraft(o.v)} style={[styles.chip, active && styles.chipActive]}>
+                      <Pressable accessibilityRole="button" key={o.v} onPress={() => setModoAvanceDraft(o.v)} style={[styles.chip, active && styles.chipActive]}>
                         <Text style={{ color: active ? '#fff' : colors.text, fontWeight: '700', fontSize: 12 }}>{o.label}</Text>
                       </Pressable>
                     );
@@ -2286,19 +2379,19 @@ export default function ProjectDetailScreen() {
               </View>
 
               <View>
-                <Text style={styles.catLabel}>Cadencia de reporte</Text>
+                <Text style={styles.catLabel}>{t('proyectoPantalla.cadenciaDeReporte')}</Text>
                 <Text style={styles.catHelper}>
-                  Solo controla como se agrupan las curvas al consultar — la fecha exacta de cada avance siempre se guarda igual.
+                  {t('proyectoPantalla.soloControlaComoSeAgrupan')}
                 </Text>
                 <View style={{ flexDirection: 'row', gap: 8 }}>
                   {([
-                    { v: 'DIARIA' as const, label: 'Diaria' },
-                    { v: 'SEMANAL' as const, label: 'Semanal' },
-                    { v: 'MENSUAL' as const, label: 'Mensual' },
+                    { v: 'DIARIA' as const, label: t('proyectoPantalla.diaria') },
+                    { v: 'SEMANAL' as const, label: t('proyectoPantalla.semanal') },
+                    { v: 'MENSUAL' as const, label: t('proyectoPantalla.mensual') },
                   ]).map((o) => {
                     const active = cadenciaDraft === o.v;
                     return (
-                      <Pressable key={o.v} onPress={() => setCadenciaDraft(o.v)} style={[styles.chip, active && styles.chipActive]}>
+                      <Pressable accessibilityRole="button" key={o.v} onPress={() => setCadenciaDraft(o.v)} style={[styles.chip, active && styles.chipActive]}>
                         <Text style={{ color: active ? '#fff' : colors.text, fontWeight: '700', fontSize: 12 }}>{o.label}</Text>
                       </Pressable>
                     );
@@ -2308,15 +2401,15 @@ export default function ProjectDetailScreen() {
 
               {cadenciaDraft === 'SEMANAL' ? (
                 <View>
-                  <Text style={styles.catLabel}>Dia de inicio de semana</Text>
+                  <Text style={styles.catLabel}>{t('proyectoPantalla.diaDeInicioDeSemana')}</Text>
                   <Text style={styles.catHelper}>
-                    Ej. si el informe de referencia corta sabado a sabado, elige Sabado — no se asume lunes.
+                    {t('proyectoPantalla.ejSiElInformeDe')}
                   </Text>
                   <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
                     {(['LUNES', 'MARTES', 'MIERCOLES', 'JUEVES', 'VIERNES', 'SABADO', 'DOMINGO'] as const).map((d) => {
                       const active = diaInicioSemanaDraft === d;
                       return (
-                        <Pressable key={d} onPress={() => setDiaInicioSemanaDraft(d)} style={[styles.chip, active && styles.chipActive]}>
+                        <Pressable accessibilityRole="button" key={d} onPress={() => setDiaInicioSemanaDraft(d)} style={[styles.chip, active && styles.chipActive]}>
                           <Text style={{ color: active ? '#fff' : colors.text, fontWeight: '700', fontSize: 12 }}>
                             {d.charAt(0) + d.slice(1).toLowerCase()}
                           </Text>
@@ -2328,16 +2421,53 @@ export default function ProjectDetailScreen() {
               ) : null}
 
               <View>
-                <Text style={styles.catLabel}>Nombres de nivel de partida (en orden)</Text>
+                <Text style={styles.catLabel}>{t('numeros.separadorTitulo')}</Text>
+                <Text style={styles.catHelper}>{t('numeros.separadorAyuda')}</Text>
+                <View style={{ flexDirection: 'row', gap: 8 }}>
+                  {([['.', t('numeros.separadorPunto')], [',', t('numeros.separadorComa')]] as const).map(([valor, etiqueta]) => {
+                    const active = separadorDecimalDraft === valor;
+                    return (
+                      <Pressable
+                        accessibilityRole="button" accessibilityState={{ selected: active }}
+                        key={valor} onPress={() => setSeparadorDecimalDraft(valor)}
+                        style={[styles.chip, active && styles.chipActive]}
+                      >
+                        <Text style={{ color: active ? '#fff' : colors.text, fontWeight: '700', fontSize: 12 }}>{etiqueta}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              </View>
+
+              <View>
+                <Text style={styles.catLabel}>{t('zona.titulo')}</Text>
+                <Text style={styles.catHelper}>{t('zona.ayuda')}</Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
+                  {ZONAS_HORARIAS_MX.map((z) => {
+                    const active = zonaHorariaDraft === z.id;
+                    return (
+                      <Pressable
+                        accessibilityRole="button" accessibilityState={{ selected: active }}
+                        key={z.id} onPress={() => setZonaHorariaDraft(z.id)}
+                        style={[styles.chip, active && styles.chipActive]}
+                      >
+                        <Text style={{ color: active ? colors.textInverse : colors.text, fontWeight: '700', fontSize: 12 }}>{z.etiqueta}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </ScrollView>
+              </View>
+
+              <View>
+                <Text style={styles.catLabel}>{t('proyectoPantalla.nombresDeNivelDePartida')}</Text>
                 <Text style={styles.catHelper}>
-                  Ej. "Partida", "Subpartida", "Actividad", "Subactividad". Si el arbol es mas profundo que esta lista,
-                  los niveles sobrantes caen a "Nivel N" generico. Vacio = usa el texto historico "Partida"/"Sub-partida".
+                  {t('proyectoPantalla.nombresNivelAyuda')}
                 </Text>
                 <View style={styles.catChipsWrap}>
                   {nombresNivelesDraft.map((it, idx) => (
                     <View key={`${it}-${idx}`} style={styles.catChip}>
                       <Text style={styles.catChipTxt}>{idx + 1}. {it}</Text>
-                      <Pressable
+                      <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')}
                         onPress={() => setNombresNivelesDraft((arr) => arr.filter((_, i) => i !== idx))}
                         hitSlop={6}
                       >
@@ -2346,60 +2476,80 @@ export default function ProjectDetailScreen() {
                     </View>
                   ))}
                   {nombresNivelesDraft.length === 0 && (
-                    <Text style={styles.catEmpty}>Sin configurar; se usa el texto historico.</Text>
+                    <Text style={styles.catEmpty}>{t('proyectoPantalla.sinConfigurarSeUsaEl')}</Text>
                   )}
                 </View>
                 <View style={styles.catInputRow}>
                   <TextInput
                     value={nombreNivelPartidaDraft}
-                    onChangeText={setNombreNivelPartidaDraft}
+                    onChangeText={(v) => { setNombreNivelPartidaDraft(v); setNombreNivelError(null); }}
                     onSubmitEditing={addNombreNivel}
-                    placeholder={`Nivel ${nombresNivelesDraft.length + 1} (ej. Partida)`}
+                    placeholder={t('proyectoPantalla.nivelEjemplo', { n: nombresNivelesDraft.length + 1 })}
                     placeholderTextColor={colors.textMuted}
                     style={styles.catInput}
                     returnKeyType="done"
                   />
-                  <Pressable onPress={addNombreNivel} style={styles.catAddBtn}>
+                  <Pressable accessibilityRole="button" accessibilityLabel={a11y('agregar')} hitSlop={8} onPress={addNombreNivel} style={styles.catAddBtn}>
                     <Ionicons name="add" size={20} color="#fff" />
                   </Pressable>
                 </View>
+                <InlineError message={nombreNivelError} style={{ marginTop: 6 }} />
+                {nombresNivelesDraft.length > 0 ? (
+                  <Text style={styles.catHelper}>{t('proyectoPantalla.generoAyuda')}</Text>
+                ) : null}
+                {nombresNivelesDraft.map((nombre) => (
+                  <SelectorGeneroNivel
+                    key={`genero-${nombre}`}
+                    nombre={nombre}
+                    valor={generoDe(generosDraft, nombre)}
+                    onChange={(g) => setGenerosDraft((m) => ponerGenero(m, nombre, g))}
+                  />
+                ))}
               </View>
 
               <View>
-                <Text style={styles.catLabel}>Nombre del nivel hoja (Concepto)</Text>
+                <Text style={styles.catLabel}>{t('proyectoPantalla.nombreDelNivelHojaConcepto')}</Text>
                 <TextInput
                   value={nombreNivelConceptoDraft}
-                  onChangeText={setNombreNivelConceptoDraft}
-                  placeholder="Concepto"
+                  onChangeText={(v) => {
+                    setGenerosDraft((m) => migrarGenero(m, claveDeConcepto(nombreNivelConceptoDraft), claveDeConcepto(v)));
+                    setNombreNivelConceptoDraft(v);
+                  }}
+                  placeholder={t('proyectoPantalla.concepto')}
                   placeholderTextColor={colors.textMuted}
                   style={styles.catInput}
+                />
+                <SelectorGeneroNivel
+                  nombre={nombreNivelConceptoDraft.trim() || t('proyectoPantalla.concepto')}
+                  valor={generoDe(generosDraft, claveDeConcepto(nombreNivelConceptoDraft))}
+                  onChange={(g) => setGenerosDraft((m) => ponerGenero(m, claveDeConcepto(nombreNivelConceptoDraft), g))}
                 />
               </View>
 
               <View>
-                <Text style={styles.catLabel}>Titulo del modulo de catalogo</Text>
+                <Text style={styles.catLabel}>{t('proyectoPantalla.tituloDelModuloDeCatalogo')}</Text>
                 <Text style={styles.catHelper}>
-                  Aparece en la pantalla, el encabezado del PDF y el nombre del archivo exportado. Vacio = "Catalogo de Conceptos".
+                  {t('proyectoPantalla.apareceEnLaPantallaEl')}
                 </Text>
                 <TextInput
                   value={tituloModuloDraft}
                   onChangeText={setTituloModuloDraft}
-                  placeholder="Catalogo de Conceptos"
+                  placeholder={t('proyectoPantalla.catalogoDeConceptos')}
                   placeholderTextColor={colors.textMuted}
                   style={styles.catInput}
                 />
               </View>
 
               <View>
-                <Text style={styles.catLabel}>Unidades personalizadas</Text>
+                <Text style={styles.catLabel}>{t('proyectoPantalla.unidadesPersonalizadas')}</Text>
                 <Text style={styles.catHelper}>
-                  Se suman al catalogo base de unidades para este proyecto — sigue siendo lista cerrada, nunca texto libre en la captura.
+                  {t('proyectoPantalla.seSumanAlCatalogoBase')}
                 </Text>
                 <View style={styles.catChipsWrap}>
                   {unidadesPersonalizadasDraft.map((it, idx) => (
                     <View key={`${it}-${idx}`} style={styles.catChip}>
                       <Text style={styles.catChipTxt}>{it}</Text>
-                      <Pressable
+                      <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')}
                         onPress={() => setUnidadesPersonalizadasDraft((arr) => arr.filter((x) => x !== it))}
                         hitSlop={6}
                       >
@@ -2408,28 +2558,29 @@ export default function ProjectDetailScreen() {
                     </View>
                   ))}
                   {unidadesPersonalizadasDraft.length === 0 && (
-                    <Text style={styles.catEmpty}>Ninguna adicional configurada.</Text>
+                    <Text style={styles.catEmpty}>{t('proyectoPantalla.ningunaAdicionalConfigurada')}</Text>
                   )}
                 </View>
                 <View style={styles.catInputRow}>
                   <TextInput
                     value={unidadPersonalizadaDraftTxt}
-                    onChangeText={setUnidadPersonalizadaDraftTxt}
+                    onChangeText={(v) => { setUnidadPersonalizadaDraftTxt(v); setUnidadPersonalizadaError(null); }}
                     onSubmitEditing={addUnidadPersonalizada}
-                    placeholder="Ej. LOTE, VIAJE..."
+                    placeholder={t('proyectoPantalla.ejLoteViaje')}
                     placeholderTextColor={colors.textMuted}
                     style={styles.catInput}
                     autoCapitalize="characters"
                     returnKeyType="done"
                   />
-                  <Pressable onPress={addUnidadPersonalizada} style={styles.catAddBtn}>
+                  <Pressable accessibilityRole="button" accessibilityLabel={a11y('agregar')} hitSlop={8} onPress={addUnidadPersonalizada} style={styles.catAddBtn}>
                     <Ionicons name="add" size={20} color="#fff" />
                   </Pressable>
                 </View>
+                <InlineError message={unidadPersonalizadaError} style={{ marginTop: 6 }} />
               </View>
 
               <Button
-                label="Guardar configuracion"
+                label={t('proyectoPantalla.guardarConfiguracion')}
                 loading={catalogoConfigSaving}
                 onPress={() => saveCatalogoConfig()}
                 disabled={catalogoConfigSaving}
@@ -2459,7 +2610,7 @@ export default function ProjectDetailScreen() {
           keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 24}
           style={styles.exportBackdrop}
         >
-          <Pressable
+          <Pressable accessibilityRole="button"
             style={StyleSheet.absoluteFill}
             onPress={() => !objetoSaving && setObjetoModalOpen(false)}
           />
@@ -2468,12 +2619,12 @@ export default function ProjectDetailScreen() {
             <View style={styles.exportHeader}>
               <View style={styles.exportBack} />
               <View style={{ flex: 1 }}>
-                <Text style={styles.exportTitle}>Identidad institucional</Text>
+                <Text style={styles.exportTitle}>{t('proyectoPantalla.identidadInstitucional')}</Text>
                 <Text style={styles.exportSubtitle}>
-                  Estos datos aparecen en las portadas y encabezados de los reportes exportados (PDF, Word, PowerPoint).
+                  {t('proyectoPantalla.estosDatosAparecenEnLas')}
                 </Text>
               </View>
-              <Pressable
+              <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')}
                 onPress={() => !objetoSaving && setObjetoModalOpen(false)}
                 hitSlop={10}
                 style={styles.exportBack}
@@ -2486,14 +2637,14 @@ export default function ProjectDetailScreen() {
               contentContainerStyle={{ paddingHorizontal: spacing.md, paddingBottom: spacing.lg, gap: spacing.md }}
             >
               <View>
-                <Text style={styles.catLabel}>Cliente principal</Text>
+                <Text style={styles.catLabel}>{t('proyectoPantalla.clientePrincipal')}</Text>
                 <Text style={styles.catHelper}>
-                  Dependencia o entidad que contrata la obra (aparece como "CLIENTE" en la portada).
+                  {t('proyectoPantalla.dependenciaOEntidadQueContrata')}
                 </Text>
                 <TextInput
                   value={clienteDraft}
                   onChangeText={setClienteDraft}
-                  placeholder="Ej. Gobierno de la Ciudad de Mexico - SOBSE"
+                  placeholder={t('proyectoPantalla.ejGobiernoDeLaCiudad')}
                   placeholderTextColor={colors.textMuted}
                   style={styles.catInput}
                 />
@@ -2518,110 +2669,47 @@ export default function ProjectDetailScreen() {
                 />
               </View>
 
-              <View>
-                <Text style={styles.catLabel}>Color institucional (#RRGGBB)</Text>
-                <Text style={styles.catHelper}>
-                  Color principal usado en banners, tablas, botones y acentos de toda la app y los reportes exportados.
-                </Text>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-                  <TextInput
-                    value={colorInstitucionalDraft}
-                    onChangeText={setColorInstitucionalDraft}
-                    placeholder="#003366"
-                    placeholderTextColor={colors.textMuted}
-                    autoCapitalize="characters"
-                    style={[styles.catInput, { flex: 1 }]}
-                  />
-                  <View
-                    style={{
-                      width: 44,
-                      height: 44,
-                      borderRadius: radius.sm,
-                      borderWidth: 1,
-                      borderColor: colors.borderStrong,
-                      backgroundColor: /^#([0-9a-fA-F]{3}){1,2}$/.test((colorInstitucionalDraft || '').trim())
-                        ? colorInstitucionalDraft.trim()
-                        : '#003366',
-                    }}
-                  />
-                </View>
-              </View>
+              <ColorInput
+                label={t('proyectoPantalla.colorInstitucionalRrggbb')}
+                ayuda="Color principal usado en banners, tablas, botones y acentos de toda la app y los reportes exportados."
+                value={colorInstitucionalDraft}
+                onChange={setColorInstitucionalDraft}
+                editable={!objetoSaving}
+              />
+              <ColorInput
+                label={t('proyectoPantalla.colorDelTituloDePortada')}
+                ayuda={'Color del título grande en la portada del Informe exportado (PDF/PPTX Diario/Semanal/Mensual). No afecta banners ni tablas: usa "Color institucional" para eso.'}
+                value={colorDraft}
+                onChange={setColorDraft}
+                editable={!objetoSaving}
+              />
+              <ColorInput
+                label={t('proyectoPantalla.colorDelTextoDeObservaciones')}
+                ayuda="Color del pie de foto (observaciones) que acompaña cada imagen en los reportes ejecutivos PDF/PPTX."
+                value={reportTextColorDraft}
+                onChange={setReportTextColorDraft}
+                placeholder={COLOR_TEXTO_REPORTE_DEFECTO}
+                editable={!objetoSaving}
+              />
 
               <View>
-                <Text style={styles.catLabel}>Color del título de portada (#RRGGBB)</Text>
+                <Text style={styles.catLabel}>{t('proyectoPantalla.objetoDelContrato')}</Text>
                 <Text style={styles.catHelper}>
-                  Color del título grande en la portada del Informe exportado (PDF/PPTX Diario/Semanal/Mensual).
-                  Ya no afecta banners ni tablas -- usa "Color institucional" para eso.
-                </Text>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-                  <TextInput
-                    value={colorDraft}
-                    onChangeText={setColorDraft}
-                    placeholder="#003366"
-                    placeholderTextColor={colors.textMuted}
-                    autoCapitalize="characters"
-                    style={[styles.catInput, { flex: 1 }]}
-                  />
-                  <View
-                    style={{
-                      width: 44,
-                      height: 44,
-                      borderRadius: radius.sm,
-                      borderWidth: 1,
-                      borderColor: colors.borderStrong,
-                      backgroundColor: /^#([0-9a-fA-F]{3}){1,2}$/.test((colorDraft || '').trim())
-                        ? colorDraft.trim()
-                        : '#003366',
-                    }}
-                  />
-                </View>
-              </View>
-
-              <View>
-                <Text style={styles.catLabel}>Color del texto de observaciones (#RRGGBB)</Text>
-                <Text style={styles.catHelper}>
-                  Color del pie de foto (observaciones) que acompana cada imagen en los reportes ejecutivos PDF/PPTX.
-                </Text>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-                  <TextInput
-                    value={reportTextColorDraft}
-                    onChangeText={setReportTextColorDraft}
-                    placeholder="#0F172A"
-                    placeholderTextColor={colors.textMuted}
-                    autoCapitalize="characters"
-                    style={[styles.catInput, { flex: 1 }]}
-                  />
-                  <View
-                    style={{
-                      width: 44,
-                      height: 44,
-                      borderRadius: radius.sm,
-                      borderWidth: 1,
-                      borderColor: colors.borderStrong,
-                      backgroundColor: /^#([0-9a-fA-F]{3}){1,2}$/.test((reportTextColorDraft || '').trim())
-                        ? reportTextColorDraft.trim()
-                        : '#0F172A',
-                    }}
-                  />
-                </View>
-              </View>
-
-              <View>
-                <Text style={styles.catLabel}>Objeto del contrato</Text>
-                <Text style={styles.catHelper}>
-                  Descripcion institucional del alcance del contrato (aparece en la portada como descripcion de la obra).
+                  {t('proyectoPantalla.descripcionInstitucionalDelAlcanceDel')}
                 </Text>
                 <TextInput
                   value={objetoDraft}
                   onChangeText={setObjetoDraft}
-                  placeholder="Ej. Supervision tecnica de la construccion del Tramo III..."
+                  placeholder={t('proyectoPantalla.ejSupervisionTecnicaDeLa')}
                   placeholderTextColor={colors.textMuted}
                   multiline
                   style={[styles.catInput, { minHeight: 90, textAlignVertical: 'top', paddingTop: 10 }]}
                 />
               </View>
 
-              <Pressable
+              <InlineError message={objetoError} />
+
+              <Pressable accessibilityRole="button"
                 onPress={saveObjeto}
                 disabled={objetoSaving}
                 style={({ pressed }) => [
@@ -2635,7 +2723,7 @@ export default function ProjectDetailScreen() {
                 ) : (
                   <>
                     <Ionicons name="save-outline" size={18} color="#fff" />
-                    <Text style={styles.catSaveTxt}>Guardar identidad</Text>
+                    <Text style={styles.catSaveTxt}>{t('proyectoPantalla.guardarIdentidad')}</Text>
                   </>
                 )}
               </Pressable>
@@ -2658,7 +2746,7 @@ export default function ProjectDetailScreen() {
         <View style={[styles.exportSheet, styles.sheetSurface, { maxHeight: '88%' }]}>
           <View style={styles.exportHandle} />
           <View style={styles.exportHeader}>
-            <Pressable
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')}
               style={styles.exportBack}
               onPress={() => gdBusy === null && setGdModalOpen(false)}
               hitSlop={10}
@@ -2666,9 +2754,9 @@ export default function ProjectDetailScreen() {
               <Ionicons name="chevron-down" size={22} color={colors.text} />
             </Pressable>
             <View style={{ flex: 1 }}>
-              <Text style={styles.exportTitle}>Datos Generales</Text>
+              <Text style={styles.exportTitle}>{t('proyectoPantalla.datosGenerales')}</Text>
               <Text style={styles.exportSubtitle}>
-                Sube imagenes (presupuesto, programa, planos, mapa...) que se emitiran como slides/paginas dedicadas al inicio del PDF/PPTX.
+                {t('proyectoPantalla.subeImagenesPresupuestoProgramaPlanos2')}
               </Text>
             </View>
           </View>
@@ -2677,7 +2765,7 @@ export default function ProjectDetailScreen() {
             contentContainerStyle={{ paddingBottom: 24 }}
             keyboardShouldPersistTaps="handled"
           >
-            <Pressable
+            <Pressable accessibilityRole="button"
               onPress={onAddGeneralDataImages}
               disabled={gdBusy !== null}
               style={({ pressed }) => ({
@@ -2700,7 +2788,7 @@ export default function ProjectDetailScreen() {
                 <Ionicons name="add-circle" size={22} color="#fff" />
               )}
               <Text style={{ color: '#fff', fontWeight: '800', fontSize: 16 }}>
-                {gdBusy === 'add' ? 'Subiendo...' : '+ Agregar imagen(es)'}
+                {gdBusy === 'add' ? t('proyectoPantalla.subiendo2') : t('proyectoPantalla.agregarImagenEs')}
               </Text>
             </Pressable>
             {gdImagesLoading && !gdImagesFetched ? (
@@ -2711,13 +2799,13 @@ export default function ProjectDetailScreen() {
               <View style={{ paddingHorizontal: 24, paddingVertical: 30, alignItems: 'center' }}>
                 <Ionicons name="images-outline" size={48} color={colors.textMuted} />
                 <Text style={{ color: colors.textMuted, textAlign: 'center', marginTop: 10, fontSize: 15 }}>
-                  Aun no has subido imagenes.
+                  {t('proyectoPantalla.aunNoHasSubidoImagenes')}
                 </Text>
                 <Text style={{ color: colors.textMuted, textAlign: 'center', marginTop: 4, fontSize: 12 }}>
-                  Maximo 5 MB por imagen . hasta 30 imagenes por proyecto.
+                  {t('proyectoPantalla.maximo5MbPorImagen')}
                 </Text>
                 {/* Boton secundario redundante para no perder el CTA en el empty-state */}
-                <Pressable
+                <Pressable accessibilityRole="button"
                   onPress={onAddGeneralDataImages}
                   disabled={gdBusy !== null}
                   style={({ pressed }) => ({
@@ -2735,7 +2823,7 @@ export default function ProjectDetailScreen() {
                 >
                   <Ionicons name="cloud-upload-outline" size={20} color={colors.primary} />
                   <Text style={{ color: colors.primary, fontWeight: '700', fontSize: 15 }}>
-                    Elegir de galeria
+                    {t('proyectoPantalla.elegirDeGaleria')}
                   </Text>
                 </Pressable>
               </View>
@@ -2777,7 +2865,7 @@ export default function ProjectDetailScreen() {
                     />
                     <View style={{ padding: 8, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
                       <Text style={{ color: colors.textMuted, fontSize: 12 }}>#{idx + 1}</Text>
-                      <Pressable
+                      <Pressable accessibilityRole="button" accessibilityLabel={a11y('eliminar')}
                         onPress={() => onDeleteGeneralDataImage(idx)}
                         disabled={gdBusy !== null}
                         hitSlop={8}
@@ -2813,12 +2901,12 @@ export default function ProjectDetailScreen() {
           <View style={styles.exportHeader}>
             <View style={styles.exportBack} />
             <View style={{ flex: 1 }}>
-              <Text style={styles.exportTitle}>Plantillas de exportacion</Text>
+              <Text style={styles.exportTitle}>{t('proyectoPantalla.plantillasDeExportacion')}</Text>
               <Text style={styles.exportSubtitle}>
-                Sube fondos institucionales que se imprimiran como base al exportar reportes.
+                {t('proyectoPantalla.subeFondosInstitucionalesQueSe')}
               </Text>
             </View>
-            <Pressable
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')}
               onPress={() => !tplBusyKind && setTplModalOpen(false)}
               hitSlop={10}
               style={styles.exportBack}
@@ -2832,23 +2920,23 @@ export default function ProjectDetailScreen() {
             <View style={styles.tplHelperBox}>
               <Ionicons name="information-circle-outline" size={18} color={colors.primary} />
               <Text style={styles.tplHelperTxt}>
-                <Text style={{ fontWeight: '900' }}>Modo Superposicion (PDF)</Text> - recomendado. Exporta tu plantilla PowerPoint a PDF y subela aqui. El motor imprime el reporte SynCo sobre las paginas de tu plantilla como marca de agua institucional. Convencion por numero de pagina:{'\n'}
-                . <Text style={{ fontWeight: '900' }}>Pagina 1</Text> = Portada (fondo).{'\n'}
-                . <Text style={{ fontWeight: '900' }}>Pagina 2</Text> = Portadilla de Nodo (se inserta tal cual antes de cada nodo).{'\n'}
-                . <Text style={{ fontWeight: '900' }}>Pagina 3+</Text> = Base para paginas de datos (ciclada). Fotos 13.37 x 10 cm.{'\n'}
-                Max. 25 MB por archivo.
+                <Text style={{ fontWeight: '900' }}>{t('proyectoPantalla.modoSuperposicionPdf')}</Text>{t('proyectoPantalla.superposicionIntro')}{'\n'}
+                · <Text style={{ fontWeight: '900' }}>{t('proyectoPantalla.pagina1')}</Text>{t('proyectoPantalla.pagina1Desc')}{'\n'}
+                · <Text style={{ fontWeight: '900' }}>{t('proyectoPantalla.pagina2')}</Text>{t('proyectoPantalla.pagina2Desc')}{'\n'}
+                · <Text style={{ fontWeight: '900' }}>{t('proyectoPantalla.pagina3')}</Text>{t('proyectoPantalla.pagina3Desc')}{'\n'}
+                {t('proyectoPantalla.max25MbPorArchivo')}
               </Text>
             </View>
 
             {(['pdf', 'docx', 'pptx', 'map'] as const).map((kind) => {
               const meta =
                 kind === 'pdf'
-                  ? { label: 'PDF . plantilla base', sub: 'Portada + Portadilla de Nodo + Base de contenido', icon: 'document-text' as const, tint: '#DC2626' }
+                  ? { label: t('proyectoPantalla.pdfPlantillaBase'), sub: t('proyectoPantalla.portadaPortadillaDeNodoBase'), icon: 'document-text' as const, tint: '#DC2626' }
                   : kind === 'docx'
-                  ? { label: 'Word (opcional)', sub: 'Se usa como base tal cual - sin token-relleno', icon: 'document' as const, tint: '#1D4ED8' }
+                  ? { label: t('proyecto.plantillaWordOpcional'), sub: t('proyecto.plantillaWordDescripcion'), icon: 'document' as const, tint: '#1D4ED8' }
                   : kind === 'pptx'
-                  ? { label: 'PowerPoint (opcional)', sub: 'Se usa como base tal cual - recomendado exportar a PDF', icon: 'easel' as const, tint: '#B45309' }
-                  : { label: 'Mapa / Ubicacion', sub: 'Imagen (JPG/PNG) - usada por otros motores auxiliares', icon: 'map' as const, tint: '#059669' };
+                  ? { label: t('proyectoPantalla.powerpointOpcional'), sub: t('proyectoPantalla.seUsaComoBaseTal'), icon: 'easel' as const, tint: '#B45309' }
+                  : { label: t('proyecto.mapaUbicacion'), sub: t('proyecto.mapaUbicacionDescripcion'), icon: 'map' as const, tint: '#059669' };
               const hasFile = !!(project as any)?.[`template_${kind}`];
               const busy = tplBusyKind === kind;
               return (
@@ -2873,13 +2961,13 @@ export default function ProjectDetailScreen() {
                             { color: hasFile ? colors.success : colors.textMuted },
                           ]}
                         >
-                          {hasFile ? 'Plantilla cargada' : 'Sin plantilla (diseno DIRAC)'}
+                          {hasFile ? t('proyectoPantalla.plantillaCargada') : t('proyectoPantalla.sinPlantillaDisenoDirac')}
                         </Text>
                       </View>
                     </View>
                   </View>
                   <View style={styles.tplBtnRow}>
-                    <Pressable
+                    <Pressable accessibilityRole="button"
                       onPress={() => onPickAndUploadTemplate(kind)}
                       disabled={!!tplBusyKind}
                       style={({ pressed }) => [
@@ -2899,13 +2987,13 @@ export default function ProjectDetailScreen() {
                             color="#fff"
                           />
                           <Text style={styles.tplPrimaryTxt}>
-                            {hasFile ? 'Reemplazar' : 'Subir plantilla'}
+                            {hasFile ? t('proyectoPantalla.reemplazar') : t('proyectoPantalla.subirPlantilla')}
                           </Text>
                         </>
                       )}
                     </Pressable>
                     {hasFile && (
-                      <Pressable
+                      <Pressable accessibilityRole="button"
                         onPress={() => onDeleteTemplate(kind)}
                         disabled={!!tplBusyKind}
                         style={({ pressed }) => [
@@ -2915,7 +3003,7 @@ export default function ProjectDetailScreen() {
                         ]}
                       >
                         <Ionicons name="trash-outline" size={16} color={colors.error} />
-                        <Text style={styles.tplGhostTxt}>Eliminar</Text>
+                        <Text style={styles.tplGhostTxt}>{t('proyectoPantalla.eliminar')}</Text>
                       </Pressable>
                     )}
                   </View>
@@ -2925,25 +3013,19 @@ export default function ProjectDetailScreen() {
           </ScrollView>
         </View>
       </Modal>
-    </View>
-  );
-}
-
-function InfoRow({ icon, label, value }: { icon: any; label: string; value: string }) {
-  return (
-    <View style={styles.row}>
-      <Ionicons name={icon} size={18} color={colors.primary} />
-      <View style={{ flex: 1 }}>
-        <Text style={styles.rowLabel}>{label}</Text>
-        <Text style={styles.rowValue}>{value}</Text>
-      </View>
+      <TipoObraProyectoModal
+        visible={tipoObraOpen && esCoordGeneral}
+        project={project}
+        onClose={() => setTipoObraOpen(false)}
+        onProjectUpdated={(upd) => setProject((p) => ({ ...(p || ({} as any)), ...upd }))}
+      />
     </View>
   );
 }
 
 function ActionTile({ icon, title, subtitle, disabled, comingSoon, onPress, busy, badge }: any) {
   return (
-    <Pressable
+    <Pressable accessibilityRole="button"
       onPress={onPress}
       disabled={!!disabled}
       style={({ pressed }) => [styles.tile, disabled && { opacity: 0.55 }, pressed && !disabled && { transform: [{ scale: 0.99 }] }]}
@@ -2968,7 +3050,7 @@ function ActionTile({ icon, title, subtitle, disabled, comingSoon, onPress, busy
       <View style={{ flex: 1 }}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
           <Text style={styles.tileTitle}>{title}</Text>
-          {comingSoon ? <Text style={styles.soonBadge}>Proximamente</Text> : null}
+          {comingSoon ? <Text style={styles.soonBadge}>{t('proyectoPantalla.proximamente')}</Text> : null}
         </View>
         <Text style={styles.tileSub}>{subtitle}</Text>
       </View>
@@ -3011,10 +3093,10 @@ function AiSummaryModal({
           <View style={styles.exportHandle} />
           <View style={styles.exportHeader}>
             <View style={{ flex: 1 }}>
-              <Text style={styles.exportTitle}>Resumen Ejecutivo con IA</Text>
-              <Text style={styles.exportSubtitle}>Generado a partir de los reportes del período</Text>
+              <Text style={styles.exportTitle}>{t('proyectoPantalla.resumenEjecutivoConIa')}</Text>
+              <Text style={styles.exportSubtitle}>{t('proyectoPantalla.generadoAPartirDeLos')}</Text>
             </View>
-            <Pressable onPress={onClose} hitSlop={10} style={styles.exportBack}>
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} onPress={onClose} hitSlop={10} style={styles.exportBack}>
               <Ionicons name="close" size={22} color={colors.text} />
             </Pressable>
           </View>
@@ -3025,7 +3107,7 @@ function AiSummaryModal({
               ['semanal', 'Semana'],
               ['mensual', 'Mes'],
             ] as const).map(([key, label]) => (
-              <Pressable
+              <Pressable accessibilityRole="button"
                 key={key}
                 onPress={() => onChangePeriodo(key)}
                 disabled={busy}
@@ -3046,14 +3128,14 @@ function AiSummaryModal({
             {busy ? (
               <View style={{ paddingVertical: 40, alignItems: 'center', gap: 12 }}>
                 <ActivityIndicator color={colors.primary} size="large" />
-                <Text style={{ color: colors.textMuted, fontWeight: '600' }}>Analizando reportes...</Text>
+                <Text style={{ color: colors.textMuted, fontWeight: '600' }}>{t('proyectoPantalla.analizandoReportesDeHoy')}</Text>
               </View>
             ) : error ? (
               <View style={{ paddingVertical: 20, alignItems: 'center', gap: 8 }}>
                 <Ionicons name="alert-circle-outline" size={40} color={colors.error} />
                 <Text style={{ color: colors.error, textAlign: 'center', fontWeight: '700' }}>{error}</Text>
-                <Pressable onPress={onRegenerate} style={{ marginTop: 12, padding: 10 }}>
-                  <Text style={{ color: colors.primary, fontWeight: '800' }}>Reintentar</Text>
+                <Pressable accessibilityRole="button" onPress={onRegenerate} style={{ marginTop: 12, padding: 10 }}>
+                  <Text style={{ color: colors.primary, fontWeight: '800' }}>{t('proyectoPantalla.reintentar')}</Text>
                 </Pressable>
               </View>
             ) : summary ? (
@@ -3061,7 +3143,7 @@ function AiSummaryModal({
                 {meta && (
                   <View style={{ flexDirection: 'row', gap: 8, marginBottom: 4 }}>
                     <View style={{ backgroundColor: '#F0F9FF', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, borderWidth: 1, borderColor: '#BAE6FD' }}>
-                      <Text style={{ fontSize: 10, color: '#0369A1', fontWeight: '800' }}>{meta.reports_count} REPORTES</Text>
+                      <Text style={{ fontSize: 10, color: '#0369A1', fontWeight: '800' }}>{t('proyectoPantalla.reportesHoyN', { n: meta.reports_count })}</Text>
                     </View>
                   </View>
                 )}
@@ -3070,7 +3152,7 @@ function AiSummaryModal({
                 </View>
 
                 <View style={{ flexDirection: 'row', gap: 10, marginTop: 8 }}>
-                  <Pressable
+                  <Pressable accessibilityRole="button"
                     onPress={onCopy}
                     style={({ pressed }) => [
                       { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 12, borderRadius: 10, backgroundColor: copied ? colors.success : colors.primary },
@@ -3078,9 +3160,9 @@ function AiSummaryModal({
                     ]}
                   >
                     <Ionicons name={copied ? "checkmark-circle" : "copy-outline"} size={18} color="#fff" />
-                    <Text style={{ color: '#fff', fontWeight: '800' }}>{copied ? 'Copiado' : 'Copiar resumen'}</Text>
+                    <Text style={{ color: '#fff', fontWeight: '800' }}>{copied ? t('proyectoPantalla.copiado') : t('proyectoPantalla.copiarResumen')}</Text>
                   </Pressable>
-                  <Pressable
+                  <Pressable accessibilityRole="button" accessibilityLabel={a11y('actualizar')} hitSlop={8}
                     onPress={onRegenerate}
                     style={({ pressed }) => [
                       { width: 44, height: 44, alignItems: 'center', justifyContent: 'center', borderRadius: 10, borderWidth: 1.5, borderColor: colors.primary },
@@ -3095,7 +3177,7 @@ function AiSummaryModal({
           </ScrollView>
 
           <View style={{ padding: spacing.md, paddingBottom: insets.bottom + spacing.md, borderTopWidth: 1, borderTopColor: colors.border }}>
-            <Button label="Cerrar" variant="secondary" fullWidth onPress={onClose} />
+            <Button label={t('proyectoPantalla.cerrar')} variant="secondary" fullWidth onPress={onClose} />
           </View>
         </View>
       </View>
@@ -3143,12 +3225,6 @@ const styles = StyleSheet.create({
   tabTxtActive: {
     color: '#fff',
   },
-  header: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: spacing.md, paddingVertical: spacing.sm, gap: spacing.md,
-  },
-  iconBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
-  title: { flex: 1, textAlign: 'center', fontSize: 17, fontWeight: '800', color: colors.text },
   scroll: { paddingHorizontal: spacing.lg, gap: spacing.md },
   center: { paddingVertical: spacing.xl, alignItems: 'center' },
   errorBox: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: colors.errorBg, padding: 10, borderRadius: radius.md },

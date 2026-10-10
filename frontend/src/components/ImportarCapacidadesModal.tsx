@@ -47,7 +47,7 @@ const norm = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCa
 
 function Chip({ label, active, onPress }: { label: string; active?: boolean; onPress: () => void }) {
   return (
-    <Pressable onPress={onPress} style={[st.chip, active && st.chipActive]}>
+    <Pressable accessibilityRole="button" onPress={onPress} style={[st.chip, active && st.chipActive]}>
       <Text style={[st.chipTxt, active && { color: colors.primaryDark }]} numberOfLines={1}>{label}</Text>
     </Pressable>
   );
@@ -58,7 +58,7 @@ function Boton({ label, onPress, kind = 'primary', disabled, icon }: {
 }) {
   const fg = kind === 'primary' ? '#fff' : kind === 'danger' ? colors.error : colors.primary;
   return (
-    <Pressable onPress={onPress} disabled={disabled}
+    <Pressable accessibilityRole="button" onPress={onPress} disabled={disabled}
       style={[st.btn, kind === 'primary' && { backgroundColor: colors.primary }, kind !== 'primary' && st.btnGhost, disabled && { opacity: 0.5 }]}>
       {icon ? <Ionicons name={icon} size={16} color={fg} /> : null}
       <Text style={[st.btnTxt, { color: fg }]}>{label}</Text>
@@ -217,7 +217,7 @@ export function ImportarCapacidadesModal({ projectId, certs, onClose, onDone }: 
       <KeyboardAvoidingView style={{ flex: 1, backgroundColor: colors.bg }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <View style={[st.head, { paddingTop: insets.top + spacing.sm }]}>
           <Text style={st.headTitle}>{titulo}</Text>
-          <Pressable onPress={onClose} hitSlop={10}><Ionicons name="close" size={24} color={colors.text} /></Pressable>
+          <Pressable accessibilityRole="button" accessibilityLabel="Cerrar" onPress={onClose} hitSlop={10}><Ionicons name="close" size={24} color={colors.text} /></Pressable>
         </View>
         <ScrollView contentContainerStyle={{ padding: spacing.md, gap: spacing.sm, paddingBottom: insets.bottom + 80 }} keyboardShouldPersistTaps="handled">
           {msg ? <View style={st.errorBox}><Text style={st.errorTxt}>{msg}</Text></View> : null}

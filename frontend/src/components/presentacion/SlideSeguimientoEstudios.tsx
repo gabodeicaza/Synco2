@@ -36,11 +36,11 @@ export function SlideSeguimientoEstudios({
       <Text style={[styles.header, { color: colorTema }]}>SEGUIMIENTO A ESTUDIOS Y ANÁLISIS</Text>
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: spacing.sm, flexGrow: 0 }}>
         <View style={styles.tabsRow}>
-          <Pressable onPress={() => setTab('__global__')} style={[styles.tabBtn, tab === '__global__' && styles.tabBtnActive]}>
+          <Pressable accessibilityRole="button" onPress={() => setTab('__global__')} style={[styles.tabBtn, tab === '__global__' && styles.tabBtnActive]}>
             <Text style={[styles.tabTxt, tab === '__global__' && styles.tabTxtActive]}>Global</Text>
           </Pressable>
           {estacionesConDatos.map((id) => (
-            <Pressable key={id} onPress={() => setTab(id)} style={[styles.tabBtn, tab === id && styles.tabBtnActive]}>
+            <Pressable accessibilityRole="button" key={id} onPress={() => setTab(id)} style={[styles.tabBtn, tab === id && styles.tabBtnActive]}>
               <Text style={[styles.tabTxt, tab === id && styles.tabTxtActive]} numberOfLines={1}>{nodesById[id]?.name || id}</Text>
             </Pressable>
           ))}

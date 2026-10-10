@@ -1,43 +1,54 @@
-// SynCo v2.0 _ Panel "Mis reuniones" para el tab Inicio.
+// Dirac · Panel "Mis reuniones" para el tab Inicio.
 // Presentacional: recibe las reuniones ya resueltas (asignadas al usuario
 // como autor o asistente, ver `mine=1` en GET /projects/{pid}/events) y solo
 // las pinta con hora + ubicacion. `project_name` es opcional: solo lo manda
 // el Coordinador General, que agrega reuniones de varios proyectos a la vez.
-import React from 'react';
+import React, { useMemo } from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
 import { ProjectEvent } from '@/src/api';
 import { colors, radius, shadow, spacing } from '@/src/theme';
-import { formatEventTime } from '@/src/utils/events';
+import { t } from '@/src/i18n';
+import type { ZonaProyecto } from '@/src/utils/fechas';
+import { etiquetaDiaReunion, horaReunion, ordenarReuniones } from '@/src/utils/reuniones';
 
 export type MyMeetingItem = ProjectEvent & { project_name?: string };
 
 interface Props {
   items: MyMeetingItem[];
   loading?: boolean;
+  /** Zona del proyecto para el día y la hora (sin ella: CDMX). El Coordinador mezcla proyectos. */
+  zona?: ZonaProyecto | null;
 }
 
-export function MyMeetingsPanel({ items, loading }: Props) {
+export function MyMeetingsPanel({ items, loading, zona }: Props) {
+  const ordenadas = useMemo(() => ordenarReuniones(items, zona), [items, zona]);
   return (
     <View style={styles.wrap}>
       <View style={styles.headerRow}>
         <Ionicons name="calendar-outline" size={14} color={colors.textMuted} />
-        <Text style={styles.title}>Mis reuniones</Text>
+        <Text style={styles.title}>{t('reuniones.titulo')}</Text>
       </View>
 
       {loading ? (
         <View style={styles.center}><ActivityIndicator color={colors.primary} /></View>
       ) : items.length === 0 ? (
         <View style={styles.empty}>
-          <Text style={styles.emptyTxt}>Sin reuniones próximas asignadas.</Text>
+          <Text style={styles.emptyTxt}>{t('reuniones.vacio')}</Text>
         </View>
       ) : (
         <View style={{ gap: spacing.sm }}>
-          {items.map((it) => (
-            <View key={it.id} style={styles.card}>
+          {ordenadas.map((it) => (
+            <View
+              key={it.id}
+              style={styles.card}
+              accessible
+              accessibilityLabel={`${it.title}. ${t('reuniones.etiqueta', { dia: etiquetaDiaReunion(it, zona), hora: horaReunion(it, zona) })}`}
+            >
               <View style={styles.timeBlock}>
-                <Text style={styles.timeTxt}>{formatEventTime(it).split(' _ ')[0]}</Text>
+                <Text style={styles.dayTxt}>{etiquetaDiaReunion(it, zona)}</Text>
+                <Text style={styles.timeTxt}>{horaReunion(it, zona)}</Text>
               </View>
               <View style={{ flex: 1, minWidth: 0 }}>
                 <Text style={styles.cardTitle} numberOfLines={1}>{it.title}</Text>
@@ -78,10 +89,11 @@ const styles = StyleSheet.create({
     padding: spacing.sm + 2, borderWidth: 1, borderColor: colors.border, ...shadow.card,
   },
   timeBlock: {
-    minWidth: 52, alignItems: 'center', justifyContent: 'center',
+    minWidth: 84, alignItems: 'center', justifyContent: 'center',
     backgroundColor: colors.primaryLight, borderRadius: radius.md,
     paddingVertical: 8, paddingHorizontal: 6,
   },
+  dayTxt: { fontSize: 10, fontWeight: '700', color: colors.primary, textAlign: 'center' },
   timeTxt: { fontSize: 13, fontWeight: '800', color: colors.primary },
   cardTitle: { fontSize: 14, fontWeight: '800', color: colors.text },
   metaRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 },

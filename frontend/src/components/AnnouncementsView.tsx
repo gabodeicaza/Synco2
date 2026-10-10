@@ -21,13 +21,19 @@ import {
   RefreshControl, ScrollView, StyleSheet, Switch, Text, TextInput, View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { router, useFocusEffect } from 'expo-router';
+import { useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { api, Announcement, Area, LocationNode } from '@/src/api';
 import { colors, radius, shadow, spacing } from '@/src/theme';
 import { confirm } from '@/src/utils/confirm';
 import { fmtDateTimeCDMX } from '@/src/utils/tz';
+import { a11y, t as tr } from '@/src/i18n';
+import { VigenciaSelector } from '@/src/components/VigenciaSelector';
+import { ScreenHeader } from '@/src/components/ScreenHeader';
+import {
+  etiquetaVigencia, textoTiempoRestante, VigenciaHoras, vigenciaParaGuardar, vigenciaValida, VIGENCIA_POR_DEFECTO,
+} from '@/src/utils/vigenciaNoticias';
 
 type Jerarquia = 'urgente' | 'importante' | 'informativo' | null;
 type Editing = {
@@ -38,13 +44,22 @@ type Editing = {
   jerarquia: Jerarquia;
   audiencia: string; // 'general' o area_id
   node_id: string | null; // Vincula la noticia a un nodo especifico
+  vigencia: VigenciaHoras;
+  /** Vigencia con la que se abrió la edición (null al crear): solo se envía si cambia. */
+  vigenciaOriginal: VigenciaHoras | null;
 } | null;
 
-const JERARQUIA_COLORS: Record<string, { bg: string; bd: string; fg: string; label: string; icon: any }> = {
-  urgente: { bg: '#FEE2E2', bd: '#EF4444', fg: '#991B1B', label: 'Urgente', icon: 'flame' },
-  importante: { bg: '#FEF3C7', bd: '#F59E0B', fg: '#92400E', label: 'Importante', icon: 'warning' },
-  informativo: { bg: '#DBEAFE', bd: '#3B82F6', fg: '#1E40AF', label: 'Informativo', icon: 'information-circle' },
+const JERARQUIA_COLORS: Record<string, { bg: string; bd: string; fg: string; icon: any }> = {
+  urgente: { bg: '#FEE2E2', bd: '#EF4444', fg: '#991B1B', icon: 'flame' },
+  importante: { bg: '#FEF3C7', bd: '#F59E0B', fg: '#92400E', icon: 'warning' },
+  informativo: { bg: '#DBEAFE', bd: '#3B82F6', fg: '#1E40AF', icon: 'information-circle' },
 };
+
+function jerarquiaLabel(clave: string): string {
+  if (clave === 'urgente') return tr('noticias.urgente');
+  if (clave === 'importante') return tr('noticias.importante');
+  return tr('noticias.informativo');
+}
 
 interface AnnouncementsViewProps {
   pid: string;
@@ -86,7 +101,7 @@ export default function AnnouncementsView({
       setAreas(ars || []);
       setNodes(nds || []);
     } catch (e: any) {
-      setError(e?.message || 'Error al cargar');
+      setError(e?.message || tr('noticias.errorCargar'));
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -99,8 +114,8 @@ export default function AnnouncementsView({
     if (!editing) return;
     const t = editing.title.trim();
     const b = editing.body.trim();
-    if (!t) { setError('Titulo requerido'); return; }
-    if (!b) { setError('Cuerpo requerido'); return; }
+    if (!t) { setError(tr('noticias.tituloRequerido')); return; }
+    if (!b) { setError(tr('noticias.contenidoRequerido')); return; }
     try {
       setSaving(true);
       setError(null);
@@ -112,6 +127,8 @@ export default function AnnouncementsView({
           severidad: editing.jerarquia,
           audiencia: aud,
           node_id: editing.node_id,
+          // Cambiar la vigencia reinicia el plazo desde este momento; si no cambió, no se envía.
+          ...vigenciaParaGuardar(editing.vigencia, editing.vigenciaOriginal),
         });
       } else {
         await api.createAnnouncement(pid, {
@@ -120,12 +137,13 @@ export default function AnnouncementsView({
           severidad: editing.jerarquia,
           audiencia: aud,
           node_id: editing.node_id,
+          vigencia_horas: editing.vigencia,
         });
       }
       setEditing(null);
       await load(true);
     } catch (e: any) {
-      setError(e?.message || 'No se pudo guardar');
+      setError(e?.message || tr('noticias.noSeGuardo'));
     } finally {
       setSaving(false);
     }
@@ -136,45 +154,50 @@ export default function AnnouncementsView({
       await api.updateAnnouncement(a.id, { pinned: !a.pinned });
       await load(true);
     } catch (e: any) {
-      setError(e?.message || 'No se pudo actualizar');
+      setError(e?.message || tr('noticias.noSeActualizo'));
     }
   }
 
   async function onDelete(a: Announcement) {
     const ok = await confirm(
-      'Eliminar noticia',
-      `¿Eliminar "${a.title}"? Esta acción no se puede deshacer.`,
-      { confirmText: 'Eliminar', destructive: true },
+      tr('noticias.eliminarTitulo'),
+      tr('noticias.eliminarConNombre', { titulo: a.title }),
+      { confirmText: tr('noticias.eliminar'), destructive: true },
     );
     if (!ok) return;
     try {
       await api.deleteAnnouncement(a.id);
       await load(true);
     } catch (e: any) {
-      setError(e?.message || 'No se pudo eliminar');
+      setError(e?.message || tr('noticias.noSeElimino'));
     }
   }
 
+  const tituloVista = headerTitle || tr('noticias.titulo');
+  const subtituloVista = headerSubtitle || tr('noticias.vistaSubtitulo');
+  const botonNueva = (
+    <Pressable accessibilityRole="button"
+      onPress={() => setEditing({ title: '', body: '', pinned: false, jerarquia: null, audiencia: 'general', node_id: null, vigencia: VIGENCIA_POR_DEFECTO, vigenciaOriginal: null })}
+      style={styles.newBtn}
+    >
+      <Ionicons name="add" size={18} color="#fff" />
+      <Text style={styles.newBtnTxt}>{tr('noticias.nuevaCorta')}</Text>
+    </Pressable>
+  );
+
   return (
-    <View style={[styles.flex, { paddingTop: topPadding !== undefined ? topPadding : insets.top }]}>
-      <View style={styles.header}>
-        {!embedded && (
-          <Pressable onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
-            <Ionicons name="chevron-back" size={24} color={colors.text} />
-          </Pressable>
-        )}
-        <View style={{ flex: 1 }}>
-          <Text style={styles.title} numberOfLines={1}>{headerTitle || 'Noticias'}</Text>
-          <Text style={styles.subtitle}>{headerSubtitle || 'Anuncios visibles para todo el proyecto'}</Text>
+    <View style={[styles.flex, { paddingTop: embedded ? (topPadding !== undefined ? topPadding : insets.top) : (topPadding ?? 0) }]}>
+      {embedded ? (
+        <View style={styles.header}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.title} numberOfLines={1}>{tituloVista}</Text>
+            <Text style={styles.subtitle}>{subtituloVista}</Text>
+          </View>
+          {botonNueva}
         </View>
-        <Pressable
-          onPress={() => setEditing({ title: '', body: '', pinned: false, jerarquia: null, audiencia: 'general', node_id: null })}
-          style={styles.newBtn}
-        >
-          <Ionicons name="add" size={18} color="#fff" />
-          <Text style={styles.newBtnTxt}>Nueva</Text>
-        </Pressable>
-      </View>
+      ) : (
+        <ScreenHeader title={tituloVista} subtitle={subtituloVista} safeArea={topPadding === undefined} right={botonNueva} />
+      )}
 
       <ScrollView
         contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + 32 }]}
@@ -196,13 +219,11 @@ export default function AnnouncementsView({
             <View style={styles.emptyIcon}>
               <Ionicons name="newspaper-outline" size={26} color={colors.primary} />
             </View>
-            <Text style={styles.emptyTitle}>Sin noticias publicadas</Text>
-            <Text style={styles.emptyMsg}>
-              Publica anuncios visibles para Sub-Coordinadores y Especialistas del proyecto.
-            </Text>
-            <Pressable style={styles.emptyBtn} onPress={() => setEditing({ title: '', body: '', pinned: false, jerarquia: null, audiencia: 'general', node_id: null })}>
+            <Text style={styles.emptyTitle}>{tr('noticias.sinPublicadas')}</Text>
+            <Text style={styles.emptyMsg}>{tr('noticias.sinPublicadasMensaje')}</Text>
+            <Pressable accessibilityRole="button" style={styles.emptyBtn} onPress={() => setEditing({ title: '', body: '', pinned: false, jerarquia: null, audiencia: 'general', node_id: null, vigencia: VIGENCIA_POR_DEFECTO, vigenciaOriginal: null })}>
               <Ionicons name="add" size={16} color="#fff" />
-              <Text style={styles.emptyBtnTxt}>Publicar primera</Text>
+              <Text style={styles.emptyBtnTxt}>{tr('noticias.publicarPrimera')}</Text>
             </Pressable>
           </View>
         ) : (
@@ -210,8 +231,8 @@ export default function AnnouncementsView({
             const j = (a.jerarquia || '').toLowerCase();
             const jCfg = JERARQUIA_COLORS[j];
             const audName = a.audiencia && a.audiencia !== 'general'
-              ? (areas.find((ar) => ar.id === a.audiencia)?.name || 'Area especifica')
-              : 'Todo el proyecto';
+              ? (areas.find((ar) => ar.id === a.audiencia)?.name || tr('noticias.areaEspecifica'))
+              : tr('noticias.todoProyecto');
             return (
             <View
               key={a.id}
@@ -223,25 +244,25 @@ export default function AnnouncementsView({
             >
               <View style={styles.cardTopRow}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap', flex: 1 }}>
-                  <Pressable style={styles.pinChip} onPress={() => onTogglePin(a)}>
+                  <Pressable accessibilityRole="button" style={styles.pinChip} onPress={() => onTogglePin(a)}>
                     <Ionicons
                       name={a.pinned ? 'pin' : 'pin-outline'}
                       size={12}
                       color={a.pinned ? colors.primary : colors.textMuted}
                     />
                     <Text style={[styles.pinChipTxt, a.pinned && { color: colors.primary }]}>
-                      {a.pinned ? 'Fijado' : 'Fijar'}
+                      {a.pinned ? tr('noticias.fijado') : tr('noticias.fijar')}
                     </Text>
                   </Pressable>
                   {jCfg ? (
                     <View style={[styles.jerChip, { backgroundColor: jCfg.bg, borderColor: jCfg.bd }]}>
                       <Ionicons name={jCfg.icon} size={11} color={jCfg.fg} />
-                      <Text style={[styles.jerChipTxt, { color: jCfg.fg }]}>{jCfg.label}</Text>
+                      <Text style={[styles.jerChipTxt, { color: jCfg.fg }]}>{jerarquiaLabel(j)}</Text>
                     </View>
                   ) : null}
                 </View>
                 <View style={{ flexDirection: 'row', gap: 6 }}>
-                  <Pressable
+                  <Pressable accessibilityRole="button" accessibilityLabel={a11y('editar')} hitSlop={8}
                     onPress={() => setEditing({
                       id: a.id,
                       title: a.title,
@@ -250,12 +271,14 @@ export default function AnnouncementsView({
                       jerarquia: (j === 'urgente' || j === 'importante' || j === 'informativo') ? (j as Jerarquia) : null,
                       audiencia: a.audiencia || 'general',
                       node_id: (a as any).node_id || null,
+                      vigencia: vigenciaValida(a.vigencia_horas),
+                      vigenciaOriginal: vigenciaValida(a.vigencia_horas),
                     })}
                     style={styles.iconAction}
                   >
                     <Ionicons name="create-outline" size={16} color={colors.primary} />
                   </Pressable>
-                  <Pressable onPress={() => onDelete(a)} style={[styles.iconAction, { backgroundColor: colors.errorBg }]}>
+                  <Pressable accessibilityRole="button" accessibilityLabel={a11y('eliminar')} hitSlop={8} onPress={() => onDelete(a)} style={[styles.iconAction, { backgroundColor: colors.errorBg }]}>
                     <Ionicons name="trash-outline" size={16} color={colors.error} />
                   </Pressable>
                 </View>
@@ -274,7 +297,9 @@ export default function AnnouncementsView({
                 {a.expires_at ? (
                   <>
                     <Text style={styles.cardMetaDot}>·</Text>
-                    <Text style={[styles.cardMetaTxt, { color: colors.textMuted }]}>{formatExpiry(a.expires_at)}</Text>
+                    <Text style={[styles.cardMetaTxt, { color: colors.textMuted }]}>
+                      {`${tr('noticiasVigencia.vigenciaCorta', { vigencia: etiquetaVigencia(vigenciaValida(a.vigencia_horas)) })} · ${textoTiempoRestante(a.expires_at)}`}
+                    </Text>
                   </>
                 ) : null}
               </View>
@@ -293,15 +318,15 @@ export default function AnnouncementsView({
           <View style={styles.modalCard}>
             <View style={styles.modalHandle} />
             <Text style={styles.modalTitle}>
-              {editing?.id ? 'Editar noticia' : 'Nueva noticia'}
+              {editing?.id ? tr('noticias.editar') : tr('noticias.nueva')}
             </Text>
             <ScrollView contentContainerStyle={{ gap: spacing.sm, paddingBottom: spacing.sm }} keyboardShouldPersistTaps="handled">
               <View>
-                <Text style={styles.label}>Titulo</Text>
+                <Text style={styles.label}>{tr('noticias.tituloEtiqueta')}</Text>
                 <TextInput
                   value={editing?.title || ''}
                   onChangeText={(t) => setEditing((e) => e ? { ...e, title: t } : e)}
-                  placeholder="Ej. Cierre Tramo 2 sabado"
+                  placeholder={tr('noticias.tituloEjemploVista')}
                   placeholderTextColor={colors.textMuted}
                   style={styles.input}
                   maxLength={140}
@@ -309,11 +334,11 @@ export default function AnnouncementsView({
                 <Text style={styles.helper}>{(editing?.title || '').length} / 140</Text>
               </View>
               <View>
-                <Text style={styles.label}>Contenido</Text>
+                <Text style={styles.label}>{tr('noticias.contenidoEtiqueta')}</Text>
                 <TextInput
                   value={editing?.body || ''}
                   onChangeText={(t) => setEditing((e) => e ? { ...e, body: t } : e)}
-                  placeholder="Describe la noticia. Las saltos de linea se respetan."
+                  placeholder={tr('noticias.contenidoAyuda')}
                   placeholderTextColor={colors.textMuted}
                   style={[styles.input, styles.inputArea]}
                   multiline
@@ -324,8 +349,8 @@ export default function AnnouncementsView({
               </View>
               <View style={styles.switchRow}>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.label}>Fijar al inicio</Text>
-                  <Text style={styles.helper}>Aparecera arriba del feed para todos los miembros del proyecto.</Text>
+                  <Text style={styles.label}>{tr('noticias.fijarAlInicio')}</Text>
+                  <Text style={styles.helper}>{tr('noticias.fijarAyuda')}</Text>
                 </View>
                 <Switch
                   value={!!editing?.pinned}
@@ -335,20 +360,27 @@ export default function AnnouncementsView({
                 />
               </View>
 
+              <VigenciaSelector
+                value={editing?.vigencia ?? VIGENCIA_POR_DEFECTO}
+                onChange={(v) => setEditing((e) => e ? { ...e, vigencia: v } : e)}
+                disabled={saving}
+                edicion={!!editing?.id}
+              />
+
               <View>
-                <Text style={styles.label}>Jerarquia</Text>
+                <Text style={styles.label}>{tr('noticias.jerarquia')}</Text>
                 <View style={styles.chipsRow}>
-                  <Pressable
+                  <Pressable accessibilityRole="button"
                     onPress={() => setEditing((e) => e ? { ...e, jerarquia: null } : e)}
                     style={[styles.audChip, !editing?.jerarquia && styles.audChipActive]}
                   >
-                    <Text style={[styles.audChipTxt, !editing?.jerarquia && styles.audChipTxtActive]}>Sin nivel</Text>
+                    <Text style={[styles.audChipTxt, !editing?.jerarquia && styles.audChipTxtActive]}>{tr('noticias.sinNivel')}</Text>
                   </Pressable>
                   {(['urgente', 'importante', 'informativo'] as const).map((k) => {
                     const cfg = JERARQUIA_COLORS[k];
                     const active = editing?.jerarquia === k;
                     return (
-                      <Pressable
+                      <Pressable accessibilityRole="button"
                         key={k}
                         onPress={() => setEditing((e) => e ? { ...e, jerarquia: k } : e)}
                         style={[
@@ -358,7 +390,7 @@ export default function AnnouncementsView({
                         ]}
                       >
                         <Ionicons name={cfg.icon} size={12} color={cfg.fg} />
-                        <Text style={[styles.audChipTxt, { color: cfg.fg, fontWeight: '800' }]}>{cfg.label}</Text>
+                        <Text style={[styles.audChipTxt, { color: cfg.fg, fontWeight: '800' }]}>{jerarquiaLabel(k)}</Text>
                       </Pressable>
                     );
                   })}
@@ -366,20 +398,20 @@ export default function AnnouncementsView({
               </View>
 
               <View>
-                <Text style={styles.label}>Audiencia</Text>
-                <Text style={styles.helper}>Elige a quien va dirigida la noticia.</Text>
+                <Text style={styles.label}>{tr('noticias.audiencia')}</Text>
+                <Text style={styles.helper}>{tr('noticias.audienciaAyuda')}</Text>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6, paddingVertical: 6 }}>
-                  <Pressable
+                  <Pressable accessibilityRole="button"
                     onPress={() => setEditing((e) => e ? { ...e, audiencia: 'general' } : e)}
                     style={[styles.audChip, (editing?.audiencia || 'general') === 'general' && styles.audChipActive]}
                   >
                     <Ionicons name="globe-outline" size={12} color={(editing?.audiencia || 'general') === 'general' ? '#fff' : colors.textMuted} />
-                    <Text style={[styles.audChipTxt, (editing?.audiencia || 'general') === 'general' && styles.audChipTxtActive]}>Todo el proyecto</Text>
+                    <Text style={[styles.audChipTxt, (editing?.audiencia || 'general') === 'general' && styles.audChipTxtActive]}>{tr('noticias.todoProyecto')}</Text>
                   </Pressable>
                   {areas.map((ar) => {
                     const active = editing?.audiencia === ar.id;
                     return (
-                      <Pressable
+                      <Pressable accessibilityRole="button"
                         key={ar.id}
                         onPress={() => setEditing((e) => e ? { ...e, audiencia: ar.id } : e)}
                         style={[styles.audChip, active && styles.audChipActive]}
@@ -393,22 +425,20 @@ export default function AnnouncementsView({
               </View>
 
               <View>
-                <Text style={styles.label}>Vincular a Nodo (opcional)</Text>
-                <Text style={styles.helper}>
-                  Si lo seleccionas, esta noticia aparecera en la seccion del nodo al exportar reportes (solo si es Importante o Urgente).
-                </Text>
+                <Text style={styles.label}>{tr('noticias.vincularNodoOpcional')}</Text>
+                <Text style={styles.helper}>{tr('noticias.vincularAyuda')}</Text>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6, paddingVertical: 6 }}>
-                  <Pressable
+                  <Pressable accessibilityRole="button"
                     onPress={() => setEditing((e) => e ? { ...e, node_id: null } : e)}
                     style={[styles.audChip, !editing?.node_id && styles.audChipActive]}
                   >
                     <Ionicons name="remove-circle-outline" size={12} color={!editing?.node_id ? '#fff' : colors.textMuted} />
-                    <Text style={[styles.audChipTxt, !editing?.node_id && styles.audChipTxtActive]}>Sin nodo</Text>
+                    <Text style={[styles.audChipTxt, !editing?.node_id && styles.audChipTxtActive]}>{tr('noticias.sinNodo')}</Text>
                   </Pressable>
                   {nodes.map((nd) => {
                     const active = editing?.node_id === nd.id;
                     return (
-                      <Pressable
+                      <Pressable accessibilityRole="button"
                         key={nd.id}
                         onPress={() => setEditing((e) => e ? { ...e, node_id: nd.id } : e)}
                         style={[styles.audChip, active && styles.audChipActive]}
@@ -425,11 +455,11 @@ export default function AnnouncementsView({
               {error ? <Text style={[styles.errorText, { textAlign: 'center' }]}>{error}</Text> : null}
             </ScrollView>
             <View style={styles.modalActions}>
-              <Pressable onPress={() => { setEditing(null); setError(null); }} style={[styles.btn, styles.btnGhost]}>
-                <Text style={styles.btnGhostTxt}>Cancelar</Text>
+              <Pressable accessibilityRole="button" onPress={() => { setEditing(null); setError(null); }} style={[styles.btn, styles.btnGhost]}>
+                <Text style={styles.btnGhostTxt}>{tr('noticias.cancelar')}</Text>
               </Pressable>
-              <Pressable onPress={onSave} disabled={saving} style={[styles.btn, styles.btnPrimary, saving && { opacity: 0.6 }]}>
-                {saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.btnPrimaryTxt}>{editing?.id ? 'Guardar' : 'Publicar'}</Text>}
+              <Pressable accessibilityRole="button" onPress={onSave} disabled={saving} style={[styles.btn, styles.btnPrimary, saving && { opacity: 0.6 }]}>
+                {saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.btnPrimaryTxt}>{editing?.id ? tr('noticias.guardar') : tr('noticias.publicar')}</Text>}
               </Pressable>
             </View>
           </View>
@@ -439,24 +469,12 @@ export default function AnnouncementsView({
   );
 }
 
-function formatExpiry(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '';
-  const diff = d.getTime() - Date.now();
-  if (diff <= 0) return 'Por expirar';
-  const m = Math.round(diff / 60000);
-  if (m < 60) return `Vence en ${m} min`;
-  const h = Math.round(m / 60);
-  return `Vence en ${h} h`;
-}
-
 const styles = StyleSheet.create({
   flex: { flex: 1, backgroundColor: colors.bg },
   header: {
     flexDirection: 'row', alignItems: 'center', gap: spacing.sm,
     paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
   },
-  iconBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
   title: { fontSize: 17, fontWeight: '800', color: colors.text },
   subtitle: { fontSize: 11, color: colors.textMuted, marginTop: 1 },
   newBtn: {

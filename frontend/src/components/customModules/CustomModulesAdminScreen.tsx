@@ -184,15 +184,15 @@ export default function CustomModulesAdminScreen({ projectId }: { projectId: str
             </View>
             <Text style={styles.salida}>{resumenSalida(m.salida)}</Text>
             <View style={styles.actions}>
-              <Pressable hitSlop={8} onPress={() => mover(idx, -1)} disabled={idx === 0}><Ionicons name="arrow-up" size={18} color={idx === 0 ? colors.border : colors.text} /></Pressable>
-              <Pressable hitSlop={8} onPress={() => mover(idx, 1)} disabled={idx === items.length - 1}><Ionicons name="arrow-down" size={18} color={idx === items.length - 1 ? colors.border : colors.text} /></Pressable>
+              <Pressable accessibilityRole="button" accessibilityLabel="Subir" hitSlop={8} onPress={() => mover(idx, -1)} disabled={idx === 0}><Ionicons name="arrow-up" size={18} color={idx === 0 ? colors.border : colors.text} /></Pressable>
+              <Pressable accessibilityRole="button" accessibilityLabel="Bajar" hitSlop={8} onPress={() => mover(idx, 1)} disabled={idx === items.length - 1}><Ionicons name="arrow-down" size={18} color={idx === items.length - 1 ? colors.border : colors.text} /></Pressable>
               <View style={{ flex: 1 }} />
               <Action icon="list-outline" label="Registros" onPress={() => router.push({ pathname: '/(coord)/projects/[id]/modulo-personalizado' as any, params: { id: projectId, mid: m.id } })} />
               <Action icon="create-outline" label="Editar" onPress={() => setBuilder({ inicial: m, id: m.id, n: m.n_registros || 0 })} />
               <Action icon="copy-outline" label="Copiar" onPress={() => abrirCopiar(m)} />
               <Action icon="bookmark-outline" label="Plantilla" onPress={() => guardarPlantilla(m)} />
               {ocupado === m.id ? <ActivityIndicator size="small" color={colors.primary} /> : (
-                <Pressable hitSlop={8} onPress={() => borrar(m)}><Ionicons name="trash-outline" size={18} color={colors.error} /></Pressable>
+                <Pressable accessibilityRole="button" accessibilityLabel="Eliminar" hitSlop={8} onPress={() => borrar(m)}><Ionicons name="trash-outline" size={18} color={colors.error} /></Pressable>
               )}
             </View>
           </View>
@@ -202,11 +202,11 @@ export default function CustomModulesAdminScreen({ projectId }: { projectId: str
       {/* Selector de plantilla */}
       <Modal visible={eligiendo} transparent animationType="fade" onRequestClose={() => setEligiendo(false)}>
         <Pressable style={styles.backdrop} onPress={() => setEligiendo(false)}>
-          <Pressable style={styles.sheet} onPress={() => undefined}>
+          <Pressable accessibilityRole="button" style={styles.sheet} onPress={() => undefined}>
             <Text style={styles.sheetTitle}>¿Cómo quieres empezar?</Text>
             <ScrollView style={{ maxHeight: 440 }}>
               {PLANTILLAS.map((p) => (
-                <Pressable
+                <Pressable accessibilityRole="button"
                   key={p.clave} style={styles.plantilla}
                   onPress={() => { setEligiendo(false); setBuilder({ inicial: p.crear(), id: null, n: 0 }); }}
                 >
@@ -220,7 +220,7 @@ export default function CustomModulesAdminScreen({ projectId }: { projectId: str
               ))}
               {propias.length > 0 ? <Text style={styles.secTitle}>Mis plantillas</Text> : null}
               {propias.map((t) => (
-                <Pressable
+                <Pressable accessibilityRole="button"
                   key={t.id} style={styles.plantilla}
                   onPress={() => { setEligiendo(false); setBuilder({ inicial: moduloDesdePlantilla(t), id: null, n: 0 }); }}
                 >
@@ -229,7 +229,7 @@ export default function CustomModulesAdminScreen({ projectId }: { projectId: str
                     <Text style={styles.name}>{t.nombre}</Text>
                     <Text style={styles.meta} numberOfLines={2}>{t.descripcion || `${(t.definicion.campos || []).length} campos`}</Text>
                   </View>
-                  <Pressable hitSlop={8} onPress={() => borrarPlantilla(t)}><Ionicons name="trash-outline" size={18} color={colors.error} /></Pressable>
+                  <Pressable accessibilityRole="button" accessibilityLabel="Eliminar" hitSlop={8} onPress={() => borrarPlantilla(t)}><Ionicons name="trash-outline" size={18} color={colors.error} /></Pressable>
                 </Pressable>
               ))}
             </ScrollView>
@@ -240,16 +240,16 @@ export default function CustomModulesAdminScreen({ projectId }: { projectId: str
       {/* Copiar */}
       <Modal visible={!!copiando} transparent animationType="fade" onRequestClose={() => setCopiando(null)}>
         <Pressable style={styles.backdrop} onPress={() => setCopiando(null)}>
-          <Pressable style={styles.sheet} onPress={() => undefined}>
+          <Pressable accessibilityRole="button" style={styles.sheet} onPress={() => undefined}>
             <Text style={styles.sheetTitle}>Copiar «{copiando?.nombre}»</Text>
             <Text style={styles.meta}>Se copia la definición (campos y reglas de impresión), sin registros y apagada.</Text>
             <ScrollView style={{ maxHeight: 360, marginTop: spacing.sm }}>
-              <Pressable style={styles.plantilla} onPress={() => copiando && duplicar(copiando)}>
+              <Pressable accessibilityRole="button" style={styles.plantilla} onPress={() => copiando && duplicar(copiando)}>
                 <Ionicons name="copy-outline" size={20} color={colors.primary} />
                 <Text style={[styles.name, { flex: 1 }]}>En este proyecto</Text>
               </Pressable>
               {proyectos.filter((p) => p.id !== projectId).map((p) => (
-                <Pressable key={p.id} style={styles.plantilla} onPress={() => copiando && duplicar(copiando, p.id)}>
+                <Pressable accessibilityRole="button" key={p.id} style={styles.plantilla} onPress={() => copiando && duplicar(copiando, p.id)}>
                   <Ionicons name="business-outline" size={20} color={colors.primary} />
                   <Text style={[styles.name, { flex: 1 }]} numberOfLines={1}>{p.name}</Text>
                 </Pressable>
@@ -273,7 +273,7 @@ export default function CustomModulesAdminScreen({ projectId }: { projectId: str
 
 function Action({ icon, label, onPress }: { icon: keyof typeof Ionicons.glyphMap; label: string; onPress: () => void }) {
   return (
-    <Pressable onPress={onPress} hitSlop={6} style={styles.action}>
+    <Pressable accessibilityRole="button" onPress={onPress} hitSlop={6} style={styles.action}>
       <Ionicons name={icon} size={16} color={colors.primary} />
       <Text style={styles.actionTxt}>{label}</Text>
     </Pressable>

@@ -1,6 +1,8 @@
 import React, { useEffect } from 'react';
+import { View } from 'react-native';
 import { Tabs, router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import OfflineQueueIndicator from '@/src/components/OfflineQueueIndicator';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '@/src/auth-context';
 import { ROLE_COORD, ROLE_JEFE } from '@/src/utils/roles';
@@ -20,10 +22,15 @@ export default function CoordLayout() {
   }, [user, loading]);
 
   return (
+    <View style={{ flex: 1 }}>
     <Tabs
       backBehavior="history"
       screenOptions={{
         headerShown: false,
+        // G-07: las pestañas se montan al abrirlas y las inactivas se congelan (no se vuelven a pintar
+        // ni gastan memoria en Android de gama baja). Los polls corren solo con la pantalla enfocada.
+        lazy: true,
+        freezeOnBlur: true,
         tabBarActiveTintColor: colors.primary,
         tabBarInactiveTintColor: colors.textMuted,
         tabBarStyle: {
@@ -85,8 +92,11 @@ export default function CoordLayout() {
       <Tabs.Screen name="report-templates" options={{ href: null }} />
       {/* Cambiar mi contraseña — alcanzable desde Mi perfil, sin tab visible. */}
       <Tabs.Screen name="cambiar-password" options={{ href: null }} />
+      <Tabs.Screen name="migracion-catalogo" options={{ href: null }} />
       {/* Solicitudes de "Olvidé mi contraseña" — alcanzable desde Mi perfil, sin tab visible. */}
       <Tabs.Screen name="password-resets" options={{ href: null }} />
     </Tabs>
+    <OfflineQueueIndicator />
+    </View>
   );
 }

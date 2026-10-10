@@ -7,7 +7,7 @@
  *     MinutasView con el proyecto seleccionado.
  * Delega toda la logica de minutas a `MinutasView` para no duplicar codigo.
  */
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback } from 'react';
 import {
   View,
   Text,
@@ -21,40 +21,20 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 
-import { api, Project } from '@/src/api';
 import { colors, spacing } from '@/src/theme';
+import { t } from '@/src/i18n';
+import { useProyectoActivo } from '@/src/proyecto-activo-context';
 import MinutasView from '@/src/components/MinutasView';
 
 export default function MinutasHubScreen() {
   const insets = useSafeAreaInsets();
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [selected, setSelected] = useState<string>('');
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  // P-05: el proyecto activo es el mismo para Mensajes, Minutas, Noticias y Calendario.
+  const { proyectoId, proyectos: projects, cargando: loading, setProyectoId: setSelected, recargar } = useProyectoActivo();
+  const selected = proyectoId || '';
+  const error: string | null = null;
 
-  const load = useCallback(async () => {
-    try {
-      setError(null);
-      setLoading(true);
-      const items = await api.listProjects();
-      setProjects(items || []);
-      if (items && items.length > 0) {
-        setSelected((cur) => (cur && items.find((p) => p.id === cur) ? cur : items[0].id));
-      } else {
-        setSelected('');
-      }
-    } catch (e: any) {
-      setError(e?.message || 'No se pudieron cargar proyectos');
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  // [PERF 2026-08-07] Antes se disparaba `load()` tanto en `useEffect` como en
-  // `useFocusEffect`; ambos corren en el montaje inicial y duplicaban la
-  // llamada a listProjects justo cuando el usuario entra al hub. Basta con
-  // useFocusEffect: cubre el montaje (primer foco) y los re-focos posteriores.
-  useFocusEffect(useCallback(() => { load(); }, [load]));
+  // [PERF 2026-08-07] Basta con useFocusEffect: cubre el montaje (primer foco) y los re-focos.
+  useFocusEffect(useCallback(() => { void recargar(); }, [recargar]));
 
   // Loading inicial
   if (loading && projects.length === 0) {
@@ -73,7 +53,7 @@ export default function MinutasHubScreen() {
         <Ionicons name="clipboard-outline" size={44} color={colors.textMuted} />
         <Text style={styles.emptyTitle}>Sin proyectos asignados</Text>
         <Text style={styles.emptySub}>
-          {error || 'Cuando tengas proyectos, aqui veras las minutas y acuerdos.'}
+          {error || 'Cuando tengas proyectos, aquí verás las minutas y acuerdos.'}
         </Text>
       </View>
     );
@@ -87,7 +67,7 @@ export default function MinutasHubScreen() {
       <StatusBar barStyle="dark-content" />
       {showSelector && (
         <View style={[styles.selectorWrap, { paddingTop: insets.top + spacing.xs }]}>
-          <Text style={styles.selectorLabel}>Proyecto</Text>
+          <Text style={styles.selectorLabel}>{t('proyectoActivo.proyecto')}</Text>
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
@@ -96,7 +76,7 @@ export default function MinutasHubScreen() {
             {projects.map((p) => {
               const active = p.id === selected;
               return (
-                <Pressable
+                <Pressable accessibilityRole="button"
                   key={p.id}
                   onPress={() => setSelected(p.id)}
                   style={[styles.projChip, active && styles.projChipActive]}

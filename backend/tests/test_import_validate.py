@@ -148,14 +148,17 @@ def test_clave_existente_en_proyecto_es_duplicado():
 # ============================================================================
 # Clave duplicada DENTRO del archivo -> se recalcula dinámicamente
 # ============================================================================
-def test_clave_duplicada_en_archivo_marca_ambas_filas():
+def test_clave_duplicada_en_archivo_conserva_la_primera_valida_y_omite_la_otra():
+    # C-08: la gemela válida (la primera) se conserva; la otra se omite solo porque esa gemela existe.
     filas = _validar([
         ["A1", "Concepto A v1", "PZA", "10", "50.00"],
         ["A1", "Concepto A v2", "PZA", "20", "60.00"],
     ])
     vista = _calcular_vista_filas(filas, {})
-    assert all(f["estado"] == "duplicado" for f in vista)
-    assert all(any(p["tipo"] == "clave_duplicada_archivo" for p in f["problemas_activos"]) for f in vista)
+    assert vista[0]["estado"] == "ok"
+    assert vista[1]["estado"] == "duplicado"
+    dup = next(p for p in vista[1]["problemas_activos"] if p["tipo"] == "clave_duplicada_archivo")
+    assert dup["fila_gemela"] == vista[0]["fila"]
 
 
 def test_descartar_una_fila_duplicada_deja_ok_a_la_otra():

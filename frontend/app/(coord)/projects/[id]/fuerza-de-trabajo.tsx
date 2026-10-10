@@ -5,12 +5,13 @@
 // igual que ya la tenian Sub-Coordinador y Especialista (ver
 // (subcoord)/fuerza-de-trabajo.tsx y (spec)/fuerza-de-trabajo.tsx).
 import React from 'react';
-import { ScrollView, StyleSheet, Text, View, Pressable } from 'react-native';
+import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { router, useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, spacing } from '@/src/theme';
 import { WorkforceTracker } from '@/src/components/WorkforceTracker';
+import { ScreenHeader } from '@/src/components/ScreenHeader';
 
 export default function FuerzaDeTrabajoRoute() {
   const insets = useSafeAreaInsets();
@@ -19,13 +20,11 @@ export default function FuerzaDeTrabajoRoute() {
 
   return (
     <View style={[styles.flex, { paddingTop: insets.top }]}>
-      <View style={styles.header}>
-        <Pressable onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
-          <Ionicons name="chevron-back" size={24} color={colors.text} />
-        </Pressable>
-        <Text style={styles.title} numberOfLines={1}>Fuerza de Trabajo</Text>
-        <View style={{ width: 32 }} />
-      </View>
+      <ScreenHeader
+        title="Fuerza de Trabajo"
+        fallbackHref={{ pathname: '/(coord)/projects/[id]', params: { id: pid } }}
+        safeArea={false}
+      />
 
       {!pid ? (
         <View style={styles.errorBox}>
@@ -43,12 +42,6 @@ export default function FuerzaDeTrabajoRoute() {
 
 const styles = StyleSheet.create({
   flex: { flex: 1, backgroundColor: colors.bg },
-  header: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: spacing.md, paddingVertical: spacing.sm, gap: spacing.md,
-  },
-  iconBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
-  title: { flex: 1, textAlign: 'center', fontSize: 17, fontWeight: '800', color: colors.text },
   scroll: { paddingHorizontal: spacing.lg, gap: spacing.md },
   errorBox: {
     flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: colors.errorBg,

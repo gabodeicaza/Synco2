@@ -64,7 +64,7 @@ export function createOfflineQueueEngine<TPayload = Record<string, any>>(opts: O
   const WEB_STORAGE_KEY = `synco_web_${opts.fileName}`;
 
   function log(...args: any[]) {
-    if (__DEV__) console.log(`[SynCo][${opts.logTag}]`, ...args);
+    if (__DEV__) console.log(`[Dirac][${opts.logTag}]`, ...args);
   }
 
   // --- Notificacion de cambios ------------------------------------------
@@ -257,8 +257,8 @@ export function createOfflineQueueEngine<TPayload = Record<string, any>>(opts: O
       if (items.length >= MAX_QUEUE_ITEMS) {
         const msg = opts.maxQueueItemsErrorMessage
           ? opts.maxQueueItemsErrorMessage(MAX_QUEUE_ITEMS)
-          : `Ya hay ${MAX_QUEUE_ITEMS} elementos esperando conexion en este dispositivo. ` +
-            'Conectate y espera a que se sincronicen antes de agregar mas.';
+          : `Ya hay ${MAX_QUEUE_ITEMS} elementos esperando conexión en este dispositivo. ` +
+            'Conéctate y espera a que se sincronicen antes de agregar mas.';
         throw new OfflineQueueFullError(msg);
       }
       const newItem: QueueItem<TPayload> = {

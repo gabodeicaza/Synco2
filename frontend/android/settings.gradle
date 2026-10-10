@@ -32,7 +32,7 @@ extensions.configure(com.facebook.react.ReactSettingsExtension) { ex ->
 }
 expoAutolinking.useExpoModules()
 
-rootProject.name = 'SynCo'
+rootProject.name = 'Dirac'
 
 expoAutolinking.useExpoVersionCatalog()
 

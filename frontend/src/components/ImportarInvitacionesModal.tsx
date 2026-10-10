@@ -5,16 +5,21 @@
 // Filas con error se corrigen en el Excel y se vuelve a subir el archivo.
 import React, { useState } from 'react';
 import {
-  Modal, View, Text, StyleSheet, Pressable, ScrollView, ActivityIndicator, Alert,
+  Modal, View, Text, StyleSheet, Pressable, ScrollView, ActivityIndicator,
 } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import { Ionicons } from '@expo/vector-icons';
 
 import { api, InvitationBulkRow, InvitationBulkCommitResult } from '@/src/api';
+import { InlineError } from '@/src/components/InlineError';
+import { useEnvio } from '@/src/hooks/useEnvio';
+import { esErrorDeRed } from '@/src/utils/errores';
+import { showToast } from '@/src/utils/toast';
 import { colors, radius, spacing } from '@/src/theme';
 import { downloadBlob } from '@/src/utils/downloadBlob';
 import { confirm } from '@/src/utils/confirm';
 import { roleLabel } from '@/src/utils/roles';
+import { a11y, t } from '@/src/i18n';
 
 type Step = 'archivo' | 'revision' | 'resultado';
 
@@ -34,7 +39,7 @@ interface Props {
 
 export function ImportarInvitacionesModal({ visible, projectId, onClose, onImported }: Props) {
   const [step, setStep] = useState<Step>('archivo');
-  const [busy, setBusy] = useState(false);
+  const { guardando: busy, ejecutar } = useEnvio();
   const [descargandoPlantilla, setDescargandoPlantilla] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [filas, setFilas] = useState<InvitationBulkRow[]>([]);
@@ -42,91 +47,92 @@ export function ImportarInvitacionesModal({ visible, projectId, onClose, onImpor
   const [commitResult, setCommitResult] = useState<InvitationBulkCommitResult | null>(null);
 
   function reset() {
-    setStep('archivo'); setBusy(false); setError(null);
+    setStep('archivo'); setError(null);
     setFilas([]); setResumen(null); setCommitResult(null);
   }
 
   function handleClose() { reset(); onClose(); }
 
+  function fallo(e: unknown, respaldo: string) {
+    if (esErrorDeRed(e)) showToast(t('red.errorDeRed'));
+    setError(!esErrorDeRed(e) && (e as any)?.message ? (e as any).message : respaldo);
+  }
+
   async function descargarPlantilla() {
-    if (descargandoPlantilla) return;
-    setDescargandoPlantilla(true);
-    try {
-      const { blob, filename } = await api.downloadInvitationsBulkPlantilla(projectId);
-      await downloadBlob(blob, filename, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    } catch (e: any) {
-      Alert.alert('No se pudo descargar la plantilla', e?.message || 'Intentalo nuevamente.');
-    } finally {
-      setDescargandoPlantilla(false);
-    }
+    await ejecutar(async () => {
+      setDescargandoPlantilla(true); setError(null);
+      try {
+        const { blob, filename } = await api.downloadInvitationsBulkPlantilla(projectId);
+        await downloadBlob(blob, filename, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      } catch (e: any) {
+        fallo(e, t('invitaciones.importar.plantillaError'));
+      } finally {
+        setDescargandoPlantilla(false);
+      }
+    });
   }
 
   async function pickFile() {
-    try {
-      const result = await DocumentPicker.getDocumentAsync({
-        type: [
-          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-          'application/vnd.ms-excel',
-        ],
-        copyToCacheDirectory: true,
-      });
-      if (result.canceled || !result.assets?.[0]) return;
-      const asset = result.assets[0];
+    await ejecutar(async () => {
+      try {
+        const result = await DocumentPicker.getDocumentAsync({
+          type: [
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            'application/vnd.ms-excel',
+          ],
+          copyToCacheDirectory: true,
+        });
+        if (result.canceled || !result.assets?.[0]) return;
+        const asset = result.assets[0];
 
-      setBusy(true); setError(null);
-      const res = await api.invitationsBulkValidate(projectId, {
-        uri: asset.uri, name: asset.name || 'invitaciones.xlsx', mimeType: asset.mimeType,
-      });
-      setResumen(res.resumen);
-      setFilas(res.filas);
-      setStep('revision');
-    } catch (e: any) {
-      setError(e?.message || 'No se pudo procesar el archivo');
-    } finally {
-      setBusy(false);
-    }
+        setError(null);
+        const res = await api.invitationsBulkValidate(projectId, {
+          uri: asset.uri, name: asset.name || 'invitaciones.xlsx', mimeType: asset.mimeType,
+        });
+        setResumen(res.resumen);
+        setFilas(res.filas);
+        setStep('revision');
+      } catch (e: any) {
+        fallo(e, t('invitaciones.importar.archivoError'));
+      }
+    });
   }
 
   async function importar() {
-    const listas = filas.filter((f) => f.estado === 'ok').length;
-    if (listas === 0) {
-      Alert.alert('Nada para importar', 'No hay filas listas para importar en este archivo.');
-      return;
-    }
-    const ok = await confirm(
-      'Importar invitaciones',
-      `Se crearán ${listas} invitación(es) nueva(s). Las filas con error o ya invitadas se omitirán. ¿Continuar?`,
-    );
-    if (!ok) return;
-    try {
-      setBusy(true); setError(null);
-      const res = await api.invitationsBulkCommit(projectId, filas);
-      setCommitResult(res);
-      setStep('resultado');
-    } catch (e: any) {
-      setError(e?.message || 'La importación falló');
-    } finally {
-      setBusy(false);
-    }
+    await ejecutar(async () => {
+      const listas = filas.filter((f) => f.estado === 'ok').length;
+      if (listas === 0) {
+        setError(t('invitaciones.importar.nadaQueImportar'));
+        return;
+      }
+      const ok = await confirm(
+        'Importar invitaciones',
+        `Se crearán ${listas} invitación(es) nueva(s). Las filas con error o ya invitadas se omitirán. ¿Continuar?`,
+      );
+      if (!ok) return;
+      try {
+        setError(null);
+        const res = await api.invitationsBulkCommit(projectId, filas);
+        setCommitResult(res);
+        setStep('resultado');
+      } catch (e: any) {
+        fallo(e, t('invitaciones.importar.importacionError'));
+      }
+    });
   }
 
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={handleClose}>
       <View style={styles.container}>
         <View style={styles.header}>
-          <Pressable onPress={handleClose} hitSlop={10}>
+          <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} onPress={handleClose} hitSlop={10}>
             <Ionicons name="close" size={24} color={colors.text} />
           </Pressable>
-          <Text style={styles.title}>Importar invitaciones (Excel)</Text>
+          <Text style={styles.title}>{t('invitaciones.importar.titulo')}</Text>
           <View style={{ width: 24 }} />
         </View>
 
-        {error ? (
-          <View style={styles.errorBox}>
-            <Ionicons name="alert-circle" size={16} color={colors.error} />
-            <Text style={styles.errorText}>{error}</Text>
-          </View>
-        ) : null}
+        <InlineError message={error} style={styles.errorBox} />
 
         <ScrollView contentContainerStyle={styles.body}>
           {step === 'archivo' ? (
@@ -136,7 +142,7 @@ export function ImportarInvitacionesModal({ visible, projectId, onClose, onImpor
                 Sube un Excel con columnas: No. de Control, Iniciales, Puesto, Área, Rol
                 (especialista/subcoordinador) y Correo. La fila 1 debe ser el encabezado.
               </Text>
-              <Pressable style={styles.linkBtnCenter} onPress={descargarPlantilla} disabled={descargandoPlantilla}>
+              <Pressable accessibilityRole="button" style={styles.linkBtnCenter} onPress={descargarPlantilla} disabled={descargandoPlantilla}>
                 {descargandoPlantilla ? <ActivityIndicator color={colors.primary} /> : (
                   <>
                     <Ionicons name="download-outline" size={16} color={colors.primary} />
@@ -144,7 +150,7 @@ export function ImportarInvitacionesModal({ visible, projectId, onClose, onImpor
                   </>
                 )}
               </Pressable>
-              <Pressable style={styles.primaryBtn} onPress={pickFile} disabled={busy}>
+              <Pressable accessibilityRole="button" style={styles.primaryBtn} onPress={pickFile} disabled={busy}>
                 {busy ? <ActivityIndicator color="#fff" /> : (
                   <>
                     <Ionicons name="folder-open-outline" size={18} color="#fff" />
@@ -169,11 +175,11 @@ export function ImportarInvitacionesModal({ visible, projectId, onClose, onImpor
                 ))}
               </View>
 
-              <Pressable style={styles.smallBtn} onPress={pickFile} disabled={busy}>
+              <Pressable accessibilityRole="button" style={styles.smallBtn} onPress={pickFile} disabled={busy}>
                 <Text style={styles.smallBtnTxt}>Subir otro archivo</Text>
               </Pressable>
 
-              <Pressable style={styles.primaryBtn} onPress={importar} disabled={busy}>
+              <Pressable accessibilityRole="button" style={styles.primaryBtn} onPress={importar} disabled={busy}>
                 {busy ? <ActivityIndicator color="#fff" /> : (
                   <>
                     <Ionicons name="cloud-upload-outline" size={18} color="#fff" />
@@ -191,7 +197,7 @@ export function ImportarInvitacionesModal({ visible, projectId, onClose, onImpor
               <Text style={styles.help}>{commitResult.creados} invitación(es) creada(s)</Text>
               {commitResult.omitidos > 0 ? <Text style={styles.help}>{commitResult.omitidos} ya tenían invitación pendiente (omitidas)</Text> : null}
               {commitResult.con_error > 0 ? <Text style={[styles.help, { color: colors.error }]}>{commitResult.con_error} con error (no se importaron)</Text> : null}
-              <Pressable style={styles.primaryBtn} onPress={() => { reset(); onImported(); onClose(); }}>
+              <Pressable accessibilityRole="button" style={styles.primaryBtn} onPress={() => { reset(); onImported(); onClose(); }}>
                 <Text style={styles.primaryBtnTxt}>Listo</Text>
               </Pressable>
             </View>
@@ -236,11 +242,7 @@ const styles = StyleSheet.create({
   },
   title: { fontSize: 16, fontWeight: '800', color: colors.text },
 
-  errorBox: {
-    flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: colors.errorBg,
-    padding: 10, borderRadius: 10, marginHorizontal: spacing.md, marginTop: spacing.sm,
-  },
-  errorText: { flex: 1, color: colors.error, fontSize: 12, fontWeight: '600' },
+  errorBox: { marginHorizontal: spacing.md, marginTop: spacing.sm },
 
   body: { padding: spacing.md, paddingBottom: 60 },
   stepCenter: { alignItems: 'center', gap: 12, paddingTop: 30 },

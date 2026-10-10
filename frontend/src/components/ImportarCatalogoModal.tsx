@@ -8,38 +8,43 @@
 // volver a subirlo. La validación completa vive en el backend
 // (import_validate) — este modal solo la dispara y muestra el resultado ya
 // paginado; nunca reparsea nada del lado del cliente.
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
-  Modal, View, Text, StyleSheet, Pressable, ScrollView, ActivityIndicator, Alert, TextInput,
+  Modal, View, Text, StyleSheet, Pressable, ScrollView, ActivityIndicator, TextInput,
 } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import { Ionicons } from '@expo/vector-icons';
 
 import {
-  api, ConvencionDecimal, ImportFila, ImportHeadersResponse, ImportMapping, ImportResumen, Partida, SesionPendiente,
+  api, ConvencionDecimal, ImportFila, ImportHeadersResponse, ImportMapping, ImportResumen, Partida, Project, SesionPendiente,
 } from '@/src/api';
 import { colors, radius, shadow, spacing } from '@/src/theme';
-import { UNIDADES } from '@/src/utils/unidades';
-import { formatCantidad, isValidDecimalInput } from '@/src/utils/money';
+import { nombreConcepto, pluralizar } from '@/src/utils/nombresNivel';
+import { unidadesDelProyecto } from '@/src/utils/unidades';
+import { formatCantidad } from '@/src/utils/money';
+import { DECIMALES_CANTIDAD, DECIMALES_IMPORTE, SeparadorDecimal, mensajeNumeroInvalido, parseNumeroEntrada } from '@/src/utils/numeros';
+import { InlineError } from '@/src/components/InlineError';
 import { confirm } from '@/src/utils/confirm';
+import { a11y, t } from '@/src/i18n';
 import {
   WizardStep, quedanFueraLabel, filasFueraCount, puedeValidar as puedeValidarMapeo,
   pasoSiguienteTrasSubir, pasoAnterior, pasoInicialDeSesionPendiente,
 } from '@/src/utils/importWizard';
 
-type MappingField = 'clave' | 'descripcion' | 'unidad' | 'cantidad' | 'precio_unitario' | 'importe';
+type MappingField = 'clave' | 'descripcion' | 'unidad' | 'cantidad' | 'precio_unitario' | 'importe' | 'deductiva';
 const MAPPING_FIELDS: { key: MappingField; label: string; required: boolean }[] = [
-  { key: 'clave', label: 'Clave', required: true },
-  { key: 'descripcion', label: 'Descripción', required: true },
-  { key: 'unidad', label: 'Unidad', required: false },
-  { key: 'cantidad', label: 'Cantidad', required: true },
-  { key: 'precio_unitario', label: 'Precio unitario', required: true },
-  { key: 'importe', label: 'Importe (solo referencia)', required: false },
+  { key: 'clave', label: t('importadorUI.campoClave'), required: true },
+  { key: 'descripcion', label: t('importadorUI.campoDescripcion'), required: true },
+  { key: 'unidad', label: t('importadorUI.campoUnidad'), required: false },
+  { key: 'cantidad', label: t('importadorUI.campoCantidad'), required: true },
+  { key: 'precio_unitario', label: t('importadorUI.campoPrecioUnitario'), required: true },
+  { key: 'importe', label: t('importadorUI.campoImporteReferencia'), required: false },
+  { key: 'deductiva', label: t('importadorUI.campoDeductiva'), required: false },
 ];
 
 const CONVENCION_LABELS: Record<ConvencionDecimal, string> = {
-  coma: 'Coma decimal (634,00 = 634.00)',
-  punto: 'Punto decimal (634.00 = 634.00)',
+  coma: t('importadorUI.convencionComa'),
+  punto: t('importadorUI.convencionPunto'),
 };
 
 const ESTADO_COLOR: Record<string, string> = {
@@ -47,25 +52,29 @@ const ESTADO_COLOR: Record<string, string> = {
   duplicado: colors.primary, descartado: colors.textMuted,
 };
 const ESTADO_LABEL: Record<string, string> = {
-  ok: 'Lista', advertencia: 'Advertencia', error: 'Error', duplicado: 'Duplicada', descartado: 'Descartada',
+  ok: t('importadorUI.estadoLista'), advertencia: t('importadorUI.estadoAdvertencia'), error: t('importadorUI.estadoError'),
+  duplicado: t('importadorUI.estadoDuplicada'), descartado: t('importadorUI.estadoDescartada'),
 };
 
 const STEPS: { key: WizardStep; label: string }[] = [
-  { key: 'archivo', label: '1. Archivo' },
-  { key: 'mapeo', label: '2. Mapeo' },
-  { key: 'revision', label: '3. Revisión' },
-  { key: 'resultado', label: '4. Importar' },
+  { key: 'archivo', label: t('importadorUI.pasoArchivo') },
+  { key: 'mapeo', label: t('importadorUI.pasoMapeo') },
+  { key: 'revision', label: t('importadorUI.pasoRevision') },
+  { key: 'resultado', label: t('importadorUI.pasoImportar') },
 ];
 
 interface Props {
   visible: boolean;
   projectId: string;
   partidas: Partida[];
+  /** Proyecto (para el nombre configurado del concepto en los textos); opcional. */
+  project?: Pick<Project, 'nombre_nivel_concepto'> | null;
   onClose: () => void;
   onImported: () => void;
 }
 
-export function ImportarCatalogoModal({ visible, projectId, partidas, onClose, onImported }: Props) {
+export function ImportarCatalogoModal({ visible, projectId, partidas, project, onClose, onImported }: Props) {
+  const conceptosPlural = pluralizar(nombreConcepto(project)).toLowerCase();
   const [step, setStep] = useState<WizardStep>('archivo');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -74,6 +83,10 @@ export function ImportarCatalogoModal({ visible, projectId, partidas, onClose, o
   // consultando, null = no hay ninguna, objeto = hay una para ofrecer retomar).
   const [sesionPendiente, setSesionPendiente] = useState<SesionPendiente | null | undefined>(undefined);
   const [resolviendoSesion, setResolviendoSesion] = useState(false);
+
+  // C-04: unidades del proyecto (base + personalizadas) y separador decimal para corregir valores.
+  const [unidadesPersonalizadas, setUnidadesPersonalizadas] = useState<string[]>([]);
+  const [separador, setSeparador] = useState<SeparadorDecimal>('.');
 
   // Paso 1: archivo
   const [importId, setImportId] = useState<string | null>(null);
@@ -95,6 +108,8 @@ export function ImportarCatalogoModal({ visible, projectId, partidas, onClose, o
   const [duplicadosAccion, setDuplicadosAccion] = useState<'omitir' | 'actualizar'>('omitir');
   const [expandedFila, setExpandedFila] = useState<number | null>(null);
 
+  const unidadesProyecto = useMemo(() => unidadesDelProyecto(unidadesPersonalizadas), [unidadesPersonalizadas]);
+
   // Paso 4: resultado
   const [commitResult, setCommitResult] = useState<{ creados: number; actualizados: number; omitidos: number; con_error: number; descartados: number } | null>(null);
 
@@ -112,6 +127,19 @@ export function ImportarCatalogoModal({ visible, projectId, partidas, onClose, o
   }
 
   function handleClose() { resetCompleto(); onClose(); }
+
+  useEffect(() => {
+    if (!visible) return;
+    let vivo = true;
+    api.getProject(projectId)
+      .then((p) => {
+        if (!vivo) return;
+        setUnidadesPersonalizadas(p?.unidades_personalizadas || []);
+        setSeparador(p?.separador_decimal === ',' ? ',' : '.');
+      })
+      .catch(() => {});
+    return () => { vivo = false; };
+  }, [visible, projectId]);
 
   // --- Sesión sin terminar: se consulta cada vez que el modal se abre --------
   useEffect(() => {
@@ -158,7 +186,7 @@ export function ImportarCatalogoModal({ visible, projectId, partidas, onClose, o
         // y se arranca en blanco en vez de dejar el modal en un estado roto.
         // reset() primero (limpia error a null), el mensaje real se pone DESPUÉS.
         reset();
-        setError('Tu importación anterior ya no está disponible (expiró). Empecemos de nuevo.');
+        setError(t('importadorUI.errImportacionExpirada'));
       }
       setSesionPendiente(null);
     } finally {
@@ -206,7 +234,7 @@ export function ImportarCatalogoModal({ visible, projectId, partidas, onClose, o
         await loadHeaders(res.import_id, res.sheet_names[0]);
       }
     } catch (e: any) {
-      setError(e?.message || 'No se pudo subir el archivo');
+      setError(e?.message || t('importadorUI.errSubir'));
     } finally {
       setBusy(false);
     }
@@ -224,7 +252,7 @@ export function ImportarCatalogoModal({ visible, projectId, partidas, onClose, o
       setStep('mapeo');
       return true;
     } catch (e: any) {
-      setError(e?.message || 'No se pudo leer la hoja seleccionada');
+      setError(e?.message || t('importadorUI.errLeerHoja'));
       return false;
     } finally {
       setBusy(false);
@@ -240,19 +268,16 @@ export function ImportarCatalogoModal({ visible, projectId, partidas, onClose, o
 
   // --- Paso 2 -> 3: validar (todo el archivo, una sola vez) ------------------
   async function validar(convencionForzada?: ConvencionDecimal) {
-    if (!importId || !selectedSheet || !partidaId) {
-      Alert.alert('Falta información', 'Elige la partida destino antes de validar.');
-      return;
-    }
+    if (!importId || !selectedSheet) return;
     if (!mapping.clave || !mapping.descripcion || !mapping.cantidad || !mapping.precio_unitario) {
-      Alert.alert('Mapeo incompleto', 'Asigna al menos Clave, Descripción, Cantidad y Precio unitario.');
+      setError(t('importadorUI.errMapeoIncompleto'));
       return;
     }
     try {
       setBusy(true); setError(null);
       const res = await api.importCatalogoValidate(projectId, importId, {
         sheet: selectedSheet, header_row_index: headersResp?.header_row_index ?? 0,
-        mapping, partida_id: partidaId,
+        mapping, partida_id: partidaId ?? undefined,
         convencion: convencionForzada || convencion,
       });
       setResumen(res.resumen);
@@ -260,7 +285,7 @@ export function ImportarCatalogoModal({ visible, projectId, partidas, onClose, o
       setStep('revision');
       await cargarPagina(1);
     } catch (e: any) {
-      setError(e?.message || 'La validación falló');
+      setError(e?.message || t('importadorUI.errValidacion'));
     } finally {
       setBusy(false);
     }
@@ -280,7 +305,7 @@ export function ImportarCatalogoModal({ visible, projectId, partidas, onClose, o
       setExpandedFila(null);
       return true;
     } catch (e: any) {
-      setError(e?.message || 'No se pudo cargar la página');
+      setError(e?.message || t('importadorUI.errPagina'));
       return false;
     } finally {
       setBusy(false);
@@ -295,7 +320,7 @@ export function ImportarCatalogoModal({ visible, projectId, partidas, onClose, o
       setFilas((cur) => cur.map((f) => (f.fila === fila ? res.fila : f)));
       setResumen(res.resumen);
     } catch (e: any) {
-      Alert.alert('No se pudo corregir', e?.message || 'Intentalo nuevamente.');
+      setError(e?.message || t('importadorUI.errCorregirFila'));
     }
   }
 
@@ -306,7 +331,7 @@ export function ImportarCatalogoModal({ visible, projectId, partidas, onClose, o
       setFilas((cur) => cur.map((f) => (f.fila === fila ? res.fila : f)));
       setResumen(res.resumen);
     } catch (e: any) {
-      Alert.alert('No se pudo descartar', e?.message || 'Intentalo nuevamente.');
+      setError(e?.message || t('importadorUI.errDescartarFila'));
     }
   }
 
@@ -317,7 +342,7 @@ export function ImportarCatalogoModal({ visible, projectId, partidas, onClose, o
       setFilas((cur) => cur.map((f) => (f.fila === fila ? res.fila : f)));
       setResumen(res.resumen);
     } catch (e: any) {
-      Alert.alert('No se pudo revertir', e?.message || 'Intentalo nuevamente.');
+      setError(e?.message || t('importadorUI.errRevertirFila'));
     }
   }
 
@@ -327,7 +352,7 @@ export function ImportarCatalogoModal({ visible, projectId, partidas, onClose, o
       await api.importCatalogoSetDuplicadosAccion(importId, accion);
       setDuplicadosAccion(accion);
     } catch (e: any) {
-      Alert.alert('Error', e?.message || 'No se pudo cambiar la opción');
+      setError(e?.message || t('importadorUI.errOpcion'));
     }
   }
 
@@ -336,10 +361,10 @@ export function ImportarCatalogoModal({ visible, projectId, partidas, onClose, o
     if (!importId) return;
     const quedanFuera = filasFueraCount(resumen);
     const ok = await confirm(
-      'Importar catálogo',
+      t('importadorUI.titulo'),
       quedanFuera > 0
-        ? `${quedanFuera} fila(s) quedarán fuera (con error o descartadas). El resto se importará. ¿Continuar?`
-        : 'Se importarán todas las filas listas. ¿Continuar?',
+        ? t('importadorUI.confirmarConFuera', { n: quedanFuera })
+        : t('importadorUI.confirmarTodas'),
     );
     if (!ok) return;
     try {
@@ -348,7 +373,7 @@ export function ImportarCatalogoModal({ visible, projectId, partidas, onClose, o
       setCommitResult(res);
       setStep('resultado');
     } catch (e: any) {
-      setError(e?.message || 'La importación falló');
+      setError(e?.message || t('importadorUI.errImportacion'));
     } finally {
       setBusy(false);
     }
@@ -360,20 +385,26 @@ export function ImportarCatalogoModal({ visible, projectId, partidas, onClose, o
     <Modal visible={visible} animationType="slide" onRequestClose={handleClose}>
       <View style={styles.container}>
         <View style={styles.header}>
-          <Pressable
-            onPress={() => {
-              // pasoAnterior nunca toca mapping/partidaId/convencion — solo
-              // cambia el paso (ver src/utils/importWizard.ts).
-              if (step === 'archivo') handleClose();
-              else setStep(pasoAnterior(step, sheetNames.length > 1));
-            }}
-            hitSlop={10}
-          >
-            <Ionicons name={step === 'archivo' ? 'close' : 'chevron-back'} size={24} color={colors.text} />
-          </Pressable>
-          <Text style={styles.title}>Importar catálogo</Text>
-          <Pressable onPress={handleClose} hitSlop={10}>
-            <Ionicons name="close" size={22} color={colors.textMuted} />
+          {/* C-15: un solo botón de cerrar (a la derecha). "Atrás" solo aparece en los pasos intermedios. */}
+          {step === 'archivo' || step === 'resultado' ? (
+            <View style={styles.headerEspacio} />
+          ) : (
+            <Pressable accessibilityRole="button" accessibilityLabel={t('catalogoNav.atrasPaso')}
+              onPress={() => {
+                // pasoAnterior nunca toca mapping/partidaId/convencion — solo
+                // cambia el paso (ver src/utils/importWizard.ts).
+                setStep(pasoAnterior(step, sheetNames.length > 1));
+              }}
+              hitSlop={10}
+              style={styles.atrasBtn}
+            >
+              <Ionicons name="chevron-back" size={20} color={colors.primary} />
+              <Text style={styles.atrasTxt}>{t('catalogoNav.atras')}</Text>
+            </Pressable>
+          )}
+          <Text style={styles.title}>{t('importadorUI.titulo')}</Text>
+          <Pressable accessibilityRole="button" accessibilityLabel={t('catalogoNav.cerrarImportador')} onPress={handleClose} hitSlop={10} style={styles.cerrarBtn}>
+            <Ionicons name="close" size={22} color={colors.text} />
           </Pressable>
         </View>
 
@@ -397,31 +428,34 @@ export function ImportarCatalogoModal({ visible, projectId, partidas, onClose, o
           {sesionPendiente ? (
             <View style={styles.stepCenter}>
               <Ionicons name="time-outline" size={44} color={colors.warning} />
-              <Text style={styles.resultTitle}>Tienes una importación sin terminar</Text>
+              <Text style={styles.resultTitle}>{t('importadorUI.sesionPendienteTitulo')}</Text>
               <Text style={styles.help}>
-                {sesionPendiente.filename || 'Un archivo'} — {sesionPendiente.validado ? 'ya validado, lista para revisar' : 'sin validar todavía'}.
+                {t('importadorUI.sesionPendienteLinea', {
+                  archivo: sesionPendiente.filename || t('importadorUI.archivoSinNombre'),
+                  estado: sesionPendiente.validado ? t('importadorUI.sesionValidada') : t('importadorUI.sesionSinValidar'),
+                })}
               </Text>
-              <Pressable style={styles.primaryBtn} onPress={continuarSesionPendiente} disabled={resolviendoSesion}>
+              <Pressable accessibilityRole="button" style={styles.primaryBtn} onPress={continuarSesionPendiente} disabled={resolviendoSesion}>
                 {resolviendoSesion ? <ActivityIndicator color="#fff" /> : (
                   <>
                     <Ionicons name="play-forward-outline" size={18} color="#fff" />
-                    <Text style={styles.primaryBtnTxt}>Continuar donde quedé</Text>
+                    <Text style={styles.primaryBtnTxt}>{t('importadorUI.continuarDondeQuede')}</Text>
                   </>
                 )}
               </Pressable>
-              <Pressable style={styles.smallBtn} onPress={empezarDeNuevo} disabled={resolviendoSesion}>
-                <Text style={styles.smallBtnTxt}>Empezar de nuevo (descarta la anterior)</Text>
+              <Pressable accessibilityRole="button" style={styles.smallBtn} onPress={empezarDeNuevo} disabled={resolviendoSesion}>
+                <Text style={styles.smallBtnTxt}>{t('importadorUI.empezarDeNuevo')}</Text>
               </Pressable>
             </View>
           ) : step === 'archivo' ? (
             <View style={styles.stepCenter}>
               <Ionicons name="document-attach-outline" size={48} color={colors.primary} />
-              <Text style={styles.help}>Selecciona un archivo .xlsx, .xls o .csv con tu catálogo de conceptos.</Text>
-              <Pressable style={styles.primaryBtn} onPress={pickFile} disabled={busy}>
+              <Text style={styles.help}>{t('importadorUI.seleccionaArchivo', { conceptos: conceptosPlural })}</Text>
+              <Pressable accessibilityRole="button" style={styles.primaryBtn} onPress={pickFile} disabled={busy}>
                 {busy ? <ActivityIndicator color="#fff" /> : (
                   <>
                     <Ionicons name="folder-open-outline" size={18} color="#fff" />
-                    <Text style={styles.primaryBtnTxt}>Seleccionar archivo</Text>
+                    <Text style={styles.primaryBtnTxt}>{t('importadorUI.seleccionarArchivo')}</Text>
                   </>
                 )}
               </Pressable>
@@ -430,9 +464,9 @@ export function ImportarCatalogoModal({ visible, projectId, partidas, onClose, o
 
           {step === 'hoja' ? (
             <View>
-              <Text style={styles.help}>Este archivo tiene varias hojas. ¿Cuál quieres importar?</Text>
+              <Text style={styles.help}>{t('importadorUI.variasHojas')}</Text>
               {sheetNames.map((s) => (
-                <Pressable key={s} style={styles.optionRow} onPress={() => loadHeaders(importId!, s)} disabled={busy}>
+                <Pressable accessibilityRole="button" key={s} style={styles.optionRow} onPress={() => loadHeaders(importId!, s)} disabled={busy}>
                   <Ionicons name="grid-outline" size={18} color={colors.primary} />
                   <Text style={styles.optionTxt}>{s}</Text>
                 </Pressable>
@@ -443,25 +477,25 @@ export function ImportarCatalogoModal({ visible, projectId, partidas, onClose, o
 
           {step === 'mapeo' && headersResp ? (
             <View style={{ gap: 14 }}>
-              <Text style={styles.help}>Se detectaron {headersResp.total_rows} filas de datos. Asigna cada columna al campo correspondiente.</Text>
+              <Text style={styles.help}>{t('importadorUI.seDetectaron', { n: headersResp.total_rows })}</Text>
 
-              <Pressable onPress={() => setMostrarFilasCrudas((v) => !v)} style={styles.linkRow}>
+              <Pressable accessibilityRole="button" onPress={() => setMostrarFilasCrudas((v) => !v)} style={styles.linkRow}>
                 <Ionicons name={mostrarFilasCrudas ? 'chevron-up' : 'help-circle-outline'} size={14} color={colors.primary} />
                 <Text style={styles.linkRowTxt}>
-                  {mostrarFilasCrudas ? 'Ocultar' : '¿Estos no son los encabezados correctos? Elige la fila correcta'}
+                  {mostrarFilasCrudas ? t('importadorUI.ocultar') : t('importadorUI.encabezadosIncorrectos')}
                 </Text>
               </Pressable>
 
               {mostrarFilasCrudas ? (
                 <View style={styles.rawPreviewBox}>
                   <Text style={styles.helpSmall}>
-                    Si el archivo trae un logo o título antes de la fila de encabezado real, tócala aquí abajo.
+                    {t('importadorUI.ayudaFilaEncabezado')}
                   </Text>
                   {headersResp.preview_rows.map((row, idx) => {
                     const esLaActual = idx === headersResp.header_row_index;
-                    const textoFila = row.filter((c) => c !== null && c !== undefined && String(c).trim() !== '').map((c) => String(c)).join(' · ') || '(fila vacía)';
+                    const textoFila = row.filter((c) => c !== null && c !== undefined && String(c).trim() !== '').map((c) => String(c)).join(' · ') || t('importadorUI.filaVacia');
                     return (
-                      <Pressable
+                      <Pressable accessibilityRole="button"
                         key={idx}
                         onPress={() => elegirFilaEncabezado(idx)}
                         style={[styles.rawPreviewRow, esLaActual && styles.rawPreviewRowActive]}
@@ -483,7 +517,7 @@ export function ImportarCatalogoModal({ visible, projectId, partidas, onClose, o
                     {headersResp.headers.filter(Boolean).map((h) => {
                       const active = mapping[f.key] === h;
                       return (
-                        <Pressable
+                        <Pressable accessibilityRole="button"
                           key={h}
                           onPress={() => setMapping((m) => ({ ...m, [f.key]: active ? undefined : h }))}
                           style={[styles.chip, active && styles.chipActive]}
@@ -496,36 +530,41 @@ export function ImportarCatalogoModal({ visible, projectId, partidas, onClose, o
                 </View>
               ))}
 
-              <Text style={styles.fieldLabel}>Partida destino *</Text>
+              <Text style={styles.fieldLabel}>{t('importador.destinoTitulo')}</Text>
+              <Text style={styles.helpSmall}>{t('importador.destinoAyuda')}</Text>
+              <Text style={styles.helpSmall}>{t('importador.deductivaAyuda')}</Text>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6 }}>
+                <Pressable accessibilityRole="button" accessibilityState={{ selected: partidaId === null }} onPress={() => setPartidaId(null)} style={[styles.chip, partidaId === null && styles.chipActive]}>
+                  <Text style={[styles.chipTxt, partidaId === null && styles.chipTxtActive]} numberOfLines={1}>{t('importador.sinDestino')}</Text>
+                </Pressable>
                 {partidas.map((p) => {
                   const active = partidaId === p.id;
                   return (
-                    <Pressable key={p.id} onPress={() => setPartidaId(p.id)} style={[styles.chip, active && styles.chipActive]}>
+                    <Pressable accessibilityRole="button" key={p.id} onPress={() => setPartidaId(p.id)} style={[styles.chip, active && styles.chipActive]}>
                       <Text style={[styles.chipTxt, active && styles.chipTxtActive]} numberOfLines={1}>{p.clave} — {p.nombre}</Text>
                     </Pressable>
                   );
                 })}
               </ScrollView>
 
-              <Text style={styles.fieldLabel}>Convención decimal</Text>
+              <Text style={styles.fieldLabel}>{t('importadorUI.convencionDecimal')}</Text>
               <View style={{ gap: 6 }}>
                 {(['coma', 'punto'] as ConvencionDecimal[]).map((c) => {
                   const active = convencion === c;
                   const esDetectada = headersResp.convencion_detectada === c;
                   return (
-                    <Pressable key={c} onPress={() => setConvencion(c)} style={[styles.optionRow, active && styles.optionRowActive]}>
+                    <Pressable accessibilityRole="button" key={c} onPress={() => setConvencion(c)} style={[styles.optionRow, active && styles.optionRowActive]}>
                       <Ionicons name={active ? 'radio-button-on' : 'radio-button-off'} size={18} color={colors.primary} />
-                      <Text style={styles.optionTxt}>{CONVENCION_LABELS[c]}{esDetectada ? ' (detectada)' : ''}</Text>
+                      <Text style={styles.optionTxt}>{CONVENCION_LABELS[c]}{esDetectada ? t('importadorUI.detectada') : ''}</Text>
                     </Pressable>
                   );
                 })}
                 {!headersResp.convencion_detectada ? (
-                  <Text style={styles.helpSmall}>No se pudo detectar automáticamente; si no eliges una, los números ambiguos ("1.234") se marcarán para que los resuelvas uno por uno en la revisión.</Text>
+                  <Text style={styles.helpSmall}>{t('importadorUI.convencionNoDetectada')}</Text>
                 ) : null}
               </View>
 
-              <Pressable
+              <Pressable accessibilityRole="button"
                 style={[styles.primaryBtn, (!puedeValidarMapeo(mapping, partidaId) || busy) && { opacity: 0.5 }]}
                 onPress={() => validar()}
                 disabled={!puedeValidarMapeo(mapping, partidaId) || busy}
@@ -533,7 +572,7 @@ export function ImportarCatalogoModal({ visible, projectId, partidas, onClose, o
                 {busy ? <ActivityIndicator color="#fff" /> : (
                   <>
                     <Ionicons name="checkmark-done-outline" size={18} color="#fff" />
-                    <Text style={styles.primaryBtnTxt}>Validar archivo completo</Text>
+                    <Text style={styles.primaryBtnTxt}>{t('importadorUI.validarArchivo')}</Text>
                   </>
                 )}
               </Pressable>
@@ -543,37 +582,37 @@ export function ImportarCatalogoModal({ visible, projectId, partidas, onClose, o
           {step === 'revision' && resumen ? (
             <View style={{ gap: 12 }}>
               <View style={styles.resumenRow}>
-                <ResumenChip label="Listas" n={resumen.ok} color={colors.success} />
-                <ResumenChip label="Advertencia" n={resumen.advertencia} color={colors.warning} />
-                <ResumenChip label="Error" n={resumen.error} color={colors.error} />
-                <ResumenChip label="Duplicadas" n={resumen.duplicado} color={colors.primary} />
-                <ResumenChip label="Descartadas" n={resumen.descartado} color={colors.textMuted} />
+                <ResumenChip label={t('importadorUI.resListas')} n={resumen.ok} color={colors.success} />
+                <ResumenChip label={t('importadorUI.resAdvertencia')} n={resumen.advertencia} color={colors.warning} />
+                <ResumenChip label={t('importadorUI.resError')} n={resumen.error} color={colors.error} />
+                <ResumenChip label={t('importadorUI.resDuplicadas')} n={resumen.duplicado} color={colors.primary} />
+                <ResumenChip label={t('importadorUI.resDescartadas')} n={resumen.descartado} color={colors.textMuted} />
               </View>
 
               {resumen.duplicado > 0 ? (
                 <View style={{ gap: 6 }}>
-                  <Text style={styles.fieldLabel}>Claves ya existentes en el proyecto</Text>
+                  <Text style={styles.fieldLabel}>{t('importadorUI.clavesExistentes')}</Text>
                   <View style={{ flexDirection: 'row', gap: 6 }}>
-                    <Pressable onPress={() => cambiarDuplicadosAccion('omitir')} style={[styles.chip, duplicadosAccion === 'omitir' && styles.chipActive]}>
-                      <Text style={[styles.chipTxt, duplicadosAccion === 'omitir' && styles.chipTxtActive]}>Omitir (no tocar)</Text>
+                    <Pressable accessibilityRole="button" onPress={() => cambiarDuplicadosAccion('omitir')} style={[styles.chip, duplicadosAccion === 'omitir' && styles.chipActive]}>
+                      <Text style={[styles.chipTxt, duplicadosAccion === 'omitir' && styles.chipTxtActive]}>{t('importadorUI.omitir')}</Text>
                     </Pressable>
-                    <Pressable onPress={() => cambiarDuplicadosAccion('actualizar')} style={[styles.chip, duplicadosAccion === 'actualizar' && styles.chipActive]}>
-                      <Text style={[styles.chipTxt, duplicadosAccion === 'actualizar' && styles.chipTxtActive]}>Actualizar existentes</Text>
+                    <Pressable accessibilityRole="button" onPress={() => cambiarDuplicadosAccion('actualizar')} style={[styles.chip, duplicadosAccion === 'actualizar' && styles.chipActive]}>
+                      <Text style={[styles.chipTxt, duplicadosAccion === 'actualizar' && styles.chipTxtActive]}>{t('importadorUI.actualizarExistentes')}</Text>
                     </Pressable>
                   </View>
-                  <Text style={styles.helpSmall}>Las claves duplicadas DENTRO del mismo archivo no se autoresuelven — hay que descartar todas menos una.</Text>
+                  <Text style={styles.helpSmall}>{t('importadorUI.duplicadasEnArchivo')}</Text>
                 </View>
               ) : null}
 
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                <Text style={styles.fieldLabel}>¿Los números ambiguos se leyeron mal?</Text>
+                <Text style={styles.fieldLabel}>{t('importadorUI.numerosAmbiguos')}</Text>
               </View>
               <View style={{ flexDirection: 'row', gap: 6 }}>
-                <Pressable style={styles.smallBtn} onPress={() => validar('coma')} disabled={busy}>
-                  <Text style={styles.smallBtnTxt}>Re-validar todo como coma decimal</Text>
+                <Pressable accessibilityRole="button" style={styles.smallBtn} onPress={() => validar('coma')} disabled={busy}>
+                  <Text style={styles.smallBtnTxt}>{t('importadorUI.revalidarComa')}</Text>
                 </Pressable>
-                <Pressable style={styles.smallBtn} onPress={() => validar('punto')} disabled={busy}>
-                  <Text style={styles.smallBtnTxt}>Re-validar todo como punto decimal</Text>
+                <Pressable accessibilityRole="button" style={styles.smallBtn} onPress={() => validar('punto')} disabled={busy}>
+                  <Text style={styles.smallBtnTxt}>{t('importadorUI.revalidarPunto')}</Text>
                 </Pressable>
               </View>
 
@@ -588,26 +627,28 @@ export function ImportarCatalogoModal({ visible, projectId, partidas, onClose, o
                       onCorregir={aplicarCorreccion}
                       onDescartar={descartarFila}
                       onRevertir={revertirFila}
+                      unidades={unidadesProyecto}
+                      separador={separador}
                     />
                   ))}
                 </View>
               )}
 
               <View style={styles.pagerRow}>
-                <Pressable disabled={page <= 1} onPress={() => cargarPagina(page - 1)} style={[styles.pagerBtn, page <= 1 && { opacity: 0.4 }]}>
+                <Pressable accessibilityRole="button" accessibilityLabel={a11y('paginaAnterior')} hitSlop={8} disabled={page <= 1} onPress={() => cargarPagina(page - 1)} style={[styles.pagerBtn, page <= 1 && { opacity: 0.4 }]}>
                   <Ionicons name="chevron-back" size={16} color={colors.primary} />
                 </Pressable>
-                <Text style={styles.pagerTxt}>Página {page} de {totalPages}</Text>
-                <Pressable disabled={page >= totalPages} onPress={() => cargarPagina(page + 1)} style={[styles.pagerBtn, page >= totalPages && { opacity: 0.4 }]}>
+                <Text style={styles.pagerTxt}>{t('importadorUI.pagina', { page, total: totalPages })}</Text>
+                <Pressable accessibilityRole="button" accessibilityLabel={a11y('paginaSiguiente')} hitSlop={8} disabled={page >= totalPages} onPress={() => cargarPagina(page + 1)} style={[styles.pagerBtn, page >= totalPages && { opacity: 0.4 }]}>
                   <Ionicons name="chevron-forward" size={16} color={colors.primary} />
                 </Pressable>
               </View>
 
-              <Pressable style={styles.primaryBtn} onPress={commit} disabled={busy}>
+              <Pressable accessibilityRole="button" style={styles.primaryBtn} onPress={commit} disabled={busy}>
                 {busy ? <ActivityIndicator color="#fff" /> : (
                   <>
                     <Ionicons name="cloud-upload-outline" size={18} color="#fff" />
-                    <Text style={styles.primaryBtnTxt}>Importar{quedanFueraLabel(resumen)}</Text>
+                    <Text style={styles.primaryBtnTxt}>{t('importadorUI.importar')}{quedanFueraLabel(resumen)}</Text>
                   </>
                 )}
               </Pressable>
@@ -617,13 +658,15 @@ export function ImportarCatalogoModal({ visible, projectId, partidas, onClose, o
           {step === 'resultado' && commitResult ? (
             <View style={styles.stepCenter}>
               <Ionicons name="checkmark-circle" size={48} color={colors.success} />
-              <Text style={styles.resultTitle}>Importación completada</Text>
-              <Text style={styles.help}>{commitResult.creados} creados · {commitResult.actualizados} actualizados</Text>
-              {commitResult.omitidos > 0 ? <Text style={styles.help}>{commitResult.omitidos} omitidos (duplicados)</Text> : null}
-              {commitResult.con_error > 0 ? <Text style={[styles.help, { color: colors.error }]}>{commitResult.con_error} con error (no se importaron)</Text> : null}
-              {commitResult.descartados > 0 ? <Text style={styles.help}>{commitResult.descartados} descartadas por ti</Text> : null}
-              <Pressable style={styles.primaryBtn} onPress={() => { resetCompleto(); onImported(); }}>
-                <Text style={styles.primaryBtnTxt}>Listo</Text>
+              <Text style={styles.resultTitle}>{t('importadorUI.importacionCompletada')}</Text>
+              <Text style={styles.help}>{t('importadorUI.creadosActualizados', { creados: commitResult.creados, actualizados: commitResult.actualizados })}</Text>
+              {(commitResult as any).partidas_creadas > 0 ? <Text style={styles.help}>{t('importador.partidasCreadas', { n: (commitResult as any).partidas_creadas })}</Text> : null}
+              {(commitResult as any).sin_partida > 0 ? <Text style={[styles.help, { color: colors.error }]}>{t('importador.sinPartida', { n: (commitResult as any).sin_partida })}</Text> : null}
+              {commitResult.omitidos > 0 ? <Text style={styles.help}>{t('importadorUI.omitidos', { n: commitResult.omitidos })}</Text> : null}
+              {commitResult.con_error > 0 ? <Text style={[styles.help, { color: colors.error }]}>{t('importadorUI.conError', { n: commitResult.con_error })}</Text> : null}
+              {commitResult.descartados > 0 ? <Text style={styles.help}>{t('importadorUI.descartadasPorTi', { n: commitResult.descartados })}</Text> : null}
+              <Pressable accessibilityRole="button" style={styles.primaryBtn} onPress={() => { resetCompleto(); onImported(); }}>
+                <Text style={styles.primaryBtnTxt}>{t('importadorUI.listo')}</Text>
               </Pressable>
             </View>
           ) : null}
@@ -642,8 +685,8 @@ function ResumenChip({ label, n, color }: { label: string; n: number; color: str
   );
 }
 
-function FilaRevision({
-  fila, expanded, onToggle, onCorregir, onDescartar, onRevertir,
+export function FilaRevision({
+  fila, expanded, onToggle, onCorregir, onDescartar, onRevertir, unidades, separador,
 }: {
   fila: ImportFila;
   expanded: boolean;
@@ -651,16 +694,21 @@ function FilaRevision({
   onCorregir: (fila: number, payload: { cantidad?: string; precio_unitario?: string; unidad?: string }) => void;
   onDescartar: (fila: number, descartar: boolean) => void;
   onRevertir: (fila: number) => void;
+  unidades: string[];
+  separador: SeparadorDecimal;
 }) {
   const [draftCantidad, setDraftCantidad] = useState(fila.cantidad_efectiva || '');
   const [draftPu, setDraftPu] = useState(fila.precio_unitario_efectivo || '');
+  const [errorCorreccion, setErrorCorreccion] = useState<string | null>(null);
   const color = ESTADO_COLOR[fila.estado] || colors.textMuted;
 
   return (
     <View style={[styles.filaCard, { borderLeftColor: color, borderLeftWidth: 4 }]}>
-      <Pressable onPress={onToggle} style={styles.filaHeaderRow}>
+      <Pressable accessibilityRole="button" onPress={onToggle} style={styles.filaHeaderRow}>
         <View style={{ flex: 1 }}>
-          <Text style={styles.filaClave} numberOfLines={1}>{fila.clave || `Fila ${fila.fila}`} — {fila.descripcion || '(sin descripción)'}</Text>
+          <Text style={styles.filaClave} numberOfLines={1}>
+            {fila.tipo_fila === 'partida' ? `[${t('importador.filaPartida')}] ` : ''}{fila.clave || t('importadorUI.fila', { n: fila.fila })} — {fila.descripcion || t('importadorUI.sinDescripcion')}
+          </Text>
           <Text style={[styles.filaEstado, { color }]}>{ESTADO_LABEL[fila.estado] || fila.estado}</Text>
         </View>
         <Ionicons name={expanded ? 'chevron-up' : 'chevron-down'} size={16} color={colors.textMuted} />
@@ -673,13 +721,13 @@ function FilaRevision({
               <Text style={styles.problemaMotivo}>{p.motivo}</Text>
               {p.tipo === 'numero_ambiguo' ? (
                 <View style={{ flexDirection: 'row', gap: 8, marginTop: 6 }}>
-                  <Pressable
+                  <Pressable accessibilityRole="button"
                     style={styles.choiceBtn}
                     onPress={() => onCorregir(fila.fila, p.campo === 'precio_unitario' ? { precio_unitario: p.lectura_miles } : { cantidad: p.lectura_miles })}
                   >
                     <Text style={styles.choiceBtnTxt}>{p.lectura_miles}</Text>
                   </Pressable>
-                  <Pressable
+                  <Pressable accessibilityRole="button"
                     style={styles.choiceBtn}
                     onPress={() => onCorregir(fila.fila, p.campo === 'precio_unitario' ? { precio_unitario: p.lectura_decimal } : { cantidad: p.lectura_decimal })}
                   >
@@ -687,30 +735,47 @@ function FilaRevision({
                   </Pressable>
                 </View>
               ) : null}
-              {p.tipo === 'numero_ilegible' && (p.campo === 'cantidad' || p.campo === 'precio_unitario') ? (
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 6 }}>
-                  <TextInput
-                    value={p.campo === 'cantidad' ? draftCantidad : draftPu}
-                    onChangeText={p.campo === 'cantidad' ? setDraftCantidad : setDraftPu}
-                    keyboardType="decimal-pad"
-                    placeholder="Valor correcto"
-                    style={styles.editInput}
-                  />
-                  <Pressable
-                    onPress={() => {
-                      const v = p.campo === 'cantidad' ? draftCantidad : draftPu;
-                      if (!isValidDecimalInput(v)) { Alert.alert('Valor inválido', 'Ingresa un número con hasta 2 decimales.'); return; }
-                      onCorregir(fila.fila, p.campo === 'cantidad' ? { cantidad: v } : { precio_unitario: v });
-                    }}
-                  >
-                    <Ionicons name="checkmark-circle" size={22} color={colors.success} />
-                  </Pressable>
+              {p.tipo === 'cantidad_no_positiva' ? <Text style={styles.helpSmall}>{t('importador.cantidadNoPositivaAyuda')}</Text> : null}
+              {p.tipo === 'precio_unitario_cero' ? <Text style={styles.helpSmall}>{t('importador.precioCeroAyuda')}</Text> : null}
+              {p.tipo === 'unidad_vacia' ? <Text style={styles.helpSmall}>{t('importador.unidadVaciaAyuda')}</Text> : null}
+              {p.tipo === 'clave_duplicada_archivo' ? <Text style={styles.helpSmall}>{t('importador.duplicadaAyuda')}</Text> : null}
+              {p.tipo === 'clave_duplicada_sin_gemela_valida' ? <Text style={styles.helpSmall}>{t('importador.sinGemelaAyuda')}</Text> : null}
+              {p.tipo === 'clave_sin_prefijo_padre' ? <Text style={styles.helpSmall}>{t('importador.sinPrefijoAyuda')}</Text> : null}
+              {(p.tipo === 'numero_ilegible' || p.tipo === 'cantidad_no_positiva' || p.tipo === 'precio_unitario_cero') && (p.campo === 'cantidad' || p.campo === 'precio_unitario') ? (
+                <View style={{ marginTop: 6 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                    <TextInput
+                      value={p.campo === 'cantidad' ? draftCantidad : draftPu}
+                      onChangeText={(v) => { setErrorCorreccion(null); (p.campo === 'cantidad' ? setDraftCantidad : setDraftPu)(v); }}
+                      keyboardType="decimal-pad"
+                      placeholder={t('importador.valorCorrecto')}
+                      placeholderTextColor={colors.textMuted}
+                      accessibilityLabel={t('importador.valorCorrecto')}
+                      style={[styles.editInput, errorCorreccion ? { borderColor: colors.error } : null]}
+                    />
+                    <Pressable accessibilityRole="button" accessibilityLabel={a11y('confirmar')} hitSlop={8}
+                      onPress={() => {
+                        const v = p.campo === 'cantidad' ? draftCantidad : draftPu;
+                        const maxDecimales = p.campo === 'cantidad' ? DECIMALES_CANTIDAD : DECIMALES_IMPORTE;
+                        const leido = parseNumeroEntrada(v, { separador, maxDecimales, permitirNegativo: true });
+                        if (!leido.ok) {
+                          setErrorCorreccion(mensajeNumeroInvalido(leido.motivo, maxDecimales, p.campo === 'cantidad' ? t('importadorUI.laCantidad') : t('importadorUI.elPrecioUnitario')));
+                          return;
+                        }
+                        setErrorCorreccion(null);
+                        onCorregir(fila.fila, p.campo === 'cantidad' ? { cantidad: leido.valor } : { precio_unitario: leido.valor });
+                      }}
+                    >
+                      <Ionicons name="checkmark-circle" size={22} color={colors.success} />
+                    </Pressable>
+                  </View>
+                  <InlineError message={errorCorreccion} style={{ marginTop: 6 }} />
                 </View>
               ) : null}
-              {p.tipo === 'unidad_no_reconocida' ? (
+              {p.tipo === 'unidad_no_reconocida' || p.tipo === 'unidad_vacia' ? (
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6, marginTop: 6 }}>
-                  {UNIDADES.map((u) => (
-                    <Pressable key={u} style={styles.choiceBtn} onPress={() => onCorregir(fila.fila, { unidad: u })}>
+                  {unidades.map((u) => (
+                    <Pressable accessibilityRole="button" key={u} style={styles.choiceBtn} onPress={() => onCorregir(fila.fila, { unidad: u })}>
                       <Text style={styles.choiceBtnTxt}>{u}</Text>
                     </Pressable>
                   ))}
@@ -720,21 +785,21 @@ function FilaRevision({
           ))}
 
           <View style={styles.filaValoresRow}>
-            <Text style={styles.filaValorTxt}>Unidad: {fila.unidad_efectiva}</Text>
-            <Text style={styles.filaValorTxt}>Cantidad: {fila.cantidad_efectiva ? formatCantidad(fila.cantidad_efectiva) : '—'}</Text>
-            <Text style={styles.filaValorTxt}>PU: {fila.precio_unitario_efectivo || '—'}</Text>
+            <Text style={styles.filaValorTxt}>{t('importadorUI.unidadValor', { valor: fila.unidad_efectiva })}</Text>
+            <Text style={styles.filaValorTxt}>{t('importadorUI.cantidadValor', { valor: fila.cantidad_efectiva ? formatCantidad(fila.cantidad_efectiva) : '—' })}</Text>
+            <Text style={styles.filaValorTxt}>{t('importadorUI.puValor', { valor: fila.precio_unitario_efectivo || '—' })}</Text>
           </View>
 
           <View style={{ flexDirection: 'row', gap: 12, marginTop: 8 }}>
             {fila.correccion ? (
-              <Pressable onPress={() => onRevertir(fila.fila)} style={styles.linkBtn}>
+              <Pressable accessibilityRole="button" onPress={() => onRevertir(fila.fila)} style={styles.linkBtn}>
                 <Ionicons name="arrow-undo-outline" size={14} color={colors.primary} />
-                <Text style={styles.linkBtnTxt}>Revertir a original</Text>
+                <Text style={styles.linkBtnTxt}>{t('importadorUI.revertir')}</Text>
               </Pressable>
             ) : null}
-            <Pressable onPress={() => onDescartar(fila.fila, fila.estado !== 'descartado')} style={styles.linkBtn}>
+            <Pressable accessibilityRole="button" onPress={() => onDescartar(fila.fila, fila.estado !== 'descartado')} style={styles.linkBtn}>
               <Ionicons name={fila.estado === 'descartado' ? 'refresh-outline' : 'trash-outline'} size={14} color={colors.error} />
-              <Text style={[styles.linkBtnTxt, { color: colors.error }]}>{fila.estado === 'descartado' ? 'Recuperar fila' : 'Descartar fila'}</Text>
+              <Text style={[styles.linkBtnTxt, { color: colors.error }]}>{fila.estado === 'descartado' ? t('importadorUI.recuperarFila') : t('importadorUI.descartarFila')}</Text>
             </Pressable>
           </View>
         </View>
@@ -751,6 +816,10 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface, borderBottomWidth: 1, borderBottomColor: colors.border,
   },
   title: { fontSize: 17, fontWeight: '800', color: colors.text },
+  headerEspacio: { width: 44, height: 44 },
+  atrasBtn: { flexDirection: 'row', alignItems: 'center', minHeight: 44, minWidth: 44, paddingRight: 8 },
+  atrasTxt: { fontSize: 14, fontWeight: '700', color: colors.primary },
+  cerrarBtn: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
   stepRow: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: spacing.md, paddingTop: spacing.sm },
   stepItem: { alignItems: 'center', gap: 4, flex: 1 },
   stepDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: colors.border },

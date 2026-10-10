@@ -82,7 +82,9 @@ def _concepto_existente(cid, clave, **overrides):
 
 
 @run_async
-async def test_concepto_nuevo_toma_como_meta_su_propia_cantidad():
+async def test_concepto_nuevo_nace_sin_meta_y_con_la_cadencia_del_proyecto():
+    # C-06: el importador no trae fechas, así que no hay programa del que calcular un
+    # ritmo: la meta queda vacía (ya NO es "toda la cantidad por semana").
     conceptos_col = _FakeCollection()
     sessions_col = _FakeCollection([{"id": "import-1"}])
 
@@ -91,11 +93,25 @@ async def test_concepto_nuevo_toma_como_meta_su_propia_cantidad():
     resultado = await _ejecutar_commit_con_compensacion(
         conceptos_col, sessions_col, _noop_bitacora,
         "proyecto-1", "import-1", "partida-1", vista, "actualizar", TEST_USER, "archivo.xlsx",
+        cadencia="DIARIA",
     )
     assert resultado["creados"] == 1
     creado = list(conceptos_col.docs.values())[0]
-    assert creado["meta"] == "10"
-    assert creado["meta"] == creado["cantidad"]
+    assert creado["cantidad"] == "10"
+    assert creado["meta"] == ""
+    assert creado["periodicidad_meta"] == "DIARIA"
+
+
+@run_async
+async def test_sin_cadencia_explicita_se_usa_la_mensual_por_defecto_del_proyecto():
+    conceptos_col = _FakeCollection()
+    sessions_col = _FakeCollection([{"id": "import-1"}])
+    vista = _vista_de([["A1", "Concepto nuevo", "PZA", "10", "50.00"]])
+    await _ejecutar_commit_con_compensacion(
+        conceptos_col, sessions_col, _noop_bitacora,
+        "proyecto-1", "import-1", "partida-1", vista, "actualizar", TEST_USER, "archivo.xlsx",
+    )
+    assert list(conceptos_col.docs.values())[0]["periodicidad_meta"] == "MENSUAL"
 
 
 @run_async

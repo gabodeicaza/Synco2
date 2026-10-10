@@ -7,12 +7,12 @@ import {
   View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, TextInput, Alert, Modal, KeyboardAvoidingView, Platform,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { api, AmbientalAuditoriaItem, JerarquiaInforme, Project } from '@/src/api';
 import { JerarquiaInformePicker, JERARQUIA_DEFAULT } from '@/src/components/JerarquiaInformePicker';
 import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
 import { Button } from '@/src/components/Button';
+import { ScreenHeader } from '@/src/components/ScreenHeader';
 
 type Tipo = 'cumplimiento' | 'incumplimiento';
 
@@ -49,7 +49,6 @@ export default function ImpactoAmbientalScreen({ projectId }: { projectId: strin
   useEffect(() => { load(); }, [load]);
 
   const headerColor = project?.color_institucional || project?.color_tema || colors.primary;
-  const headerTextColor = contrastText(headerColor);
 
   const cumplimientos = useMemo(() => items.filter((i) => i.tipo === 'cumplimiento'), [items]);
   const incumplimientos = useMemo(() => items.filter((i) => i.tipo === 'incumplimiento'), [items]);
@@ -80,7 +79,7 @@ export default function ImpactoAmbientalScreen({ projectId }: { projectId: strin
       setJerarquiaDraft(JERARQUIA_DEFAULT);
       await load();
     } catch (e: any) {
-      Alert.alert('No se pudo guardar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo guardar', e?.message || 'Inténtalo nuevamente.');
     } finally {
       setSaving(false);
     }
@@ -96,15 +95,7 @@ export default function ImpactoAmbientalScreen({ projectId }: { projectId: strin
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <View style={[styles.headerWrap, { backgroundColor: headerColor, paddingTop: insets.top + spacing.xs }]}>
-        <View style={styles.headerTopRow}>
-          <Pressable onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
-            <Ionicons name="chevron-back" size={22} color={headerTextColor} />
-          </Pressable>
-          <Text style={[styles.titleBar, { color: headerTextColor }]} numberOfLines={1}>Impacto Ambiental</Text>
-          <View style={{ width: 32 }} />
-        </View>
-      </View>
+      <ScreenHeader title="Impacto Ambiental" backgroundColor={headerColor} />
 
       <ScrollView contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + spacing.xl }]}>
         <View style={styles.columnsRow}>
@@ -119,7 +110,7 @@ export default function ImpactoAmbientalScreen({ projectId }: { projectId: strin
             ) : (
               cumplimientos.map((i) => <AuditCard key={i.id} item={i} good />)
             )}
-            <Pressable onPress={() => openForm('cumplimiento')} style={[styles.addBtn, styles.addBtnGood]}>
+            <Pressable accessibilityRole="button" onPress={() => openForm('cumplimiento')} style={[styles.addBtn, styles.addBtnGood]}>
               <Ionicons name="add" size={16} color={colors.success} />
               <Text style={[styles.addBtnTxt, { color: colors.success }]}>Agregar</Text>
             </Pressable>
@@ -136,7 +127,7 @@ export default function ImpactoAmbientalScreen({ projectId }: { projectId: strin
             ) : (
               incumplimientos.map((i) => <AuditCard key={i.id} item={i} good={false} />)
             )}
-            <Pressable onPress={() => openForm('incumplimiento')} style={[styles.addBtn, styles.addBtnBad]}>
+            <Pressable accessibilityRole="button" onPress={() => openForm('incumplimiento')} style={[styles.addBtn, styles.addBtnBad]}>
               <Ionicons name="add" size={16} color={colors.error} />
               <Text style={[styles.addBtnTxt, { color: colors.error }]}>Agregar</Text>
             </Pressable>
@@ -196,10 +187,6 @@ function AuditCard({ item, good }: { item: AmbientalAuditoriaItem; good: boolean
 
 const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg },
-  headerWrap: { paddingHorizontal: spacing.md, paddingBottom: spacing.sm },
-  headerTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  iconBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
-  titleBar: { fontWeight: '800', fontSize: 16, letterSpacing: 0.3 },
   scroll: { padding: spacing.md },
   columnsRow: { flexDirection: 'row', gap: spacing.sm },
   column: { flex: 1, gap: spacing.xs },

@@ -1,16 +1,17 @@
-// SynCo v2.0 _ Gestion de Coordinadores Generales (solo coord_general puede acceder)
+// Dirac · Gestion de Coordinadores Generales (solo coord_general puede acceder)
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, Pressable, TextInput, ActivityIndicator,
   KeyboardAvoidingView, Platform, RefreshControl, Alert,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { ScreenHeader } from '@/src/components/ScreenHeader';
 import { api, ApiError, type User } from '@/src/api';
 import { useAuth } from '@/src/auth-context';
 import { colors, radius, spacing, shadow } from '@/src/theme';
 import { fmtDateCDMX } from '@/src/utils/tz';
+import { a11y } from '@/src/i18n';
 
 function formatDate(iso?: string | null): string {
   return fmtDateCDMX(iso);
@@ -57,14 +58,14 @@ export default function CoordinatorsScreen() {
     const e = email.trim().toLowerCase();
     const p = password.trim();
     if (!n) return Alert.alert('Campo requerido', 'Ingresa el nombre');
-    if (!e || !e.includes('@')) return Alert.alert('Email invalido', 'Ingresa un email valido');
-    if (p.length < 6) return Alert.alert('Contrasena corta', 'Minimo 6 caracteres');
+    if (!e || !e.includes('@')) return Alert.alert('Email inválido', 'Ingresa un email válido');
+    if (p.length < 6) return Alert.alert('Contraseña corta', 'Mínimo 6 caracteres');
     setSaving(true);
     try {
       await api.createCoordinator({ name: n, email: e, password: p });
       Alert.alert(
         'Coordinador creado',
-        `Se creo la cuenta para ${e}. Comparte la contrasena inicial de forma segura.`,
+        `Se creó la cuenta para ${e}. Comparte la contraseña inicial de forma segura.`,
       );
       resetForm();
       setShowForm(false);
@@ -83,16 +84,10 @@ export default function CoordinatorsScreen() {
   if (user?.role !== 'coordinador_general') {
     return (
       <View style={[styles.flex, { paddingTop: insets.top }]}>
-        <View style={styles.header}>
-          <Pressable onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
-            <Ionicons name="chevron-back" size={24} color={colors.text} />
-          </Pressable>
-          <Text style={styles.title}>Coordinadores</Text>
-          <View style={{ width: 32 }} />
-        </View>
+        <ScreenHeader title="Coordinadores" fallbackHref="/(coord)" safeArea={false} />
         <View style={styles.emptyCenter}>
           <Ionicons name="lock-closed-outline" size={42} color={colors.textMuted} />
-          <Text style={styles.emptyTxt}>Solo un Coordinador General puede acceder a esta seccion.</Text>
+          <Text style={styles.emptyTxt}>Solo un Coordinador General puede acceder a esta sección.</Text>
         </View>
       </View>
     );
@@ -103,13 +98,7 @@ export default function CoordinatorsScreen() {
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       style={[styles.flex, { paddingTop: insets.top }]}
     >
-      <View style={styles.header}>
-        <Pressable onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
-          <Ionicons name="chevron-back" size={24} color={colors.text} />
-        </Pressable>
-        <Text style={styles.title}>Coordinadores Generales</Text>
-        <View style={{ width: 32 }} />
-      </View>
+      <ScreenHeader title="Coordinadores Generales" fallbackHref="/(coord)" safeArea={false} />
 
       <ScrollView
         contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + 24 }]}
@@ -133,7 +122,7 @@ export default function CoordinatorsScreen() {
         </View>
 
         {!showForm && (
-          <Pressable
+          <Pressable accessibilityRole="button"
             onPress={() => setShowForm(true)}
             style={({ pressed }) => [styles.addBtn, pressed && { opacity: 0.85 }]}
           >
@@ -146,7 +135,7 @@ export default function CoordinatorsScreen() {
           <View style={styles.formCard}>
             <View style={styles.formHeader}>
               <Text style={styles.formTitle}>Nuevo Coordinador General</Text>
-              <Pressable onPress={() => { resetForm(); setShowForm(false); }} hitSlop={8}>
+              <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} onPress={() => { resetForm(); setShowForm(false); }} hitSlop={8}>
                 <Ionicons name="close" size={22} color={colors.text} />
               </Pressable>
             </View>
@@ -155,7 +144,7 @@ export default function CoordinatorsScreen() {
             <TextInput
               value={name}
               onChangeText={setName}
-              placeholder="Ej. Maria Lopez"
+              placeholder="Ej. Maria López"
               placeholderTextColor={colors.textMuted}
               style={styles.input}
             />
@@ -171,20 +160,20 @@ export default function CoordinatorsScreen() {
               style={styles.input}
             />
 
-            <Text style={styles.label}>Contrasena inicial (min. 6 caracteres)</Text>
+            <Text style={styles.label}>Contraseña inicial (min. 6 caracteres)</Text>
             <TextInput
               value={password}
               onChangeText={setPassword}
-              placeholder="________"
+              placeholder="••••••••"
               placeholderTextColor={colors.textMuted}
               secureTextEntry
               style={styles.input}
             />
             <Text style={styles.helper}>
-              Comparte la contrasena inicial de forma segura. El nuevo Coordinador podra cambiarla despues.
+              Comparte la contraseña inicial de forma segura. El nuevo Coordinador podrá cambiarla después.
             </Text>
 
-            <Pressable
+            <Pressable accessibilityRole="button"
               onPress={onSave}
               disabled={saving}
               style={({ pressed }) => [
@@ -239,12 +228,6 @@ export default function CoordinatorsScreen() {
 
 const styles = StyleSheet.create({
   flex: { flex: 1, backgroundColor: colors.bg },
-  header: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
-  },
-  iconBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
-  title: { fontSize: 17, fontWeight: '800', color: colors.text },
   scroll: { paddingHorizontal: spacing.lg, gap: spacing.md },
 
   infoCard: {

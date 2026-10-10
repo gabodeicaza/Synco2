@@ -2,26 +2,28 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, ActivityIndicator, Pressable, Alert, TextInput,
 } from 'react-native';
-import { useLocalSearchParams, router } from 'expo-router';
+import { useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { ScreenHeader } from '@/src/components/ScreenHeader';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import { api, Project } from '@/src/api';
 import { colors, radius, shadow, spacing } from '@/src/theme';
 import { parseExcel, mapPersonalRows } from '@/src/utils/excel';
+import { a11y } from '@/src/i18n';
 
 /** Categorias conocidas para agrupar el personal por rol. */
 const PERSONAL_CATEGORIES: { label: string; keywords: string[] }[] = [
   { label: 'Ingenieros', keywords: ['ingenier'] },
   { label: 'Residentes', keywords: ['residente'] },
   { label: 'Supervisores', keywords: ['supervisor'] },
-  { label: 'Topografos', keywords: ['topograf'] },
+  { label: 'Topógrafos', keywords: ['topograf'] },
   { label: 'Maestros', keywords: ['maestro'] },
   { label: 'Oficiales', keywords: ['oficial'] },
   { label: 'Ayudantes', keywords: ['ayudante'] },
   { label: 'Operadores', keywords: ['operador'] },
   { label: 'Electricistas', keywords: ['electricista'] },
-  { label: 'Albaniles', keywords: ['albanil'] },
+  { label: 'Albañiles', keywords: ['albanil'] },
   { label: 'Soldadores', keywords: ['soldador'] },
   { label: 'Choferes', keywords: ['chofer', 'conductor'] },
   { label: 'Almacenistas', keywords: ['almacenista'] },
@@ -140,14 +142,14 @@ export default function PersonalManagementScreen() {
       const newItems = mapPersonalRows(rawRows);
 
       if (newItems.length === 0) {
-        Alert.alert('Importacion vacia', 'No se encontraron registros validos en el Excel.');
+        Alert.alert('Importación vacia', 'No se encontraron registros válidos en el Excel.');
         return;
       }
 
       // Merge avoiding duplicates
       const merged = Array.from(new Set([...list, ...newItems]));
       await save(merged);
-      Alert.alert('Exito', `Se importaron ${newItems.length} registros de personal.`);
+      Alert.alert('Éxito', `Se importaron ${newItems.length} registros de personal.`);
     } catch (e: any) {
       console.error('[ExcelImport] Personal Error:', e);
       Alert.alert('Error', `No se pudo procesar el archivo Excel: ${e?.message || String(e)}`);
@@ -158,29 +160,29 @@ export default function PersonalManagementScreen() {
 
   return (
     <View style={styles.flex}>
-      <View style={styles.header}>
-        <Pressable onPress={() => router.back()} hitSlop={10} style={styles.backBtn}>
-          <Ionicons name="chevron-back" size={24} color={colors.text} />
-        </Pressable>
-        <Text style={styles.title}>Personal</Text>
-        <Pressable onPress={onImport} disabled={busy} style={styles.importBtn}>
-          <Ionicons name="download-outline" size={18} color={colors.primary} />
-          <Text style={styles.importBtnTxt}>Importar</Text>
-        </Pressable>
-      </View>
+      <ScreenHeader
+        title="Personal"
+        fallbackHref={{ pathname: '/(coord)/projects/[id]', params: { id: pid } }}
+        right={(
+          <Pressable accessibilityRole="button" onPress={onImport} disabled={busy} style={styles.importBtn}>
+            <Ionicons name="download-outline" size={18} color={colors.primary} />
+            <Text style={styles.importBtnTxt}>Importar</Text>
+          </Pressable>
+        )}
+      />
 
       <ScrollView contentContainerStyle={styles.scroll}>
         <View style={styles.inputCard}>
-          <Text style={styles.label}>Nueva categoria / rol</Text>
+          <Text style={styles.label}>Nueva categoría / rol</Text>
           <View style={styles.inputRow}>
             <TextInput
               value={draft}
               onChangeText={setDraft}
-              placeholder="Ej. Topografo, Residente..."
+              placeholder="Ej. Topógrafo, Residente..."
               style={styles.input}
               onSubmitEditing={onAdd}
             />
-            <Pressable onPress={onAdd} disabled={busy} style={styles.addBtn}>
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y('agregar')} hitSlop={8} onPress={onAdd} disabled={busy} style={styles.addBtn}>
               <Ionicons name="add" size={24} color="#fff" />
             </Pressable>
           </View>
@@ -203,7 +205,7 @@ export default function PersonalManagementScreen() {
                     <View key={`${item}-${idx}`} style={styles.item}>
                       <Ionicons name="person-outline" size={18} color={colors.textMuted} />
                       <Text style={styles.itemTxt}>{item}</Text>
-                      <Pressable onPress={() => onRemove(item)} disabled={busy} hitSlop={10}>
+                      <Pressable accessibilityRole="button" accessibilityLabel={a11y('eliminar')} onPress={() => onRemove(item)} disabled={busy} hitSlop={10}>
                         <Ionicons name="trash-outline" size={18} color={colors.error} />
                       </Pressable>
                     </View>
@@ -212,7 +214,7 @@ export default function PersonalManagementScreen() {
               </View>
             ))}
             {list.length === 0 && (
-              <Text style={styles.empty}>Aun no hay categorias de personal.</Text>
+              <Text style={styles.empty}>Aún no hay categorías de personal.</Text>
             )}
           </View>
         )}
@@ -223,9 +225,6 @@ export default function PersonalManagementScreen() {
 
 const styles = StyleSheet.create({
   flex: { flex: 1, backgroundColor: colors.bg },
-  header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.md, paddingVertical: spacing.sm, backgroundColor: colors.surface, borderBottomWidth: 1, borderBottomColor: colors.border, gap: 12 },
-  backBtn: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
-  title: { flex: 1, fontSize: 18, fontWeight: '800', color: colors.text },
   importBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 8, borderRadius: radius.md, backgroundColor: colors.primaryLight },
   importBtnTxt: { color: colors.primary, fontWeight: '700', fontSize: 13 },
   scroll: { padding: spacing.md, paddingBottom: 40 },

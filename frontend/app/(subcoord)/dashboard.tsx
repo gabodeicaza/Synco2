@@ -25,18 +25,22 @@ import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '@/src/auth-context';
 import { api, FeedItem, LocationNode, Project, ProjectEvent } from '@/src/api';
 import { colors, radius, shadow, spacing, areaTone } from '@/src/theme';
-import { roleLabel } from '@/src/utils/roles';
+import { APP_BRAND, roleLabel } from '@/src/utils/roles';
 import { HeaderMenu } from '@/src/components/HeaderMenu';
 import { DailyGoalsPanel } from '@/src/components/DailyGoalsPanel';
 import { MyMeetingsPanel } from '@/src/components/MyMeetingsPanel';
 import { ReportPreviewSheet } from '@/src/components/ReportPreviewSheet';
 import { periodToInformeType } from '@/src/components/PeriodSheet';
 import { HistoryCalendarModal } from '@/src/components/HistoryCalendarModal';
+import { ReportesVacio } from '@/src/components/ReportesVacio';
 import {
   dayjs, toISODateCDMX, fmtTimeCDMX, CDMX_TZ,
   getStartOfTodayCDMX, getStartOfNaturalWeekCDMX, getStartOfNaturalMonthCDMX
 } from '@/src/utils/tz';
 import { shareWithAutoRecover } from '@/src/utils/share';
+import { t, a11y } from '@/src/i18n';
+import { fmtFechaHora } from '@/src/utils/fechas';
+import { unirOVacio } from '@/src/utils/texto';
 
 export default function SubCoordDashboard() {
   const insets = useSafeAreaInsets();
@@ -107,7 +111,7 @@ export default function SubCoordDashboard() {
         setPid(list[0].id);
       }
     } catch (e: any) {
-      setError(e?.message || 'No se pudieron cargar los proyectos');
+      setError(e?.message || t('panelSubcoord.noSePudieronCargarLos'));
     }
   }, [pid]);
 
@@ -138,7 +142,7 @@ export default function SubCoordDashboard() {
       setError(null);
       await Promise.all([loadStructure(projectId), loadFeed(projectId)]);
     } catch (e: any) {
-      setError(e?.message || 'No se pudo cargar la informacion');
+      setError(e?.message || t('panelSubcoord.noSePudoCargarLa'));
     }
   }, [loadStructure, loadFeed]);
 
@@ -167,7 +171,7 @@ export default function SubCoordDashboard() {
   // del feed, no de la estructura completa del proyecto.
   useEffect(() => {
     if (!pid || loadedStructureForPid.current !== pid) return;
-    loadFeed(pid).catch((e: any) => setError(e?.message || 'No se pudo cargar la informacion'));
+    loadFeed(pid).catch((e: any) => setError(e?.message || t('panelSubcoord.noSePudoCargarLa')));
   }, [debouncedQuery, period, pid, loadFeed]);
 
   const onRefresh = useCallback(async () => {
@@ -273,7 +277,7 @@ export default function SubCoordDashboard() {
       setAiSummary(res.summary);
       setAiMeta({ reports_count: res.reports_count, period_hours: res.period_hours });
     } catch (e: any) {
-      setAiError(e?.message || 'No se pudo generar el resumen.');
+      setAiError(e?.message || t('panelSubcoord.noSePudoGenerarEl'));
     } finally {
       setAiBusy(false);
     }
@@ -299,7 +303,7 @@ export default function SubCoordDashboard() {
       setAiCopied(true);
       setTimeout(() => setAiCopied(false), 1800);
     } catch {
-      Alert.alert('No se pudo copiar', 'Intenta seleccionar el texto manualmente.');
+      Alert.alert(t('panelSubcoord.noSePudoCopiar'), t('panelSubcoord.intentaSeleccionarElTextoManualmente'));
     }
   }
 
@@ -308,13 +312,13 @@ export default function SubCoordDashboard() {
     try {
       const available = await Sharing.isAvailableAsync();
       if (!available) {
-        Alert.alert('No disponible', 'Compartir no esta disponible en este dispositivo.');
+        Alert.alert(t('panelSubcoord.noDisponible'), t('panelSubcoord.compartirNoEstaDisponibleEn'));
         return;
       }
       const ts = Date.now();
       const fileUri = `${FileSystem.cacheDirectory}resumen_ejecutivo_${ts}.txt`;
-      const header = `__ Resumen Ejecutivo _ SynCo\n${
-        aiMeta ? `${aiMeta.reports_count} reportes _ ultimas ${aiMeta.period_hours}h\n` : ''
+      const header = `${t('marca.resumenEjecutivo')}\n${
+        aiMeta ? `${aiMeta.reports_count} reportes · últimas ${aiMeta.period_hours}h\n` : ''
       }\n`;
       await FileSystem.writeAsStringAsync(fileUri, header + aiSummary, {
         encoding: FileSystem.EncodingType.UTF8,
@@ -325,7 +329,7 @@ export default function SubCoordDashboard() {
         UTI: 'public.plain-text',
       });
     } catch (e: any) {
-      Alert.alert('No se pudo compartir', e?.message || 'Intentalo nuevamente.');
+      Alert.alert(t('panelSubcoord.noSePudoCompartir'), e?.message || t('panelSubcoord.intentaloNuevamente'));
     }
   }
 
@@ -336,19 +340,19 @@ export default function SubCoordDashboard() {
       setSharingReportId(item.id);
       const available = await Sharing.isAvailableAsync();
       if (!available) {
-        Alert.alert('No disponible', 'Compartir no esta disponible en este dispositivo.');
+        Alert.alert(t('panelSubcoord.noDisponible'), t('panelSubcoord.compartirNoEstaDisponibleEn'));
         return;
       }
 
-      const path = (item.node_path_names || []).join(' _ ') || '_';
-      const ts = item.created_at ? dayjs.utc(item.created_at).tz(CDMX_TZ).format('DD/MM/YYYY HH:mm') : '';
+      const path = unirOVacio(item.node_path_names || []);
+      const ts = item.created_at ? fmtFechaHora(item.created_at) : '';
       const captionLines = [
-        '__ *Reporte de obra _ SynCo*',
+        `*${t('marca.reporteDeObra')}*`,
         '',
-        `__ *Ubicacion:* ${path}`,
-        `__ *Capturado por:* ${item.captured_by_name || '_'}`,
-        ts ? `__ *Fecha:* ${ts}` : '',
-        item.area_name ? `___ *Area:* ${item.area_name}` : '',
+        `*Ubicación:* ${path}`,
+        `*Capturado por:* ${item.captured_by_name || '—'}`,
+        ts ? `*Fecha:* ${ts}` : '',
+        item.area_name ? `*Área:* ${item.area_name}` : '',
         item.avance ? `\n__ *Avance:*\n${item.avance}` : '',
       ].filter(Boolean);
       const caption = captionLines.join('\n');
@@ -380,7 +384,7 @@ export default function SubCoordDashboard() {
         });
       }
     } catch (e: any) {
-      Alert.alert('No se pudo compartir', e?.message || 'Intentalo nuevamente.');
+      Alert.alert(t('panelSubcoord.noSePudoCompartir'), e?.message || t('panelSubcoord.intentaloNuevamente'));
     } finally {
       setSharingReportId(null);
     }
@@ -417,16 +421,16 @@ export default function SubCoordDashboard() {
           await Sharing.shareAsync(dest, {
             mimeType:
               'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            dialogTitle: 'Compartir reporte SynCo',
+            dialogTitle: t('marca.compartirReporte'),
           });
         } else {
-          Alert.alert('Listo', `Archivo guardado en cache:\n${dest}`);
+          Alert.alert(t('panelSubcoord.listo'), t('panelSubcoord.archivoGuardadoCache', { ruta: dest }));
         }
       }
     } catch (e: any) {
       Alert.alert(
-        'No se pudo exportar',
-        e?.message || 'Intentalo nuevamente.',
+        t('panelSubcoord.noSePudoExportar'),
+        e?.message || t('panelSubcoord.intentaloNuevamente'),
       );
     } finally {
       setExporting(false);
@@ -498,14 +502,14 @@ export default function SubCoordDashboard() {
           encoding: FileSystem.EncodingType.Base64,
         });
         if (await Sharing.isAvailableAsync()) {
-          await Sharing.shareAsync(dest, { dialogTitle: 'Compartir reporte SynCo' });
+          await Sharing.shareAsync(dest, { dialogTitle: t('marca.compartirReporte') });
         } else {
-          Alert.alert('Listo', `Archivo guardado en cache:\n${dest}`);
+          Alert.alert(t('panelSubcoord.listo'), t('panelSubcoord.archivoGuardadoCache', { ruta: dest }));
         }
       }
       setAdvExportOpen(false);
     } catch (e: any) {
-      Alert.alert('No se pudo exportar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert(t('panelSubcoord.noSePudoExportar'), e?.message || t('panelSubcoord.intentaloNuevamente'));
     } finally {
       setAdvExporting(false);
     }
@@ -525,12 +529,12 @@ export default function SubCoordDashboard() {
       <View style={[styles.header, { paddingTop: insets.top + spacing.xs }]}>
         <HeaderMenu basePath="/(subcoord)" projectId={pid} />
         <View style={{ flex: 1, alignItems: 'center' }}>
-          <Text style={styles.headerTitle}>SynCo</Text>
+          <Text style={styles.headerTitle}>{APP_BRAND}</Text>
           <Text style={styles.headerSubtitle} numberOfLines={1}>
-            Sub-coordinador _ {roleLabel(user?.role)}
+            {t('panelSubcoord.subCoordinador')} {roleLabel(user?.role)}
           </Text>
         </View>
-        <Pressable hitSlop={10} style={styles.headerBtn}>
+        <Pressable accessibilityRole="button" accessibilityLabel={a11y('notificaciones')} hitSlop={10} style={styles.headerBtn}>
           <Ionicons name="notifications-outline" size={22} color="#fff" />
         </Pressable>
       </View>
@@ -555,34 +559,34 @@ export default function SubCoordDashboard() {
                 <Ionicons name="briefcase" size={18} color="#fff" />
               </View>
               <View style={{ flex: 1 }}>
-                <Text style={styles.heroLabel}>PROYECTO COORDINADO</Text>
+                <Text style={styles.heroLabel}>{t('panelSubcoord.proyectoCoordinado')}</Text>
                 <Text style={styles.heroTitle} numberOfLines={1}>
-                  {currentProject?.name || 'Sin proyecto'}
+                  {currentProject?.name || t('panelSubcoord.sinProyecto')}
                 </Text>
               </View>
             </View>
             <Text style={styles.heroPuesto}>
-              Hola, {user?.name || 'Sub-coordinador'}
+              {t('panelSubcoord.hola')} {user?.name || t('panelSubcoord.subCoordinador2')}
             </Text>
             {scopeNodeName ? (
               <View style={styles.heroScopeRow}>
                 <Ionicons name="location" size={12} color={colors.primary} />
                 <Text style={styles.heroScopeTxt} numberOfLines={1}>
-                  Tramo asignado: <Text style={styles.heroScopeName}>{scopeNodeName}</Text>
+                  {t('panelSubcoord.tramoAsignado')} <Text style={styles.heroScopeName}>{scopeNodeName}</Text>
                 </Text>
               </View>
             ) : (
               <View style={styles.heroScopeRow}>
                 <Ionicons name="alert-circle" size={12} color={colors.textMuted} />
                 <Text style={[styles.heroScopeTxt, { color: colors.textMuted }]} numberOfLines={1}>
-                  Sin tramo asignado
+                  {t('panelSubcoord.sinTramoAsignado')}
                 </Text>
               </View>
             )}
             {currentProject?.contract_number ? (
               <Text style={styles.heroMeta}>
-                Contrato {currentProject.contract_number}
-                {currentProject.constructora ? `  _  ${currentProject.constructora}` : ''}
+                {t('panelSubcoord.contrato')} {currentProject.contract_number}
+                {currentProject.constructora ? `  ·  ${currentProject.constructora}` : ''}
               </Text>
             ) : null}
           </View>
@@ -591,7 +595,7 @@ export default function SubCoordDashboard() {
         {/* Selector de proyectos (si hay mas de uno) */}
         {projects.length > 1 && (
           <View style={{ paddingHorizontal: spacing.md, marginTop: spacing.md }}>
-            <Text style={styles.sectionLabel}>Cambiar proyecto</Text>
+            <Text style={styles.sectionLabel}>{t('panelSubcoord.cambiarProyecto')}</Text>
             <ScrollView
               horizontal
               showsHorizontalScrollIndicator={false}
@@ -600,7 +604,7 @@ export default function SubCoordDashboard() {
               {projects.map((p) => {
                 const sel = p.id === pid;
                 return (
-                  <Pressable
+                  <Pressable accessibilityRole="button"
                     key={p.id}
                     onPress={() => setPid(p.id)}
                     style={[styles.chip, sel && styles.chipActive]}
@@ -620,9 +624,9 @@ export default function SubCoordDashboard() {
 
         {/* Stat Cards: TOTAL _ MÍOS _ COMPAÑEROS (Dynamic) */}
         <View style={styles.statsRow}>
-          <StatCard label="TOTAL" value={stats.total} icon="albums-outline" tint={colors.primary} />
-          <StatCard label="MÍOS" value={stats.mine} icon="person" tint="#0EA5E9" />
-          <StatCard label="COMPAÑEROS" value={stats.others} icon="people-outline" tint="#10B981" />
+          <StatCard label={t('panelSubcoord.total')} value={stats.total} icon="albums-outline" tint={colors.primary} />
+          <StatCard label={t('panelSubcoord.mios')} value={stats.mine} icon="person" tint="#0EA5E9" />
+          <StatCard label={t('panelSubcoord.companeros')} value={stats.others} icon="people-outline" tint="#10B981" />
         </View>
 
         {/* P4 - Chips de Tiempo (Hoy / Semana / Mes / Todo / Dia calendario) */}
@@ -635,7 +639,7 @@ export default function SubCoordDashboard() {
           ] as const).map((t) => {
             const sel = period === t.k && !selectedDate;
             return (
-              <Pressable
+              <Pressable accessibilityRole="button"
                 key={t.k}
                 onPress={() => {
                   setPeriod(t.k);
@@ -655,7 +659,7 @@ export default function SubCoordDashboard() {
             );
           })}
           {/* Boton Dia _ abre calendario historico */}
-          <Pressable
+          <Pressable accessibilityRole="button"
             onPress={() => setCalendarOpen(true)}
             style={[styles.timeChip, !!selectedDate && styles.timeChipActive]}
           >
@@ -668,10 +672,10 @@ export default function SubCoordDashboard() {
               style={[styles.timeChipTxt, !!selectedDate && styles.timeChipTxtActive]}
               numberOfLines={1}
             >
-              {selectedDate || 'Dia'}
+              {selectedDate || t('panelSubcoord.dia')}
             </Text>
             {selectedDate && (
-              <Pressable
+              <Pressable accessibilityRole="button" accessibilityLabel={a11y('quitar')}
                 hitSlop={8}
                 onPress={(e) => {
                   e.stopPropagation();
@@ -692,7 +696,7 @@ export default function SubCoordDashboard() {
               showsHorizontalScrollIndicator={false}
               contentContainerStyle={styles.areaChipsContent}
             >
-              <Pressable
+              <Pressable accessibilityRole="button"
                 onPress={() => setSelectedAreas(new Set())}
                 style={[
                   styles.areaChip,
@@ -710,14 +714,14 @@ export default function SubCoordDashboard() {
                     selectedAreas.size === 0 && styles.areaChipTxtActive,
                   ]}
                 >
-                  Todas
+                  {t('panelSubcoord.todas')}
                 </Text>
               </Pressable>
               {allAreas.map((a) => {
                 const sel = selectedAreas.has(a.name);
                 const tone = areaTone(a.color || undefined);
                 return (
-                  <Pressable
+                  <Pressable accessibilityRole="button"
                     key={a.name}
                     onPress={() => {
                       const next = new Set(selectedAreas);
@@ -763,8 +767,8 @@ export default function SubCoordDashboard() {
           <View style={styles.errorBox}>
             <Ionicons name="alert-circle-outline" size={24} color={colors.error} />
             <Text style={styles.errorTxt}>{error}</Text>
-            <Pressable onPress={() => pid && loadData(pid)} style={styles.retryBtn}>
-              <Text style={styles.retryTxt}>Reintentar</Text>
+            <Pressable accessibilityRole="button" onPress={() => pid && loadData(pid)} style={styles.retryBtn}>
+              <Text style={styles.retryTxt}>{t('panelSubcoord.reintentar')}</Text>
             </Pressable>
           </View>
         ) : !pid ? (
@@ -772,9 +776,9 @@ export default function SubCoordDashboard() {
             <View style={styles.emptyIcon}>
               <Ionicons name="folder-open-outline" size={28} color={colors.primary} />
             </View>
-            <Text style={styles.emptyTitle}>Sin proyectos asignados</Text>
+            <Text style={styles.emptyTitle}>{t('panelSubcoord.sinProyectosAsignados')}</Text>
             <Text style={styles.emptyMsg}>
-              Pidele a tu Coordinador General que te asigne a un proyecto para ver el panel.
+              {t('panelSubcoord.pideleATuCoordinadorGeneral')}
             </Text>
           </View>
         ) : (
@@ -788,7 +792,7 @@ export default function SubCoordDashboard() {
 
             {/* Boton Resumen Ejecutivo IA */}
             <View style={styles.exportRow}>
-              <Pressable
+              <Pressable accessibilityRole="button"
                 onPress={openAiSummary}
                 disabled={aiBusy}
                 style={({ pressed }) => [
@@ -803,9 +807,9 @@ export default function SubCoordDashboard() {
                   <Ionicons name="sparkles" size={22} color="#fff" />
                 )}
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.exportMainTitle}>Resumen Ejecutivo con IA</Text>
+                  <Text style={styles.exportMainTitle}>{t('panelSubcoord.resumenEjecutivoConIa')}</Text>
                   <Text style={styles.exportMainSub}>
-                    {aiBusy ? 'Analizando reportes_' : 'Analisis ejecutivo _ ultimas 24h'}
+                    {aiBusy ? t('panelSubcoord.analizandoReportes') : t('panelSubcoord.analisisEjecutivoUltimas24h')}
                   </Text>
                 </View>
                 {!aiBusy && (
@@ -816,7 +820,7 @@ export default function SubCoordDashboard() {
 
             {/* Boton Exportacion Avanzada (PDF/XLSX/DOCX/PPTX _ periodo) */}
             <View style={styles.exportRow}>
-              <Pressable
+              <Pressable accessibilityRole="button"
                 onPress={() => setAdvExportOpen(true)}
                 style={({ pressed }) => [
                   styles.exportMainBtn,
@@ -825,9 +829,9 @@ export default function SubCoordDashboard() {
               >
                 <Ionicons name="download-outline" size={22} color="#fff" />
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.exportMainTitle}>Exportacion Avanzada</Text>
+                  <Text style={styles.exportMainTitle}>{t('panelSubcoord.exportacionAvanzada')}</Text>
                   <Text style={styles.exportMainSub}>
-                    PDF _ XLSX _ DOCX _ PPTX  _  Hoy/Ayer/Semana/Mes
+                    {t('panelSubcoord.pdfXlsxDocxPptxHoy')}
                   </Text>
                 </View>
                 <Ionicons name="chevron-forward" size={20} color="rgba(255,255,255,0.85)" />
@@ -841,7 +845,7 @@ export default function SubCoordDashboard() {
                 <TextInput
                   value={searchQuery}
                   onChangeText={setSearchQuery}
-                  placeholder="Buscar reporte por nombre, ubicacion o texto_"
+                  placeholder={t('panelSubcoord.buscarReportePorNombreUbicacion')}
                   placeholderTextColor={colors.textMuted}
                   style={styles.subSearchInput}
                   autoCorrect={false}
@@ -849,7 +853,7 @@ export default function SubCoordDashboard() {
                   returnKeyType="search"
                 />
                 {searchQuery ? (
-                  <Pressable hitSlop={8} onPress={() => setSearchQuery('')}>
+                  <Pressable accessibilityRole="button" accessibilityLabel={a11y('quitar')} hitSlop={8} onPress={() => setSearchQuery('')}>
                     <Ionicons name="close-circle" size={17} color={colors.textMuted} />
                   </Pressable>
                 ) : null}
@@ -857,7 +861,7 @@ export default function SubCoordDashboard() {
             </View>
             <View style={styles.feedHeaderRow}>
               <Text style={styles.feedTitle}>
-                {debouncedQuery ? 'Resultados' : 'Reportes Recientes'}
+                {debouncedQuery ? t('panelSubcoord.resultados') : t('panelSubcoord.reportesRecientes')}
               </Text>
               {todayReports.length > 0 ? (
                 <Text style={styles.feedCount}>{todayReports.length}</Text>
@@ -865,31 +869,19 @@ export default function SubCoordDashboard() {
             </View>
 
             {todayReports.length === 0 ? (
-              <View style={styles.emptyBox}>
-                <View style={styles.emptyIcon}>
-                  <Ionicons
-                    name={debouncedQuery ? 'search-outline' : 'time-outline'}
-                    size={26}
-                    color={colors.primary}
-                  />
-                </View>
-                <Text style={styles.emptyTitle}>
-                  {debouncedQuery ? 'Sin resultados' : 'Aun sin reportes hoy'}
-                </Text>
-                <Text style={styles.emptyMsg}>
-                  {debouncedQuery
-                    ? `No encontramos reportes que coincidan con "${debouncedQuery}".`
-                    : 'Cuando tu equipo capture actividad, aparecera aqui.'}
-                </Text>
-              </View>
+              <ReportesVacio
+                variante="sub"
+                busqueda={debouncedQuery}
+                onQuitarFiltros={() => setSearchQuery('')}
+              />
             ) : (
               <View style={{ paddingHorizontal: spacing.md, gap: spacing.sm }}>
                 {todayReports.map((r) => {
                   const tone = areaTone(r.area_color || undefined);
                   const path = r.node_path_names || [];
-                  const leafName = path[path.length - 1] || 'Sin ubicacion';
+                  const leafName = path[path.length - 1] || t('panelSubcoord.sinUbicacion');
                   const parentName = path.length >= 2 ? path[path.length - 2] : '';
-                  const subtitle = parentName ? `${parentName} _ ${leafName}` : leafName;
+                  const subtitle = parentName ? `${parentName} · ${leafName}` : leafName;
                   return (
                     <FeedCard
                       key={r.id}
@@ -920,9 +912,9 @@ export default function SubCoordDashboard() {
             <View style={styles.aiHeader}>
               <View style={styles.aiTitleRow}>
                 <Ionicons name="sparkles" size={20} color={colors.primary} />
-                <Text style={styles.aiTitle}>Resumen Ejecutivo</Text>
+                <Text style={styles.aiTitle}>{t('panelSubcoord.resumenEjecutivo')}</Text>
               </View>
-              <Pressable
+              <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')}
                 onPress={() => setAiOpen(false)}
                 hitSlop={10}
                 style={({ pressed }) => [styles.aiClose, pressed && { opacity: 0.6 }]}
@@ -937,7 +929,7 @@ export default function SubCoordDashboard() {
                 ['semanal', 'Semana'],
                 ['mensual', 'Mes'],
               ] as const).map(([key, label]) => (
-                <Pressable
+                <Pressable accessibilityRole="button"
                   key={key}
                   onPress={() => changeAiPeriodo(key)}
                   disabled={aiBusy}
@@ -956,7 +948,7 @@ export default function SubCoordDashboard() {
 
             {aiMeta && (
               <Text style={styles.aiMeta}>
-                {aiMeta.reports_count} reportes _ {aiMeta.period_hours}h
+                {t('panelSubcoord.reportesUltimasHoras', { n: aiMeta.reports_count, horas: aiMeta.period_hours })}
               </Text>
             )}
 
@@ -964,19 +956,19 @@ export default function SubCoordDashboard() {
               {aiBusy ? (
                 <View style={styles.aiLoading}>
                   <ActivityIndicator size="small" color={colors.primary} />
-                  <Text style={styles.aiLoadingTxt}>Analizando reportes_</Text>
+                  <Text style={styles.aiLoadingTxt}>{t('panelSubcoord.analizandoReportes')}</Text>
                 </View>
               ) : aiError ? (
                 <Text style={styles.aiError}>{aiError}</Text>
               ) : aiSummary ? (
                 <Text style={styles.aiBody}>{aiSummary}</Text>
               ) : (
-                <Text style={styles.aiBody}>Sin contenido.</Text>
+                <Text style={styles.aiBody}>{t('panelSubcoord.sinContenido')}</Text>
               )}
             </ScrollView>
 
             <View style={styles.aiActions}>
-              <Pressable
+              <Pressable accessibilityRole="button"
                 onPress={() => runAiSummary()}
                 disabled={aiBusy}
                 style={({ pressed }) => [
@@ -985,9 +977,9 @@ export default function SubCoordDashboard() {
                 ]}
               >
                 <Ionicons name="refresh" size={16} color={colors.text} />
-                <Text style={styles.aiSecTxt}>Regenerar</Text>
+                <Text style={styles.aiSecTxt}>{t('panelSubcoord.regenerar')}</Text>
               </Pressable>
-              <Pressable
+              <Pressable accessibilityRole="button"
                 onPress={copyAiSummary}
                 disabled={!aiSummary || aiBusy}
                 style={({ pressed }) => [
@@ -997,11 +989,11 @@ export default function SubCoordDashboard() {
                 ]}
               >
                 <Ionicons name={aiCopied ? 'checkmark' : 'copy-outline'} size={16} color="#fff" />
-                <Text style={styles.aiPrimTxt}>{aiCopied ? 'Copiado' : 'Copiar'}</Text>
+                <Text style={styles.aiPrimTxt}>{aiCopied ? t('panelSubcoord.copiado') : t('panelSubcoord.copiar')}</Text>
               </Pressable>
             </View>
 
-            <Pressable
+            <Pressable accessibilityRole="button"
               onPress={shareSummaryWhatsApp}
               disabled={!aiSummary || aiBusy}
               style={({ pressed }) => [
@@ -1011,7 +1003,7 @@ export default function SubCoordDashboard() {
               ]}
             >
               <Ionicons name="logo-whatsapp" size={18} color="#fff" />
-              <Text style={styles.waTxt}>Compartir por WhatsApp</Text>
+              <Text style={styles.waTxt}>{t('panelSubcoord.compartirPorWhatsapp')}</Text>
             </Pressable>
           </View>
         </View>
@@ -1046,17 +1038,17 @@ export default function SubCoordDashboard() {
         animationType="fade"
         onRequestClose={() => !advExporting && setAdvExportOpen(false)}
       >
-        <Pressable
+        <Pressable accessibilityRole="button"
           style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', padding: 16 }}
           onPress={() => !advExporting && setAdvExportOpen(false)}
         >
-          <Pressable
+          <Pressable accessibilityRole="button"
             style={{ width: '92%', maxWidth: 460, maxHeight: '85%', backgroundColor: '#fff', borderRadius: 16, overflow: 'hidden' }}
             onPress={(e) => e.stopPropagation()}
           >
             <View style={styles.previewHeader}>
-              <Text style={styles.previewTitle}>Exportacion Avanzada</Text>
-              <Pressable
+              <Text style={styles.previewTitle}>{t('panelSubcoord.exportacionAvanzada')}</Text>
+              <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')}
                 hitSlop={10}
                 disabled={advExporting}
                 onPress={() => setAdvExportOpen(false)}
@@ -1066,12 +1058,12 @@ export default function SubCoordDashboard() {
             </View>
             <ScrollView contentContainerStyle={{ padding: 16, gap: 16 }}>
               <View>
-                <Text style={styles.advLabel}>Formato</Text>
+                <Text style={styles.advLabel}>{t('panelSubcoord.formato')}</Text>
                 <View style={styles.advGrid}>
                   {(['xlsx', 'pdf', 'docx', 'pptx'] as const).map((f) => {
                     const active = expFormat === f;
                     return (
-                      <Pressable
+                      <Pressable accessibilityRole="button"
                         key={f}
                         onPress={() => setExpFormat(f)}
                         style={[styles.advChip, active && styles.advChipActive]}
@@ -1085,7 +1077,7 @@ export default function SubCoordDashboard() {
                 </View>
               </View>
               <View>
-                <Text style={styles.advLabel}>Periodo</Text>
+                <Text style={styles.advLabel}>{t('panelSubcoord.periodo')}</Text>
                 <View style={styles.advGrid}>
                   {([
                     { k: 'today', l: 'Hoy' },
@@ -1095,7 +1087,7 @@ export default function SubCoordDashboard() {
                   ] as const).map((p) => {
                     const active = expPeriod === p.k;
                     return (
-                      <Pressable
+                      <Pressable accessibilityRole="button"
                         key={p.k}
                         onPress={() => setExpPeriod(p.k as any)}
                         style={[styles.advChip, active && styles.advChipActive]}
@@ -1109,32 +1101,32 @@ export default function SubCoordDashboard() {
                 </View>
                 {expFormat === 'xlsx' ? (
                   <Text style={styles.advHint}>
-                    Nota: XLSX exporta todos los reportes vigentes (el periodo no aplica).
+                    {t('panelSubcoord.notaXlsxExportaTodosLos')}
                   </Text>
                 ) : (expPeriod === 'today' || expPeriod === 'week' || expPeriod === 'month') && (
                   <Text style={styles.advHint}>
-                    {expPeriod === 'today' && 'Informe Diario: solo reportes con jerarquia "Diario".'}
-                    {expPeriod === 'week' && 'Informe Semanal: solo reportes con jerarquia "Semanal".'}
-                    {expPeriod === 'month' && 'Informe Mensual: solo reportes con jerarquia "Mensual".'}
+                    {expPeriod === 'today' && t('panelSubcoord.informeDiarioSoloReportesCon')}
+                    {expPeriod === 'week' && t('panelSubcoord.informeSemanalSoloReportesCon')}
+                    {expPeriod === 'month' && t('panelSubcoord.informeMensualSoloReportesCon')}
                   </Text>
                 )}
               </View>
               {expFormat !== 'xlsx' && expAreas.length > 0 && (
                 <View>
-                  <Text style={styles.advLabel}>Area</Text>
+                  <Text style={styles.advLabel}>{t('panelSubcoord.area')}</Text>
                   <View style={styles.advGrid}>
-                    <Pressable
+                    <Pressable accessibilityRole="button"
                       onPress={() => setExpAreaId(null)}
                       style={[styles.advChip, expAreaId === null && styles.advChipActive]}
                     >
                       <Text style={[styles.advChipTxt, expAreaId === null && styles.advChipTxtActive]}>
-                        Todas
+                        {t('panelSubcoord.todas')}
                       </Text>
                     </Pressable>
                     {expAreas.map((a) => {
                       const active = expAreaId === a.id;
                       return (
-                        <Pressable
+                        <Pressable accessibilityRole="button"
                           key={a.id}
                           onPress={() => setExpAreaId(a.id)}
                           style={[styles.advChip, active && styles.advChipActive]}
@@ -1155,11 +1147,11 @@ export default function SubCoordDashboard() {
                     })}
                   </View>
                   <Text style={styles.advHint}>
-                    Filtra los reportes por area. Solo se incluyen severidades Importante y Urgente.
+                    {t('panelSubcoord.filtraLosReportesPorArea')}
                   </Text>
                 </View>
               )}
-              <Pressable
+              <Pressable accessibilityRole="button"
                 onPress={onAdvExport}
                 disabled={advExporting}
                 style={({ pressed }) => [
@@ -1173,7 +1165,7 @@ export default function SubCoordDashboard() {
                   <Ionicons name="download-outline" size={20} color="#fff" />
                 )}
                 <Text style={styles.advExportGoTxt}>
-                  {advExporting ? 'Generando_' : 'Exportar ahora'}
+                  {advExporting ? t('panelSubcoord.generando') : t('panelSubcoord.exportarAhora')}
                 </Text>
               </Pressable>
             </ScrollView>
@@ -1211,7 +1203,7 @@ const StatCard = memo(({
 
 const FeedCard = memo(({ r, tone, subtitle, onPreview, onShare, isSharing }: any) => {
   return (
-    <Pressable
+    <Pressable accessibilityRole="button"
       onPress={() => onPreview(r)}
       style={({ pressed }) => [
         styles.feedCard,
@@ -1251,13 +1243,13 @@ const FeedCard = memo(({ r, tone, subtitle, onPreview, onShare, isSharing }: any
           <Text style={styles.feedTime}>{fmtTimeCDMX(r.created_at)}</Text>
         </View>
         <Text style={styles.feedCardTitle} numberOfLines={1}>
-          {r.title || r.nombre || r.titulo || r.name || r.description || r.descripcion || subtitle || 'Reporte de Obra'}
+          {r.title || r.nombre || r.titulo || r.name || r.description || r.descripcion || subtitle || t('panelSubcoord.reporteDeObra')}
         </Text>
         <Text style={styles.feedCardSub} numberOfLines={1}>
           {subtitle}
         </Text>
         <Text style={styles.feedMetaTxt} numberOfLines={1}>
-          __ {r.captured_by_name || '_'}
+          {r.captured_by_name || '—'}
         </Text>
         {!!r.actividades && (
           <Text style={styles.feedActividades} numberOfLines={2}>
@@ -1270,7 +1262,7 @@ const FeedCard = memo(({ r, tone, subtitle, onPreview, onShare, isSharing }: any
           </Text>
         )}
       </View>
-      <Pressable
+      <Pressable accessibilityRole="button" accessibilityLabel={a11y('whatsapp')}
         onPress={() => onShare(r)}
         disabled={isSharing}
         hitSlop={8}
@@ -1298,9 +1290,9 @@ const HeroCard = memo(({ user, currentProject, globalPct, scopeNodeName }: any) 
             <Ionicons name="briefcase" size={18} color="#fff" />
           </View>
           <View style={{ flex: 1 }}>
-            <Text style={styles.heroLabel}>PROYECTO COORDINADO</Text>
+            <Text style={styles.heroLabel}>{t('panelSubcoord.proyectoCoordinado')}</Text>
             <Text style={styles.heroTitle} numberOfLines={1}>
-              {currentProject?.name || 'Sin proyecto'}
+              {currentProject?.name || t('panelSubcoord.sinProyecto')}
             </Text>
           </View>
           <View style={styles.heroLeavesPill}>
@@ -1309,27 +1301,27 @@ const HeroCard = memo(({ user, currentProject, globalPct, scopeNodeName }: any) 
           </View>
         </View>
         <Text style={styles.heroPuesto}>
-          Hola, {user?.name || 'Sub-coordinador'}
+          {t('panelSubcoord.hola')} {user?.name || t('panelSubcoord.subCoordinador2')}
         </Text>
         {scopeNodeName ? (
           <View style={styles.heroScopeRow}>
             <Ionicons name="location" size={12} color={colors.primary} />
             <Text style={styles.heroScopeTxt} numberOfLines={1}>
-              Tramo asignado: <Text style={styles.heroScopeName}>{scopeNodeName}</Text>
+              {t('panelSubcoord.tramoAsignado')} <Text style={styles.heroScopeName}>{scopeNodeName}</Text>
             </Text>
           </View>
         ) : (
           <View style={styles.heroScopeRow}>
             <Ionicons name="alert-circle" size={12} color={colors.textMuted} />
             <Text style={[styles.heroScopeTxt, { color: colors.textMuted }]} numberOfLines={1}>
-              Sin tramo asignado
+              {t('panelSubcoord.sinTramoAsignado')}
             </Text>
           </View>
         )}
         {currentProject?.contract_number ? (
           <Text style={styles.heroMeta}>
-            Contrato {currentProject.contract_number}
-            {currentProject.constructora ? `  _  ${currentProject.constructora}` : ''}
+            {t('panelSubcoord.contrato')} {currentProject.contract_number}
+            {currentProject.constructora ? `  ·  ${currentProject.constructora}` : ''}
           </Text>
         ) : null}
       </View>
@@ -1339,7 +1331,7 @@ const HeroCard = memo(({ user, currentProject, globalPct, scopeNodeName }: any) 
 
 const ActionTile = memo(({ icon, title, subtitle, disabled, comingSoon, onPress, busy, badge }: any) => {
   return (
-    <Pressable
+    <Pressable accessibilityRole="button"
       onPress={onPress}
       disabled={!!disabled}
       style={({ pressed }) => [styles.tile, disabled && { opacity: 0.55 }, pressed && !disabled && { transform: [{ scale: 0.99 }] }]}
@@ -1364,7 +1356,7 @@ const ActionTile = memo(({ icon, title, subtitle, disabled, comingSoon, onPress,
       <View style={{ flex: 1 }}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
           <Text style={styles.tileTitle}>{title}</Text>
-          {comingSoon ? <Text style={styles.soonBadge}>Proximamente</Text> : null}
+          {comingSoon ? <Text style={styles.soonBadge}>{t('panelSubcoord.proximamente')}</Text> : null}
         </View>
         <Text style={styles.tileSub}>{subtitle}</Text>
       </View>

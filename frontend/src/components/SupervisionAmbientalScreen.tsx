@@ -253,7 +253,7 @@ export default function SupervisionAmbientalScreen({ projectId }: { projectId: s
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <View style={[styles.headerWrap, { backgroundColor: headerColor, paddingTop: insets.top + spacing.xs }]}>
         <View style={styles.headerTopRow}>
-          <Pressable onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
+          <Pressable accessibilityRole="button" accessibilityLabel="Volver" onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
             <Ionicons name="chevron-back" size={22} color={headerTextColor} />
           </Pressable>
           <Text style={[styles.titleBar, { color: headerTextColor }]} numberOfLines={1}>Supervisión Ambiental</Text>
@@ -262,7 +262,7 @@ export default function SupervisionAmbientalScreen({ projectId }: { projectId: s
       </View>
 
       <ScrollView contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + spacing.xl }]}>
-        <Pressable
+        <Pressable accessibilityRole="button"
           style={[styles.card, { padding: spacing.md }]}
           onPress={puedeEscribir ? () => setCfgDraft({ referencia: config.referencia || '', total: config.total_a_restituir === null ? '' : String(config.total_a_restituir) }) : undefined}
         >
@@ -278,7 +278,7 @@ export default function SupervisionAmbientalScreen({ projectId }: { projectId: s
               <View style={styles.sectionHeaderRow}>
                 <Text style={styles.sectionTitle}>{sec.titulo}</Text>
                 {puedeEscribir ? (
-                  <Pressable onPress={() => nuevo(sec)} style={styles.addBtn}>
+                  <Pressable accessibilityRole="button" onPress={() => nuevo(sec)} style={styles.addBtn}>
                     <Ionicons name="add" size={16} color={colors.primary} />
                     <Text style={styles.addBtnTxt}>{sec.nuevo}</Text>
                   </Pressable>
@@ -291,14 +291,14 @@ export default function SupervisionAmbientalScreen({ projectId }: { projectId: s
                 const r = sec.resumen(it);
                 const puedeBorrar = puedeBorrarTodo || it.created_by === user?.id;
                 return (
-                  <Pressable key={it.id} style={[styles.card, styles.itemRow]} onPress={puedeEscribir ? () => editar(sec, it) : undefined}>
+                  <Pressable accessibilityRole="button" key={it.id} style={[styles.card, styles.itemRow]} onPress={puedeEscribir ? () => editar(sec, it) : undefined}>
                     {it.thumb ? <Image source={{ uri: `data:image/jpeg;base64,${it.thumb}` }} style={styles.thumb} /> : null}
                     <View style={{ flex: 1 }}>
                       <Text style={styles.cardTitle}>{r.titulo}</Text>
                       {r.detalle ? <Text style={styles.meta}>{r.detalle}</Text> : null}
                     </View>
                     {puedeEscribir && puedeBorrar ? (
-                      <Pressable hitSlop={8} onPress={() => onDelete(it)}>
+                      <Pressable accessibilityRole="button" accessibilityLabel="Eliminar" hitSlop={8} onPress={() => onDelete(it)}>
                         <Ionicons name="trash-outline" size={18} color={colors.error} />
                       </Pressable>
                     ) : null}

@@ -33,7 +33,7 @@ export function GraficasEditor({
         <View key={g.id} style={styles.card}>
           <View style={styles.head}>
             <Text style={styles.headTxt}>Gráfica {i + 1}</Text>
-            <Pressable hitSlop={8} onPress={() => onChange(graficas.filter((x) => x.id !== g.id))}>
+            <Pressable accessibilityRole="button" accessibilityLabel="Eliminar" hitSlop={8} onPress={() => onChange(graficas.filter((x) => x.id !== g.id))}>
               <Ionicons name="trash-outline" size={18} color={colors.error} />
             </Pressable>
           </View>

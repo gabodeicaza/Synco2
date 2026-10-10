@@ -1,4 +1,7 @@
-import { decimalStringToCents, centsToDecimalString, formatMoney, isValidDecimalInput } from '../money';
+import {
+  decimalStringToCents, centsToDecimalString, decimalStringToScaled, formatCantidad, formatMoney, isValidDecimalInput,
+  isValidDecimalInputN, scaledToDecimalString,
+} from '../money';
 
 describe('money (enteros de centavos, sin float)', () => {
   it('convierte string decimal a centavos exactos', () => {
@@ -24,5 +27,38 @@ describe('money (enteros de centavos, sin float)', () => {
     expect(isValidDecimalInput('185.5')).toBe(true);
     expect(isValidDecimalInput('abc')).toBe(false);
     expect(isValidDecimalInput('185.555')).toBe(false);
+  });
+});
+
+describe('enteros escalados (4 decimales)', () => {
+  it('ida y vuelta sin error de redondeo', () => {
+    expect(decimalStringToScaled('12.3456', 4)).toBe(123456);
+    expect(decimalStringToScaled('12.3', 4)).toBe(123000);
+    expect(decimalStringToScaled('-0.0001', 4)).toBe(-1);
+    expect(decimalStringToScaled('1.234567', 4)).toBe(12345); // trunca lo que sobra
+    expect(scaledToDecimalString(123456, 4)).toBe('12.3456');
+    expect(scaledToDecimalString(-1, 4)).toBe('-0.0001');
+    expect(scaledToDecimalString(5, 0)).toBe('5');
+  });
+
+  it('valida decimales con tope configurable', () => {
+    expect(isValidDecimalInputN('1.2345', 4)).toBe(true);
+    expect(isValidDecimalInputN('1.23456', 4)).toBe(false);
+    expect(isValidDecimalInputN('1.234', 2)).toBe(false);
+  });
+});
+
+describe('formatCantidad (formato es-MX)', () => {
+  it('agrupa miles con coma y quita ceros sobrantes', () => {
+    expect(formatCantidad('45000')).toBe('45,000');
+    expect(formatCantidad('1234567.5000')).toBe('1,234,567.5');
+    expect(formatCantidad('1500.00')).toBe('1,500');
+    expect(formatCantidad('-3200.25')).toBe('-3,200.25');
+  });
+
+  it('no altera cantidades pequeñas ni vacías', () => {
+    expect(formatCantidad('12.5')).toBe('12.5');
+    expect(formatCantidad('0')).toBe('0');
+    expect(formatCantidad(null)).toBe('0');
   });
 });

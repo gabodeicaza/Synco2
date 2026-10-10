@@ -148,7 +148,7 @@ export default function EstimacionesScreen({ projectId }: { projectId: string })
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <View style={[styles.headerWrap, { backgroundColor: headerColor, paddingTop: insets.top + spacing.xs }]}>
         <View style={styles.headerTopRow}>
-          <Pressable onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
+          <Pressable accessibilityRole="button" accessibilityLabel="Volver" onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
             <Ionicons name="chevron-back" size={22} color={headerTextColor} />
           </Pressable>
           <Text style={[styles.titleBar, { color: headerTextColor }]} numberOfLines={1}>Estimaciones</Text>
@@ -162,7 +162,7 @@ export default function EstimacionesScreen({ projectId }: { projectId: string })
             <View style={styles.sectionHeaderRow}>
               <Text style={styles.sectionTitle}>Concentrado · {CONTRATO_LABEL[contrato]}</Text>
               {puedeEditar ? (
-                <Pressable onPress={() => nuevo(contrato)} style={styles.addBtn}>
+                <Pressable accessibilityRole="button" onPress={() => nuevo(contrato)} style={styles.addBtn}>
                   <Ionicons name="add" size={16} color={colors.primary} />
                   <Text style={styles.addBtnTxt}>Nueva estimación</Text>
                 </Pressable>
@@ -173,12 +173,12 @@ export default function EstimacionesScreen({ projectId }: { projectId: string })
                 <Text style={styles.emptyTxt}>Sin estimaciones de {CONTRATO_LABEL[contrato].toLowerCase()}.</Text>
               </View>
             ) : rows.map((e) => (
-              <Pressable key={e.id} style={[styles.card, { padding: spacing.md }]} onPress={puedeEditar ? () => editar(e) : undefined}>
+              <Pressable accessibilityRole="button" key={e.id} style={[styles.card, { padding: spacing.md }]} onPress={puedeEditar ? () => editar(e) : undefined}>
                 <View style={styles.cardHeader}>
                   <Text style={styles.cardTitle}>Estimación {e.numero}</Text>
                   <Text style={styles.estatus}>{e.estatus || '-'}</Text>
                   {puedeEditar ? (
-                    <Pressable hitSlop={8} onPress={() => onDelete(e)}>
+                    <Pressable accessibilityRole="button" accessibilityLabel="Eliminar" hitSlop={8} onPress={() => onDelete(e)}>
                       <Ionicons name="trash-outline" size={18} color={colors.error} />
                     </Pressable>
                   ) : null}

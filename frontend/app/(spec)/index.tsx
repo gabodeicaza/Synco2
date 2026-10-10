@@ -1,4 +1,4 @@
-// SynCo v2.0 _ Tab "Inicio" / Feed del Especialista.
+// Dirac · Tab "Inicio" / Feed del Especialista.
 // Cumple con la descripcion exacta solicitada por el usuario:
 //   _ Fondo azul corporativo en la mitad superior.
 //   _ Hero Card "MI AREA ASIGNADA" en blanco con datos del especialista.
@@ -18,16 +18,21 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Clipboard from 'expo-clipboard';
 
 import { useAuth } from '@/src/auth-context';
+import { useProyectoActivo } from '@/src/proyecto-activo-context';
 import { colors, radius, shadow, spacing } from '@/src/theme';
 import { HeaderMenu } from '@/src/components/HeaderMenu';
 import { api, FeedItem, FeedResponse, Project, ProjectEvent } from '@/src/api';
 import { storage } from '@/src/utils/storage';
 import { ReportPeriod, periodToInformeType } from '@/src/components/PeriodSheet';
 import { downloadBlob } from '@/src/utils/downloadBlob';
+import { SinReportesAviso } from '@/src/components/SinReportesAviso';
+import { ReportesVacio } from '@/src/components/ReportesVacio';
+import { verificarConteoExportacion } from '@/src/utils/conteoExportacion';
 import { DailyGoalsPanel } from '@/src/components/DailyGoalsPanel';
 import { MyMeetingsPanel } from '@/src/components/MyMeetingsPanel';
 import { ReportPreviewSheet } from '@/src/components/ReportPreviewSheet';
 import { HistoryCalendarModal } from '@/src/components/HistoryCalendarModal';
+import { a11y, t } from '@/src/i18n';
 import {
   dayjs, toISODateCDMX, CDMX_TZ,
 } from '@/src/utils/tz';
@@ -38,16 +43,16 @@ type ExportStep = 'period' | 'scope' | 'format';
 type ExportScope = 'mine' | 'area';
 
 const PERIOD_OPTIONS: { value: ReportPeriod; label: string; sub: string; icon: keyof typeof Ionicons.glyphMap }[] = [
-  { value: 'today',     label: 'Hoy',         sub: 'Informe Diario · solo jerarquia "Diario"',  icon: 'today-outline' },
-  { value: 'yesterday', label: 'Ayer',        sub: 'Reportes del dia anterior', icon: 'calendar-clear-outline' },
-  { value: 'week',      label: 'Esta semana', sub: 'Informe Semanal · solo jerarquia "Semanal"',            icon: 'calendar-outline' },
-  { value: 'month',     label: 'Este mes',    sub: 'Informe Mensual · solo jerarquia "Mensual"',           icon: 'calendar-number-outline' },
+  { value: 'today',     label: 'Hoy',         sub: 'Informe Diario · solo jerarquía "Diario"',  icon: 'today-outline' },
+  { value: 'yesterday', label: 'Ayer',        sub: 'Reportes del día anterior', icon: 'calendar-clear-outline' },
+  { value: 'week',      label: 'Esta semana', sub: 'Informe Semanal · solo jerarquía "Semanal"',            icon: 'calendar-outline' },
+  { value: 'month',     label: 'Este mes',    sub: 'Informe Mensual · solo jerarquía "Mensual"',           icon: 'calendar-number-outline' },
 ];
 
 const FORMAT_OPTIONS: { value: ExportFormat; label: string; sub: string; icon: keyof typeof Ionicons.glyphMap; tint: string }[] = [
   { value: 'pdf',  label: 'PDF',        sub: 'Documento horizontal listo para imprimir', icon: 'document-text', tint: '#DC2626' },
   { value: 'docx', label: 'Word',       sub: 'Editable en Microsoft Word',                icon: 'document',      tint: '#1D4ED8' },
-  { value: 'pptx', label: 'PowerPoint', sub: 'Presentacion institucional 16:9',            icon: 'easel',         tint: '#B45309' },
+  { value: 'pptx', label: 'PowerPoint', sub: 'Presentación institucional 16:9',            icon: 'easel',         tint: '#B45309' },
 ];
 
 // Campos que realmente se pintan en una `FeedCard`. Se usan para decidir si
@@ -77,7 +82,9 @@ const RANGE_OPTIONS: { key: RangeKey; label: string }[] = [
 export default function SpecFeedScreen() {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
-  const projectId = (user?.project_ids || [])[0] || '';
+  // P-05: mismo proyecto activo que Minutas, Mensajes, Noticias y Calendario (con respaldo al primero del usuario).
+  const { proyectoId } = useProyectoActivo();
+  const projectId = proyectoId || (user?.project_ids || [])[0] || '';
 
   const [project, setProject] = useState<Project | null>(null);
   const [myMeetings, setMyMeetings] = useState<ProjectEvent[]>([]);
@@ -93,6 +100,7 @@ export default function SpecFeedScreen() {
   const [exportPeriod, setExportPeriod] = useState<ReportPeriod>('today');
   const [exportScope, setExportScope] = useState<ExportScope>('mine');
   const [exportBusy, setExportBusy] = useState(false);
+  const [exportSinReportes, setExportSinReportes] = useState<{ fmt: ExportFormat; otros: number } | null>(null);
 
   const [calendarOpen, setCalendarOpen] = useState(false);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
@@ -163,7 +171,7 @@ export default function SpecFeedScreen() {
   const loadFeed = useCallback(async (nextRange: RangeKey = range, silent = false, q = debouncedQuery) => {
     if (!projectId) {
       setLoading(false);
-      setError('Tu cuenta no esta asociada a ningun proyecto.');
+      setError(t('inicioEspecialista.tuCuentaNoEsta'));
       return;
     }
     try {
@@ -205,6 +213,7 @@ export default function SpecFeedScreen() {
     setExportStep('period');
     setExportPeriod('today');
     setExportScope('mine');
+    setExportSinReportes(null);
     setExportOpen(true);
   }
 
@@ -252,18 +261,26 @@ export default function SpecFeedScreen() {
       setAiCopied(true);
       setTimeout(() => setAiCopied(false), 1800);
     } catch {
-      Alert.alert('No se pudo copiar', 'Intenta seleccionar el texto manualmente.');
+      Alert.alert(t('proyectoPantalla.noSePudoCopiar'), t('proyectoPantalla.intentaSeleccionarElTextoManualmente'));
     }
   }
 
   function onPickPeriod(p: ReportPeriod) { setExportPeriod(p); setExportStep('scope'); }
-  function onPickScope(s: ExportScope) { setExportScope(s); setExportStep('format'); }
+  function onPickScope(s: ExportScope) { setExportScope(s); setExportSinReportes(null); setExportStep('format'); }
 
-  async function onPickFormat(fmt: ExportFormat) {
+  async function onPickFormat(fmt: ExportFormat, forzar?: boolean) {
     if (!projectId) return;
     try {
       setExportBusy(true);
+      setExportSinReportes(null);
       const opts = { scope: exportScope, period_type: periodToInformeType(exportPeriod) } as { scope: ExportScope; period_type?: string };
+      if (!forzar) {
+        const conteo = await verificarConteoExportacion(projectId, exportPeriod, opts);
+        if (conteo.vacio) {
+          setExportSinReportes({ fmt, otros: conteo.otros });
+          return;
+        }
+      }
       let blob: Blob; let filename: string; let mime: string;
       if (fmt === 'docx') {
         const r = await api.downloadReportsDocx(projectId, exportPeriod, opts);
@@ -282,7 +299,7 @@ export default function SpecFeedScreen() {
       setExportOpen(false);
       setTimeout(() => setExportStep('period'), 200);
     } catch (e: any) {
-      Alert.alert(`No se pudo generar el ${fmt.toUpperCase()}`, e?.message || 'Intentalo nuevamente.');
+      Alert.alert(t('inicioEspecialista.noSePudoGenerar', { formato: fmt.toUpperCase() }), e?.message || t('inicioEspecialista.intentaNuevamente'));
     } finally {
       setExportBusy(false);
     }
@@ -326,9 +343,9 @@ export default function SpecFeedScreen() {
     <>
       <HeroCard user={user} project={project} globalPct={0} />
       <View style={styles.statsRow}>
-        <StatCard label="TOTAL" value={stats.total} icon="albums-outline" tint={colors.primary} />
-        <StatCard label="MÍOS" value={stats.mine} icon="person" tint="#0EA5E9" />
-        <StatCard label="COMPAÑEROS" value={stats.others} icon="people-outline" tint="#10B981" />
+        <StatCard label={t('inicioEspecialista.total')} value={stats.total} icon="albums-outline" tint={colors.primary} />
+        <StatCard label={t('inicioEspecialista.mios')} value={stats.mine} icon="person" tint="#0EA5E9" />
+        <StatCard label={t('inicioEspecialista.companeros')} value={stats.others} icon="people-outline" tint="#10B981" />
       </View>
 
       {projectId ? (
@@ -343,21 +360,21 @@ export default function SpecFeedScreen() {
 
 
       <View style={styles.timeFiltersWrap}>
-        <Text style={styles.sectionLabel}>Filtrar actividad</Text>
+        <Text style={styles.sectionLabel}>{t('proyectoPantalla.filtrarActividad')}</Text>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: spacing.md, gap: spacing.sm }}>
           {RANGE_OPTIONS.map((opt) => {
             const active = range === opt.key && !selectedDate;
             return (
-              <Pressable key={opt.key} onPress={() => { setSelectedDate(null); onPickRange(opt.key); }} style={[styles.chip, active && styles.chipActive]}>
+              <Pressable accessibilityRole="button" key={opt.key} onPress={() => { setSelectedDate(null); onPickRange(opt.key); }} style={[styles.chip, active && styles.chipActive]}>
                 <Text style={[styles.chipTxt, active && styles.chipTxtActive]}>{opt.label}</Text>
               </Pressable>
             );
           })}
-          <Pressable onPress={() => setCalendarOpen(true)} style={[styles.chip, !!selectedDate && styles.chipActive]}>
+          <Pressable accessibilityRole="button" onPress={() => setCalendarOpen(true)} style={[styles.chip, !!selectedDate && styles.chipActive]}>
             <Ionicons name="calendar-outline" size={14} color={selectedDate ? '#fff' : colors.textBody} />
             <Text style={[styles.chipTxt, !!selectedDate && styles.chipTxtActive]}>{selectedDate || 'Calendario'}</Text>
             {selectedDate && (
-              <Pressable onPress={() => setSelectedDate(null)} hitSlop={8} style={{ marginLeft: 6 }}>
+              <Pressable accessibilityRole="button" accessibilityLabel={a11y('quitar')} onPress={() => setSelectedDate(null)} hitSlop={8} style={{ marginLeft: 6 }}>
                 <Ionicons name="close-circle" size={14} color="#fff" />
               </Pressable>
             )}
@@ -371,17 +388,17 @@ export default function SpecFeedScreen() {
           <TextInput
             value={searchQuery}
             onChangeText={setSearchQuery}
-            placeholder="Buscar reporte..."
+            placeholder={t('inicioEspecialista.buscarReporte')}
             placeholderTextColor={colors.textMuted}
             style={styles.searchInput}
             autoCorrect={false}
           />
-          {searchQuery ? <Pressable onPress={() => setSearchQuery('')} hitSlop={8}><Ionicons name="close-circle" size={18} color={colors.textMuted} /></Pressable> : null}
+          {searchQuery ? <Pressable accessibilityRole="button" accessibilityLabel={a11y('quitar')} onPress={() => setSearchQuery('')} hitSlop={8}><Ionicons name="close-circle" size={18} color={colors.textMuted} /></Pressable> : null}
         </View>
       </View>
 
       <View style={styles.feedHeaderRow}>
-        <Text style={styles.feedTitle}>{debouncedQuery ? 'Resultados' : 'Actividad reciente'}</Text>
+        <Text style={styles.feedTitle}>{debouncedQuery ? t('inicioEspecialista.resultados') : t('inicioEspecialista.actividadReciente')}</Text>
         {reports.length > 0 && <Text style={styles.feedCount}>{reports.length}</Text>}
       </View>
 
@@ -399,10 +416,10 @@ export default function SpecFeedScreen() {
       <View style={[styles.header, { paddingTop: insets.top + spacing.xs }]}>
         <HeaderMenu basePath="/(spec)" projectId={projectId} />
         <View style={{ flex: 1, alignItems: 'center' }}>
-          <Text style={styles.headerTitle}>Dirac</Text>
+          <Text style={styles.headerTitle}>{t('marca.nombre')}</Text>
           <Text style={styles.headerSubtitle} numberOfLines={1}>{project?.name || 'Cargando...'}</Text>
         </View>
-        <Pressable hitSlop={10} style={styles.headerBtn}>
+        <Pressable accessibilityRole="button" accessibilityLabel={a11y('notificaciones')} hitSlop={10} style={styles.headerBtn}>
           <Ionicons name="notifications-outline" size={22} color="#fff" />
         </Pressable>
       </View>
@@ -418,14 +435,13 @@ export default function SpecFeedScreen() {
         ListHeaderComponent={ListHeader}
         ListEmptyComponent={
           !loading ? (
-            <View style={styles.emptyBox}>
-              <Ionicons name="reader-outline" size={28} color={colors.primary} />
-              <Text style={styles.emptyTitle}>Sin reportes</Text>
-              <Text style={styles.emptyMsg}>No se encontraron reportes para este filtro.</Text>
-              <Pressable style={styles.emptyBtn} onPress={() => router.push('/(spec)/nuevo' as any)}>
-                <Text style={styles.emptyBtnTxt}>Crear nuevo reporte</Text>
-              </Pressable>
-            </View>
+            <ReportesVacio
+              variante="spec"
+              hayFiltros={range !== 'all' || !!selectedDate}
+              busqueda={debouncedQuery}
+              onQuitarFiltros={() => { setSelectedDate(null); setSearchQuery(''); onPickRange('all'); }}
+              onCrear={() => router.push('/(spec)/nuevo' as any)}
+            />
           ) : null
         }
         contentContainerStyle={{ paddingBottom: spacing.xl }}
@@ -456,26 +472,33 @@ export default function SpecFeedScreen() {
             <View style={styles.exportHandle} />
             <View style={styles.exportHeader}>
               <View style={{ flex: 1 }}>
-                <Text style={styles.exportTitle}>Exportar Reportes</Text>
-                <Text style={styles.exportSubtitle}>Paso {exportStep === 'period' ? 1 : exportStep === 'scope' ? 2 : 3} de 3</Text>
+                <Text style={styles.exportTitle}>{t('proyectoPantalla.exportarReportes')}</Text>
+                <Text style={styles.exportSubtitle}>{t('inicioEspecialista.pasoDe3', { n: exportStep === 'period' ? 1 : exportStep === 'scope' ? 2 : 3 })}</Text>
               </View>
-              <Pressable onPress={closeExportFlow} hitSlop={10} style={styles.headerBtn}><Ionicons name="close" size={22} color={colors.text} /></Pressable>
+              <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} onPress={closeExportFlow} hitSlop={10} style={styles.headerBtn}><Ionicons name="close" size={22} color={colors.text} /></Pressable>
             </View>
             <View style={{ padding: spacing.md, gap: 10 }}>
               {exportStep === 'period' && PERIOD_OPTIONS.map(opt => (
-                <Pressable key={opt.value} onPress={() => onPickPeriod(opt.value)} style={styles.exportItem}>
+                <Pressable accessibilityRole="button" key={opt.value} onPress={() => onPickPeriod(opt.value)} style={styles.exportItem}>
                   <View style={styles.exportItemIcon}><Ionicons name={opt.icon} size={20} color={colors.primary} /></View>
                   <View style={{ flex: 1 }}><Text style={styles.exportItemTitle}>{opt.label}</Text><Text style={styles.exportItemSub}>{opt.sub}</Text></View>
                 </Pressable>
               ))}
               {exportStep === 'scope' && (
                 <>
-                  <Pressable onPress={() => onPickScope('mine')} style={styles.exportItem}><View style={styles.exportItemIcon}><Ionicons name="person-outline" size={20} color={colors.primary} /></View><View style={{ flex: 1 }}><Text style={styles.exportItemTitle}>Mis reportes</Text><Text style={styles.exportItemSub}>Solo lo que yo capture</Text></View></Pressable>
-                  <Pressable onPress={() => onPickScope('area')} style={styles.exportItem}><View style={styles.exportItemIcon}><Ionicons name="grid-outline" size={20} color={colors.primary} /></View><View style={{ flex: 1 }}><Text style={styles.exportItemTitle}>Mi area</Text><Text style={styles.exportItemSub}>Reportes de toda mi area</Text></View></Pressable>
+                  <Pressable accessibilityRole="button" onPress={() => onPickScope('mine')} style={styles.exportItem}><View style={styles.exportItemIcon}><Ionicons name="person-outline" size={20} color={colors.primary} /></View><View style={{ flex: 1 }}><Text style={styles.exportItemTitle}>{t('inicioEspecialista.misReportes')}</Text><Text style={styles.exportItemSub}>{t('inicioEspecialista.soloLoQueYo')}</Text></View></Pressable>
+                  <Pressable accessibilityRole="button" onPress={() => onPickScope('area')} style={styles.exportItem}><View style={styles.exportItemIcon}><Ionicons name="grid-outline" size={20} color={colors.primary} /></View><View style={{ flex: 1 }}><Text style={styles.exportItemTitle}>{t('inicioEspecialista.miArea')}</Text><Text style={styles.exportItemSub}>{t('inicioEspecialista.reportesDeTodaMi')}</Text></View></Pressable>
                 </>
               )}
+              {exportStep === 'format' && exportSinReportes ? (
+                <SinReportesAviso
+                  otros={exportSinReportes.otros}
+                  onCambiarPeriodo={() => { setExportSinReportes(null); setExportStep('period'); }}
+                  onExportarDeTodosModos={() => onPickFormat(exportSinReportes.fmt, true)}
+                />
+              ) : null}
               {exportStep === 'format' && FORMAT_OPTIONS.map(opt => (
-                <Pressable key={opt.value} onPress={() => onPickFormat(opt.value)} style={styles.exportItem}>
+                <Pressable accessibilityRole="button" key={opt.value} onPress={() => onPickFormat(opt.value)} style={styles.exportItem}>
                   <View style={[styles.exportItemIcon, { backgroundColor: opt.tint + '1A' }]}><Ionicons name={opt.icon} size={20} color={opt.tint} /></View>
                   <View style={{ flex: 1 }}><Text style={styles.exportItemTitle}>{opt.label}</Text><Text style={styles.exportItemSub}>{opt.sub}</Text></View>
                 </Pressable>
@@ -505,21 +528,21 @@ const HeroCard = memo(({ user, project }: any) => {
         <View style={styles.heroHeaderRow}>
           <View style={styles.heroIcon}><Ionicons name="location" size={18} color="#fff" /></View>
           <View style={{ flex: 1 }}>
-            <Text style={styles.heroLabel}>MI AREA ASIGNADA</Text>
-            <Text style={styles.heroTitle} numberOfLines={1}>{user?.area || 'Sin area asignada'}</Text>
+            <Text style={styles.heroLabel}>{t('inicioEspecialista.miAreaAsignada')}</Text>
+            <Text style={styles.heroTitle} numberOfLines={1}>{user?.area || 'Sin área asignada'}</Text>
           </View>
           <View style={styles.heroLeavesPill}>
             <Ionicons name="flag" size={11} color={colors.primary} />
             <Text style={styles.heroLeavesTxt}>
-              {(user?.scope_node_ids || []).length > 0 ? `${user.scope_node_ids.length} hojas` : 'Todo el proyecto'}
+              {(user?.scope_node_ids || []).length > 0 ? (user.scope_node_ids.length === 1 ? t('inicioEspecialista.hojasUna') : t('inicioEspecialista.hojas', { n: user.scope_node_ids.length })) : t('avanceNiveles.todoElProyecto')}
             </Text>
           </View>
         </View>
         {user?.puesto ? <Text style={styles.heroPuesto}>{user.puesto}</Text> : null}
         {project?.contract_number ? (
           <Text style={styles.heroMeta}>
-            Contrato {project.contract_number}
-            {project.constructora ? `  _  ${project.constructora}` : ''}
+            {t('proyectoPantalla.contrato')} {project.contract_number}
+            {project.constructora ? `  ·  ${project.constructora}` : ''}
           </Text>
         ) : null}
       </View>
@@ -530,11 +553,11 @@ const HeroCard = memo(({ user, project }: any) => {
 const ExportRow = memo(({ busy, onPress }: any) => {
   return (
     <View style={styles.exportRow}>
-      <Pressable onPress={onPress} disabled={busy} style={styles.exportMainBtn}>
+      <Pressable accessibilityRole="button" onPress={onPress} disabled={busy} style={styles.exportMainBtn}>
         {busy ? <ActivityIndicator color="#fff" size="small" /> : <Ionicons name="download-outline" size={22} color="#fff" />}
         <View style={{ flex: 1 }}>
-          <Text style={styles.exportMainTitle}>Exportar Reportes</Text>
-          <Text style={styles.exportMainSub}>{busy ? 'Generando archivo...' : 'PDF . Word . PowerPoint'}</Text>
+          <Text style={styles.exportMainTitle}>{t('proyectoPantalla.exportarReportes')}</Text>
+          <Text style={styles.exportMainSub}>{busy ? t('proyectoPantalla.generandoArchivo') : t('inicioEspecialista.pdfWordPowerpoint')}</Text>
         </View>
         <Ionicons name="chevron-forward" size={20} color="rgba(255,255,255,0.85)" />
       </Pressable>
@@ -545,11 +568,11 @@ const ExportRow = memo(({ busy, onPress }: any) => {
 const AiSummaryRow = memo(({ busy, onPress }: any) => {
   return (
     <View style={styles.exportRow}>
-      <Pressable onPress={onPress} disabled={busy} style={styles.aiBtn}>
+      <Pressable accessibilityRole="button" onPress={onPress} disabled={busy} style={styles.aiBtn}>
         {busy ? <ActivityIndicator color="#fff" size="small" /> : <Ionicons name="sparkles" size={22} color="#fff" />}
         <View style={{ flex: 1 }}>
-          <Text style={styles.aiBtnTitle}>_ Generar Resumen Ejecutivo con IA</Text>
-          <Text style={styles.aiBtnSub}>{busy ? 'Analizando reportes del dia...' : 'Avances, equipo y personal en 3 vinetas'}</Text>
+          <Text style={styles.aiBtnTitle}>{t('proyectoPantalla.generarResumenEjecutivoConIa')}</Text>
+          <Text style={styles.aiBtnSub}>{busy ? t('proyectoPantalla.analizandoReportesDelDia') : t('inicioEspecialista.avancesEquipoYPersonal')}</Text>
         </View>
         <Ionicons name="chevron-forward" size={20} color="rgba(255,255,255,0.85)" />
       </Pressable>
@@ -581,10 +604,10 @@ function AiSummaryModal({
           <View style={styles.exportHandle} />
           <View style={styles.exportHeader}>
             <View style={{ flex: 1 }}>
-              <Text style={styles.exportTitle}>Resumen Ejecutivo con IA</Text>
-              <Text style={styles.exportSubtitle}>Generado a partir de los reportes del período</Text>
+              <Text style={styles.exportTitle}>{t('proyectoPantalla.resumenEjecutivoConIa')}</Text>
+              <Text style={styles.exportSubtitle}>{t('proyectoPantalla.generadoAPartirDeLos')}</Text>
             </View>
-            <Pressable onPress={onClose} hitSlop={10} style={{ width: 36, height: 36, alignItems: 'center', justifyContent: 'center' }}>
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} onPress={onClose} hitSlop={10} style={{ width: 36, height: 36, alignItems: 'center', justifyContent: 'center' }}>
               <Ionicons name="close" size={22} color={colors.text} />
             </Pressable>
           </View>
@@ -595,7 +618,7 @@ function AiSummaryModal({
               ['semanal', 'Semana'],
               ['mensual', 'Mes'],
             ] as const).map(([key, label]) => (
-              <Pressable
+              <Pressable accessibilityRole="button"
                 key={key}
                 onPress={() => onChangePeriodo(key)}
                 disabled={busy}
@@ -616,14 +639,14 @@ function AiSummaryModal({
             {busy ? (
               <View style={{ paddingVertical: 40, alignItems: 'center', gap: 12 }}>
                 <ActivityIndicator color={colors.primary} size="large" />
-                <Text style={{ color: colors.textMuted, fontWeight: '600' }}>Analizando reportes...</Text>
+                <Text style={{ color: colors.textMuted, fontWeight: '600' }}>{t('proyectoPantalla.analizandoReportesDeHoy')}</Text>
               </View>
             ) : error ? (
               <View style={{ paddingVertical: 20, alignItems: 'center', gap: 8 }}>
                 <Ionicons name="alert-circle-outline" size={40} color={colors.error} />
                 <Text style={{ color: colors.error, textAlign: 'center', fontWeight: '700' }}>{error}</Text>
-                <Pressable onPress={onRegenerate} style={{ marginTop: 12, padding: 10 }}>
-                  <Text style={{ color: colors.primary, fontWeight: '800' }}>Reintentar</Text>
+                <Pressable accessibilityRole="button" onPress={onRegenerate} style={{ marginTop: 12, padding: 10 }}>
+                  <Text style={{ color: colors.primary, fontWeight: '800' }}>{t('red.reintentar')}</Text>
                 </Pressable>
               </View>
             ) : summary ? (
@@ -631,7 +654,7 @@ function AiSummaryModal({
                 {meta && (
                   <View style={{ flexDirection: 'row', gap: 8, marginBottom: 4 }}>
                     <View style={{ backgroundColor: '#F0F9FF', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, borderWidth: 1, borderColor: '#BAE6FD' }}>
-                      <Text style={{ fontSize: 10, color: '#0369A1', fontWeight: '800' }}>{meta.reports_count} REPORTES</Text>
+                      <Text style={{ fontSize: 10, color: '#0369A1', fontWeight: '800' }}>{meta.reports_count} {t('inicioEspecialista.reportesHoy')}</Text>
                     </View>
                   </View>
                 )}
@@ -640,7 +663,7 @@ function AiSummaryModal({
                 </View>
 
                 <View style={{ flexDirection: 'row', gap: 10, marginTop: 8 }}>
-                  <Pressable
+                  <Pressable accessibilityRole="button"
                     onPress={onCopy}
                     style={({ pressed }) => [
                       { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 12, borderRadius: 10, backgroundColor: copied ? colors.success : colors.primary },
@@ -648,9 +671,9 @@ function AiSummaryModal({
                     ]}
                   >
                     <Ionicons name={copied ? 'checkmark-circle' : 'copy-outline'} size={18} color="#fff" />
-                    <Text style={{ color: '#fff', fontWeight: '800' }}>{copied ? 'Copiado' : 'Copiar resumen'}</Text>
+                    <Text style={{ color: '#fff', fontWeight: '800' }}>{copied ? t('proyectoPantalla.copiado') : t('proyectoPantalla.copiarResumen')}</Text>
                   </Pressable>
-                  <Pressable
+                  <Pressable accessibilityRole="button" accessibilityLabel={a11y('actualizar')} hitSlop={8}
                     onPress={onRegenerate}
                     style={({ pressed }) => [
                       { width: 44, height: 44, alignItems: 'center', justifyContent: 'center', borderRadius: 10, borderWidth: 1.5, borderColor: colors.primary },
@@ -665,14 +688,14 @@ function AiSummaryModal({
           </ScrollView>
 
           <View style={{ padding: spacing.md, paddingBottom: insets.bottom + spacing.md, borderTopWidth: 1, borderTopColor: colors.border }}>
-            <Pressable
+            <Pressable accessibilityRole="button"
               onPress={onClose}
               style={({ pressed }) => [
                 { minHeight: 46, alignItems: 'center', justifyContent: 'center', borderRadius: 10, borderWidth: 1, borderColor: colors.border },
                 pressed && { backgroundColor: colors.bg },
               ]}
             >
-              <Text style={{ color: colors.text, fontWeight: '800' }}>Cerrar</Text>
+              <Text style={{ color: colors.text, fontWeight: '800' }}>{t('a11y.cerrar')}</Text>
             </Pressable>
           </View>
         </View>
@@ -698,11 +721,11 @@ function areFeedCardPropsEqual(prev: FeedCardProps, next: FeedCardProps): boolea
 // demas (fotos, texto completo, jerarquia, actividades, observaciones) vive
 // en el detalle (`ReportPreviewSheet`) que se abre al tocarla.
 const FeedCard = memo(function FeedCard({ item, onPreview }: FeedCardProps) {
-  const leafName = (item.node_path_names || [])[(item.node_path_names || []).length - 1] || 'Sin ubicacion';
+  const leafName = (item.node_path_names || [])[(item.node_path_names || []).length - 1] || 'Sin ubicación';
   const handlePreview = useCallback(() => onPreview(item), [onPreview, item]);
 
   return (
-    <Pressable onPress={handlePreview} style={styles.feedCard}>
+    <Pressable accessibilityRole="button" onPress={handlePreview} style={styles.feedCard}>
       <View style={styles.feedCardIcon}><Ionicons name="document-text-outline" size={18} color={colors.primary} /></View>
       <View style={{ flex: 1, minWidth: 0 }}>
         <Text style={styles.feedCardTitle} numberOfLines={1}>{item.title || item.nombre || item.titulo || item.name || 'Reporte'}</Text>
@@ -712,7 +735,7 @@ const FeedCard = memo(function FeedCard({ item, onPreview }: FeedCardProps) {
         </View>
         <View style={styles.feedCompactRow}>
           <Ionicons name="person-outline" size={12} color={colors.textMuted} />
-          <Text style={styles.feedCardSub} numberOfLines={1}>{item.captured_by_name || '_'}</Text>
+          <Text style={styles.feedCardSub} numberOfLines={1}>{item.captured_by_name || '—'}</Text>
         </View>
       </View>
       <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />

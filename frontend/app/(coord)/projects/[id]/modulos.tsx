@@ -10,14 +10,20 @@
 // encendido en cualquiera de las 3 categorías; el backend rechaza
 // escrituras si ninguno lo está (ver _ensure_modulo_activo en server.py).
 import React, { useCallback, useEffect, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, ActivityIndicator, Pressable, Alert, Switch, Modal } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, ActivityIndicator, Pressable, Switch, Modal } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { router, useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { api, Area, ModulosConfig, ModuloCategoria, Project } from '@/src/api';
-import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
-import { MODULOS, CATEGORIA_LABEL, CATEGORIA_ORDEN, ModuloDef } from '@/src/utils/modulos';
+import { ScreenHeader } from '@/src/components/ScreenHeader';
+import { api, Area, ModulosConfig, ModuloCategoria, Project, TipoObraInfo } from '@/src/api';
+import { InlineError } from '@/src/components/InlineError';
+import { t } from '@/src/i18n';
 import { confirm } from '@/src/utils/confirm';
+import { showToast } from '@/src/utils/toast';
+import { esErrorDeRed } from '@/src/utils/errores';
+import { moduloPayloadRecomendado, nombreTipoObra, puedeRestablecerModulos } from '@/src/utils/tipoObraModulos';
+import { colors, radius, shadow, spacing } from '@/src/theme';
+import { MODULOS, CATEGORIA_LABEL, CATEGORIA_ORDEN, ModuloDef } from '@/src/utils/modulos';
 
 function vacio(): ModulosConfig {
   return { reportes_diarios: {}, reportes_semanales: {}, reportes_mensuales: {} };
@@ -42,18 +48,25 @@ export default function ModulosConfigScreen() {
   const [asignaciones, setAsignaciones] = useState<Record<string, string>>({});
   const [elegir, setElegir] = useState<ModuloDef | null>(null); // módulo cuyo área se está eligiendo
   const [savingArea, setSavingArea] = useState(false);
+  const [tipos, setTipos] = useState<TipoObraInfo[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [restableciendo, setRestableciendo] = useState(false);
 
   const load = useCallback(async () => {
     if (!pid) return;
     try {
       setLoading(true);
+      setError(null);
       const [p, a] = await Promise.all([api.getProject(pid), api.listAreas(pid).catch(() => [] as Area[])]);
       setProject(p);
       setAreas(a);
       setAsignaciones(p.modulos_areas || {});
       setDraft({ ...vacio(), ...(p.modulos || {}) });
+      // El catálogo solo aporta los módulos recomendados y el nombre del tipo: si falla, la pantalla sigue.
+      api.listTiposObra().then(setTipos).catch(() => setTipos([]));
     } catch (e: any) {
-      Alert.alert('Error', e?.message || 'No se pudo cargar el proyecto.');
+      if (esErrorDeRed(e)) showToast(t('red.errorDeRed'));
+      else setError(e?.message || t('modulosObra.noSePudoCargar'));
     } finally {
       setLoading(false);
     }
@@ -62,20 +75,21 @@ export default function ModulosConfigScreen() {
   useEffect(() => { load(); }, [load]);
 
   const headerColor = project?.color_institucional || project?.color_tema || colors.primary;
-  const headerTextColor = contrastText(headerColor);
 
   async function onToggle(categoria: ModuloCategoria, key: string, value: boolean) {
     const previous = draft;
     // Optimista: refleja el cambio de inmediato, revierte si el guardado falla.
     setDraft((d) => ({ ...d, [categoria]: { ...d[categoria], [key]: value } }));
     setSaving(savingKey(categoria, key));
+    setError(null);
     try {
       const upd = await api.setProjectModulos(pid, { [categoria]: { [key]: value } } as Partial<ModulosConfig>);
       setProject(upd);
       setDraft({ ...vacio(), ...(upd.modulos || {}) });
     } catch (e: any) {
       setDraft(previous);
-      Alert.alert('No se pudo guardar', e?.message || 'Intentalo nuevamente.');
+      if (esErrorDeRed(e)) showToast(t('red.errorDeRed'));
+      else setError(e?.message || t('modulosObra.noSePudoGuardar'));
     } finally {
       setSaving(null);
     }
@@ -103,7 +117,7 @@ export default function ModulosConfigScreen() {
       setDraft({ ...vacio(), ...(upd.modulos || {}) });
     } catch (e: any) {
       setDraft(previous);
-      Alert.alert('No se pudo guardar', e?.message || 'Intentalo nuevamente.');
+      if (esErrorDeRed(e)) showToast(t('red.errorDeRed')); else setError(e?.message || t('modulosObra.noSePudoGuardar'));
     } finally {
       setSaving(null);
     }
@@ -117,7 +131,7 @@ export default function ModulosConfigScreen() {
       setAsignaciones(upd.modulos_areas || {});
       setElegir(null);
     } catch (e: any) {
-      Alert.alert('No se pudo guardar', e?.message || 'Intentalo nuevamente.');
+      if (esErrorDeRed(e)) showToast(t('red.errorDeRed')); else setError(e?.message || t('modulosObra.noSePudoGuardar'));
     } finally {
       setSavingArea(false);
     }
@@ -125,6 +139,33 @@ export default function ModulosConfigScreen() {
 
   const nombreArea = (m: ModuloDef) => areas.find((a) => a.id === asignaciones[m.key])?.name;
   const conPantalla = MODULOS.filter((m) => !!m.screen);
+
+  const tipoActual = project?.tipo_obra;
+  const infoTipo = tipos.find((x) => x.id === tipoActual);
+  const puedeRestablecer = puedeRestablecerModulos(tipoActual) && !!infoTipo;
+
+  async function onRestablecer() {
+    if (!infoTipo || restableciendo) return;
+    const ok = await confirm(
+      t('modulosObra.restablecerTitulo'),
+      t('modulosObra.restablecerMensaje', { tipo: infoTipo.nombre }),
+      { confirmText: t('modulosObra.restablecerConfirmar') },
+    );
+    if (!ok) return;
+    setRestableciendo(true);
+    setError(null);
+    try {
+      const upd = await api.setProjectModulos(pid, moduloPayloadRecomendado(infoTipo));
+      setProject(upd);
+      setDraft({ ...vacio(), ...(upd.modulos || {}) });
+      showToast(t('modulosObra.restablecido'));
+    } catch (e: any) {
+      if (esErrorDeRed(e)) showToast(t('red.errorDeRed'));
+      else setError(e?.message || t('modulosObra.noSePudoRestablecer'));
+    } finally {
+      setRestableciendo(false);
+    }
+  }
 
   if (loading) {
     return (
@@ -136,23 +177,36 @@ export default function ModulosConfigScreen() {
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <View style={[styles.headerWrap, { backgroundColor: headerColor, paddingTop: insets.top + spacing.xs }]}>
-        <View style={styles.headerTopRow}>
-          <Pressable onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
-            <Ionicons name="chevron-back" size={22} color={headerTextColor} />
-          </Pressable>
-          <Text style={[styles.titleBar, { color: headerTextColor }]} numberOfLines={1}>Módulos del proyecto</Text>
-          <View style={{ width: 32 }} />
-        </View>
-      </View>
+      <ScreenHeader
+        title={t('modulosObra.titulo')}
+        backgroundColor={headerColor}
+        fallbackHref={{ pathname: '/(coord)/projects/[id]', params: { id: pid } }}
+      />
 
       <ScrollView contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + spacing.xl }]}>
-        <Text style={styles.helpTxt}>
-          Cada plantilla tiene un interruptor por informe: enciéndelo en Diario, Semanal y/o
-          Mensual para indicar en cuáles quieres que aparezca el recuento de sus actividades al
-          exportar. Con al menos uno encendido, la plantilla queda disponible para capturar datos
-          y aparece en el menú de Sub-Coordinador y Especialista.
-        </Text>
+        <View style={styles.tipoCard}>
+          <Text style={styles.rowTitle}>{t('modulosObra.tipoActual', { tipo: nombreTipoObra(tipoActual, tipos) })}</Text>
+          <Text style={styles.rowSub}>{t('modulosObra.tipoActualAyuda')}</Text>
+          {puedeRestablecer ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={t('modulosObra.restablecer')}
+              accessibilityState={{ busy: restableciendo, disabled: restableciendo }}
+              disabled={restableciendo}
+              onPress={onRestablecer}
+              style={styles.restablecerBtn}
+            >
+              {restableciendo ? <ActivityIndicator size="small" color={colors.primary} /> : (
+                <Ionicons name="refresh" size={16} color={colors.primary} />
+              )}
+              <Text style={styles.restablecerTxt}>{t('modulosObra.restablecer')}</Text>
+            </Pressable>
+          ) : null}
+        </View>
+
+        <InlineError message={error} style={{ marginBottom: spacing.md }} />
+
+        <Text style={styles.helpTxt}>{t('modulosObra.ayuda')}</Text>
 
         <View style={{ marginBottom: spacing.lg }}>
           <Text style={styles.sectionTitle}>Área de cada módulo</Text>
@@ -165,7 +219,7 @@ export default function ModulosConfigScreen() {
             {conPantalla.map((m, idx) => {
               const nombre = nombreArea(m);
               return (
-                <Pressable key={m.key} onPress={() => setElegir(m)} style={[styles.row, idx > 0 && styles.rowBorder]}>
+                <Pressable accessibilityRole="button" key={m.key} onPress={() => setElegir(m)} style={[styles.row, idx > 0 && styles.rowBorder]}>
                   <Ionicons name={m.icon} size={20} color={colors.primary} />
                   <Text style={[styles.rowTitle, { flex: 1 }]}>{m.label}</Text>
                   <Text style={[styles.areaChip, !nombre && { color: colors.textMuted, fontWeight: '600' }]} numberOfLines={1}>
@@ -227,14 +281,14 @@ export default function ModulosConfigScreen() {
 
       <Modal visible={!!elegir} transparent animationType="fade" onRequestClose={() => setElegir(null)}>
         <Pressable style={styles.modalBackdrop} onPress={() => setElegir(null)}>
-          <Pressable style={styles.modalCard} onPress={() => undefined}>
+          <Pressable accessibilityRole="button" style={styles.modalCard} onPress={() => undefined}>
             <Text style={styles.modalTitle}>Área de “{elegir?.label}”</Text>
             <ScrollView style={{ maxHeight: 360 }}>
-              <Pressable disabled={savingArea} onPress={() => elegir && asignarArea(elegir, null)} style={styles.optRow}>
+              <Pressable accessibilityRole="button" disabled={savingArea} onPress={() => elegir && asignarArea(elegir, null)} style={styles.optRow}>
                 <Text style={[styles.optTxt, !elegir || !asignaciones[elegir.key] ? styles.optSel : null]}>General (sin área)</Text>
               </Pressable>
               {areas.map((a) => (
-                <Pressable key={a.id} disabled={savingArea} onPress={() => elegir && asignarArea(elegir, a.id)} style={[styles.optRow, styles.rowBorder]}>
+                <Pressable accessibilityRole="button" key={a.id} disabled={savingArea} onPress={() => elegir && asignarArea(elegir, a.id)} style={[styles.optRow, styles.rowBorder]}>
                   <Text style={[styles.optTxt, elegir && asignaciones[elegir.key] === a.id ? styles.optSel : null]}>{a.name}</Text>
                 </Pressable>
               ))}
@@ -252,10 +306,6 @@ export default function ModulosConfigScreen() {
 
 const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg },
-  headerWrap: { paddingHorizontal: spacing.md, paddingBottom: spacing.sm },
-  headerTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  iconBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
-  titleBar: { fontWeight: '800', fontSize: 16, letterSpacing: 0.3 },
   scroll: { padding: spacing.md },
   helpTxt: { color: colors.textMuted, fontSize: 13, marginBottom: spacing.lg, lineHeight: 18 },
   sectionTitle: { fontSize: 13, fontWeight: '800', color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: spacing.xs },
@@ -274,4 +324,10 @@ const styles = StyleSheet.create({
   optRow: { paddingVertical: 14 },
   optTxt: { fontSize: 14, color: colors.text },
   optSel: { fontWeight: '800', color: colors.primary },
+  tipoCard: {
+    backgroundColor: colors.surface, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border,
+    padding: spacing.md, marginBottom: spacing.md,
+  },
+  restablecerBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, minHeight: 44, marginTop: spacing.xs },
+  restablecerTxt: { color: colors.primary, fontWeight: '700', fontSize: 13, flexShrink: 1 },
 });

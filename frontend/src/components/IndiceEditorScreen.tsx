@@ -113,7 +113,7 @@ export default function IndiceEditorScreen({ projectId: pid }: { projectId: stri
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <View style={[styles.headerWrap, { backgroundColor: headerColor, paddingTop: insets.top + spacing.xs }]}>
         <View style={styles.headerTopRow}>
-          <Pressable onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
+          <Pressable accessibilityRole="button" accessibilityLabel="Volver" onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
             <Ionicons name="chevron-back" size={22} color={headerTextColor} />
           </Pressable>
           <Text style={[styles.titleBar, { color: headerTextColor }]} numberOfLines={1}>Indice de informes</Text>
@@ -135,7 +135,7 @@ export default function IndiceEditorScreen({ projectId: pid }: { projectId: stri
           {INDICE_PERIODOS.map((p) => {
             const activo = p.value === periodo;
             return (
-              <Pressable
+              <Pressable accessibilityRole="button"
                 key={p.value}
                 onPress={() => setPeriodo(p.value)}
                 style={[styles.tab, activo && styles.tabActivo]}
@@ -151,7 +151,7 @@ export default function IndiceEditorScreen({ projectId: pid }: { projectId: stri
         {loading ? (
           <ActivityIndicator color={colors.primary} style={{ marginTop: spacing.xl }} />
         ) : !actual ? (
-          <Pressable onPress={() => cargar(periodo)} style={{ alignItems: 'center', marginTop: spacing.xl }}>
+          <Pressable accessibilityRole="button" onPress={() => cargar(periodo)} style={{ alignItems: 'center', marginTop: spacing.xl }}>
             <Text style={styles.linkTxt}>No se pudo cargar. Toca para reintentar</Text>
           </Pressable>
         ) : (
@@ -185,7 +185,7 @@ export default function IndiceEditorScreen({ projectId: pid }: { projectId: stri
 
             <View style={styles.seccionesHead}>
               <Text style={styles.sectionTitle}>Secciones ({secciones.length})</Text>
-              <Pressable onPress={actualizarEstructura} disabled={refreshing} hitSlop={8} style={styles.linkBtn}>
+              <Pressable accessibilityRole="button" onPress={actualizarEstructura} disabled={refreshing} hitSlop={8} style={styles.linkBtn}>
                 {refreshing ? (
                   <ActivityIndicator size="small" color={colors.primary} />
                 ) : (
@@ -216,7 +216,7 @@ export default function IndiceEditorScreen({ projectId: pid }: { projectId: stri
                         maxLength={200}
                         style={[styles.input, styles.secInput, oculta && { opacity: 0.45 }]}
                       />
-                      <Pressable
+                      <Pressable accessibilityRole="button"
                         onPress={() => editar((c) => alternarOculta(c, s.key))}
                         hitSlop={6}
                         style={styles.secBtn}
@@ -228,7 +228,7 @@ export default function IndiceEditorScreen({ projectId: pid }: { projectId: stri
                           color={oculta ? colors.textMuted : colors.primary}
                         />
                       </Pressable>
-                      <Pressable
+                      <Pressable accessibilityRole="button"
                         onPress={() => editar((c) => moverSeccion(actual.estructura, c, s.key, -1))}
                         disabled={idx === 0}
                         hitSlop={6}
@@ -237,7 +237,7 @@ export default function IndiceEditorScreen({ projectId: pid }: { projectId: stri
                       >
                         <Ionicons name="chevron-up" size={20} color={colors.text} />
                       </Pressable>
-                      <Pressable
+                      <Pressable accessibilityRole="button"
                         onPress={() => editar((c) => moverSeccion(actual.estructura, c, s.key, 1))}
                         disabled={idx === secciones.length - 1}
                         hitSlop={6}
@@ -252,7 +252,7 @@ export default function IndiceEditorScreen({ projectId: pid }: { projectId: stri
               </View>
             )}
 
-            <Pressable
+            <Pressable accessibilityRole="button"
               onPress={guardar}
               disabled={saving || !actual.sucio}
               style={[styles.saveBtn, (saving || !actual.sucio) && { opacity: 0.5 }]}

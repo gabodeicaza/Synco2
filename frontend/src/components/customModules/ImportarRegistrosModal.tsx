@@ -110,7 +110,7 @@ export function ImportarRegistrosModal({
         <View style={[styles.sheet, { paddingBottom: insets.bottom + spacing.md }]}>
           <View style={styles.head}>
             <Text style={styles.title}>Importar desde Excel</Text>
-            <Pressable onPress={cerrar} hitSlop={10}><Ionicons name="close" size={22} color={colors.text} /></Pressable>
+            <Pressable accessibilityRole="button" accessibilityLabel="Cerrar" onPress={cerrar} hitSlop={10}><Ionicons name="close" size={22} color={colors.text} /></Pressable>
           </View>
 
           {hecho !== null ? (

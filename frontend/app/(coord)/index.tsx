@@ -11,6 +11,7 @@ import { colors, radius, spacing, shadow } from '@/src/theme';
 import { roleLabel } from '@/src/utils/roles';
 import { Button } from '@/src/components/Button';
 import { MyMeetingsPanel, MyMeetingItem } from '@/src/components/MyMeetingsPanel';
+import { ordenarReuniones } from '@/src/utils/reuniones';
 
 export default function CoordHome() {
   const insets = useSafeAreaInsets();
@@ -40,7 +41,7 @@ export default function CoordHome() {
               .catch(() => [] as MyMeetingItem[])
           )
         );
-        const merged = perProject.flat().sort((a, b) => (a.start_at || '').localeCompare(b.start_at || ''));
+        const merged = ordenarReuniones(perProject.flat());
         setMyMeetings(merged.slice(0, 8));
       } finally {
         setMyMeetingsLoading(false);
@@ -63,7 +64,7 @@ export default function CoordHome() {
           <Text style={styles.greeting}>Hola, {user?.name?.split(' ')[0] || 'Coordinador'}</Text>
           <Text style={styles.role}>{roleLabel(user?.role)}</Text>
         </View>
-        <Pressable onPress={() => router.push('/(coord)/profile')} hitSlop={8} style={styles.avatar}>
+        <Pressable accessibilityRole="button" onPress={() => router.push('/(coord)/profile')} hitSlop={8} style={styles.avatar}>
           <Text style={styles.avatarText}>{(user?.name?.[0] || 'C').toUpperCase()}</Text>
         </Pressable>
       </View>
@@ -94,9 +95,9 @@ export default function CoordHome() {
         ) : projects.length === 0 ? (
           <View style={styles.emptyBlock}>
             <Ionicons name="folder-open-outline" size={48} color={colors.textMuted} />
-            <Text style={styles.emptyTitle}>Aun no has creado proyectos</Text>
+            <Text style={styles.emptyTitle}>Aún no has creado proyectos</Text>
             <Text style={styles.emptyMsg}>
-              Crea tu primer proyecto para comenzar a configurar su arbol de nodos, areas e invitaciones.
+              Crea tu primer proyecto para comenzar a configurar su árbol de nodos, áreas e invitaciones.
             </Text>
           </View>
         ) : (
@@ -106,7 +107,7 @@ export default function CoordHome() {
         )}
       </ScrollView>
 
-      <Pressable
+      <Pressable accessibilityRole="button"
         style={[styles.fab, { bottom: insets.bottom + 20 }]}
         onPress={() => router.push('/(coord)/projects/new')}
       >
@@ -119,7 +120,7 @@ export default function CoordHome() {
 
 function ProjectCard({ project }: { project: Project }) {
   return (
-    <Pressable
+    <Pressable accessibilityRole="button"
       onPress={() => router.push({ pathname: '/(coord)/projects/[id]', params: { id: project.id } })}
       style={({ pressed }) => [styles.card, pressed && { transform: [{ scale: 0.99 }], opacity: 0.95 }]}
     >
@@ -129,7 +130,7 @@ function ProjectCard({ project }: { project: Project }) {
       <View style={{ flex: 1, gap: 2 }}>
         <Text style={styles.cardTitle} numberOfLines={1}>{project.name}</Text>
         <Text style={styles.cardMeta} numberOfLines={1}>
-          {project.constructora} _ {project.contract_number}
+          {project.constructora} · {project.contract_number}
         </Text>
       </View>
       <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />

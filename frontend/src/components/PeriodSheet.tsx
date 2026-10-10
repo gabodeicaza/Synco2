@@ -25,9 +25,9 @@ export function periodToInformeType(period: ReportPeriod): 'diario' | 'semanal' 
 
 const OPTIONS: { value: ReportPeriod; label: string; sub: string; icon: any }[] = [
   { value: 'today', label: 'Hoy', sub: 'Reportes capturados hoy (UTC)', icon: 'today-outline' },
-  { value: 'yesterday', label: 'Ayer', sub: 'Reportes del dia anterior', icon: 'calendar-clear-outline' },
-  { value: 'week', label: 'Ultima semana', sub: 'Ultimos 7 dias', icon: 'calendar-outline' },
-  { value: 'month', label: 'Ultimo mes', sub: 'Ultimos 30 dias', icon: 'calendar-number-outline' },
+  { value: 'yesterday', label: 'Ayer', sub: 'Reportes del día anterior', icon: 'calendar-clear-outline' },
+  { value: 'week', label: 'Última semana', sub: 'Últimos 7 días', icon: 'calendar-outline' },
+  { value: 'month', label: 'Último mes', sub: 'Últimos 30 días', icon: 'calendar-number-outline' },
 ];
 
 export function PeriodSheet({
@@ -44,12 +44,12 @@ export function PeriodSheet({
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <Pressable style={styles.backdrop} onPress={onClose}>
-        <Pressable style={styles.sheet} onPress={(e) => e.stopPropagation()}>
+        <Pressable accessibilityRole="button" style={styles.sheet} onPress={(e) => e.stopPropagation()}>
           <View style={styles.handle} />
           <Text style={styles.title}>{title}</Text>
-          <Text style={styles.subtitle}>Generaremos un PDF horizontal con la jerarquia completa</Text>
+          <Text style={styles.subtitle}>Generaremos un PDF horizontal con la jerarquía completa</Text>
           {OPTIONS.map((o) => (
-            <Pressable
+            <Pressable accessibilityRole="button"
               key={o.value}
               onPress={() => { onSelect(o.value); }}
               style={({ pressed }) => [styles.option, pressed && { backgroundColor: colors.primaryLight }]}
@@ -64,7 +64,7 @@ export function PeriodSheet({
               <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
             </Pressable>
           ))}
-          <Pressable onPress={onClose} style={styles.cancel}>
+          <Pressable accessibilityRole="button" onPress={onClose} style={styles.cancel}>
             <Text style={styles.cancelText}>Cancelar</Text>
           </Pressable>
         </Pressable>

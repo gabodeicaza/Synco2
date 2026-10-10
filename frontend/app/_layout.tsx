@@ -1,4 +1,5 @@
 import React, { useEffect } from 'react';
+import { View } from 'react-native';
 import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
@@ -14,7 +15,16 @@ import '@/src/utils/tz';
 
 import { useIconFonts } from '@/src/hooks/use-icon-fonts';
 import { AuthProvider } from '@/src/auth-context';
+import { ProyectoActivoProvider } from '@/src/proyecto-activo-context';
 import { OfflineQueueProvider } from '@/src/offline-queue-context';
+import { BannerSinConexion } from '@/src/components/BannerSinConexion';
+import { PedirNotificaciones } from '@/src/components/PedirNotificaciones';
+import { NotificacionesNavegacion } from '@/src/components/NotificacionesNavegacion';
+import { configurarPing } from '@/src/utils/connectivity';
+import { colors } from '@/src/theme';
+
+// El ping de conectividad usa GET /api/health (ver src/utils/connectivity.ts).
+configurarPing();
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
@@ -43,16 +53,23 @@ export default function RootLayout() {
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
         <AuthProvider>
+          <ProyectoActivoProvider>
           <OfflineQueueProvider>
             <StatusBar style="dark" />
-            <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: '#F8FAFC' } }}>
+            <View style={{ flex: 1 }}>
+            <BannerSinConexion />
+            <PedirNotificaciones />
+            <NotificacionesNavegacion />
+            <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.bg } }}>
               <Stack.Screen name="index" />
               <Stack.Screen name="(auth)" />
               <Stack.Screen name="(coord)" />
               <Stack.Screen name="(subcoord)" />
               <Stack.Screen name="(spec)" />
             </Stack>
+            </View>
           </OfflineQueueProvider>
+          </ProyectoActivoProvider>
         </AuthProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>

@@ -1,8 +1,9 @@
-// SynCo v2.0 REST client.
+// Dirac v2.0 REST client.
 // Reads JWT from secure storage on every call.
 import { Alert, Platform } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
 import { storage } from '@/src/utils/storage';
+import { mensajeDeError } from '@/src/utils/errores';
 import { BACKEND_URL, BASE, ApiError, setAuthTokenCache, request, safeJson, getToken, authHeader } from '@/src/httpClient';
 import { generateClientId, enqueueReport, isLikelyOnline } from '@/src/utils/offlineQueue';
 import { generateAvanceClientId, enqueueAvance, isAvanceLikelyOnline } from '@/src/utils/avanceQueue';
@@ -10,7 +11,7 @@ import { enqueueCustomRecord, generateCustomClientId, isCustomLikelyOnline } fro
 
 // [DIAG 2026-07-08] Toggle para mostrar Alert diagnostico en dispositivo
 // cuando falla un upload. Poner en `false` cuando termine la investigacion.
-const UPLOAD_DIAG_ALERT = true;
+const UPLOAD_DIAG_ALERT = __DEV__;
 
 // Extrae el mensaje real de error de una respuesta no-2xx (el backend manda
 // `{"detail": "..."}` via HTTPException). Antes, las descargas de
@@ -23,7 +24,7 @@ async function _downloadErrorMessage(res: Response, fallback: string): Promise<s
     const data = text ? safeJson(text) : null;
     const detail = data && (data as any).detail;
     if (typeof detail === 'string' && detail.trim()) return `${fallback} (${res.status}): ${detail}`;
-    if (detail) return `${fallback} (${res.status}): ${JSON.stringify(detail)}`;
+    if (detail) return `${fallback} (${res.status}): ${mensajeDeError(detail)}`;
   } catch {
     // noop: nos quedamos con el fallback
   }
@@ -229,7 +230,7 @@ async function nativeMultipartUpload<T>(
     );
   } catch (err: any) {
     if (err instanceof ApiError) throw err;
-    throw new ApiError(0, `Fallo la preparacion del archivo: ${err?.message || err}`);
+    throw new ApiError(0, `Fallo la preparación del archivo: ${err?.message || err}`);
   }
 
   if (!url || url === '/api' || url.startsWith('/api/')) {
@@ -258,14 +259,16 @@ async function nativeMultipartUpload<T>(
         );
       } catch { /* noop */ }
     }
-    throw new ApiError(0, `uploadAsync fallo -> ${nativeMsg}. url=${url} localUri=${normalized.uri} size=${normalized.size} mime=${normalized.type}`);
+    if (__DEV__) console.warn(`[upload] uploadAsync falló -> ${nativeMsg}. url=${url} localUri=${normalized.uri} size=${normalized.size} mime=${normalized.type}`);
+    throw new ApiError(0, 'No se pudo subir el archivo. Revisa tu conexión e inténtalo de nuevo.');
   }
 
   const { status, body } = response;
   const data = body ? safeJson(body) : null;
   if (status < 200 || status >= 300) {
     const detail = (data && (data as any).detail) || body?.slice(0, 200) || 'sin cuerpo';
-    throw new ApiError(status, `HTTP ${status}. detail="${typeof detail === 'string' ? detail : JSON.stringify(detail)}" url=${url} size=${normalized.size} mime=${normalized.type}`);
+    if (__DEV__) console.warn(`[upload] HTTP ${status} url=${url} size=${normalized.size} mime=${normalized.type}`);
+    throw new ApiError(status, mensajeDeError(detail));
   }
   return data as T;
 }
@@ -1090,11 +1093,16 @@ export interface ModuloAutoOutline {
   bloques: { type?: string | null; heading?: string | null; n: number }[];
 }
 
+/** Periodos del análisis financiero: los mismos en el tablero EVM y en la Presentación (A-05). */
+export type PeriodoFinanciero = 'mes_actual' | 'ultimos_3_meses' | 'proyecto_completo';
+
 export interface Presentacion {
   id: string;
   project_id: string;
   fecha: string;
   titulo: string;
+  /** Periodo de la sección Financiero. Las presentaciones viejas no lo traen: se toma mes_actual. */
+  periodo_financiero?: PeriodoFinanciero;
   secciones: PresentacionSeccion[];
   created_by: string;
   created_by_name: string;
@@ -1191,6 +1199,18 @@ export interface Project {
   // consultar; RegistroAvance.fecha siempre guarda la fecha exacta.
   cadencia_reporte?: 'DIARIA' | 'SEMANAL' | 'MENSUAL';
   dia_inicio_semana?: 'LUNES' | 'MARTES' | 'MIERCOLES' | 'JUEVES' | 'VIERNES' | 'SABADO' | 'DOMINGO';
+  /** Zona horaria IANA del proyecto (defecto America/Mexico_City). */
+  zona_horaria?: string;
+  /** Separador decimal con que se capturan los números en el proyecto (defecto "."). */
+  separador_decimal?: '.' | ',';
+  /** Tipo de obra (decide módulos y plantillas por defecto). "legado" = proyecto anterior sin el campo. */
+  tipo_obra?: TipoObra;
+  /** Género gramatical de los nombres de nivel configurados (clave = nombre del nivel). Sin clave = automático. */
+  genero_niveles?: Record<string, 'm' | 'f'>;
+  /** Hoy en la zona del proyecto (YYYY-MM-DD), al momento de la consulta. */
+  hoy?: string;
+  /** Desfase actual respecto a UTC en minutos (CDMX = -360). Lo usa fechas.ts. */
+  tz_offset_min?: number;
   // Sistema Multi-Proyecto Modular: plantillas encendidas/apagadas, con un
   // interruptor independiente por categoría de informe (Diario/Semanal/
   // Mensual). Ver MODULOS_KEYS en server.py — claves no reconocidas ahí
@@ -1216,6 +1236,9 @@ export interface LocationNode {
   target_lat?: number | null;
   target_lon?: number | null;
   target_elev?: number | null;
+  /** Ubicación GPS real (grados decimales), independiente de target_* (que en la práctica son UTM). */
+  gps_lat?: number | null;
+  gps_lon?: number | null;
   avance_actual?: number | null;
   metadata?: Record<string, any> | null;
   cover_image?: string | null;
@@ -1386,6 +1409,28 @@ export interface ReportTemplate {
   name: string;
   category: string;
   fields: ReportTemplateField[];
+  /** Tipos de obra a los que sirve la plantilla; ["*"] = cualquiera. */
+  tipos_obra?: string[];
+}
+
+/** Tipo de obra del proyecto. "legado" solo se LEE (proyectos anteriores sin el campo); no se puede elegir. */
+export type TipoObra = 'generica' | 'carretera' | 'edificacion' | 'hidraulica' | 'puente' | 'legado';
+
+export interface TipoObraInfo {
+  id: Exclude<TipoObra, 'legado'>;
+  nombre: string;
+  descripcion: string;
+  /** Módulos activos por defecto para el tipo, con la misma forma que Project.modulos. */
+  modulos_por_defecto: ModulosConfig;
+  /** Códigos de plantillas de reporte recomendadas para el tipo. */
+  plantillas_recomendadas: string[];
+}
+
+export interface PlantillaEtapasPoste {
+  id: string;
+  nombre: string;
+  descripcion: string;
+  etapas: EtapaPosteElemento[];
 }
 
 export interface FeedItem {
@@ -1454,9 +1499,11 @@ export interface Announcement {
   author_role?: string;
   created_at: string;
   updated_at: string;
-  // Toda noticia vence 24h después de creada (fijada o no); el backend la
-  // deja de listar (y Mongo la purga vía TTL index) al llegar esta fecha.
+  // Toda noticia vence `vigencia_horas` después de creada o de su última edición de vigencia
+  // (fijada o no); el backend la deja de listar (y Mongo la purga vía TTL index) al llegar esta fecha.
   expires_at?: string;
+  /** Vigencia en horas: 6, 24 (por defecto), 48 o 168 (7 días). */
+  vigencia_horas?: 6 | 24 | 48 | 168;
 }
 
 export interface Acuerdo {
@@ -1555,6 +1602,9 @@ export interface ProjectEvent {
   location?: string | null;
   start_at: string;
   end_at?: string | null;
+  /** Evento de todo el día (minutas, inicio/fin de concepto): no lleva hora. */
+  all_day?: boolean;
+  fecha?: string | null;
   author_id: string;
   author_name: string;
   author_role?: string;
@@ -1640,6 +1690,8 @@ export async function getWeather(lat: number, lon: number): Promise<WeatherNow |
 export interface Partida {
   id: string;
   project_id: string;
+  /** C-01: partida creada por la migración con la clave como nombre; se limpia al renombrarla. */
+  nombre_pendiente?: boolean;
   clave: string;
   nombre: string;
   orden: number;
@@ -1663,8 +1715,9 @@ export interface Concepto {
   unidad: string;
   cantidad: string;
   precio_unitario: string;
+  /** Ritmo objetivo por periodicidad_meta; "" si el concepto no tiene programa (C-06). */
   meta: string;
-  periodicidad_meta: 'SEMANAL' | 'MENSUAL';
+  periodicidad_meta: 'DIARIA' | 'SEMANAL' | 'MENSUAL';
   activo: boolean;
   created_at: string;
   // Calculados por el servidor
@@ -1679,6 +1732,52 @@ export interface Concepto {
   fecha_fin?: string | null; // "YYYY-MM-DD"
   /** precio_unitario_dinamico = importe_total_editable / meta_cantidad, calculado por el servidor — null si el concepto no tiene datos EVM. */
   precio_unitario_dinamico?: string | null;
+  // ---- A-02: volumen excedente y conceptos extraordinarios ------------------
+  /** Trabajo que no está en el catálogo contratado. */
+  extraordinario?: boolean;
+  /** Estatus del P.U. de un extraordinario (null en conceptos normales). */
+  pu_estatus?: EstatusAutorizacion | null;
+  /** Ejecutado por encima de lo contratado (en modo porcentaje: puntos sobre 100). */
+  cantidad_excedente?: string;
+  importe_excedente?: string;
+  estatus_excedente?: EstatusAutorizacion | null;
+}
+
+export interface MigracionCatalogoItem {
+  project_id: string;
+  nombre: string;
+  /** Cablebús Línea 4: la API se niega a migrarlo. */
+  excluido: boolean;
+  partidas_a_crear: number;
+  conceptos_a_mover: number;
+  ultima_migracion: { id: string; estado: 'aplicando' | 'aplicada' | 'revertida'; aplicada_en?: string | null; revertida_en?: string | null } | null;
+}
+
+export interface MigracionCatalogoVistaPrevia {
+  project_id: string;
+  partidas_a_crear: { clave: string; padre: string | null }[];
+  conceptos_a_mover: number;
+  muestra_movimientos: { clave: string; hacia: string }[];
+  nota: string;
+}
+
+export type EstatusAutorizacion = 'pendiente_autorizacion' | 'autorizado' | 'rechazado';
+
+export interface Excedente {
+  concepto_id: string;
+  clave: string;
+  descripcion: string;
+  unidad: string;
+  extraordinario: boolean;
+  cantidad_contratada: string;
+  cantidad_ejecutada: string;
+  cantidad_excedente: string;
+  importe_excedente: string;
+  estatus: EstatusAutorizacion;
+  referencia?: string | null;
+  comentario?: string | null;
+  autorizado_por_nombre?: string | null;
+  actualizado_en?: string | null;
 }
 
 export interface ConceptoSearchResult extends Concepto {
@@ -1769,6 +1868,9 @@ export interface RegistroAvance {
   // null solo para avances capturados ANTES de esta etapa. ---------------
   precio_unitario_congelado?: string | null;
   importe_ganado_congelado?: string | null;
+  /** A-01: `normal` (incremento > 0) o `ajuste` (corrección con signo y motivo obligatorio). */
+  tipo?: 'normal' | 'ajuste';
+  motivo?: string | null;
   /** true si `fecha` cayó fuera de [concepto.fecha_inicio, concepto.fecha_fin] al momento de capturar — nunca bloquea, solo se muestra en la Lista por Excepción. */
   fuera_de_ventana?: boolean;
 }
@@ -1823,6 +1925,8 @@ export interface ImportMapping {
   cantidad?: string;
   precio_unitario?: string;
   importe?: string;
+  /** C-03: columna opcional que marca las filas deductivas (SI, X, 1). */
+  deductiva?: string;
 }
 
 // tipo: 'excel_error' | 'numero_ilegible' | 'numero_ambiguo' | 'campo_obligatorio_vacio'
@@ -1839,6 +1943,9 @@ export type ImportEstadoFila = 'ok' | 'error' | 'advertencia' | 'duplicado' | 'd
 
 export interface ImportFila {
   fila: number;
+  /** C-01: una fila sin cantidad ni P.U. es una partida (nodo del catálogo). */
+  tipo_fila?: 'partida' | 'concepto';
+  deductiva?: boolean;
   clave: string | null;
   descripcion: string | null;
   unidad: string;
@@ -1888,6 +1995,10 @@ export interface ImportPreviewResponse {
 }
 
 export interface ImportCommitResult {
+  /** C-01: partidas creadas a partir de las filas sin cantidad ni P.U. */
+  partidas_creadas?: number;
+  /** Conceptos que no se importaron por no tener partida padre ni destino. */
+  sin_partida?: number;
   creados: number;
   actualizados: number;
   omitidos: number;
@@ -1927,6 +2038,7 @@ export interface ImportMappingEvm {
 // tipo incluye, además de los del catálogo legado: 'fecha_ilegible' | 'rango_fecha_invalido'
 export interface ImportFilaEvm {
   fila: number;
+  tipo_fila?: 'partida' | 'concepto';
   clave: string | null;
   descripcion: string | null;
   meta_cantidad: string | null;
@@ -1979,16 +2091,33 @@ export interface AnalisisPeriodo {
   end: string;
   /** Valor Planeado (PV) — string decimal exacto, ver src/utils/money.ts. */
   pv: string;
-  /** Valor Ganado (EV). */
+  /** Valor Ganado TOTAL (alias de ev_total; se conserva por compatibilidad). */
   ev: string;
+  /** EV contractual: topado al volumen contratado. */
+  ev_contractual?: string;
+  /** EV total: incluye el volumen excedente. */
+  ev_total?: string;
+  /** Presupuesto contratado (BAC). */
+  bac?: string;
+  ev_acumulado?: string;
+  ac_acumulado?: string;
+  /** Estimado al terminar = BAC / CPI. null mientras no haya gasto real. */
+  eac?: string | null;
+  /** Por gastar = EAC - AC. */
+  etc?: string | null;
+  /** Variación al terminar = BAC - EAC (negativo = sobrecosto proyectado). */
+  vac?: string | null;
   /** Costo Real (AC), desde gastos_reales. */
   ac: string;
-  /** SPI = EV/PV — null si PV es 0 (nada planeado en la ventana). */
+  /** SPI = EV contractual / PV — null si PV es 0 (nada planeado en la ventana). */
   spi: string | null;
-  /** CPI = EV/AC — null si AC es 0 (nada de gasto real capturado). */
+  /** CPI = EV total / AC — null si AC es 0 (nada de gasto real capturado). */
   cpi: string | null;
   variacion_cronograma: string;
-  variacion_costo: string;
+  /** CV = EV total − AC — null mientras AC es 0 (sin gasto real capturado), igual que el CPI. */
+  variacion_costo: string | null;
+  /** Conceptos activos sin fechas ni distribución en el programa (no aportan PV). */
+  conceptos_sin_programa?: number;
 }
 
 export interface CurvaS {
@@ -2002,8 +2131,17 @@ export interface ExcepcionEvm {
   concepto_id: string;
   clave: string;
   descripcion: string;
-  tipo: 'fuera_de_ventana' | 'sobre_meta' | 'atrasado';
+  tipo:
+    | 'fuera_de_ventana' | 'atrasado' | 'excedente_volumen' | 'sobrecosto'
+    | 'ajuste_negativo' | 'acuerdo_vencido' | 'sin_avance_en_ventana';
   detalle: string;
+  /** Excedentes, sobrecosto, ajustes negativos, acuerdos vencidos y conceptos sin avance son informativos: nunca bloquean nada. */
+  severidad?: 'alerta' | 'informativa';
+  cantidad?: string | null;
+  importe?: string | null;
+  /** Solo `acuerdo_vencido`. */
+  dias_atraso?: number | null;
+  responsable?: string | null;
 }
 
 export interface ActividadEvm {
@@ -2091,6 +2229,7 @@ export interface ProgramaImportHeadersResponse {
 }
 
 // tipo: 'importe_ilegible' | 'concepto_no_encontrado' | 'celda_mes_ilegible' | 'distribucion_no_cuadra'
+//       | 'rango_mes_ilegible' | 'rango_fecha_invalido'
 export interface ProgramaImportProblema {
   tipo: string;
   campo: string | null;
@@ -2191,10 +2330,10 @@ export const api = {
   login: (email: string, password: string) =>
     request<{ token: string; user: User }>('POST', '/auth/login', { email, password }),
   me: () => request<User>('GET', '/auth/me'),
-  deleteAccount: (password: string) =>
-    request<{ ok: boolean }>('POST', '/auth/delete_account', { password }),
   changePassword: (new_password: string) =>
     request<{ ok: boolean }>('POST', '/auth/change_password', { new_password }),
+  deleteAccount: (password: string) =>
+    request<{ ok: boolean }>('POST', '/auth/delete_account', { password }),
   forgotPassword: (email: string) =>
     request<{ ok: boolean; message: string }>('POST', '/auth/forgot_password', { email }),
 
@@ -2275,7 +2414,7 @@ export const api = {
     const data = text ? safeJson(text) : null;
     if (!res.ok) {
       const msg = (data && (data as any).detail) || `HTTP ${res.status}`;
-      throw new ApiError(res.status, typeof msg === 'string' ? msg : JSON.stringify(msg));
+      throw new ApiError(res.status, mensajeDeError(msg));
     }
     return data as LocationNode;
   },
@@ -2318,7 +2457,7 @@ export const api = {
     const data = text ? safeJson(text) : null;
     if (!res.ok) {
       const msg = (data && (data as any).detail) || `HTTP ${res.status}`;
-      throw new ApiError(res.status, typeof msg === 'string' ? msg : JSON.stringify(msg));
+      throw new ApiError(res.status, mensajeDeError(msg));
     }
     return data as PlanoAvance;
   },
@@ -2348,7 +2487,7 @@ export const api = {
     file: { uri: string; name: string; mimeType?: string | null },
   ): Promise<any> => {
     if (!file || !file.uri) {
-      Alert.alert('Error de Subida', 'No se ha seleccionado ningun archivo para la carga masiva.');
+      Alert.alert('Error de Subida', 'No se ha seleccionado ningún archivo para la carga masiva.');
       throw new ApiError(0, 'Archivo o URI no proporcionado');
     }
     const isWeb = Platform.OS === 'web';
@@ -2375,7 +2514,7 @@ export const api = {
     const data = text ? safeJson(text) : null;
     if (!res.ok) {
       const msg = (data && (data as any).detail) || `HTTP ${res.status}`;
-      throw new ApiError(res.status, typeof msg === 'string' ? msg : JSON.stringify(msg));
+      throw new ApiError(res.status, mensajeDeError(msg));
     }
     return data as any;
   },
@@ -2387,7 +2526,7 @@ export const api = {
     file: { uri: string; name: string; mimeType?: string | null },
   ): Promise<any> => {
     if (!file || !file.uri) {
-      Alert.alert('Error de Subida', 'No se ha seleccionado ningun archivo para subir al proyecto.');
+      Alert.alert('Error de Subida', 'No se ha seleccionado ningún archivo para subir al proyecto.');
       throw new ApiError(0, 'Archivo o URI no proporcionado');
     }
     const isWeb = Platform.OS === 'web';
@@ -2414,7 +2553,7 @@ export const api = {
     const data = text ? safeJson(text) : null;
     if (!res.ok) {
       const msg = (data && (data as any).detail) || `HTTP ${res.status}`;
-      throw new ApiError(res.status, typeof msg === 'string' ? msg : JSON.stringify(msg));
+      throw new ApiError(res.status, mensajeDeError(msg));
     }
     return data as any;
   },
@@ -2455,7 +2594,7 @@ export const api = {
     const data = text ? safeJson(text) : null;
     if (!res.ok) {
       const msg = (data && (data as any).detail) || `HTTP ${res.status}`;
-      throw new ApiError(res.status, typeof msg === 'string' ? msg : JSON.stringify(msg));
+      throw new ApiError(res.status, mensajeDeError(msg));
     }
     return data as Project;
   },
@@ -2506,7 +2645,7 @@ export const api = {
     const data = text ? safeJson(text) : null;
     if (!res.ok) {
       const msg = (data && (data as any).detail) || `HTTP ${res.status}`;
-      throw new ApiError(res.status, typeof msg === 'string' ? msg : JSON.stringify(msg));
+      throw new ApiError(res.status, mensajeDeError(msg));
     }
     return data as Project;
   },
@@ -2538,7 +2677,7 @@ export const api = {
     const data = text ? safeJson(text) : null;
     if (!res.ok) {
       const msg = (data && (data as any).detail) || `HTTP ${res.status}`;
-      throw new ApiError(res.status, typeof msg === 'string' ? msg : JSON.stringify(msg));
+      throw new ApiError(res.status, mensajeDeError(msg));
     }
     return data as { data_url: string };
   },
@@ -2553,7 +2692,7 @@ export const api = {
   downloadNodesTemplate: async (pid: string): Promise<{ blob?: Blob; uri?: string; filename: string }> => {
     const headers = await authHeader();
     const url = `${BASE}/projects/${pid}/nodes/bulk-upload/template`;
-    const filename = 'plantilla_nodos_synco.xlsx';
+    const filename = 'plantilla_nodos_dirac.xlsx';
     const res = await fetch(url, { method: 'GET', headers });
     if (!res.ok) {
       throw new ApiError(res.status, `HTTP ${res.status} al descargar la plantilla`);
@@ -3055,10 +3194,10 @@ export const api = {
 
   // === Presentación (Informe de Actividades semanal) ===
   listPresentaciones: (pid: string) => request<Presentacion[]>('GET', `/projects/${pid}/presentaciones`),
-  createPresentacion: (pid: string, body: { fecha: string; titulo?: string; plantilla?: 'semanal' }) =>
+  createPresentacion: (pid: string, body: { fecha: string; titulo?: string; plantilla?: 'semanal'; periodo_financiero?: PeriodoFinanciero }) =>
     request<Presentacion>('POST', `/projects/${pid}/presentaciones`, { project_id: pid, ...body }),
   getPresentacion: (pid: string, presId: string) => request<Presentacion>('GET', `/projects/${pid}/presentaciones/${presId}`),
-  updatePresentacion: (pid: string, presId: string, body: Partial<{ fecha: string; titulo: string }>) =>
+  updatePresentacion: (pid: string, presId: string, body: Partial<{ fecha: string; titulo: string; periodo_financiero: PeriodoFinanciero }>) =>
     request<Presentacion>('PATCH', `/projects/${pid}/presentaciones/${presId}`, body),
   deletePresentacion: (pid: string, presId: string) =>
     request<{ ok: boolean }>('DELETE', `/projects/${pid}/presentaciones/${presId}`),
@@ -3106,7 +3245,7 @@ export const api = {
     if (!res.ok) throw new ApiError(res.status, await _downloadErrorMessage(res, 'Error al descargar la plantilla'));
     const cd = res.headers.get('Content-Disposition') || '';
     const m = cd.match(/filename="?([^"]+)"?/);
-    return { blob: await res.blob(), filename: (m && m[1]) || 'plantilla_invitaciones_synco.xlsx' };
+    return { blob: await res.blob(), filename: (m && m[1]) || 'plantilla_invitaciones_dirac.xlsx' };
   },
   invitationsBulkValidate: async (
     pid: string,
@@ -3136,14 +3275,19 @@ export const api = {
     const data = text ? safeJson(text) : null;
     if (!res.ok) {
       const msg = (data && (data as any).detail) || `HTTP ${res.status}`;
-      throw new ApiError(res.status, typeof msg === 'string' ? msg : JSON.stringify(msg));
+      throw new ApiError(res.status, mensajeDeError(msg));
     }
     return data as InvitationBulkValidateResponse;
   },
   invitationsBulkCommit: (pid: string, rows: InvitationBulkRow[]) =>
     request<InvitationBulkCommitResult>('POST', `/projects/${pid}/invitations/bulk_import/commit`, { rows }),
 
-  getReportTemplates: () => request<ReportTemplate[]>('GET', '/report-templates'),
+  getReportTemplates: (tipoObra?: Exclude<TipoObra, 'legado'>) =>
+    request<ReportTemplate[]>('GET', `/report-templates${tipoObra ? `?tipo_obra=${encodeURIComponent(tipoObra)}` : ''}`),
+  listTiposObra: () => request<TipoObraInfo[]>('GET', '/tipos_obra'),
+  listPlantillasEtapasPoste: () => request<PlantillaEtapasPoste[]>('GET', '/etapas_poste/plantillas'),
+  aplicarPlantillaEtapasPoste: (pid: string, plantilla: string) =>
+    request<Project>('POST', `/projects/${pid}/etapas_poste/aplicar-plantilla`, { plantilla }),
   createReportTemplate: (body: { code: string; name: string; category: string; fields: ReportTemplateField[] }) =>
     request<ReportTemplate>('POST', '/report-templates', body),
   updateReportTemplate: (tid: string, body: { name?: string; category?: string; fields?: ReportTemplateField[] }) =>
@@ -3254,8 +3398,20 @@ export const api = {
   },
   sendChannelMessage: (cid: string, text: string) => request<Message>('POST', `/channels/${cid}/messages`, { text }),
   createDirectChannel: (pid: string, target_user_id: string) => request<Channel>('POST', `/projects/${pid}/channels/direct`, { target_user_id }),
-  listProjectMembers: (pid: string) => request<User[]>('GET', `/projects/${pid}/members`),
+  /** `soloMiembros`: solo quien pertenece al proyecto (selector de responsables de minutas). */
+  listProjectMembers: (pid: string, opts?: { soloMiembros?: boolean }) =>
+    request<User[]>('GET', `/projects/${pid}/members${opts?.soloMiembros ? '?solo_miembros=1' : ''}`),
 
+  /** Cuántos reportes exportaría un PDF/Word/PPTX con estos filtros (R-03). */
+  countExportReports: (pid: string, period: string, opts?: { area_id?: string; scope?: string; period_type?: string }) => {
+    const qs = new URLSearchParams({ period });
+    if (opts?.area_id) qs.set('area_id', opts.area_id);
+    if (opts?.scope) qs.set('scope', opts.scope);
+    if (opts?.period_type) qs.set('period_type', opts.period_type);
+    return request<{ reportes: number; reportes_fuerza_trabajo: number; periodo: string; inicio: string; fin: string }>(
+      'GET', `/projects/${pid}/export/reports/count?${qs.toString()}`,
+    );
+  },
   exportReportsXlsxUrl: (pid: string) => `${BASE}/projects/${pid}/export/reports.xlsx`,
   downloadReportsXlsx: async (pid: string): Promise<{ blob: Blob; filename: string }> => {
     const tok = await getToken();
@@ -3380,7 +3536,7 @@ export const api = {
     const data = text ? safeJson(text) : null;
     if (!res.ok) {
       const msg = (data && (data as any).detail) || `HTTP ${res.status}`;
-      throw new ApiError(res.status, typeof msg === 'string' ? msg : JSON.stringify(msg));
+      throw new ApiError(res.status, mensajeDeError(msg));
     }
     return data as Minuta;
   },
@@ -3419,19 +3575,22 @@ export const api = {
     request<Concepto[]>('GET', `/partidas/${partidaId}/conceptos${incluirInactivos ? '?incluir_inactivos=true' : ''}`),
   createConcepto: (payload: {
     partida_id: string; clave: string; descripcion: string; unidad: string;
-    cantidad: string; precio_unitario: string; meta: string; periodicidad_meta: 'SEMANAL' | 'MENSUAL';
+    cantidad: string; precio_unitario: string; meta?: string; periodicidad_meta?: 'DIARIA' | 'SEMANAL' | 'MENSUAL';
+    fecha_inicio?: string | null; fecha_fin?: string | null;
+    extraordinario?: boolean;
   }) => request<Concepto>('POST', '/conceptos', payload),
   updateConcepto: (id: string, payload: Partial<{
     clave: string; descripcion: string; unidad: string; cantidad: string;
-    precio_unitario: string; meta: string; periodicidad_meta: 'SEMANAL' | 'MENSUAL'; activo: boolean;
+    precio_unitario: string; meta: string; periodicidad_meta: 'DIARIA' | 'SEMANAL' | 'MENSUAL'; activo: boolean;
   }>) => request<Concepto>('PATCH', `/conceptos/${id}`, payload),
   deleteConcepto: (id: string) => request<{ ok: boolean }>('DELETE', `/conceptos/${id}`),
   conceptoBitacora: (conceptoId: string) => request<BitacoraCambio[]>('GET', `/conceptos/${conceptoId}/bitacora`),
 
-  searchConceptos: (pid: string, opts: { q?: string; unidad?: string } = {}) => {
+  searchConceptos: (pid: string, opts: { q?: string; unidad?: string; limit?: number } = {}) => {
     const qs = new URLSearchParams();
     if (opts.q && opts.q.trim()) qs.set('q', opts.q.trim());
     if (opts.unidad) qs.set('unidad', opts.unidad);
+    if (opts.limit) qs.set('limit', String(opts.limit));
     const suffix = qs.toString();
     return request<ConceptoSearchResult[]>('GET', `/projects/${pid}/conceptos/search${suffix ? `?${suffix}` : ''}`);
   },
@@ -3500,7 +3659,7 @@ export const api = {
     const data = text ? safeJson(text) : null;
     if (!res.ok) {
       const msg = (data && (data as any).detail) || `HTTP ${res.status}`;
-      throw new ApiError(res.status, typeof msg === 'string' ? msg : JSON.stringify(msg));
+      throw new ApiError(res.status, mensajeDeError(msg));
     }
     return data as ImportSheetsResponse;
   },
@@ -3518,7 +3677,7 @@ export const api = {
   // cambiar la convención, o "aplicar esta interpretación a todas las
   // filas ambiguas") re-valida el archivo completo desde cero.
   importCatalogoValidate: (pid: string, importId: string, payload: {
-    sheet: string; header_row_index?: number; mapping: ImportMapping; partida_id: string; convencion?: ConvencionDecimal;
+    sheet: string; header_row_index?: number; mapping: ImportMapping; partida_id?: string; convencion?: ConvencionDecimal;
   }) => request<ImportValidateResult>('POST', `/projects/${pid}/conceptos/import/${importId}/validate`, payload),
   // Vista previa paginada del resultado ya validado — no procesa nada.
   importCatalogoPreview: (importId: string, opts: { page?: number; page_size?: number } = {}) => {
@@ -3577,7 +3736,7 @@ export const api = {
     const data = text ? safeJson(text) : null;
     if (!res.ok) {
       const msg = (data && (data as any).detail) || `HTTP ${res.status}`;
-      throw new ApiError(res.status, typeof msg === 'string' ? msg : JSON.stringify(msg));
+      throw new ApiError(res.status, mensajeDeError(msg));
     }
     return data as ImportSheetsResponse;
   },
@@ -3589,7 +3748,7 @@ export const api = {
     return request<ImportHeadersResponse>('GET', `/conceptos/import_evm/${importId}/headers${suffix ? `?${suffix}` : ''}`);
   },
   importEvmValidate: (pid: string, importId: string, payload: {
-    sheet: string; header_row_index?: number; mapping: ImportMappingEvm; partida_id: string; convencion?: ConvencionDecimal;
+    sheet: string; header_row_index?: number; mapping: ImportMappingEvm; partida_id?: string; convencion?: ConvencionDecimal;
   }) => request<ImportValidateEvmResult>('POST', `/projects/${pid}/conceptos/import_evm/${importId}/validate`, payload),
   importEvmPreview: (importId: string, opts: { page?: number; page_size?: number } = {}) => {
     const qs = new URLSearchParams();
@@ -3652,7 +3811,7 @@ export const api = {
     const data = text ? safeJson(text) : null;
     if (!res.ok) {
       const msg = (data && (data as any).detail) || `HTTP ${res.status}`;
-      throw new ApiError(res.status, typeof msg === 'string' ? msg : JSON.stringify(msg));
+      throw new ApiError(res.status, mensajeDeError(msg));
     }
     return data as ImportSheetsResponse;
   },
@@ -3688,6 +3847,7 @@ export const api = {
   createAvance: async (payload: {
     concepto_id: string; fecha: string; cantidad_ejecutada: string;
     nodo_id?: string; reporte_id?: string; fotos?: string[]; photo_captions?: string[]; client_id?: string;
+    tipo?: 'normal' | 'ajuste'; motivo?: string;
   }): Promise<RegistroAvance> => {
     const finalPayload = { ...payload, client_id: payload.client_id || generateAvanceClientId() };
     const localEcho = (createdAt: string): RegistroAvance => ({
@@ -3703,6 +3863,8 @@ export const api = {
       capturado_por: '',
       creado_en: createdAt,
       sincronizado: false,
+      tipo: finalPayload.tipo ?? 'normal',
+      motivo: finalPayload.motivo ?? null,
     });
 
     if (!(await isAvanceLikelyOnline())) {
@@ -3745,10 +3907,33 @@ export const api = {
   // `contrato` (obra | supervision): el backend asume obra si no se manda.
   analisisPeriodo: (pid: string, start: string, end: string, contrato: ContratoFin = 'obra') =>
     request<AnalisisPeriodo>('GET', `/projects/${pid}/analisis_periodo?start=${start}&end=${end}&contrato=${contrato}`),
+  /** Mismo análisis, con la ventana que resuelve el servidor (la misma función que usa la Presentación).
+   * `fecha` es la fecha de corte (defecto: hoy en la zona del proyecto). */
+  analisisPeriodoPorPeriodo: (pid: string, periodo: PeriodoFinanciero, fecha?: string, contrato: ContratoFin = 'obra') =>
+    request<AnalisisPeriodo>(
+      'GET',
+      `/projects/${pid}/analisis_periodo?periodo=${periodo}${fecha ? `&fecha=${fecha}` : ''}&contrato=${contrato}`,
+    ),
   analisisPeriodoCurvaS: (pid: string, contrato: ContratoFin = 'obra') =>
     request<CurvaS>('GET', `/projects/${pid}/analisis_periodo/curva_s?contrato=${contrato}`),
   analisisPeriodoPresupuestoTotal: (pid: string, contrato: ContratoFin = 'obra') =>
     request<{ project_id: string; presupuesto_total: string }>('GET', `/projects/${pid}/analisis_periodo/presupuesto_total?contrato=${contrato}`),
+  migracionCatalogoLista: () => request<MigracionCatalogoItem[]>('GET', '/admin/migraciones/catalogo-jerarquia'),
+  migracionCatalogoVistaPrevia: (pid: string) =>
+    request<MigracionCatalogoVistaPrevia>('GET', `/admin/migraciones/catalogo-jerarquia/${pid}/vista-previa`),
+  migracionCatalogoAplicar: (pid: string) =>
+    request<{ ok: boolean; migracion_id: string | null; sin_cambios: boolean; partidas_creadas: number; conceptos_reubicados: number }>(
+      'POST', `/admin/migraciones/catalogo-jerarquia/${pid}/aplicar`, { confirm: true },
+    ),
+  migracionCatalogoRevertir: (pid: string) =>
+    request<{ ok: boolean; migracion_id: string; conceptos_restaurados: number; partidas_dadas_de_baja: number }>(
+      'POST', `/admin/migraciones/catalogo-jerarquia/${pid}/revertir`, { confirm: true },
+    ),
+  listExcedentes: (pid: string) => request<Excedente[]>('GET', `/projects/${pid}/excedentes`),
+  setExcedenteEstatus: (pid: string, conceptoId: string, body: { estatus: EstatusAutorizacion; referencia?: string; comentario?: string }) =>
+    request<Excedente>('PATCH', `/projects/${pid}/excedentes/${conceptoId}`, body),
+  setPuExtraordinario: (conceptoId: string, body: { pu_estatus: EstatusAutorizacion; referencia?: string; precio_unitario?: string }) =>
+    request<Concepto>('PATCH', `/conceptos/${conceptoId}/pu_estatus`, body),
   analisisPeriodoExcepciones: (pid: string, contrato: ContratoFin = 'obra') =>
     request<ExcepcionEvm[]>('GET', `/projects/${pid}/analisis_periodo/excepciones?contrato=${contrato}`),
   analisisPeriodoActividades: (pid: string, contrato: ContratoFin = 'obra') =>
@@ -3797,7 +3982,7 @@ export const api = {
     const data = text ? safeJson(text) : null;
     if (!res.ok) {
       const msg = (data && (data as any).detail) || `HTTP ${res.status}`;
-      throw new ApiError(res.status, typeof msg === 'string' ? msg : JSON.stringify(msg));
+      throw new ApiError(res.status, mensajeDeError(msg));
     }
     return data as GastoRealImportResult;
   },
@@ -3845,7 +4030,7 @@ export const api = {
     const data = text ? safeJson(text) : null;
     if (!res.ok) {
       const msg = (data && (data as any).detail) || `HTTP ${res.status}`;
-      throw new ApiError(res.status, typeof msg === 'string' ? msg : JSON.stringify(msg));
+      throw new ApiError(res.status, mensajeDeError(msg));
     }
     return data as RegistroAvanceImportResult;
   },

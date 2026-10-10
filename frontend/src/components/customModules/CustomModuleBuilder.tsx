@@ -189,15 +189,15 @@ export function CustomModuleBuilder({
     <Modal visible animationType="slide" onRequestClose={cerrar}>
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1, backgroundColor: colors.bg }}>
         <View style={[styles.header, { backgroundColor: headerColor, paddingTop: insets.top + spacing.xs }]}>
-          <Pressable onPress={cerrar} hitSlop={10} style={styles.hBtn}><Ionicons name="close" size={22} color={fg} /></Pressable>
+          <Pressable accessibilityRole="button" accessibilityLabel="Cerrar" onPress={cerrar} hitSlop={10} style={styles.hBtn}><Ionicons name="close" size={22} color={fg} /></Pressable>
           <Text style={[styles.hTitle, { color: fg }]} numberOfLines={1}>{moduleId ? 'Editar módulo' : 'Nuevo módulo'}</Text>
-          <Pressable onPress={pedirConfirmacion} disabled={saving} hitSlop={10} style={styles.hBtn}>
+          <Pressable accessibilityRole="button" onPress={pedirConfirmacion} disabled={saving} hitSlop={10} style={styles.hBtn}>
             {saving ? <ActivityIndicator size="small" color={fg} /> : <Text style={[styles.hSave, { color: fg }]}>Guardar</Text>}
           </Pressable>
         </View>
         <View style={styles.tabs}>
           {TABS.map((t) => (
-            <Pressable key={t.key} onPress={() => setTab(t.key)} style={[styles.tab, tab === t.key && styles.tabOn]}>
+            <Pressable accessibilityRole="button" key={t.key} onPress={() => setTab(t.key)} style={[styles.tab, tab === t.key && styles.tabOn]}>
               <Ionicons name={t.icon} size={15} color={tab === t.key ? '#fff' : colors.text} />
               <Text style={[styles.tabTxt, tab === t.key && { color: '#fff' }]} numberOfLines={1}>{t.label}</Text>
             </Pressable>
@@ -222,7 +222,7 @@ export function CustomModuleBuilder({
                 <FieldLabel>Icono</FieldLabel>
                 <View style={styles.iconGrid}>
                   {CM_ICONOS.map((ic) => (
-                    <Pressable key={ic} onPress={() => set({ icono: ic })} style={[styles.iconCell, d.icono === ic && styles.iconCellOn]}>
+                    <Pressable accessibilityRole="button" accessibilityLabel={`Icono ${ic}`} hitSlop={6} key={ic} onPress={() => set({ icono: ic })} style={[styles.iconCell, d.icono === ic && styles.iconCellOn]}>
                       <Ionicons name={ic} size={20} color={d.icono === ic ? '#fff' : colors.primary} />
                     </Pressable>
                   ))}
@@ -305,7 +305,7 @@ export function CustomModuleBuilder({
                 const info = cmTipoInfo(c.tipo);
                 return (
                   <View key={c.id} style={[styles.card, { marginBottom: spacing.sm }]}>
-                    <Pressable style={styles.campoTop} onPress={() => setEditando({ campo: c, nuevo: false })}>
+                    <Pressable accessibilityRole="button" style={styles.campoTop} onPress={() => setEditando({ campo: c, nuevo: false })}>
                       <View style={styles.campoIcon}><Ionicons name={info.icon} size={18} color="#fff" /></View>
                       <View style={{ flex: 1 }}>
                         <Text style={styles.campoName} numberOfLines={1}>{c.etiqueta || '(sin nombre)'}</Text>
@@ -325,13 +325,13 @@ export function CustomModuleBuilder({
                       {(c.agregacion || 'ninguna') !== 'ninguna' ? <Badge txt={`Total: ${c.agregacion}`} /> : null}
                     </View>
                     <View style={styles.campoActions}>
-                      <Pressable hitSlop={8} onPress={() => mover(i, -1)} disabled={i === 0}><Ionicons name="arrow-up" size={18} color={i === 0 ? colors.border : colors.text} /></Pressable>
-                      <Pressable hitSlop={8} onPress={() => mover(i, 1)} disabled={i === campos.length - 1}><Ionicons name="arrow-down" size={18} color={i === campos.length - 1 ? colors.border : colors.text} /></Pressable>
+                      <Pressable accessibilityRole="button" accessibilityLabel="Subir" hitSlop={8} onPress={() => mover(i, -1)} disabled={i === 0}><Ionicons name="arrow-up" size={18} color={i === 0 ? colors.border : colors.text} /></Pressable>
+                      <Pressable accessibilityRole="button" accessibilityLabel="Bajar" hitSlop={8} onPress={() => mover(i, 1)} disabled={i === campos.length - 1}><Ionicons name="arrow-down" size={18} color={i === campos.length - 1 ? colors.border : colors.text} /></Pressable>
                       <View style={{ flex: 1 }} />
-                      <Pressable hitSlop={8} onPress={() => setEditando({ campo: { ...c, id: campoNuevo(c.tipo).id, etiqueta: `${c.etiqueta} (copia)` }, nuevo: true })}>
+                      <Pressable accessibilityRole="button" accessibilityLabel="Copiar" hitSlop={8} onPress={() => setEditando({ campo: { ...c, id: campoNuevo(c.tipo).id, etiqueta: `${c.etiqueta} (copia)` }, nuevo: true })}>
                         <Ionicons name="copy-outline" size={18} color={colors.primary} />
                       </Pressable>
-                      <Pressable hitSlop={8} onPress={() => borrarCampo(c)}><Ionicons name="trash-outline" size={18} color={colors.error} /></Pressable>
+                      <Pressable accessibilityRole="button" accessibilityLabel="Eliminar" hitSlop={8} onPress={() => borrarCampo(c)}><Ionicons name="trash-outline" size={18} color={colors.error} /></Pressable>
                     </View>
                   </View>
                 );
@@ -363,7 +363,7 @@ export function CustomModuleBuilder({
                         const bloqueado = m.modo === 'fotos' && !hayFotos;
                         const on = cfg.modo === m.modo;
                         return (
-                          <Pressable
+                          <Pressable accessibilityRole="button"
                             key={m.modo} disabled={bloqueado} onPress={() => setModo(cat, { modo: m.modo })}
                             style={[styles.modoCard, on && styles.modoCardOn, bloqueado && { opacity: 0.4 }]}
                           >

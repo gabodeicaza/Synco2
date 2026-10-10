@@ -1,7 +1,12 @@
-// Provider global de la cola offline de reportes.
+// Provider global de la cola offline (reportes + registros de avance).
 // Mismo patron que auth-context.tsx: createContext + XProvider + useX() que
 // lanza si se usa fuera del provider. Se monta una sola vez en app/_layout.tsx
 // para que este disponible en los 3 grupos de rutas por rol.
+//
+// Las dos colas (reportes y avances) comparten el mismo motor de archivo pero son
+// archivos distintos: este contexto las vacia AMBAS al reconectar, al volver a primer
+// plano y por intervalo, y expone el conteo total y por tipo. (Antes solo se vaciaba la de
+// reportes y los avances encolados sin conexion nunca se enviaban.)
 import React, {
   createContext, useCallback, useContext, useEffect, useRef, useState,
 } from 'react';
@@ -11,64 +16,88 @@ import {
   QueuedReport, flushQueue, listQueuedReports, removeQueuedReport, subscribeQueueChanges,
 } from '@/src/utils/offlineQueue';
 import {
+  QueuedAvance, flushAvanceQueue, listQueuedAvances, removeQueuedAvance, subscribeAvanceQueueChanges,
+} from '@/src/utils/avanceQueue';
+import {
   QueuedCustomRecord, flushCustomQueue, listQueuedCustomRecords, removeQueuedCustomRecord, subscribeCustomQueueChanges,
 } from '@/src/utils/customRecordQueue';
+import { mensajesDeFlush } from '@/src/utils/resumenFlushCola';
 import { showToast } from '@/src/utils/toast';
 
+export type TipoPendiente = 'reporte' | 'avance' | 'registro';
+
+export interface Pendiente {
+  tipo: TipoPendiente;
+  item: QueuedReport | QueuedAvance | QueuedCustomRecord;
+}
+
 interface OfflineQueueCtx {
+  /** Reportes en cola (compatibilidad con quien ya los usaba). */
   items: QueuedReport[];
+  avances: QueuedAvance[];
   /** Registros de módulos personalizados esperando conexión (Creador de módulos). */
   customItems: QueuedCustomRecord[];
   discardCustomItem: (clientId: string) => Promise<void>;
+  /** Reportes, avances y registros juntos, del mas antiguo al mas nuevo. */
+  pendientes: Pendiente[];
   pendingCount: number;
+  pendingReports: number;
+  pendingAvances: number;
   isOnline: boolean | null;
   isFlushing: boolean;
   refreshQueue: () => Promise<void>;
   flushNow: () => Promise<void>;
-  discardItem: (clientId: string) => Promise<void>;
+  discardItem: (clientId: string, tipo?: TipoPendiente) => Promise<void>;
 }
 
 const Ctx = createContext<OfflineQueueCtx | null>(null);
 
 const AUTO_FLUSH_INTERVAL_MS = 60_000;
 
+const porEnviar = (i: { status: string }) => i.status === 'pending' || i.status === 'failed';
+
 export function OfflineQueueProvider({ children }: { children: React.ReactNode }) {
   const [items, setItems] = useState<QueuedReport[]>([]);
+  const [avances, setAvances] = useState<QueuedAvance[]>([]);
   const [customItems, setCustomItems] = useState<QueuedCustomRecord[]>([]);
   const [isOnline, setIsOnline] = useState<boolean | null>(null);
   const [isFlushing, setIsFlushing] = useState(false);
 
-  const pendientes = (l: { status: string }[]) => l.filter((i) => i.status === 'pending' || i.status === 'failed').length;
-  const pendingCount = pendientes(items) + pendientes(customItems);
+  const pendingReports = items.filter(porEnviar).length;
+  const pendingAvances = avances.filter(porEnviar).length;
+  const pendingCount = pendingReports + pendingAvances + customItems.filter(porEnviar).length;
   const pendingCountRef = useRef(pendingCount);
   pendingCountRef.current = pendingCount;
 
+  const pendientes: Pendiente[] = [
+    ...items.map((item): Pendiente => ({ tipo: 'reporte', item })),
+    ...avances.map((item): Pendiente => ({ tipo: 'avance', item })),
+    ...customItems.map((item): Pendiente => ({ tipo: 'registro', item })),
+  ].sort((a, b) => String(a.item.created_at).localeCompare(String(b.item.created_at)));
+
   const refreshQueue = useCallback(async () => {
-    try {
-      const next = await listQueuedReports();
-      setItems(next);
-    } catch {
-      /* noop: si el archivo esta inaccesible, dejamos el estado tal cual */
-    }
-    try {
-      setCustomItems(await listQueuedCustomRecords());
-    } catch {
-      /* noop */
-    }
+    // Cada cola se lee por separado: si el archivo de una esta inaccesible, las otras se
+    // actualizan igual y la fallida se deja tal cual.
+    const [reportes, registros, custom] = await Promise.all([
+      listQueuedReports().catch(() => null),
+      listQueuedAvances().catch(() => null),
+      listQueuedCustomRecords().catch(() => null),
+    ]);
+    if (reportes) setItems(reportes);
+    if (registros) setAvances(registros);
+    if (custom) setCustomItems(custom);
   }, []);
 
   const runFlush = useCallback(async (manual: boolean) => {
-    const result = await flushQueue({ manual }).catch(() => null);
+    // Primero reportes, luego avances y registros, en secuencia: cada item puede llevar varios
+    // MB de fotos y mandar las colas a la vez saturaria una conexion recien recuperada.
+    const reportes = await flushQueue({ manual }).catch(() => null);
+    const registros = await flushAvanceQueue({ manual }).catch(() => null);
     const custom = await flushCustomQueue({ manual }).catch(() => null);
     await refreshQueue();
-    const synced = (result?.synced || 0) + (custom?.synced || 0);
-    const remaining = (result?.remaining || 0) + (custom?.remaining || 0);
-    const skippedOffline = !!(result?.skippedOffline || custom?.skippedOffline);
-    if (!result && !custom) return;
-    if (synced > 0) {
-      showToast(`${synced} elemento${synced > 1 ? 's' : ''} sincronizado${synced > 1 ? 's' : ''}`);
-    } else if (manual && remaining > 0 && !skippedOffline) {
-      showToast('No se pudo sincronizar. Revisa tu conexion.');
+    mensajesDeFlush(reportes, registros, manual).forEach((m) => showToast(m));
+    if (custom && custom.synced > 0) {
+      showToast(`${custom.synced} registro${custom.synced > 1 ? 's' : ''} de módulo sincronizado${custom.synced > 1 ? 's' : ''}`);
     }
   }, [refreshQueue]);
 
@@ -81,8 +110,10 @@ export function OfflineQueueProvider({ children }: { children: React.ReactNode }
     }
   }, [runFlush]);
 
-  const discardItem = useCallback(async (clientId: string) => {
-    await removeQueuedReport(clientId);
+  const discardItem = useCallback(async (clientId: string, tipo: TipoPendiente = 'reporte') => {
+    if (tipo === 'avance') await removeQueuedAvance(clientId);
+    else if (tipo === 'registro') await removeQueuedCustomRecord(clientId);
+    else await removeQueuedReport(clientId);
     await refreshQueue();
   }, [refreshQueue]);
 
@@ -91,7 +122,7 @@ export function OfflineQueueProvider({ children }: { children: React.ReactNode }
     await refreshQueue();
   }, [refreshQueue]);
 
-  // Carga inicial de la cola persistida (por si quedaron reportes de una
+  // Carga inicial de la cola persistida (por si quedaron pendientes de una
   // sesion anterior de la app) + intento de sincronizar de una vez si ya
   // hay red al abrir la app, en vez de esperar el intervalo de 60s.
   useEffect(() => {
@@ -101,14 +132,21 @@ export function OfflineQueueProvider({ children }: { children: React.ReactNode }
     })();
   }, [refreshQueue, runFlush]);
 
-  // `enqueueReport`/`removeQueuedReport`/`updateQueuedReport` mutan el
-  // archivo desde fuera de React (ej. api.createReport, o un flush corriendo
-  // en background). Sin esta suscripcion, un reporte recien encolado nunca
-  // se reflejaba aqui: el pill no aparecia y el resto de los disparadores de
-  // abajo (NetInfo/AppState/intervalo) nunca se activaban porque dependen de
-  // que `pendingCount` ya sea > 0 en el estado de React.
-  useEffect(() => subscribeQueueChanges(() => { refreshQueue(); }), [refreshQueue]);
-  useEffect(() => subscribeCustomQueueChanges(() => { refreshQueue(); }), [refreshQueue]);
+  // `enqueueReport`/`enqueueAvance`/`remove*` mutan el archivo desde fuera de React (ej.
+  // api.createReport / api.createAvance, o un flush corriendo en background). Sin esta
+  // suscripcion, un pendiente recien encolado nunca se reflejaba aqui: el pill no aparecia
+  // y el resto de los disparadores de abajo (NetInfo/AppState/intervalo) nunca se activaban
+  // porque dependen de que `pendingCount` ya sea > 0 en el estado de React.
+  useEffect(() => {
+    const salirReportes = subscribeQueueChanges(() => { refreshQueue(); });
+    const salirAvances = subscribeAvanceQueueChanges(() => { refreshQueue(); });
+    const salirCustom = subscribeCustomQueueChanges(() => { refreshQueue(); });
+    return () => {
+      salirReportes();
+      salirAvances();
+      salirCustom();
+    };
+  }, [refreshQueue]);
 
   // Reconexion de red -> intento automatico de sincronizar.
   useEffect(() => {
@@ -145,7 +183,8 @@ export function OfflineQueueProvider({ children }: { children: React.ReactNode }
   }, [pendingCount, runFlush]);
 
   const value: OfflineQueueCtx = {
-    items, customItems, discardCustomItem, pendingCount, isOnline, isFlushing, refreshQueue, flushNow, discardItem,
+    items, avances, customItems, discardCustomItem, pendientes, pendingCount, pendingReports, pendingAvances,
+    isOnline, isFlushing, refreshQueue, flushNow, discardItem,
   };
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

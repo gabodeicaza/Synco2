@@ -1,10 +1,10 @@
-// SynCo v2.0 _ Roles del sistema.
+// Dirac · Roles del sistema.
 //   - coordinador_general (God Mode multi-proyecto)
 //   - jefe_proyecto       (Supervision global de un proyecto, read-only)
 //   - sub_coordinador     (scope: sub-arbol)
 //   - especialista        (scope: hojas asignadas)
 
-export const APP_BRAND = 'SynCo';
+export const APP_BRAND = 'Dirac';
 export const APP_TAGLINE = 'Reporte de obra inteligente, sin huella local.';
 
 export type AppRole = 'coordinador_general' | 'jefe_proyecto' | 'sub_coordinador' | 'especialista';
@@ -15,12 +15,12 @@ export const ROLE_SUB: AppRole = 'sub_coordinador';
 export const ROLE_ESP: AppRole = 'especialista';
 
 export function roleLabel(role?: string | null, areaName?: string | null): string {
-  if (!role) return '_';
+  if (!role) return '—';
   if (role === ROLE_COORD) return 'Coordinador General';
   if (role === ROLE_JEFE) return 'Jefe de Proyecto';
   if (role === ROLE_SUB) return 'Sub-Coordinador';
   if (role === ROLE_ESP) {
-    return areaName && areaName.trim() ? `Especialista _ ${areaName.trim()}` : 'Especialista';
+    return areaName && areaName.trim() ? `Especialista · ${areaName.trim()}` : 'Especialista';
   }
   return role;
 }
@@ -30,7 +30,7 @@ export function roleShortLabel(role?: string | null): string {
   if (role === ROLE_JEFE) return 'Jefe de Proyecto';
   if (role === ROLE_SUB) return 'Sub-Coord.';
   if (role === ROLE_ESP) return 'Especialista';
-  return '_';
+  return '—';
 }
 
 export function isCoord(role?: string | null): boolean {

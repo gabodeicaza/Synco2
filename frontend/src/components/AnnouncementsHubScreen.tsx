@@ -7,7 +7,7 @@
  *     AnnouncementsView con el proyecto seleccionado.
  * Delega toda la lógica de noticias a AnnouncementsView para no duplicar código.
  */
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback } from 'react';
 import {
   View,
   Text,
@@ -21,36 +21,19 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 
-import { api, Project } from '@/src/api';
 import { colors, spacing } from '@/src/theme';
+import { t } from '@/src/i18n';
+import { useProyectoActivo } from '@/src/proyecto-activo-context';
 import AnnouncementsView from '@/src/components/AnnouncementsView';
 
 export default function AnnouncementsHubScreen() {
   const insets = useSafeAreaInsets();
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [selected, setSelected] = useState<string>('');
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  // P-05: el proyecto activo es el mismo para Mensajes, Minutas, Noticias y Calendario.
+  const { proyectoId, proyectos: projects, cargando: loading, setProyectoId: setSelected, recargar } = useProyectoActivo();
+  const selected = proyectoId || '';
+  const error: string | null = null;
 
-  const load = useCallback(async () => {
-    try {
-      setError(null);
-      setLoading(true);
-      const items = await api.listProjects();
-      setProjects(items || []);
-      if (items && items.length > 0) {
-        setSelected((cur) => (cur && items.find((p) => p.id === cur) ? cur : items[0].id));
-      } else {
-        setSelected('');
-      }
-    } catch (e: any) {
-      setError(e?.message || 'No se pudieron cargar proyectos');
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useFocusEffect(useCallback(() => { load(); }, [load]));
+  useFocusEffect(useCallback(() => { void recargar(); }, [recargar]));
 
   if (loading && projects.length === 0) {
     return (
@@ -67,7 +50,7 @@ export default function AnnouncementsHubScreen() {
         <Ionicons name="newspaper-outline" size={44} color={colors.textMuted} />
         <Text style={styles.emptyTitle}>Sin proyectos asignados</Text>
         <Text style={styles.emptySub}>
-          {error || 'Cuando tengas proyectos, aqui veras y publicaras noticias.'}
+          {error || 'Cuando tengas proyectos, aquí verás y publicarás noticias.'}
         </Text>
       </View>
     );
@@ -80,7 +63,7 @@ export default function AnnouncementsHubScreen() {
       <StatusBar barStyle="dark-content" />
       {showSelector && (
         <View style={[styles.selectorWrap, { paddingTop: insets.top + spacing.xs }]}>
-          <Text style={styles.selectorLabel}>Proyecto</Text>
+          <Text style={styles.selectorLabel}>{t('proyectoActivo.proyecto')}</Text>
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
@@ -89,7 +72,7 @@ export default function AnnouncementsHubScreen() {
             {projects.map((p) => {
               const active = p.id === selected;
               return (
-                <Pressable
+                <Pressable accessibilityRole="button"
                   key={p.id}
                   onPress={() => setSelected(p.id)}
                   style={[styles.projChip, active && styles.projChipActive]}

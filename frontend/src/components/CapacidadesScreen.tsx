@@ -62,7 +62,7 @@ function Semaforo({ s }: { s: CapSemaforo }) {
 
 function Chip({ label, active, onPress }: { label: string; active?: boolean; onPress: () => void }) {
   return (
-    <Pressable onPress={onPress} style={[st.chip, active && st.chipActive]}>
+    <Pressable accessibilityRole="button" onPress={onPress} style={[st.chip, active && st.chipActive]}>
       <Text style={[st.chipTxt, active && st.chipTxtActive]} numberOfLines={1}>{label}</Text>
     </Pressable>
   );
@@ -75,7 +75,7 @@ function Sheet({ visible, title, onClose, children }: { visible: boolean; title:
       <KeyboardAvoidingView style={{ flex: 1, backgroundColor: colors.bg }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <View style={[st.sheetHead, { paddingTop: insets.top + spacing.sm }]}>
           <Text style={st.sheetTitle} numberOfLines={1}>{title}</Text>
-          <Pressable onPress={onClose} hitSlop={10}><Ionicons name="close" size={24} color={colors.text} /></Pressable>
+          <Pressable accessibilityRole="button" accessibilityLabel="Cerrar" onPress={onClose} hitSlop={10}><Ionicons name="close" size={24} color={colors.text} /></Pressable>
         </View>
         <ScrollView contentContainerStyle={{ padding: spacing.md, gap: spacing.sm, paddingBottom: insets.bottom + 60 }} keyboardShouldPersistTaps="handled">
           {children}
@@ -105,7 +105,7 @@ function Boton({ label, onPress, kind = 'primary', disabled, icon }: {
 }) {
   const fg = kind === 'primary' ? '#fff' : kind === 'danger' ? colors.error : colors.primary;
   return (
-    <Pressable
+    <Pressable accessibilityRole="button"
       onPress={onPress} disabled={disabled}
       style={[st.btn, kind === 'primary' && { backgroundColor: colors.primary }, kind !== 'primary' && st.btnGhost, disabled && { opacity: 0.5 }]}
     >
@@ -210,7 +210,7 @@ export function CapacidadesScreen({ projectId }: { projectId: string }) {
             style={st.searchInput} value={q} onChangeText={setQ} placeholder="Buscar nombre, puesto o equipo…"
             placeholderTextColor={colors.textMuted} autoCorrect={false}
           />
-          {q ? <Pressable onPress={() => setQ('')} hitSlop={8}><Ionicons name="close-circle" size={18} color={colors.textMuted} /></Pressable> : null}
+          {q ? <Pressable accessibilityRole="button" accessibilityLabel="Quitar" onPress={() => setQ('')} hitSlop={8}><Ionicons name="close-circle" size={18} color={colors.textMuted} /></Pressable> : null}
         </View>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={st.chipsRow}>
           <Chip label="Todos" active={!fSemaforo} onPress={() => setFSemaforo('')} />
@@ -226,11 +226,11 @@ export function CapacidadesScreen({ projectId }: { projectId: string }) {
         ) : null}
         <View style={st.rowBetween}>
           <Text style={st.muted}>{total} {verBajas ? 'en baja' : 'activos'}</Text>
-          <Pressable onPress={() => setVerBajas(!verBajas)}><Text style={st.link}>{verBajas ? 'Ver activos' : 'Ver bajas'}</Text></Pressable>
+          <Pressable accessibilityRole="button" onPress={() => setVerBajas(!verBajas)}><Text style={st.link}>{verBajas ? 'Ver activos' : 'Ver bajas'}</Text></Pressable>
         </View>
         {operadores.length === 0 && !cargando ? <Text style={st.empty}>Sin operadores con esos filtros.</Text> : null}
         {operadores.map((o) => (
-          <Pressable key={o.id} style={st.card} onPress={() => setDetalleId(o.id)}>
+          <Pressable accessibilityRole="button" key={o.id} style={st.card} onPress={() => setDetalleId(o.id)}>
             <View style={st.rowBetween}>
               <Text style={st.cardTitle} numberOfLines={2}>{o.nombre}</Text>
               <Semaforo s={o.semaforo} />
@@ -265,14 +265,14 @@ export function CapacidadesScreen({ projectId }: { projectId: string }) {
         </View>
         {equipos.length === 0 && !cargando ? <Text style={st.empty}>Sin equipos registrados.</Text> : null}
         {equipos.map((e) => (
-          <Pressable key={e.id} style={st.card} onPress={() => (puedeEditar ? setFormEq({ eq: e }) : e.operador && setDetalleId(e.operador.id))}>
+          <Pressable accessibilityRole="button" key={e.id} style={st.card} onPress={() => (puedeEditar ? setFormEq({ eq: e }) : e.operador && setDetalleId(e.operador.id))}>
             <View style={st.rowBetween}>
               <Text style={st.cardTitle} numberOfLines={2}>{e.nombre}</Text>
               {e.operador ? <Semaforo s={e.operador.semaforo} /> : <Text style={st.muted}>Sin operador</Text>}
             </View>
             <Text style={st.muted} numberOfLines={1}>{[e.modelo, e.tipo, e.ubicacion, e.estado === 'inactivo' ? 'Inactivo' : null].filter(Boolean).join(' · ')}</Text>
             {e.operador ? (
-              <Pressable onPress={() => setDetalleId(e.operador!.id)} hitSlop={6}>
+              <Pressable accessibilityRole="button" onPress={() => setDetalleId(e.operador!.id)} hitSlop={6}>
                 <Text style={st.link}>Operador: {e.operador.nombre}</Text>
               </Pressable>
             ) : null}
@@ -311,7 +311,7 @@ export function CapacidadesScreen({ projectId }: { projectId: string }) {
         <Text style={st.section}>Brechas ({resumen.brechas.length})</Text>
         {resumen.brechas.length === 0 ? <Text style={st.empty}>Sin brechas.</Text> : null}
         {resumen.brechas.map((b) => (
-          <Pressable key={b.id} style={st.card} onPress={() => setDetalleId(b.id)}>
+          <Pressable accessibilityRole="button" key={b.id} style={st.card} onPress={() => setDetalleId(b.id)}>
             <Text style={st.cardTitle}>{b.nombre}{b.frente ? ` · ${b.frente}` : ''}</Text>
             <View style={st.tagsRow}>
               {b.faltantes.map((n) => <Text key={`f${n}`} style={[st.tag, st.tagRed]}>Falta: {n}</Text>)}
@@ -322,7 +322,7 @@ export function CapacidadesScreen({ projectId }: { projectId: string }) {
         <Text style={st.section}>Vencimientos (alerta a {resumen.alerta_dias} días)</Text>
         {resumen.vencimientos.length === 0 ? <Text style={st.empty}>Nada por vencer.</Text> : null}
         {resumen.vencimientos.map((v, i) => (
-          <Pressable key={`${v.id}${v.cert}${i}`} style={st.card} onPress={() => setDetalleId(v.id)}>
+          <Pressable accessibilityRole="button" key={`${v.id}${v.cert}${i}`} style={st.card} onPress={() => setDetalleId(v.id)}>
             <View style={st.rowBetween}>
               <Text style={st.cardTitle} numberOfLines={1}>{v.nombre}</Text>
               <Text style={[st.tag, v.estado === 'vencida' ? st.tagRed : st.tagAmber]}>{v.estado === 'vencida' ? 'Vencida' : 'Por vencer'}</Text>
@@ -343,7 +343,7 @@ export function CapacidadesScreen({ projectId }: { projectId: string }) {
         </View>
         {certs.length === 0 ? <Text style={st.empty}>Aún no hay certificaciones. Crea la primera (p. ej. DC3 Trabajos en altura).</Text> : null}
         {certs.map((c) => (
-          <Pressable key={c.id} style={st.card} onPress={() => puedeEditar && setFormCert({ cert: c })}>
+          <Pressable accessibilityRole="button" key={c.id} style={st.card} onPress={() => puedeEditar && setFormCert({ cert: c })}>
             <Text style={st.cardTitle}>{c.nombre}</Text>
             <Text style={st.muted}>
               {c.vigencia_meses ? `Vigencia ${c.vigencia_meses} meses` : 'No vence'}{c.obligatoria ? ' · Obligatoria para todos' : ''}
@@ -356,7 +356,7 @@ export function CapacidadesScreen({ projectId }: { projectId: string }) {
         </View>
         {tipos.length === 0 ? <Text style={st.empty}>Define qué certificaciones exige cada tipo para calcular el semáforo.</Text> : null}
         {tipos.map((t) => (
-          <Pressable key={t.id} style={st.card} onPress={() => puedeEditar && setFormTipo({ tipo: t })}>
+          <Pressable accessibilityRole="button" key={t.id} style={st.card} onPress={() => puedeEditar && setFormTipo({ tipo: t })}>
             <Text style={st.cardTitle}>{t.nombre}</Text>
             <Text style={st.muted}>
               Exige: {t.cert_ids.map((id) => certs.find((c) => c.id === id)?.nombre).filter(Boolean).join(', ') || 'nada (sin reglas)'}
@@ -370,19 +370,19 @@ export function CapacidadesScreen({ projectId }: { projectId: string }) {
   return (
     <View style={[st.flex, { paddingTop: insets.top }]}>
       <View style={st.header}>
-        <Pressable onPress={() => router.back()} hitSlop={8} style={st.iconBtn}>
+        <Pressable accessibilityRole="button" accessibilityLabel="Volver" onPress={() => router.back()} hitSlop={8} style={st.iconBtn}>
           <Ionicons name="chevron-back" size={24} color={colors.text} />
         </Pressable>
         <Text style={st.title} numberOfLines={1}>Capacidades de Operadores</Text>
         {puedeEditar ? (
-          <Pressable onPress={() => setImportando(true)} hitSlop={8} style={st.iconBtn} accessibilityLabel="Importar desde Excel">
+          <Pressable accessibilityRole="button" onPress={() => setImportando(true)} hitSlop={8} style={st.iconBtn} accessibilityLabel="Importar desde Excel">
             <Ionicons name="cloud-upload-outline" size={22} color={colors.primary} />
           </Pressable>
         ) : <View style={{ width: 32 }} />}
       </View>
       <View style={st.tabs}>
         {TABS.map((t) => (
-          <Pressable key={t.value} style={[st.tabBtn, tab === t.value && st.tabBtnActive]} onPress={() => setTab(t.value)}>
+          <Pressable accessibilityRole="button" key={t.value} style={[st.tabBtn, tab === t.value && st.tabBtnActive]} onPress={() => setTab(t.value)}>
             <Ionicons name={t.icon} size={16} color={tab === t.value ? colors.primary : colors.textMuted} />
             <Text style={[st.tabTxt, tab === t.value && { color: colors.primary }]}>{t.label}</Text>
           </Pressable>
@@ -400,7 +400,7 @@ export function CapacidadesScreen({ projectId }: { projectId: string }) {
       </ScrollView>
 
       {puedeEditar && (tab === 'operadores' || tab === 'equipos') ? (
-        <Pressable
+        <Pressable accessibilityRole="button" accessibilityLabel="Agregar"
           style={[st.fab, { bottom: insets.bottom + 20 }]}
           onPress={() => (tab === 'operadores' ? setFormOp({ op: null }) : setFormEq({ eq: null }))}
         >
@@ -668,7 +668,7 @@ function FormOperador({ projectId, op, tipos, frentes, onClose, onSaved }: {
             <View key={s.persona_id} style={st.rowBetween}>
               <Text style={{ flex: 1, color: colors.text }} numberOfLines={1}>{s.nombre}</Text>
               {s.operador_id ? <Text style={st.muted}>Ya está en el proyecto</Text> : (
-                <Pressable onPress={() => guardar({ persona_id: s.persona_id })}><Text style={st.link}>Usar esta</Text></Pressable>
+                <Pressable accessibilityRole="button" onPress={() => guardar({ persona_id: s.persona_id })}><Text style={st.link}>Usar esta</Text></Pressable>
               )}
             </View>
           ))}
@@ -689,7 +689,7 @@ function FormOperador({ projectId, op, tipos, frentes, onClose, onSaved }: {
           {candidatos.map((c) => (
             <View key={c.persona_id} style={st.rowBetween}>
               <Text style={{ flex: 1, color: colors.text }} numberOfLines={1}>{c.nombre} ({Math.round(c.similitud * 100)}%)</Text>
-              <Pressable onPress={() => guardar({ persona_id: c.persona_id })}><Text style={st.link}>Es la misma</Text></Pressable>
+              <Pressable accessibilityRole="button" onPress={() => guardar({ persona_id: c.persona_id })}><Text style={st.link}>Es la misma</Text></Pressable>
             </View>
           ))}
           <Boton label="Es otra persona, crear de todos modos" kind="ghost" onPress={() => guardar({ force: true })} />

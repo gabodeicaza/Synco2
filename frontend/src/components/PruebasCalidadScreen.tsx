@@ -181,7 +181,7 @@ export default function PruebasCalidadScreen({ projectId }: { projectId: string 
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <View style={[styles.headerWrap, { backgroundColor: headerColor, paddingTop: insets.top + spacing.xs }]}>
         <View style={styles.headerTopRow}>
-          <Pressable onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
+          <Pressable accessibilityRole="button" accessibilityLabel="Volver" onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
             <Ionicons name="chevron-back" size={22} color={headerTextColor} />
           </Pressable>
           <Text style={[styles.titleBar, { color: headerTextColor }]} numberOfLines={1}>Pruebas de Calidad</Text>
@@ -193,7 +193,7 @@ export default function PruebasCalidadScreen({ projectId }: { projectId: string 
         <View style={styles.sectionHeaderRow}>
           <Text style={styles.sectionTitle}>Concentrado</Text>
           {puedeEscribir ? (
-            <Pressable onPress={() => setDraft(emptyDraft())} style={styles.addBtn}>
+            <Pressable accessibilityRole="button" onPress={() => setDraft(emptyDraft())} style={styles.addBtn}>
               <Ionicons name="add" size={16} color={colors.primary} />
               <Text style={styles.addBtnTxt}>Nueva prueba</Text>
             </Pressable>
@@ -216,7 +216,7 @@ export default function PruebasCalidadScreen({ projectId }: { projectId: string 
               {rows.map((it) => {
                 const puedeBorrar = puedeEscribir && (puedeBorrarTodo || it.created_by === user?.id);
                 return (
-                  <Pressable
+                  <Pressable accessibilityRole="button"
                     key={it.id} style={[styles.card, { padding: spacing.md }]}
                     onPress={puedeEscribir ? () => openEdit(it) : undefined}
                   >
@@ -224,7 +224,7 @@ export default function PruebasCalidadScreen({ projectId }: { projectId: string 
                       <Text style={styles.cardTitle} numberOfLines={2}>{it.frente}</Text>
                       <Text style={styles.fecha}>{fmtFecha(it.fecha)}</Text>
                       {puedeBorrar ? (
-                        <Pressable hitSlop={8} onPress={() => onDelete(it)}>
+                        <Pressable accessibilityRole="button" accessibilityLabel="Eliminar" hitSlop={8} onPress={() => onDelete(it)}>
                           <Ionicons name="trash-outline" size={18} color={colors.error} />
                         </Pressable>
                       ) : null}

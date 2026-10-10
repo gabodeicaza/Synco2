@@ -94,14 +94,14 @@ export function DatosContratoModal({
                 Alimentan la diapositiva "Datos de contrato" del informe PowerPoint. En blanco, la obra usa los datos base del proyecto.
               </Text>
             </View>
-            <Pressable onPress={() => !saving && onClose()} hitSlop={10}>
+            <Pressable accessibilityRole="button" accessibilityLabel="Cerrar" onPress={() => !saving && onClose()} hitSlop={10}>
               <Ionicons name="close" size={22} color={colors.text} />
             </Pressable>
           </View>
 
           <View style={styles.tabs}>
             {(['obra', 'supervision'] as Bloque[]).map((b) => (
-              <Pressable key={b} onPress={() => setBloque(b)} style={[styles.tab, bloque === b && styles.tabActive]}>
+              <Pressable accessibilityRole="button" key={b} onPress={() => setBloque(b)} style={[styles.tab, bloque === b && styles.tabActive]}>
                 <Text style={[styles.tabTxt, bloque === b && { color: '#fff' }]}>{BLOQUE_LABEL[b]}</Text>
               </Pressable>
             ))}

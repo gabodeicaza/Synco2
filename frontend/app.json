@@ -9,29 +9,35 @@
       "package": "mx.apmapp.dirac",
       "permissions": [
         "CAMERA",
-        "READ_EXTERNAL_STORAGE",
-        "WRITE_EXTERNAL_STORAGE",
-        "READ_MEDIA_IMAGES",
-        "READ_MEDIA_VIDEO",
         "ACCESS_FINE_LOCATION",
         "ACCESS_COARSE_LOCATION",
         "ACCESS_NETWORK_STATE",
         "VIBRATE",
         "POST_NOTIFICATIONS"
       ],
-      "usesCleartextTraffic": false
+      "usesCleartextTraffic": false,
+      "blockedPermissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.READ_MEDIA_VIDEO",
+        "android.permission.READ_MEDIA_VISUAL_USER_SELECTED",
+        "android.permission.SYSTEM_ALERT_WINDOW"
+      ]
     },
     "experiments": {
       "typedRoutes": true
     },
     "icon": "./assets/images/app-icon.png",
     "ios": {
-      "bundleIdentifier": "app.emergent.offlinereportsync13c7397a",
+      "bundleIdentifier": "mx.apmapp.dirac",
       "infoPlist": {
         "NSCameraUsageDescription": "Capturar evidencia de obra en memoria, sin guardarla en tu dispositivo.",
         "NSLocationWhenInUseUsageDescription": "Adjuntar ubicación a la evidencia fotográfica.",
         "NSPhotoLibraryAddUsageDescription": "Guardar evidencia compartida en tu galería.",
-        "NSPhotoLibraryUsageDescription": "Adjuntar fotos al reporte sin guardarlas en tu dispositivo."
+        "NSPhotoLibraryUsageDescription": "Adjuntar fotos al reporte sin guardarlas en tu dispositivo.",
+        "ITSAppUsesNonExemptEncryption": false
       },
       "supportsTablet": true
     },
@@ -75,7 +81,9 @@
         "expo-build-properties",
         {
           "android": {
-            "usesCleartextTraffic": false
+            "usesCleartextTraffic": false,
+            "compileSdkVersion": 36,
+            "targetSdkVersion": 36
           }
         }
       ],

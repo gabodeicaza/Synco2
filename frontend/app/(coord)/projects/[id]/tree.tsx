@@ -5,7 +5,7 @@ import {
 } from 'react-native';
 import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
+import { useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
@@ -13,10 +13,16 @@ import * as ImageManipulator from 'expo-image-manipulator';
 import * as Sharing from 'expo-sharing';
 import * as FileSystem from 'expo-file-system/legacy';
 import { Button } from '@/src/components/Button';
+import { ScreenHeader } from '@/src/components/ScreenHeader';
 import { api, LocationNodeTree } from '@/src/api';
 import { colors, radius, spacing, shadow } from '@/src/theme';
 import { MEASUREMENT_LABELS, MEASUREMENT_ICONS, MeasurementType } from '@/src/utils/roles';
 import { confirm } from '@/src/utils/confirm';
+import { requestMediaLibraryPermission } from '@/src/utils/permissions';
+import { UbicacionGpsNodo } from '@/src/components/UbicacionGpsNodo';
+import { puntoGpsDeNodo } from '@/src/utils/gpsNodo';
+import { unir } from '@/src/utils/texto';
+import { t, a11y  } from '@/src/i18n';
 
 // =============================================================================
 // Constructor visual del Arbol de Nodos
@@ -64,7 +70,7 @@ export default function TreeBuilderScreen() {
         return init;
       });
     } catch (e: any) {
-      setError(e?.message || 'Error al cargar el arbol');
+      setError(e?.message || t('arbolNodos.errorAlCargarElArbol'));
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -98,15 +104,15 @@ export default function TreeBuilderScreen() {
   async function onDelete(node: LocationNodeTree) {
     const childrenCount = countNodes(node.children);
     const msg = childrenCount === 0
-      ? `?Eliminar el nodo "${node.name}"?`
-      : `?Eliminar "${node.name}" y sus ${childrenCount} descendiente(s)? Esta accion no se puede deshacer.`;
-    const ok = await confirm('Eliminar nodo', msg, { confirmText: 'Eliminar', destructive: true });
+      ? `¿Eliminar el nodo "${node.name}"?`
+      : `¿Eliminar "${node.name}" y sus ${childrenCount} descendiente(s)? Esta acción no se puede deshacer.`;
+    const ok = await confirm(t('arbolNodos.eliminarNodo'), msg, { confirmText: t('arbolNodos.eliminar'), destructive: true });
     if (!ok) return;
     try {
       await api.deleteNode(node.id);
       await load();
     } catch (e: any) {
-      Alert.alert('Error', e?.message || 'No se pudo eliminar');
+      Alert.alert(t('arbolNodos.error'), e?.message || t('arbolNodos.noSePudoEliminar'));
     }
   }
 
@@ -151,10 +157,10 @@ export default function TreeBuilderScreen() {
           UTI: 'org.openxmlformats.spreadsheetml.sheet',
         });
       } else {
-        Alert.alert('Plantilla descargada', `Guardada en: ${fileUri}`);
+        Alert.alert(t('arbolNodos.plantillaDescargada'), t('arbolNodos.guardadaEn', { ruta: fileUri }));
       }
     } catch (e: any) {
-      Alert.alert('No se pudo descargar', e?.message || 'Error desconocido');
+      Alert.alert(t('arbolNodos.noSePudoDescargar'), e?.message || t('arbolNodos.errorDesconocido'));
     }
   }
 
@@ -228,18 +234,18 @@ export default function TreeBuilderScreen() {
         lines.push('');
         lines.push(`Errores: ${res.errors.length}`);
         for (const e of res.errors.slice(0, 5)) {
-          lines.push(`_ Fila ${e.row}: ${e.error}`);
+          lines.push(`• Fila ${e.row}: ${e.error}`);
         }
       }
-      Alert.alert('Importacion completada', lines.join('\n'));
+      Alert.alert(t('arbolNodos.importacionCompletada'), lines.join('\n'));
       await load();
     } catch (e: any) {
       // [DEBUG UI] Mostramos el mensaje ENRIQUECIDO desde api.ts que
       // incluye URL, tamano del archivo copiado, mime y error nativo.
       // Fundamental para diagnosticar en Expo Go / device fisico.
       Alert.alert(
-        'Error al importar Excel',
-        String(e?.message || 'No se pudo procesar el archivo'),
+        t('arbolNodos.errorAlImportarExcel'),
+        String(e?.message || t('arbolNodos.noSePudoProcesarEl')),
         [{ text: 'OK' }],
       );
     } finally {
@@ -282,49 +288,50 @@ export default function TreeBuilderScreen() {
       setEditor(null);
       await load();
     } catch (e: any) {
-      Alert.alert('Error', e?.message || 'No se pudo guardar');
+      Alert.alert(t('arbolNodos.error'), e?.message || t('arbolNodos.noSePudoGuardar'));
     }
   }
 
   return (
     <View style={[styles.flex, { paddingTop: insets.top }]}>
-      <View style={styles.header}>
-        <Pressable onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
-          <Ionicons name="chevron-back" size={24} color={colors.text} />
-        </Pressable>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.title}>Arbol de nodos</Text>
-          <Text style={styles.subtitle}>{totalCount} nodo{totalCount === 1 ? '' : 's'} _ {leafCount} hoja{leafCount === 1 ? '' : 's'}</Text>
-        </View>
-        <Pressable onPress={tree.length === 0 ? undefined : expandAll} hitSlop={8} style={styles.iconBtn}>
-          <Ionicons name="expand" size={20} color={tree.length === 0 ? colors.textMuted : colors.text} />
-        </Pressable>
-        <Pressable onPress={tree.length === 0 ? undefined : collapseAll} hitSlop={8} style={styles.iconBtn}>
-          <Ionicons name="contract" size={20} color={tree.length === 0 ? colors.textMuted : colors.text} />
-        </Pressable>
-        <Pressable
-          onPress={onDownloadTemplate}
-          hitSlop={8}
-          style={styles.iconBtn}
-          accessibilityRole="button"
-          accessibilityLabel="Descargar plantilla Excel"
-        >
-          <Ionicons name="document-text-outline" size={20} color={colors.primary} />
-        </Pressable>
-        <Pressable
-          onPress={uploading ? undefined : onImportExcel}
-          hitSlop={8}
-          style={styles.iconBtn}
-          disabled={uploading}
-          accessibilityRole="button"
-          accessibilityLabel="Importar nodos desde Excel"
-        >
-          {uploading
-            ? <ActivityIndicator size="small" color={colors.primary} />
-            : <Ionicons name="cloud-upload-outline" size={20} color={colors.primary} />
-          }
-        </Pressable>
-      </View>
+      <ScreenHeader
+        title={t('arbolNodos.arbolDeNodos')}
+        subtitle={unir([`${totalCount} nodo${totalCount === 1 ? '' : 's'}`, `${leafCount} hoja${leafCount === 1 ? '' : 's'}`])}
+        fallbackHref={{ pathname: '/(coord)/projects/[id]', params: { id: pid } }}
+        safeArea={false}
+        right={(
+          <>
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y('expandirTodo')} onPress={tree.length === 0 ? undefined : expandAll} hitSlop={8} style={styles.iconBtn}>
+              <Ionicons name="expand" size={20} color={tree.length === 0 ? colors.textMuted : colors.text} />
+            </Pressable>
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y('contraerTodo')} onPress={tree.length === 0 ? undefined : collapseAll} hitSlop={8} style={styles.iconBtn}>
+              <Ionicons name="contract" size={20} color={tree.length === 0 ? colors.textMuted : colors.text} />
+            </Pressable>
+            <Pressable
+              onPress={onDownloadTemplate}
+              hitSlop={8}
+              style={styles.iconBtn}
+              accessibilityRole="button"
+              accessibilityLabel={t('arbolNodos.descargarPlantillaExcel')}
+            >
+              <Ionicons name="document-text-outline" size={20} color={colors.primary} />
+            </Pressable>
+            <Pressable
+              onPress={uploading ? undefined : onImportExcel}
+              hitSlop={8}
+              style={styles.iconBtn}
+              disabled={uploading}
+              accessibilityRole="button"
+              accessibilityLabel={t('arbolNodos.importarNodosDesdeExcel')}
+            >
+              {uploading
+                ? <ActivityIndicator size="small" color={colors.primary} />
+                : <Ionicons name="cloud-upload-outline" size={20} color={colors.primary} />
+              }
+            </Pressable>
+          </>
+        )}
+      />
 
       <ScrollView
         contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + 110 }]}
@@ -340,9 +347,9 @@ export default function TreeBuilderScreen() {
         ) : tree.length === 0 ? (
           <View style={styles.emptyBlock}>
             <Ionicons name="git-network-outline" size={56} color={colors.textMuted} />
-            <Text style={styles.emptyTitle}>El arbol esta vacio</Text>
+            <Text style={styles.emptyTitle}>{t('arbolNodos.elArbolEstaVacio')}</Text>
             <Text style={styles.emptyMsg}>
-              Define la estructura espacial de tu proyecto. Puedes anidar tantos niveles como necesites. Los nodos hoja son los puntos donde el Especialista captura mediciones.
+              {t('arbolNodos.defineLaEstructuraEspacialDe')}
             </Text>
             <Pressable
               onPress={uploading ? undefined : onImportExcel}
@@ -354,7 +361,7 @@ export default function TreeBuilderScreen() {
                 ? <ActivityIndicator size="small" color={colors.primary} />
                 : <Ionicons name="cloud-upload-outline" size={18} color={colors.primary} />}
               <Text style={styles.emptyImportText}>
-                {uploading ? 'Procesando...' : 'Importar Nodos (Excel/CSV)'}
+                {uploading ? t('arbolNodos.procesando') : t('arbolNodos.importarNodosExcelCsv')}
               </Text>
             </Pressable>
             <Pressable
@@ -363,7 +370,7 @@ export default function TreeBuilderScreen() {
               accessibilityRole="button"
             >
               <Ionicons name="document-text-outline" size={14} color={colors.textMuted} />
-              <Text style={styles.emptyTemplateText}>Descargar plantilla de ejemplo</Text>
+              <Text style={styles.emptyTemplateText}>{t('arbolNodos.descargarPlantillaDeEjemplo')}</Text>
             </Pressable>
           </View>
         ) : (
@@ -383,9 +390,9 @@ export default function TreeBuilderScreen() {
         )}
       </ScrollView>
 
-      <Pressable style={[styles.fab, { bottom: insets.bottom + 20 }]} onPress={() => setEditor({ kind: 'create_root' })}>
+      <Pressable accessibilityRole="button" style={[styles.fab, { bottom: insets.bottom + 20 }]} onPress={() => setEditor({ kind: 'create_root' })}>
         <Ionicons name="add" size={26} color={colors.textInverse} />
-        <Text style={styles.fabText}>Agregar nodo raiz</Text>
+        <Text style={styles.fabText}>{t('arbolNodos.agregarNodoRaiz')}</Text>
       </Pressable>
 
       <NodeEditorModal
@@ -428,7 +435,7 @@ function NodeBranch({
         {node.depth > 0 ? <View style={[styles.guide, { left: indent - 6 }]} /> : null}
 
         {/* Toggle / spacer */}
-        <Pressable
+        <Pressable accessibilityRole="button" accessibilityLabel={a11y(isOpen ? 'contraer' : 'expandir')} accessibilityState={{ expanded: isOpen, disabled: !hasChildren }}
           onPress={() => hasChildren && onToggle(node.id)}
           hitSlop={6}
           style={styles.toggleBtn}
@@ -451,7 +458,7 @@ function NodeBranch({
         </View>
 
         {/* Label */}
-        <Pressable
+        <Pressable accessibilityRole="button"
           style={{ flex: 1, paddingVertical: 6 }}
           onPress={() => hasChildren ? onToggle(node.id) : onEdit(node)}
           onLongPress={() => onEdit(node)}
@@ -467,29 +474,29 @@ function NodeBranch({
               <View style={styles.metaBadge}>
                 <Ionicons name="document-attach" size={9} color={colors.textBody} />
                 <Text style={styles.metaBadgeText}>
-                  {Object.keys(node.metadata).length} dato{Object.keys(node.metadata).length === 1 ? '' : 's'}
+                  {Object.keys(node.metadata).length === 1 ? t('arbolNodos.datosUno') : t('arbolNodos.datos', { n: Object.keys(node.metadata).length })}
                 </Text>
               </View>
             ) : null}
             {(node as any).cover_image ? (
               <View style={[styles.metaBadge, styles.coverBadge]}>
                 <Ionicons name="image" size={9} color={colors.primary} />
-                <Text style={[styles.metaBadgeText, { color: colors.primary }]}>Portada</Text>
+                <Text style={[styles.metaBadgeText, { color: colors.primary }]}>{t('arbolNodos.portada')}</Text>
               </View>
             ) : null}
             {hasChildren ? (
-              <Text style={styles.childCount}>{node.children.length} hijo{node.children.length === 1 ? '' : 's'}</Text>
+              <Text style={styles.childCount}>{node.children.length === 1 ? t('arbolNodos.hijoUno') : t('arbolNodos.hijos', { n: node.children.length })}</Text>
             ) : !isLeaf ? (
-              <Text style={styles.muted}>Vacio</Text>
+              <Text style={styles.muted}>{t('arbolNodos.vacio')}</Text>
             ) : null}
           </View>
         </Pressable>
 
         {/* Quick actions */}
-        <Pressable onPress={() => onAddChild(node)} hitSlop={6} style={styles.actionBtn}>
+        <Pressable accessibilityRole="button" accessibilityLabel={a11y('agregar')} onPress={() => onAddChild(node)} hitSlop={6} style={styles.actionBtn}>
           <Ionicons name="add-circle-outline" size={20} color={colors.primary} />
         </Pressable>
-        <Pressable onPress={() => setMenuOpen((o) => !o)} hitSlop={6} style={styles.actionBtn}>
+        <Pressable accessibilityRole="button" accessibilityLabel={a11y('masOpciones')} onPress={() => setMenuOpen((o) => !o)} hitSlop={6} style={styles.actionBtn}>
           <Ionicons name="ellipsis-vertical" size={18} color={colors.textBody} />
         </Pressable>
       </View>
@@ -497,31 +504,31 @@ function NodeBranch({
       {/* Inline action menu */}
       {menuOpen ? (
         <View style={[styles.menu, { marginLeft: indent + 36 }]}>
-          <Pressable style={styles.menuItem} onPress={() => { setMenuOpen(false); onEdit(node); }}>
+          <Pressable accessibilityRole="button" style={styles.menuItem} onPress={() => { setMenuOpen(false); onEdit(node); }}>
             <Ionicons name="create-outline" size={16} color={colors.textBody} />
-            <Text style={styles.menuText}>Editar</Text>
+            <Text style={styles.menuText}>{t('arbolNodos.editar')}</Text>
           </Pressable>
-          <Pressable style={styles.menuItem} onPress={() => { setMenuOpen(false); onAddChild(node); }}>
+          <Pressable accessibilityRole="button" style={styles.menuItem} onPress={() => { setMenuOpen(false); onAddChild(node); }}>
             <Ionicons name="git-branch-outline" size={16} color={colors.textBody} />
-            <Text style={styles.menuText}>Agregar nodo hijo</Text>
+            <Text style={styles.menuText}>{t('arbolNodos.agregarNodoHijo')}</Text>
           </Pressable>
           {node.metadata && Object.keys(node.metadata).length > 0 ? (
-            <Pressable
+            <Pressable accessibilityRole="button"
               style={styles.menuItem}
               onPress={() => {
                 setMenuOpen(false);
                 const entries = Object.entries(node.metadata || {});
-                const body = entries.map(([k, v]) => `_ ${k}: ${formatMetaValue(v)}`).join('\n');
-                Alert.alert(node.name, body || 'Sin metadatos');
+                const body = entries.map(([k, v]) => `• ${k}: ${formatMetaValue(v)}`).join('\n');
+                Alert.alert(node.name, body || t('arbolNodos.sinMetadatos'));
               }}
             >
               <Ionicons name="document-attach-outline" size={16} color={colors.textBody} />
-              <Text style={styles.menuText}>Ver metadatos ({Object.keys(node.metadata).length})</Text>
+              <Text style={styles.menuText}>{t('arbolNodos.verMetadatosN', { n: Object.keys(node.metadata).length })}</Text>
             </Pressable>
           ) : null}
-          <Pressable style={[styles.menuItem, styles.menuDanger]} onPress={() => { setMenuOpen(false); onDelete(node); }}>
+          <Pressable accessibilityRole="button" style={[styles.menuItem, styles.menuDanger]} onPress={() => { setMenuOpen(false); onDelete(node); }}>
             <Ionicons name="trash-outline" size={16} color={colors.error} />
-            <Text style={[styles.menuText, { color: colors.error }]}>Eliminar</Text>
+            <Text style={[styles.menuText, { color: colors.error }]}>{t('arbolNodos.eliminar')}</Text>
           </Pressable>
         </View>
       ) : null}
@@ -605,7 +612,7 @@ function NodeEditorModal({
     if (!editor) return '';
     if (editor.kind === 'edit') return `Editar: ${editor.node.name}`;
     if (editor.kind === 'create_child') return `Hijo de "${editor.parent.name}"`;
-    return 'Nuevo nodo raiz';
+    return 'Nuevo nodo raíz';
   }, [editor]);
 
   // Acceso al Predio / Situacion Social son campos de estatus de Subtramo
@@ -637,8 +644,8 @@ function NodeEditorModal({
   async function submit() {
     setErr(null);
     const n = name.trim();
-    if (!n) { setErr('El nombre es obligatorio'); return; }
-    if (isLeaf && !mtype) { setErr('Selecciona el tipo de medicion para el nodo hoja'); return; }
+    if (!n) { setErr(t('arbolNodos.elNombreEsObligatorio')); return; }
+    if (isLeaf && !mtype) { setErr(t('arbolNodos.seleccionaElTipoDeMedicion')); return; }
     let parsedLat: number | null = null;
     let parsedLon: number | null = null;
     let parsedElev: number | null = null;
@@ -646,9 +653,9 @@ function NodeEditorModal({
       parsedLat = parseCoord(tLat);
       parsedLon = parseCoord(tLon);
       parsedElev = parseCoord(tElev);
-      if (Number.isNaN(parsedLat as any)) { setErr('Coordenada X (Este) invalida'); return; }
-      if (Number.isNaN(parsedLon as any)) { setErr('Coordenada Y (Norte) invalida'); return; }
-      if (Number.isNaN(parsedElev as any)) { setErr('Elevacion invalida'); return; }
+      if (Number.isNaN(parsedLat as any)) { setErr(t('arbolNodos.coordenadaXEsteInvalida')); return; }
+      if (Number.isNaN(parsedLon as any)) { setErr(t('arbolNodos.coordenadaYNorteInvalida')); return; }
+      if (Number.isNaN(parsedElev as any)) { setErr(t('arbolNodos.elevacionInvalida')); return; }
       // Nota: en obra civil se usan coordenadas UTM (cientos de miles / millones).
       // No se aplica restriccion de rango geografico (-90/90, -180/180).
     }
@@ -676,9 +683,9 @@ function NodeEditorModal({
     try {
       // Solicitar permiso (solo aplica en native; en web se ignora)
       if (Platform.OS !== 'web') {
-        const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+        const perm = await requestMediaLibraryPermission();
         if (!perm.granted) {
-          setCoverErr('Sin permiso para acceder a la galeria.');
+          setCoverErr(t('arbolNodos.sinPermisoParaAccederA'));
           return;
         }
       }
@@ -737,9 +744,9 @@ function NodeEditorModal({
       // [DEBUG UI] Ademas de setear el error inline, mostramos Alert.alert
       // con el mensaje COMPLETO (incluye URL, tamano, mime, error nativo)
       // para que el usuario pueda leerlo en su dispositivo fisico.
-      const details = e?.message || 'No se pudo subir la portada';
+      const details = e?.message || t('arbolNodos.noSePudoSubirLa');
       setCoverErr(details);
-      Alert.alert('Error de subida (portada)', String(details), [{ text: 'OK' }]);
+      Alert.alert(t('arbolNodos.errorDeSubidaPortada'), String(details), [{ text: 'OK' }]);
     } finally {
       setCoverBusy(false);
     }
@@ -748,9 +755,9 @@ function NodeEditorModal({
   async function removeCover() {
     if (!editor || editor.kind !== 'edit') return;
     const ok = await confirm(
-      'Eliminar portada',
-      '?Eliminar la foto de portada de este nodo? Volvera a usarse la portadilla generica del proyecto.',
-      { confirmText: 'Eliminar', destructive: true },
+      t('arbolNodos.eliminarPortada'),
+      t('arbolNodos.eliminarLaFotoDePortada'),
+      { confirmText: t('arbolNodos.eliminar'), destructive: true },
     );
     if (!ok) return;
     setCoverErr(null);
@@ -760,9 +767,9 @@ function NodeEditorModal({
       setCoverUri(null);
       if (onCoverChanged) await onCoverChanged();
     } catch (e: any) {
-      const details = e?.message || 'No se pudo eliminar la portada';
+      const details = e?.message || t('arbolNodos.noSePudoEliminarLa');
       setCoverErr(details);
-      Alert.alert('Error eliminando portada', String(details), [{ text: 'OK' }]);
+      Alert.alert(t('arbolNodos.errorEliminandoPortada'), String(details), [{ text: 'OK' }]);
     } finally {
       setCoverBusy(false);
     }
@@ -775,18 +782,18 @@ function NodeEditorModal({
           <View style={[styles.modalCard, { paddingBottom: insets.bottom + spacing.md }]}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle} numberOfLines={1}>{title}</Text>
-              <Pressable onPress={onClose} hitSlop={8}><Ionicons name="close" size={24} color={colors.text} /></Pressable>
+              <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} onPress={onClose} hitSlop={8}><Ionicons name="close" size={24} color={colors.text} /></Pressable>
             </View>
 
             <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ gap: spacing.md, paddingTop: spacing.sm }}>
               <View>
-                <Text style={styles.label}>Nombre del nodo</Text>
+                <Text style={styles.label}>{t('arbolNodos.nombreDelNodo')}</Text>
                 <View style={styles.inputWrap}>
                   <Ionicons name="pricetag-outline" size={18} color={colors.textMuted} />
                   <TextInput
                     value={name}
                     onChangeText={setName}
-                    placeholder="Ej. Tramo 1, Estacion 02+450, Eje A"
+                    placeholder={t('arbolNodos.ejTramo1Estacion02')}
                     placeholderTextColor={colors.textMuted}
                     style={styles.input}
                     autoFocus
@@ -801,14 +808,14 @@ function NodeEditorModal({
               {isSubtramoContext ? (
                 <>
                   <View>
-                    <Text style={styles.label}>Acceso al Predio</Text>
+                    <Text style={styles.label}>{t('arbolNodos.accesoAlPredio')}</Text>
                     <View style={{ gap: 8 }}>
                       {([
                         { key: null, label: 'Sin especificar', icon: 'help-circle-outline' },
                         { key: 'Con acceso', label: 'Con acceso', icon: 'checkmark-circle-outline' },
                         { key: 'Sin acceso', label: 'Sin acceso', icon: 'close-circle-outline' },
                       ] as const).map((opt) => (
-                        <Pressable
+                        <Pressable accessibilityRole="button"
                           key={opt.label}
                           onPress={() => setAccesoPredio(opt.key)}
                           style={[styles.mOption, accesoPredio === opt.key && styles.mOptionOn]}
@@ -826,18 +833,18 @@ function NodeEditorModal({
                       ))}
                     </View>
                     <Text style={styles.metaHelp}>
-                      Estatus vigente del acceso a este subtramo. Se muestra como insignia de color en la pagina de resumen del PDF/PPT exportado.
+                      {t('arbolNodos.estatusVigenteDelAccesoA')}
                     </Text>
                   </View>
 
                   <View>
-                    <Text style={styles.label}>Situacion Social - Liberacion Fisica del Predio (opcional)</Text>
+                    <Text style={styles.label}>{t('arbolNodos.situacionSocialLiberacionFisicaDel')}</Text>
                     <View style={[styles.inputWrap, { alignItems: 'flex-start', minHeight: 88 }]}>
                       <Ionicons name="people-outline" size={18} color={colors.textMuted} style={{ marginTop: 2 }} />
                       <TextInput
                         value={situacionSocial}
                         onChangeText={setSituacionSocial}
-                        placeholder={'Una linea por punto, ej.:\nPredio liberado en su totalidad\nPendiente firma de convenio con propietario'}
+                        placeholder={t('arbolNodos.unaLineaPorPuntoEj')}
                         placeholderTextColor={colors.textMuted}
                         style={[styles.input, { minHeight: 80, textAlignVertical: 'top' }]}
                         multiline
@@ -845,7 +852,7 @@ function NodeEditorModal({
                       />
                     </View>
                     <Text style={styles.metaHelp}>
-                      Cada linea se muestra como una vineta independiente en la pagina de resumen exportada.
+                      {t('arbolNodos.cadaLineaSeMuestraComo')}
                     </Text>
                   </View>
                 </>
@@ -856,10 +863,10 @@ function NodeEditorModal({
                 <View style={styles.coverSection}>
                   <View style={styles.coverHeader}>
                     <Ionicons name="image" size={18} color={colors.primary} />
-                    <Text style={styles.coverTitle}>Foto de portada del nodo</Text>
+                    <Text style={styles.coverTitle}>{t('arbolNodos.fotoDePortadaDelNodo')}</Text>
                   </View>
                   <Text style={styles.coverHelp}>
-                    Aparecera como portadilla institucional (capitulo) en el PDF exportado, antes de todos los reportes de este nodo y sus descendientes.
+                    {t('arbolNodos.apareceraComoPortadillaInstitucionalCapitulo')}
                   </Text>
 
                   {coverUri ? (
@@ -878,7 +885,7 @@ function NodeEditorModal({
                   ) : (
                     <View style={styles.coverEmptyWrap}>
                       <Ionicons name="images-outline" size={36} color={colors.textMuted} />
-                      <Text style={styles.coverEmptyText}>Sin foto de portada</Text>
+                      <Text style={styles.coverEmptyText}>{t('arbolNodos.sinFotoDePortada')}</Text>
                     </View>
                   )}
 
@@ -895,7 +902,7 @@ function NodeEditorModal({
                         <>
                           <Ionicons name={coverUri ? 'refresh' : 'cloud-upload'} size={16} color={colors.textInverse} />
                           <Text style={styles.coverBtnPrimaryText}>
-                            {coverUri ? 'Cambiar foto' : 'Subir foto'}
+                            {coverUri ? t('arbolNodos.cambiarFoto') : t('arbolNodos.subirFoto')}
                           </Text>
                         </>
                       )}
@@ -908,7 +915,7 @@ function NodeEditorModal({
                         accessibilityRole="button"
                       >
                         <Ionicons name="trash-outline" size={16} color={colors.error} />
-                        <Text style={styles.coverBtnDangerText}>Eliminar</Text>
+                        <Text style={styles.coverBtnDangerText}>{t('arbolNodos.eliminar')}</Text>
                       </Pressable>
                     ) : null}
                   </View>
@@ -924,12 +931,12 @@ function NodeEditorModal({
                 <View style={styles.coverHint}>
                   <Ionicons name="information-circle-outline" size={16} color={colors.textMuted} />
                   <Text style={styles.coverHintText}>
-                    Podras subir una foto de portada del nodo despues de crearlo.
+                    {t('arbolNodos.podrasSubirUnaFotoDe')}
                   </Text>
                 </View>
               )}
 
-              <Pressable
+              <Pressable accessibilityRole="button"
                 onPress={() => setIsLeaf((v) => !v)}
                 style={[styles.leafToggle, isLeaf && styles.leafToggleOn]}
               >
@@ -940,10 +947,10 @@ function NodeEditorModal({
                 />
                 <View style={{ flex: 1 }}>
                   <Text style={[styles.leafToggleTitle, isLeaf && { color: colors.primary }]}>
-                    Es nodo hoja (captura mediciones)
+                    {t('arbolNodos.esNodoHojaCapturaMediciones')}
                   </Text>
                   <Text style={styles.leafToggleSub}>
-                    Los nodos hoja son los puntos donde el Especialista registra mediciones.
+                    {t('arbolNodos.losNodosHojaSonLos')}
                   </Text>
                 </View>
                 <View style={[styles.switch, isLeaf && styles.switchOn]}>
@@ -953,10 +960,10 @@ function NodeEditorModal({
 
               {isLeaf ? (
                 <View>
-                  <Text style={styles.label}>Tipo de medicion</Text>
+                  <Text style={styles.label}>{t('arbolNodos.tipoDeMedicion')}</Text>
                   <View style={{ gap: 8 }}>
                     {(Object.keys(MEASUREMENT_LABELS) as MeasurementType[]).map((k) => (
-                      <Pressable
+                      <Pressable accessibilityRole="button"
                         key={k}
                         onPress={() => setMtype(k)}
                         style={[styles.mOption, mtype === k && styles.mOptionOn]}
@@ -978,14 +985,14 @@ function NodeEditorModal({
                     <View style={styles.coordCard}>
                       <View style={styles.coordHeader}>
                         <Ionicons name="location" size={16} color={colors.primary} />
-                        <Text style={styles.coordHeaderText}>Coordenadas objetivo (oficina)</Text>
+                        <Text style={styles.coordHeaderText}>{t('arbolNodos.coordenadasObjetivoOficina')}</Text>
                       </View>
                       <Text style={styles.coordHelp}>
-                        Valores dictados por el Coordinador. El Especialista los vera en modo solo-lectura al capturar este nodo.
+                        {t('arbolNodos.valoresDictadosPorElCoordinador')}
                       </Text>
                       <View style={styles.coordRow}>
                         <View style={styles.coordField}>
-                          <Text style={styles.coordLabel}>Coordenada X (Este)</Text>
+                          <Text style={styles.coordLabel}>{t('arbolNodos.coordenadaXEste')}</Text>
                           <View style={styles.inputWrap}>
                             <Ionicons name="locate-outline" size={16} color={colors.textMuted} />
                             <TextInput
@@ -1001,7 +1008,7 @@ function NodeEditorModal({
                           </View>
                         </View>
                         <View style={styles.coordField}>
-                          <Text style={styles.coordLabel}>Coordenada Y (Norte)</Text>
+                          <Text style={styles.coordLabel}>{t('arbolNodos.coordenadaYNorte')}</Text>
                           <View style={styles.inputWrap}>
                             <Ionicons name="locate-outline" size={16} color={colors.textMuted} />
                             <TextInput
@@ -1018,13 +1025,13 @@ function NodeEditorModal({
                         </View>
                       </View>
                       <View style={styles.coordField}>
-                        <Text style={styles.coordLabel}>Elevacion / Cota (Z)</Text>
+                        <Text style={styles.coordLabel}>{t('arbolNodos.elevacionCotaZ')}</Text>
                         <View style={styles.inputWrap}>
                           <Ionicons name="trending-up-outline" size={16} color={colors.textMuted} />
                           <TextInput
                             value={tElev}
                             onChangeText={setTElev}
-                            placeholder="2240.50 (msnm)"
+                            placeholder={t('arbolNodos.t224050Msnm')}
                             placeholderTextColor={colors.textMuted}
                             style={styles.input}
                             keyboardType="numbers-and-punctuation"
@@ -1036,6 +1043,15 @@ function NodeEditorModal({
                     </View>
                   ) : null}
                 </View>
+              ) : null}
+
+              {editor?.kind === 'edit' ? (
+                <UbicacionGpsNodo
+                  key={editor.node.id}
+                  nodeId={editor.node.id}
+                  punto={puntoGpsDeNodo(editor.node as any)}
+                  onChanged={onCoverChanged}
+                />
               ) : null}
 
               {err ? (
@@ -1088,14 +1104,7 @@ function formatMetaValue(v: any): string {
 
 const styles = StyleSheet.create({
   flex: { flex: 1, backgroundColor: colors.bg },
-  header: {
-    flexDirection: 'row', alignItems: 'center', gap: 4,
-    paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
-    borderBottomWidth: 1, borderBottomColor: colors.border, backgroundColor: colors.surface,
-  },
   iconBtn: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center' },
-  title: { fontSize: 17, fontWeight: '800', color: colors.text },
-  subtitle: { fontSize: 11, color: colors.textMuted, fontWeight: '700', marginTop: 1 },
   scroll: { paddingHorizontal: spacing.md, paddingTop: spacing.sm, gap: spacing.sm },
   center: { paddingVertical: spacing.xl, alignItems: 'center' },
   errorBox: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: colors.errorBg, padding: 10, borderRadius: radius.md },

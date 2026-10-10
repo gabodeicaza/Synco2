@@ -4,39 +4,55 @@
 // (mismo criterio que "Nuevo Reporte" — ver src/api.ts createAvance).
 import React, { useEffect, useState } from 'react';
 import {
-  View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, TextInput, StatusBar, Alert, Image, Modal,
+  View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, TextInput, StatusBar, Image, Modal, Linking,
 } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { pickPhotoDataUrl } from '@/src/utils/photoPicker';
+import * as ImagePicker from 'expo-image-picker';
 
-import { api, Concepto, ConceptoSearchResult, Project, LocationNodeTree } from '@/src/api';
+import { api, Concepto, Project, LocationNodeTree } from '@/src/api';
 import { colors, radius, shadow, spacing } from '@/src/theme';
 import { APP_BRAND } from '@/src/utils/roles';
+import { ScreenHeader } from '@/src/components/ScreenHeader';
 import { UNIDAD_LABELS, Unidad } from '@/src/utils/unidades';
-import { nombreConcepto } from '@/src/utils/nombresNivel';
-import { decimalStringToCents, formatCantidad, isValidDecimalInput, pctDeDecimales } from '@/src/utils/money';
-import { dayjs, CDMX_TZ } from '@/src/utils/tz';
-import { esPorcentajeValido, esRetrocesoLocal } from '@/src/utils/avancePorcentaje';
+import { concordanciaConcepto } from '@/src/utils/nombresNivel';
+import { decimalStringToScaled, formatCantidad, pctDeDecimales } from '@/src/utils/money';
+import { esRetrocesoLocal } from '@/src/utils/avancePorcentaje';
+import { InlineError } from '@/src/components/InlineError';
+import { showToast } from '@/src/utils/toast';
+import {
+  TipoAvance, excedenteAlCapturar, excedentePorcentajeAlCapturar, hayErrores, sumarCantidades, validarAvance,
+} from '@/src/utils/validacionAvance';
+import { DECIMALES_CANTIDAD, formatoNumero, mensajeNumeroInvalido, parseNumeroEntrada, SeparadorDecimal } from '@/src/utils/numeros';
+import { useBusquedaConceptos } from '@/src/hooks/useBusquedaConceptos';
+import { useEnvio } from '@/src/hooks/useEnvio';
+import { useFormErrors } from '@/src/hooks/useFormErrors';
+import { requestCameraPermission, requestMediaLibraryPermission } from '@/src/utils/permissions';
+import { prepararFotoEvidencia } from '@/src/utils/comprimirFoto';
+import { confirm } from '@/src/utils/confirm';
+import { a11y, t } from '@/src/i18n';
+import { fmtFecha, hoyProyecto } from '@/src/utils/fechas';
 
 export default function RegistrarAvanceScreen({ projectId }: { projectId: string }) {
-  const insets = useSafeAreaInsets();
   const [project, setProject] = useState<Project | null>(null);
+  const conc = concordanciaConcepto(project);
 
-  const [query, setQuery] = useState('');
-  const [results, setResults] = useState<ConceptoSearchResult[]>([]);
-  const [searching, setSearching] = useState(false);
+  const busqueda = useBusquedaConceptos(projectId, t('busquedaConceptos.errorBusqueda'));
   const [selected, setSelected] = useState<Concepto | null>(null);
 
-  // [FIX] `dayjs()` sin `.tz()` usa la zona horaria del dispositivo, no
-  // CDMX -- si alguien capturaba avance de noche en un dispositivo en otra
-  // zona horaria, la fecha guardada podía quedar corrida un día respecto al
-  // día calendario CDMX real (mismo bug de raíz que RangoFechasPicker).
-  const [fecha] = useState(dayjs().tz(CDMX_TZ).format('YYYY-MM-DD'));
+  // La fecha de la captura es el "hoy" de la zona del PROYECTO (no la del
+  // dispositivo ni UTC) y se calcula al enviar, así sigue correcta si la
+  // pantalla queda abierta pasada la medianoche.
   const [cantidad, setCantidad] = useState('');
+  // A-01: "avance" (incremento > 0) o "ajuste" (corrección con signo y motivo).
+  const [tipo, setTipo] = useState<TipoAvance>('normal');
+  const [motivo, setMotivo] = useState('');
+  const { errores, errorGeneral, ponerTodos, limpiarTodo, alCambiar, errorDeGuardado } =
+    useFormErrors<'cantidad' | 'motivo' | 'fecha'>();
   const [foto, setFoto] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
+  const [errorFoto, setErrorFoto] = useState<string | null>(null);
+  const [avisoFoto, setAvisoFoto] = useState<string | null>(null);
+  const [preparandoFoto, setPreparandoFoto] = useState(false);
+  const { guardando: saving, ejecutar } = useEnvio();
 
   // Nodo (opcional, nunca bloqueante) — si el residente sabe en qué nodo
   // ejecutó, se guarda aunque el cálculo de avance no lo use hoy (modo
@@ -49,87 +65,137 @@ export default function RegistrarAvanceScreen({ projectId }: { projectId: string
   useEffect(() => { api.getProject(projectId).then(setProject).catch(() => {}); }, [projectId]);
   useEffect(() => { api.getTree(projectId).then(setNodes).catch(() => setNodes([])); }, [projectId]);
 
-  useEffect(() => {
-    if (!query.trim()) { setResults([]); return; }
-    setSearching(true);
-    const t = setTimeout(async () => {
-      try {
-        const r = await api.searchConceptos(projectId, { q: query });
-        setResults(r);
-      } catch {
-        /* noop: busqueda best-effort */
-      } finally {
-        setSearching(false);
+  // T-05a: la evidencia entra por la cámara o por la galería y SIEMPRE se comprime
+  // (1600 px, JPEG 0.7) antes de adjuntarse: pesa menos en la cola sin conexión.
+  // El permiso se pide justo al tocar el botón, con la explicación de Fase 0.
+  async function elegirFoto(origen: 'camara' | 'galeria') {
+    setErrorFoto(null);
+    setAvisoFoto(null);
+    const permiso = origen === 'camara' ? await requestCameraPermission() : await requestMediaLibraryPermission();
+    if (!permiso.granted) {
+      if (origen === 'camara' && !permiso.canAskAgain) {
+        const abrir = await confirm(t('permisos.camaraTitulo'), t('permisos.camaraMensaje'), { confirmText: t('permisos.abrirAjustes') });
+        if (abrir) Linking.openSettings();
       }
-    }, 300);
-    return () => clearTimeout(t);
-  }, [query, projectId]);
-
-  async function pickPhoto() {
-    const dataUrl = await pickPhotoDataUrl('library', { maxDim: 1400, quality: 0.75 });
-    if (dataUrl) setFoto(dataUrl);
+      setErrorFoto(t(origen === 'camara' ? 'camaraEvidencia.permisoCamara' : 'camaraEvidencia.permisoGaleria'));
+      return;
+    }
+    const opciones = { mediaTypes: ImagePicker.MediaTypeOptions.Images, base64: true, quality: 0.8 };
+    let resultado;
+    try {
+      resultado = origen === 'camara'
+        ? await ImagePicker.launchCameraAsync(opciones)
+        : await ImagePicker.launchImageLibraryAsync(opciones);
+    } catch {
+      setErrorFoto(t('camaraEvidencia.noSePudoLeer'));
+      return;
+    }
+    if (resultado.canceled || !resultado.assets?.[0]) return;
+    setPreparandoFoto(true);
+    try {
+      const r = await prepararFotoEvidencia(resultado.assets[0]);
+      if (!r.ok) {
+        setErrorFoto(
+          r.motivo === 'demasiado_grande'
+            ? t('camaraEvidencia.demasiadaGrande', { mb: ((r.bytes ?? 0) / (1024 * 1024)).toFixed(1) })
+            : t('camaraEvidencia.noSePudoLeer'),
+        );
+        return;
+      }
+      setFoto(r.dataUri);
+      if (!r.comprimida) setAvisoFoto(t('camaraEvidencia.sinCompresion'));
+    } finally {
+      setPreparandoFoto(false);
+    }
   }
 
   const esPorcentaje = project?.modo_avance === 'PORCENTAJE';
 
+  // A-07/X-05: se acepta "1,500" y "1500" según el separador del proyecto; al API siempre
+  // va el decimal con punto. La cantidad de avance admite hasta 4 decimales.
+  const separador: SeparadorDecimal = project?.separador_decimal === ',' ? ',' : '.';
+  const opcionesNumero = { separador, maxDecimales: DECIMALES_CANTIDAD, permitirNegativo: tipo === 'ajuste' };
+  const lectura = parseNumeroEntrada(cantidad, opcionesNumero);
+  const cantidadApi = lectura.ok ? lectura.valor : '';
+
+  function darFormatoCantidad() {
+    if (!lectura.ok) return;
+    const texto = formatoNumero(lectura.valor, { separador, maxDecimales: DECIMALES_CANTIDAD });
+    if (texto && texto !== cantidad) setCantidad(texto);
+  }
+
+  function limpiarFormulario() {
+    setSelected(null);
+    setCantidad('');
+    setMotivo('');
+    setTipo('normal');
+    setFoto(null);
+    setErrorFoto(null);
+    setAvisoFoto(null);
+    setSelectedNodo(null);
+    busqueda.limpiar();
+    limpiarTodo();
+  }
+
   async function submit() {
     if (!selected) return;
-    if (esPorcentaje) {
-      if (!esPorcentajeValido(cantidad)) {
-        Alert.alert('Porcentaje inválido', 'Ingresa un valor entre 0 y 100, con hasta 2 decimales.');
-        return;
+    await ejecutar(async () => {
+      const fecha = hoyProyecto(project);
+      const e = validarAvance({ cantidad: cantidadApi, tipo, motivo, fecha, hoy: hoyProyecto(project), esPorcentaje });
+      if (!lectura.ok && lectura.motivo === 'decimales') {
+        e.cantidad = mensajeNumeroInvalido('decimales', DECIMALES_CANTIDAD, t('capturaAvance.cantidad'));
       }
-    } else if (!isValidDecimalInput(cantidad)) {
-      Alert.alert('Cantidad inválida', 'Ingresa un número con hasta 2 decimales.');
-      return;
-    }
-    try {
-      setSaving(true);
-      const res = await api.createAvance({
-        concepto_id: selected.id,
-        fecha,
-        cantidad_ejecutada: cantidad,
-        fotos: foto ? [foto] : [],
-        nodo_id: selectedNodo?.id,
-      });
-      const resumen = esPorcentaje
-        ? `${selected.clave} · va al ${formatCantidad(cantidad)}%`
-        : `${selected.clave} · ${formatCantidad(cantidad)} ${selected.unidad}`;
-      if (res.es_retroceso) {
-        // Un retroceso se permite (nunca se rechaza) pero nunca se guarda
-        // como si nada — el aviso es distinto del de éxito normal.
-        Alert.alert(
-          'Avance registrado — es un retroceso',
-          `${resumen}\n\nEste valor es menor que el porcentaje anterior registrado. Se guardó de todas formas y quedó marcado para revisión.`,
-        );
-      } else {
-        Alert.alert('Avance registrado', resumen);
+      if (ponerTodos(e) || hayErrores(e)) return;
+      try {
+        const res = await api.createAvance({
+          concepto_id: selected.id,
+          fecha,
+          cantidad_ejecutada: cantidadApi,
+          fotos: foto ? [foto] : [],
+          nodo_id: selectedNodo?.id,
+          tipo,
+          motivo: tipo === 'ajuste' ? motivo.trim() : undefined,
+        });
+        const resumen = esPorcentaje
+          ? `${selected.clave} · va al ${formatCantidad(cantidadApi)}%`
+          : `${selected.clave} · ${formatCantidad(cantidadApi)} ${selected.unidad}`;
+        if (res.es_retroceso) {
+          // Un retroceso se permite (nunca se rechaza) pero nunca se guarda
+          // como si nada: el aviso es distinto del de éxito normal.
+          showToast(`${t('avance.retrocesoTitulo')}. ${resumen}. ${t('avance.retrocesoDetalle')}`);
+        } else {
+          showToast(`${tipo === 'ajuste' ? t('avance.ajusteRegistrado') : t('avance.registrado')}: ${resumen}`);
+        }
+        limpiarFormulario();
+      } catch (err: any) {
+        errorDeGuardado(err, t('avance.noSePudoRegistrar'));
       }
-      setSelected(null);
-      setCantidad('');
-      setFoto(null);
-      setSelectedNodo(null);
-      setQuery('');
-      setResults([]);
-    } catch (e: any) {
-      Alert.alert('No se pudo registrar', e?.message || 'Intentalo nuevamente.');
-    } finally {
-      setSaving(false);
-    }
+    });
   }
+
+  // Aviso informativo (nunca bloquea): la captura pasa de lo contratado.
+  const avisoExcedente = (() => {
+    if (!selected || !cantidadApi || tipo === 'ajuste') return null;
+    if (esPorcentaje) {
+      const r = excedentePorcentajeAlCapturar(cantidadApi);
+      return r.excede ? t('avance.excedePorcentaje', { excedente: formatCantidad(r.excedente) }) : null;
+    }
+    const r = excedenteAlCapturar(selected.cantidad_ejecutada_acumulada, cantidadApi, selected.cantidad);
+    if (!r.excede) return null;
+    return t('avance.excedeVolumen', {
+      ejecutado: formatCantidad(sumarCantidades(selected.cantidad_ejecutada_acumulada, cantidadApi)),
+      contratado: formatCantidad(selected.cantidad),
+      unidad: selected.unidad,
+      excedente: formatCantidad(r.excedente),
+    });
+  })();
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <StatusBar barStyle="light-content" />
-      <View style={[styles.header, { paddingTop: insets.top + spacing.xs }]}>
-        <Pressable onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
-          <Ionicons name="chevron-back" size={22} color="#fff" />
-        </Pressable>
-        <Text style={styles.brand}>{APP_BRAND}</Text>
-        <View style={{ width: 32 }} />
-      </View>
-      <Text style={styles.titleBar}>REGISTRAR AVANCE — {(project?.name || '').toUpperCase()}</Text>
-      <Text style={styles.subtitle}>{dayjs().tz(CDMX_TZ).format('dddd D [de] MMMM')}</Text>
+      <ScreenHeader title={APP_BRAND} backgroundColor={colors.primary} />
+      <Text style={styles.titleBar}>{t('avanceNiveles.tituloRegistrar', { proyecto: (project?.name || '').toUpperCase() })}</Text>
+      <Text style={styles.subtitle}>{fmtFecha(hoyProyecto())}</Text>
 
       <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
         {!selected ? (
@@ -137,36 +203,63 @@ export default function RegistrarAvanceScreen({ projectId }: { projectId: string
             <View style={styles.searchBar}>
               <Ionicons name="search-outline" size={18} color={colors.textMuted} />
               <TextInput
-                value={query}
-                onChangeText={setQuery}
-                placeholder={`Buscar ${nombreConcepto(project).toLowerCase()} por clave o descripción…`}
+                value={busqueda.query}
+                onChangeText={busqueda.setQuery}
+                placeholder={t('avanceNiveles.buscarConcepto', { concepto: conc.minuscula })}
                 placeholderTextColor={colors.textMuted}
                 style={styles.searchInput}
+                autoCorrect={false}
+                accessibilityLabel={t('avanceNiveles.buscarConceptoLabel', { concepto: conc.minuscula })}
               />
             </View>
-            {searching ? <ActivityIndicator color={colors.primary} style={{ marginTop: 16 }} /> : null}
-            {results.map((c) => (
-              <Pressable key={c.id} style={styles.resultCard} onPress={() => setSelected(c)}>
+            {busqueda.cargando ? (
+              <ActivityIndicator color={colors.primary} style={{ marginTop: 16 }} accessibilityLabel={t('busquedaConceptos.cargando')} />
+            ) : null}
+            {!busqueda.cargando && busqueda.error ? (
+              <View style={styles.busquedaError}>
+                <InlineError message={busqueda.error} />
+                <Pressable accessibilityRole="button" onPress={busqueda.reintentar} style={styles.reintentarBtn}>
+                  <Ionicons name="refresh" size={14} color={colors.primary} />
+                  <Text style={styles.changeBtnTxt}>{t('busquedaConceptos.reintentar')}</Text>
+                </Pressable>
+              </View>
+            ) : null}
+            {!busqueda.cargando && !busqueda.error && busqueda.results.length === 0 ? (
+              <Text style={styles.ayudaTxt}>
+                {busqueda.buscado
+                  ? t('busquedaConceptos.sinResultados', { texto: busqueda.buscado })
+                  : t('busquedaConceptos.sinConceptos')}
+              </Text>
+            ) : null}
+            {!busqueda.cargando && !busqueda.error && !busqueda.buscado && busqueda.results.length > 0 ? (
+              <Text style={styles.ayudaTxt}>{t('busquedaConceptos.listaPorDefecto')}</Text>
+            ) : null}
+            {!busqueda.cargando && !busqueda.error ? busqueda.results.map((c) => (
+              <Pressable accessibilityRole="button" key={c.id} style={styles.resultCard} onPress={() => setSelected(c)}>
                 <Text style={styles.resultPartida}>{c.partida_clave} — {c.partida_nombre}</Text>
                 <Text style={styles.resultClave}>{c.clave} · {c.descripcion}</Text>
                 <Text style={styles.resultMeta}>
                   {project?.modo_avance === 'PORCENTAJE'
-                    ? `Va al ${formatCantidad(c.cantidad_ejecutada_acumulada)}%`
-                    : `Meta: ${formatCantidad(c.meta)} ${c.unidad} · Ejecutado: ${formatCantidad(c.cantidad_ejecutada_acumulada)} de ${formatCantidad(c.cantidad)} ${c.unidad}`}
+                    ? t('avanceNiveles.vaAlPorcentaje', { valor: formatCantidad(c.cantidad_ejecutada_acumulada) })
+                    : `${c.meta ? t('avanceNiveles.metaPrefijo', { meta: formatCantidad(c.meta), unidad: c.unidad }) : ''}${t('avanceNiveles.ejecutadoDe', {
+                      ejecutado: formatCantidad(c.cantidad_ejecutada_acumulada), contratado: formatCantidad(c.cantidad), unidad: c.unidad,
+                    })}`}
                 </Text>
               </Pressable>
-            ))}
+            )) : null}
           </>
         ) : (
           <View style={styles.formCard}>
-            <Pressable onPress={() => setSelected(null)} style={styles.changeBtn}>
+            <Pressable accessibilityRole="button" onPress={() => setSelected(null)} style={styles.changeBtn}>
               <Ionicons name="chevron-back" size={14} color={colors.primary} />
-              <Text style={styles.changeBtnTxt}>Cambiar concepto</Text>
+              <Text style={styles.changeBtnTxt}>{t('avanceNiveles.cambiarConcepto', { concepto: conc.minuscula })}</Text>
             </Pressable>
             <Text style={styles.selectedClave}>{selected.clave}</Text>
             <Text style={styles.selectedDesc}>{selected.descripcion}</Text>
             <Text style={styles.selectedMeta}>
-              Unidad: {UNIDAD_LABELS[selected.unidad as Unidad] || selected.unidad} · Contratado: {formatCantidad(selected.cantidad)}
+              {t('avanceNiveles.unidadContratado', {
+                unidad: UNIDAD_LABELS[selected.unidad as Unidad] || selected.unidad, contratado: formatCantidad(selected.cantidad),
+              })}
             </Text>
 
             {/* Avance acumulado a la fecha — fracción + porcentaje. Antes solo
@@ -178,7 +271,7 @@ export default function RegistrarAvanceScreen({ projectId }: { projectId: string
                 ? `${formatCantidad(selected.cantidad_ejecutada_acumulada)}%`
                 : `${formatCantidad(selected.cantidad_ejecutada_acumulada)} / ${formatCantidad(selected.cantidad)} ${selected.unidad}`;
               const avancePct = esPorcentaje
-                ? decimalStringToCents(selected.cantidad_ejecutada_acumulada) / 100
+                ? decimalStringToScaled(selected.cantidad_ejecutada_acumulada, DECIMALES_CANTIDAD) / 10 ** DECIMALES_CANTIDAD
                 : pctDeDecimales(selected.cantidad_ejecutada_acumulada, selected.cantidad);
               const barWidth = Math.max(0, Math.min(100, avancePct));
               return (
@@ -194,12 +287,31 @@ export default function RegistrarAvanceScreen({ projectId }: { projectId: string
               );
             })()}
 
+            {!esPorcentaje ? (
+              <View style={styles.modeRow} accessibilityRole="tablist">
+                {(['normal', 'ajuste'] as TipoAvance[]).map((m) => (
+                  <Pressable
+                    key={m}
+                    accessibilityRole="tab"
+                    accessibilityState={{ selected: tipo === m }}
+                    onPress={() => { setTipo(m); limpiarTodo(); }}
+                    style={[styles.modeChip, tipo === m && styles.modeChipOn]}
+                  >
+                    <Text style={[styles.modeChipTxt, tipo === m && styles.modeChipTxtOn]}>
+                      {m === 'normal' ? t('avance.modoAvance') : t('avance.modoAjuste')}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            ) : null}
+            {tipo === 'ajuste' ? <Text style={styles.ayudaTxt}>{t('avance.ajusteAyuda')}</Text> : null}
+
             {esPorcentaje ? (
               <>
                 <View style={styles.pctLabelRow}>
-                  <Text style={styles.fieldLabel}>El concepto va al ___%</Text>
+                  <Text style={styles.fieldLabel}>{t('avanceNiveles.conceptoVaAl', { El: conc.El, concepto: conc.minuscula })}</Text>
                   <Text style={styles.pctAnteriorTxt}>
-                    Anterior: {formatCantidad(selected.cantidad_ejecutada_acumulada)}%
+                    {t('avanceNiveles.anterior', { valor: formatCantidad(selected.cantidad_ejecutada_acumulada) })}
                   </Text>
                 </View>
                 {/* Acumulativo, no incremental — el residente escribe el
@@ -208,32 +320,62 @@ export default function RegistrarAvanceScreen({ projectId }: { projectId: string
                     obra existe) pero se avisa al confirmar, ver submit(). */}
               </>
             ) : (
-              <Text style={styles.fieldLabel}>Cantidad ejecutada hoy ({selected.unidad})</Text>
+              <Text style={styles.fieldLabel}>
+                {tipo === 'ajuste' ? t('avance.cantidadAjuste', { unidad: selected.unidad }) : t('avanceNiveles.cantidadHoy', { unidad: selected.unidad })}
+              </Text>
             )}
             <TextInput
               value={cantidad}
-              onChangeText={setCantidad}
-              placeholder={esPorcentaje ? '0-100' : '0.00'}
-              keyboardType="decimal-pad"
-              style={styles.qtyInput}
+              onChangeText={alCambiar('cantidad', setCantidad)}
+              onBlur={darFormatoCantidad}
+              onSubmitEditing={tipo === 'ajuste' ? undefined : submit}
+              returnKeyType={tipo === 'ajuste' ? 'next' : 'done'}
+              inputMode={tipo === 'ajuste' ? undefined : 'decimal'}
+              autoCorrect={false}
+              placeholder={esPorcentaje ? '0.00' : tipo === 'ajuste' ? '-0.00' : '0.00'}
+              keyboardType={tipo === 'ajuste' ? 'numbers-and-punctuation' : 'decimal-pad'}
+              style={[styles.qtyInput, errores.cantidad ? styles.inputConError : null]}
               autoFocus
+              editable={!saving}
+              accessibilityLabel={esPorcentaje
+                ? t('avanceNiveles.etiquetaPorcentaje', { el: conc.el, concepto: conc.minuscula })
+                : t('avanceNiveles.etiquetaCantidad')}
             />
-            {esPorcentaje && cantidad && esRetrocesoLocal(cantidad, selected.cantidad_ejecutada_acumulada) ? (
+            <InlineError message={errores.cantidad} />
+            {avisoExcedente ? <Text style={styles.avisoExcedente}>{avisoExcedente}</Text> : null}
+            {tipo === 'ajuste' ? (
+              <>
+                <Text style={styles.fieldLabel}>{t('avance.motivo')}</Text>
+                <TextInput
+                  value={motivo}
+                  onChangeText={alCambiar('motivo', setMotivo)}
+                  placeholder={t('avance.motivoPlaceholder')}
+                  placeholderTextColor={colors.textMuted}
+                  style={[styles.motivoInput, errores.motivo ? styles.inputConError : null]}
+                  multiline
+                  editable={!saving}
+                  accessibilityLabel={t('avance.motivo')}
+                />
+                <InlineError message={errores.motivo} />
+              </>
+            ) : null}
+            <InlineError message={errores.fecha} />
+            {esPorcentaje && cantidadApi && esRetrocesoLocal(cantidadApi, selected.cantidad_ejecutada_acumulada) ? (
               <Text style={styles.pctRetrocesoTxt}>
-                Este valor es menor que el {formatCantidad(selected.cantidad_ejecutada_acumulada)}% anterior — se permite, pero se marcará como retroceso.
+                {t('avanceNiveles.retroceso', { valor: formatCantidad(selected.cantidad_ejecutada_acumulada) })}
               </Text>
             ) : null}
 
             {nodes.length > 0 ? (
               <>
-                <Text style={styles.fieldLabel}>Nodo (opcional)</Text>
-                <Pressable style={styles.nodoBtn} onPress={() => setNodoPickerOpen(true)}>
+                <Text style={styles.fieldLabel}>{t('avanceNiveles.nodoOpcional')}</Text>
+                <Pressable accessibilityRole="button" style={styles.nodoBtn} onPress={() => setNodoPickerOpen(true)}>
                   <Ionicons name="location-outline" size={16} color={colors.primary} />
                   <Text style={styles.nodoBtnTxt} numberOfLines={1}>
-                    {selectedNodo ? selectedNodo.name : 'Sin especificar'}
+                    {selectedNodo ? selectedNodo.name : t('avanceNiveles.sinEspecificar')}
                   </Text>
                   {selectedNodo ? (
-                    <Pressable onPress={() => setSelectedNodo(null)} hitSlop={8}>
+                    <Pressable accessibilityRole="button" accessibilityLabel={a11y('quitar')} onPress={() => setSelectedNodo(null)} hitSlop={8}>
                       <Ionicons name="close-circle" size={16} color={colors.textMuted} />
                     </Pressable>
                   ) : (
@@ -243,17 +385,54 @@ export default function RegistrarAvanceScreen({ projectId }: { projectId: string
               </>
             ) : null}
 
-            <Pressable style={styles.photoBtn} onPress={pickPhoto}>
-              <Ionicons name="camera-outline" size={18} color={colors.primary} />
-              <Text style={styles.photoBtnTxt}>{foto ? 'Cambiar foto de evidencia' : 'Adjuntar foto de evidencia (opcional)'}</Text>
-            </Pressable>
-            {foto ? <Image source={{ uri: foto }} style={styles.photoPreview} /> : null}
+            <Text style={styles.photoBtnTxt}>{foto ? t('camaraEvidencia.cambiar') : t('camaraEvidencia.adjuntar')}</Text>
+            <View style={styles.photoRow}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={t('camaraEvidencia.tomarFoto')}
+                style={[styles.photoBtn, (preparandoFoto || saving) && { opacity: 0.5 }]}
+                disabled={preparandoFoto || saving}
+                onPress={() => elegirFoto('camara')}
+              >
+                <Ionicons name="camera-outline" size={18} color={colors.primary} />
+                <Text style={styles.photoBtnTxt}>{t('camaraEvidencia.tomarFoto')}</Text>
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={t('camaraEvidencia.elegirGaleria')}
+                style={[styles.photoBtn, (preparandoFoto || saving) && { opacity: 0.5 }]}
+                disabled={preparandoFoto || saving}
+                onPress={() => elegirFoto('galeria')}
+              >
+                <Ionicons name="images-outline" size={18} color={colors.primary} />
+                <Text style={styles.photoBtnTxt}>{t('camaraEvidencia.elegirGaleria')}</Text>
+              </Pressable>
+            </View>
+            {preparandoFoto ? <ActivityIndicator color={colors.primary} style={{ marginTop: 6 }} /> : null}
+            <InlineError message={errorFoto} style={{ marginTop: 6 }} />
+            {avisoFoto ? <Text style={styles.avisoExcedente}>{avisoFoto}</Text> : null}
+            {foto ? (
+              <View>
+                <Image source={{ uri: foto }} style={styles.photoPreview} accessibilityLabel={t('camaraEvidencia.vistaPrevia')} />
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={t('camaraEvidencia.quitar')}
+                  style={styles.photoQuitar}
+                  onPress={() => { setFoto(null); setAvisoFoto(null); }}
+                >
+                  <Ionicons name="close-circle" size={22} color={colors.error} />
+                  <Text style={styles.photoQuitarTxt}>{t('camaraEvidencia.quitar')}</Text>
+                </Pressable>
+              </View>
+            ) : null}
 
-            <Pressable style={[styles.submitBtn, (!cantidad || saving) && { opacity: 0.5 }]} onPress={submit} disabled={!cantidad || saving}>
+            <InlineError message={errorGeneral} />
+
+            <Pressable accessibilityRole="button" style={[styles.submitBtn, (!cantidad || saving) && { opacity: 0.5 }]} onPress={submit} disabled={!cantidad || saving}>
               {saving ? <ActivityIndicator color="#fff" /> : (
                 <>
                   <Ionicons name="checkmark-circle-outline" size={18} color="#fff" />
-                  <Text style={styles.submitBtnTxt}>Registrar avance</Text>
+                  <Text style={styles.submitBtnTxt}>{tipo === 'ajuste' ? t('avanceNiveles.registrarAjuste') : t('avanceNiveles.registrarAvance')}</Text>
                 </>
               )}
             </Pressable>
@@ -300,14 +479,14 @@ function NodoPickerModal({
       <View style={styles.pickerBackdrop}>
         <View style={styles.pickerCard}>
           <View style={styles.pickerHeader}>
-            <Text style={styles.pickerTitle}>Elegir nodo</Text>
-            <Pressable onPress={onClose} hitSlop={8}>
+            <Text style={styles.pickerTitle}>{t('avanceNiveles.elegirNodo')}</Text>
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} onPress={onClose} hitSlop={8}>
               <Ionicons name="close" size={22} color={colors.textMuted} />
             </Pressable>
           </View>
           <ScrollView style={{ maxHeight: 360 }}>
             {flat.map(({ node, depth }) => (
-              <Pressable key={node.id} style={[styles.pickerRow, { paddingLeft: 14 + depth * 18 }]} onPress={() => onSelect(node)}>
+              <Pressable accessibilityRole="button" key={node.id} style={[styles.pickerRow, { paddingLeft: 14 + depth * 18 }]} onPress={() => onSelect(node)}>
                 <Ionicons name="location-outline" size={14} color={colors.primary} />
                 <Text style={styles.pickerRowTxt} numberOfLines={1}>{node.name}</Text>
               </Pressable>
@@ -320,9 +499,6 @@ function NodoPickerModal({
 }
 
 const styles = StyleSheet.create({
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: spacing.md, backgroundColor: colors.primary, paddingBottom: spacing.sm },
-  iconBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
-  brand: { color: '#fff', fontWeight: '800', fontSize: 15 },
   titleBar: { fontSize: 14, fontWeight: '800', color: colors.text, paddingHorizontal: spacing.md, paddingTop: spacing.sm },
   subtitle: { fontSize: 12, color: colors.textMuted, paddingHorizontal: spacing.md, marginBottom: spacing.sm, textTransform: 'capitalize' },
 
@@ -360,6 +536,26 @@ const styles = StyleSheet.create({
   pctLabelRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 8 },
   pctAnteriorTxt: { fontSize: 12, fontWeight: '700', color: colors.textMuted },
   pctRetrocesoTxt: { fontSize: 11, color: colors.warning, fontWeight: '600', marginTop: 4 },
+  modeRow: { flexDirection: 'row', gap: 8, marginTop: 8 },
+  modeChip: {
+    flex: 1, minHeight: 44, alignItems: 'center', justifyContent: 'center', borderRadius: radius.md,
+    borderWidth: 1, borderColor: colors.border, backgroundColor: colors.bg,
+  },
+  modeChipOn: { backgroundColor: colors.primary, borderColor: colors.primary },
+  modeChipTxt: { fontSize: 13, fontWeight: '700', color: colors.textBody },
+  modeChipTxtOn: { color: colors.textInverse },
+  ayudaTxt: { fontSize: 11, color: colors.textMuted, marginTop: 4 },
+  busquedaError: { gap: 8 },
+  reintentarBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start', minHeight: 44 },
+  inputConError: { borderColor: colors.error },
+  avisoExcedente: {
+    fontSize: 12, color: colors.textBody, backgroundColor: colors.warningBg, borderRadius: radius.md,
+    padding: 10, fontWeight: '600', marginTop: 6,
+  },
+  motivoInput: {
+    borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, paddingHorizontal: 12, paddingVertical: 10,
+    fontSize: 14, color: colors.text, backgroundColor: colors.bg, minHeight: 64, textAlignVertical: 'top',
+  },
 
   nodoBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 8, borderWidth: 1, borderColor: colors.border,
@@ -374,8 +570,14 @@ const styles = StyleSheet.create({
   pickerRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: colors.border },
   pickerRowTxt: { flex: 1, fontSize: 13, color: colors.text },
 
-  photoBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 6 },
+  photoRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 6 },
+  photoBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 8, minHeight: 44, paddingHorizontal: 12,
+    borderWidth: 1, borderColor: colors.primary, borderRadius: radius.md,
+  },
   photoBtnTxt: { color: colors.primary, fontSize: 13, fontWeight: '600' },
+  photoQuitar: { flexDirection: 'row', alignItems: 'center', gap: 6, minHeight: 44 },
+  photoQuitarTxt: { color: colors.error, fontSize: 13, fontWeight: '600' },
   photoPreview: { width: '100%', height: 160, borderRadius: radius.md, marginTop: 6 },
 
   submitBtn: {

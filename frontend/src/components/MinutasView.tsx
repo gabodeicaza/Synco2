@@ -32,7 +32,7 @@ import {
   FlatList,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { router, useFocusEffect } from 'expo-router';
+import { useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as DocumentPicker from 'expo-document-picker';
 import { api, Area, LocationNode, Minuta, PendienteGeneral, Project, User } from '@/src/api';
@@ -42,13 +42,26 @@ import { colors, radius, shadow, spacing } from '@/src/theme';
 import { confirm } from '@/src/utils/confirm';
 import { dayjs } from '@/src/utils/tz';
 import { downloadBlob } from '@/src/utils/downloadBlob';
+import { a11y, t } from '@/src/i18n';
+import { fmtFecha, hoyProyecto } from '@/src/utils/fechas';
+import { unir } from '@/src/utils/texto';
+import {
+  claveAcuerdo, hayErroresMinuta, primerCampoConError, reindexarErroresAcuerdos, validarMinuta,
+} from '@/src/utils/validacionMinuta';
+import { InlineError } from '@/src/components/InlineError';
+import { FormField } from '@/src/components/FormField';
+import { ScreenHeader } from '@/src/components/ScreenHeader';
+import { useFormErrors } from '@/src/hooks/useFormErrors';
+import { useEnvio } from '@/src/hooks/useEnvio';
+import { useModalUnico } from '@/src/hooks/useModalUnico';
+import { showToast } from '@/src/utils/toast';
 
 // ---------- utilidades semaforo -------------------------------------------
 type Urgency = 'red' | 'yellow' | 'green' | 'gray';
 
 function todayISO(): string {
-  // [FIX 2026-07-17] Calculado en zona CDMX
-  return dayjs().tz().format('YYYY-MM-DD');
+  // Hoy en la zona del proyecto (CDMX por defecto), nunca el día UTC ni el del dispositivo.
+  return hoyProyecto();
 }
 
 /** Devuelve el estado y semaforo global de una minuta a partir de sus acuerdos. */
@@ -86,7 +99,7 @@ function urgencyMeta(u: Urgency) {
     case 'red':
       return { color: '#DC2626', label: 'Urgente', icon: 'alert-circle' as const };
     case 'yellow':
-      return { color: '#D97706', label: 'Proximo', icon: 'time-outline' as const };
+      return { color: '#D97706', label: 'Próximo', icon: 'time-outline' as const };
     case 'green':
       return { color: '#059669', label: 'En plazo', icon: 'checkmark-circle-outline' as const };
     case 'gray':
@@ -95,12 +108,10 @@ function urgencyMeta(u: Urgency) {
   }
 }
 
+// Un solo formato de fecha en toda la app: "23 sep 2026" (ver src/utils/fechas.ts).
 function fmtDate(iso?: string | null): string {
-  if (!iso) return '_';
-  const s = iso.slice(0, 10);
-  const [y, m, d] = s.split('-');
-  if (!y || !m || !d) return s;
-  return `${d}/${m}/${y}`;
+  if (!iso) return '—';
+  return fmtFecha(iso.slice(0, 10));
 }
 
 interface MinutasViewProps {
@@ -149,7 +160,7 @@ export default function MinutasView({
       setProject((p) => (p ? { ...p, ...upd } : upd));
       setPrefixEditing(false);
     } catch (e: any) {
-      Alert.alert('No se pudo guardar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert(t('minutasVista.noSePudoGuardar'), e?.message || 'Inténtalo nuevamente.');
     } finally {
       setPrefixSaving(false);
     }
@@ -205,7 +216,7 @@ export default function MinutasView({
             tipo: tipoFilter,
           }),
           areas.length ? Promise.resolve(areas) : api.listAreas(pid),
-          members.length ? Promise.resolve(members) : api.listProjectMembers(pid),
+          members.length ? Promise.resolve(members) : api.listProjectMembers(pid, { soloMiembros: true }),
           nodes.length ? Promise.resolve(nodes) : api.listNodes(pid),
         ]);
         setMinutas(ms);
@@ -213,7 +224,7 @@ export default function MinutasView({
         if (!members.length) setMembers(mbs);
         if (!nodes.length) setNodes(nds);
       } catch (e: any) {
-        Alert.alert('Error', e?.message || 'No se pudo cargar el modulo de minutas');
+        Alert.alert(t('minutasVista.error'), e?.message || 'No se pudo cargar el módulo de minutas');
       } finally {
         setLoading(false);
         setRefreshing(false);
@@ -292,14 +303,14 @@ export default function MinutasView({
             : x,
         ),
       );
-      Alert.alert('Error', e?.message || 'No se pudo actualizar el acuerdo');
+      Alert.alert(t('minutasVista.error'), e?.message || 'No se pudo actualizar el acuerdo');
     }
   };
 
   const onDelete = async (m: Minuta) => {
     const ok = await confirm(
-      'Eliminar minuta',
-      `?Eliminar "${m.titulo}"? Esta accion no se puede deshacer.`,
+      t('minutasVista.eliminarMinuta'),
+      t('minutasVista.eliminarMinutaPregunta', { titulo: m.titulo }),
       { confirmText: 'Eliminar', destructive: true },
     );
     if (!ok) return;
@@ -307,7 +318,7 @@ export default function MinutasView({
       await api.deleteMinuta(m.id);
       setMinutas((prev) => prev.filter((x) => x.id !== m.id));
     } catch (e: any) {
-      Alert.alert('Error', e?.message || 'No se pudo eliminar la minuta');
+      Alert.alert(t('minutasVista.error'), e?.message || 'No se pudo eliminar la minuta');
     }
   };
 
@@ -315,26 +326,29 @@ export default function MinutasView({
     setMinutas((prev) => prev.map((x) => (x.id === updated.id ? updated : x)));
   }, []);
 
+  const tituloVista = headerTitle || 'Minutas';
+  const subtituloVista = headerSubtitle || 'Acuerdos y seguimiento de obra';
+  const botonNueva = canCreate ? (
+    <Pressable accessibilityRole="button" onPress={() => setCreateOpen(true)} style={styles.newBtn}>
+      <Ionicons name="add" size={18} color="#fff" />
+      <Text style={styles.newBtnTxt}>{t('minutasVista.nueva')}</Text>
+    </Pressable>
+  ) : null;
+
   return (
-    <View style={[styles.flex, { paddingTop: topPadding !== undefined ? topPadding : insets.top }]}>
+    <View style={[styles.flex, { paddingTop: embedded ? (topPadding !== undefined ? topPadding : insets.top) : (topPadding ?? 0) }]}>
       {/* Header */}
-      <View style={styles.header}>
-        {!embedded && (
-          <Pressable onPress={() => router.back()} hitSlop={12} style={styles.iconBtn}>
-            <Ionicons name="chevron-back" size={22} color={colors.text} />
-          </Pressable>
-        )}
-        <View style={{ flex: 1 }}>
-          <Text style={styles.hTitle}>{headerTitle || 'Minutas'}</Text>
-          <Text style={styles.hSub}>{headerSubtitle || 'Acuerdos y seguimiento de obra'}</Text>
+      {embedded ? (
+        <View style={styles.header}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.hTitle}>{tituloVista}</Text>
+            <Text style={styles.hSub}>{subtituloVista}</Text>
+          </View>
+          {botonNueva}
         </View>
-        {canCreate && (
-          <Pressable onPress={() => setCreateOpen(true)} style={styles.newBtn}>
-            <Ionicons name="add" size={18} color="#fff" />
-            <Text style={styles.newBtnTxt}>Nueva</Text>
-          </Pressable>
-        )}
-      </View>
+      ) : (
+        <ScreenHeader title={tituloVista} subtitle={subtituloVista} safeArea={topPadding === undefined} right={botonNueva} />
+      )}
 
       {/* Codigo institucional de minutas (prefijo) */}
       <View style={styles.codePrefixRow}>
@@ -344,7 +358,7 @@ export default function MinutasView({
             <TextInput
               value={prefixDraft}
               onChangeText={setPrefixDraft}
-              placeholder="Ej. CL4 OBRA"
+              placeholder={t('minutasVista.ejCl4Obra')}
               placeholderTextColor={colors.textMuted}
               style={styles.codePrefixInput}
               autoCapitalize="characters"
@@ -357,10 +371,10 @@ export default function MinutasView({
               <ActivityIndicator size="small" color={colors.primary} />
             ) : (
               <>
-                <Pressable onPress={onSavePrefix} hitSlop={8}>
+                <Pressable accessibilityRole="button" accessibilityLabel={a11y('confirmar')} onPress={onSavePrefix} hitSlop={8}>
                   <Ionicons name="checkmark" size={18} color={colors.primary} />
                 </Pressable>
-                <Pressable
+                <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')}
                   onPress={() => { setPrefixEditing(false); setPrefixDraft(project?.minuta_code_prefix || ''); }}
                   hitSlop={8}
                 >
@@ -372,10 +386,10 @@ export default function MinutasView({
         ) : (
           <>
             <Text style={styles.codePrefixTxt} numberOfLines={1}>
-              Codigo de minutas: <Text style={styles.codePrefixVal}>{project?.minuta_code_prefix || 'Sin definir'}</Text>
+              {t('minutasVista.codigoDeMinutas')} <Text style={styles.codePrefixVal}>{project?.minuta_code_prefix || 'Sin definir'}</Text>
             </Text>
             {canEditCodigoPrefix ? (
-              <Pressable
+              <Pressable accessibilityRole="button" accessibilityLabel={a11y('editar')}
                 onPress={() => { setPrefixDraft(project?.minuta_code_prefix || ''); setPrefixEditing(true); }}
                 hitSlop={8}
               >
@@ -384,7 +398,7 @@ export default function MinutasView({
             ) : (
               <View style={styles.readOnlyBadge}>
                 <Ionicons name="eye-outline" size={10} color={colors.textMuted} />
-                <Text style={styles.readOnlyBadgeTxt}>Solo lectura</Text>
+                <Text style={styles.readOnlyBadgeTxt}>{t('minutasVista.soloLectura')}</Text>
               </View>
             )}
           </>
@@ -396,13 +410,13 @@ export default function MinutasView({
         <View style={styles.tabsRow}>
           <TabBtn
             active={tab === 'pending'}
-            label="Pendientes"
+            label={t('minutasVista.pendientes')}
             icon="alert-circle-outline"
             onPress={() => setTab('pending')}
           />
           <TabBtn
             active={tab === 'done'}
-            label="Concluidas"
+            label={t('minutasVista.concluidas')}
             icon="checkmark-done-outline"
             onPress={() => setTab('done')}
           />
@@ -414,18 +428,18 @@ export default function MinutasView({
             <TextInput
               value={q}
               onChangeText={setQ}
-              placeholder="Buscar por titulo, acuerdo o responsable_"
+              placeholder={t('minutasVista.buscarPorTituloAcuerdoO')}
               placeholderTextColor={colors.textMuted}
               style={styles.searchInput}
               returnKeyType="search"
             />
             {q.length > 0 && (
-              <Pressable onPress={() => setQ('')} hitSlop={8}>
+              <Pressable accessibilityRole="button" accessibilityLabel={a11y('quitar')} onPress={() => setQ('')} hitSlop={8}>
                 <Ionicons name="close-circle" size={16} color={colors.textMuted} />
               </Pressable>
             )}
           </View>
-          <Pressable
+          <Pressable accessibilityRole="button"
             onPress={() => setMine((v) => !v)}
             style={[styles.mineBtn, mine && styles.mineBtnOn]}
           >
@@ -434,7 +448,7 @@ export default function MinutasView({
               size={14}
               color={mine ? '#fff' : colors.primary}
             />
-            <Text style={[styles.mineTxt, mine && { color: '#fff' }]}>Mis Minutas</Text>
+            <Text style={[styles.mineTxt, mine && { color: '#fff' }]}>{t('minutasVista.misMinutas')}</Text>
           </Pressable>
         </View>
 
@@ -446,7 +460,7 @@ export default function MinutasView({
           ] as const).map((opt) => {
             const active = tipoFilter === opt.key;
             return (
-              <Pressable
+              <Pressable accessibilityRole="button"
                 key={opt.key}
                 onPress={() => setTipoFilter(opt.key)}
                 style={[styles.chip, active && { backgroundColor: colors.primary, borderColor: colors.primary }]}
@@ -467,7 +481,7 @@ export default function MinutasView({
             {areas.map((a) => {
               const active = areaFilter.includes(a.id);
               return (
-                <Pressable
+                <Pressable accessibilityRole="button"
                   key={a.id}
                   onPress={() => onToggleArea(a.id)}
                   style={[
@@ -493,9 +507,9 @@ export default function MinutasView({
               );
             })}
             {areaFilter.length > 0 && (
-              <Pressable onPress={() => setAreaFilter([])} style={[styles.chip, styles.chipClear]}>
+              <Pressable accessibilityRole="button" onPress={() => setAreaFilter([])} style={[styles.chip, styles.chipClear]}>
                 <Ionicons name="close" size={12} color={colors.textMuted} />
-                <Text style={[styles.chipTxt, { color: colors.textMuted }]}>Limpiar</Text>
+                <Text style={[styles.chipTxt, { color: colors.textMuted }]}>{t('minutasVista.limpiar')}</Text>
               </Pressable>
             )}
           </ScrollView>
@@ -511,7 +525,7 @@ export default function MinutasView({
             {nodes.map((n) => {
               const active = ubicacionFilter.includes(n.id);
               return (
-                <Pressable
+                <Pressable accessibilityRole="button"
                   key={n.id}
                   onPress={() => onToggleUbicacion(n.id)}
                   style={[
@@ -537,12 +551,12 @@ export default function MinutasView({
               );
             })}
             {ubicacionFilter.length > 0 && (
-              <Pressable
+              <Pressable accessibilityRole="button"
                 onPress={() => setUbicacionFilter([])}
                 style={[styles.chip, styles.chipClear]}
               >
                 <Ionicons name="close" size={12} color={colors.textMuted} />
-                <Text style={[styles.chipTxt, { color: colors.textMuted }]}>Limpiar</Text>
+                <Text style={[styles.chipTxt, { color: colors.textMuted }]}>{t('minutasVista.limpiar')}</Text>
               </Pressable>
             )}
           </ScrollView>
@@ -580,11 +594,11 @@ export default function MinutasView({
           ListEmptyComponent={
             <View style={styles.center}>
               <Ionicons name="clipboard-outline" size={44} color={colors.textMuted} />
-              <Text style={styles.emptyTitle}>Sin minutas {tab === 'pending' ? 'pendientes' : 'concluidas'}</Text>
+              <Text style={styles.emptyTitle}>{t('minutasVista.sinMinutas')} {tab === 'pending' ? t('minutasVista.pendientes2') : t('minutasVista.concluidas2')}</Text>
               <Text style={styles.emptySub}>
                 {canCreate
-                  ? 'Crea la primera minuta con el boton "Nueva".'
-                  : 'Aun no hay minutas registradas en este proyecto.'}
+                  ? t('minutasVista.creaLaPrimeraMinutaCon')
+                  : t('minutasVista.aunNoHayMinutasRegistradas')}
               </Text>
             </View>
           }
@@ -635,7 +649,7 @@ function TabBtn({
   onPress: () => void;
 }) {
   return (
-    <Pressable
+    <Pressable accessibilityRole="button"
       onPress={onPress}
       style={[styles.tabBtn, active && styles.tabBtnActive]}
     >
@@ -675,7 +689,7 @@ const MinutaCard = memo(({
 
   return (
     <View style={[styles.card, { borderLeftWidth: 4, borderLeftColor: meta.color }]}>
-      <Pressable style={styles.cardHead} onPress={onToggleExpand}>
+      <Pressable accessibilityRole="button" style={styles.cardHead} onPress={onToggleExpand}>
         <View style={[styles.badge, { backgroundColor: meta.color }]}>
           <Ionicons name={meta.icon} size={12} color="#fff" />
           <Text style={styles.badgeTxt}>{meta.label}</Text>
@@ -701,7 +715,7 @@ const MinutaCard = memo(({
               style={{ color: colors.text, fontSize: 12, fontWeight: '600' }}
             >
               {minuta.ubicacion_path_names && minuta.ubicacion_path_names.length > 0
-                ? minuta.ubicacion_path_names.join(' _ ')
+                ? unir(minuta.ubicacion_path_names)
                 : minuta.ubicacion_name}
             </Text>
           </View>
@@ -723,7 +737,7 @@ const MinutaCard = memo(({
             ))}
             {minuta.involved_names.length > 4 && (
               <Text style={{ fontSize: 10, color: colors.textMuted, marginTop: 3 }}>
-                +{minuta.involved_names.length - 4} mas
+                +{minuta.involved_names.length - 4} {t('minutasVista.mas')}
               </Text>
             )}
           </View>
@@ -743,7 +757,7 @@ const MinutaCard = memo(({
             <View style={styles.metaCell}>
               <Ionicons name="list-outline" size={13} color={colors.textMuted} />
               <Text style={styles.metaTxt}>
-                {done}/{total} acuerdos
+                {done}/{total} {t('minutasVista.acuerdos')}
               </Text>
             </View>
           )}
@@ -756,7 +770,7 @@ const MinutaCard = memo(({
         </View>
         <View style={{ position: 'absolute', top: 10, right: 10, flexDirection: 'row', gap: 6 }}>
           {canDelete && (
-            <Pressable
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y('eliminar')}
               onPress={() => onDelete(minuta)}
               hitSlop={8}
               style={styles.iconGhost}
@@ -820,7 +834,7 @@ const MinutaPdfBlock = memo(({ minuta, onChanged }: { minuta: Minuta; onChanged:
       });
       onChanged(updated);
     } catch (e: any) {
-      Alert.alert('No se pudo subir el PDF', e?.message || 'Intentalo nuevamente.');
+      Alert.alert(t('minutasVista.noSePudoSubirEl'), e?.message || 'Inténtalo nuevamente.');
     } finally {
       setBusy(false);
     }
@@ -835,7 +849,7 @@ const MinutaPdfBlock = memo(({ minuta, onChanged }: { minuta: Minuta; onChanged:
       );
       await downloadBlob(blob, filename, mime || 'application/pdf');
     } catch (e: any) {
-      Alert.alert('No se pudo abrir el PDF', e?.message || 'Revisa tu conexion.');
+      Alert.alert(t('minutasVista.noSePudoAbrirEl'), e?.message || 'Revisa tu conexión.');
     } finally {
       setOpening(false);
     }
@@ -843,8 +857,8 @@ const MinutaPdfBlock = memo(({ minuta, onChanged }: { minuta: Minuta; onChanged:
 
   async function removePdf() {
     const ok = await confirm(
-      'Quitar PDF',
-      'Se eliminara el PDF escaneado de esta minuta.',
+      t('minutasVista.quitarPdf'),
+      t('minutasVista.seEliminaraElPdfEscaneado'),
       { confirmText: 'Quitar', destructive: true },
     );
     if (!ok) return;
@@ -853,7 +867,7 @@ const MinutaPdfBlock = memo(({ minuta, onChanged }: { minuta: Minuta; onChanged:
       const updated = await api.deleteMinutaPdf(minuta.id);
       onChanged(updated);
     } catch (e: any) {
-      Alert.alert('No se pudo quitar el PDF', e?.message || 'Intentalo nuevamente.');
+      Alert.alert(t('minutasVista.noSePudoQuitarEl'), e?.message || 'Inténtalo nuevamente.');
     } finally {
       setBusy(false);
     }
@@ -863,7 +877,7 @@ const MinutaPdfBlock = memo(({ minuta, onChanged }: { minuta: Minuta; onChanged:
     <View style={styles.pdfBlock}>
       {minuta.pdf_file_id ? (
         <>
-          <Pressable onPress={openPdf} disabled={opening} style={styles.pdfRow}>
+          <Pressable accessibilityRole="button" onPress={openPdf} disabled={opening} style={styles.pdfRow}>
             <Ionicons name="document-attach" size={16} color={colors.primary} />
             <Text style={styles.pdfRowTxt} numberOfLines={1}>
               {minuta.pdf_original_name || 'minuta.pdf'}
@@ -875,22 +889,22 @@ const MinutaPdfBlock = memo(({ minuta, onChanged }: { minuta: Minuta; onChanged:
             )}
           </Pressable>
           <View style={{ flexDirection: 'row', gap: 16, marginTop: 6 }}>
-            <Pressable onPress={pickAndUpload} disabled={busy} hitSlop={8}>
-              <Text style={styles.pdfActionTxt}>Reemplazar</Text>
+            <Pressable accessibilityRole="button" onPress={pickAndUpload} disabled={busy} hitSlop={8}>
+              <Text style={styles.pdfActionTxt}>{t('minutasVista.reemplazar')}</Text>
             </Pressable>
-            <Pressable onPress={removePdf} disabled={busy} hitSlop={8}>
-              <Text style={[styles.pdfActionTxt, { color: '#DC2626' }]}>Quitar</Text>
+            <Pressable accessibilityRole="button" onPress={removePdf} disabled={busy} hitSlop={8}>
+              <Text style={[styles.pdfActionTxt, { color: '#DC2626' }]}>{t('minutasVista.quitar')}</Text>
             </Pressable>
           </View>
         </>
       ) : (
-        <Pressable onPress={pickAndUpload} disabled={busy} style={styles.pdfAttachBtn}>
+        <Pressable accessibilityRole="button" onPress={pickAndUpload} disabled={busy} style={styles.pdfAttachBtn}>
           {busy ? (
             <ActivityIndicator size="small" color={colors.primary} />
           ) : (
             <Ionicons name="attach-outline" size={16} color={colors.primary} />
           )}
-          <Text style={styles.pdfAttachTxt}>Anexar PDF escaneado</Text>
+          <Text style={styles.pdfAttachTxt}>{t('minutasVista.anexarPdfEscaneado')}</Text>
         </Pressable>
       )}
     </View>
@@ -924,7 +938,7 @@ const AcuerdoRow = memo(({
 
   return (
     <View style={[styles.acuerdoRow, acuerdo.estado && { opacity: 0.6 }]}>
-      <Pressable
+      <Pressable accessibilityRole="checkbox" accessibilityLabel={a11y('acuerdoCumplido')} accessibilityState={{ checked: !!acuerdo.estado, disabled: !canToggle }}
         onPress={() => onToggle(!acuerdo.estado)}
         disabled={!canToggle}
         hitSlop={8}
@@ -967,7 +981,7 @@ const AcuerdoRow = memo(({
 // =============================================================================
 type DraftAcuerdo = { descripcion: string; responsable_id: string; fecha_limite: string };
 
-function CreateMinutaModal({
+export function CreateMinutaModal({
   visible,
   onClose,
   onCreated,
@@ -989,12 +1003,25 @@ function CreateMinutaModal({
   const [titulo, setTitulo] = useState('');
   const [descripcion, setDescripcion] = useState('');
   const [fechaReunion, setFechaReunion] = useState(todayISO());
+  const { errores, errorGeneral, limpiar, ponerTodos, alCambiar, errorDeGuardado, setErrorGeneral } = useFormErrors<string>();
+  const { guardando: saving, ejecutar } = useEnvio();
+  // Scroll hasta el primer campo con error: posición (y) de cada campo dentro del ScrollView.
+  const scrollRef = useRef<ScrollView>(null);
+  const posiciones = useRef<Record<string, number>>({});
+  const marcarPosicion = (clave: string) => (e: { nativeEvent: { layout: { y: number } } }) => {
+    posiciones.current[clave] = e.nativeEvent.layout.y;
+  };
   const [selAreas, setSelAreas] = useState<string[]>([]);
   // Ubicacion (nodo del proyecto) _ obligatorio. Un solo nodo por minuta.
   const [ubicacionId, setUbicacionId] = useState<string>('');
-  const [ubicacionPickerOpen, setUbicacionPickerOpen] = useState(false);
+  // K-06: los selectores son hojas DENTRO de este mismo modal (no Modals anidados) y solo
+  // puede haber una abierta a la vez.
+  const hoja = useModalUnico<'ubicacion' | 'involucrados' | 'responsable'>();
+  const ubicacionPickerOpen = hoja.esta('ubicacion');
+  const setUbicacionPickerOpen = hoja.ponerVisible('ubicacion');
   const [involvedIds, setInvolvedIds] = useState<string[]>([]);
-  const [involvedPickerOpen, setInvolvedPickerOpen] = useState(false);
+  const involvedPickerOpen = hoja.esta('involucrados');
+  const setInvolvedPickerOpen = hoja.ponerVisible('involucrados');
   // Pendiente del Hub de Pendientes al que se escriben los acuerdos (opcional).
   const [pendientes, setPendientes] = useState<PendienteGeneral[]>([]);
   const [pendienteId, setPendienteId] = useState<string>('');
@@ -1008,8 +1035,13 @@ function CreateMinutaModal({
     { descripcion: '', responsable_id: '', fecha_limite: todayISO() },
   ]);
   const [pdfAsset, setPdfAsset] = useState<{ uri: string; name: string; mimeType?: string | null } | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [respPickerFor, setRespPickerFor] = useState<number | null>(null);
+  const [respIndice, setRespIndice] = useState<number | null>(null);
+  const respPickerFor = hoja.esta('responsable') ? respIndice : null;
+  const setRespPickerFor = (i: number | null) => {
+    setRespIndice(i);
+    if (i === null) hoja.cerrar('responsable');
+    else hoja.abrir('responsable');
+  };
 
   async function pickPdf() {
     try {
@@ -1021,7 +1053,7 @@ function CreateMinutaModal({
       const asset = result.assets[0];
       setPdfAsset({ uri: asset.uri, name: asset.name || 'minuta.pdf', mimeType: asset.mimeType || 'application/pdf' });
     } catch (e: any) {
-      Alert.alert('No se pudo seleccionar el PDF', e?.message || 'Intentalo nuevamente.');
+      setErrorGeneral(e?.message || t('minuta.errores.noSePudoElegirPdf'));
     }
   }
 
@@ -1037,40 +1069,33 @@ function CreateMinutaModal({
   const addAcuerdo = () =>
     setAcuerdos((p) => [...p, { descripcion: '', responsable_id: '', fecha_limite: todayISO() }]);
 
-  const removeAcuerdo = (i: number) =>
-    setAcuerdos((p) => (p.length === 1 ? p : p.filter((_, idx) => idx !== i)));
+  const removeAcuerdo = (i: number) => {
+    if (acuerdos.length === 1) return;
+    setAcuerdos((p) => p.filter((_, idx) => idx !== i));
+    ponerTodos(reindexarErroresAcuerdos(errores, i));
+  };
 
-  const onSave = async () => {
-    if (!titulo.trim()) {
-      Alert.alert('Falta el titulo', 'La minuta requiere un titulo.');
+  // Cambiar la fecha de la reunión invalida los mensajes de "límite anterior a la reunión".
+  const alCambiarFechaReunion = (v: string) => {
+    setFechaReunion(v);
+    limpiar('reunion');
+    acuerdos.forEach((_, i) => limpiar(claveAcuerdo(i, 'fecha')));
+  };
+
+  const onSave = () => ejecutar(guardar);
+
+  async function guardar() {
+    // K-04 / K-03: se validan TODOS los campos y se resaltan junto a cada uno.
+    const ev = validarMinuta({ tipo, titulo, ubicacionId, fechaReunion, acuerdos });
+    if (hayErroresMinuta(ev)) {
+      ponerTodos(ev);
+      setErrorGeneral(t('formulario.revisaCampos'));
+      const primero = primerCampoConError(ev);
+      const y = primero ? posiciones.current[primero.startsWith('acuerdo.') ? primero.split('.').slice(0, 2).join('.') : primero] : undefined;
+      if (y !== undefined) scrollRef.current?.scrollTo({ y: Math.max(0, y - 12), animated: true });
       return;
     }
-    if (!ubicacionId) {
-      Alert.alert('Falta la ubicacion', 'Selecciona la ubicacion (nodo del proyecto).');
-      return;
-    }
-    if (tipo === 'compromiso') {
-      if (acuerdos.length === 0) {
-        Alert.alert('Sin acuerdos', 'Registra al menos un acuerdo.');
-        return;
-      }
-      for (let i = 0; i < acuerdos.length; i++) {
-        const a = acuerdos[i];
-        if (!a.descripcion.trim()) {
-          Alert.alert(`Acuerdo #${i + 1}`, 'La descripcion es obligatoria.');
-          return;
-        }
-        if (!a.responsable_id) {
-          Alert.alert(`Acuerdo #${i + 1}`, 'Selecciona un responsable.');
-          return;
-        }
-        if (!a.fecha_limite) {
-          Alert.alert(`Acuerdo #${i + 1}`, 'Selecciona la fecha limite.');
-          return;
-        }
-      }
-    }
-    setSaving(true);
+    ponerTodos({});
     try {
       const created = await api.createMinuta(projectId, {
         tipo,
@@ -1094,41 +1119,41 @@ function CreateMinutaModal({
       if (pdfAsset) {
         try {
           await api.uploadMinutaPdf(created.id, pdfAsset);
-        } catch (e: any) {
-          Alert.alert(
-            'Minuta creada, pero el PDF no se subio',
-            (e?.message || 'Intenta anexarlo de nuevo desde la minuta.'),
-          );
+        } catch {
+          showToast(t('minuta.form.pdfNoSubido'));
         }
       }
 
-      // [FIX 2026-07] Notificaciones locales y programadas
-      const { triggerLocalNotification, scheduleMinuteReminder } = await import('@/src/utils/pushNotifications');
-      triggerLocalNotification('__ Minuta Creada', `Se ha registrado la minuta: ${titulo.trim()}`);
+      // [FIX 2026-07] Notificaciones locales y programadas. La minuta ya existe: un fallo
+      // aquí no debe verse como "no se pudo crear" (el usuario reintentaría y la duplicaría).
+      try {
+        const { triggerLocalNotification, scheduleMinuteReminder } = await import('@/src/utils/pushNotifications');
+        triggerLocalNotification('Minuta Creada', `Se ha registrado la minuta: ${titulo.trim()}`);
 
-      // Programar recordatorios para cada acuerdo (24h antes) — solo aplica a compromisos.
-      if (tipo === 'compromiso') {
-        for (const a of acuerdos) {
-          if (a.descripcion && a.fecha_limite) {
-            await scheduleMinuteReminder(Math.random().toString(36).slice(2), a.descripcion, a.fecha_limite);
+        // Programar recordatorios para cada acuerdo (24h antes) — solo aplica a compromisos.
+        if (tipo === 'compromiso') {
+          for (const a of acuerdos) {
+            if (a.descripcion && a.fecha_limite) {
+              await scheduleMinuteReminder(Math.random().toString(36).slice(2), a.descripcion, a.fecha_limite);
+            }
           }
         }
+      } catch {
+        // los recordatorios locales son un extra
       }
 
       onCreated();
     } catch (e: any) {
-      Alert.alert('Error', e?.message || 'No se pudo crear la minuta');
-    } finally {
-      setSaving(false);
+      errorDeGuardado(e, t('minuta.errores.noSePudoCrear'));
     }
-  };
+  }
 
   const memberName = (uid: string) =>
     uid === 'contratista' ? 'Contratista' : members.find((m) => m.id === uid)?.name || 'Seleccionar responsable';
 
   const ubicacionLabel = ubicacionId
-    ? nodes.find((n) => n.id === ubicacionId)?.name || 'Ubicacion'
-    : 'Seleccionar ubicacion_';
+    ? nodes.find((n) => n.id === ubicacionId)?.name || t('minuta.form.ubicacion')
+    : t('minuta.form.seleccionarUbicacion');
 
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose} transparent>
@@ -1139,72 +1164,86 @@ function CreateMinutaModal({
         >
           <View style={[styles.modalSheet, { paddingBottom: insets.bottom + 12 }]}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Nueva minuta</Text>
-              <Pressable onPress={onClose} hitSlop={12} style={styles.iconBtn}>
+              <Text style={styles.modalTitle}>{t('minutasVista.nuevaMinuta')}</Text>
+              <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} onPress={onClose} hitSlop={12} style={styles.iconBtn}>
                 <Ionicons name="close" size={22} color={colors.text} />
               </Pressable>
             </View>
 
-            <ScrollView contentContainerStyle={{ padding: spacing.md, paddingBottom: 32 }}>
-              <Text style={styles.label}>Tipo de minuta *</Text>
+            <ScrollView
+              ref={scrollRef}
+              keyboardShouldPersistTaps="handled"
+              contentContainerStyle={{ padding: spacing.md, paddingBottom: 32 }}
+            >
+              <Text style={styles.label}>{t('minutasVista.tipoDeMinuta')}</Text>
               <View style={styles.tipoRow}>
-                <Pressable
+                <Pressable accessibilityRole="button"
                   onPress={() => setTipo('compromiso')}
                   style={[styles.tipoBtn, tipo === 'compromiso' && styles.tipoBtnActive]}
                 >
                   <Ionicons name="checkbox-outline" size={16} color={tipo === 'compromiso' ? '#fff' : colors.text} />
-                  <Text style={[styles.tipoBtnTxt, tipo === 'compromiso' && styles.tipoBtnTxtActive]}>Compromiso</Text>
+                  <Text style={[styles.tipoBtnTxt, tipo === 'compromiso' && styles.tipoBtnTxtActive]}>{t('minutasVista.compromiso')}</Text>
                 </Pressable>
-                <Pressable
+                <Pressable accessibilityRole="button"
                   onPress={() => setTipo('informativo')}
                   style={[styles.tipoBtn, tipo === 'informativo' && styles.tipoBtnActive]}
                 >
                   <Ionicons name="information-circle-outline" size={16} color={tipo === 'informativo' ? '#fff' : colors.text} />
-                  <Text style={[styles.tipoBtnTxt, tipo === 'informativo' && styles.tipoBtnTxtActive]}>Informativa</Text>
+                  <Text style={[styles.tipoBtnTxt, tipo === 'informativo' && styles.tipoBtnTxtActive]}>{t('minutasVista.informativa')}</Text>
                 </Pressable>
               </View>
               <Text style={styles.tipoHint}>
                 {tipo === 'compromiso'
-                  ? 'Genera acuerdos con responsable y fecha limite de seguimiento.'
-                  : 'Solo texto — avisa un cambio o acuerdo, sin generar compromisos de seguimiento.'}
+                  ? t('minutasVista.generaAcuerdosConResponsableY')
+                  : t('minutasVista.soloTextoAvisaUnCambio')}
               </Text>
 
-              <Text style={styles.label}>Titulo *</Text>
-              <TextInput
-                style={styles.input}
-                value={titulo}
-                onChangeText={setTitulo}
-                placeholder="Ej. Reunion de arranque de obra"
-                placeholderTextColor={colors.textMuted}
-                maxLength={200}
-              />
+              <View onLayout={marcarPosicion('titulo')}>
+                <FormField
+                  label={t('minuta.form.titulo')}
+                  obligatorio
+                  value={titulo}
+                  onChangeText={alCambiar<string>('titulo', setTitulo)}
+                  placeholder={t('minuta.form.tituloPlaceholder')}
+                  maxLength={200}
+                  error={errores.titulo}
+                />
+              </View>
 
-              <Text style={styles.label}>Descripcion</Text>
+              <Text style={styles.label}>{t('minutasVista.descripcion')}</Text>
               <TextInput
                 style={[styles.input, { minHeight: 70, textAlignVertical: 'top' }]}
                 value={descripcion}
                 onChangeText={setDescripcion}
-                placeholder="Contexto y notas de la reunion (opcional)"
+                placeholder={t('minutasVista.contextoYNotasDeLa')}
                 placeholderTextColor={colors.textMuted}
                 multiline
                 maxLength={4000}
               />
 
-              <Text style={styles.label}>Fecha de reunion *</Text>
-              <TextInput
-                style={styles.input}
-                value={fechaReunion}
-                onChangeText={setFechaReunion}
-                placeholder="YYYY-MM-DD"
-                placeholderTextColor={colors.textMuted}
-              />
+              <View onLayout={marcarPosicion('reunion')}>
+                <FormField
+                  label={t('minuta.form.fechaReunion')}
+                  obligatorio
+                  value={fechaReunion}
+                  onChangeText={alCambiarFechaReunion}
+                  placeholder={t('minutasVista.aaaaMmDd')}
+                  error={errores.reunion}
+                />
+              </View>
 
               {/* Ubicacion (nodo del proyecto) _ obligatorio 2026-07 */}
-              <Text style={styles.label}>Ubicacion *</Text>
-              <Pressable
+              <View onLayout={marcarPosicion('ubicacion')}>
+              <Text style={styles.label}>
+                {t('minuta.form.ubicacion')}
+                <Text style={{ color: colors.error }}> *</Text>
+              </Text>
+              <Pressable accessibilityRole="button"
+                accessibilityLabel={t('minuta.form.ubicacion')}
                 onPress={() => setUbicacionPickerOpen(true)}
                 style={[
                   styles.input,
+                  errores.ubicacion ? { borderColor: colors.error } : null,
                   {
                     flexDirection: 'row',
                     alignItems: 'center',
@@ -1231,13 +1270,15 @@ function CreateMinutaModal({
                 </View>
                 <Ionicons name="chevron-down" size={16} color={colors.textMuted} />
               </Pressable>
+              <InlineError message={errores.ubicacion} style={{ marginTop: 6 }} />
+              </View>
 
-              <Text style={styles.label}>Areas involucradas</Text>
+              <Text style={styles.label}>{t('minutasVista.areasInvolucradas')}</Text>
               <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
                 {areas.map((a) => {
                   const on = selAreas.includes(a.id);
                   return (
-                    <Pressable
+                    <Pressable accessibilityRole="button"
                       key={a.id}
                       onPress={() => toggleArea(a.id)}
                       style={[
@@ -1260,23 +1301,24 @@ function CreateMinutaModal({
               </View>
 
               <View style={styles.sepRow}>
-                <Text style={styles.label}>Involucrados</Text>
-                <Pressable
+                <Text style={styles.label}>{t('minutasVista.involucrados')}</Text>
+                <Pressable accessibilityRole="button"
+                  accessibilityLabel={t('hojaSeleccion.abrirInvolucrados')}
                   onPress={() => setInvolvedPickerOpen(true)}
                   style={styles.addRow}
                 >
                   <Ionicons name="person-add-outline" size={16} color={colors.primary} />
                   <Text style={styles.addRowTxt}>
-                    {involvedIds.length > 0 ? `Editar (${involvedIds.length})` : 'Anadir personas'}
+                    {involvedIds.length > 0 ? t('minutasVista.editarConteo', { n: involvedIds.length }) : t('minutasVista.anadirPersonas')}
                   </Text>
                 </Pressable>
               </View>
               <Text style={{ color: colors.textMuted, fontSize: 11, marginTop: -2, marginBottom: 6 }}>
-                Veran esta minuta en su filtro "Mis Minutas".
+                {t('minutasVista.veranEstaMinutaEnSu')}
               </Text>
               {involvedIds.length === 0 ? (
                 <Text style={{ color: colors.textMuted, fontSize: 12, fontStyle: 'italic' }}>
-                  Sin involucrados adicionales.
+                  {t('minutasVista.sinInvolucradosAdicionales')}
                 </Text>
               ) : (
                 <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
@@ -1287,7 +1329,7 @@ function CreateMinutaModal({
                       <View key={uid} style={styles.involvedChip}>
                         <Ionicons name="person" size={11} color={colors.primary} />
                         <Text style={styles.involvedChipTxt}>{u.name}</Text>
-                        <Pressable onPress={() => toggleInvolved(uid)} hitSlop={8}>
+                        <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} onPress={() => toggleInvolved(uid)} hitSlop={8}>
                           <Ionicons name="close" size={12} color={colors.textMuted} />
                         </Pressable>
                       </View>
@@ -1297,20 +1339,20 @@ function CreateMinutaModal({
               )}
 
               <View style={styles.sepRow}>
-                <Text style={styles.label}>PDF escaneado (opcional)</Text>
+                <Text style={styles.label}>{t('minutasVista.pdfEscaneadoOpcional')}</Text>
               </View>
               {pdfAsset ? (
                 <View style={styles.pdfRow}>
                   <Ionicons name="document-attach" size={16} color={colors.primary} />
                   <Text style={styles.pdfRowTxt} numberOfLines={1}>{pdfAsset.name}</Text>
-                  <Pressable onPress={() => setPdfAsset(null)} hitSlop={8}>
+                  <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} onPress={() => setPdfAsset(null)} hitSlop={8}>
                     <Ionicons name="close" size={16} color={colors.textMuted} />
                   </Pressable>
                 </View>
               ) : (
-                <Pressable onPress={pickPdf} style={styles.pdfAttachBtn}>
+                <Pressable accessibilityRole="button" onPress={pickPdf} style={styles.pdfAttachBtn}>
                   <Ionicons name="attach-outline" size={16} color={colors.primary} />
-                  <Text style={styles.pdfAttachTxt}>Seleccionar PDF (una hoja)</Text>
+                  <Text style={styles.pdfAttachTxt}>{t('minutasVista.seleccionarPdfUnaHoja')}</Text>
                 </Pressable>
               )}
 
@@ -1326,7 +1368,7 @@ function CreateMinutaModal({
                     {pendientes.map((pg) => {
                       const on = pendienteId === pg.id;
                       return (
-                        <Pressable
+                        <Pressable accessibilityRole="button"
                           key={pg.id}
                           onPress={() => setPendienteId(on ? '' : pg.id)}
                           style={[styles.chip, on && { backgroundColor: colors.primary, borderColor: colors.primary }]}
@@ -1343,36 +1385,48 @@ function CreateMinutaModal({
 
               {tipo === 'compromiso' && (
                 <>
-                  <View style={styles.sepRow}>
-                    <Text style={styles.label}>Acuerdos *</Text>
-                    <Pressable onPress={addAcuerdo} style={styles.addRow}>
+                  <View style={styles.sepRow} onLayout={marcarPosicion('acuerdos')}>
+                    <Text style={styles.label}>{t('minutasVista.acuerdos2')}</Text>
+                    <Pressable
+                      accessibilityRole="button"
+                      onPress={() => { limpiar('acuerdos'); addAcuerdo(); }}
+                      style={styles.addRow}
+                    >
                       <Ionicons name="add" size={16} color={colors.primary} />
-                      <Text style={styles.addRowTxt}>Anadir</Text>
+                      <Text style={styles.addRowTxt}>{t('minutasVista.anadir')}</Text>
                     </Pressable>
                   </View>
+                  <InlineError message={errores.acuerdos} style={{ marginBottom: 6 }} />
 
                   {acuerdos.map((a, i) => (
-                    <View key={i} style={styles.acuerdoDraft}>
+                    <View key={i} style={styles.acuerdoDraft} onLayout={marcarPosicion(`acuerdo.${i}`)}>
                       <View style={styles.acuerdoDraftHead}>
                         <Text style={styles.acuerdoDraftIdx}>#{i + 1}</Text>
                         {acuerdos.length > 1 && (
-                          <Pressable onPress={() => removeAcuerdo(i)} hitSlop={8}>
+                          <Pressable accessibilityRole="button" accessibilityLabel={a11y('quitar')} onPress={() => removeAcuerdo(i)} hitSlop={8}>
                             <Ionicons name="close-circle" size={18} color="#DC2626" />
                           </Pressable>
                         )}
                       </View>
-                      <TextInput
-                        style={[styles.input, { minHeight: 60, textAlignVertical: 'top' }]}
+                      <FormField
+                        label={t('minuta.form.acuerdoLabel', { n: i + 1 })}
                         value={a.descripcion}
-                        onChangeText={(v) => setAcuerdoField(i, { descripcion: v })}
-                        placeholder="Descripcion del acuerdo_"
-                        placeholderTextColor={colors.textMuted}
+                        onChangeText={(v) => { limpiar(claveAcuerdo(i, 'descripcion')); setAcuerdoField(i, { descripcion: v }); }}
+                        placeholder={t('minuta.form.acuerdoPlaceholder')}
                         multiline
                         maxLength={1200}
+                        inputStyle={{ minHeight: 60, textAlignVertical: 'top' }}
+                        error={errores[claveAcuerdo(i, 'descripcion')]}
                       />
-                      <Pressable
+                      <Pressable accessibilityRole="button"
+                        accessibilityLabel={t('minuta.form.seleccionarResponsable')}
                         onPress={() => setRespPickerFor(i)}
-                        style={[styles.input, styles.selectRow]}
+                        style={[
+                          styles.input,
+                          styles.selectRow,
+                          { marginTop: 8 },
+                          errores[claveAcuerdo(i, 'responsable')] ? { borderColor: colors.error } : null,
+                        ]}
                       >
                         <Ionicons name="person-outline" size={14} color={colors.textMuted} />
                         <Text
@@ -1382,16 +1436,17 @@ function CreateMinutaModal({
                           }}
                           numberOfLines={1}
                         >
-                          {a.responsable_id ? memberName(a.responsable_id) : 'Seleccionar responsable'}
+                          {a.responsable_id ? memberName(a.responsable_id) : t('minuta.form.seleccionarResponsable')}
                         </Text>
                         <Ionicons name="chevron-down" size={14} color={colors.textMuted} />
                       </Pressable>
-                      <TextInput
-                        style={styles.input}
+                      <InlineError message={errores[claveAcuerdo(i, 'responsable')]} style={{ marginTop: 6 }} />
+                      <FormField
+                        label={t('minuta.form.fechaLimite', { n: i + 1 })}
                         value={a.fecha_limite}
-                        onChangeText={(v) => setAcuerdoField(i, { fecha_limite: v })}
-                        placeholder="Fecha limite (YYYY-MM-DD)"
-                        placeholderTextColor={colors.textMuted}
+                        onChangeText={(v) => { limpiar(claveAcuerdo(i, 'fecha')); setAcuerdoField(i, { fecha_limite: v }); }}
+                        placeholder={t('minuta.form.fechaLimitePlaceholder')}
+                        error={errores[claveAcuerdo(i, 'fecha')]}
                       />
                     </View>
                   ))}
@@ -1399,15 +1454,23 @@ function CreateMinutaModal({
               )}
             </ScrollView>
 
+            <InlineError message={errorGeneral} style={{ marginHorizontal: spacing.md, marginBottom: 8 }} />
             <View style={styles.modalFooter}>
-              <Pressable onPress={onClose} style={styles.btnGhost} disabled={saving}>
-                <Text style={styles.btnGhostTxt}>Cancelar</Text>
+              <Pressable accessibilityRole="button" onPress={onClose} style={styles.btnGhost} disabled={saving}>
+                <Text style={styles.btnGhostTxt}>{t('minutasVista.cancelar')}</Text>
               </Pressable>
-              <Pressable onPress={onSave} style={styles.btnPrimary} disabled={saving}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={t('minuta.form.guardar')}
+                accessibilityState={{ disabled: saving, busy: saving }}
+                onPress={onSave}
+                style={[styles.btnPrimary, saving && { opacity: 0.6 }]}
+                disabled={saving}
+              >
                 {saving ? (
                   <ActivityIndicator color="#fff" />
                 ) : (
-                  <Text style={styles.btnPrimaryTxt}>Guardar minuta</Text>
+                  <Text style={styles.btnPrimaryTxt}>{t('minuta.form.guardar')}</Text>
                 )}
               </Pressable>
             </View>
@@ -1416,23 +1479,37 @@ function CreateMinutaModal({
 
         {/* Picker de responsable */}
         {respPickerFor !== null && (
-          <Modal
-            transparent
-            animationType="fade"
-            visible={respPickerFor !== null}
-            onRequestClose={() => setRespPickerFor(null)}
+          <View
+            style={styles.pickerBackdrop}
+            accessibilityViewIsModal
+            accessibilityLabel={t('hojaSeleccion.responsable')}
+            onAccessibilityEscape={() => setRespPickerFor(null)}
           >
             <Pressable
-              style={styles.pickerBackdrop}
+              accessibilityRole="button"
+              accessibilityLabel={t('hojaSeleccion.cerrarA11y')}
+              style={StyleSheet.absoluteFillObject}
               onPress={() => setRespPickerFor(null)}
-            >
-              <View style={styles.pickerSheet}>
-                <Text style={styles.pickerTitle}>Selecciona responsable</Text>
+            />
+            <View style={styles.pickerSheet}>
+              <View style={styles.pickerHeader}>
+                <Text style={styles.pickerTitle}>{t('hojaSeleccion.responsable')}</Text>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={t('hojaSeleccion.cerrarA11y')}
+                  onPress={() => setRespPickerFor(null)}
+                  hitSlop={8}
+                  style={styles.pickerCerrar}
+                >
+                  <Text style={styles.pickerCerrarTxt}>{t('hojaSeleccion.cerrar')}</Text>
+                </Pressable>
+              </View>
                 <ScrollView style={{ maxHeight: 380 }}>
                   {/* "Contratista" siempre disponible: no es una cuenta de usuario,
                       representa a la empresa contratista del proyecto. */}
-                  <Pressable
+                  <Pressable accessibilityRole="button"
                     onPress={() => {
+                      limpiar(claveAcuerdo(respPickerFor!, 'responsable'));
                       setAcuerdoField(respPickerFor!, { responsable_id: 'contratista' });
                       setRespPickerFor(null);
                     }}
@@ -1440,19 +1517,20 @@ function CreateMinutaModal({
                   >
                     <Ionicons name="business" size={22} color={colors.primary} />
                     <View style={{ flex: 1 }}>
-                      <Text style={{ fontWeight: '700', color: colors.text }}>Contratista</Text>
-                      <Text style={{ color: colors.textMuted, fontSize: 12 }}>Empresa contratista</Text>
+                      <Text style={{ fontWeight: '700', color: colors.text }}>{t('minutasVista.contratista')}</Text>
+                      <Text style={{ color: colors.textMuted, fontSize: 12 }}>{t('minutasVista.empresaContratista')}</Text>
                     </View>
                   </Pressable>
                   {members.length === 0 ? (
                     <Text style={{ padding: 16, color: colors.textMuted }}>
-                      No hay miembros en el proyecto.
+                      {t('minutasVista.noHayMiembrosEnEl')}
                     </Text>
                   ) : (
                     members.map((m) => (
-                      <Pressable
+                      <Pressable accessibilityRole="button"
                         key={m.id}
                         onPress={() => {
+                          limpiar(claveAcuerdo(respPickerFor!, 'responsable'));
                           setAcuerdoField(respPickerFor!, { responsable_id: m.id });
                           setRespPickerFor(null);
                         }}
@@ -1470,39 +1548,49 @@ function CreateMinutaModal({
                   )}
                 </ScrollView>
               </View>
-            </Pressable>
-          </Modal>
+          </View>
         )}
 
         {/* Picker de involucrados (multi-seleccion) */}
         {involvedPickerOpen && (
-          <Modal
-            transparent
-            animationType="fade"
-            visible={involvedPickerOpen}
-            onRequestClose={() => setInvolvedPickerOpen(false)}
+          <View
+            style={styles.pickerBackdrop}
+            accessibilityViewIsModal
+            accessibilityLabel={t('hojaSeleccion.involucrados')}
+            onAccessibilityEscape={() => setInvolvedPickerOpen(false)}
           >
-            <View style={styles.pickerBackdrop}>
-              <View style={styles.pickerSheet}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={t('hojaSeleccion.cerrarA11y')}
+              style={StyleSheet.absoluteFillObject}
+              onPress={() => setInvolvedPickerOpen(false)}
+            />
+            <View style={styles.pickerSheet}>
                 <View style={{
                   flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
                   padding: 8, borderBottomWidth: 1, borderBottomColor: colors.border,
                 }}>
-                  <Text style={styles.pickerTitle}>Involucrados ({involvedIds.length})</Text>
-                  <Pressable onPress={() => setInvolvedPickerOpen(false)} hitSlop={8}>
-                    <Text style={{ color: colors.primary, fontWeight: '800' }}>Listo</Text>
+                  <Text style={styles.pickerTitle}>{t('minutasVista.involucrados2', { n: involvedIds.length })}</Text>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={t('hojaSeleccion.cerrarA11y')}
+                    onPress={() => setInvolvedPickerOpen(false)}
+                    hitSlop={8}
+                    style={styles.pickerCerrar}
+                  >
+                    <Text style={styles.pickerCerrarTxt}>{t('hojaSeleccion.listo')}</Text>
                   </Pressable>
                 </View>
                 <ScrollView style={{ maxHeight: 420 }}>
                   {members.length === 0 ? (
                     <Text style={{ padding: 16, color: colors.textMuted }}>
-                      No hay miembros en el proyecto.
+                      {t('minutasVista.noHayMiembrosEnEl')}
                     </Text>
                   ) : (
                     members.map((m) => {
                       const on = involvedIds.includes(m.id);
                       return (
-                        <Pressable
+                        <Pressable accessibilityRole="button"
                           key={m.id}
                           onPress={() => toggleInvolved(m.id)}
                           style={[styles.pickerRow, on && { backgroundColor: colors.bg }]}
@@ -1526,33 +1614,43 @@ function CreateMinutaModal({
                   )}
                 </ScrollView>
               </View>
-            </View>
-          </Modal>
+          </View>
         )}
 
         {/* Picker de Ubicacion (seleccion unica entre nodos del proyecto) */}
         {ubicacionPickerOpen && (
-          <Modal
-            transparent
-            animationType="fade"
-            visible={ubicacionPickerOpen}
-            onRequestClose={() => setUbicacionPickerOpen(false)}
+          <View
+            style={styles.pickerBackdrop}
+            accessibilityViewIsModal
+            accessibilityLabel={t('hojaSeleccion.ubicacion')}
+            onAccessibilityEscape={() => setUbicacionPickerOpen(false)}
           >
-            <View style={styles.pickerBackdrop}>
-              <View style={styles.pickerSheet}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={t('hojaSeleccion.cerrarA11y')}
+              style={StyleSheet.absoluteFillObject}
+              onPress={() => setUbicacionPickerOpen(false)}
+            />
+            <View style={styles.pickerSheet}>
                 <View style={{
                   flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
                   padding: 8, borderBottomWidth: 1, borderBottomColor: colors.border,
                 }}>
-                  <Text style={styles.pickerTitle}>Ubicacion</Text>
-                  <Pressable onPress={() => setUbicacionPickerOpen(false)} hitSlop={8}>
-                    <Text style={{ color: colors.primary, fontWeight: '800' }}>Cerrar</Text>
+                  <Text style={styles.pickerTitle}>{t('hojaSeleccion.ubicacion')}</Text>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={t('hojaSeleccion.cerrarA11y')}
+                    onPress={() => setUbicacionPickerOpen(false)}
+                    hitSlop={8}
+                    style={styles.pickerCerrar}
+                  >
+                    <Text style={styles.pickerCerrarTxt}>{t('hojaSeleccion.cerrar')}</Text>
                   </Pressable>
                 </View>
                 <ScrollView style={{ maxHeight: 420 }}>
                   {nodes.length === 0 ? (
                     <Text style={{ padding: 16, color: colors.textMuted }}>
-                      El proyecto aun no tiene ubicaciones. Pidele al coordinador que las cree.
+                      {t('minutasVista.elProyectoAunNoTiene')}
                     </Text>
                   ) : (
                     [...nodes]
@@ -1560,10 +1658,11 @@ function CreateMinutaModal({
                       .map((n) => {
                       const on = ubicacionId === n.id;
                       return (
-                        <Pressable
+                        <Pressable accessibilityRole="button"
                           key={n.id}
                           onPress={() => {
                             setUbicacionId(n.id);
+                            limpiar('ubicacion');
                             setUbicacionPickerOpen(false);
                           }}
                           style={[styles.pickerRow, on && { backgroundColor: colors.bg }]}
@@ -1584,8 +1683,7 @@ function CreateMinutaModal({
                   )}
                 </ScrollView>
               </View>
-            </View>
-          </Modal>
+          </View>
         )}
       </View>
     </Modal>
@@ -1717,7 +1815,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.primary,
     paddingHorizontal: 10,
-    height: 38,
+    height: 44,
     borderRadius: radius.md,
     backgroundColor: colors.surface,
   },
@@ -1957,7 +2055,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     padding: 20,
+    zIndex: 10,
+    elevation: 10,
   },
+  pickerHeader: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    padding: 8, borderBottomWidth: 1, borderBottomColor: colors.border,
+  },
+  pickerCerrar: { minHeight: 44, minWidth: 44, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 8 },
+  pickerCerrarTxt: { color: colors.primary, fontWeight: '800' },
   pickerSheet: {
     width: '100%',
     maxWidth: 420,

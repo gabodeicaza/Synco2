@@ -1,10 +1,12 @@
-// SynCo v2.0 _ Tab "Mensajes" con canales tipo Slack/WhatsApp.
+// Dirac · Tab "Mensajes" con canales tipo Slack/WhatsApp.
 // Vista 1 (Lista): canales del proyecto agrupados (General _ Areas _ Directos).
 // Vista 2 (Chat): mensajes del canal seleccionado con polling 6s.
 // Single-file state machine para evitar restructurar el routing del tab.
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { usePollingConFoco } from '@/src/hooks/usePollingConFoco';
+import { decisionEnter } from '@/src/utils/enviarConEnter';
 import {
-  ActivityIndicator, Alert, AppState, AppStateStatus, FlatList,
+  ActivityIndicator, Alert, FlatList,
   KeyboardAvoidingView, Modal, Platform, Pressable, RefreshControl,
   StatusBar, StyleSheet, Text, TextInput, View,
 } from 'react-native';
@@ -12,9 +14,13 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useAuth } from '@/src/auth-context';
+import { useProyectoActivo } from '@/src/proyecto-activo-context';
 import { api, Channel, Message, User } from '@/src/api';
 import { colors, radius, shadow, spacing } from '@/src/theme';
 import { dayjs, CDMX_TZ, fmtTimeCDMX } from '@/src/utils/tz';
+import { a11y } from '@/src/i18n';
+import { ScreenHeader } from '@/src/components/ScreenHeader';
+import { homeRouteForRole } from '@/src/utils/roles';
 
 const POLL_MS = 6000;
 
@@ -22,11 +28,15 @@ type ScreenView = { kind: 'list' } | { kind: 'chat'; channel: Channel };
 
 export default function MensajesScreen() {
   const { user } = useAuth();
-  const projectId = (user?.project_ids || [])[0] || '';
-  return <MensajesView projectId={projectId} />;
+  // P-05: mismo proyecto activo que Minutas, Noticias y Calendario (con respaldo al primero del usuario).
+  const { proyectoId } = useProyectoActivo();
+  const projectId = proyectoId || (user?.project_ids || [])[0] || '';
+  return <MensajesView projectId={projectId} conRegreso />;
 }
 
-export function MensajesView({ projectId }: { projectId: string }) {
+/** `conRegreso`: la lista lleva el encabezado estándar con botón de regreso (rutas alcanzadas por
+ * menú). El Coordinador la incrusta en una pestaña raíz con su propio encabezado y no lo pide. */
+export function MensajesView({ projectId, conRegreso = false }: { projectId: string; conRegreso?: boolean }) {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
 
@@ -38,7 +48,6 @@ export function MensajesView({ projectId }: { projectId: string }) {
   const [errorList, setErrorList] = useState<string | null>(null);
   const [refreshingList, setRefreshingList] = useState(false);
   const [showDmPicker, setShowDmPicker] = useState(false);
-  const listPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const loadChannels = useCallback(async (silent = false) => {
     if (!projectId) { setLoadingList(false); setErrorList('Sin proyecto asignado'); return; }
@@ -57,21 +66,8 @@ export function MensajesView({ projectId }: { projectId: string }) {
 
   useEffect(() => { loadChannels(false); }, [loadChannels]);
 
-  // Polling de la lista de canales solo cuando estamos en vista de lista
-  useEffect(() => {
-    function start() {
-      if (listPollRef.current) return;
-      listPollRef.current = setInterval(() => { loadChannels(true); }, 30000);
-    }
-    function stop() {
-      if (listPollRef.current) { clearInterval(listPollRef.current); listPollRef.current = null; }
-    }
-    if (view.kind === 'list') start(); else stop();
-    const sub = AppState.addEventListener('change', (s: AppStateStatus) => {
-      if (s === 'active' && view.kind === 'list') { loadChannels(true); start(); } else { stop(); }
-    });
-    return () => { stop(); sub.remove(); };
-  }, [loadChannels, view.kind]);
+  // Polling de la lista de canales: solo en vista de lista y solo con la pestaña enfocada (G-07).
+  usePollingConFoco(() => { loadChannels(true); }, 30000, view.kind === 'list');
 
   if (view.kind === 'chat') {
     return (
@@ -89,18 +85,32 @@ export function MensajesView({ projectId }: { projectId: string }) {
       <StatusBar barStyle="light-content" />
       <View style={[styles.blueTop, { height: 140 + insets.top }]} />
 
-      <View style={[styles.header, { paddingTop: insets.top + spacing.xs }]}>
-        <View style={styles.headerIcon}>
-          <Ionicons name="chatbubbles" size={18} color="#fff" />
+      {conRegreso ? (
+        <ScreenHeader
+          title="Mensajes"
+          subtitle="Canales del proyecto"
+          backgroundColor={colors.primary}
+          fallbackHref={homeRouteForRole(user?.role) as any}
+          right={(
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y('actualizar')} onPress={() => loadChannels(false)} hitSlop={10} style={[styles.refreshBtn, { width: 44, height: 44, borderRadius: 22 }]}>
+              <Ionicons name="refresh" size={18} color="#fff" />
+            </Pressable>
+          )}
+        />
+      ) : (
+        <View style={[styles.header, { paddingTop: insets.top + spacing.xs }]}>
+          <View style={styles.headerIcon}>
+            <Ionicons name="chatbubbles" size={18} color="#fff" />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.headerTitle}>Mensajes</Text>
+            <Text style={styles.headerSubtitle}>Canales del proyecto</Text>
+          </View>
+          <Pressable accessibilityRole="button" accessibilityLabel={a11y('actualizar')} onPress={() => loadChannels(false)} hitSlop={10} style={styles.refreshBtn}>
+            <Ionicons name="refresh" size={18} color="#fff" />
+          </Pressable>
         </View>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.headerTitle}>Mensajes</Text>
-          <Text style={styles.headerSubtitle}>Canales del proyecto</Text>
-        </View>
-        <Pressable onPress={() => loadChannels(false)} hitSlop={10} style={styles.refreshBtn}>
-          <Ionicons name="refresh" size={18} color="#fff" />
-        </Pressable>
-      </View>
+      )}
 
       {loadingList ? (
         <View style={styles.center}><ActivityIndicator color={colors.primary} /></View>
@@ -108,7 +118,7 @@ export function MensajesView({ projectId }: { projectId: string }) {
         <View style={styles.errorBox}>
           <Ionicons name="alert-circle-outline" size={22} color={colors.error} />
           <Text style={styles.errorTxt}>{errorList}</Text>
-          <Pressable onPress={() => loadChannels(false)} style={styles.retryBtn}>
+          <Pressable accessibilityRole="button" onPress={() => loadChannels(false)} style={styles.retryBtn}>
             <Text style={styles.retryTxt}>Reintentar</Text>
           </Pressable>
         </View>
@@ -129,7 +139,7 @@ export function MensajesView({ projectId }: { projectId: string }) {
             <View style={styles.empty}>
               <View style={styles.emptyIcon}><Ionicons name="chatbubbles-outline" size={28} color={colors.primary} /></View>
               <Text style={styles.emptyTitle}>Sin canales aun</Text>
-              <Text style={styles.emptyMsg}>El canal General se crea automaticamente al primer ingreso.</Text>
+              <Text style={styles.emptyMsg}>El canal General se crea automáticamente al primer ingreso.</Text>
             </View>
           }
           renderItem={({ item }) => {
@@ -146,7 +156,7 @@ export function MensajesView({ projectId }: { projectId: string }) {
         />
       )}
 
-      <Pressable onPress={() => setShowDmPicker(true)} style={[styles.fab, { bottom: insets.bottom + 16 }]}>
+      <Pressable accessibilityRole="button" accessibilityLabel={a11y('agregar')} hitSlop={8} onPress={() => setShowDmPicker(true)} style={[styles.fab, { bottom: insets.bottom + 16 }]}>
         <Ionicons name="person-add" size={22} color="#fff" />
       </Pressable>
 
@@ -183,7 +193,7 @@ function channelsWithSeparators(items: Channel[]): ChannelListItem[] {
     general.forEach((c) => result.push({ kind: 'channel', channel: c }));
   }
   if (areas.length) {
-    result.push({ kind: 'sep', label: 'POR AREA' });
+    result.push({ kind: 'sep', label: 'POR ÁREA' });
     areas.forEach((c) => result.push({ kind: 'channel', channel: c }));
   }
   if (direct.length) {
@@ -200,7 +210,7 @@ function ChannelRow({ channel, onPress }: { channel: Channel; onPress: () => voi
   const iconName = channel.type === 'direct' ? 'person-circle' : channel.type === 'area' ? 'pricetag' : 'megaphone';
   const tint = channel.type === 'direct' ? colors.textBody : colors.primary;
   return (
-    <Pressable onPress={onPress} style={styles.row}>
+    <Pressable accessibilityRole="button" onPress={onPress} style={styles.row}>
       <View style={[styles.rowIcon, channel.type === 'general' && { backgroundColor: colors.primary }]}>
         <Ionicons
           name={iconName as any}
@@ -243,7 +253,6 @@ function ChatView({
   const [error, setError] = useState<string | null>(null);
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastSinceRef = useRef<string | null>(null);
   const listRef = useRef<FlatList<Message>>(null);
 
@@ -276,20 +285,8 @@ function ChatView({
 
   useEffect(() => { initialLoad(); }, [initialLoad]);
 
-  useEffect(() => {
-    function start() {
-      if (pollRef.current) return;
-      pollRef.current = setInterval(fetchDelta, POLL_MS);
-    }
-    function stop() {
-      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
-    }
-    start();
-    const sub = AppState.addEventListener('change', (s) => {
-      if (s === 'active') { fetchDelta(); start(); } else { stop(); }
-    });
-    return () => { stop(); sub.remove(); };
-  }, [fetchDelta]);
+  // Polling del chat: solo con la pestaña enfocada y la app activa (G-07).
+  usePollingConFoco(fetchDelta, POLL_MS);
 
   // Auto-scroll al final cuando cambia items
   useEffect(() => {
@@ -316,6 +313,21 @@ function ChatView({
     }
   }
 
+  function alTeclear(e: any) {
+    const ne = e?.nativeEvent ?? {};
+    const decision = decisionEnter({
+      key: ne.key ?? e?.key ?? '',
+      shiftKey: !!(ne.shiftKey ?? e?.shiftKey),
+      componiendo: !!ne.isComposing,
+      plataforma: Platform.OS,
+      enviando: sending,
+      texto: text,
+    });
+    if (decision === 'salto') return;
+    e?.preventDefault?.();
+    if (decision === 'enviar') send();
+  }
+
   function onDeleteMessage(m: Message) {
     const confirm = () => {
       api.deleteMessage(m.id).then(() => {
@@ -323,7 +335,7 @@ function ChatView({
       }).catch((e) => Alert.alert('Error', e?.message || 'No se pudo eliminar'));
     };
     if (Platform.OS === 'web') {
-      if (typeof window !== 'undefined' && window.confirm('?Eliminar este mensaje?')) confirm();
+      if (typeof window !== 'undefined' && window.confirm('¿Eliminar este mensaje?')) confirm();
     } else {
       Alert.alert('Eliminar mensaje', '?Seguro?', [
         { text: 'Cancelar', style: 'cancel' },
@@ -341,21 +353,13 @@ function ChatView({
     ? 'Visible para todo el equipo del proyecto'
     : channel.type === 'area'
       ? 'Solo asignados a esta disciplina'
-      : 'Conversacion privada 1 a 1';
+      : 'Conversación privada 1 a 1';
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <StatusBar barStyle="light-content" />
       <View style={[styles.blueTop, { height: 130 + insets.top }]} />
-      <View style={[styles.header, { paddingTop: insets.top + spacing.xs }]}>
-        <Pressable onPress={onBack} hitSlop={10} style={styles.refreshBtn}>
-          <Ionicons name="chevron-back" size={22} color="#fff" />
-        </Pressable>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.headerTitle} numberOfLines={1}>{headerTitle}</Text>
-          <Text style={styles.headerSubtitle} numberOfLines={1}>{headerSub}</Text>
-        </View>
-      </View>
+      <ScreenHeader title={headerTitle} subtitle={headerSub} backgroundColor={colors.primary} onBack={onBack} />
 
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
@@ -368,7 +372,7 @@ function ChatView({
           <View style={styles.errorBox}>
             <Ionicons name="alert-circle-outline" size={22} color={colors.error} />
             <Text style={styles.errorTxt}>{error}</Text>
-            <Pressable onPress={initialLoad} style={styles.retryBtn}>
+            <Pressable accessibilityRole="button" onPress={initialLoad} style={styles.retryBtn}>
               <Text style={styles.retryTxt}>Reintentar</Text>
             </Pressable>
           </View>
@@ -381,8 +385,8 @@ function ChatView({
             ListEmptyComponent={
               <View style={styles.empty}>
                 <View style={styles.emptyIcon}><Ionicons name="chatbubble-ellipses-outline" size={28} color={colors.primary} /></View>
-                <Text style={styles.emptyTitle}>Aun no hay mensajes</Text>
-                <Text style={styles.emptyMsg}>Se el primero en escribir.</Text>
+                <Text style={styles.emptyTitle}>Aún no hay mensajes</Text>
+                <Text style={styles.emptyMsg}>Sé el primero en escribir.</Text>
               </View>
             }
             renderItem={({ item }) => (
@@ -398,14 +402,16 @@ function ChatView({
         <View style={[styles.composer, { paddingBottom: insets.bottom + 6 }]}>
           <TextInput
             value={text} onChangeText={setText}
-            placeholder="Escribe un mensaje_"
+            placeholder="Escribe un mensaje…"
             placeholderTextColor={colors.textMuted}
             style={styles.composerInput}
             multiline
             editable={!sending}
             maxLength={2000}
+            // G-06: solo en web, Enter envía y Mayús+Enter hace salto de línea.
+            onKeyPress={Platform.OS === 'web' ? alTeclear : undefined}
           />
-          <Pressable onPress={send} disabled={sending || !text.trim()} style={[styles.sendBtn, (sending || !text.trim()) && { opacity: 0.5 }]}>
+          <Pressable accessibilityRole="button" accessibilityLabel={a11y('enviar')} hitSlop={8} onPress={send} disabled={sending || !text.trim()} style={[styles.sendBtn, (sending || !text.trim()) && { opacity: 0.5 }]}>
             {sending ? <ActivityIndicator color="#fff" /> : <Ionicons name="send" size={18} color="#fff" />}
           </Pressable>
         </View>
@@ -424,7 +430,7 @@ function MessageBubble({
 }) {
   return (
     <View style={[styles.bubbleRow, isMine && { justifyContent: 'flex-end' }]}>
-      <Pressable onLongPress={canDelete ? onDelete : undefined} delayLongPress={400}
+      <Pressable accessibilityRole="button" onLongPress={canDelete ? onDelete : undefined} delayLongPress={400}
         style={[styles.bubble, isMine ? styles.bubbleMine : styles.bubbleOther]}>
         {!isMine ? (
           <Text style={styles.bubbleAuthor} numberOfLines={1}>{m.user_name}</Text>
@@ -484,7 +490,7 @@ function DMPicker({
         <View style={[styles.modalCard, { paddingBottom: insets.bottom + spacing.md, maxHeight: '75%' }]}>
           <View style={styles.modalHead}>
             <Text style={styles.modalTitle}>Nuevo mensaje directo</Text>
-            <Pressable onPress={onClose} hitSlop={10}><Ionicons name="close" size={22} color={colors.textBody} /></Pressable>
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} onPress={onClose} hitSlop={10}><Ionicons name="close" size={22} color={colors.textBody} /></Pressable>
           </View>
           {loading ? (
             <View style={styles.center}><ActivityIndicator color={colors.primary} /></View>
@@ -500,13 +506,13 @@ function DMPicker({
                   (c) => c.type === 'direct' && (c.member_ids || []).includes(item.id),
                 );
                 return (
-                  <Pressable onPress={() => startDM(item)} style={styles.memberRow} disabled={busyId === item.id}>
+                  <Pressable accessibilityRole="button" onPress={() => startDM(item)} style={styles.memberRow} disabled={busyId === item.id}>
                     <View style={styles.memberAvatar}>
                       <Ionicons name="person" size={20} color={colors.primary} />
                     </View>
                     <View style={{ flex: 1 }}>
                       <Text style={styles.memberName}>{item.name}</Text>
-                      <Text style={styles.memberRole}>{prettyRole(item.role)}{item.area ? ` _ ${item.area}` : ''}</Text>
+                      <Text style={styles.memberRole}>{prettyRole(item.role)}{item.area ? ` · ${item.area}` : ''}</Text>
                     </View>
                     {busyId === item.id ? (
                       <ActivityIndicator color={colors.primary} />

@@ -1,44 +1,26 @@
-// SynCo v2.0 _ Tab "Calendario" (Coordinador General)
+// Dirac · Tab "Calendario" (Coordinador General)
 // Vista universal con selector de proyecto cuando el coordinador maneja varios.
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StatusBar, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useAuth } from '@/src/auth-context';
-import { api, Project } from '@/src/api';
 import UniversalCalendar from '@/src/components/UniversalCalendar';
+import { useProyectoActivo } from '@/src/proyecto-activo-context';
 import { colors, radius, spacing } from '@/src/theme';
 
 export default function CalendarioCoordScreen() {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [selected, setSelected] = useState<string>('');
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  // P-05: proyecto activo compartido con Mensajes, Minutas y Noticias.
+  const { proyectoId, proyectos: projects, cargando: loading, setProyectoId: setSelected, recargar } = useProyectoActivo();
+  const selected = proyectoId || '';
+  const error: string | null = null;
 
-  const load = useCallback(async () => {
-    try {
-      setError(null);
-      setLoading(true);
-      const items = await api.listProjects();
-      setProjects(items || []);
-      if (items && items.length > 0) {
-        setSelected((cur) => (cur && items.find((p) => p.id === cur) ? cur : items[0].id));
-      } else {
-        setSelected('');
-      }
-    } catch (e: any) {
-      setError(e?.message || 'No se pudieron cargar proyectos');
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useFocusEffect(useCallback(() => { load(); }, [load]));
-  useEffect(() => { load(); }, [load]);
+  // Al volver a la pestaña se refresca la lista (un proyecto nuevo aparece sin reiniciar la app).
+  useFocusEffect(useCallback(() => { void recargar(); }, [recargar]));
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
@@ -65,7 +47,7 @@ export default function CalendarioCoordScreen() {
             {projects.map((p) => {
               const active = p.id === selected;
               return (
-                <Pressable
+                <Pressable accessibilityRole="button"
                   key={p.id}
                   onPress={() => setSelected(p.id)}
                   style={[styles.projChip, active && styles.projChipActive]}
@@ -85,7 +67,7 @@ export default function CalendarioCoordScreen() {
         </View>
       ) : null}
 
-      {loading ? (
+      {loading && projects.length === 0 ? (
         <View style={styles.center}><ActivityIndicator color={colors.primary} /></View>
       ) : error ? (
         <View style={styles.errorBox}>
@@ -95,7 +77,7 @@ export default function CalendarioCoordScreen() {
       ) : !selected ? (
         <View style={styles.empty}>
           <Ionicons name="folder-open-outline" size={32} color={colors.textMuted} />
-          <Text style={styles.emptyTitle}>Aun no tienes proyectos</Text>
+          <Text style={styles.emptyTitle}>Aún no tienes proyectos</Text>
           <Text style={styles.emptyMsg}>Crea un proyecto para comenzar a programar eventos.</Text>
         </View>
       ) : (
@@ -130,7 +112,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.15)',
     borderWidth: 1, borderColor: 'rgba(255,255,255,0.35)',
     marginRight: 6,
-    height: 28,
+    height: 44,
   },
   projChipActive: {
     backgroundColor: '#fff',

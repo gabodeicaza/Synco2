@@ -1,21 +1,22 @@
 import { esPorcentajeValido, esRetrocesoLocal } from '../avancePorcentaje';
 
 describe('esPorcentajeValido', () => {
-  it('acepta valores dentro de 0-100', () => {
-    expect(esPorcentajeValido('0')).toBe(true);
+  it('acepta valores positivos, incluso pasando de 100% (excedente permitido)', () => {
     expect(esPorcentajeValido('45.5')).toBe(true);
     expect(esPorcentajeValido('100')).toBe(true);
+    expect(esPorcentajeValido('120')).toBe(true);
   });
 
-  it('rechaza fuera de rango', () => {
-    expect(esPorcentajeValido('100.01')).toBe(false);
+  it('rechaza cero y negativos', () => {
+    expect(esPorcentajeValido('0')).toBe(false);
+    expect(esPorcentajeValido('0.00')).toBe(false);
     expect(esPorcentajeValido('-1')).toBe(false);
-    expect(esPorcentajeValido('101')).toBe(false);
   });
 
-  it('rechaza formato inválido (vacío, más de 2 decimales, no numérico)', () => {
+  it('rechaza formato inválido (vacío, más de 4 decimales, no numérico)', () => {
     expect(esPorcentajeValido('')).toBe(false);
-    expect(esPorcentajeValido('45.555')).toBe(false);
+    expect(esPorcentajeValido('45.55555')).toBe(false);
+    expect(esPorcentajeValido('45.5555')).toBe(true);
     expect(esPorcentajeValido('abc')).toBe(false);
   });
 });

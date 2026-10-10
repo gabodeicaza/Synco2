@@ -153,21 +153,23 @@ def test_cadencia_reporte_default_mensual_y_configurable(admin_headers, project_
     assert r2.json()["dia_inicio_semana"] == "SABADO"
 
 
-def test_captura_porcentaje_fuera_de_rango_se_rechaza(admin_headers, project_porcentaje):
+def test_captura_porcentaje_solo_rechaza_cero_negativo_y_texto(admin_headers, project_porcentaje):
+    """A-01/A-02: ya NO hay tope de 100% (el excedente se permite y se hace visible);
+    lo que se rechaza es cero, negativos y texto."""
     partida = _crear_partida(admin_headers, project_porcentaje, "PCT.1")
     concepto = _crear_concepto(admin_headers, partida["id"], "PCT.1.1")
+    url = f"{API}/avances"
 
-    r = requests.post(
-        f"{API}/avances", headers=admin_headers,
-        json={"concepto_id": concepto["id"], "fecha": "2026-06-01", "cantidad_ejecutada": "101"}, timeout=TIMEOUT,
-    )
-    assert r.status_code == 400, r.text
+    def post(valor):
+        return requests.post(
+            url, headers=admin_headers,
+            json={"concepto_id": concepto["id"], "fecha": "2026-06-01", "cantidad_ejecutada": valor}, timeout=TIMEOUT,
+        )
 
-    r2 = requests.post(
-        f"{API}/avances", headers=admin_headers,
-        json={"concepto_id": concepto["id"], "fecha": "2026-06-01", "cantidad_ejecutada": "-5"}, timeout=TIMEOUT,
-    )
-    assert r2.status_code == 400, r2.text
+    assert post("-5").status_code == 400
+    assert post("0").status_code == 400
+    assert post("abc").status_code in (400, 422)
+    assert post("101").status_code == 200  # excede 100%: se permite
 
 
 def test_captura_porcentaje_es_acumulativa_no_incremental(admin_headers, project_porcentaje):

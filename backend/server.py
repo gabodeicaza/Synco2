@@ -1,4 +1,4 @@
-"""SynCo v2.0 — SaaS Multiproyecto para reportes de obra.
+"""Dirac v2.0 — SaaS Multiproyecto para reportes de obra.
 
 Arquitectura:
 - Coordinador General (god mode): único que crea proyectos, árbol de nodos,
@@ -15,7 +15,10 @@ import math
 import uuid
 import shutil
 import logging
+import hmac
 import secrets
+import hashlib
+import smtplib
 import asyncio
 import unicodedata
 from pathlib import Path
@@ -62,7 +65,9 @@ DB_NAME = os.environ["DB_NAME"]
 JWT_SECRET = os.environ["JWT_SECRET"]
 JWT_ALGORITHM = os.environ.get("JWT_ALGORITHM", "HS256")
 JWT_EXPIRE_MINUTES = int(os.environ.get("JWT_EXPIRE_MINUTES", "10080"))
-BOOTSTRAP_SECRET = os.environ.get("BOOTSTRAP_SECRET", "synco_bootstrap_2026_change_me")
+# Sin valor por defecto: si la variable no está definida, /admin/bootstrap queda desactivado
+# (un secreto por defecto escrito en el repositorio permitiría crear un Coordinador General).
+BOOTSTRAP_SECRET = os.environ.get("BOOTSTRAP_SECRET", "")
 EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
 # Resumen Ejecutivo con IA: llamada directa a Gemini desde el BACKEND (nunca
 # desde el cliente — la key nunca se expone en el app). Modelo configurable
@@ -81,12 +86,12 @@ GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
 client = AsyncIOMotorClient(MONGO_URL, serverSelectionTimeoutMS=5000)
 db = client[DB_NAME]
 
-app = FastAPI(title="SynCo v2.0 API")
+app = FastAPI(title="Dirac API")
 api = APIRouter(prefix="/api")
 bearer = HTTPBearer(auto_error=False)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-log = logging.getLogger("synco")
+log = logging.getLogger("dirac")
 
 
 # Handler temporal para diagnosticar 422 (validation errors). Registra el
@@ -116,7 +121,22 @@ async def _log_422(request, exc: RequestValidationError):
         )
     except Exception as _e:
         log.warning("[422 handler] logging failed: %s", _e)
-    return JSONResponse(status_code=422, content={"detail": exc.errors()})
+    return JSONResponse(status_code=422, content={"detail": _errores_422_serializables(exc)})
+
+
+def _errores_422_serializables(exc: RequestValidationError) -> list:
+    """`exc.errors()` puede traer `ctx` con la EXCEPCIÓN original (p. ej. un ValueError de un
+    validador propio): no es serializable a JSON, y el intento de responderla terminaba en un
+    500 en lugar del 422 con el mensaje. Se convierte a texto y se omite el `input` crudo
+    (puede ser una imagen base64 enorme)."""
+    salida = []
+    for e in exc.errors() or []:
+        e = dict(e)
+        e.pop("input", None)
+        if e.get("ctx"):
+            e["ctx"] = {k: str(v) for k, v in e["ctx"].items()}
+        salida.append(e)
+    return salida
 
 
 # Handler temporal para diagnosticar 500 (excepciones no controladas).
@@ -432,17 +452,37 @@ class EtapaPosteElemento(BaseModel):
         return limpio
 
 
-# Plantilla con la que arranca todo proyecto nuevo (y cualquier proyecto
-# viejo que nunca haya guardado la suya, ver _project_public/get_project) —
-# el caso Cablebús: Pilas -> Cabezal -> Fuste -> Poste, cada uno con sus
-# actividades de construcción en orden. Totalmente editable después desde
-# la herramienta de Control de Obra; esto es solo el punto de partida.
-_ETAPAS_POSTE_DEFAULT = [
+# Plantilla OPCIONAL de etapas de Control de Obra para cimentaciones con
+# postes (Pilas -> Cabezal -> Fuste -> Poste, cada elemento con sus
+# actividades de construcción en orden). Ningún proyecto nuevo la recibe por
+# defecto: el Coordinador General la aplica cuando la necesita
+# (POST /projects/{pid}/etapas_poste/aplicar-plantilla) y después es
+# totalmente editable desde Control de Obra.
+PLANTILLA_ETAPAS_CIMENTACION_POSTES = [
     {"nombre": "Pilas", "actividades": ["Perforaciones", "Hincado de Acero", "Colado"]},
     {"nombre": "Cabezal", "actividades": ["Excavación", "Plantilla", "Descabece", "Armado de acero", "Cimbrado", "Colado", "Relleno"]},
     {"nombre": "Fuste", "actividades": ["Armado de Acero", "Cimbrado", "Colado"]},
     {"nombre": "Poste", "actividades": ["Montaje"]},
 ]
+# Alias histórico: los proyectos anteriores a `tipo_obra` (tipo interno
+# "legado") que nunca guardaron su propia plantilla siguen usándola, para no
+# cambiarles el comportamiento (ver `etapas_poste_de`).
+_ETAPAS_POSTE_DEFAULT = PLANTILLA_ETAPAS_CIMENTACION_POSTES
+
+# Catálogo de plantillas de etapas que un proyecto puede aplicar a demanda.
+PLANTILLAS_ETAPAS_POSTE = {
+    "cimentacion_postes": {
+        "nombre": "Cimentación de postes",
+        "descripcion": "Pilas, cabezal, fuste y poste con sus actividades de construcción.",
+        "etapas": PLANTILLA_ETAPAS_CIMENTACION_POSTES,
+    },
+}
+
+# Tipo de obra del proyecto. Los proyectos nuevos son "generica" salvo que se
+# elija otro; los proyectos anteriores (sin el campo) se leen como "legado" y
+# conservan exactamente su comportamiento (ver `tipo_obra_de`).
+TipoObra = Literal["generica", "carretera", "edificacion", "hidraulica", "puente"]
+TIPO_OBRA_LEGADO = "legado"
 
 
 class ProjectIn(BaseModel):
@@ -498,13 +538,19 @@ class ProjectIn(BaseModel):
     # fallback genérico ("Nivel N"), nunca se trunca ni se repite el último.
     nombres_niveles_partida: List[str] = Field(default_factory=list)
     nombre_nivel_concepto: str = ""  # fallback "Concepto" si vacío
+    # Género gramatical forzado de un nombre de nivel (clave = el nombre, valor 'm' | 'f'):
+    # sin clave, el género se deduce de la palabra ("Nuevo tramo", "Nueva partida").
+    genero_niveles: Dict[str, Literal["m", "f"]] = Field(default_factory=dict)
     # Unidades adicionales a UNIDADES (constante base, definida junto al
     # resto del módulo de catálogo), propias de este proyecto — la captura
     # sigue siendo de lista cerrada, nunca texto libre.
     unidades_personalizadas: List[str] = Field(default_factory=list)
+    # Tipo de obra: decide qué módulos y plantillas de reporte se activan/ofrecen
+    # por defecto al crear el proyecto (ver TIPOS_OBRA).
+    tipo_obra: TipoObra = "generica"
     # Plantilla de elementos/actividades de Poste del módulo Control de
-    # Obra (ver EtapaPosteElemento) — [] deja que el backend aplique
-    # _ETAPAS_POSTE_DEFAULT en vez de forzar el caso Cablebús aquí.
+    # Obra (ver EtapaPosteElemento). [] en un proyecto nuevo = sin etapas
+    # (la plantilla de cimentación de postes se aplica a demanda).
     etapas_poste: List[EtapaPosteElemento] = Field(default_factory=list)
     # Título visible del módulo de catálogo (pantalla, encabezado del PDF y
     # nombre del archivo exportado). NO se deriva pluralizando
@@ -523,6 +569,12 @@ class ProjectIn(BaseModel):
     # referencia del plan corta sábado a sábado, así que no se puede asumir
     # lunes como en un calendario ISO estándar.
     dia_inicio_semana: Literal["LUNES", "MARTES", "MIERCOLES", "JUEVES", "VIERNES", "SABADO", "DOMINGO"] = "LUNES"
+    # Zona horaria IANA del proyecto (defecto America/Mexico_City). Todo "hoy" y
+    # todo rango de fechas se calcula en esta zona.
+    zona_horaria: Optional[str] = None
+    # Separador decimal con el que se capturan los números en este proyecto:
+    # "." (1,500.25) o "," (1.500,25). Solo afecta la captura en la app.
+    separador_decimal: Literal[".", ","] = "."
     # === Sistema Multi-Proyecto Modular (Etapa 5) ===
     # Plantillas encendidas/apagadas para este proyecto — cada una con un
     # interruptor independiente por categoría de informe (Diario/Semanal/
@@ -559,11 +611,15 @@ class ProjectPatch(BaseModel):
     modo_avance: Optional[Literal["CANTIDAD", "PORCENTAJE", "MATRIZ"]] = None
     nombres_niveles_partida: Optional[List[str]] = None
     nombre_nivel_concepto: Optional[str] = None
+    genero_niveles: Optional[Dict[str, Literal["m", "f"]]] = None
     unidades_personalizadas: Optional[List[str]] = None
+    tipo_obra: Optional[TipoObra] = None
     etapas_poste: Optional[List[EtapaPosteElemento]] = None
     titulo_modulo_catalogo: Optional[str] = None
     cadencia_reporte: Optional[Literal["DIARIA", "SEMANAL", "MENSUAL"]] = None
     dia_inicio_semana: Optional[Literal["LUNES", "MARTES", "MIERCOLES", "JUEVES", "VIERNES", "SABADO", "DOMINGO"]] = None
+    zona_horaria: Optional[str] = None
+    separador_decimal: Optional[Literal[".", ","]] = None
     # Banderas de intención explícita — mismo idioma que `quitar_padre` en
     # PartidaPatch. Dos flags independientes (no una sola) porque
     # tipo_contrato y modo_avance son ejes que no se deben conflatar: cambiar
@@ -609,11 +665,17 @@ class ProjectOut(BaseModel):
     modo_avance: str = "CANTIDAD"
     nombres_niveles_partida: List[str] = Field(default_factory=list)
     nombre_nivel_concepto: str = ""
+    genero_niveles: Dict[str, str] = Field(default_factory=dict)
     unidades_personalizadas: List[str] = Field(default_factory=list)
+    tipo_obra: str = TIPO_OBRA_LEGADO  # "legado" = proyecto anterior al campo (comportamiento sin cambios)
     etapas_poste: List[EtapaPosteElemento] = Field(default_factory=list)
     titulo_modulo_catalogo: str = ""
     cadencia_reporte: str = "MENSUAL"
     dia_inicio_semana: str = "LUNES"
+    zona_horaria: str = "America/Mexico_City"
+    separador_decimal: str = "."
+    hoy: Optional[str] = None  # fecha de hoy en la zona del proyecto (YYYY-MM-DD)
+    tz_offset_min: Optional[int] = None  # desfase actual respecto a UTC, en minutos
     modulos: dict = Field(default_factory=dict)
     created_by: str
     created_at: datetime
@@ -633,6 +695,11 @@ class LocationNodeIn(BaseModel):
     target_lat: Optional[float] = None
     target_lon: Optional[float] = None
     target_elev: Optional[float] = None
+    # Ubicación GPS real del nodo (grados decimales WGS84), tomada con el
+    # dispositivo. Independiente de target_* (que en la práctica guardan UTM).
+    # Ambos o ninguno; ver `validar_gps_nodo`.
+    gps_lat: Optional[float] = None
+    gps_lon: Optional[float] = None
     # Estatus de acceso al predio y situación social/liberación física, capturados
     # a nivel de nodo (vigentes al momento de consulta, no por reporte/período).
     # Usados en la página de resumen por subtramo del export PDF/PPTX.
@@ -670,6 +737,8 @@ class LocationNodeOut(BaseModel):
     target_lat: Optional[float] = None
     target_lon: Optional[float] = None
     target_elev: Optional[float] = None
+    gps_lat: Optional[float] = None
+    gps_lon: Optional[float] = None
     meta: Optional[float] = None
     acceso_predio: Optional[str] = None
     situacion_social: Optional[str] = None
@@ -825,6 +894,10 @@ class ReportIn(BaseModel):
     # ReportTemplate) y los valores capturados para sus campos dinámicos.
     template_id: Optional[str] = None
     dynamic_data: dict = Field(default_factory=dict)
+    # Captura rápida de Fuerza de Trabajo: reporte mínimo con solo personal y/o
+    # equipo. No exige valor de medición del nodo (no aplica) pero sí al menos
+    # una categoría de personal o de equipo.
+    solo_fuerza_trabajo: bool = False
 
 
 class ReportOut(BaseModel):
@@ -1030,6 +1103,158 @@ SEED_REPORT_TEMPLATES: List[dict] = [
 ]
 
 
+# === Tipos de obra (K-13 / T-10) ============================================
+# El tipo de obra decide qué módulos quedan ENCENDIDOS al crear el proyecto y qué
+# plantillas de reporte se recomiendan. Nunca reescribe lo ya configurado: cambiar
+# el tipo de un proyecto solo cambia lo que se ofrece a futuro.
+#
+# Plantillas de reporte: cada plantilla sembrada declara `tipos_obra`. "*" = sirve
+# para cualquier tipo. Las plantillas que ya existen en la base de datos (sembradas
+# antes de este campo) o creadas por el usuario y sin el campo se leen con este
+# mismo mapa (o "*" si no aparecen), sin migrar datos.
+PLANTILLAS_TIPOS_OBRA: dict = {
+    "calidad_colados": ["*"],
+    "calidad_acero": ["*"],
+    "calidad_revision_acero": ["*"],
+    # Prueba de integridad de pilas: solo tiene sentido en cimentaciones profundas.
+    "calidad_pit_concreto": ["edificacion", "puente"],
+    "topografia_cimbrado": ["*"],
+    "hse": ["*"],
+    "gestion_social": ["*"],
+    "medio_ambiente": ["*"],
+    "obra_civil": ["*"],
+    "reporte_libre": ["*"],
+}
+for _plantilla_semilla in SEED_REPORT_TEMPLATES:
+    _plantilla_semilla.setdefault("tipos_obra", PLANTILLAS_TIPOS_OBRA.get(_plantilla_semilla["code"], ["*"]))
+
+_CAT_D, _CAT_S, _CAT_M = "reportes_diarios", "reportes_semanales", "reportes_mensuales"
+_EN_DSM = (_CAT_D, _CAT_S, _CAT_M)   # diario, semanal y mensual
+_EN_SM = (_CAT_S, _CAT_M)            # semanal y mensual
+_EN_M = (_CAT_M,)                    # solo mensual
+
+# `modulos`: módulo -> categorías de informe en las que queda encendido. El
+# módulo de Control de Obra (avance por elemento de cimentación) NO se enciende
+# por defecto en ningún tipo: es específico de ciertas obras y el Coordinador lo
+# activa a mano. Los módulos no listados quedan apagados.
+TIPOS_OBRA: dict = {
+    "generica": {
+        "nombre": "Genérica",
+        "descripcion": "Punto de partida neutro: seguridad, riesgos, estado del tiempo y tabla resumen.",
+        "modulos": {
+            "seguridad_higiene": _EN_DSM, "gestion_riesgos": _EN_SM,
+            "estado_tiempo": _EN_DSM, "tabla_resumen": _EN_SM,
+        },
+        "plantillas": ["reporte_libre", "obra_civil", "hse", "calidad_colados", "calidad_acero"],
+    },
+    "carretera": {
+        "nombre": "Carretera",
+        "descripcion": "Terracerías y pavimentos: suma impacto ambiental y estudios del proyecto.",
+        "modulos": {
+            "seguridad_higiene": _EN_DSM, "gestion_riesgos": _EN_SM, "estado_tiempo": _EN_DSM,
+            "tabla_resumen": _EN_SM, "impacto_ambiental": _EN_SM, "estudios_proyecto": _EN_M,
+        },
+        "plantillas": [
+            "obra_civil", "calidad_colados", "calidad_acero", "hse", "medio_ambiente", "gestion_social", "reporte_libre",
+        ],
+    },
+    "edificacion": {
+        "nombre": "Edificación",
+        "descripcion": "Estructura y acabados: control de acero, colados y cimbrado.",
+        "modulos": {
+            "seguridad_higiene": _EN_DSM, "gestion_riesgos": _EN_SM, "estado_tiempo": _EN_DSM,
+            "tabla_resumen": _EN_SM, "estudios_proyecto": _EN_M,
+        },
+        "plantillas": [
+            "obra_civil", "calidad_colados", "calidad_acero", "calidad_revision_acero",
+            "topografia_cimbrado", "hse", "reporte_libre",
+        ],
+    },
+    "hidraulica": {
+        "nombre": "Hidráulica",
+        "descripcion": "Redes, canales y presas: suma impacto ambiental, gestión social y estudios.",
+        "modulos": {
+            "seguridad_higiene": _EN_DSM, "gestion_riesgos": _EN_SM, "estado_tiempo": _EN_DSM,
+            "tabla_resumen": _EN_SM, "impacto_ambiental": _EN_SM, "estudios_proyecto": _EN_M,
+        },
+        "plantillas": [
+            "obra_civil", "calidad_colados", "calidad_acero", "hse", "medio_ambiente", "gestion_social", "reporte_libre",
+        ],
+    },
+    "puente": {
+        "nombre": "Puente",
+        "descripcion": "Cimentación profunda, subestructura y superestructura: incluye la prueba de integridad de pilas.",
+        "modulos": {
+            "seguridad_higiene": _EN_DSM, "gestion_riesgos": _EN_SM, "estado_tiempo": _EN_DSM,
+            "tabla_resumen": _EN_SM, "impacto_ambiental": _EN_SM, "estudios_proyecto": _EN_M,
+        },
+        "plantillas": [
+            "obra_civil", "calidad_colados", "calidad_acero", "calidad_revision_acero", "calidad_pit_concreto",
+            "topografia_cimbrado", "hse", "medio_ambiente", "reporte_libre",
+        ],
+    },
+}
+TIPOS_OBRA_IDS = tuple(TIPOS_OBRA.keys())
+
+
+def tipo_obra_de(project: Optional[dict]) -> str:
+    """Tipo de obra del proyecto. Un proyecto anterior al campo se lee como
+    "legado" (sin escribir nada en la base de datos)."""
+    return ((project or {}).get("tipo_obra") or "").strip() or TIPO_OBRA_LEGADO
+
+
+def modulos_por_defecto_de_tipo(tipo: Optional[str]) -> dict:
+    """`modulos` (estructura de MODULOS_CATALOG) con lo que el tipo enciende por
+    defecto. Un tipo desconocido o "legado" deja todo apagado (como siempre)."""
+    definicion = TIPOS_OBRA.get(tipo or "")
+    crudo: dict = {categoria: {} for categoria in MODULOS_CATALOG}
+    if definicion:
+        for clave, categorias in definicion["modulos"].items():
+            for categoria in categorias:
+                crudo[categoria][clave] = True
+    return _sanitize_modulos(crudo)
+
+
+def catalogo_tipos_obra() -> list:
+    """Catálogo público de tipos (sin "legado", que es interno)."""
+    salida = []
+    for tid, d in TIPOS_OBRA.items():
+        salida.append({
+            "id": tid,
+            "nombre": d["nombre"],
+            "descripcion": d["descripcion"],
+            "modulos_por_defecto": modulos_por_defecto_de_tipo(tid),
+            "plantillas_recomendadas": list(d["plantillas"]),
+        })
+    return salida
+
+
+def tipos_de_plantilla(tpl: dict) -> list:
+    """Tipos de obra para los que sirve una plantilla: el campo propio, si lo
+    tiene; si no, el mapa de plantillas sembradas; si no, cualquiera ("*")."""
+    return list(tpl.get("tipos_obra") or PLANTILLAS_TIPOS_OBRA.get(tpl.get("code"), ["*"]))
+
+
+def plantilla_visible_para_tipo(tpl: dict, tipo: Optional[str]) -> bool:
+    """Sin tipo, o con "legado", se ven todas (comportamiento de siempre)."""
+    if not tipo or tipo == TIPO_OBRA_LEGADO:
+        return True
+    tipos = tipos_de_plantilla(tpl)
+    return "*" in tipos or tipo in tipos
+
+
+def etapas_poste_de(project: Optional[dict]) -> list:
+    """Etapas de Control de Obra efectivas del proyecto. Un proyecto anterior a
+    `tipo_obra` sin plantilla propia usa la de cimentación de postes (como
+    siempre); un proyecto con tipo de obra no recibe ninguna por defecto."""
+    etapas = (project or {}).get("etapas_poste")
+    if etapas:
+        return etapas
+    if tipo_obra_de(project) == TIPO_OBRA_LEGADO:
+        return PLANTILLA_ETAPAS_CIMENTACION_POSTES
+    return []
+
+
 # === Helpers ================================================================
 def hash_pw(pw: str) -> str:
     return bcrypt.hashpw(pw.encode(), bcrypt.gensalt(rounds=10)).decode()
@@ -1056,7 +1281,7 @@ async def current_user(creds: Optional[HTTPAuthorizationCredentials] = Depends(b
     except jwt.PyJWTError:
         raise HTTPException(401, "Token inválido")
     u = await db.users.find_one({"id": uid})
-    if not u:
+    if not u or u.get("deleted_at"):
         raise HTTPException(401, "Usuario no existe")
     u.pop("_id", None)
     u.pop("password", None)
@@ -1087,6 +1312,71 @@ def user_to_out(u: dict) -> dict:
         "expo_push_tokens": u.get("expo_push_tokens") or [],
         "created_at": u.get("created_at", datetime.now(timezone.utc)),
     }
+
+
+# === FECHAS DEL PROYECTO (X-04 / A-08 / K-05) ================================
+# Única fuente de "hoy", inicio de día y semana. Todo se calcula en la zona
+# horaria del proyecto (`zona_horaria`, por defecto America/Mexico_City), nunca
+# en UTC ni en la hora del servidor. La semana va de lunes a domingo salvo que el
+# proyecto configure otro `dia_inicio_semana`.
+ZONA_POR_DEFECTO = "America/Mexico_City"
+DIAS_SEMANA = {"LUNES": 0, "MARTES": 1, "MIERCOLES": 2, "JUEVES": 3, "VIERNES": 4, "SABADO": 5, "DOMINGO": 6}
+
+
+def validar_zona_horaria(nombre: Optional[str]) -> Optional[str]:
+    """Devuelve el nombre IANA si es válido; ValueError si no. Vacío -> None (usa el defecto)."""
+    n = (nombre or "").strip()
+    if not n:
+        return None
+    try:
+        ZoneInfo(n)
+    except Exception:
+        raise ValueError(f"Zona horaria no válida: {n}")
+    return n
+
+
+def zona_proyecto(project: Optional[dict] = None):
+    nombre = (project or {}).get("zona_horaria") or ZONA_POR_DEFECTO
+    try:
+        return ZoneInfo(nombre)
+    except Exception:
+        return MX_TZ
+
+
+def hoy_proyecto(project: Optional[dict] = None, ahora_utc: Optional[datetime] = None) -> date:
+    """Fecha de hoy EN LA ZONA DEL PROYECTO."""
+    ahora = ahora_utc or datetime.now(timezone.utc)
+    return ahora.astimezone(zona_proyecto(project)).date()
+
+
+def offset_min_proyecto(project: Optional[dict] = None, ahora_utc: Optional[datetime] = None) -> int:
+    """Desfase actual de la zona respecto a UTC, en minutos (CDMX = -360)."""
+    ahora = ahora_utc or datetime.now(timezone.utc)
+    off = ahora.astimezone(zona_proyecto(project)).utcoffset()
+    return int(off.total_seconds() // 60) if off is not None else 0
+
+
+def inicio_dia_utc(fecha: date, project: Optional[dict] = None) -> datetime:
+    """00:00 del día `fecha` en la zona del proyecto, expresado en UTC."""
+    local = datetime(fecha.year, fecha.month, fecha.day, tzinfo=zona_proyecto(project))
+    return local.astimezone(timezone.utc)
+
+
+def inicio_semana(hoy: date, dia_inicio: Optional[str] = "LUNES") -> date:
+    objetivo = DIAS_SEMANA.get((dia_inicio or "LUNES").upper(), 0)
+    return hoy - timedelta(days=(hoy.weekday() - objetivo) % 7)
+
+
+def semana_de(hoy: date, dia_inicio: Optional[str] = "LUNES") -> Tuple[date, date]:
+    """(primer día, último día) de la semana que contiene `hoy`."""
+    ini = inicio_semana(hoy, dia_inicio)
+    return ini, ini + timedelta(days=6)
+
+
+async def hoy_de(pid: str) -> date:
+    """`hoy_proyecto` a partir del id del proyecto (una consulta ligera)."""
+    proj = await db.projects.find_one({"id": pid}, {"zona_horaria": 1})
+    return hoy_proyecto(proj)
 
 
 async def ensure_project_access(user: dict, project_id: str) -> dict:
@@ -1239,6 +1529,15 @@ async def startup_event():
     await db.partidas.create_index("id")
     await db.conceptos.create_index("id")
     await db.registros_avance.create_index("id")
+    # Idempotencia de la cola offline de avances. Índice parcial: solo aplica a los
+    # registros con client_id de texto (los viejos guardan null). Si ya hubiera
+    # duplicados legados, no se tumba el arranque: queda la revisión por consulta.
+    try:
+        await db.registros_avance.create_index(
+            "client_id", unique=True, partialFilterExpression={"client_id": {"$type": "string"}},
+        )
+    except Exception as e:
+        log.warning(f"[avance] no se pudo crear el índice único de client_id: {e}")
     await db.catalogo_import_sessions.create_index("id")
     await db.programa_import_sessions.create_index("id")
     # Etapa EVM: mismo criterio de TTL 24h que catalogo/programa (sesiones
@@ -1330,6 +1629,8 @@ async def startup_event():
     await db.password_reset_requests.create_index("id", unique=True)
     await db.password_reset_requests.create_index([("status", 1), ("created_at", 1)])
     await db.password_reset_requests.create_index("user_id")
+    await db.password_reset_tokens.create_index("token_hash", unique=True)
+    await db.password_reset_tokens.create_index([("user_id", 1), ("created_at", 1)])
 
     # --- Seed de plantillas de reporte estructurado (idempotente por `code`) ---
     try:
@@ -1402,24 +1703,459 @@ async def startup_event():
     # Loop en segundo plano: recordatorios push de reuniones (1h antes).
     asyncio.create_task(_meeting_reminder_loop())
 
-    log.info("[startup] SynCo v2.0 ready")
+    log.info("[startup] Dirac ready")
 
 
 # === ROOT / HEALTH ==========================================================
 @api.get("/")
 async def root():
-    return {"name": "SynCo v2.0", "status": "ok"}
+    return {"name": "Dirac", "status": "ok"}
 
 
-@api.get("/health")
+@api.api_route("/health", methods=["GET", "HEAD"])
 async def health():
-    return {"ok": True, "ts": datetime.now(timezone.utc).isoformat()}
+    """Ping de la app (NetInfo), del banner "Sin conexión" y de los monitores.
+    200 solo si Mongo responde; si no, 503 (la app no puede trabajar sin base)."""
+    ts = datetime.now(timezone.utc).isoformat()
+    try:
+        await asyncio.wait_for(db.command("ping"), timeout=3)
+    except Exception as e:  # noqa: BLE001 - cualquier fallo de la base = no saludable
+        log.warning(f"[health] Mongo no responde: {e}")
+        return JSONResponse(status_code=503, content={"ok": False, "db": False, "ts": ts})
+    return {"ok": True, "db": True, "ts": ts}
+
+
+# === PÁGINAS LEGALES PÚBLICAS (privacidad, términos, eliminar cuenta) ======
+# Google Play y la App Store piden URLs públicas para estas tres páginas. Viven
+# aquí (y no en archivos estáticos) porque el despliegue solo copia server.py.
+SUPPORT_EMAIL = os.environ.get("SUPPORT_EMAIL", "gabodeicaza@gmail.com")
+LEGAL_FECHA = "23 de septiembre de 2026"
+
+_LEGAL_PLANTILLA = """<!DOCTYPE html>
+<html lang="es-MX">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{TITULO}} · Dirac</title>
+<style>
+  :root { --marca: #1E40AF; --texto: #1f2937; --tenue: #6b7280; --error: #B91C1C; --ok: #166534; }
+  body { font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; max-width: 760px; margin: 0 auto; padding: 32px 20px 64px; color: var(--texto); line-height: 1.6; }
+  h1 { color: var(--marca); font-size: 1.6rem; }
+  h2 { color: var(--marca); font-size: 1.15rem; margin-top: 2rem; }
+  ul { padding-left: 1.2rem; }
+  .fecha { color: var(--tenue); font-size: 0.9rem; }
+  a { color: var(--marca); }
+  label { display: block; font-weight: 600; margin-top: 1rem; }
+  input, textarea { width: 100%; box-sizing: border-box; padding: 10px; font-size: 1rem; border: 1px solid var(--tenue); border-radius: 6px; }
+  button { margin-top: 1rem; padding: 12px 20px; font-size: 1rem; background: var(--marca); color: #fff; border: 0; border-radius: 6px; cursor: pointer; min-height: 44px; }
+  button:disabled { opacity: .6; cursor: default; }
+  #resultado { margin-top: 1rem; font-weight: 600; }
+  #resultado.error { color: var(--error); }
+  #resultado.ok { color: var(--ok); }
+</style>
+</head>
+<body>
+{{CUERPO}}
+</body>
+</html>
+"""
+
+
+def _pagina_legal(titulo: str, cuerpo: str) -> str:
+    return _LEGAL_PLANTILLA.replace("{{TITULO}}", titulo).replace("{{CUERPO}}", cuerpo)
+
+
+_CONTACTO_HTML = f"""<h2>Contacto</h2>
+  <p>Gabriel Esteban de Icaza Dávila<br>
+  Correo: <a href="mailto:{SUPPORT_EMAIL}">{SUPPORT_EMAIL}</a></p>"""
+
+PRIVACY_POLICY_HTML = _pagina_legal("Política de privacidad", f"""
+  <h1>Política de privacidad de Dirac</h1>
+  <p class="fecha">Última actualización: {LEGAL_FECHA}</p>
+
+  <p>Dirac es una aplicación para la captura y gestión de reportes técnicos, avances y control de
+  obra en campo, desarrollada y operada por <strong>Gabriel Esteban de Icaza Dávila</strong>. Esta
+  página explica qué datos recopila la aplicación, para qué se usan y cómo se protegen.</p>
+
+  <h2>Qué datos recopilamos</h2>
+  <ul>
+    <li><strong>Datos de cuenta:</strong> correo electrónico, contraseña (almacenada de forma
+    cifrada), nombre, puesto y rol dentro del proyecto. El acceso a la aplicación es únicamente
+    por invitación.</li>
+    <li><strong>Ubicación:</strong> coordenadas GPS, únicamente cuando el usuario lo autoriza y
+    adjunta evidencia fotográfica o marca un punto de obra, para georreferenciar esa evidencia.</li>
+    <li><strong>Fotografías:</strong> imágenes tomadas con la cámara o elegidas de la galería como
+    evidencia de obra. Se envían al servidor del proyecto.</li>
+    <li><strong>Archivos adjuntos:</strong> documentos o imágenes que el usuario decida adjuntar
+    (planos, plantillas, catálogos y hojas de cálculo).</li>
+    <li><strong>Datos de obra:</strong> texto, fechas, cantidades, avances, gastos, minutas,
+    mensajes y demás información técnica capturada por el equipo del proyecto.</li>
+    <li><strong>Token de notificaciones push:</strong> un identificador técnico del dispositivo,
+    gestionado a través de Expo Application Services (EAS), usado únicamente para enviar
+    notificaciones relacionadas con la operación (por ejemplo, avisos de reuniones o acuerdos).</li>
+  </ul>
+
+  <h2>Para qué usamos estos datos</h2>
+  <p>Los datos se usan exclusivamente para operar la aplicación: autenticar usuarios, generar y
+  sincronizar reportes de obra con un servidor centralizado, calcular indicadores del proyecto y
+  notificar eventos relevantes a los usuarios correspondientes. No usamos estos datos con fines
+  publicitarios.</p>
+
+  <h2>Con quién compartimos datos</h2>
+  <p>No vendemos ni compartimos datos personales con terceros con fines comerciales. La única
+  excepción es el envío de notificaciones push, para lo cual el token del dispositivo se procesa
+  a través de <strong>Expo Application Services (EAS)</strong> como proveedor técnico. La
+  aplicación no integra redes de publicidad ni herramientas de analítica o rastreo de terceros.</p>
+
+  <h2>Dónde se almacenan los datos</h2>
+  <p>Los datos se almacenan en una base de datos propia (MongoDB) alojada en un servidor bajo
+  control directo del operador de la aplicación. Toda la comunicación entre la aplicación y el
+  servidor viaja cifrada mediante HTTPS/TLS. En el dispositivo, la sesión se guarda en el
+  almacén seguro del sistema.</p>
+
+  <h2>Cuánto tiempo conservamos los datos</h2>
+  <p>Los datos se conservan mientras la cuenta y el proyecto asociado permanezcan activos.</p>
+
+  <h2>Eliminación de tu cuenta</h2>
+  <p>Puedes eliminar tu cuenta desde la aplicación (Perfil → Eliminar mi cuenta) o solicitarlo en
+  <a href="/eliminar-cuenta">esta página</a>. Al eliminarla borramos tu correo, nombre, teléfono,
+  contraseña y tokens de notificación. Los reportes, avances y minutas que capturaste son parte
+  del registro de obra del proyecto y se conservan, pero con tu nombre reemplazado por
+  «Usuario eliminado».</p>
+
+  <h2>Tus derechos</h2>
+  <p>Puedes solicitar acceso, rectificación, cancelación u oposición al tratamiento de tus datos
+  personales en cualquier momento escribiendo al correo de contacto de esta página.</p>
+
+  <h2>Menores de edad</h2>
+  <p>Esta aplicación está dirigida a personal técnico y operativo de obra, y no a menores de edad.</p>
+
+  <h2>Cambios a esta política</h2>
+  <p>Cualquier cambio se publicará en esta misma página junto con su fecha de actualización.</p>
+
+  {_CONTACTO_HTML}
+""")
+
+TERMS_HTML = _pagina_legal("Términos de uso", f"""
+  <h1>Términos de uso de Dirac</h1>
+  <p class="fecha">Última actualización: {LEGAL_FECHA}</p>
+
+  <h2>1. Aceptación</h2>
+  <p>Al crear una cuenta o usar Dirac aceptas estos términos y la
+  <a href="/privacidad">política de privacidad</a>. Si no estás de acuerdo, no uses la aplicación.</p>
+
+  <h2>2. Cuentas y acceso</h2>
+  <p>El acceso es por invitación del Coordinador General de tu proyecto. Eres responsable de
+  mantener la confidencialidad de tu contraseña y de la actividad realizada con tu cuenta.</p>
+
+  <h2>3. Uso permitido</h2>
+  <p>Dirac debe usarse para gestionar información de obra de los proyectos a los que fuiste
+  invitado. No debes capturar información falsa, intentar acceder a proyectos ajenos, alterar el
+  funcionamiento del servicio ni usarlo para fines ilícitos.</p>
+
+  <h2>4. Contenido y datos de obra</h2>
+  <p>La información que captures pertenece a la organización titular del proyecto. Nos otorgas
+  permiso para almacenarla, procesarla y mostrarla a los usuarios autorizados del proyecto con el
+  único fin de operar el servicio.</p>
+
+  <h2>5. Indicadores y reportes</h2>
+  <p>Los indicadores (avance, valor ganado, costos, proyecciones) se calculan con los datos que
+  captura el equipo. Son una herramienta de apoyo a la toma de decisiones y no sustituyen la
+  revisión técnica de un profesional responsable de la obra.</p>
+
+  <h2>6. Disponibilidad</h2>
+  <p>Procuramos que el servicio esté disponible de forma continua, pero puede haber
+  interrupciones por mantenimiento o causas ajenas. La aplicación permite capturar sin conexión y
+  sincronizar después.</p>
+
+  <h2>7. Limitación de responsabilidad</h2>
+  <p>El servicio se ofrece «tal cual». En la medida permitida por la ley, el operador no
+  responde por daños indirectos derivados del uso o de la imposibilidad de uso de la aplicación,
+  ni por decisiones de obra tomadas con base en la información capturada.</p>
+
+  <h2>8. Terminación</h2>
+  <p>Puedes eliminar tu cuenta en cualquier momento desde la aplicación o en
+  <a href="/eliminar-cuenta">esta página</a>. Podemos suspender cuentas que incumplan estos términos.</p>
+
+  <h2>9. Cambios</h2>
+  <p>Podemos actualizar estos términos; los cambios se publicarán en esta página con su fecha.</p>
+
+  <h2>10. Ley aplicable</h2>
+  <p>Estos términos se rigen por las leyes de los Estados Unidos Mexicanos. Para cualquier
+  controversia, las partes se someten a los tribunales competentes de la Ciudad de México.</p>
+
+  {_CONTACTO_HTML}
+""")
+
+DELETE_ACCOUNT_HTML = _pagina_legal("Eliminar mi cuenta", f"""
+  <h1>Eliminar mi cuenta de Dirac</h1>
+  <p class="fecha">Última actualización: {LEGAL_FECHA}</p>
+
+  <h2>Desde la aplicación</h2>
+  <p>Abre <strong>Perfil → Eliminar mi cuenta</strong>, confirma y escribe tu contraseña. La
+  eliminación es inmediata.</p>
+
+  <h2>Desde esta página</h2>
+  <p>Si ya no tienes la aplicación, escribe el correo de tu cuenta. Atenderemos tu solicitud y te
+  lo confirmaremos.</p>
+  <form id="forma" novalidate>
+    <label for="correo">Correo de tu cuenta</label>
+    <input id="correo" type="email" autocomplete="email" required>
+    <label for="nota">Comentario (opcional)</label>
+    <textarea id="nota" rows="3" maxlength="500"></textarea>
+    <button id="enviar" type="submit">Solicitar eliminación</button>
+    <p id="resultado" role="status" aria-live="polite"></p>
+  </form>
+
+  <h2>Qué se elimina y qué se conserva</h2>
+  <ul>
+    <li><strong>Se elimina:</strong> tu correo, nombre, teléfono, puesto, contraseña, tokens de
+    notificación y solicitudes de contraseña.</li>
+    <li><strong>Se conserva:</strong> los reportes, avances y minutas que capturaste, porque son
+    parte del registro de obra del proyecto. Aparecerán firmados por «Usuario eliminado» y sin
+    ningún dato que te identifique.</li>
+  </ul>
+
+  {_CONTACTO_HTML}
+  <script>
+    const forma = document.getElementById('forma');
+    const salida = document.getElementById('resultado');
+    forma.addEventListener('submit', async (ev) => {{
+      ev.preventDefault();
+      const correo = document.getElementById('correo').value.trim();
+      salida.className = '';
+      if (!/^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$/.test(correo)) {{
+        salida.className = 'error';
+        salida.textContent = 'Escribe un correo válido.';
+        return;
+      }}
+      const boton = document.getElementById('enviar');
+      boton.disabled = true;
+      try {{
+        const r = await fetch('/api/public/deletion_request', {{
+          method: 'POST',
+          headers: {{ 'Content-Type': 'application/json' }},
+          body: JSON.stringify({{ email: correo, note: document.getElementById('nota').value }}),
+        }});
+        if (!r.ok) throw new Error('http ' + r.status);
+        const d = await r.json();
+        salida.className = 'ok';
+        salida.textContent = d.message;
+        forma.reset();
+      }} catch (e) {{
+        salida.className = 'error';
+        salida.textContent = 'No pudimos enviar la solicitud. Inténtalo de nuevo o escríbenos por correo.';
+      }} finally {{
+        boton.disabled = false;
+      }}
+    }});
+  </script>
+""")
+
+
+@app.get("/privacidad", response_class=HTMLResponse)
+@api.get("/privacidad", response_class=HTMLResponse)
+async def privacy_policy():
+    return PRIVACY_POLICY_HTML
+
+
+@app.get("/terminos", response_class=HTMLResponse)
+@api.get("/terminos", response_class=HTMLResponse)
+async def terms_of_use():
+    return TERMS_HTML
+
+
+@app.get("/eliminar-cuenta", response_class=HTMLResponse)
+@api.get("/eliminar-cuenta", response_class=HTMLResponse)
+async def delete_account_page():
+    return DELETE_ACCOUNT_HTML
+
+
+# === RECUPERAR CONTRASEÑA POR CORREO (T-08) ================================
+# La persona pide un enlace; llega por correo, sirve UNA sola vez y vence a los
+# 30 minutos. Solo se guarda el hash del token (nunca el token). Si el servidor
+# de correo no está configurado (SMTP_HOST vacío), el flujo cae al respaldo
+# administrativo anterior: queda una solicitud para el Coordinador General.
+RESET_TOKEN_TTL_MIN = 30
+RESET_MAX_POR_HORA = 3
+PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "https://apm-app.mx").rstrip("/")
+MSG_RESET_CORREO = (
+    "Si el correo está registrado, te enviamos un enlace para crear una contraseña nueva. "
+    f"El enlace sirve una sola vez y vence en {RESET_TOKEN_TTL_MIN} minutos."
+)
+MSG_RESET_RESPALDO = (
+    "Si el correo está registrado, tu Coordinador General verá la solicitud y te compartirá una contraseña nueva."
+)
+
+
+def smtp_configurado() -> bool:
+    return bool(os.environ.get("SMTP_HOST"))
+
+
+def hash_reset_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def construir_correo_reset(nombre: str, enlace: str) -> Tuple[str, str]:
+    """(asunto, cuerpo en texto plano) del correo de recuperación."""
+    asunto = "Restablece tu contraseña de Dirac"
+    cuerpo = (
+        f"Hola {nombre},\n\n"
+        "Recibimos una solicitud para crear una contraseña nueva en Dirac. "
+        "Abre este enlace para elegirla:\n\n"
+        f"{enlace}\n\n"
+        f"El enlace sirve una sola vez y vence en {RESET_TOKEN_TTL_MIN} minutos. "
+        "Si no lo pediste, ignora este correo: tu contraseña actual no cambia.\n\n"
+        "Equipo Dirac"
+    )
+    return asunto, cuerpo
+
+
+def _enviar_smtp_sync(destino: str, asunto: str, cuerpo: str) -> None:
+    from email.message import EmailMessage
+
+    host = os.environ["SMTP_HOST"]
+    port = int(os.environ.get("SMTP_PORT", "587"))
+    remitente = os.environ.get("SMTP_FROM") or os.environ.get("SMTP_USER") or SUPPORT_EMAIL
+    msg = EmailMessage()
+    msg["Subject"] = asunto
+    msg["From"] = remitente
+    msg["To"] = destino
+    msg.set_content(cuerpo)
+    if port == 465:
+        server = smtplib.SMTP_SSL(host, port, timeout=15)
+    else:
+        server = smtplib.SMTP(host, port, timeout=15)
+        if os.environ.get("SMTP_STARTTLS", "1") != "0":
+            server.starttls()
+    try:
+        if os.environ.get("SMTP_USER"):
+            server.login(os.environ["SMTP_USER"], os.environ.get("SMTP_PASSWORD", ""))
+        server.send_message(msg)
+    finally:
+        server.quit()
+
+
+async def enviar_correo(destino: str, asunto: str, cuerpo: str) -> bool:
+    """True si el servidor aceptó el correo. Nunca lanza: un fallo de correo no debe romper el login."""
+    if not smtp_configurado():
+        return False
+    try:
+        await asyncio.to_thread(_enviar_smtp_sync, destino, asunto, cuerpo)
+        return True
+    except Exception as e:  # noqa: BLE001
+        log.warning(f"[reset] No se pudo enviar el correo: {type(e).__name__}")
+        return False
+
+
+async def crear_token_reset(uid: str) -> Optional[str]:
+    """Genera un token nuevo (invalida los anteriores). None si excede el límite por hora."""
+    ahora = datetime.now(timezone.utc)
+    recientes = await db.password_reset_tokens.count_documents(
+        {"user_id": uid, "created_at": {"$gt": ahora - timedelta(hours=1)}}
+    )
+    if recientes >= RESET_MAX_POR_HORA:
+        return None
+    await db.password_reset_tokens.update_many({"user_id": uid, "used_at": None}, {"$set": {"used_at": ahora}})
+    token = secrets.token_urlsafe(32)
+    await db.password_reset_tokens.insert_one({
+        "id": str(uuid.uuid4()),
+        "user_id": uid,
+        "token_hash": hash_reset_token(token),
+        "created_at": ahora,
+        "expires_at": ahora + timedelta(minutes=RESET_TOKEN_TTL_MIN),
+        "used_at": None,
+    })
+    return token
+
+
+class ResetPasswordIn(BaseModel):
+    token: str
+    new_password: str
+
+
+@api.post("/auth/reset_password")
+async def reset_password(body: ResetPasswordIn):
+    """Consume el token del correo. Un solo uso: el `find_one_and_update` lo marca
+    como usado de forma atómica, así dos peticiones simultáneas no lo gastan dos veces."""
+    new_pw = (body.new_password or "").strip()
+    if len(new_pw) < 6:
+        raise HTTPException(400, "La nueva contraseña debe tener mínimo 6 caracteres")
+    ahora = datetime.now(timezone.utc)
+    tok = await db.password_reset_tokens.find_one_and_update(
+        {"token_hash": hash_reset_token(body.token or ""), "used_at": None, "expires_at": {"$gt": ahora}},
+        {"$set": {"used_at": ahora}},
+    )
+    if not tok:
+        raise HTTPException(400, "El enlace no es válido o ya venció. Pide uno nuevo.")
+    res = await db.users.update_one(
+        {"id": tok["user_id"], "deleted_at": {"$exists": False}},
+        {"$set": {"password": hash_pw(new_pw)}},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(400, "El enlace no es válido o ya venció. Pide uno nuevo.")
+    # Cualquier solicitud administrativa pendiente de esa persona ya no hace falta.
+    await db.password_reset_requests.update_many(
+        {"user_id": tok["user_id"], "status": "pending"},
+        {"$set": {"status": "resolved", "resolved_at": ahora}},
+    )
+    return {"ok": True}
+
+
+RESET_PAGE_HTML = _pagina_legal("Restablecer contraseña", """
+  <h1>Crea tu contraseña nueva</h1>
+  <form id="forma" novalidate>
+    <label for="pw1">Contraseña nueva (mínimo 6 caracteres)</label>
+    <input id="pw1" type="password" autocomplete="new-password" required>
+    <label for="pw2">Repite la contraseña</label>
+    <input id="pw2" type="password" autocomplete="new-password" required>
+    <button id="enviar" type="submit">Guardar contraseña</button>
+    <p id="resultado" role="status" aria-live="polite"></p>
+  </form>
+  <script>
+    const token = new URLSearchParams(location.search).get('token') || '';
+    const forma = document.getElementById('forma');
+    const salida = document.getElementById('resultado');
+    function mostrar(clase, texto) { salida.className = clase; salida.textContent = texto; }
+    forma.addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      const a = document.getElementById('pw1').value;
+      const b = document.getElementById('pw2').value;
+      if (!token) return mostrar('error', 'Este enlace está incompleto. Pide uno nuevo desde la aplicación.');
+      if (a.length < 6) return mostrar('error', 'La contraseña debe tener mínimo 6 caracteres.');
+      if (a !== b) return mostrar('error', 'Las contraseñas no coinciden.');
+      const boton = document.getElementById('enviar');
+      boton.disabled = true;
+      try {
+        const r = await fetch('/api/auth/reset_password', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token: token, new_password: a }),
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) return mostrar('error', typeof d.detail === 'string' ? d.detail : 'No se pudo guardar la contraseña.');
+        forma.reset();
+        mostrar('ok', 'Listo. Ya puedes iniciar sesión en Dirac con tu contraseña nueva.');
+      } catch (e) {
+        mostrar('error', 'No hay conexión. Inténtalo de nuevo.');
+      } finally {
+        boton.disabled = false;
+      }
+    });
+  </script>
+""")
+
+
+@app.get("/restablecer", response_class=HTMLResponse)
+@api.get("/restablecer", response_class=HTMLResponse)
+async def reset_password_page():
+    return RESET_PAGE_HTML
 
 
 # === BOOTSTRAP (idempotente) ================================================
 @api.post("/admin/bootstrap")
 async def bootstrap(body: BootstrapIn):
-    if body.secret != BOOTSTRAP_SECRET:
+    if not BOOTSTRAP_SECRET or not hmac.compare_digest(str(body.secret or "").encode(), BOOTSTRAP_SECRET.encode()):
         raise HTTPException(403, "Secret inválido")
     existing = await db.users.find_one({"email": body.email.lower()})
     if existing:
@@ -1454,7 +2190,7 @@ async def list_coordinators(user: dict = Depends(require_role(ROLE_COORD))):
     """Lista todos los Coordinadores Generales. Sólo accesible por otro
     Coordinador General. Devuelve el directorio con email, nombre y fecha
     de alta para auditoría."""
-    items = await db.users.find({"role": ROLE_COORD}).sort("created_at", 1).to_list(length=500)
+    items = await db.users.find({"role": ROLE_COORD, "deleted_at": {"$exists": False}}).sort("created_at", 1).to_list(length=500)
     return [user_to_out(u) for u in items]
 
 
@@ -1499,7 +2235,7 @@ async def create_coordinator(
 @api.post("/auth/login", response_model=Token)
 async def login(body: LoginIn):
     u = await db.users.find_one({"email": body.email.lower()})
-    if not u or not verify_pw(body.password, u["password"]):
+    if not u or u.get("deleted_at") or not verify_pw(body.password, u["password"]):
         raise HTTPException(401, "Credenciales inválidas")
     return {"token": make_token(u["id"]), "user": user_to_out(u)}
 
@@ -1520,6 +2256,224 @@ async def change_password(body: ChangePasswordIn, user: dict = Depends(current_u
         raise HTTPException(400, "La nueva contraseña debe tener mínimo 6 caracteres")
     await db.users.update_one({"id": user["id"]}, {"$set": {"password": hash_pw(new_pw)}})
     return {"ok": True}
+
+
+# === ELIMINACIÓN DE CUENTA (T-01) ===========================================
+# Google Play y la App Store exigen poder borrar la cuenta desde la app y desde
+# una página web pública. La cuenta se ANONIMIZA (no se borra la fila): los
+# reportes, avances y minutas que firmó se conservan porque son registro de obra
+# del proyecto, pero con el autor "Usuario eliminado". Se eliminan los datos
+# personales: correo, nombre, teléfono, contraseña, tokens de notificación y
+# solicitudes de contraseña.
+USUARIO_ELIMINADO = "Usuario eliminado"
+
+# Colecciones que NO se anonimizan por autoría: `users` se trata aparte y las
+# otras solo guardan datos personales del propio usuario (se borran o se omiten).
+_COLECCIONES_SIN_AUTORIA = {"users", "password_reset_requests", "password_reset_tokens", "channel_reads", "deletion_requests"}
+
+# (campo con el id del usuario, {campo hermano con su nombre/correo: valor}).
+CAMPOS_AUTORIA: List[Tuple[str, Dict[str, Any]]] = [
+    ("created_by", {"created_by_name": USUARIO_ELIMINADO}),
+    ("updated_by", {"updated_by_name": USUARIO_ELIMINADO}),
+    ("captured_by", {"captured_by_name": USUARIO_ELIMINADO}),
+    ("author_id", {"author_name": USUARIO_ELIMINADO}),
+    ("user_id", {"user_name": USUARIO_ELIMINADO, "user_email": None}),
+    ("capturado_por", {"capturado_por_nombre": USUARIO_ELIMINADO}),
+    ("creado_por", {"creado_por_nombre": USUARIO_ELIMINADO}),
+    ("uploaded_by", {"uploaded_by_name": USUARIO_ELIMINADO}),
+    ("pdf_uploaded_by", {"pdf_uploaded_by_name": USUARIO_ELIMINADO}),
+    ("completed_by", {"completed_by_name": USUARIO_ELIMINADO}),
+    ("resolved_by", {"resolved_by_name": USUARIO_ELIMINADO}),
+    ("responsable_id", {"responsable_name": USUARIO_ELIMINADO}),
+]
+
+
+# Arreglos paralelos ids/nombres (minutas.involved_*, events.attendee_*): el nombre
+# de cada persona vive en la misma posición que su id.
+ARREGLOS_PARALELOS: List[Tuple[str, str]] = [
+    ("involved_ids", "involved_names"),
+    ("attendee_ids", "attendee_names"),
+]
+
+
+def nombres_sin_usuario(ids: List[str], nombres: List[str], uid: str) -> List[str]:
+    """Copia de `nombres` con USUARIO_ELIMINADO en las posiciones donde `ids` == uid."""
+    salida = list(nombres or [])
+    for i, x in enumerate(ids or []):
+        if x == uid and i < len(salida):
+            salida[i] = USUARIO_ELIMINADO
+    return salida
+
+
+def correo_eliminado(uid: str) -> str:
+    """Correo de relleno único (la colección exige `email` único) y no enviable."""
+    return f"eliminado-{uid}@eliminado.example.com"
+
+
+def campos_usuario_anonimizado(uid: str, ahora: datetime) -> Dict[str, Any]:
+    """`$set` que deja el documento de usuario sin datos personales ni acceso."""
+    return {
+        "name": USUARIO_ELIMINADO,
+        "email": correo_eliminado(uid),
+        "password": hash_pw(secrets.token_urlsafe(32)),  # nadie la conoce: no puede entrar
+        "expo_push_tokens": [],
+        "project_ids": [],
+        "scope_node_id": None,
+        "scope_node_ids": [],
+        "area": None,
+        "area_id": None,
+        "puesto": None,
+        "no_control": None,
+        "phone": None,
+        "deleted_at": ahora,
+    }
+
+
+async def anonimizar_usuario(uid: str) -> Dict[str, int]:
+    """Anonimiza a `uid` en toda la base. Idempotente. Devuelve conteos por tipo."""
+    ahora = datetime.now(timezone.utc)
+    u = await db.users.find_one({"id": uid})
+    if not u:
+        raise HTTPException(404, "Usuario no existe")
+    email_original = (u.get("email") or "").lower()
+    conteo = {"documentos_anonimizados": 0, "documentos_borrados": 0}
+
+    # 1) Datos personales propios: se borran.
+    r = await db.password_reset_requests.delete_many({"user_id": uid})
+    conteo["documentos_borrados"] += r.deleted_count
+    r = await db.channel_reads.delete_many({"user_id": uid})
+    conteo["documentos_borrados"] += r.deleted_count
+    r = await db.password_reset_tokens.delete_many({"user_id": uid})
+    conteo["documentos_borrados"] += r.deleted_count
+
+    # 2) Autoría en el resto de colecciones: se conserva el registro, se quita el nombre.
+    for cname in await db.list_collection_names():
+        if cname in _COLECCIONES_SIN_AUTORIA or cname.startswith("system."):
+            continue
+        col = db[cname]
+        for campo_id, hermanos in CAMPOS_AUTORIA:
+            for campo, valor in hermanos.items():
+                res = await col.update_many({campo_id: uid, campo: {"$exists": True}}, {"$set": {campo: valor}})
+                conteo["documentos_anonimizados"] += res.modified_count
+    # Arreglos paralelos ids/nombres (participantes de minutas y eventos).
+        for ids_f, names_f in ARREGLOS_PARALELOS:
+            for d in await col.find({ids_f: uid, names_f: {"$exists": True}}).to_list(length=10000):
+                nuevos = nombres_sin_usuario(d.get(ids_f) or [], d.get(names_f) or [], uid)
+                await col.update_one({"_id": d["_id"]}, {"$set": {names_f: nuevos}})
+                conteo["documentos_anonimizados"] += 1
+    # Minutas: el responsable de cada acuerdo va dentro de un arreglo.
+    res = await db.minutas.update_many(
+        {"acuerdos.responsable_id": uid},
+        {"$set": {"acuerdos.$[a].responsable_name": USUARIO_ELIMINADO}},
+        array_filters=[{"a.responsable_id": uid}],
+    )
+    conteo["documentos_anonimizados"] += res.modified_count
+
+    # 3) Invitaciones: quita nombre y correo; las pendientes ya no se pueden canjear.
+    filtro_inv: Dict[str, Any] = {"accepted_user_id": uid}
+    if email_original:
+        filtro_inv = {"$or": [{"accepted_user_id": uid}, {"email": email_original}]}
+    await db.invitations.update_many({**filtro_inv, "status": "pending"}, {"$set": {"status": "revoked"}})
+    res = await db.invitations.update_many(
+        filtro_inv,
+        {"$set": {"name": USUARIO_ELIMINADO, "email": correo_eliminado(uid), "phone": None}},
+    )
+    conteo["documentos_anonimizados"] += res.modified_count
+
+    # 4) El usuario en sí (al final: si algo falla antes, se puede reintentar).
+    await db.users.update_one({"id": uid}, {"$set": campos_usuario_anonimizado(uid, ahora)})
+    conteo["documentos_anonimizados"] += 1
+    log.info(f"[cuenta] Usuario {uid} anonimizado: {conteo}")
+    return conteo
+
+
+async def _validar_puede_eliminarse(u: dict) -> None:
+    """No se permite dejar el sistema sin ningún Coordinador General."""
+    if u.get("role") == ROLE_COORD:
+        otros = await db.users.count_documents(
+            {"role": ROLE_COORD, "id": {"$ne": u["id"]}, "deleted_at": {"$exists": False}}
+        )
+        if otros == 0:
+            raise HTTPException(
+                409,
+                "Eres el único Coordinador General. Crea o promueve a otro antes de eliminar tu cuenta.",
+            )
+
+
+class DeleteAccountIn(BaseModel):
+    password: str
+
+
+@api.post("/auth/delete_account")
+async def delete_account(body: DeleteAccountIn, user: dict = Depends(current_user)):
+    """Eliminación de cuenta iniciada por la persona (exige su contraseña)."""
+    completo = await db.users.find_one({"id": user["id"]})
+    if not completo or not verify_pw(body.password or "", completo.get("password", "")):
+        raise HTTPException(403, "La contraseña no es correcta")
+    await _validar_puede_eliminarse(completo)
+    await anonimizar_usuario(user["id"])
+    return {"ok": True}
+
+
+class DeletionRequestIn(BaseModel):
+    email: EmailStr
+    note: Optional[str] = None
+
+
+@api.post("/public/deletion_request")
+async def public_deletion_request(body: DeletionRequestIn):
+    """Formulario público de la página /eliminar-cuenta (sin sesión). Responde
+    siempre lo mismo, exista o no la cuenta, para no revelar quién es usuario."""
+    email = body.email.lower()
+    u = await db.users.find_one({"email": email, "deleted_at": {"$exists": False}})
+    ya = await db.deletion_requests.find_one({"email": email, "status": "pending"})
+    if not ya:
+        await db.deletion_requests.insert_one({
+            "id": str(uuid.uuid4()),
+            "email": email,
+            "user_id": u["id"] if u else None,
+            "note": (body.note or "").strip()[:500] or None,
+            "status": "pending",
+            "created_at": datetime.now(timezone.utc),
+        })
+    return {"ok": True, "message": "Recibimos tu solicitud. Si el correo corresponde a una cuenta, la eliminaremos y te lo confirmaremos."}
+
+
+@api.get("/admin/deletion_requests")
+async def list_deletion_requests(user: dict = Depends(require_role(ROLE_COORD))):
+    items = await db.deletion_requests.find({"status": "pending"}).sort("created_at", 1).to_list(length=500)
+    for it in items:
+        it.pop("_id", None)
+    return items
+
+
+class ExecuteDeletionIn(BaseModel):
+    confirm: bool = False
+
+
+@api.post("/admin/deletion_requests/{rid}/execute")
+async def execute_deletion_request(rid: str, body: ExecuteDeletionIn, user: dict = Depends(require_role(ROLE_COORD))):
+    """El Coordinador General atiende una solicitud pública. Requiere confirm=true."""
+    if not body.confirm:
+        raise HTTPException(400, "Falta confirmar la eliminación (confirm=true)")
+    req = await db.deletion_requests.find_one({"id": rid})
+    if not req:
+        raise HTTPException(404, "Solicitud no existe")
+    if req["status"] != "pending":
+        raise HTTPException(410, "Solicitud ya atendida")
+    conteo = None
+    if req.get("user_id"):
+        target = await db.users.find_one({"id": req["user_id"]})
+        if target and not target.get("deleted_at"):
+            await _validar_puede_eliminarse(target)
+            conteo = await anonimizar_usuario(target["id"])
+    # La solicitud conserva el correo solo mientras está pendiente.
+    await db.deletion_requests.update_one(
+        {"id": rid},
+        {"$set": {"status": "done", "resolved_at": datetime.now(timezone.utc), "resolved_by": user["id"],
+                  "email": correo_eliminado(req.get("user_id") or rid), "note": None}},
+    )
+    return {"ok": True, "resultado": conteo}
 
 
 # === PUSH NOTIFICATIONS (Expo) ==============================================
@@ -1709,6 +2663,32 @@ async def send_push_notification(
 
 
 # === PROJECTS ===============================================================
+GENERO_NIVELES_MAX = 20
+GENERO_NIVELES_CLAVE_MAX = 60
+
+
+def sanitizar_genero_niveles(valor) -> dict:
+    """Valida `genero_niveles` (nombre de nivel → 'm' | 'f'): claves de texto no vacías de hasta
+    60 caracteres, máximo 20 entradas. Devuelve un dict limpio; lanza 400 con mensaje es-MX."""
+    if not valor:
+        return {}
+    if not isinstance(valor, dict):
+        raise HTTPException(400, "El género de los niveles debe ser una lista de pares nombre y género.")
+    if len(valor) > GENERO_NIVELES_MAX:
+        raise HTTPException(400, f"Solo se puede indicar el género de hasta {GENERO_NIVELES_MAX} niveles.")
+    limpio: dict = {}
+    for clave, genero in valor.items():
+        nombre = clave.strip() if isinstance(clave, str) else ""
+        if not nombre:
+            raise HTTPException(400, "El nombre de un nivel con género indicado no puede estar vacío.")
+        if len(nombre) > GENERO_NIVELES_CLAVE_MAX:
+            raise HTTPException(400, f"El nombre de un nivel admite hasta {GENERO_NIVELES_CLAVE_MAX} caracteres.")
+        if genero not in ("m", "f"):
+            raise HTTPException(400, "El género de un nivel debe ser masculino o femenino.")
+        limpio[nombre] = genero
+    return limpio
+
+
 def _sanitize_str_list(items, max_items: int = 200, max_len: int = 200) -> list:
     """Limpia listas de strings (contratistas / contratos). Dedup case-insensitive."""
     if not items or not isinstance(items, list):
@@ -1731,6 +2711,32 @@ def _sanitize_str_list(items, max_items: int = 200, max_len: int = 200) -> list:
         if len(out) >= max_items:
             break
     return out
+
+
+def _zona_o_400(nombre: Optional[str]) -> str:
+    try:
+        return validar_zona_horaria(nombre) or ZONA_POR_DEFECTO
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+COLOR_HEX_ESTRICTO = re.compile(r"^#[0-9A-Fa-f]{6}$")
+
+
+def validar_color_hex(valor: Optional[str], etiqueta: str) -> Optional[str]:
+    """P-02: al GUARDAR un color se exige #RRGGBB exacto y NUNCA se sustituye en silencio un
+    valor inválido por el color por defecto: se responde 400 con un mensaje claro.
+    Vacío/None = "no configurado" (devuelve None; quien llama decide el color por defecto)."""
+    if valor is None:
+        return None
+    if not isinstance(valor, str):
+        raise HTTPException(400, f"{etiqueta}: el color debe ser texto con el formato #RRGGBB (por ejemplo #1E40AF).")
+    v = valor.strip()
+    if v == "":
+        return None
+    if not COLOR_HEX_ESTRICTO.match(v):
+        raise HTTPException(400, f"{etiqueta}: el color debe tener el formato #RRGGBB (por ejemplo #1E40AF). Escribiste «{valor}».")
+    return v.upper()
 
 
 def _sanitize_color_hex(value: Optional[str]) -> Optional[str]:
@@ -1789,6 +2795,7 @@ async def list_projects(user: dict = Depends(current_user)):
         it.setdefault("contratistas_list", [])
         it.setdefault("contratos_list", [])
         it.setdefault("minuta_code_prefix", None)
+        it["tipo_obra"] = tipo_obra_de(it)
         it["modulos"] = _sanitize_modulos(it.get("modulos"))
         it["modulos_areas"] = _sanitize_modulos_areas(it.get("modulos_areas"))
     return items
@@ -1805,9 +2812,9 @@ async def create_project(body: ProjectIn, user: dict = Depends(require_role(ROLE
         "objeto_contrato": (body.objeto_contrato or "").strip() or None,
         "datos_contrato": _sanitize_datos_contrato(body.datos_contrato),
         "cliente_principal": (body.cliente_principal or "").strip() or None,
-        "color_tema": _sanitize_color_hex(body.color_tema) or "#003366",
-        "color_institucional": _sanitize_color_hex(body.color_institucional) or "#003366",
-        "report_text_color": _sanitize_color_hex(body.report_text_color) or "#0F172A",
+        "color_tema": validar_color_hex(body.color_tema, "Color del título de portada") or "#003366",
+        "color_institucional": validar_color_hex(body.color_institucional, "Color institucional") or "#003366",
+        "report_text_color": validar_color_hex(body.report_text_color, "Color del texto de reportes") or "#0F172A",
         "start_date": body.start_date,
         "end_date": body.end_date,
         "description": (body.description or "").strip() or None,
@@ -1820,13 +2827,18 @@ async def create_project(body: ProjectIn, user: dict = Depends(require_role(ROLE
         "modo_avance": body.modo_avance,
         "nombres_niveles_partida": _sanitize_str_list(body.nombres_niveles_partida),
         "nombre_nivel_concepto": (body.nombre_nivel_concepto or "").strip(),
+        "genero_niveles": sanitizar_genero_niveles(body.genero_niveles),
         "unidades_personalizadas": _sanitize_str_list(body.unidades_personalizadas),
-        "etapas_poste": [e.model_dump() for e in body.etapas_poste] if body.etapas_poste else _ETAPAS_POSTE_DEFAULT,
+        "tipo_obra": body.tipo_obra,
+        "etapas_poste": [e.model_dump() for e in body.etapas_poste],
         "titulo_modulo_catalogo": (body.titulo_modulo_catalogo or "").strip(),
         "cadencia_reporte": body.cadencia_reporte,
         "dia_inicio_semana": body.dia_inicio_semana,
         "whatsapp_group_id": _sanitize_whatsapp_group_id(body.whatsapp_group_id),
-        "modulos": _sanitize_modulos(body.modulos),
+        "zona_horaria": _zona_o_400(body.zona_horaria),
+        "separador_decimal": body.separador_decimal,
+        # Sin `modulos` explícitos, el tipo de obra decide cuáles quedan encendidos.
+        "modulos": _sanitize_modulos(body.modulos) if body.modulos is not None else modulos_por_defecto_de_tipo(body.tipo_obra),
         "created_by": user["id"],
         "created_at": datetime.now(timezone.utc),
         "archived": False,
@@ -1868,11 +2880,18 @@ async def get_project(pid: str, user: dict = Depends(current_user)):
     p.setdefault("modo_avance", "CANTIDAD")
     p.setdefault("nombres_niveles_partida", [])
     p.setdefault("nombre_nivel_concepto", "")
+    p.setdefault("genero_niveles", {})
     p.setdefault("unidades_personalizadas", [])
-    p.setdefault("etapas_poste", _ETAPAS_POSTE_DEFAULT)
+    if "etapas_poste" not in p:
+        p["etapas_poste"] = list(etapas_poste_de(p))
+    p["tipo_obra"] = tipo_obra_de(p)
     p.setdefault("titulo_modulo_catalogo", "")
     p.setdefault("cadencia_reporte", "MENSUAL")
     p.setdefault("dia_inicio_semana", "LUNES")
+    p["zona_horaria"] = p.get("zona_horaria") or ZONA_POR_DEFECTO
+    p.setdefault("separador_decimal", ".")
+    p["hoy"] = hoy_proyecto(p).isoformat()
+    p["tz_offset_min"] = offset_min_proyecto(p)
     p["modulos"] = _sanitize_modulos(p.get("modulos"))
     p["modulos_areas"] = _sanitize_modulos_areas(p.get("modulos_areas"))
     return p
@@ -1905,11 +2924,11 @@ async def update_project(pid: str, body: ProjectPatch, user: dict = Depends(requ
     if body.cliente_principal is not None:
         upd["cliente_principal"] = body.cliente_principal.strip() or None
     if body.color_tema is not None:
-        upd["color_tema"] = _sanitize_color_hex(body.color_tema) or "#003366"
+        upd["color_tema"] = validar_color_hex(body.color_tema, "Color del título de portada") or "#003366"
     if body.color_institucional is not None:
-        upd["color_institucional"] = _sanitize_color_hex(body.color_institucional) or "#003366"
+        upd["color_institucional"] = validar_color_hex(body.color_institucional, "Color institucional") or "#003366"
     if body.report_text_color is not None:
-        upd["report_text_color"] = _sanitize_color_hex(body.report_text_color) or "#0F172A"
+        upd["report_text_color"] = validar_color_hex(body.report_text_color, "Color del texto de reportes") or "#0F172A"
     if body.start_date is not None:
         upd["start_date"] = body.start_date
     if body.end_date is not None:
@@ -1964,16 +2983,30 @@ async def update_project(pid: str, body: ProjectPatch, user: dict = Depends(requ
         upd["nombres_niveles_partida"] = _sanitize_str_list(body.nombres_niveles_partida)
     if body.nombre_nivel_concepto is not None:
         upd["nombre_nivel_concepto"] = body.nombre_nivel_concepto.strip()
+    if body.genero_niveles is not None:
+        upd["genero_niveles"] = sanitizar_genero_niveles(body.genero_niveles)
     if body.unidades_personalizadas is not None:
         upd["unidades_personalizadas"] = _sanitize_str_list(body.unidades_personalizadas)
     if body.etapas_poste is not None:
         upd["etapas_poste"] = [e.model_dump() for e in body.etapas_poste]
+    if body.tipo_obra is not None and body.tipo_obra != existing.get("tipo_obra"):
+        # Cambiar el tipo solo cambia lo que se ofrece a futuro: NO reescribe módulos
+        # ni etapas ya configurados. Un proyecto anterior al campo que nunca guardó sus
+        # etapas conserva las que usaba implícitamente (para no perderlas al dejar de
+        # ser "legado").
+        if not existing.get("tipo_obra") and "etapas_poste" not in existing and "etapas_poste" not in upd:
+            upd["etapas_poste"] = [dict(e) for e in PLANTILLA_ETAPAS_CIMENTACION_POSTES]
+        upd["tipo_obra"] = body.tipo_obra
     if body.titulo_modulo_catalogo is not None:
         upd["titulo_modulo_catalogo"] = body.titulo_modulo_catalogo.strip()
     if body.cadencia_reporte is not None:
         upd["cadencia_reporte"] = body.cadencia_reporte
     if body.dia_inicio_semana is not None:
         upd["dia_inicio_semana"] = body.dia_inicio_semana
+    if body.zona_horaria is not None:
+        upd["zona_horaria"] = _zona_o_400(body.zona_horaria)
+    if body.separador_decimal is not None:
+        upd["separador_decimal"] = body.separador_decimal
 
     if upd:
         await db.projects.update_one({"id": pid}, {"$set": upd})
@@ -2014,11 +3047,18 @@ def _project_public(p: dict) -> dict:
     p.setdefault("modo_avance", "CANTIDAD")
     p.setdefault("nombres_niveles_partida", [])
     p.setdefault("nombre_nivel_concepto", "")
+    p.setdefault("genero_niveles", {})
     p.setdefault("unidades_personalizadas", [])
-    p.setdefault("etapas_poste", _ETAPAS_POSTE_DEFAULT)
+    if "etapas_poste" not in p:
+        p["etapas_poste"] = list(etapas_poste_de(p))
+    p["tipo_obra"] = tipo_obra_de(p)
     p.setdefault("titulo_modulo_catalogo", "")
     p.setdefault("cadencia_reporte", "MENSUAL")
     p.setdefault("dia_inicio_semana", "LUNES")
+    p["zona_horaria"] = p.get("zona_horaria") or ZONA_POR_DEFECTO
+    p.setdefault("separador_decimal", ".")
+    p["hoy"] = hoy_proyecto(p).isoformat()
+    p["tz_offset_min"] = offset_min_proyecto(p)
     p["modulos"] = _sanitize_modulos(p.get("modulos"))
     p["modulos_areas"] = _sanitize_modulos_areas(p.get("modulos_areas"))
     return p
@@ -2124,6 +3164,48 @@ async def set_project_modulos_areas(
             raise HTTPException(400, "El área no existe en este proyecto")
         merged[clave] = area_id
     await db.projects.update_one({"id": pid}, {"$set": {"modulos_areas": merged}})
+    p = await db.projects.find_one({"id": pid})
+    return _project_public(p)
+
+
+@api.get("/tipos_obra")
+async def list_tipos_obra(user: dict = Depends(current_user)):
+    """Catálogo de tipos de obra para el selector: nombre, descripción, módulos que
+    enciende por defecto y plantillas de reporte recomendadas. "legado" (proyectos
+    anteriores al campo) es interno y no aparece."""
+    return catalogo_tipos_obra()
+
+
+@api.get("/etapas_poste/plantillas")
+async def list_plantillas_etapas_poste(user: dict = Depends(current_user)):
+    """Plantillas opcionales de etapas de Control de Obra que se pueden aplicar a un proyecto."""
+    return [
+        {"id": pid_, "nombre": d["nombre"], "descripcion": d["descripcion"], "etapas": [dict(e) for e in d["etapas"]]}
+        for pid_, d in PLANTILLAS_ETAPAS_POSTE.items()
+    ]
+
+
+class AplicarPlantillaEtapasIn(BaseModel):
+    plantilla: str
+
+
+@api.post("/projects/{pid}/etapas_poste/aplicar-plantilla")
+async def aplicar_plantilla_etapas_poste(
+    pid: str,
+    body: AplicarPlantillaEtapasIn,
+    user: dict = Depends(require_role(ROLE_COORD)),
+):
+    """Copia al proyecto una plantilla opcional de etapas (reemplaza las que tenga).
+    Solo Coordinador General."""
+    definicion = PLANTILLAS_ETAPAS_POSTE.get((body.plantilla or "").strip())
+    if not definicion:
+        raise HTTPException(400, f"Plantilla de etapas desconocida: {body.plantilla}")
+    existing = await db.projects.find_one({"id": pid})
+    if not existing:
+        raise HTTPException(404, "Proyecto no existe")
+    # Pasa por el mismo modelo que valida las etapas al guardarlas a mano.
+    etapas = [EtapaPosteElemento(**e).model_dump() for e in definicion["etapas"]]
+    await db.projects.update_one({"id": pid}, {"$set": {"etapas_poste": etapas}})
     p = await db.projects.find_one({"id": pid})
     return _project_public(p)
 
@@ -2316,7 +3398,7 @@ async def create_forestal_registro(pid: str, body: ForestalRegistroIn, user: dic
         "estacion_nombre": (node_name or "").strip() or None,
         "tipo": body.tipo,
         "cantidad": body.cantidad,
-        "fecha": body.fecha or datetime.now(MX_TZ).date().isoformat(),
+        "fecha": body.fecha or (await hoy_de(pid)).isoformat(),
         "notas": (body.notas or "").strip() or None,
         "images": await asyncio.to_thread(_normalize_images_b64, body.images[:10]),
         "jerarquia": _jerarquia_modulo(body.jerarquia),
@@ -2430,7 +3512,7 @@ async def create_forestal_autorizado(
     await ensure_project_access(user, pid)
     estacion = body.estacion.strip()
     if not estacion:
-        raise HTTPException(400, "estacion es requerida")
+        raise HTTPException(400, "La estación es requerida")
     doc = {
         "id": str(uuid.uuid4()),
         "project_id": pid,
@@ -2461,7 +3543,7 @@ async def update_forestal_autorizado(
     if "estacion" in upd:
         upd["estacion"] = upd["estacion"].strip()
         if not upd["estacion"]:
-            raise HTTPException(400, "estacion no puede quedar vacía")
+            raise HTTPException(400, "La estación no puede quedar vacía")
     upd["updated_by"] = user["id"]
     upd["updated_by_name"] = user["name"]
     upd["updated_at"] = datetime.now(timezone.utc)
@@ -2701,7 +3783,7 @@ async def list_weather_logs(pid: str, date: Optional[str] = None, user: dict = D
     para que la pantalla de captura indexe por `node_id` en vez de pedir
     nodo por nodo."""
     await ensure_project_access(user, pid)
-    fecha_cdmx = date or datetime.now(timezone.utc).astimezone(MX_TZ).date().isoformat()
+    fecha_cdmx = date or (await hoy_de(pid)).isoformat()
     docs = await db.weather_logs.find(
         {"project_id": pid, "fecha_cdmx": fecha_cdmx}, {"_id": 0},
     ).sort([("node_id", 1), ("hora_cdmx", 1)]).to_list(length=2000)
@@ -2741,9 +3823,8 @@ async def upsert_weather_log(pid: str, body: WeatherLogIn, user: dict = Depends(
         raise HTTPException(400, "Este nodo no es una Estación habilitada en Acceso al Predio")
 
     now = datetime.now(timezone.utc)
-    now_mx = now.astimezone(MX_TZ)
-    fecha_cdmx = now_mx.date().isoformat()
-    hora_cdmx = f"{now_mx.hour:02d}"
+    fecha_cdmx = (await hoy_de(pid)).isoformat()
+    hora_cdmx = f"{now.astimezone(MX_TZ).hour:02d}"
     key = {"project_id": pid, "node_id": body.node_id, "fecha_cdmx": fecha_cdmx, "hora_cdmx": hora_cdmx}
     upd = {
         **key,
@@ -3147,7 +4228,7 @@ async def create_seguridad_reporte(pid: str, body: SeguridadReporteIn, user: dic
         "id": str(uuid.uuid4()),
         "project_id": pid,
         "node_id": body.node_id,
-        "fecha": _seguridad_validar_fecha(body.fecha),
+        "fecha": _seguridad_validar_fecha(body.fecha) if body.fecha else (await hoy_de(pid)).isoformat(),
         "trabajador": _seguridad_clean(body.trabajador, 120),
         "contratista": _seguridad_clean(body.contratista, 120),
         "tipo_registro": body.tipo_registro,
@@ -3310,7 +4391,7 @@ def _cruz_calcular(registros: list, anio: int, mes: int, hoy: date, fuerza_traba
         "dias": dias,
         "resumen": [{"tipo": t, "label": CRUZ_LABEL[t], "abrev": CRUZ_ABREV[t], "color": CRUZ_COLOR[t],
                      "cantidad": conteo[t], "porcentaje": _pct(conteo[t])} for t in CRUZ_TIPOS_ORDEN],
-        "fuerza_trabajo": {"personal": fuerza_trabajo, "heredado": fuerza_heredada},
+        "fuerza_trabajo": {"personal": fuerza_trabajo, **({"heredado": True} if fuerza_heredada else {})},
         "parametros": parametros or [],
         "registros": bitacora,
     }
@@ -3656,7 +4737,7 @@ async def create_seguridad_checklist(pid: str, body: SeguridadChecklistIn, user:
     doc = {
         "id": str(uuid.uuid4()),
         "project_id": pid,
-        "fecha": body.fecha or datetime.now(MX_TZ).date().isoformat(),
+        "fecha": body.fecha or (await hoy_de(pid)).isoformat(),
         "items": [it.model_dump() for it in body.items],
         "captured_by": user["id"],
         "captured_by_name": user["name"],
@@ -3912,7 +4993,7 @@ async def create_estudio_bitacora(pid: str, body: EstudioBitacoraIn, user: dict 
         "project_id": pid,
         "disciplina": body.disciplina,
         "texto": texto,
-        "fecha": body.fecha or datetime.now(MX_TZ).date().isoformat(),
+        "fecha": body.fecha or (await hoy_de(pid)).isoformat(),
         "jerarquia": _jerarquia_modulo(body.jerarquia),
         "captured_by": user["id"],
         "captured_by_name": user["name"],
@@ -4041,7 +5122,7 @@ async def create_ambiental_auditoria(pid: str, body: AmbientalAuditoriaIn, user:
         "project_id": pid,
         "tipo": body.tipo,
         "descripcion": descripcion,
-        "fecha": body.fecha or datetime.now(MX_TZ).date().isoformat(),
+        "fecha": body.fecha or (await hoy_de(pid)).isoformat(),
         "notas": (body.notas or "").strip() or None,
         "images": await asyncio.to_thread(_normalize_images_b64, body.images[:10]),
         "jerarquia": _jerarquia_modulo(body.jerarquia),
@@ -4144,10 +5225,30 @@ async def get_tree(pid: str, user: dict = Depends(current_user)):
     return roots
 
 
+def validar_gps_nodo(lat: Optional[float], lon: Optional[float]) -> Tuple[Optional[float], Optional[float]]:
+    """Valida la ubicación GPS de un nodo: ambos o ninguno, dentro de rango y finitos.
+    Devuelve (lat, lon) o lanza ValueError con un mensaje legible en es-MX."""
+    if lat is None and lon is None:
+        return None, None
+    if lat is None or lon is None:
+        raise ValueError("La ubicación GPS necesita latitud y longitud juntas.")
+    if not (math.isfinite(lat) and math.isfinite(lon)):
+        raise ValueError("La ubicación GPS no es válida.")
+    if not -90 <= lat <= 90:
+        raise ValueError("La latitud debe estar entre -90 y 90 grados.")
+    if not -180 <= lon <= 180:
+        raise ValueError("La longitud debe estar entre -180 y 180 grados.")
+    return float(lat), float(lon)
+
+
 @api.post("/projects/{pid}/nodes")
 async def create_node(pid: str, body: LocationNodeIn, user: dict = Depends(require_role(ROLE_COORD))):
     if body.project_id != pid:
         raise HTTPException(400, "project_id mismatch")
+    try:
+        gps_lat, gps_lon = validar_gps_nodo(body.gps_lat, body.gps_lon)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     await ensure_project_access(user, pid)
     parent = None
     depth = 0
@@ -4179,6 +5280,8 @@ async def create_node(pid: str, body: LocationNodeIn, user: dict = Depends(requi
         "target_lat": body.target_lat if is_coord_leaf else None,
         "target_lon": body.target_lon if is_coord_leaf else None,
         "target_elev": body.target_elev if is_coord_leaf else None,
+        "gps_lat": gps_lat,
+        "gps_lon": gps_lon,
         "acceso_predio": body.acceso_predio,
         "situacion_social": body.situacion_social,
         "tipo_nodo": body.tipo_nodo,
@@ -4202,6 +5305,10 @@ class NodePatch(BaseModel):
     target_lat: Optional[float] = None
     target_lon: Optional[float] = None
     target_elev: Optional[float] = None
+    # Ubicación GPS real (ver LocationNodeIn). `quitar_gps=True` la borra (None = no tocar).
+    gps_lat: Optional[float] = None
+    gps_lon: Optional[float] = None
+    quitar_gps: Optional[bool] = None
     acceso_predio: Optional[str] = None
     situacion_social: Optional[str] = None
     # None = no tocar (deja el default: antes fijo a "solo Subtramo,
@@ -4262,6 +5369,15 @@ async def update_node(nid: str, body: NodePatch, user: dict = Depends(require_ro
     for fld, val in (("target_lat", body.target_lat), ("target_lon", body.target_lon), ("target_elev", body.target_elev)):
         if val is not None and is_coord_leaf:
             upd[fld] = val
+    # Ubicación GPS: aplica a cualquier nodo y es independiente de target_*.
+    if body.quitar_gps:
+        upd["gps_lat"] = None
+        upd["gps_lon"] = None
+    elif body.gps_lat is not None or body.gps_lon is not None:
+        try:
+            upd["gps_lat"], upd["gps_lon"] = validar_gps_nodo(body.gps_lat, body.gps_lon)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
     if body.acceso_predio is not None:
         upd["acceso_predio"] = body.acceso_predio.strip()
     if body.situacion_social is not None:
@@ -4339,7 +5455,7 @@ async def update_poste_actividad_estatus(nid: str, body: PosteActividadEstatusPa
     project = await ensure_project_access(user, node["project_id"])
     _ensure_modulo_activo(project, "control_obra")
 
-    etapas = project.get("etapas_poste") or _ETAPAS_POSTE_DEFAULT
+    etapas = etapas_poste_de(project)
     claves_validas = {f"{el['nombre']}::{act}" for el in etapas for act in el.get("actividades", [])}
     if body.actividad_key not in claves_validas:
         raise HTTPException(400, f"'{body.actividad_key}' no es una actividad configurada en la plantilla de este proyecto")
@@ -7618,6 +8734,8 @@ class PresentacionIn(BaseModel):
     # (portada, mapa, FINANCIERO, ESTUDIOS Y ANÁLISIS, AVANCE DE OBRA,
     # reportes de la semana, cierre). Sin valor: presentación vacía.
     plantilla: Optional[Literal["semanal"]] = None
+    # Periodo de la sección Financiero: el mismo catálogo que el tablero EVM (A-05).
+    periodo_financiero: Literal["mes_actual", "ultimos_3_meses", "proyecto_completo"] = "mes_actual"
 
 
 # Secciones AUTOMÁTICAS de la presentación: se arman en vivo con los mismos
@@ -7678,6 +8796,7 @@ def _secciones_plantilla_semanal() -> List[dict]:
 class PresentacionPatch(BaseModel):
     fecha: Optional[str] = None
     titulo: Optional[str] = None
+    periodo_financiero: Optional[Literal["mes_actual", "ultimos_3_meses", "proyecto_completo"]] = None
 
 
 @api.post("/projects/{pid}/presentaciones")
@@ -7693,6 +8812,7 @@ async def create_presentacion(pid: str, body: PresentacionIn, user: dict = Depen
         "project_id": pid,
         "fecha": body.fecha,
         "titulo": titulo,
+        "periodo_financiero": body.periodo_financiero,
         "secciones": _secciones_plantilla_semanal() if body.plantilla == "semanal" else [],
         "created_by": user["id"],
         "created_by_name": user["name"],
@@ -7745,6 +8865,8 @@ async def update_presentacion(
         if not v:
             raise HTTPException(400, "Título requerido")
         upd["titulo"] = v
+    if body.periodo_financiero is not None:
+        upd["periodo_financiero"] = body.periodo_financiero
     if upd:
         upd["updated_at"] = datetime.now(timezone.utc)
         await db.presentaciones.update_one({"id": pres_id}, {"$set": upd})
@@ -7842,7 +8964,7 @@ async def create_presentacion_seccion(
         raise HTTPException(404, "Presentación no existe")
     await _validate_presentacion_seccion_refs(pid, body)
     if body.tipo == "divisor" and not (body.titulo or "").strip():
-        raise HTTPException(400, "Sección 'divisor' requiere titulo")
+        raise HTTPException(400, "Sección 'divisor' requiere título")
     if body.tipo == "croquis_estacion" and not body.node_id:
         raise HTTPException(400, "Sección 'croquis_estacion' requiere node_id")
     if body.tipo == "avance_grafico" and not body.plano_id:
@@ -8016,30 +9138,20 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
 
     analisis: Optional[dict] = None
     presupuesto_total_str: Optional[str] = None
+    periodo_financiero_txt: Optional[str] = None
     if any(s.get("tipo") == "financiero" for s in secciones):
         try:
-            end_d = date.fromisoformat(pres["fecha"])
-            start_d = end_d - timedelta(days=6)
-            conceptos, _pertenece_obra = await _conceptos_activos_contrato(pid, "obra")
-            pv_total = sum((_prorrateo_concepto_en_ventana(c, start_d, end_d) for c in conceptos), start=Decimal("0"))
-            ev_total = Decimal("0")
-            async for a in db.registros_avance.find({"project_id": pid, "fecha": {"$gte": start_d.isoformat(), "$lte": end_d.isoformat()}}):
-                if _pertenece_obra(a.get("concepto_id")) and a.get("importe_ganado_congelado") is not None:
-                    ev_total += to_decimal(a["importe_ganado_congelado"])
-            ac_total = Decimal("0")
-            async for g in db.gastos_reales.find({"project_id": pid, "fecha": {"$gte": start_d.isoformat(), "$lte": end_d.isoformat()}}):
-                ac_total += to_decimal(g["monto"])
-            CUATRO_DEC = Decimal("0.0001")
-            spi = (ev_total / pv_total).quantize(CUATRO_DEC, rounding=ROUND_HALF_UP) if pv_total != 0 else None
-            cpi = (ev_total / ac_total).quantize(CUATRO_DEC, rounding=ROUND_HALF_UP) if ac_total != 0 else None
-            analisis = {
-                "pv": round_money(pv_total), "ev": round_money(ev_total), "ac": round_money(ac_total),
-                "spi": spi, "cpi": cpi,
-                "variacion_cronograma": round_money(ev_total - pv_total), "variacion_costo": round_money(ev_total - ac_total),
-            }
-            presupuesto_total = sum((_concepto_importe_efectivo(c) for c in conceptos), start=Decimal("0"))
-            presupuesto_total_str = dec_to_str(round_money(presupuesto_total))
+            # Mismo servicio y mismo periodo que el tablero EVM (A-05): así ambos muestran
+            # las mismas cifras, con EV contractual y EV total.
+            fin = await datos_financieros_presentacion(pid, pres, proj)
+            analisis = fin["cifras"]
+            presupuesto_total_str = dec_to_str(analisis["bac"])
+            periodo_financiero_txt = (
+                f"Periodo: {_fmt_dia_corto_es(fin['start'])} al {_fmt_dia_corto_es(fin['end'])}"
+            )
         except Exception:
+            # No se traga en silencio: queda en el log y la slide dice que no hay datos.
+            log.exception("Presentación %s: no se pudo calcular la sección Financiero", pres_id)
             analisis = None
 
     disciplina_rows: list = []
@@ -8354,15 +9466,26 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                 add_text(slide, MARGIN_X, y, content_w, _Cm(1), "Sin datos financieros disponibles para este periodo.",
                          size=13, color=MUTED_RGB, align=_PP_ALIGN.CENTER)
                 return
+            if periodo_financiero_txt:
+                add_text(slide, MARGIN_X, y, content_w, _Cm(0.7), periodo_financiero_txt,
+                         size=11, color=MUTED_RGB, align=_PP_ALIGN.CENTER)
+                y += _Cm(0.9)
+            def _m(v):
+                return f"${dec_to_str(v)}" if v is not None else "—"
+
             kpis = [
-                ("Presupuesto total", f"${presupuesto_total_str}" if presupuesto_total_str else "—"),
-                ("Valor Planeado (PV)", f"${dec_to_str(analisis['pv'])}"),
-                ("Valor Ganado (EV)", f"${dec_to_str(analisis['ev'])}"),
-                ("Costo Real (AC)", f"${dec_to_str(analisis['ac'])}"),
+                ("Presupuesto (BAC)", f"${presupuesto_total_str}" if presupuesto_total_str else "—"),
+                ("Valor Planeado (PV)", _m(analisis['pv'])),
+                ("Valor Ganado contractual", _m(analisis['ev_contractual'])),
+                ("Valor Ganado total (con excedentes)", _m(analisis['ev_total'])),
+                ("Costo Real (AC)", _m(analisis['ac'])),
                 ("SPI", dec_to_str(analisis['spi']) if analisis['spi'] is not None else "—"),
                 ("CPI", dec_to_str(analisis['cpi']) if analisis['cpi'] is not None else "—"),
-                ("Variación cronograma", f"${dec_to_str(analisis['variacion_cronograma'])}"),
-                ("Variación costo", f"${dec_to_str(analisis['variacion_costo'])}"),
+                ("Variación cronograma", _m(analisis['variacion_cronograma'])),
+                ("Variación costo", _m(analisis['variacion_costo'])),
+                ("Estimado al terminar (EAC)", _m(analisis['eac'])),
+                ("Por gastar (ETC)", _m(analisis['etc'])),
+                ("Variación al terminar (VAC)", _m(analisis['vac'])),
             ]
             cols = 4
             card_w = int((content_w - _Cm(0.4) * (cols - 1)) / cols)
@@ -8376,6 +9499,11 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                          size=9, bold=True, color=MUTED_RGB, align=_PP_ALIGN.CENTER)
                 add_text(slide, x + _Cm(0.15), yy + _Cm(0.9), card_w - _Cm(0.3), _Cm(1.2), value,
                          size=14, bold=True, color=TEXT_RGB, align=_PP_ALIGN.CENTER)
+            if analisis.get("variacion_costo") is None:
+                filas = (len(kpis) + cols - 1) // cols
+                add_text(slide, MARGIN_X, int(y + filas * (card_h + _Cm(0.4))), content_w, _Cm(0.7),
+                         "Sin gasto real capturado en el periodo: el CPI y la variación de costo no se calculan.",
+                         size=10, color=MUTED_RGB, align=_PP_ALIGN.CENTER)
 
         def slide_seguimiento_estudios():
             slide = _clone_membrete()
@@ -8949,7 +10077,7 @@ async def bulk_upload_template(
     buf.seek(0)
 
     headers = {
-        "Content-Disposition": 'attachment; filename="plantilla_nodos_synco.xlsx"',
+        "Content-Disposition": 'attachment; filename="plantilla_nodos_dirac.xlsx"',
     }
     return StreamingResponse(
         buf,
@@ -9419,7 +10547,7 @@ async def create_area(pid: str, body: AreaIn, user: dict = Depends(require_role(
         "id": str(uuid.uuid4()),
         "project_id": pid,
         "name": name,
-        "color": body.color or "#1E40AF",
+        "color": validar_color_hex(body.color, "Color del área") or "#1E40AF",
         "created_at": datetime.now(timezone.utc),
     }
     await db.areas.insert_one(doc)
@@ -9527,6 +10655,7 @@ async def create_invite(pid: str, body: InvitationIn, user: dict = Depends(requi
         email=body.email, name=body.name, role=body.role,
         area_id=body.area_id, puesto=body.puesto, no_control=body.no_control,
     )
+    doc["creado_por"] = user["id"]
     await db.invitations.insert_one(doc)
     doc.pop("_id", None)
     return doc
@@ -9611,6 +10740,7 @@ async def accept_invite(body: AcceptInviteIn):
     await db.invitations.update_one(
         {"id": inv["id"]}, {"$set": {"status": "accepted", "accepted_at": datetime.now(timezone.utc), "accepted_user_id": uid}}
     )
+    asyncio.create_task(_notify_invitation_accepted(inv, user_doc["name"]))
     return {"token": make_token(uid), "user": user_to_out(user_doc)}
 
 
@@ -9775,7 +10905,7 @@ async def invitations_bulk_template(pid: str, user: dict = Depends(require_role(
     return StreamingResponse(
         buf,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": 'attachment; filename="plantilla_invitaciones_synco.xlsx"'},
+        headers={"Content-Disposition": 'attachment; filename="plantilla_invitaciones_dirac.xlsx"'},
     )
 
 
@@ -9839,6 +10969,7 @@ async def invitations_bulk_commit(
                 email=validado["email"], name=validado["name"], role=validado["role"],
                 area_id=validado["area_id"], puesto=validado["puesto"], no_control=validado["no_control"],
             )
+            doc["creado_por"] = user["id"]
             await db.invitations.insert_one(doc)
             doc.pop("_id", None)
             creados.append(doc)
@@ -9882,9 +11013,20 @@ def validate_measurement_value(mtype: str, value: dict):
 
 
 @api.get("/report-templates")
-async def list_report_templates(user: dict = Depends(current_user)):
+async def list_report_templates(tipo_obra: Optional[str] = None, user: dict = Depends(current_user)):
+    """Plantillas de reporte. Sin `tipo_obra` (o con "legado") devuelve todas, como
+    siempre; con un tipo de obra devuelve las que sirven para ese tipo. Cada
+    plantilla incluye `tipos_obra` ("*" = cualquier tipo)."""
+    if tipo_obra and tipo_obra != TIPO_OBRA_LEGADO and tipo_obra not in TIPOS_OBRA_IDS:
+        raise HTTPException(400, f"Tipo de obra inválido: {tipo_obra}")
     cursor = db.report_templates.find({}, {"_id": 0}).sort("name", 1)
-    return await cursor.to_list(length=None)
+    plantillas = await cursor.to_list(length=None)
+    salida = []
+    for tpl in plantillas:
+        tpl["tipos_obra"] = tipos_de_plantilla(tpl)
+        if plantilla_visible_para_tipo(tpl, tipo_obra):
+            salida.append(tpl)
+    return salida
 
 
 def _normalize_template_code(raw: str) -> str:
@@ -10007,7 +11149,11 @@ async def create_report(body: ReportIn, user: dict = Depends(current_user)):
                 pre_mv["coord_source"] = "node_metadata"
                 body.measurement_value = pre_mv
 
-    validate_measurement_value(node["measurement_type"], body.measurement_value)
+    if body.solo_fuerza_trabajo:
+        if not any((p or "").strip() for p in body.personnel) and not any((e or "").strip() for e in body.equipment):
+            raise HTTPException(400, "Captura al menos una categoría de personal o de equipo")
+    if not (body.solo_fuerza_trabajo and not body.measurement_value):
+        validate_measurement_value(node["measurement_type"], body.measurement_value)
     path_names = await node_path_names(body.node_id)
     area_name = None
     if body.area_id:
@@ -10029,7 +11175,7 @@ async def create_report(body: ReportIn, user: dict = Depends(current_user)):
     # Si pre-validación ya marcó coord_source=node_metadata, se mantiene.
     # En caso contrario, asumimos user_input.
     # ====================================================================
-    if node.get("measurement_type") == "coord_latlon" and "coord_source" not in mv:
+    if node.get("measurement_type") == "coord_latlon" and "coord_source" not in mv and not body.solo_fuerza_trabajo:
         mv["coord_source"] = "user_input"
     inherited_target = None
     if mv.get("coord_source") == "node_metadata":
@@ -10113,6 +11259,8 @@ async def create_report(body: ReportIn, user: dict = Depends(current_user)):
         "template_id": body.template_id or None,
         "dynamic_data": body.dynamic_data or {},
     }
+    if body.solo_fuerza_trabajo:
+        doc["solo_fuerza_trabajo"] = True
     if body.client_id:
         # Solo se agrega si hay valor: el índice es sparse, y una clave con
         # `None` explícito en todos los docs rompería esa exclusión.
@@ -10342,6 +11490,7 @@ async def _notify_supervisors_new_report(
             {
                 "project_ids": project_id,
                 "role": {"$in": [ROLE_COORD, ROLE_JEFE]},
+                "deleted_at": {"$exists": False},
             },
             {"_id": 0, "id": 1, "name": 1, "role": 1, "expo_push_tokens": 1},
         )
@@ -10835,27 +11984,34 @@ def _compress_missing_thumbnails(raw_items: List[dict]) -> dict:
     return out
 
 
-def _feed_day_bounds(date_str: str) -> Optional[tuple]:
-    """Convierte 'YYYY-MM-DD' (día natural CDMX) en (inicio, fin) UTC."""
+def _feed_day_bounds(date_str: str, zona=None) -> Optional[tuple]:
+    """Convierte 'YYYY-MM-DD' (día natural de la zona del proyecto; CDMX por
+    defecto) en (inicio, fin) UTC."""
     try:
         y, m, d = (int(x) for x in date_str.split("-"))
-        start_mx = datetime(y, m, d, 0, 0, 0, tzinfo=MX_TZ)
+        start_mx = datetime(y, m, d, 0, 0, 0, tzinfo=zona or MX_TZ)
     except Exception:
         return None
     end_mx = start_mx + timedelta(days=1)
     return start_mx.astimezone(timezone.utc), end_mx.astimezone(timezone.utc)
 
 
-def _feed_range_start(rng: str) -> Optional[datetime]:
-    """Devuelve el inicio del rango en UTC.
+def _inicio_semana_local(now_local: datetime, project: Optional[dict] = None) -> datetime:
+    """00:00 del primer día de la semana (lunes por defecto) en la zona de `now_local`."""
+    ini = inicio_semana(now_local.date(), (project or {}).get("dia_inicio_semana"))
+    return datetime(ini.year, ini.month, ini.day, tzinfo=now_local.tzinfo)
 
-    today  → hoy 00:00 CDMX
-    week   → inicio de la semana natural (Domingo) CDMX
-    month  → día 1 del mes actual CDMX
+
+def _feed_range_start(rng: str, project: Optional[dict] = None) -> Optional[datetime]:
+    """Devuelve el inicio del rango en UTC (zona del proyecto; CDMX por defecto).
+
+    today  → hoy 00:00
+    week   → inicio de la semana (lunes, o el `dia_inicio_semana` del proyecto)
+    month  → día 1 del mes actual
     all/None → None (sin filtro temporal)
     """
     now_utc = datetime.now(timezone.utc)
-    now_mx = now_utc.astimezone(MX_TZ)
+    now_mx = now_utc.astimezone(zona_proyecto(project))
     rng = (rng or "today").lower()
 
     if rng == "today":
@@ -10863,11 +12019,7 @@ def _feed_range_start(rng: str) -> Optional[datetime]:
         return start_mx.astimezone(timezone.utc)
 
     if rng == "week":
-        # [FIX] Semana natural inicia en Domingo
-        # weekday(): 0=Mon, ..., 6=Sun
-        days_to_sunday = (now_mx.weekday() + 1) % 7
-        start_mx = now_mx.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days_to_sunday)
-        return start_mx.astimezone(timezone.utc)
+        return _inicio_semana_local(now_mx, project).astimezone(timezone.utc)
 
     if rng == "month":
         # [FIX] Mes natural (día 1)
@@ -10906,7 +12058,7 @@ async def reports_feed(
     `since`: chequeo ligero de reportes nuevos — filtra `created_at` estrictamente
     posterior al ISO datetime dado, ignora `skip`/`range`/`date` y ordena desc.
     """
-    await ensure_project_access(user, pid)
+    proj_feed = await ensure_project_access(user, pid)
     query: dict = {"project_id": pid}
     # Sub-coordinador/Coordinador/Especialista sin scope: feed GLOBAL (sin restricción).
 
@@ -10920,11 +12072,11 @@ async def reports_feed(
     if since_dt is not None:
         query["created_at"] = {"$gt": since_dt}
     else:
-        day_bounds = _feed_day_bounds(date) if date else None
+        day_bounds = _feed_day_bounds(date, zona_proyecto(proj_feed)) if date else None
         if day_bounds is not None:
             query["created_at"] = {"$gte": day_bounds[0], "$lt": day_bounds[1]}
         else:
-            start = _feed_range_start(range)
+            start = _feed_range_start(range, proj_feed)
             if start is not None:
                 query["created_at"] = {"$gte": start}
 
@@ -11112,14 +12264,14 @@ async def get_report_collage(rid: str, user: dict = Depends(current_user)):
             break
         canvas.paste(cell, positions[i])
 
-    # Marca SynCo discreta en la esquina inferior derecha
+    # Marca Dirac discreta en la esquina inferior derecha
     try:
         draw = ImageDraw.Draw(canvas)
         try:
             font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 22)
         except Exception:
             font = ImageFont.load_default()
-        stamp = f"SynCo · {len(cells)} foto{'s' if len(cells) != 1 else ''}"
+        stamp = f"Dirac · {len(cells)} foto{'s' if len(cells) != 1 else ''}"
         bbox = draw.textbbox((0, 0), stamp, font=font)
         w = bbox[2] - bbox[0]
         h = bbox[3] - bbox[1]
@@ -11274,7 +12426,7 @@ async def list_project_users(pid: str, user: dict = Depends(current_user)):
     # Incluye también a los Coord Generales y Jefes de Proyecto (que tienen
     # acceso global y pueden no estar en project_ids del documento).
     items = await db.users.find(
-        {"$or": [
+        {"deleted_at": {"$exists": False}, "$or": [
             {"project_ids": pid},
             {"role": {"$in": [ROLE_COORD, ROLE_JEFE]}},
         ]}
@@ -11284,16 +12436,33 @@ async def list_project_users(pid: str, user: dict = Depends(current_user)):
     return [user_to_out(u) for u in items]
 
 
+def filtro_miembros_proyecto(pid: str, solo_miembros: bool = False) -> dict:
+    """Filtro Mongo de la lista de miembros. Con `solo_miembros` (K-02, selector de
+    responsables de minutas) entra únicamente quien tiene el proyecto en `project_ids`;
+    sin él se conserva la lista amplia (asistentes de eventos y mensajes directos),
+    que además incluye a todos los coordinadores y jefes de proyecto."""
+    base: dict = {"deleted_at": {"$exists": False}}
+    if solo_miembros:
+        base["project_ids"] = pid
+    else:
+        base["$or"] = [{"project_ids": pid}, {"role": {"$in": [ROLE_COORD, ROLE_JEFE]}}]
+    return base
+
+
+def es_miembro_de_proyecto(u: Optional[dict], pid: str) -> bool:
+    return bool(u) and pid in (u.get("project_ids") or [])
+
+
 @api.get("/projects/{pid}/members")
-async def list_project_members(pid: str, user: dict = Depends(current_user)):
-    """Alias semántico de /users — lista miembros del proyecto."""
+async def list_project_members(
+    pid: str,
+    solo_miembros: bool = Query(False),
+    user: dict = Depends(current_user),
+):
+    """Alias semántico de /users — lista miembros del proyecto. `?solo_miembros=1`
+    excluye a los coordinadores/jefes que no pertenecen al proyecto (K-02)."""
     await ensure_project_access(user, pid)
-    items = await db.users.find(
-        {"$or": [
-            {"project_ids": pid},
-            {"role": {"$in": [ROLE_COORD, ROLE_JEFE]}},
-        ]}
-    ).to_list(length=1000)
+    items = await db.users.find(filtro_miembros_proyecto(pid, solo_miembros)).to_list(length=1000)
     if user.get("role") == ROLE_ESPECIALISTA:
         items = [u for u in items if u.get("role") != ROLE_COORD]
     return [user_to_out(u) for u in items]
@@ -11415,27 +12584,53 @@ async def reset_team_member_password(pid: str, uid: str, user: dict = Depends(re
 # (genera una temporal, igual que el botón de Equipo/Invitaciones) sin
 # necesitar que el usuario esté asignado a un proyecto específico del
 # Coordinador que la atiende — Coordinador General ya tiene god-mode.
+_TAREAS_RESET: set = set()  # referencias fuertes: evita que el GC cancele el envío en segundo plano
+
+
+async def _crear_solicitud_admin(u: dict) -> None:
+    """Respaldo administrativo: deja la solicitud para que un Coordinador General la resuelva."""
+    existing = await db.password_reset_requests.find_one({"user_id": u["id"], "status": "pending"})
+    if existing:
+        return
+    await db.password_reset_requests.insert_one({
+        "id": str(uuid.uuid4()),
+        "user_id": u["id"],
+        "email": u["email"],
+        "name": u["name"],
+        "role": u["role"],
+        "project_ids": u.get("project_ids") or [],
+        "status": "pending",
+        "created_at": datetime.now(timezone.utc),
+    })
+
+
+async def _procesar_reset(u: dict) -> None:
+    """Envía el enlace por correo; si no se puede, cae al respaldo administrativo."""
+    try:
+        if smtp_configurado():
+            token = await crear_token_reset(u["id"])
+            if token is None:
+                return  # demasiadas solicitudes en la última hora: no se manda otro correo
+            asunto, cuerpo = construir_correo_reset(u["name"], f"{PUBLIC_BASE_URL}/api/restablecer?token={token}")
+            if await enviar_correo(u["email"], asunto, cuerpo):
+                return
+        await _crear_solicitud_admin(u)
+    except Exception as e:  # noqa: BLE001
+        log.warning(f"[reset] Falló el procesamiento: {type(e).__name__}: {e}")
+
+
 @api.post("/auth/forgot_password")
 async def forgot_password(body: ForgotPasswordIn):
-    """Sin autenticación (pantalla de login). Responde siempre el mismo
-    mensaje genérico exista o no el correo, para no filtrar qué cuentas
-    están registradas."""
+    """Sin autenticación (pantalla de login). Responde siempre lo mismo y tarda lo
+    mismo exista o no el correo (el envío va en segundo plano) para no filtrar qué
+    cuentas están registradas."""
     email = body.email.lower()
-    u = await db.users.find_one({"email": email})
+    u = await db.users.find_one({"email": email, "deleted_at": {"$exists": False}})
     if u:
-        existing = await db.password_reset_requests.find_one({"user_id": u["id"], "status": "pending"})
-        if not existing:
-            await db.password_reset_requests.insert_one({
-                "id": str(uuid.uuid4()),
-                "user_id": u["id"],
-                "email": u["email"],
-                "name": u["name"],
-                "role": u["role"],
-                "project_ids": u.get("project_ids") or [],
-                "status": "pending",
-                "created_at": datetime.now(timezone.utc),
-            })
-    return {"ok": True, "message": "Si el correo está registrado, tu Coordinador General verá la solicitud y te compartirá una contraseña nueva."}
+        tarea = asyncio.create_task(_procesar_reset(u))
+        _TAREAS_RESET.add(tarea)
+        tarea.add_done_callback(_TAREAS_RESET.discard)
+    return {"ok": True, "message": MSG_RESET_CORREO if smtp_configurado() else MSG_RESET_RESPALDO}
 
 
 @api.get("/admin/password_reset_requests")
@@ -11509,12 +12704,34 @@ async def remove_team_member(pid: str, uid: str, user: dict = Depends(require_ro
 # Toda noticia (fijada o no) vence 24h después de creada. El fijado solo
 # controla el orden mientras está vigente; no extiende su vida.
 ANNOUNCEMENT_TTL_HOURS = 24
+# G-05: la vigencia es elegible al crear y al editar. Solo estos valores (tope 7 días).
+ANNOUNCEMENT_VIGENCIAS_HORAS = (6, 24, 48, 168)
+
+
+def validar_vigencia_horas(valor: Any) -> int:
+    """Valida la vigencia de una noticia (6, 24, 48 o 168 horas). Lanza ValueError con
+    un mensaje es-MX legible (el handler lo vuelve 400)."""
+    if isinstance(valor, bool) or not isinstance(valor, int) or valor not in ANNOUNCEMENT_VIGENCIAS_HORAS:
+        opciones = ", ".join(str(h) for h in ANNOUNCEMENT_VIGENCIAS_HORAS)
+        raise ValueError(f"La vigencia de la noticia debe ser de {opciones} horas (máximo 7 días).")
+    return valor
+
+
+def vigencia_de_noticia(doc: dict) -> int:
+    """Vigencia en horas de una noticia; las anteriores a G-05 no guardan el campo y duran 24 h."""
+    v = doc.get("vigencia_horas")
+    return v if isinstance(v, int) and not isinstance(v, bool) and v in ANNOUNCEMENT_VIGENCIAS_HORAS else ANNOUNCEMENT_TTL_HOURS
+
+
+def expira_en(ahora: datetime, vigencia_horas: int) -> datetime:
+    return ahora + timedelta(hours=vigencia_horas)
 
 
 class AnnouncementIn(BaseModel):
     title: str
     body: str
     pinned: bool = False
+    vigencia_horas: Optional[int] = None  # 6 | 24 | 48 | 168 (por defecto 24)
     jerarquia: Optional[str] = None  # 'urgente' | 'importante' | 'informativo' | None
     severidad: Optional[str] = None  # alias front-end de jerarquia
     audiencia: Optional[str] = None  # 'general' o area_id
@@ -11529,10 +12746,14 @@ class AnnouncementPatch(BaseModel):
     severidad: Optional[str] = None
     audiencia: Optional[str] = None
     node_id: Optional[str] = None  # "" o null para desvincular
+    # Cambia la vigencia: la noticia vence `vigencia_horas` después de ESTA edición
+    # (el reloj se reinicia desde el momento de editar).
+    vigencia_horas: Optional[int] = None
 
 
 def _announcement_out(doc: dict) -> dict:
     doc.pop("_id", None)
+    doc["vigencia_horas"] = vigencia_de_noticia(doc)
     return doc
 
 
@@ -11564,11 +12785,15 @@ async def create_announcement(
     if not title:
         raise HTTPException(400, "Título requerido")
     if not text:
-        raise HTTPException(400, "Cuerpo requerido")
+        raise HTTPException(400, "Contenido requerido")
     if len(title) > 140:
         raise HTTPException(400, "Título máximo 140 caracteres")
     if len(text) > 4000:
-        raise HTTPException(400, "Cuerpo máximo 4000 caracteres")
+        raise HTTPException(400, "Contenido máximo 4000 caracteres")
+    try:
+        vigencia = validar_vigencia_horas(body.vigencia_horas) if body.vigencia_horas is not None else ANNOUNCEMENT_TTL_HOURS
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     # Normaliza severidad/jerarquía (acepta ambos nombres).
     sev_raw = (body.severidad or body.jerarquia or "").strip().lower() or None
     if sev_raw and sev_raw not in ("urgente", "importante", "informativo"):
@@ -11610,13 +12835,16 @@ async def create_announcement(
         "author_role": user["role"],
         "created_at": now,
         "updated_at": now,
-        # Toda noticia vence 24h después de publicada, fijada o no (índice TTL
-        # la purga físicamente; el listado también filtra por si el barrido
-        # de Mongo aún no corrió).
-        "expires_at": now + timedelta(hours=ANNOUNCEMENT_TTL_HOURS),
+        # Toda noticia vence `vigencia_horas` después de publicada (24 h por defecto),
+        # fijada o no (índice TTL la purga físicamente; el listado también filtra
+        # por si el barrido de Mongo aún no corrió).
+        "vigencia_horas": vigencia,
+        "expires_at": expira_en(now, vigencia),
         "intranet": False,
     }
     await db.announcements.insert_one(doc)
+    if jerarquia == "urgente":
+        asyncio.create_task(_notify_urgent_announcement(pid, doc["id"], title, user["id"]))
     return _announcement_out(doc)
 
 
@@ -11647,15 +12875,15 @@ async def update_announcement(
     if body.body is not None:
         b = body.body.strip()
         if not b:
-            raise HTTPException(400, "Cuerpo no puede estar vacío")
+            raise HTTPException(400, "Contenido no puede estar vacío")
         if len(b) > 4000:
-            raise HTTPException(400, "Cuerpo máximo 4000 caracteres")
+            raise HTTPException(400, "Contenido máximo 4000 caracteres")
         update["body"] = b
     if body.pinned is not None:
         # El autor puede fijar/desfijar su propia noticia; un Coordinador
         # puede hacerlo sobre cualquiera. El fijado nunca extiende
         # `expires_at`: como máximo dura lo que le quede de vida a la noticia
-        # (máx. 24h desde su creación).
+        # (su vigencia: 6 h, 24 h, 48 h o 7 días según `vigencia_horas`).
         if not (is_author or is_coord):
             raise HTTPException(403, "Sólo el autor o un Coordinador puede fijar esta noticia")
         update["pinned"] = bool(body.pinned)
@@ -11691,6 +12919,20 @@ async def update_announcement(
             update["node_id"] = nid
             update["node_path_ids"] = path_ids
             update["node_name"] = node.get("name")
+    if body.vigencia_horas is not None:
+        try:
+            nueva_vigencia = validar_vigencia_horas(body.vigencia_horas)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        ahora_v = datetime.now(timezone.utc)
+        vence = a.get("expires_at")
+        if isinstance(vence, datetime):
+            if vence.tzinfo is None:
+                vence = vence.replace(tzinfo=timezone.utc)
+            if vence <= ahora_v:
+                raise HTTPException(400, "La noticia ya expiró: no se puede cambiar su vigencia.")
+        update["vigencia_horas"] = nueva_vigencia
+        update["expires_at"] = expira_en(ahora_v, nueva_vigencia)
     if not update:
         return _announcement_out(a)
     update["updated_at"] = datetime.now(timezone.utc)
@@ -12183,6 +13425,8 @@ class EventIn(BaseModel):
     end_at: Optional[str] = None
     area_id: Optional[str] = None
     attendee_ids: List[str] = Field(default_factory=list)
+    # Evento de todo el día: `start_at` es solo la fecha; no lleva hora.
+    all_day: bool = False
 
 
 class EventPatch(BaseModel):
@@ -12193,11 +13437,20 @@ class EventPatch(BaseModel):
     end_at: Optional[str] = None
     area_id: Optional[str] = None
     attendee_ids: Optional[List[str]] = None
+    all_day: Optional[bool] = None
 
 
 def _event_out(doc: dict) -> dict:
     doc.pop("_id", None)
+    doc.setdefault("all_day", False)
     return doc
+
+
+def _evento_dia_completo(fecha_iso: str, project: Optional[dict]) -> datetime:
+    """Un evento con solo fecha (minuta, inicio/fin de concepto) cae en las 00:00
+    del día en la zona del proyecto. Antes se guardaba a las 00:00 UTC, que en CDMX
+    es 18:00 del día ANTERIOR y el evento salía a la hora y al día equivocados."""
+    return inicio_dia_utc(date.fromisoformat(str(fecha_iso)[:10]), project)
 
 
 async def _resolve_attendee_ids(ids: List[str]) -> tuple:
@@ -12232,9 +13485,14 @@ async def _enrich_event_with_area(doc: dict) -> dict:
     return doc
 
 
-def _parse_iso(s: str) -> datetime:
+def _parse_iso(s: str, zona=None) -> datetime:
+    """ISO 8601 -> datetime. Si viene SIN zona horaria se interpreta en `zona`
+    (la del proyecto) en vez de dejarlo naive, que Mongo guardaría como UTC."""
     try:
-        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        if dt.tzinfo is None and zona is not None:
+            dt = dt.replace(tzinfo=zona)
+        return dt
     except Exception:
         raise HTTPException(400, f"Fecha inválida: {s}")
 
@@ -12248,15 +13506,16 @@ async def list_events(
     user: dict = Depends(current_user),
 ):
     """Lista eventos. Cualquier miembro del proyecto puede leer."""
-    await ensure_project_access(user, pid)
+    proj_ev = await ensure_project_access(user, pid)
     q: dict = {"project_id": pid}
     now = datetime.now(timezone.utc)
+    # "Hoy" es el día del PROYECTO (antes se cortaba a medianoche UTC y por la
+    # tarde-noche de CDMX se ocultaban los eventos del día en curso).
+    inicio_hoy = inicio_dia_utc(hoy_proyecto(proj_ev), proj_ev)
     if range == "upcoming":
-        # eventos desde inicio del día actual (UTC) en adelante
-        start_today = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        q["start_at"] = {"$gte": start_today}
+        q["start_at"] = {"$gte": inicio_hoy}
     elif range == "past":
-        q["start_at"] = {"$lt": now.replace(hour=0, minute=0, second=0, microsecond=0)}
+        q["start_at"] = {"$lt": inicio_hoy}
     # 'all' → sin filtro
     if mine:
         # Autor o asistente asignado — mismo criterio que "Mis Minutas".
@@ -12283,7 +13542,7 @@ async def list_events(
     # calendario nunca se desincronice si el concepto cambia de fecha o se
     # borra. Se omiten en la vista "mine" (esos filtros son de autor/
     # asistente, que no aplica a un concepto).
-    start_today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    start_today = inicio_hoy
     virtuales: List[dict] = []
     if not mine:
         partida_ids = [p["id"] async for p in db.partidas.find({"project_id": pid}, {"id": 1})]
@@ -12294,19 +13553,21 @@ async def list_events(
             ):
                 etiqueta = f"{c.get('clave', '')} — {c.get('descripcion', '')}".strip(" —")
                 if c.get("fecha_inicio"):
-                    dt = datetime.fromisoformat(c["fecha_inicio"]).replace(tzinfo=timezone.utc)
+                    dt = _evento_dia_completo(c["fecha_inicio"], proj_ev)
                     virtuales.append({
                         "id": f"concepto-inicio:{c['id']}", "project_id": pid,
                         "title": f"Inicio de {etiqueta}", "description": None, "location": None,
+                        "all_day": True, "fecha": c["fecha_inicio"][:10],
                         "start_at": dt, "end_at": None, "area_id": None,
                         "author_id": "catalogo", "author_name": "Catálogo de conceptos",
                         "created_at": dt, "updated_at": dt,
                     })
                 if c.get("fecha_fin"):
-                    dt = datetime.fromisoformat(c["fecha_fin"]).replace(tzinfo=timezone.utc)
+                    dt = _evento_dia_completo(c["fecha_fin"], proj_ev)
                     virtuales.append({
                         "id": f"concepto-fin:{c['id']}", "project_id": pid,
                         "title": f"Fin de {etiqueta}", "description": None, "location": None,
+                        "all_day": True, "fecha": c["fecha_fin"][:10],
                         "start_at": dt, "end_at": None, "area_id": None,
                         "author_id": "catalogo", "author_name": "Catálogo de conceptos",
                         "created_at": dt, "updated_at": dt,
@@ -12323,11 +13584,12 @@ async def list_events(
     async for m in db.minutas.find(
         minuta_q, {"id": 1, "codigo": 1, "titulo": 1, "fecha_reunion": 1, "author_id": 1, "author_name": 1},
     ):
-        dt = datetime.fromisoformat(m["fecha_reunion"]).replace(tzinfo=timezone.utc)
+        dt = _evento_dia_completo(m["fecha_reunion"], proj_ev)
         etiqueta = f"{m.get('codigo', '')} — {m.get('titulo', '')}".strip(" —")
         virtuales.append({
             "id": f"minuta:{m['id']}", "project_id": pid,
             "title": f"Minuta: {etiqueta}", "description": None, "location": None,
+            "all_day": True, "fecha": m["fecha_reunion"][:10],
             "start_at": dt, "end_at": None, "area_id": None,
             "author_id": m.get("author_id") or "minutas", "author_name": m.get("author_name") or "Minutas",
             "created_at": dt, "updated_at": dt,
@@ -12365,14 +13627,19 @@ async def create_event(
     user: dict = Depends(current_user),
 ):
     """Cualquier miembro del proyecto puede crear eventos."""
-    await ensure_project_access(user, pid)
+    proj_ev = await ensure_project_access(user, pid)
     title = (body.title or "").strip()
     if not title:
         raise HTTPException(400, "Título requerido")
     if len(title) > 140:
         raise HTTPException(400, "Título máximo 140 caracteres")
-    start = _parse_iso(body.start_at)
-    end = _parse_iso(body.end_at) if body.end_at else None
+    zona_ev = zona_proyecto(proj_ev)
+    start = _parse_iso(body.start_at, zona_ev)
+    end = _parse_iso(body.end_at, zona_ev) if body.end_at else None
+    if body.all_day:
+        # Todo el día: sin hora. Se ancla a las 00:00 del día del proyecto.
+        start = inicio_dia_utc(start.astimezone(zona_ev).date(), proj_ev)
+        end = None
     if end and end < start:
         raise HTTPException(400, "La fecha de fin no puede ser anterior al inicio")
     desc = (body.description or "").strip() or None
@@ -12389,6 +13656,7 @@ async def create_event(
     attendee_ids, attendee_names = await _resolve_attendee_ids(body.attendee_ids)
     now = datetime.now(timezone.utc)
     doc = {
+        "all_day": bool(body.all_day),
         "id": str(uuid.uuid4()),
         "project_id": pid,
         "title": title,
@@ -12420,7 +13688,8 @@ async def update_event(
     e = await db.events.find_one({"id": eid})
     if not e:
         raise HTTPException(404, "Evento no existe")
-    await ensure_project_access(user, e["project_id"])
+    proj_ev = await ensure_project_access(user, e["project_id"])
+    zona_ev = zona_proyecto(proj_ev)
     is_author = e.get("author_id") == user["id"]
     is_coord = user["role"] == ROLE_COORD
     if not (is_author or is_coord):
@@ -12444,9 +13713,18 @@ async def update_event(
             raise HTTPException(400, "Ubicación máximo 200 caracteres")
         update["location"] = loc or None
     if body.start_at is not None:
-        update["start_at"] = _parse_iso(body.start_at)
+        update["start_at"] = _parse_iso(body.start_at, zona_ev)
     if body.end_at is not None:
-        update["end_at"] = _parse_iso(body.end_at) if body.end_at else None
+        update["end_at"] = _parse_iso(body.end_at, zona_ev) if body.end_at else None
+    if body.all_day is not None:
+        update["all_day"] = bool(body.all_day)
+        if body.all_day:
+            # Todo el día: sin hora, anclado a las 00:00 del día del proyecto y sin fin.
+            ancla = update.get("start_at", e["start_at"])
+            if ancla.tzinfo is None:
+                ancla = ancla.replace(tzinfo=timezone.utc)
+            update["start_at"] = inicio_dia_utc(ancla.astimezone(zona_ev).date(), proj_ev)
+            update["end_at"] = None
     if body.area_id is not None:
         aid = (body.area_id or None) or None
         if aid:
@@ -12488,6 +13766,175 @@ async def delete_event(eid: str, user: dict = Depends(current_user)):
         raise HTTPException(403, "Sólo el autor o un Coordinador puede eliminar")
     await db.events.delete_one({"id": eid})
     return {"ok": True}
+
+
+# === PUSH EXTRA (T-05c): acuerdos por vencer, noticia urgente, invitación aceptada ===
+# Todas comparten reglas: nunca rompen la operación principal (try/except + log), no
+# envían a quien no tiene token, y el cuerpo no lleva datos sensibles (solo el título
+# de la minuta/noticia o el nombre de quien aceptó, según el caso).
+HORA_AVISO_ACUERDOS_DESDE = 8   # hora local del proyecto: no avisar de madrugada
+HORA_AVISO_ACUERDOS_HASTA = 21
+
+
+def _recortar_push(texto: Any, largo: int = 80) -> str:
+    s = " ".join(str(texto or "").split())
+    return s if len(s) <= largo else s[: largo - 1].rstrip() + "…"
+
+
+def destinatarios_push(usuarios: List[dict], excluir_id: Optional[str] = None) -> List[str]:
+    """Ids de usuarios con al menos un token de Expo, sin repetir y sin `excluir_id` (el autor)."""
+    salida: List[str] = []
+    for u in usuarios or []:
+        uid = u.get("id")
+        if not uid or uid == excluir_id or uid in salida:
+            continue
+        if not (u.get("expo_push_tokens") or []):
+            continue
+        salida.append(uid)
+    return salida
+
+
+def acuerdos_por_vencer(minutas: List[dict], hoy: date) -> List[dict]:
+    """Acuerdos SIN cumplir cuya fecha límite es hoy o mañana (día del proyecto) y que
+    aún no avisaron ese vencimiento (`vencimiento_push_enviado` guarda la fecha avisada:
+    si la fecha límite cambia, se vuelve a avisar)."""
+    hoy_s = hoy.isoformat()
+    manana_s = (hoy + timedelta(days=1)).isoformat()
+    salida: List[dict] = []
+    for m in minutas or []:
+        for a in m.get("acuerdos") or []:
+            if a.get("estado"):
+                continue
+            fl = str(a.get("fecha_limite") or "")[:10]
+            if fl not in (hoy_s, manana_s) or a.get("vencimiento_push_enviado") == fl:
+                continue
+            if not a.get("responsable_id"):
+                continue
+            salida.append({
+                "minuta_id": m.get("id"),
+                "titulo": m.get("titulo"),
+                "acuerdo_id": a.get("id"),
+                "responsable_id": a["responsable_id"],
+                "fecha_limite": fl,
+                "dias": 0 if fl == hoy_s else 1,
+            })
+    return salida
+
+
+def es_hora_de_aviso(ahora_utc: datetime, project: Optional[dict] = None) -> bool:
+    """¿Es una hora razonable (en la zona del proyecto) para mandar avisos que no son urgentes?"""
+    hora = ahora_utc.astimezone(zona_proyecto(project)).hour
+    return HORA_AVISO_ACUERDOS_DESDE <= hora < HORA_AVISO_ACUERDOS_HASTA
+
+
+async def _avisar_acuerdos_por_vencer(ahora_utc: Optional[datetime] = None) -> int:
+    """Un push por responsable y día de vencimiento (agrupa sus acuerdos). Marca cada acuerdo
+    avisado; si el envío lanza una excepción no se marca y se reintenta en la siguiente vuelta.
+    Devuelve cuántos acuerdos quedaron marcados."""
+    ahora_utc = ahora_utc or datetime.now(timezone.utc)
+    marcados = 0
+    proyectos = await db.projects.find(
+        {"archived": {"$ne": True}}, {"_id": 0, "id": 1, "name": 1, "zona_horaria": 1}
+    ).to_list(length=2000)
+    for p in proyectos:
+        if not es_hora_de_aviso(ahora_utc, p):
+            continue
+        hoy = hoy_proyecto(p, ahora_utc)
+        fechas = [hoy.isoformat(), (hoy + timedelta(days=1)).isoformat()]
+        minutas = await db.minutas.find({
+            "project_id": p["id"],
+            "acuerdos": {"$elemMatch": {"estado": {"$ne": True}, "fecha_limite": {"$in": fechas}}},
+        }).to_list(length=500)
+        pendientes = acuerdos_por_vencer(minutas, hoy)
+        grupos: Dict[Tuple[str, int], List[dict]] = {}
+        for it in pendientes:
+            grupos.setdefault((it["responsable_id"], it["dias"]), []).append(it)
+        for (rid, dias), items in grupos.items():
+            n = len(items)
+            cuando = "hoy" if dias == 0 else "mañana"
+            titulo_push = "Acuerdo por vencer" if n == 1 else "Acuerdos por vencer"
+            if n == 1:
+                cuerpo = f"Tu acuerdo de «{_recortar_push(items[0].get('titulo'), 60)}» vence {cuando}."
+            else:
+                cuerpo = f"Tienes {n} acuerdos que vencen {cuando}."
+            try:
+                await send_push_notification(
+                    user_id=rid,
+                    title=titulo_push,
+                    body=cuerpo,
+                    data={
+                        "type": "agreement_due",
+                        "project_id": p["id"],
+                        "minuta_id": items[0].get("minuta_id") if n == 1 else None,
+                        "count": n,
+                    },
+                )
+            except Exception:
+                log.exception("[push] agreement_due falló user=%s proyecto=%s", rid, p["id"])
+                continue
+            for it in items:
+                await db.minutas.update_one(
+                    {"id": it["minuta_id"], "acuerdos.id": it["acuerdo_id"]},
+                    {"$set": {"acuerdos.$.vencimiento_push_enviado": it["fecha_limite"]}},
+                )
+                marcados += 1
+    return marcados
+
+
+async def _notify_urgent_announcement(
+    project_id: str, announcement_id: str, title: str, author_id: Optional[str],
+) -> int:
+    """Push a los miembros del proyecto (menos el autor) cuando se publica una noticia urgente.
+    Devuelve a cuántos usuarios se les intentó enviar."""
+    enviados = 0
+    try:
+        usuarios = await db.users.find(
+            {"project_ids": project_id, "deleted_at": {"$exists": False}},
+            {"_id": 0, "id": 1, "expo_push_tokens": 1},
+        ).to_list(length=1000)
+        for uid in destinatarios_push(usuarios, excluir_id=author_id):
+            try:
+                await send_push_notification(
+                    user_id=uid,
+                    title="Noticia urgente",
+                    body=_recortar_push(title, 100),
+                    data={"type": "urgent_announcement", "project_id": project_id, "announcement_id": announcement_id},
+                )
+                enviados += 1
+            except Exception:
+                log.exception("[push] urgent_announcement falló user=%s", uid)
+    except Exception:
+        log.exception("[push] no se pudo avisar la noticia urgente %s", announcement_id)
+    return enviados
+
+
+async def _notify_invitation_accepted(inv: dict, nombre_nuevo: str) -> int:
+    """Avisa a quien creó la invitación (o, si es una invitación vieja sin `creado_por`, a los
+    coordinadores del proyecto) que ya fue aceptada. El invitado aún no tiene token, por eso el
+    aviso va al Coordinador."""
+    enviados = 0
+    try:
+        if inv.get("creado_por"):
+            filtro: dict = {"id": inv["creado_por"]}
+        else:
+            filtro = {"project_ids": inv.get("project_id"), "role": ROLE_COORD}
+        usuarios = await db.users.find(
+            {**filtro, "deleted_at": {"$exists": False}}, {"_id": 0, "id": 1, "expo_push_tokens": 1},
+        ).to_list(length=200)
+        for uid in destinatarios_push(usuarios):
+            try:
+                await send_push_notification(
+                    user_id=uid,
+                    title="Invitación aceptada",
+                    body=f"{_recortar_push(nombre_nuevo, 60)} aceptó la invitación a {_recortar_push(inv.get('project_name'), 60)}.",
+                    data={"type": "invitation_accepted", "project_id": inv.get("project_id"), "invitation_id": inv.get("id")},
+                )
+                enviados += 1
+            except Exception:
+                log.exception("[push] invitation_accepted falló user=%s", uid)
+    except Exception:
+        log.exception("[push] no se pudo avisar la invitación aceptada %s", inv.get("id"))
+    return enviados
 
 
 async def _meeting_reminder_loop() -> None:
@@ -12541,6 +13988,10 @@ async def _meeting_reminder_loop() -> None:
                 await db.events.update_one({"id": e["id"]}, {"$set": {"reminder_sent": True}})
         except Exception:
             log.exception("[push] _meeting_reminder_loop: error en la iteración")
+        try:
+            await _avisar_acuerdos_por_vencer()
+        except Exception:
+            log.exception("[push] _avisar_acuerdos_por_vencer: error en la iteración")
         await asyncio.sleep(300)
 
 
@@ -12669,11 +14120,11 @@ def _parse_qty_desc(s: str) -> tuple:
 
 
 _DIAS_ES = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
-_MESES_ES = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"]
+_MESES_ES_ABREV = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"]
 
 
 def _fmt_day_label_es(dt: datetime) -> str:
-    return f"{_DIAS_ES[dt.weekday()]} {dt.day:02d} {_MESES_ES[dt.month - 1]}"
+    return f"{_DIAS_ES[dt.weekday()]} {dt.day:02d} {_MESES_ES_ABREV[dt.month - 1]}"
 
 
 def _week_bounds_for(d) -> tuple:
@@ -12686,8 +14137,8 @@ def _week_bounds_for(d) -> tuple:
 
 def _fmt_week_label_es(start, end) -> str:
     if start.month == end.month:
-        return f"Semana del {start.day:02d} al {end.day:02d} {_MESES_ES[end.month - 1]}"
-    return f"Semana del {start.day:02d} {_MESES_ES[start.month - 1]} al {end.day:02d} {_MESES_ES[end.month - 1]}"
+        return f"Semana del {start.day:02d} al {end.day:02d} {_MESES_ES_ABREV[end.month - 1]}"
+    return f"Semana del {start.day:02d} {_MESES_ES_ABREV[start.month - 1]} al {end.day:02d} {_MESES_ES_ABREV[end.month - 1]}"
 
 
 def _workforce_rows_by_root(reports_by_node: dict, nodes_by_id: dict) -> dict:
@@ -13412,7 +14863,7 @@ async def export_reports_xlsx(pid: str, user: dict = Depends(current_user)):
 
     # Cabecera del archivo: nombre del proyecto y fecha
     ws.insert_rows(1)
-    ws.cell(row=1, column=1, value=f"SynCo · {proj.get('name','Proyecto')} · Reporte exportado {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
+    ws.cell(row=1, column=1, value=f"Dirac · {proj.get('name','Proyecto')} · Reporte exportado {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(headers))
     title_cell = ws.cell(row=1, column=1)
     title_cell.font = Font(bold=True, size=12, color="1E3A8A")
@@ -13424,7 +14875,7 @@ async def export_reports_xlsx(pid: str, user: dict = Depends(current_user)):
     buf.seek(0)
 
     safe_name = re.sub(r"[^A-Za-z0-9_-]+", "_", proj.get("name", "proyecto"))[:60] or "proyecto"
-    fname = f"synco_{safe_name}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M')}.xlsx"
+    fname = f"dirac_{safe_name}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M')}.xlsx"
     return StreamingResponse(
         buf,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -13449,10 +14900,30 @@ async def export_reports_xlsx(pid: str, user: dict = Depends(current_user)):
 
 LOGO_PATH = Path(__file__).resolve().parent / "assets" / "logo_dirac.png"
 
-_MESES_ES = [
-    "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
-    "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre",
+# Meses en minúscula: en español el mes va en minúscula dentro de una fecha
+# ("16 de junio de 2026"). Para un encabezado suelto usa `mes_capitalizado`.
+_MESES_ES_COMPLETO = [
+    "enero", "febrero", "marzo", "abril", "mayo", "junio",
+    "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
 ]
+
+
+def mes_capitalizado(numero: int) -> str:
+    """Nombre del mes (1-12) con inicial mayúscula, para encabezados sueltos ('Junio')."""
+    return _MESES_ES_COMPLETO[numero - 1].capitalize()
+
+
+def fmt_fecha_corta_es(d) -> str:
+    """'23 sep 2026' (un solo estilo, igual que la app). Acepta date o datetime."""
+    return f"{d.day} {_MESES_ES_ABREV[d.month - 1]} {d.year}"
+
+
+def fmt_fecha_hora_corta_es(dt: datetime) -> str:
+    """'23 sep 2026, 08:47' en la zona del proyecto por defecto (America/Mexico_City)."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    dt = dt.astimezone(MX_TZ)
+    return f"{fmt_fecha_corta_es(dt)}, {dt:%H:%M}"
 
 _MEASUREMENT_LABELS_ES = {
     "coord_latlon": "Coordenadas (Lat/Lon)",
@@ -13467,14 +14938,14 @@ def _measurement_label(mtype: str) -> str:
 
 
 def _fmt_fecha_es(dt: datetime) -> str:
-    """Formato ej. '16 de Junio del 2026' en zona horaria America/Mexico_City."""
+    """Formato ej. '16 de junio de 2026' en zona horaria America/Mexico_City."""
     try:
         if not isinstance(dt, datetime):
             return "—"
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         dt = dt.astimezone(MX_TZ)
-        return f"{dt.day} de {_MESES_ES[dt.month - 1]} del {dt.year}"
+        return f"{dt.day} de {_MESES_ES_COMPLETO[dt.month - 1]} de {dt.year}"
     except Exception:
         return dt.strftime("%Y-%m-%d") if isinstance(dt, datetime) else "—"
 
@@ -13484,7 +14955,7 @@ def _fmt_dia_corto_es(fecha_iso: str) -> str:
     YYYY-MM-DD) — para renglones de tabla día-por-día (hoja de Forestal)."""
     try:
         d = date.fromisoformat(fecha_iso)
-        return f"{d.day} de {_MESES_ES[d.month - 1].lower()} de {d.year}"
+        return f"{d.day} de {_MESES_ES_COMPLETO[d.month - 1]} de {d.year}"
     except Exception:
         return fecha_iso
 
@@ -13499,10 +14970,10 @@ def _fmt_rango_dias_es(desde_iso: str, hasta_iso: str) -> str:
     except Exception:
         return f"DEL {desde_iso} AL {hasta_iso}"
     if d1.month == d2.month and d1.year == d2.year:
-        return f"DEL {d1.day} AL {d2.day} DE {_MESES_ES[d2.month - 1].upper()} DE {d2.year}"
+        return f"DEL {d1.day} AL {d2.day} DE {_MESES_ES_COMPLETO[d2.month - 1].upper()} DE {d2.year}"
     return (
-        f"DEL {d1.day} DE {_MESES_ES[d1.month - 1].upper()} "
-        f"AL {d2.day} DE {_MESES_ES[d2.month - 1].upper()} DE {d2.year}"
+        f"DEL {d1.day} DE {_MESES_ES_COMPLETO[d1.month - 1].upper()} "
+        f"AL {d2.day} DE {_MESES_ES_COMPLETO[d2.month - 1].upper()} DE {d2.year}"
     )
 
 
@@ -13646,7 +15117,7 @@ def _format_measurement_for_display(report: dict) -> str:
     return "—"
 
 
-def _period_range(period: str) -> tuple:
+def _period_range(period: str, project: Optional[dict] = None) -> tuple:
     """Devuelve (start_utc, end_utc, etiqueta_legible).
 
     Los rangos se calculan en horario local America/Mexico_City y se
@@ -13656,7 +15127,7 @@ def _period_range(period: str) -> tuple:
       - "Mes" = REGLA ESTRICTA: día 1 del mes calendario actual CDMX 00:00:00 → ahora.
     """
     now_utc = datetime.now(timezone.utc)
-    now_mx = now_utc.astimezone(MX_TZ)
+    now_mx = now_utc.astimezone(zona_proyecto(project))
     p = (period or "today").lower().strip()
     if p in ("today", "hoy"):
         start_mx = now_mx.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -13666,10 +15137,8 @@ def _period_range(period: str) -> tuple:
         start_mx = end_mx - timedelta(days=1)
         return start_mx.astimezone(timezone.utc), end_mx.astimezone(timezone.utc), "Ayer"
     if p in ("week", "semana", "semanal"):
-        # [FIX] Bloque fijo de semana natural (Domingo a Sábado)
-        days_to_sunday = (now_mx.weekday() + 1) % 7
-        start_mx = now_mx.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days_to_sunday)
-        return start_mx.astimezone(timezone.utc), now_utc, "Semana natural"
+        # Semana natural: lunes a domingo (o el `dia_inicio_semana` del proyecto).
+        return _inicio_semana_local(now_mx, project).astimezone(timezone.utc), now_utc, "Semana natural"
     if p in ("month", "mes", "mensual"):
         # REGLA ESTRICTA: Día 1 del mes calendario CDMX 00:00 → ahora.
         start_mx = now_mx.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
@@ -13714,10 +15183,10 @@ def _normalize_period_type(period_type: Optional[str]) -> Optional[str]:
     return None
 
 
-def _period_range_for_type(period_type: str) -> tuple:
+def _period_range_for_type(period_type: str, project: Optional[dict] = None) -> tuple:
     """Rango temporal `(start_utc, end_utc, etiqueta)` para cada categoría."""
     now_utc = datetime.now(timezone.utc)
-    now_mx = now_utc.astimezone(MX_TZ)
+    now_mx = now_utc.astimezone(zona_proyecto(project))
     pt = _normalize_period_type(period_type)
     if pt == "diario":
         # Solo hoy: desde las 00:00 CDMX de hoy hasta ahora.
@@ -13728,9 +15197,8 @@ def _period_range_for_type(period_type: str) -> tuple:
             "Reporte Diario",
         )
     if pt == "semanal":
-        # [FIX] Bloque fijo de semana natural (Domingo a Sábado)
-        days_to_sunday = (now_mx.weekday() + 1) % 7
-        start_mx = now_mx.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days_to_sunday)
+        # Semana natural: lunes a domingo (o el `dia_inicio_semana` del proyecto).
+        start_mx = _inicio_semana_local(now_mx, project)
         return (
             start_mx.astimezone(timezone.utc),
             now_utc,
@@ -13783,6 +15251,258 @@ def _strip_b64_prefix(s: str) -> str:
     return s
 
 
+# ----------------------------------------------------------------------------
+# Utilidades de español (Fase 5): capitalización, género, artículos y plurales.
+# Puras y sin estado, para textos que se arman con nombres configurados por el
+# usuario (áreas, niveles del catálogo) y no se pueden escribir a mano.
+# ----------------------------------------------------------------------------
+_PALABRAS_MENORES_ES = frozenset({
+    "de", "del", "la", "las", "el", "los", "y", "e", "o", "u", "a", "al", "en", "con", "por", "para",
+})
+_SIGLAS_CONOCIDAS = frozenset({"HSE", "SST", "IA", "TI", "QA", "QC", "EPP", "SIG", "BIM", "CFE", "SCT"})
+
+
+def _capitalizar_palabra_es(token: str) -> str:
+    return token[:1].upper() + token[1:].lower()
+
+
+def capitalizar_es(texto: Optional[str]) -> str:
+    """Capitalización del español para nombres: 'topografía y geotecnia' → 'Topografía y Geotecnia'.
+
+    Artículos, preposiciones y conjunciones van en minúscula salvo al inicio; se
+    conservan acentos y ñ; las siglas de 2-4 letras en mayúsculas (HSE, SST, IA) se
+    respetan cuando el resto del texto no está todo en mayúsculas. Un texto entero en
+    MAYÚSCULAS se normaliza ('OBRA CIVIL' → 'Obra Civil') salvo las siglas conocidas."""
+    if not texto:
+        return ""
+    partes = str(texto).split()
+    todo_mayusculas = not any(ch.islower() for ch in texto)
+    salida: List[str] = []
+    for i, token in enumerate(partes):
+        subs = token.split("-")
+        nuevos = []
+        for j, sub in enumerate(subs):
+            if not sub:
+                nuevos.append(sub)
+                continue
+            alfabetico = "".join(ch for ch in sub if ch.isalpha())
+            es_sigla = (
+                sub.isupper() and 2 <= len(alfabetico) <= 4
+                and (not todo_mayusculas or alfabetico in _SIGLAS_CONOCIDAS)
+                and alfabetico.lower() not in _PALABRAS_MENORES_ES
+            )
+            # 'Zona A': una letra mayúscula suelta se respeta, salvo las conjunciones y, e, o, u.
+            es_letra_suelta = (
+                sub.isupper() and len(alfabetico) == 1 and not todo_mayusculas
+                and alfabetico.lower() not in ("y", "e", "o", "u")
+            )
+            if es_sigla or es_letra_suelta:
+                nuevos.append(sub)
+            elif i > 0 and j == 0 and sub.lower() in _PALABRAS_MENORES_ES:
+                nuevos.append(sub.lower())
+            else:
+                nuevos.append(_capitalizar_palabra_es(sub))
+        salida.append("-".join(nuevos))
+    return " ".join(salida)
+
+
+_MASCULINOS_EN_A = frozenset({
+    "día", "dia", "mapa", "planeta", "sistema", "programa", "problema", "tema", "clima", "idioma",
+    "poema", "esquema", "diagrama", "emblema", "teorema", "síntoma", "sintoma", "cometa", "pijama",
+})
+_FEMENINOS_ESPECIALES = frozenset({
+    "mano", "serie", "especie", "superficie", "calle", "base", "clase", "fase", "parte", "torre",
+    "tesis", "crisis", "noche", "tarde", "sede", "red", "pared", "sal", "luz", "cruz", "voz",
+})
+_A_TONICA = frozenset({"área", "area", "agua", "aula", "arma", "alma", "hacha", "águila", "aguila", "ancla", "arca"})
+
+
+def _sin_acentos_es(palabra: str) -> str:
+    import unicodedata as _u
+    return "".join(c for c in _u.normalize("NFD", palabra) if _u.category(c) != "Mn")
+
+
+def _palabra_nucleo_es(nombre: str) -> str:
+    """Palabra que decide el género de un nombre: la primera ('Obra civil' → 'obra'); en un
+    compuesto con guion, la última ('Sub-partida' → 'partida')."""
+    primera = (nombre or "").strip().split()[0] if (nombre or "").strip() else ""
+    return primera.split("-")[-1].lower()
+
+
+def _override_genero(override, nombre: str, profundidad: Optional[int]) -> Optional[str]:
+    """Género forzado por el proyecto (`genero_niveles`): dict por nombre (o 'concepto') o
+    lista alineada con `nombres_niveles_partida`. Valores 'm' | 'f'."""
+    if isinstance(override, dict):
+        buscado = (nombre or "").strip().lower()
+        v = next((g for k, g in override.items() if isinstance(k, str) and k.strip().lower() == buscado), None)
+        return v if v in ("m", "f") else None
+    if isinstance(override, (list, tuple)) and profundidad is not None and 0 <= profundidad < len(override):
+        v = override[profundidad]
+        return v if v in ("m", "f") else None
+    return None
+
+
+def genero_nombre_es(nombre: Optional[str], override=None, profundidad: Optional[int] = None) -> str:
+    """'m' o 'f' para un nombre de nivel. Heurística por terminación con excepciones; el
+    proyecto puede forzarlo con `override` (ver `_override_genero`)."""
+    forzado = _override_genero(override, nombre or "", profundidad)
+    if forzado:
+        return forzado
+    p = _palabra_nucleo_es(nombre or "")
+    if not p:
+        return "m"
+    if p in _FEMENINOS_ESPECIALES:
+        return "f"
+    if p in _MASCULINOS_EN_A:
+        return "m"
+    sin = _sin_acentos_es(p)
+    if sin.endswith(("a", "cion", "sion", "xion", "dad", "tad", "tud", "umbre", "ie")):
+        return "f"
+    return "m"
+
+
+def pluralizar_es(palabra: Optional[str]) -> str:
+    """Plural regular del español para un nombre: 'nivel' → 'niveles', 'estación' →
+    'estaciones', 'luz' → 'luces', 'crisis' → 'crisis'. En una frase con 'de/del/en' se
+    pluraliza el primer nombre ('etapa de obra' → 'etapas de obra'); si no, la última palabra."""
+    texto = (palabra or "").strip()
+    if not texto:
+        return ""
+    tokens = texto.split()
+    # Nombre genérico con número ("Nivel 3"): el plural es el del sustantivo, sin el número.
+    while len(tokens) > 1 and tokens[-1].isdigit():
+        tokens.pop()
+    idx = len(tokens) - 1
+    for k, t in enumerate(tokens[1:], start=1):
+        if t.lower() in ("de", "del", "en", "con", "para", "por"):
+            idx = k - 1
+            break
+    tokens[idx] = _pluralizar_palabra_es(tokens[idx])
+    return " ".join(tokens)
+
+
+def _pluralizar_palabra_es(w: str) -> str:
+    if not w:
+        return w
+    partes = w.split("-")
+    ult = partes[-1]
+    partes[-1] = _plural_simple_es(ult)
+    return "-".join(partes)
+
+
+def _plural_simple_es(w: str) -> str:
+    import re as _re
+    low = w.lower()
+    if not low:
+        return w
+    if low.endswith("z"):
+        return w[:-1] + "ces"
+    if low[-1] in "aeiouáéó":
+        return w + "s"
+    if low[-1] in "íú":
+        return w + "es"
+    if low.endswith("s"):
+        grupos_vocales = _re.findall(r"[aeiouáéíóúü]+", low)
+        acentuada_final = len(low) >= 2 and low[-2] in "áéíóú"
+        if len(grupos_vocales) <= 1:
+            return w + "es"
+        if acentuada_final:
+            # 'país' → 'países' (hiato: conserva la í); 'autobús' → 'autobuses', 'inglés' → 'ingleses'.
+            base = w if low[-2] == "í" else w[:-2] + _sin_acentos_es(w[-2]) + "s"
+            return base + "es"
+        return w
+    if low.endswith("n") and len(low) >= 2 and low[-2] in "áéíóú":
+        return w[:-2] + _sin_acentos_es(w[-2]) + "nes"
+    return w + "es"
+
+
+def articulo_es(nombre: Optional[str], definido: bool = True, plural: bool = False, override=None,
+                profundidad: Optional[int] = None) -> str:
+    """Artículo que concuerda con el nombre: el/la/los/las (definido) o un/una/unos/unas.
+    'el área' / 'un área' (a tónica) aunque el género sea femenino."""
+    g = genero_nombre_es(nombre, override, profundidad)
+    if plural:
+        return ("los" if g == "m" else "las") if definido else ("unos" if g == "m" else "unas")
+    if g == "f" and _palabra_nucleo_es(nombre or "") in _A_TONICA:
+        return "el" if definido else "un"
+    return ("el" if g == "m" else "la") if definido else ("un" if g == "m" else "una")
+
+
+def demostrativo_es(nombre: Optional[str], plural: bool = False, override=None,
+                    profundidad: Optional[int] = None) -> str:
+    """Demostrativo que concuerda con el nombre: este/esta (estos/estas)."""
+    g = genero_nombre_es(nombre, override, profundidad)
+    if plural:
+        return "estos" if g == "m" else "estas"
+    return "este" if g == "m" else "esta"
+
+
+def nombres_nivel_proyecto(project: Optional[dict], profundidad: int = 0) -> dict:
+    """Nombres configurados de los niveles del catálogo de un proyecto, listos para armar
+    mensajes con el artículo correcto (C-14). Si el proyecto no los configuró se usan los
+    históricos 'partida' y 'concepto'. `genero_niveles` (opcional en el proyecto, dict por
+    nombre o lista alineada con `nombres_niveles_partida`) fuerza el género.
+    Devuelve {'partida': {...}, 'concepto': {...}} con nombre, minúscula, plural, género,
+    artículo definido, artículo indefinido, artículo plural y demostrativo (este/esta)."""
+    p = project or {}
+    niveles = [n for n in (p.get("nombres_niveles_partida") or []) if isinstance(n, str) and n.strip()]
+    nombre_partida = niveles[profundidad] if 0 <= profundidad < len(niveles) else "Partida"
+    nombre_concepto = (p.get("nombre_nivel_concepto") or "").strip() or "Concepto"
+    override = p.get("genero_niveles")
+
+    def _ficha(nombre: str, prof: Optional[int]) -> dict:
+        return {
+            "nombre": nombre,
+            "minuscula": nombre.lower(),
+            "plural": pluralizar_es(nombre.lower()),
+            "genero": genero_nombre_es(nombre, override, prof),
+            "articulo": articulo_es(nombre, True, False, override, prof),
+            "indefinido": articulo_es(nombre, False, False, override, prof),
+            "articulo_plural": articulo_es(nombre, True, True, override, prof),
+            "demostrativo": demostrativo_es(nombre, False, override, prof),
+        }
+
+    return {"partida": _ficha(nombre_partida, profundidad), "concepto": _ficha(nombre_concepto, None)}
+
+
+def mensaje_concepto_no_existe(clave: str, project: Optional[dict], ambito: str = "en este proyecto") -> str:
+    """"No existe ningún concepto con clave 'X' en este proyecto" con el nombre y el género del
+    nivel de concepto configurados por el proyecto ("No existe ninguna actividad con clave…")."""
+    c = nombres_nivel_proyecto(project if isinstance(project, dict) else None)["concepto"]
+    ninguno = "ningún" if c["genero"] == "m" else "ninguna"
+    return f"No existe {ninguno} {c['minuscula']} con clave '{clave}' {ambito}"
+
+
+async def _niveles_de_proyecto(project_id: Optional[str], profundidad: int = 0) -> dict:
+    """`nombres_nivel_proyecto` del proyecto `project_id`. Solo se usa en el camino de error
+    (armar un mensaje para el usuario); si el proyecto no se puede leer, caen los nombres
+    históricos 'partida' y 'concepto'."""
+    proj = None
+    if project_id:
+        try:
+            proj = await db.projects.find_one({"id": project_id})
+        except Exception:
+            proj = None
+    return nombres_nivel_proyecto(proj if isinstance(proj, dict) else None, profundidad)
+
+
+async def _profundidad_partida(project_id: Optional[str], partida_id: Optional[str]) -> int:
+    """Nivel que ocupa una partida (0 = raíz): cuántos ancestros tiene. Solo para mensajes."""
+    prof = 0
+    actual = partida_id
+    vistos: set = set()
+    try:
+        while actual and actual not in vistos and prof < 20:
+            vistos.add(actual)
+            doc = await db.partidas.find_one({"id": actual, "project_id": project_id})
+            actual = (doc or {}).get("partida_padre_id") if isinstance(doc, dict) else None
+            if actual:
+                prof += 1
+    except Exception:
+        return 0
+    return prof
+
+
 # ============================================================================
 # Regla de negocio: los reportes de "Sub supervisores" se agrupan bajo la
 # disciplina "Obra Civil" en las exportaciones ejecutivas. Cualquier variante
@@ -13828,7 +15548,7 @@ def _normalize_area_name(
     # de imprimir dos portadillas de Área consecutivas con el mismo título.
     canon = raw.replace("-", " ").replace("_", " ")
     canon = " ".join(canon.split())
-    return canon.title()
+    return capitalizar_es(canon)
 
 
 
@@ -15664,7 +17384,7 @@ async def export_reports_pdf(
         #   • Fallback obligatorio de título → "REPORTE" si `period_type` viene vacío.
         #   • Los textos se dibujan AL FINAL del canvas actual, DESPUÉS del
         #     `setFillColor(WHITE)`, y con showPage al terminar. Como el
-        #     `merge_page` en la etapa de fusión pinta el contenido SynCo
+        #     `merge_page` en la etapa de fusión pinta el contenido Dirac
         #     ENCIMA del template (foreground), quedan visibles sobre el
         #     fondo magenta.
         page_num = 1
@@ -17905,7 +19625,7 @@ async def export_reports_pdf(
     # Modo Superposición:
     #   - Página 0 del template = fondo de la portada.
     #   - Página 1 del template (si existe) = "Sección de Nodo": REEMPLAZA
-    #     por completo cada página separadora de nodo del reporte SynCo.
+    #     por completo cada página separadora de nodo del reporte Dirac.
     #   - Página 2+ del template (si existe) = base para las páginas de datos.
     #     Si no hay página 2, se recicla la última página del template.
     # Nota: `tpl_pdf_path` ya fue calculado arriba para dimensionar el canvas
@@ -17958,13 +19678,13 @@ def _overlay_pdf_on_template(
     cover_bg_page_indices: Optional[List[int]] = None,  # portadillas de Área
     general_data_page_count: int = 1,  # nº de páginas de Datos Generales
 ) -> bytes:
-    """Modo Superposición: fusiona el PDF generado por SynCo sobre la plantilla PDF.
+    """Modo Superposición: fusiona el PDF generado por Dirac sobre la plantilla PDF.
 
     Convención de páginas del template (3 páginas base):
       • Página 0 → 'Portada'. Se usa una única vez como fondo de la portada
-        institucional del reporte SynCo (índice 0 del contenido).
+        institucional del reporte Dirac (índice 0 del contenido).
       • Página 1 → 'Mapa'. Se usa una única vez como fondo de la página
-        MAPA del reporte SynCo (índice 1 del contenido, con el
+        MAPA del reporte Dirac (índice 1 del contenido, con el
         `template_map` incrustado).
       • Página 2..N-1 → 'Lienzo recurrente'. Se cicla como fondo para el
         resto de páginas de contenido del reporte (portadillas de nodo +
@@ -18030,36 +19750,20 @@ def _overlay_pdf_on_template(
 # Procesamiento ESTRICTAMENTE en memoria (io.BytesIO) - NO se escribe ningún
 # archivo al disco del dispositivo ni del servidor.
 
-async def _gather_export_data(
+async def _export_reports_query(
     pid: str,
     period: str,
     user: dict,
     area_id: Optional[str] = None,
     scope_mine_only: bool = False,
     period_type: Optional[str] = None,
-) -> dict:
-    """Carga proyecto, nodos, reportes, anuncios y rutas aplicando filtros.
+):
+    """Criterios de selección de reportes de TODAS las exportaciones (PDF/Word/PPTX)
+    y del conteo previo (`export_reports_count`): una sola fuente para que el aviso
+    "0 reportes" coincida siempre con lo que luego exporta el documento.
 
-    Reglas:
-      - `period_type` (opcional): categoriza el informe en "diario",
-          "semanal" o "mensual". Si se provee, TIENE PRIORIDAD sobre
-          `period` para calcular el rango temporal y sobrescribe el filtro
-          de severidad según la jerarquía elegida al capturar (ver
-          `_severity_set_for_period_type`):
-            * diario  → SOLO severidad "diario".
-            * semanal → SOLO severidad "importante".
-            * mensual → SOLO severidad "urgente".
-            * "informativo" nunca se incluye.
-        Si no se provee, se conserva el comportamiento clásico (`period` +
-        severidad por rol vía `_export_severity_filter`).
-      - Área: si `area_id` viene, filtra reportes por esa área.
-      - Scope:
-        * Coord / Sub-coord / Jefe → ven todos (a menos que pasen area_id).
-        * Especialista → ve sus propios por defecto; si `scope_mine_only=False`
-          y tiene `area_id`, ve los reportes del área.
-      - Noticias inyectables: Importante + Urgente vinculadas a cada nodo
-        (o sus ancestros) dentro del periodo.
-    """
+    Devuelve (proj, period_type normalizado, inicio, fin, etiqueta del periodo,
+    query con severidad, query sin severidad para Fuerza de Trabajo)."""
     await ensure_project_access(user, pid)
     proj = await db.projects.find_one({"id": pid})
     if not proj:
@@ -18067,22 +19771,9 @@ async def _gather_export_data(
 
     pt_norm = _normalize_period_type(period_type)
     if pt_norm:
-        start_dt, end_dt, period_label = _period_range_for_type(pt_norm)
+        start_dt, end_dt, period_label = _period_range_for_type(pt_norm, proj)
     else:
-        start_dt, end_dt, period_label = _period_range(period)
-
-    nodes_raw = await db.location_nodes.find({"project_id": pid}).to_list(length=10000)
-    nodes_by_id = {n["id"]: n for n in nodes_raw}
-    root_ids = [n["id"] for n in nodes_raw if not n.get("parent_id")]
-    root_ids.sort(key=lambda nid: (nodes_by_id[nid].get("order", 0), nodes_by_id[nid].get("name", "")))
-    leaf_nodes = _flatten_tree_in_order(nodes_by_id, root_ids)
-
-    # --- Nodos agrupados por su Subtramo dueño (para Acceso al Predio "a
-    # cualquier profundidad" — ver `_resolve_acceso_predio_node`) ---
-    nodes_by_subtramo: dict = {}
-    for nid in nodes_by_id:
-        sid = _subtramo_id_for(nid, nodes_by_id)
-        nodes_by_subtramo.setdefault(sid, []).append(nodes_by_id[nid])
+        start_dt, end_dt, period_label = _period_range(period, proj)
 
     role = user["role"]
     # Severidad efectiva: si viene period_type, se aplica su política; si
@@ -18117,13 +19808,6 @@ async def _gather_export_data(
     if role == ROLE_ESPECIALISTA and area_id and not scope_mine_only:
         q["area_id"] = area_id
 
-    reports = await db.reports.find(q).to_list(length=20000)
-    reports_by_node: dict = {}
-    for r in reports:
-        reports_by_node.setdefault(r.get("node_id"), []).append(r)
-    for nid, lst in reports_by_node.items():
-        lst.sort(key=lambda r: r.get("created_at") or datetime.min)
-
     # --- Reportes SIN filtro de severidad, para Fuerza de Trabajo/Maquinaria ---
     # `q` excluye "informativo" (y, con period_type, restringe a una sola
     # severidad) porque esa política aplica al contenido narrativo del
@@ -18133,6 +19817,99 @@ async def _gather_export_data(
     # tablas de Fuerza de Trabajo salían vacías en la exportación.
     q_workforce = dict(q)
     q_workforce.pop("severidad", None)
+    return proj, pt_norm, start_dt, end_dt, period_label, q, q_workforce
+
+
+@api.get("/projects/{pid}/export/reports/count")
+async def export_reports_count(
+    pid: str,
+    period: str = Query("today", description="today|yesterday|week|month"),
+    period_type: Optional[str] = Query(None, description="diario | semanal | mensual"),
+    area_id: Optional[str] = Query(None, description="Filtro por área (opcional)"),
+    scope: Optional[str] = Query(None, description="mine|area (para especialistas)"),
+    user: dict = Depends(current_user),
+):
+    """Cuántos reportes exportaría hoy un PDF/Word/PPTX con estos mismos filtros.
+
+    `reportes`: los que entran a la parte narrativa (según la política de severidad).
+    `reportes_fuerza_trabajo`: los del mismo periodo y alcance sin filtrar severidad
+    (solo alimentan las tablas de Fuerza de Trabajo/Maquinaria). Con periodo vacío
+    los documentos SÍ se generan, con la leyenda "sin reportes en el periodo"."""
+    scope_mine_only = (scope or "").lower() == "mine"
+    _proj, _pt, start_dt, end_dt, period_label, q, q_workforce = await _export_reports_query(
+        pid, period, user,
+        area_id=area_id, scope_mine_only=scope_mine_only, period_type=period_type,
+    )
+    reportes = await db.reports.count_documents(q)
+    reportes_ft = await db.reports.count_documents(q_workforce)
+    return {
+        "reportes": reportes,
+        "reportes_fuerza_trabajo": reportes_ft,
+        "periodo": period_label,
+        "inicio": start_dt.isoformat(),
+        "fin": end_dt.isoformat(),
+    }
+
+
+async def _gather_export_data(
+    pid: str,
+    period: str,
+    user: dict,
+    area_id: Optional[str] = None,
+    scope_mine_only: bool = False,
+    period_type: Optional[str] = None,
+) -> dict:
+    """Carga proyecto, nodos, reportes, anuncios y rutas aplicando filtros.
+
+    Reglas:
+      - `period_type` (opcional): categoriza el informe en "diario",
+          "semanal" o "mensual". Si se provee, TIENE PRIORIDAD sobre
+          `period` para calcular el rango temporal y sobrescribe el filtro
+          de severidad según la jerarquía elegida al capturar (ver
+          `_severity_set_for_period_type`):
+            * diario  → SOLO severidad "diario".
+            * semanal → SOLO severidad "importante".
+            * mensual → SOLO severidad "urgente".
+            * "informativo" nunca se incluye.
+        Si no se provee, se conserva el comportamiento clásico (`period` +
+        severidad por rol vía `_export_severity_filter`).
+      - Área: si `area_id` viene, filtra reportes por esa área.
+      - Scope:
+        * Coord / Sub-coord / Jefe → ven todos (a menos que pasen area_id).
+        * Especialista → ve sus propios por defecto; si `scope_mine_only=False`
+          y tiene `area_id`, ve los reportes del área.
+      - Noticias inyectables: Importante + Urgente vinculadas a cada nodo
+        (o sus ancestros) dentro del periodo.
+    """
+    proj, pt_norm, start_dt, end_dt, period_label, q, q_workforce = await _export_reports_query(
+        pid, period, user,
+        area_id=area_id, scope_mine_only=scope_mine_only, period_type=period_type,
+    )
+
+    nodes_raw = await db.location_nodes.find({"project_id": pid}).to_list(length=10000)
+    nodes_by_id = {n["id"]: n for n in nodes_raw}
+    root_ids = [n["id"] for n in nodes_raw if not n.get("parent_id")]
+    root_ids.sort(key=lambda nid: (nodes_by_id[nid].get("order", 0), nodes_by_id[nid].get("name", "")))
+    leaf_nodes = _flatten_tree_in_order(nodes_by_id, root_ids)
+
+    # --- Nodos agrupados por su Subtramo dueño (para Acceso al Predio "a
+    # cualquier profundidad" — ver `_resolve_acceso_predio_node`) ---
+    nodes_by_subtramo: dict = {}
+    for nid in nodes_by_id:
+        sid = _subtramo_id_for(nid, nodes_by_id)
+        nodes_by_subtramo.setdefault(sid, []).append(nodes_by_id[nid])
+
+    role = user["role"]
+
+    reports = await db.reports.find(q).to_list(length=20000)
+    reports_by_node: dict = {}
+    for r in reports:
+        reports_by_node.setdefault(r.get("node_id"), []).append(r)
+    for nid, lst in reports_by_node.items():
+        lst.sort(key=lambda r: r.get("created_at") or datetime.min)
+
+    # `q_workforce` (ver `_export_reports_query`) no filtra por severidad: el
+    # personal/maquinaria capturado cuenta sin importar la severidad del reporte.
     reports_workforce = await db.reports.find(q_workforce).to_list(length=20000)
     reports_by_node_workforce: dict = {}
     for r in reports_workforce:
@@ -18214,7 +19991,7 @@ async def _gather_export_data(
 def _safe_export_filename(name: str, period: str, ext: str) -> str:
     safe = re.sub(r"[^A-Za-z0-9_-]+", "_", name or "proyecto")[:60] or "proyecto"
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
-    # Sin prefijo "synco_": el archivo debe ser 100% institucional.
+    # Sin prefijo de marca: el archivo debe ser 100% institucional.
     return f"reporte_{safe}_{period}_{ts}.{ext}"
 
 
@@ -23941,39 +25718,197 @@ class AISummaryResponse(BaseModel):
     generated_at: datetime
 
 
+# === A-11: entrada del Resumen con IA (pura, sin DB ni red) =================
+RESUMEN_IA_MAX_AVANCES = 100
+RESUMEN_IA_MAX_GASTOS = 50
+RESUMEN_IA_MAX_EXCEPCIONES = 50
+
+RESUMEN_IA_SIN_DATOS = (
+    "• Avances: no disponible en los reportes (sin reportes en las últimas 24h).\n"
+    "• Actividades: no disponible en los reportes.\n"
+    "• Fuerza laboral: no disponible en los reportes.\n"
+    "• Noticias: no hay noticias vigentes.\n"
+    "• Excepciones y control de costos: sin excepciones ni gastos registrados."
+)
+
+RESUMEN_IA_SYSTEM_MESSAGE = (
+    "ERES UN ANALISTA DE OBRA CIVIL DE NIVEL EJECUTIVO. TUS REGLAS SON INQUEBRANTABLES:\n"
+    "1) NO PUEDES INVENTAR DATOS (ALUCINAR). SOLO PUEDES USAR LO QUE APARECE LITERALMENTE EN "
+    "LOS REPORTES, NOTICIAS Y EL BLOQUE DE DATOS DE CONTROL QUE SE TE DAN. SI NO HAY INFORMACIÓN "
+    "PARA UNA CATEGORÍA, ESCRIBE EXACTAMENTE 'No disponible en los reportes' (o 'Sin noticias "
+    "vigentes' para esa categoría, o 'Sin excepciones ni gastos registrados' para la de excepciones "
+    "y costos) EN VEZ DE INFERIR, ESTIMAR O COMPLETAR CON SUPOSICIONES.\n"
+    "2) NO PUEDES FALLAR.\n"
+    "3) TU ÚNICA FUNCIÓN ES RESUMIR EXACTAMENTE LO QUE DICEN LOS REPORTES, NOTICIAS Y EL BLOQUE DE "
+    "DATOS DE CONTROL, SIN AGREGAR INTERPRETACIONES NI NOMBRES QUE NO APAREZCAN EN EL TEXTO FUENTE. "
+    "CIFRAS: PUEDES CITAR EXACTAMENTE LAS CIFRAS DEL BLOQUE DE DATOS DE CONTROL (cantidades, importes, "
+    "fechas, días de atraso y conteos) TAL COMO APARECEN, Y SOLO ESAS: NO CALCULES, REDONDEES, SUMES "
+    "NI DERIVES OTRAS CIFRAS.\n"
+    "4) ESTRUCTURA BASE: ESTAS 5 VIÑETAS SIEMPRE, EN ESTE ORDEN:\n"
+    "   • Avances: qué se avanzó y dónde (nodo/tramo), según el campo Avance de los reportes y los "
+    "registros de avance del día del bloque de datos.\n"
+    "   • Actividades: qué actividades se realizaron, según el campo Actividades de los reportes.\n"
+    "   • Fuerza laboral: personal y equipo/maquinaria que estuvieron en obra.\n"
+    "   • Noticias: anuncios vigentes del proyecto (últimas 24h).\n"
+    "   • Excepciones y control de costos: excepciones del proyecto (excedentes de volumen, "
+    "sobrecosto, ajustes negativos, acuerdos vencidos, conceptos atrasados o sin avance) y gastos "
+    "reales del día, según el bloque de datos. Son alertas informativas: nunca las presentes como "
+    "bloqueos.\n\n"
+    "5) DESARROLLA CADA VIÑETA CON TODO EL DETALLE QUE EXISTA EN LOS DATOS FUENTE: si hay "
+    "información suficiente, usa varias oraciones (no una sola línea genérica) mencionando "
+    "explícitamente nodos/tramos afectados, cifras y unidades de avance tal como aparecen, "
+    "nombres de contratistas, cantidades y nombres de personal/equipo, y agrupa o compara entre "
+    "distintas áreas o tramos cuando el mismo campo aparezca repetido en varios reportes. Nunca "
+    "resumas de más comprimiendo detalles que sí están en el texto fuente: entre más rico sea el "
+    "reporte fuente, más rica debe ser la viñeta. Solo usa 'No disponible en los reportes' cuando "
+    "realmente no haya nada que reportar para esa categoría.\n"
+    "6) VIÑETA ADICIONAL OPCIONAL: si tras cubrir las 5 categorías anteriores identificas en el "
+    "campo Actividades u otro campo información relevante que no encaje en ninguna de ellas "
+    "(p. ej. pendientes, incidencias, riesgos o bloqueos mencionados explícitamente por quien "
+    "capturó el reporte), agrégala al final como '• Observaciones adicionales: ...'. Agrega esta "
+    "viñeta SOLO si hay contenido real y literal que reportar; nunca la inventes ni la agregues "
+    "vacía.\n\n"
+    "Responde SIEMPRE en español. Cada viñeta debe iniciar con '• ' y el nombre de su categoría "
+    "seguido de dos puntos (ej. '• Avances: ...'). Sin introducciones ni cierres genéricos fuera "
+    "de las viñetas."
+)
+
+
+def _iso_o_texto(valor) -> str:
+    return valor.isoformat() if isinstance(valor, datetime) else str(valor)
+
+
+def construir_entrada_resumen_ia(
+    *, pid: str, reportes: List[dict], noticias: List[dict], avances: List[dict], gastos: List[dict],
+    excepciones: List[dict], conceptos_por_id: Dict[str, dict], bac: Decimal, ac_total: Decimal, hoy: date,
+    max_avances: int = RESUMEN_IA_MAX_AVANCES, max_gastos: int = RESUMEN_IA_MAX_GASTOS,
+    max_excepciones: int = RESUMEN_IA_MAX_EXCEPCIONES,
+    periodo_label: str = "las últimas 24 horas", ventana: str = "del día",
+) -> Dict[str, Any]:
+    """Arma el texto de entrada del Resumen con IA. Devuelve {"user_text", "hay_datos", "omitidos"}.
+    `avances` y `gastos` ya vienen filtrados al día; `excepciones` son dicts de ExcepcionEvmOut
+    (ya ordenados por severidad). Los bloques de datos llevan tope y dicen cuántos se omitieron.
+    Todas las cifras salen de aquí tal cual: el prompt permite citarlas y solo esas."""
+    reporte_lines: List[str] = []
+    for r in reportes:
+        path = " › ".join(r.get("node_path_names") or []) or "(sin nodo)"
+        reporte_lines.append(
+            f"- [{_iso_o_texto(r.get('created_at'))}] {path} | Área: {r.get('area_name') or '—'} | "
+            f"Avance: {r.get('avance') or '—'} | Actividades: {(r.get('actividades') or '').strip() or '—'} | "
+            f"Contratista: {r.get('contratista') or '—'} | Personal: {', '.join(r.get('personnel') or []) or '—'} | "
+            f"Equipo: {', '.join(r.get('equipment') or []) or '—'} | Capturó: {r.get('captured_by_name') or '—'}"
+        )
+    body = "\n".join(reporte_lines) if reporte_lines else f"(sin reportes en {periodo_label})"
+
+    ann_lines = [
+        f"- [{_iso_o_texto(a.get('created_at'))}] {a.get('title') or '(sin título)'}: {a.get('body') or ''}".strip()
+        for a in noticias
+    ]
+    ann_body = "\n".join(ann_lines) if ann_lines else "(sin noticias vigentes)"
+
+    avance_lines: List[str] = []
+    for a in avances[:max_avances]:
+        c = conceptos_por_id.get(a.get("concepto_id")) or {}
+        ganado = a.get("importe_ganado_congelado")
+        linea = (
+            f"- {c.get('clave', '?')} {c.get('descripcion', '')} | {a.get('tipo') or 'normal'} | "
+            f"cantidad: {a.get('cantidad_ejecutada')} {c.get('unidad', '')}".rstrip()
+        )
+        if ganado is not None:
+            linea += f" | valor ganado: ${dec_to_str(round_money(ganado))}"
+        motivo = (a.get("motivo") or "").strip()
+        if motivo:
+            linea += f" | motivo: {motivo}"
+        avance_lines.append(linea)
+    om_avances = max(len(avances) - max_avances, 0)
+    if om_avances:
+        avance_lines.append(f"(y {om_avances} registros de avance más no listados)")
+
+    gasto_lines: List[str] = []
+    for g in gastos[:max_gastos]:
+        clave = f" (concepto {g['concepto_clave']})" if g.get("concepto_clave") else ""
+        gasto_lines.append(f"- {g.get('concepto_texto') or '(sin descripción)'}{clave} | ${dec_to_str(round_money(g['monto']))}")
+    om_gastos = max(len(gastos) - max_gastos, 0)
+    if om_gastos:
+        gasto_lines.append(f"(y {om_gastos} gastos más no listados)")
+
+    exc_lines: List[str] = []
+    for e in excepciones[:max_excepciones]:
+        etiqueta = f"{e.get('clave')} {e.get('descripcion')}".strip()
+        linea = f"- [{e.get('tipo')}] {etiqueta}: {e.get('detalle')}"
+        if e.get("cantidad"):
+            linea += f" | cantidad: {e['cantidad']}"
+        if e.get("importe"):
+            linea += f" | importe: ${e['importe']}"
+        exc_lines.append(linea)
+    om_exc = max(len(excepciones) - max_excepciones, 0)
+    if om_exc:
+        exc_lines.append(f"(y {om_exc} excepciones más no listadas)")
+
+    costos = "(sin presupuesto contratado capturado)"
+    if bac > 0:
+        pct = (ac_total * Decimal("100") / bac).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+        costos = (
+            f"Presupuesto contratado: ${dec_to_str(round_money(bac))} | Costo real acumulado: "
+            f"${dec_to_str(round_money(ac_total))} | Costo real sobre presupuesto: {dec_to_str(pct)}%"
+        )
+    elif ac_total > 0:
+        costos = f"Costo real acumulado: ${dec_to_str(round_money(ac_total))} (sin presupuesto contratado capturado)"
+
+    cuando = "hoy" if ventana == "del día" else "en el período"
+    sin_avances = f"(sin registros de avance {cuando})"
+    sin_gastos = f"(sin gastos reales {cuando})"
+    user_text = (
+        f"Reportes de {periodo_label} del proyecto (id={pid}). "
+        f"Total: {len(reportes)} entradas.\n\n{body}\n\n"
+        f"Noticias vigentes del proyecto. Total: {len(noticias)} entradas.\n\n{ann_body}\n\n"
+        f"BLOQUE DE DATOS DE CONTROL (cifras exactas; puedes citarlas tal cual y solo estas). "
+        f"Fecha de hoy en el proyecto: {hoy.isoformat()}.\n\n"
+        f"Registros de avance {ventana}. Total: {len(avances)}.\n"
+        f"{chr(10).join(avance_lines) if avance_lines else sin_avances}\n\n"
+        f"Gastos reales {ventana}. Total: {len(gastos)}.\n"
+        f"{chr(10).join(gasto_lines) if gasto_lines else sin_gastos}\n\n"
+        f"Control de costos del proyecto: {costos}\n\n"
+        f"Excepciones del proyecto. Total: {len(excepciones)}.\n"
+        f"{chr(10).join(exc_lines) if exc_lines else '(sin excepciones)'}\n\n"
+        "Genera el resumen ejecutivo solicitado, usando SOLO lo anterior."
+    )
+    return {
+        "user_text": user_text,
+        "hay_datos": bool(reportes or noticias or avances or gastos or excepciones),
+        "omitidos": {"avances": om_avances, "gastos": om_gastos, "excepciones": om_exc},
+    }
+
+
 @api.post("/projects/{pid}/ai_summary", response_model=AISummaryResponse)
 async def project_ai_summary(
     pid: str,
     periodo: Literal["diario", "semanal", "mensual"] = Query("diario"),
     user: dict = Depends(current_user),
 ):
-    """Genera un resumen ejecutivo (5 viñetas) usando IA con base en los
-    reportes del período elegido del proyecto. Disponible para todos los
-    roles con acceso al proyecto.
+    """Genera un resumen ejecutivo (5 viñetas) usando IA con base en los reportes y noticias del
+    período elegido, los registros de avance y gastos reales de ese período y las excepciones del
+    proyecto. Disponible para todos los roles con acceso al proyecto.
 
-    `periodo` (default "diario", compatible con clientes viejos que no lo
-    envían): "diario" = desde las 00:00 CDMX de hoy; "semanal" = desde el
-    domingo de la semana natural en curso (mismo criterio que
-    `_week_bounds_for`, usado en los exports PDF/PPTX); "mensual" = desde el
+    `periodo` (default "diario", compatible con clientes viejos que no lo envían): "diario" = el
+    día de hoy en la zona del proyecto; "semanal" = desde el domingo de la semana natural en curso
+    (mismo criterio que `_week_bounds_for`, usado en los exports PDF/PPTX); "mensual" = desde el
     día 1 del mes en curso.
     """
-    await ensure_project_access(user, pid)
+    project = await ensure_project_access(user, pid)
 
     if not GEMINI_API_KEY:
         raise HTTPException(500, "GEMINI_API_KEY no configurada en el servidor.")
 
-    now_mx = datetime.now(timezone.utc).astimezone(MX_TZ)
+    # Período natural en la zona del PROYECTO (no en la hora de CDMX ni la del servidor).
+    hoy = hoy_proyecto(project)
     if periodo == "semanal":
-        week_start_date, _ = _week_bounds_for(now_mx.date())
-        since_mx = datetime(
-            week_start_date.year, week_start_date.month, week_start_date.day,
-            0, 0, 0, tzinfo=MX_TZ,
-        )
+        inicio_d, _ = _week_bounds_for(hoy)
     elif periodo == "mensual":
-        since_mx = now_mx.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        inicio_d = hoy.replace(day=1)
     else:
-        since_mx = now_mx.replace(hour=0, minute=0, second=0, microsecond=0)
-    since = since_mx.astimezone(timezone.utc)
+        inicio_d = hoy
+    since = inicio_dia_utc(inicio_d, project)
     period_hours = max(1, round((datetime.now(timezone.utc) - since).total_seconds() / 3600))
 
     q: dict = {"project_id": pid, "created_at": {"$gte": since}}
@@ -23988,106 +25923,38 @@ async def project_ai_summary(
         {"project_id": pid, "expires_at": {"$gt": datetime.now(timezone.utc)}}
     ).sort([("pinned", -1), ("created_at", -1)]).to_list(length=100)
 
-    if not raw and not ann_raw:
+    # A-11: además de reportes y noticias, el resumen incluye los Registros de avance del día,
+    # los gastos reales del día, el control de costos y las excepciones del tablero EVM (mismo
+    # servicio: calcular_excepciones_evm). Mismo scope RBAC que el feed para los avances.
+    conceptos = await db.conceptos.find({"project_id": pid, "activo": True}).to_list(length=100000)
+    conceptos_por_id = {c["id"]: c for c in conceptos}
+    q_avances: dict = {"project_id": pid, "fecha": {"$gte": inicio_d.isoformat(), "$lte": hoy.isoformat()}}
+    avances_hoy = await db.registros_avance.find(q_avances).sort("creado_en", 1).to_list(length=5000)
+    gastos_todos = await db.gastos_reales.find({"project_id": pid}).to_list(length=1000000)
+    gastos_hoy = [g for g in gastos_todos if inicio_d.isoformat() <= str(g.get("fecha") or "") <= hoy.isoformat()]
+    bac, ac_total = _bac_y_ac(conceptos, gastos_todos)
+    try:
+        excepciones = [e.model_dump() for e in await calcular_excepciones_evm(pid, project)]
+    except Exception:
+        # Un fallo en las excepciones no debe tumbar el resumen de reportes.
+        log.exception("[ai_summary] no se pudieron calcular las excepciones")
+        excepciones = []
+
+    entrada = construir_entrada_resumen_ia(
+        pid=pid, reportes=raw, noticias=ann_raw, avances=avances_hoy, gastos=gastos_hoy,
+        excepciones=excepciones, conceptos_por_id=conceptos_por_id, bac=bac, ac_total=ac_total, hoy=hoy,
+        periodo_label={"diario": "las últimas 24 horas", "semanal": "la semana en curso", "mensual": "el mes en curso"}[periodo],
+        ventana="del día" if periodo == "diario" else "del período",
+    )
+    if not entrada["hay_datos"]:
         return AISummaryResponse(
-            summary=(
-                "• Avances: no disponible en los reportes (sin reportes en el período).\n"
-                "• Actividades: no disponible en los reportes.\n"
-                "• Fuerza laboral: no disponible en los reportes.\n"
-                "• Incidencias: sin incidencias importantes/urgentes en el período.\n"
-                "• Noticias: no hay noticias vigentes."
-            ),
+            summary=RESUMEN_IA_SIN_DATOS,
             reports_count=0,
             period_hours=period_hours,
             generated_at=datetime.now(timezone.utc),
         )
-
-    # Formatea reportes como texto plano legible para el LLM.
-    lines: List[str] = []
-    for r in raw:
-        path = " › ".join(r.get("node_path_names") or []) or "(sin nodo)"
-        area = r.get("area_name") or "—"
-        avance = r.get("avance") or "—"
-        actividades = (r.get("actividades") or "").strip() or "—"
-        contratista = r.get("contratista") or "—"
-        personnel = ", ".join(r.get("personnel") or []) or "—"
-        equipment = ", ".join(r.get("equipment") or []) or "—"
-        captured_by = r.get("captured_by_name") or "—"
-        created = r.get("created_at")
-        created_s = created.isoformat() if isinstance(created, datetime) else str(created)
-        lines.append(
-            f"- [{created_s}] {path} | Área: {area} | Avance: {avance} | "
-            f"Actividades: {actividades} | Contratista: {contratista} | "
-            f"Personal: {personnel} | Equipo: {equipment} | Capturó: {captured_by}"
-        )
-    body = "\n".join(lines) if lines else "(sin reportes en el período)"
-
-    # Incidencias: reportes con severidad "importante" o "urgente" dentro del
-    # mismo período/scope ya consultado — reusa `raw` en vez de una segunda
-    # query. `_normalize_severidad_list` cubre tanto el formato legacy
-    # (string escalar) como el actual (lista) de `severidad` en Mongo.
-    inc_lines: List[str] = []
-    for r in raw:
-        sevs = _normalize_severidad_list(r.get("severidad"))
-        if not any(s in ("importante", "urgente") for s in sevs):
-            continue
-        path = " › ".join(r.get("node_path_names") or []) or "(sin nodo)"
-        texto = (r.get("incidencias") or r.get("observaciones") or "").strip() or "—"
-        created = r.get("created_at")
-        created_s = created.isoformat() if isinstance(created, datetime) else str(created)
-        inc_lines.append(f"- [{created_s}] {path} | Severidad: {', '.join(sevs)} | {texto}")
-    inc_body = "\n".join(inc_lines) if inc_lines else "(sin incidencias importantes/urgentes en el período)"
-
-    ann_lines: List[str] = []
-    for a in ann_raw:
-        created = a.get("created_at")
-        created_s = created.isoformat() if isinstance(created, datetime) else str(created)
-        ann_lines.append(f"- [{created_s}] {a.get('title') or '(sin título)'}: {a.get('body') or ''}".strip())
-    ann_body = "\n".join(ann_lines) if ann_lines else "(sin noticias vigentes)"
-
-    system_message = (
-        "ERES UN ANALISTA DE OBRA CIVIL DE NIVEL EJECUTIVO. TUS REGLAS SON INQUEBRANTABLES:\n"
-        "1) NO PUEDES INVENTAR DATOS (ALUCINAR). SOLO PUEDES USAR LO QUE APARECE LITERALMENTE EN "
-        "LOS REPORTES Y NOTICIAS QUE SE TE DAN. SI NO HAY INFORMACIÓN PARA UNA CATEGORÍA, ESCRIBE "
-        "EXACTAMENTE 'No disponible en los reportes' (o 'Sin noticias vigentes' para esa categoría) "
-        "EN VEZ DE INFERIR, ESTIMAR O COMPLETAR CON SUPOSICIONES.\n"
-        "2) NO PUEDES FALLAR.\n"
-        "3) TU ÚNICA FUNCIÓN ES RESUMIR EXACTAMENTE LO QUE DICEN LOS REPORTES Y NOTICIAS, SIN AGREGAR "
-        "INTERPRETACIONES, CIFRAS NI NOMBRES QUE NO APAREZCAN EN EL TEXTO FUENTE.\n"
-        "4) ESTRUCTURA BASE: ESTAS 5 VIÑETAS SIEMPRE, EN ESTE ORDEN:\n"
-        "   • Avances: qué se avanzó y dónde (nodo/tramo), según el campo Avance de los reportes.\n"
-        "   • Actividades: qué actividades se realizaron, según el campo Actividades de los reportes.\n"
-        "   • Fuerza laboral: personal y equipo/maquinaria que estuvieron en obra.\n"
-        "   • Incidencias: desviaciones o eventos reportados con severidad 'importante' o 'urgente', "
-        "según el campo Incidencias/Severidad de los reportes.\n"
-        "   • Noticias: anuncios vigentes del proyecto.\n\n"
-        "5) DESARROLLA CADA VIÑETA CON TODO EL DETALLE QUE EXISTA EN LOS REPORTES FUENTE: si hay "
-        "información suficiente, usa varias oraciones (no una sola línea genérica) mencionando "
-        "explícitamente nodos/tramos afectados, cifras y unidades de avance tal como aparecen, "
-        "nombres de contratistas, cantidades y nombres de personal/equipo, y agrupa o compara entre "
-        "distintas áreas o tramos cuando el mismo campo aparezca repetido en varios reportes. Nunca "
-        "resumas de más comprimiendo detalles que sí están en el texto fuente: entre más rico sea el "
-        "reporte fuente, más rica debe ser la viñeta. Solo usa 'No disponible en los reportes' cuando "
-        "realmente no haya nada que reportar para esa categoría.\n"
-        "6) VIÑETA ADICIONAL OPCIONAL: si tras cubrir las 5 categorías anteriores identificas en el "
-        "campo Actividades u otro campo información relevante que no encaje en ninguna de ellas "
-        "(p. ej. pendientes, riesgos o bloqueos mencionados explícitamente por quien "
-        "capturó el reporte), agrégala al final como '• Observaciones adicionales: ...'. Agrega esta "
-        "viñeta SOLO si hay contenido real y literal que reportar; nunca la inventes ni la agregues "
-        "vacía.\n\n"
-        "Responde SIEMPRE en español. Cada viñeta debe iniciar con '• ' y el nombre de su categoría "
-        "seguido de dos puntos (ej. '• Avances: ...'). Sin introducciones ni cierres genéricos fuera "
-        "de las viñetas."
-    )
-    periodo_label = {"diario": "las últimas 24 horas", "semanal": "la semana en curso", "mensual": "el mes en curso"}[periodo]
-    user_text = (
-        f"Reportes de {periodo_label} del proyecto (id={pid}). "
-        f"Total: {len(raw)} entradas.\n\n{body}\n\n"
-        f"De esas entradas, las que tienen severidad 'importante' o 'urgente' (para la viñeta "
-        f"Incidencias). Total: {len(inc_lines)} entradas.\n\n{inc_body}\n\n"
-        f"Noticias vigentes del proyecto. Total: {len(ann_raw)} entradas.\n\n{ann_body}\n\n"
-        "Genera el resumen ejecutivo solicitado, usando SOLO lo anterior."
-    )
+    system_message = RESUMEN_IA_SYSTEM_MESSAGE
+    user_text = entrada["user_text"]
 
     try:
         import httpx  # local import: mismo patrón que EXPO_PUSH_API_URL más arriba
@@ -24099,7 +25966,7 @@ async def project_ai_summary(
                 json={
                     "system_instruction": {"parts": [{"text": system_message}]},
                     "contents": [{"parts": [{"text": user_text}]}],
-                    "generationConfig": {"maxOutputTokens": 1400},
+                    "generationConfig": {"maxOutputTokens": 1800},
                 },
             )
             if resp.status_code != 200:
@@ -24201,6 +26068,24 @@ async def _resolve_areas_for_minuta(pid: str, area_ids: List[str]) -> tuple[List
     return clean, [found_map[a]["name"] for a in clean]
 
 
+def resolver_responsable_acuerdo(rid: str, users_map: dict, pid: str, num: int) -> Tuple[str, str]:
+    """(nombre, rol) del responsable de un acuerdo. K-02: solo un miembro del proyecto o el
+    contratista; solo se valida al crear (las minutas ya guardadas no se tocan). Lanza
+    HTTPException 400 con un mensaje es-MX legible."""
+    # "Contratista" es un pseudo-responsable reservado (no es una cuenta de usuario real):
+    # siempre disponible en el selector; representa a la empresa contratista del proyecto.
+    if rid == "contratista":
+        return "Contratista", "contratista"
+    u = users_map.get(rid)
+    if not u:
+        raise HTTPException(400, f"Acuerdo #{num}: responsable inválido")
+    if not es_miembro_de_proyecto(u, pid):
+        raise HTTPException(
+            400, f"Acuerdo #{num}: el responsable debe ser miembro del proyecto o el contratista.",
+        )
+    return u.get("name") or "Sin nombre", u.get("role")
+
+
 @api.post("/projects/{pid}/minutas")
 async def create_minuta(pid: str, body: MinutaIn, user: dict = Depends(current_user)):
     proj = await ensure_project_access(user, pid)
@@ -24214,7 +26099,11 @@ async def create_minuta(pid: str, body: MinutaIn, user: dict = Depends(current_u
     if len(descripcion) > 4000:
         raise HTTPException(400, "Descripción máximo 4000 caracteres")
     area_ids, area_names = await _resolve_areas_for_minuta(pid, body.area_ids or [])
-    fecha_reunion = (body.fecha_reunion or "").strip() or datetime.now(timezone.utc).astimezone(MX_TZ).strftime("%Y-%m-%d")
+    fecha_reunion = (body.fecha_reunion or "").strip() or (await hoy_de(pid)).isoformat()
+    try:
+        date.fromisoformat(fecha_reunion)
+    except ValueError:
+        raise HTTPException(400, "La fecha de la reunión debe tener el formato AAAA-MM-DD.")
 
     # Ubicación (nodo del proyecto) — REQUERIDA por regla de negocio 2026-07.
     # Guardamos id + name + path para poder mostrar breadcrumb sin joins extra.
@@ -24286,19 +26175,7 @@ async def create_minuta(pid: str, body: MinutaIn, user: dict = Depends(current_u
         # "Contratista" es un pseudo-responsable reservado (no es una cuenta
         # de usuario real) — siempre disponible como opción en el picker del
         # frontend, representa a la empresa contratista del proyecto.
-        if rid == "contratista":
-            resp_name = "Contratista"
-            resp_role = "contratista"
-        elif rid in users_map:
-            u = users_map[rid]
-            resp_name = u.get("name") or "Sin nombre"
-            resp_role = u.get("role")
-        else:
-            raise HTTPException(400, f"Acuerdo #{i+1}: responsable inválido")
-        # Nota: no forzamos que `project_ids` incluya `pid` porque los coords
-        # generales tienen acceso implícito global y algunos usuarios legacy
-        # pueden faltarlo. La verificación real de acceso al proyecto se hace
-        # arriba en `ensure_project_access`.
+        resp_name, resp_role = resolver_responsable_acuerdo(rid, users_map, pid, i + 1)
         fl = (a.fecha_limite or "").strip()
         if not fl:
             raise HTTPException(400, f"Acuerdo #{i+1}: fecha límite requerida")
@@ -24307,6 +26184,12 @@ async def create_minuta(pid: str, body: MinutaIn, user: dict = Depends(current_u
             datetime.strptime(fl, "%Y-%m-%d")
         except ValueError:
             raise HTTPException(400, f"Acuerdo #{i+1}: fecha límite debe ser YYYY-MM-DD")
+        # K-03: un acuerdo no puede vencer antes de la reunión en la que se tomó.
+        if fl < fecha_reunion:
+            raise HTTPException(
+                400,
+                f"Acuerdo #{i+1}: la fecha límite ({fl}) no puede ser anterior a la fecha de la reunión ({fecha_reunion}).",
+            )
         acuerdos_out.append({
             "id": str(uuid.uuid4()),
             "descripcion": desc,
@@ -24328,10 +26211,10 @@ async def create_minuta(pid: str, body: MinutaIn, user: dict = Depends(current_u
     # creadas el MISMO día natural CDMX. El prefijo (2 palabras institucionales,
     # ej. "CL4 OBRA") es configurable por el Coordinador General a nivel
     # proyecto (`project.minuta_code_prefix`) y aplica a TODAS sus minutas.
-    now_mx = now.astimezone(MX_TZ)
+    now_mx = now.astimezone(zona_proyecto(proj))
     yymmdd = now_mx.strftime("%y%m%d")
     today_str = now_mx.strftime("%Y-%m-%d")
-    day_bounds = _feed_day_bounds(today_str)
+    day_bounds = _feed_day_bounds(today_str, zona_proyecto(proj))
     count_today = 0
     if day_bounds:
         start_utc, end_utc = day_bounds
@@ -24669,7 +26552,7 @@ async def minutas_badge(pid: str, user: dict = Depends(current_user)):
     'urgentes' (vencidos o que vencen HOY). Se usa para el badge del módulo.
     """
     await ensure_project_access(user, pid)
-    today = datetime.now(timezone.utc).astimezone(MX_TZ).strftime("%Y-%m-%d")
+    today = (await hoy_de(pid)).isoformat()
     cursor = db.minutas.find({
         "project_id": pid,
         "acuerdos.responsable_id": user["id"],
@@ -26141,8 +28024,52 @@ UNIDADES: tuple = (
 # libre a nivel de Pydantic; siguen siendo lista cerrada a nivel de negocio,
 # nunca texto libre para el usuario final (el selector de la UI ofrece solo
 # UNIDADES + las del proyecto).
-PERIODICIDADES: tuple = ("SEMANAL", "MENSUAL")
-PeriodicidadType = Literal["SEMANAL", "MENSUAL"]
+PERIODICIDADES: tuple = ("DIARIA", "SEMANAL", "MENSUAL")
+PeriodicidadType = Literal["DIARIA", "SEMANAL", "MENSUAL"]
+
+# C-06: meta por defecto = cantidad ÷ duración programada, en la cadencia del proyecto.
+DIAS_POR_SEMANA_META = Decimal("7")
+DIAS_POR_MES_META = Decimal("30.4")
+META_MINIMA = Decimal("0.0001")
+CUATRO_DECIMALES = Decimal("0.0001")
+
+
+def cadencia_de_proyecto(project: Optional[dict]) -> str:
+    """Cadencia de reporte del proyecto (DIARIA|SEMANAL|MENSUAL); MENSUAL si falta o es inválida."""
+    valor = ((project or {}).get("cadencia_reporte") or "").upper()
+    return valor if valor in PERIODICIDADES else "MENSUAL"
+
+
+def meta_por_defecto(cantidad: Any, fecha_inicio: Optional[str], fecha_fin: Optional[str], cadencia: str) -> Optional[str]:
+    """Meta por defecto de un concepto: la cantidad repartida en su duración programada
+    (días inclusive), expresada en la cadencia dada. Devuelve un decimal exacto en texto
+    (hasta 4 decimales, HALF_UP solo al final, nunca "0" si hay cantidad) o None si no hay
+    programa: sin fechas, fechas ilegibles o invertidas, o cantidad no positiva.
+    DIARIA = cantidad ÷ días; SEMANAL = cantidad ÷ (días/7); MENSUAL = cantidad ÷ (días/30.4)."""
+    if cantidad is None or not str(cantidad).strip():
+        return None
+    try:
+        q = to_decimal(str(cantidad).strip())
+        inicio = date.fromisoformat((fecha_inicio or "").strip())
+        fin = date.fromisoformat((fecha_fin or "").strip())
+    except (ValueError, TypeError, InvalidOperation):
+        return None
+    if not q.is_finite() or q <= 0:
+        return None
+    dias = (fin - inicio).days + 1
+    if dias < 1:
+        return None
+    dias_d = Decimal(dias)
+    if cadencia == "DIARIA":
+        valor = q / dias_d
+    elif cadencia == "SEMANAL":
+        valor = q * DIAS_POR_SEMANA_META / dias_d
+    else:
+        valor = q * DIAS_POR_MES_META / dias_d
+    valor = valor.quantize(CUATRO_DECIMALES, rounding=ROUND_HALF_UP)
+    if valor < META_MINIMA:
+        valor = META_MINIMA
+    return format(valor.normalize(), "f")
 
 
 def _validar_unidad_para_proyecto(unidad: str, project: dict) -> None:
@@ -26186,10 +28113,12 @@ def _normalize_text(s: str) -> str:
     return _strip_accents((s or "")).strip().lower()
 
 
-def _map_unidad_con_flag(raw: Optional[str]) -> "tuple[str, bool]":
+def _map_unidad_con_flag(raw: Optional[str], personalizadas: Optional[List[str]] = None) -> "tuple[str, bool]":
     """Igual que el mapeo de unidad de Etapa 2, pero además dice si la
     reconoció (para poder marcar la fila con una ADVERTENCIA en la vista
-    previa en vez de fallar en silencio con UNIVERSAL)."""
+    previa en vez de fallar en silencio con UNIVERSAL). C-04: también
+    reconoce las unidades personalizadas del proyecto (sin acentos ni
+    mayúsculas) y devuelve la unidad tal como el proyecto la configuró."""
     if not raw:
         return "UNIVERSAL", True  # celda vacía: no es un error de reconocimiento, es ausencia de dato
     key = _normalize_text(str(raw))
@@ -26197,6 +28126,9 @@ def _map_unidad_con_flag(raw: Optional[str]) -> "tuple[str, bool]":
         return key.upper(), True
     if key in _UNIDAD_ALIASES:
         return _UNIDAD_ALIASES[key], True
+    for propia in personalizadas or []:
+        if propia and _normalize_text(propia) == key:
+            return propia, True
     return "UNIVERSAL", False
 
 
@@ -26381,6 +28313,11 @@ def validar_cuadre_distribucion(importe_concepto: Decimal, valores_mensuales: Li
         return None
     return {
         "tipo": "distribucion_no_cuadra",
+        "campo": "meses",
+        "motivo": (
+            f"La suma de los meses ({dec_to_str(round_money(suma))}) no coincide con el importe del "
+            f"concepto ({dec_to_str(round_money(importe_concepto))}); diferencia de {dec_to_str(round_money(diferencia))}."
+        ),
         "importe_concepto": dec_to_str(round_money(importe_concepto)),
         "suma_distribucion": dec_to_str(round_money(suma)),
         "diferencia": dec_to_str(round_money(diferencia)),
@@ -26463,6 +28400,8 @@ class PartidaOut(BaseModel):
     activo: bool
     partida_padre_id: Optional[str] = None
     created_at: datetime
+    # C-01: partida creada por la migración con la clave como nombre; se limpia al renombrarla.
+    nombre_pendiente: bool = False
     # --- Calculados: nunca almacenados ---
     numero_conceptos: int = 0
     importe_contratado_partida: str = "0"
@@ -26488,8 +28427,11 @@ class ConceptoIn(BaseModel):
     unidad: str = "UNIVERSAL"
     cantidad: str
     precio_unitario: str
-    meta: str
-    periodicidad_meta: PeriodicidadType = "SEMANAL"
+    # C-06: la meta puede quedar vacía (sin programa no hay ritmo que calcular); si llega
+    # vacía y hay fechas, create_concepto la calcula con la cadencia del proyecto.
+    meta: str = ""
+    # Sin valor, se usa la cadencia del proyecto (cadencia_reporte).
+    periodicidad_meta: Optional[PeriodicidadType] = None
 
     @field_validator("unidad")
     @classmethod
@@ -26499,10 +28441,18 @@ class ConceptoIn(BaseModel):
             raise ValueError("unidad no puede estar vacía")
         return v
 
-    @field_validator("cantidad", "precio_unitario", "meta")
+    @field_validator("cantidad", "precio_unitario")
     @classmethod
     def _v_decimal(cls, v):
         to_decimal(v)  # valida que sea un decimal exacto parseable (nunca float)
+        return v
+
+    @field_validator("meta")
+    @classmethod
+    def _v_meta(cls, v):
+        v = (v or "").strip()
+        if v:
+            to_decimal(v)
         return v
 
     # --- Etapa EVM (aditivo, todos opcionales) --------------------------
@@ -26519,6 +28469,9 @@ class ConceptoIn(BaseModel):
     importe_total_editable: Optional[str] = None
     fecha_inicio: Optional[str] = None  # "YYYY-MM-DD"
     fecha_fin: Optional[str] = None  # "YYYY-MM-DD"
+    # A-02: trabajo que NO está en el catálogo contratado. Se permite crearlo; su P.U.
+    # queda "pendiente_autorizacion" hasta que el Coordinador General lo autorice.
+    extraordinario: bool = False
 
     @field_validator("meta_cantidad", "importe_total_editable")
     @classmethod
@@ -26570,10 +28523,21 @@ class ConceptoPatch(BaseModel):
                 raise ValueError("unidad no puede estar vacía")
         return v
 
-    @field_validator("cantidad", "precio_unitario", "meta", "meta_cantidad", "importe_total_editable")
+    @field_validator("cantidad", "precio_unitario", "meta_cantidad", "importe_total_editable")
     @classmethod
     def _v_decimal(cls, v):
         if v is not None:
+            to_decimal(v)
+        return v
+
+    @field_validator("meta")
+    @classmethod
+    def _v_meta(cls, v):
+        # C-06: "" vacía la meta (concepto sin programa).
+        if v is None:
+            return v
+        v = v.strip()
+        if v:
             to_decimal(v)
         return v
 
@@ -26616,6 +28580,12 @@ class ConceptoOut(BaseModel):
     fecha_inicio: Optional[str] = None
     fecha_fin: Optional[str] = None
     precio_unitario_dinamico: Optional[str] = None
+    # --- A-02: volumen excedente y conceptos extraordinarios -------------
+    extraordinario: bool = False
+    pu_estatus: Optional[str] = None  # None = P.U. del catálogo; en extraordinarios: estatus de autorización
+    cantidad_excedente: str = "0"  # ejecutado por encima de lo contratado (en modo PORCENTAJE: puntos sobre 100)
+    importe_excedente: str = "0"
+    estatus_excedente: Optional[str] = None  # None si no hay excedente
 
 
 class RegistroAvanceIn(BaseModel):
@@ -26645,6 +28615,10 @@ class RegistroAvanceIn(BaseModel):
     fotos: List[str] = Field(default_factory=list)  # base64, mismo criterio que ReportIn.images
     photo_captions: List[str] = Field(default_factory=list)
     client_id: Optional[str] = None  # idempotencia offline, igual que ReportIn.client_id
+    # A-01: "normal" = incremento capturado en campo (siempre > 0) · "ajuste" =
+    # corrección con signo (+/-) y motivo obligatorio; queda en la bitácora.
+    tipo: Literal["normal", "ajuste"] = "normal"
+    motivo: Optional[str] = None
 
     @field_validator("cantidad_ejecutada")
     @classmethod
@@ -26721,6 +28695,9 @@ class RegistroAvanceOut(BaseModel):
     # por Excepción del dashboard EVM. Siempre False si el concepto todavía
     # no tiene fecha_inicio/fecha_fin (nada que comparar).
     fuera_de_ventana: bool = False
+    # A-01: "normal" o "ajuste" (corrección con motivo).
+    tipo: str = "normal"
+    motivo: Optional[str] = None
 
 
 async def _registro_avance_out(doc: dict) -> RegistroAvanceOut:
@@ -26816,13 +28793,18 @@ class ImportMappingIn(BaseModel):
     # Opcional: solo para el chequeo informativo de "el importe del archivo
     # no coincide con cantidad × PU" — nunca se usa como fuente de verdad.
     importe: Optional[str] = None
+    # C-03: columna opcional que marca las filas deductivas (SI, X, 1). Solo esas pueden
+    # traer cantidad <= 0.
+    deductiva: Optional[str] = None
 
 
 class ImportValidateIn(BaseModel):
     sheet: str
     header_row_index: int = 0
     mapping: ImportMappingIn
-    partida_id: str
+    # C-01: OPCIONAL. Solo sirve para colgar el catálogo importado bajo un nodo existente;
+    # la jerarquía se detecta por la clave de cada fila.
+    partida_id: Optional[str] = None
     # Si no se manda, se usa la convención detectada automáticamente al
     # subir el archivo. Mandar un valor explícito aquí RE-VALIDA el archivo
     # completo con esa convención — mismo mecanismo tanto para "cambié la
@@ -26898,6 +28880,23 @@ async def _concepto_ejecutado_acumulado(concepto_id: str, modo_avance: str = "CA
     return _acumulado_desde_avances(avances, modo_avance)
 
 
+async def _excedente_de_concepto_doc(doc: dict, ejecutado: str, modo_avance: str, importe: Decimal):
+    """(cantidad excedente, importe excedente, estatus) de un concepto. En modo
+    PORCENTAJE el excedente son los puntos por encima de 100%."""
+    ejec = to_decimal(ejecutado)
+    if modo_avance == "PORCENTAJE":
+        exc = max(ejec - Decimal("100"), Decimal("0"))
+        imp = importe * exc / Decimal("100")
+    else:
+        exc = excedente_de_concepto(ejec, cantidad_contratada(doc))
+        imp = exc * _concepto_precio_efectivo(doc)
+    estatus = None
+    if exc > 0:
+        ed = await db.excedentes_concepto.find_one({"concepto_id": doc["id"]}, {"estatus": 1})
+        estatus = (ed or {}).get("estatus") or "pendiente_autorizacion"
+    return exc, imp, estatus
+
+
 async def _concepto_out(doc: dict) -> ConceptoOut:
     importe = _concepto_importe_efectivo(doc)
     project = await db.projects.find_one({"id": doc["project_id"]})
@@ -26906,6 +28905,7 @@ async def _concepto_out(doc: dict) -> ConceptoOut:
     precio_dinamico = None
     if _concepto_tiene_datos_evm(doc):
         precio_dinamico = dec_to_str(compute_precio_unitario_dinamico(doc["importe_total_editable"], doc["meta_cantidad"]))
+    exc, imp_exc, estatus_exc = await _excedente_de_concepto_doc(doc, ejecutado, modo_avance, importe)
     return ConceptoOut(
         id=doc["id"],
         partida_id=doc["partida_id"],
@@ -26915,8 +28915,8 @@ async def _concepto_out(doc: dict) -> ConceptoOut:
         unidad=doc["unidad"],
         cantidad=doc["cantidad"],
         precio_unitario=doc["precio_unitario"],
-        meta=doc["meta"],
-        periodicidad_meta=doc["periodicidad_meta"],
+        meta=doc.get("meta") or "",
+        periodicidad_meta=doc.get("periodicidad_meta") or "SEMANAL",
         activo=doc.get("activo", True),
         created_at=doc["created_at"],
         importe_contratado=dec_to_str(importe),
@@ -26926,6 +28926,11 @@ async def _concepto_out(doc: dict) -> ConceptoOut:
         fecha_inicio=doc.get("fecha_inicio"),
         fecha_fin=doc.get("fecha_fin"),
         precio_unitario_dinamico=precio_dinamico,
+        extraordinario=bool(doc.get("extraordinario", False)),
+        pu_estatus=doc.get("pu_estatus"),
+        cantidad_excedente=dec_to_str(exc),
+        importe_excedente=dec_to_str(round_money(imp_exc)),
+        estatus_excedente=estatus_exc,
     )
 
 
@@ -27061,6 +29066,7 @@ async def _partida_out(doc: dict, all_partidas: List[dict]) -> PartidaOut:
         activo=doc.get("activo", True),
         partida_padre_id=doc.get("partida_padre_id"),
         created_at=doc["created_at"],
+        nombre_pendiente=bool(doc.get("nombre_pendiente", False)),
         numero_conceptos=len(conceptos),
         importe_contratado_partida=dec_to_str(importe_total),
         porcentaje_avance_partida=dec_to_str(round_money(pct_partida * to_decimal("100"))),
@@ -27089,7 +29095,9 @@ async def create_partida(body: PartidaIn, user: dict = Depends(require_role(ROLE
     await ensure_project_access(user, body.project_id)
     existing = await db.partidas.find_one({"project_id": body.project_id, "clave": body.clave.strip()})
     if existing:
-        raise HTTPException(400, f"Ya existe una partida con clave {body.clave}")
+        prof = (await _profundidad_partida(body.project_id, body.partida_padre_id) + 1) if body.partida_padre_id else 0
+        n = (await _niveles_de_proyecto(body.project_id, prof))["partida"]
+        raise HTTPException(400, f"Ya existe {n['indefinido']} {n['minuscula']} con clave {body.clave}")
     partida_padre_id = body.partida_padre_id
     if partida_padre_id:
         padre = await db.partidas.find_one({"id": partida_padre_id, "project_id": body.project_id})
@@ -27126,6 +29134,7 @@ async def update_partida(partida_id: str, body: PartidaPatch, user: dict = Depen
         upd["clave"] = body.clave.strip()
     if body.nombre is not None:
         upd["nombre"] = body.nombre.strip()
+        upd["nombre_pendiente"] = False  # ya tiene nombre real
     if body.orden is not None:
         upd["orden"] = body.orden
     if body.activo is not None:
@@ -27134,7 +29143,13 @@ async def update_partida(partida_id: str, body: PartidaPatch, user: dict = Depen
         upd["partida_padre_id"] = None
     elif body.partida_padre_id is not None:
         if body.partida_padre_id == partida_id:
-            raise HTTPException(400, "Una partida no puede ser su propia partida padre")
+            n = (await _niveles_de_proyecto(
+                partida["project_id"], await _profundidad_partida(partida["project_id"], partida_id),
+            ))["partida"]
+            propia = "propia" if n["genero"] == "f" else "propio"
+            raise HTTPException(
+                400, f"{n['indefinido'].capitalize()} {n['minuscula']} no puede ser su {propia} {n['minuscula']} padre",
+            )
         nuevo_padre = await db.partidas.find_one({"id": body.partida_padre_id, "project_id": partida["project_id"]})
         if not nuevo_padre:
             raise HTTPException(404, "La partida padre no existe en este proyecto")
@@ -27142,7 +29157,12 @@ async def update_partida(partida_id: str, body: PartidaPatch, user: dict = Depen
         # El nuevo padre no puede ser la propia partida ni ninguna de sus
         # descendientes (a cualquier profundidad) — eso crearía un ciclo.
         if body.partida_padre_id in _partida_subtree_ids(partida_id, _partida_children_by_parent(todas)):
-            raise HTTPException(400, "No se puede mover una partida dentro de su propia subpartida")
+            n = (await _niveles_de_proyecto(
+                partida["project_id"], await _profundidad_partida(partida["project_id"], partida_id),
+            ))["partida"]
+            raise HTTPException(
+                400, f"No se puede mover {n['indefinido']} {n['minuscula']} dentro de su propia jerarquía",
+            )
         upd["partida_padre_id"] = body.partida_padre_id
     # Peso-por-rama: quitar_peso_manual explícito vuelve a calculado (mismo
     # criterio que quitar_padre) — peso_manual=None en el body NUNCA se lee
@@ -27202,6 +29222,21 @@ async def create_concepto(body: ConceptoIn, user: dict = Depends(require_role(RO
         raise HTTPException(404, "Partida no existe")
     project = await db.projects.find_one({"id": partida["project_id"]})
     _validar_unidad_para_proyecto(body.unidad, project or {})
+    # C-05: la clave de un concepto es única en el proyecto (igual que en el importador).
+    clave_nueva = body.clave.strip()
+    if not clave_nueva or not body.descripcion.strip():
+        raise HTTPException(400, "La clave y la descripción son obligatorias")
+    if await db.conceptos.find_one({"project_id": partida["project_id"], "activo": True, "clave": clave_nueva}):
+        c = nombres_nivel_proyecto(project)["concepto"]
+        raise HTTPException(
+            409, f"Ya existe {c['indefinido']} {c['minuscula']} con la clave '{clave_nueva}' en este proyecto",
+        )
+    # C-06: sin meta capturada, se calcula con la duración programada y la cadencia del
+    # proyecto; sin programa (sin fechas) queda vacía.
+    periodicidad_meta = body.periodicidad_meta or cadencia_de_proyecto(project)
+    meta_inicial = body.meta or (
+        meta_por_defecto(body.cantidad, body.fecha_inicio, body.fecha_fin, periodicidad_meta) or ""
+    )
     cid = str(uuid.uuid4())
     doc = {
         "id": cid,
@@ -27212,8 +29247,8 @@ async def create_concepto(body: ConceptoIn, user: dict = Depends(require_role(RO
         "unidad": body.unidad,
         "cantidad": body.cantidad,
         "precio_unitario": body.precio_unitario,
-        "meta": body.meta,
-        "periodicidad_meta": body.periodicidad_meta,
+        "meta": meta_inicial,
+        "periodicidad_meta": periodicidad_meta,
         "activo": True,
         "created_at": datetime.now(timezone.utc),
         "created_by": user["id"],
@@ -27224,8 +29259,16 @@ async def create_concepto(body: ConceptoIn, user: dict = Depends(require_role(RO
         "importe_total_editable": body.importe_total_editable,
         "fecha_inicio": body.fecha_inicio,
         "fecha_fin": body.fecha_fin,
+        # A-02: un concepto extraordinario nace con su P.U. pendiente de autorización.
+        "extraordinario": bool(body.extraordinario),
+        "pu_estatus": "pendiente_autorizacion" if body.extraordinario else None,
     }
     await db.conceptos.insert_one(doc)
+    if body.extraordinario:
+        await _log_bitacora(
+            partida["project_id"], "concepto_extraordinario", "concepto", cid,
+            "pu_estatus", None, "pendiente_autorizacion", user,
+        )
     return await _concepto_out(doc)
 
 
@@ -27257,10 +29300,10 @@ async def update_concepto(concepto_id: str, body: ConceptoPatch, user: dict = De
             "precio_unitario", concepto["precio_unitario"], body.precio_unitario, user,
         )
         upd["precio_unitario"] = body.precio_unitario
-    if body.meta is not None and body.meta != concepto["meta"]:
+    if body.meta is not None and body.meta != concepto.get("meta", ""):
         await _log_bitacora(
             concepto["project_id"], "meta", "concepto", concepto_id,
-            "meta", concepto["meta"], body.meta, user,
+            "meta", concepto.get("meta", ""), body.meta, user,
         )
         upd["meta"] = body.meta
 
@@ -27314,24 +29357,37 @@ async def delete_concepto(concepto_id: str, user: dict = Depends(require_role(RO
     return {"ok": True}
 
 
-@api.get("/projects/{pid}/conceptos/search", response_model=List[dict])
-async def search_conceptos(pid: str, q: Optional[str] = None, unidad: Optional[str] = None, user: dict = Depends(current_user)):
-    """Búsqueda global (atraviesa partidas) por clave o cualquier palabra de la
-    descripción: parcial, sin distinguir acentos ni mayúsculas. Cada resultado
-    indica a qué partida pertenece."""
-    await ensure_project_access(user, pid)
-    query: dict = {"project_id": pid, "activo": True}
-    if unidad:
-        query["unidad"] = unidad
-    docs = await db.conceptos.find(query).to_list(length=100000)
-    docs = sort_by_clave(docs)
-
+def filtrar_conceptos_busqueda(docs: list, q: Optional[str], limit: Optional[int] = None) -> list:
+    """Filtra por subcadena (sin acentos ni mayúsculas) en clave o descripción y recorta a
+    `limit`. Sin `q` devuelve todo (en el orden recibido). La búsqueda es por texto
+    literal: "1.1." o "(a)" no son expresiones regulares y no rompen nada."""
     if q and q.strip():
         needle = _normalize_text(q)
         docs = [
             d for d in docs
             if needle in _normalize_text(d["clave"]) or needle in _normalize_text(d["descripcion"])
         ]
+    if limit is not None:
+        docs = docs[:limit]
+    return docs
+
+
+@api.get("/projects/{pid}/conceptos/search", response_model=List[dict])
+async def search_conceptos(
+    pid: str, q: Optional[str] = None, unidad: Optional[str] = None,
+    limit: Optional[int] = Query(None, ge=1, le=500),
+    user: dict = Depends(current_user),
+):
+    """Búsqueda global (atraviesa partidas) por clave o cualquier palabra de la
+    descripción: parcial, sin distinguir acentos ni mayúsculas. Cada resultado
+    indica a qué partida pertenece. Sin `q` lista los conceptos por clave; `limit`
+    acota la lista (Registrar avance muestra los primeros por defecto)."""
+    await ensure_project_access(user, pid)
+    query: dict = {"project_id": pid, "activo": True}
+    if unidad:
+        query["unidad"] = unidad
+    docs = await db.conceptos.find(query).to_list(length=100000)
+    docs = filtrar_conceptos_busqueda(sort_by_clave(docs), q, limit)
 
     partida_ids = {d["partida_id"] for d in docs}
     partidas = await db.partidas.find({"id": {"$in": list(partida_ids)}}).to_list(length=10000)
@@ -27368,7 +29424,101 @@ async def concepto_bitacora(concepto_id: str, user: dict = Depends(current_user)
 # un mapeo automático a partir de los encabezados reales. "importe" es
 # opcional: solo alimenta el chequeo informativo de 3.a, nunca se usa como
 # fuente de verdad (el importe SIEMPRE se recalcula como cantidad × PU).
-_MAPPING_TARGETS = ["clave", "descripcion", "unidad", "cantidad", "precio_unitario", "importe"]
+# === C-01 / C-03 Importador jerárquico ========================================
+# La jerarquía se detecta por la CLAVE (1 -> 1.1 -> 1.1.1). Una fila sin cantidad ni
+# P.U. es una PARTIDA (nodo del catálogo); una fila con cantidad y P.U. es un CONCEPTO
+# que cuelga de la partida más cercana por prefijo de clave. La "partida destino" pasa
+# a ser opcional: solo sirve para colgar el catálogo importado bajo un nodo existente.
+# Los nombres de nivel salen de la configuración del proyecto, no de este código.
+VALORES_MARCA_DEDUCTIVA = {"si", "s", "x", "1", "true", "verdadero", "yes", "y", "ded", "deductiva", "deductivo"}
+
+
+def es_marca_deductiva(raw: Any) -> bool:
+    """¿La celda de la columna "Deductiva" marca la fila como deductiva? (SI, X, 1, ...)"""
+    if raw is None:
+        return False
+    if isinstance(raw, bool):
+        return raw
+    return _normalize_text(str(raw)) in VALORES_MARCA_DEDUCTIVA
+
+
+def clave_a_texto(raw: Any) -> Optional[str]:
+    """Clave de una celda como texto. Un número entero de Excel (1.0) vuelve a "1"."""
+    if raw is None:
+        return None
+    if isinstance(raw, float) and raw.is_integer():
+        return str(int(raw))
+    t = str(raw).strip()
+    return t or None
+
+
+def ancestros_de_clave(clave: str) -> List[str]:
+    """Prefijos de una clave, del más cercano al más lejano: "1.1.2" -> ["1.1", "1"]."""
+    partes = (clave or "").split(".")
+    return [".".join(partes[:i]) for i in range(len(partes) - 1, 0, -1)]
+
+
+def profundidad_clave(clave: str) -> int:
+    return (clave or "").count(".")
+
+
+def padre_por_prefijo(clave: str, claves_partida: Any) -> Optional[str]:
+    """Clave de la partida más cercana que es prefijo de `clave` (o None)."""
+    for a in ancestros_de_clave(clave):
+        if a in claves_partida:
+            return a
+    return None
+
+
+def es_fila_partida(*valores: Any) -> bool:
+    """Una fila es partida si TODAS las columnas numéricas del concepto vienen vacías."""
+    return all(v is None or (isinstance(v, str) and not v.strip()) for v in valores)
+
+
+def planificar_partidas(filas_partida: List[dict], existentes: Dict[str, str]) -> List[dict]:
+    """Partidas que hay que CREAR (las de clave ya existente se reutilizan), de raíz a hoja,
+    cada una con la clave de su padre (existente o creada en este mismo plan)."""
+    conocidas = set(existentes) | {f["clave"] for f in filas_partida if f.get("clave")}
+    ordenadas = sorted(enumerate(filas_partida), key=lambda t: (profundidad_clave(t[1]["clave"]), t[0]))
+    nuevas: List[dict] = []
+    vistas: set = set()
+    for orden, f in ordenadas:
+        c = f["clave"]
+        if not c or c in existentes or c in vistas:
+            continue
+        vistas.add(c)
+        nuevas.append({
+            "clave": c, "nombre": (f.get("descripcion") or c), "orden": orden,
+            "padre_clave": padre_por_prefijo(c, conocidas),
+        })
+    return nuevas
+
+
+async def _crear_partidas_planificadas(
+    partidas_col, pid: str, plan: List[dict], existentes: Dict[str, str], raiz_id: Optional[str],
+    user: dict, registrar: Callable[..., Any],
+) -> Dict[str, str]:
+    """Crea las partidas del plan y devuelve el mapa clave -> id (existentes + creadas).
+    `registrar` anota cada creación en el log de compensación ANTES de escribir."""
+    mapa = dict(existentes)
+    for pl in plan:
+        padre_id = mapa.get(pl["padre_clave"]) if pl["padre_clave"] else raiz_id
+        nuevo_id = str(uuid.uuid4())
+        await registrar({"tipo": "partida_creada", "partida_id": nuevo_id, "valor_anterior": None})
+        await partidas_col.insert_one({
+            "id": nuevo_id, "project_id": pid, "clave": pl["clave"], "nombre": pl["nombre"],
+            "orden": pl["orden"], "activo": True, "partida_padre_id": padre_id, "peso_manual": None,
+            "created_at": datetime.now(timezone.utc), "created_by": user["id"],
+        })
+        mapa[pl["clave"]] = nuevo_id
+    return mapa
+
+
+async def _claves_partida_del_proyecto(pid: str) -> Dict[str, str]:
+    return {p["clave"]: p["id"] async for p in db.partidas.find({"project_id": pid, "activo": True})}
+
+
+_MAPPING_TARGETS = ["clave", "descripcion", "unidad", "cantidad", "precio_unitario", "importe", "deductiva"]
 _MAPPING_KEYWORDS = {
     "clave": ["clave", "codigo", "código", "no.", "num", "item", "partida"],
     "descripcion": ["descripcion", "descripción", "concepto", "nombre", "actividad", "trabajo"],
@@ -27376,6 +29526,7 @@ _MAPPING_KEYWORDS = {
     "cantidad": ["cantidad", "cant", "volumen", "vol"],
     "precio_unitario": ["precio unitario", "p.u.", "pu", "precio", "costo unitario", "costo"],
     "importe": ["importe", "total", "monto"],
+    "deductiva": ["deductiva", "deductivo", "deduccion"],
 }
 
 # Umbral de tolerancia para el chequeo informativo "importe del archivo vs.
@@ -27384,9 +29535,10 @@ _TOLERANCIA_IMPORTE = Decimal("0.01")
 
 # Orden de severidad para decidir el estado de una fila cuando aplican varios
 # problemas a la vez (ver `_calcular_vista_filas`).
-_TIPOS_ERROR = {"excel_error", "numero_ilegible", "numero_ambiguo", "campo_obligatorio_vacio"}
+_TIPOS_ERROR = {"excel_error", "numero_ilegible", "numero_ambiguo", "campo_obligatorio_vacio", "cantidad_no_positiva", "sin_partida_destino", "clave_duplicada_sin_gemela_valida"}
 _TIPOS_DUPLICADO = {"clave_duplicada_archivo", "clave_existente_proyecto"}
-_TIPOS_ADVERTENCIA = {"unidad_no_reconocida", "importe_no_coincide"}
+# C-07: unidad vacía y P.U. 0 avisan pero no bloquean. C-09: clave sin el prefijo de su partida padre.
+_TIPOS_ADVERTENCIA = {"unidad_no_reconocida", "importe_no_coincide", "unidad_vacia", "precio_unitario_cero", "clave_sin_prefijo_padre"}
 
 
 def _read_workbook_sheets(filename: str, content: bytes) -> dict:
@@ -27434,6 +29586,48 @@ def _propose_mapping(headers: List[str]) -> dict:
     return mapping
 
 
+def candidatos_numericos_de_hoja(rows: List[list], header_row_index: int, mapping: Any) -> List[object]:
+    """C-13: celdas que pueden informar la convención decimal = las de las
+    columnas numéricas mapeadas (cantidad, P.U., importe). Las claves ("1.1.1"),
+    descripciones, fechas y demás columnas NO cuentan: un "1.1.1" tiene dos
+    puntos pero es una clave, no un miles europeo, y antes votaba "coma decimal"
+    para todo el archivo."""
+    if not rows or header_row_index >= len(rows):
+        return []
+    headers = [str(c) if c is not None else "" for c in rows[header_row_index]]
+
+    def _nombre(campo: str) -> Optional[str]:
+        return mapping.get(campo) if isinstance(mapping, dict) else getattr(mapping, campo, None)
+
+    indices = [
+        headers.index(n) for n in (_nombre("cantidad"), _nombre("precio_unitario"), _nombre("importe"))
+        if n and n in headers
+    ]
+    candidatos: List[object] = []
+    for fila in rows[header_row_index + 1:]:
+        for i in indices:
+            if i < len(fila) and fila[i] is not None:
+                candidatos.append(fila[i])
+    return candidatos
+
+
+def detectar_convencion_hoja(rows: List[list], header_row_index: int, mapping: Any) -> Optional[ConvencionDecimal]:
+    return detectar_convencion(candidatos_numericos_de_hoja(rows, header_row_index, mapping))
+
+
+def detectar_convencion_archivo(sheets: Dict[str, List[list]]) -> Optional[ConvencionDecimal]:
+    """Convención propuesta al subir el archivo (todavía sin mapeo elegido): por hoja se
+    toma la fila de encabezado y el mapeo propuestos y se mira solo lo numérico."""
+    candidatos: List[object] = []
+    for rows in sheets.values():
+        if not rows:
+            continue
+        hdr = next((i for i, r in enumerate(rows[:15]) if _fila_parece_encabezado(r)), 0)
+        headers = [str(c) if c is not None else "" for c in rows[hdr]]
+        candidatos.extend(candidatos_numericos_de_hoja(rows, hdr, _propose_mapping(headers)))
+    return detectar_convencion(candidatos)
+
+
 def _validar_archivo_completo(
     rows: List[list],
     header_row_index: int,
@@ -27441,6 +29635,8 @@ def _validar_archivo_completo(
     convencion: Optional[ConvencionDecimal],
     existing_by_clave: dict,
     unidades_personalizadas: Optional[List[str]] = None,
+    partidas_existentes: Optional[Dict[str, str]] = None,
+    niveles: Optional[dict] = None,
 ) -> List[dict]:
     """Procesa TODAS las filas de datos de la hoja UNA vez (3.a) — no una
     muestra. Cada fila queda con su interpretación (clave/descripción/
@@ -27454,6 +29650,7 @@ def _validar_archivo_completo(
     momento, así que se recalcula dinámicamente en `_calcular_vista_filas`."""
     if len(rows) <= header_row_index:
         raise HTTPException(400, "header_row_index fuera de rango")
+    nom_concepto = (niveles or nombres_nivel_proyecto(None))["concepto"]  # C-14: nombre y género configurados
     headers = [str(c) if c is not None else "" for c in rows[header_row_index]]
     data_rows = rows[header_row_index + 1:]
 
@@ -27466,6 +29663,7 @@ def _validar_archivo_completo(
         "clave": col(mapping.clave), "descripcion": col(mapping.descripcion),
         "unidad": col(mapping.unidad), "cantidad": col(mapping.cantidad),
         "precio_unitario": col(mapping.precio_unitario), "importe": col(mapping.importe),
+        "deductiva": col(getattr(mapping, "deductiva", None)),
     }
     if idx["clave"] is None or idx["descripcion"] is None or idx["cantidad"] is None or idx["precio_unitario"] is None:
         raise HTTPException(400, "El mapeo debe incluir al menos clave, descripción, cantidad y precio unitario")
@@ -27484,7 +29682,7 @@ def _validar_archivo_completo(
         fila_num = header_row_index + 2 + i
         problemas: List[dict] = []
 
-        clave = str(clave_raw).strip() or None
+        clave = clave_a_texto(clave_raw)
         if not clave:
             problemas.append({"tipo": "campo_obligatorio_vacio", "campo": "clave", "motivo": "La clave está vacía"})
 
@@ -27493,31 +29691,33 @@ def _validar_archivo_completo(
         if not descripcion:
             problemas.append({"tipo": "campo_obligatorio_vacio", "campo": "descripcion", "motivo": "La descripción está vacía"})
 
+        # C-01: sin cantidad ni P.U. => es una PARTIDA (nodo del catálogo), no un concepto.
+        if es_fila_partida(celda(row, "cantidad"), celda(row, "precio_unitario")):
+            filas.append({
+                "fila": fila_num, "tipo_fila": "partida", "clave": clave, "descripcion": descripcion,
+                "unidad": None, "unidad_raw": None, "cantidad": None, "cantidad_raw": None,
+                "precio_unitario": None, "precio_unitario_raw": None, "importe_archivo": None,
+                "importe_calculado": None, "concepto_existente_id": None, "deductiva": False,
+                "partida_existente_id": (partidas_existentes or {}).get(clave) if clave else None,
+                "problemas": problemas,
+            })
+            continue
+
         unidad_raw = celda(row, "unidad")
-        unidad, unidad_reconocida = _map_unidad_con_flag(str(unidad_raw) if unidad_raw is not None else None)
-        if not unidad_reconocida:
-            # TODO(Etapa 6 — importación de la matriz): _map_unidad_con_flag
-            # solo conoce UNIDADES + _UNIDAD_ALIASES, nunca
-            # project.unidades_personalizadas — el importador de catálogo
-            # (este archivo) sigue sin poder reconocer una unidad
-            # personalizada del proyecto directamente desde Excel, aunque
-            # sí la acepte si se escribe a mano en el catálogo (ver
-            # _validar_unidad_para_proyecto). Mientras tanto, el matiz de
-            # abajo evita que el aviso lea como "unidad inventada" cuando en
-            # realidad es una unidad que el proyecto configuró a propósito.
-            es_personalizada = str(unidad_raw or "").strip().upper() in {
-                (u or "").strip().upper() for u in (unidades_personalizadas or [])
-            }
-            if es_personalizada:
-                motivo = (
-                    f"Unidad '{unidad_raw}' no reconocida por el importador; si es una unidad "
-                    f"personalizada del proyecto, corrígela aquí (el importador aún no lee "
-                    f"unidades personalizadas directamente del Excel) — de lo contrario se "
-                    f"usará UNIVERSAL si no se corrige"
-                )
-            else:
-                motivo = f"Unidad '{unidad_raw}' no reconocida; se usará UNIVERSAL si no se corrige"
-            problemas.append({"tipo": "unidad_no_reconocida", "campo": "unidad", "motivo": motivo})
+        unidad, unidad_reconocida = _map_unidad_con_flag(
+            str(unidad_raw) if unidad_raw is not None else None, unidades_personalizadas,
+        )
+        if idx["unidad"] is not None and not str(unidad_raw if unidad_raw is not None else "").strip():
+            # C-07: unidad vacía -> se avisa (antes pasaba en silencio como UNIVERSAL).
+            problemas.append({
+                "tipo": "unidad_vacia", "campo": "unidad",
+                "motivo": "La unidad está vacía; se usará UNIVERSAL si no se corrige",
+            })
+        elif not unidad_reconocida:
+            problemas.append({
+                "tipo": "unidad_no_reconocida", "campo": "unidad",
+                "motivo": f"Unidad '{unidad_raw}' no reconocida; se usará UNIVERSAL si no se corrige",
+            })
 
         def _parse_campo_numerico(raw_valor, nombre_campo: str) -> Optional[str]:
             try:
@@ -27540,6 +29740,12 @@ def _validar_archivo_completo(
         cantidad = _parse_campo_numerico(cantidad_raw, "cantidad")
         pu_raw = celda(row, "precio_unitario")
         precio_unitario = _parse_campo_numerico(pu_raw, "precio_unitario")
+        if precio_unitario is not None and to_decimal(precio_unitario) == 0:
+            # C-07: un P.U. en 0 deja el importe del concepto en 0; se avisa sin bloquear.
+            problemas.append({
+                "tipo": "precio_unitario_cero", "campo": "precio_unitario",
+                "motivo": f"El precio unitario es 0; el importe de {nom_concepto['demostrativo']} {nom_concepto['minuscula']} quedará en 0",
+            })
 
         importe_archivo_raw = celda(row, "importe")
         importe_archivo = None
@@ -27565,11 +29771,13 @@ def _validar_archivo_completo(
             concepto_existente_id = existing_by_clave[clave]["id"]
             problemas.append({
                 "tipo": "clave_existente_proyecto", "campo": None,
-                "motivo": f"Ya existe un concepto con clave '{clave}' en esta partida",
+                "motivo": f"Ya existe {nom_concepto['indefinido']} {nom_concepto['minuscula']} con clave '{clave}' en este proyecto",
             })
 
         filas.append({
             "fila": fila_num,
+            "tipo_fila": "concepto",
+            "deductiva": es_marca_deductiva(celda(row, "deductiva")),
             "clave": clave,
             "descripcion": descripcion,
             "unidad": unidad,
@@ -27587,24 +29795,24 @@ def _validar_archivo_completo(
     return filas
 
 
-def _calcular_vista_filas(validated_rows: List[dict], correcciones: dict) -> List[dict]:
+def _calcular_vista_filas(validated_rows: List[dict], correcciones: dict, contexto: Optional[dict] = None) -> List[dict]:
     """Aplica el overlay de correcciones (disperso, por número de fila) sobre
     el resultado inmutable de `_validar_archivo_completo` y calcula el
     estado EFECTIVO de cada fila (ok | error | advertencia | duplicado |
     descartado). Se recalcula en cada lectura (preview, commit) — nunca se
     guarda un "estado" fijo en `validated_rows`, porque depende de
     correcciones y descartes que cambian entre lecturas."""
-    # Claves duplicadas DENTRO del archivo: se recalcula aquí (no en la
-    # validación) porque depende de qué filas están descartadas ahora mismo.
-    conteo_claves: dict = {}
+    # C-01: contexto de jerarquía. Sin contexto (pruebas, sesiones viejas) no se exige destino.
+    contexto = contexto or {}
+    tiene_destino = bool(contexto.get("tiene_destino", True))
+    destino_clave = contexto.get("destino_clave")
+    claves_partida = set(contexto.get("claves_partida_existentes") or [])
     for row in validated_rows:
-        correccion = correcciones.get(str(row["fila"])) or {}
-        if correccion.get("descartar") or not row["clave"]:
-            continue
-        conteo_claves[row["clave"]] = conteo_claves.get(row["clave"], 0) + 1
-    claves_repetidas = {c for c, n in conteo_claves.items() if n > 1}
+        if row.get("tipo_fila") == "partida" and row.get("clave") and not (correcciones.get(str(row["fila"])) or {}).get("descartar"):
+            claves_partida.add(row["clave"])
 
-    vista: List[dict] = []
+    # Pasada 1: problemas propios de cada fila (sin el chequeo de claves repetidas en el archivo).
+    entradas: List[dict] = []
     for row in validated_rows:
         fila_key = str(row["fila"])
         correccion = correcciones.get(fila_key) or {}
@@ -27617,17 +29825,88 @@ def _calcular_vista_filas(validated_rows: List[dict], correcciones: dict) -> Lis
         campos_corregidos = {k for k in ("cantidad", "precio_unitario", "unidad") if correccion.get(k) is not None}
         problemas_activos = [p for p in row["problemas"] if p.get("campo") not in campos_corregidos]
 
-        if not descartado and row["clave"] in claves_repetidas:
-            problemas_activos = problemas_activos + [{
-                "tipo": "clave_duplicada_archivo", "campo": None,
-                "motivo": f"La clave '{row['clave']}' aparece más de una vez en el archivo; descarta todas menos una",
-            }]
-
         cantidad_efectiva = correccion.get("cantidad") or row["cantidad"]
         precio_unitario_efectivo = correccion.get("precio_unitario") or row["precio_unitario"]
         unidad_efectiva = correccion.get("unidad") or row["unidad"]
 
-        if descartado:
+        if row.get("tipo_fila", "concepto") == "concepto" and not descartado:
+            # C-03: cantidad <= 0 se rechaza, salvo que la fila lleve la marca deductiva.
+            if cantidad_efectiva is not None and not row.get("deductiva"):
+                try:
+                    if to_decimal(cantidad_efectiva) <= 0:
+                        problemas_activos = problemas_activos + [{
+                            "tipo": "cantidad_no_positiva", "campo": "cantidad",
+                            "motivo": "La cantidad debe ser mayor que cero (solo una fila deductiva puede ser cero o negativa)",
+                        }]
+                except (ValueError, TypeError, InvalidOperation):
+                    pass
+            # C-01: sin destino elegido, cada concepto necesita una partida ancestro por clave.
+            padre = padre_por_prefijo(row["clave"], claves_partida) if row.get("clave") else None
+            if not tiene_destino and row.get("clave") and padre is None:
+                problemas_activos = problemas_activos + [{
+                    "tipo": "sin_partida_destino", "campo": None,
+                    "motivo": (
+                        f"La clave '{row['clave']}' no tiene una partida padre en el archivo ni en el proyecto. "
+                        "Incluye la fila de la partida o elige una partida destino."
+                    ),
+                }]
+            # C-09: con partida destino, una clave jerárquica que no lleva el prefijo de su padre
+            # (ej. "7.1" bajo la partida "3.3") se importa bajo el destino, pero se avisa.
+            if tiene_destino and destino_clave and row.get("clave") and padre is None and profundidad_clave(row["clave"]) >= 1:
+                problemas_activos = problemas_activos + [{
+                    "tipo": "clave_sin_prefijo_padre", "campo": None,
+                    "motivo": (
+                        f"La clave '{row['clave']}' no empieza con la de su partida padre '{destino_clave}'; "
+                        "se importará dentro de esa partida. Revisa que la clave sea la correcta."
+                    ),
+                }]
+
+        entradas.append({
+            "row": row, "correccion": correccion, "descartado": descartado, "problemas": problemas_activos,
+            "cantidad": cantidad_efectiva, "pu": precio_unitario_efectivo, "unidad": unidad_efectiva,
+        })
+
+    # C-08: claves repetidas DENTRO del archivo (entre filas no descartadas). La primera fila
+    # válida es la "gemela válida" y se conserva; las demás se omiten SOLO porque esa gemela
+    # existe. Si ninguna fila con esa clave es válida no se omite nada en silencio: todas quedan
+    # en error para que el usuario corrija una y descarte el resto.
+    grupos: Dict[str, List[dict]] = {}
+    for e in entradas:
+        clave = e["row"].get("clave")
+        if e["descartado"] or not clave:
+            continue
+        grupos.setdefault(clave, []).append(e)
+    for clave, grupo in grupos.items():
+        if len(grupo) < 2:
+            continue
+        validas = [e for e in grupo if not ({p["tipo"] for p in e["problemas"]} & _TIPOS_ERROR)]
+        if validas:
+            gemela = validas[0]
+            for e in grupo:
+                if e is gemela:
+                    continue
+                e["problemas"] = e["problemas"] + [{
+                    "tipo": "clave_duplicada_archivo", "campo": None, "fila_gemela": gemela["row"]["fila"],
+                    "motivo": (
+                        f"La clave '{clave}' ya aparece en la fila {gemela['row']['fila']}, que es válida; "
+                        "esta fila se omitirá"
+                    ),
+                }]
+        else:
+            for e in grupo:
+                e["problemas"] = e["problemas"] + [{
+                    "tipo": "clave_duplicada_sin_gemela_valida", "campo": None,
+                    "motivo": (
+                        f"La clave '{clave}' aparece {len(grupo)} veces y ninguna de esas filas es válida; "
+                        "corrige una y descarta las demás"
+                    ),
+                }]
+
+    vista: List[dict] = []
+    for e in entradas:
+        row = e["row"]
+        problemas_activos = e["problemas"]
+        if e["descartado"]:
             estado = "descartado"
         else:
             tipos_activos = {p["tipo"] for p in problemas_activos}
@@ -27642,11 +29921,11 @@ def _calcular_vista_filas(validated_rows: List[dict], correcciones: dict) -> Lis
 
         vista.append({
             **row,
-            "cantidad_efectiva": cantidad_efectiva,
-            "precio_unitario_efectivo": precio_unitario_efectivo,
-            "unidad_efectiva": unidad_efectiva,
+            "cantidad_efectiva": e["cantidad"],
+            "precio_unitario_efectivo": e["pu"],
+            "unidad_efectiva": e["unidad"],
             "problemas_activos": problemas_activos,
-            "correccion": correccion or None,
+            "correccion": e["correccion"] or None,
             "estado": estado,
         })
     return vista
@@ -27677,8 +29956,7 @@ async def import_upload_sheets(pid: str, file: UploadFile = File(...), user: dic
     # mapeo de columnas elegido en este paso), buscando casos inequívocos.
     # Los números nativos (int/float) no aportan evidencia: no tienen
     # separador que desambiguar.
-    candidatos = [cell for rows in sheets.values() for row in rows for cell in row]
-    convencion_detectada = detectar_convencion(candidatos)
+    convencion_detectada = detectar_convencion_archivo(sheets)
 
     import_id = str(uuid.uuid4())
     await db.catalogo_import_sessions.insert_one({
@@ -27794,7 +30072,10 @@ async def import_headers(
         "suggested_mapping": _propose_mapping(headers),
         "sample_rows": sample_rows,
         "total_rows": max(len(rows) - header_row_index - 1, 0),
-        "convencion_detectada": session.get("convencion_decimal"),
+        "convencion_detectada": (
+            detectar_convencion_hoja(rows, header_row_index, _propose_mapping(headers))
+            or session.get("convencion_decimal")
+        ),
         # Primeras filas TAL CUAL vienen en el archivo (sin importar cuál se
         # está usando como encabezado ahora) — para que el usuario elija.
         "preview_rows": rows[: min(len(rows), 15)],
@@ -27814,28 +30095,43 @@ async def import_validate(pid: str, import_id: str, body: ImportValidateIn, user
     sobre el resultado nuevo."""
     await ensure_project_access(user, pid)
     project = await db.projects.find_one({"id": pid})
-    partida = await db.partidas.find_one({"id": body.partida_id, "project_id": pid})
-    if not partida:
-        raise HTTPException(404, "Partida no existe en este proyecto")
+    if body.partida_id:
+        partida = await db.partidas.find_one({"id": body.partida_id, "project_id": pid})
+        if not partida:
+            raise HTTPException(404, "Partida no existe en este proyecto")
     session = await db.catalogo_import_sessions.find_one({"id": import_id, "project_id": pid})
     if not session:
         raise HTTPException(404, "Sesión de importación no existe o expiró")
     if body.sheet not in session["sheets"]:
         raise HTTPException(400, f"La hoja '{body.sheet}' no existe en este archivo")
 
-    convencion: Optional[ConvencionDecimal] = body.convencion or session.get("convencion_decimal")
+    convencion: Optional[ConvencionDecimal] = (
+        body.convencion
+        or detectar_convencion_hoja(session["sheets"][body.sheet], body.header_row_index, body.mapping)
+        or session.get("convencion_decimal")
+    )
 
     # Consulta única de duplicados (Respuesta 2, aprobada): se trae UNA vez
     # todo el catálogo activo de la partida destino y se compara en
     # memoria — nada de una consulta por fila. A la escala esperada
     # (decenas a unos cientos de conceptos) esto es trivial.
-    existing = await db.conceptos.find({"partida_id": body.partida_id, "activo": True}).to_list(length=10000)
+    # C-01: los duplicados se buscan en TODO el proyecto (los conceptos ya no van todos a una
+    # sola partida destino).
+    existing = await db.conceptos.find({"project_id": pid, "activo": True}).to_list(length=100000)
     existing_by_clave = {c["clave"]: c for c in existing}
 
+    partidas_proyecto = await _claves_partida_del_proyecto(pid)
     filas = _validar_archivo_completo(
         session["sheets"][body.sheet], body.header_row_index, body.mapping, convencion, existing_by_clave,
         unidades_personalizadas=(project or {}).get("unidades_personalizadas") or [],
+        partidas_existentes=partidas_proyecto,
+        niveles=nombres_nivel_proyecto(project),
     )
+    contexto = {
+        "tiene_destino": bool(body.partida_id),
+        "destino_clave": partida["clave"] if body.partida_id else None,
+        "claves_partida_existentes": sorted(partidas_proyecto),
+    }
 
     update_fields = {
         "validated_rows": filas,
@@ -27843,6 +30139,7 @@ async def import_validate(pid: str, import_id: str, body: ImportValidateIn, user
         "validated_header_row_index": body.header_row_index,
         "validated_mapping": body.mapping.model_dump(),
         "validated_partida_id": body.partida_id,
+        "validated_contexto": contexto,
         "convencion_usada": convencion,
         "validated_at": datetime.now(timezone.utc),
     }
@@ -27851,7 +30148,7 @@ async def import_validate(pid: str, import_id: str, body: ImportValidateIn, user
         update_fields["duplicados_accion"] = "omitir"
     await db.catalogo_import_sessions.update_one({"id": import_id}, {"$set": update_fields})
 
-    vista = _calcular_vista_filas(filas, session.get("correcciones") or {})
+    vista = _calcular_vista_filas(filas, session.get("correcciones") or {}, contexto=contexto)
     return {"resumen": _resumen_de_vista(vista), "convencion_usada": convencion}
 
 
@@ -27869,7 +30166,7 @@ async def import_preview(import_id: str, page: int = 1, page_size: int = 50, use
         raise HTTPException(400, "Todavía no se valida esta importación. Llama primero a /validate.")
 
     correcciones = session.get("correcciones") or {}
-    vista = _calcular_vista_filas(validated_rows, correcciones)
+    vista = _calcular_vista_filas(validated_rows, correcciones, contexto=session.get("validated_contexto"))
     resumen = _resumen_de_vista(vista)
 
     page = max(page, 1)
@@ -27918,8 +30215,8 @@ async def import_correct_row(import_id: str, fila: int, body: RowCorrectionIn, u
         except Exception:
             raise HTTPException(400, "precio_unitario inválido")
     if body.unidad is not None:
-        if body.unidad not in UNIDADES:
-            raise HTTPException(400, f"Unidad '{body.unidad}' no válida")
+        proyecto_sesion = await db.projects.find_one({"id": session["project_id"]})
+        _validar_unidad_para_proyecto(body.unidad, proyecto_sesion or {})
         entry["unidad"] = body.unidad
     if body.descartar:
         entry["descartar"] = True
@@ -27931,7 +30228,7 @@ async def import_correct_row(import_id: str, fila: int, body: RowCorrectionIn, u
         correcciones.pop(str(fila), None)  # cuerpo vacío = revertir la fila a su valor original
     await db.catalogo_import_sessions.update_one({"id": import_id}, {"$set": {"correcciones": correcciones}})
 
-    vista = _calcular_vista_filas(validated_rows, correcciones)
+    vista = _calcular_vista_filas(validated_rows, correcciones, contexto=session.get("validated_contexto"))
     fila_actualizada = next(r for r in vista if r["fila"] == fila)
     return {"fila": fila_actualizada, "resumen": _resumen_de_vista(vista)}
 
@@ -27950,7 +30247,7 @@ async def import_revert_row(import_id: str, fila: int, user: dict = Depends(requ
     correcciones.pop(str(fila), None)
     await db.catalogo_import_sessions.update_one({"id": import_id}, {"$set": {"correcciones": correcciones}})
 
-    vista = _calcular_vista_filas(validated_rows, correcciones)
+    vista = _calcular_vista_filas(validated_rows, correcciones, contexto=session.get("validated_contexto"))
     fila_actualizada = next((r for r in vista if r["fila"] == fila), None)
     if fila_actualizada is None:
         raise HTTPException(404, f"Fila {fila} no existe en esta validación")
@@ -27978,11 +30275,13 @@ async def _ejecutar_commit_con_compensacion(
     log_bitacora: Callable[..., Any],
     pid: str,
     import_id: str,
-    partida_id: str,
+    partida_id: Optional[str],
     vista: List[dict],
     duplicados_accion: str,
     user: dict,
     filename: Optional[str],
+    partidas_col=None,
+    cadencia: str = "MENSUAL",
 ) -> dict:
     """Núcleo del commit, separado de la ruta HTTP para poder probarlo con
     colecciones falsas (ver tests/test_import_commit_compensacion.py) sin
@@ -28024,21 +30323,46 @@ async def _ejecutar_commit_con_compensacion(
     valor anterior guardado para poder revertir)."""
     import_batch_id = str(uuid.uuid4())
     creados, actualizados, omitidos = 0, 0, 0
+    partidas_creadas, sin_partida = 0, 0
     log_local: List[dict] = []
+
+    async def _registrar(entry: dict) -> None:
+        log_local.append(entry)
+        await sessions_col.update_one({"id": import_id}, {"$push": {"compensacion_log": entry}})
 
     async def _compensar() -> None:
         for entry in reversed(log_local):
             try:
                 if entry["tipo"] == "creado":
                     await conceptos_col.delete_one({"id": entry["concepto_id"]})
+                elif entry["tipo"] == "partida_creada":
+                    await partidas_col.delete_one({"id": entry["partida_id"]})
                 else:
                     await conceptos_col.update_one({"id": entry["concepto_id"]}, {"$set": entry["valor_anterior"]})
             except Exception as comp_err:
                 log.error("[import_commit] fallo compensando %s: %s", entry, comp_err)
 
     try:
+        # C-01: primero las PARTIDAS del archivo (filas sin cantidad ni P.U.), de raíz a hoja.
+        mapa_partidas: Dict[str, str] = {}
+        if partidas_col is not None:
+            async for pdoc in partidas_col.find({"project_id": pid, "activo": True}):
+                mapa_partidas[pdoc["clave"]] = pdoc["id"]
+            filas_partida = [
+                r for r in vista
+                if r.get("tipo_fila") == "partida" and r["estado"] in ("ok", "advertencia") and r.get("clave")
+            ]
+            plan = planificar_partidas(filas_partida, mapa_partidas)
+            n_antes = len(mapa_partidas)
+            mapa_partidas = await _crear_partidas_planificadas(partidas_col, pid, plan, mapa_partidas, partida_id, user, _registrar)
+            partidas_creadas = len(mapa_partidas) - n_antes
+            for pl in plan:
+                await log_bitacora(pid, "import", "partida", mapa_partidas[pl["clave"]], None, None, f"creada desde importación ({filename})", user)
+
         for row in vista:
             estado = row["estado"]
+            if row.get("tipo_fila") == "partida":
+                continue  # ya se procesó arriba
             if estado in ("error", "descartado"):
                 continue
             if estado == "duplicado":
@@ -28094,19 +30418,28 @@ async def _ejecutar_commit_con_compensacion(
                 )
                 actualizados += 1
             else:
+                # C-01: el concepto cuelga de la partida más cercana por prefijo de su clave;
+                # si no hay, de la partida destino (si se eligió).
+                padre_clave = padre_por_prefijo(clave, mapa_partidas) if clave else None
+                partida_destino = mapa_partidas[padre_clave] if padre_clave else partida_id
+                if not partida_destino:
+                    sin_partida += 1
+                    continue
                 cid = str(uuid.uuid4())
                 entry = {"tipo": "creado", "concepto_id": cid, "valor_anterior": None}
                 log_local.append(entry)
                 await sessions_col.update_one({"id": import_id}, {"$push": {"compensacion_log": entry}})
 
                 await conceptos_col.insert_one({
-                    "id": cid, "partida_id": partida_id, "project_id": pid,
+                    "id": cid, "partida_id": partida_destino, "project_id": pid,
+                    "deductiva": bool(row.get("deductiva")),
                     "clave": clave, "descripcion": descripcion, "unidad": unidad,
                     "cantidad": cantidad, "precio_unitario": precio_unitario,
-                    # La meta de un concepto recién importado es su propia
-                    # cantidad contratada — no hay columna Meta en el
-                    # importador (feedback: "la meta debe de ser la cantidad").
-                    "meta": cantidad, "periodicidad_meta": "SEMANAL", "activo": True,
+                    # C-06: este importador no trae fechas, así que no hay programa
+                    # del que calcular un ritmo: la meta nace VACÍA (ya no es "toda
+                    # la cantidad por semana") y se completa al programar el
+                    # concepto. La periodicidad es la cadencia del proyecto.
+                    "meta": "", "periodicidad_meta": cadencia, "activo": True,
                     "created_at": datetime.now(timezone.utc), "created_by": user["id"],
                     "import_batch_id": import_batch_id,
                 })
@@ -28122,6 +30455,7 @@ async def _ejecutar_commit_con_compensacion(
     return {
         "creados": creados, "actualizados": actualizados, "omitidos": omitidos,
         "con_error": con_error, "descartados": descartados, "import_batch_id": import_batch_id,
+        "partidas_creadas": partidas_creadas, "sin_partida": sin_partida,
     }
 
 
@@ -28130,7 +30464,7 @@ async def import_commit(pid: str, import_id: str, user: dict = Depends(require_r
     """Paso 4: aplica el resultado ya validado (import_validate) + las
     correcciones del usuario. No recibe body — todo lo necesario ya quedó
     confirmado en la sesión de staging en los pasos anteriores."""
-    await ensure_project_access(user, pid)
+    proyecto_import = await ensure_project_access(user, pid)
     session = await db.catalogo_import_sessions.find_one({"id": import_id, "project_id": pid})
     if not session:
         raise HTTPException(404, "Sesión de importación no existe o expiró")
@@ -28138,18 +30472,20 @@ async def import_commit(pid: str, import_id: str, user: dict = Depends(require_r
     if validated_rows is None:
         raise HTTPException(400, "Todavía no se valida esta importación. Llama primero a /validate.")
     partida_id = session.get("validated_partida_id")
-    partida = await db.partidas.find_one({"id": partida_id, "project_id": pid})
-    if not partida:
-        raise HTTPException(404, "La partida validada ya no existe en este proyecto")
+    if partida_id:
+        partida = await db.partidas.find_one({"id": partida_id, "project_id": pid})
+        if not partida:
+            raise HTTPException(404, "La partida validada ya no existe en este proyecto")
 
     correcciones = session.get("correcciones") or {}
     duplicados_accion = session.get("duplicados_accion", "omitir")
-    vista = _calcular_vista_filas(validated_rows, correcciones)
+    vista = _calcular_vista_filas(validated_rows, correcciones, contexto=session.get("validated_contexto"))
 
     try:
         resultado = await _ejecutar_commit_con_compensacion(
             db.conceptos, db.catalogo_import_sessions, _log_bitacora,
             pid, import_id, partida_id, vista, duplicados_accion, user, session.get("filename"),
+            partidas_col=db.partidas, cadencia=cadencia_de_proyecto(proyecto_import),
         )
     finally:
         # 3.d: SIEMPRE se limpia la sesión de staging al terminar el commit,
@@ -28183,7 +30519,7 @@ _MAPPING_KEYWORDS_EVM = {
     "fin": ["fin", "fecha fin", "f. fin", "termino", "término", "end"],
 }
 
-_TIPOS_ERROR_EVM = {"excel_error", "numero_ilegible", "numero_ambiguo", "campo_obligatorio_vacio", "fecha_ilegible", "rango_fecha_invalido"}
+_TIPOS_ERROR_EVM = {"excel_error", "numero_ilegible", "numero_ambiguo", "campo_obligatorio_vacio", "fecha_ilegible", "rango_fecha_invalido", "sin_partida_destino"}
 _TIPOS_DUPLICADO_EVM = {"clave_duplicada_archivo", "clave_existente_proyecto"}
 
 
@@ -28264,7 +30600,7 @@ class ImportValidateEvmIn(BaseModel):
     sheet: str
     header_row_index: int = 0
     mapping: ImportMappingEvmIn
-    partida_id: str
+    partida_id: Optional[str] = None  # C-01: opcional (ver ImportValidateIn)
     convencion: Optional[ConvencionDecimal] = None
 
 
@@ -28300,6 +30636,8 @@ def _validar_archivo_completo_evm(
     mapping: "ImportMappingEvmIn",
     convencion: Optional[ConvencionDecimal],
     existing_by_clave: dict,
+    partidas_existentes: Optional[Dict[str, str]] = None,
+    niveles: Optional[dict] = None,
 ) -> List[dict]:
     """Mismo contrato que _validar_archivo_completo (catálogo legado):
     procesa TODAS las filas una vez, resultado inmutable, correcciones
@@ -28311,6 +30649,7 @@ def _validar_archivo_completo_evm(
     importador no trae columna de unidad, tal como se pidió."""
     if len(rows) <= header_row_index:
         raise HTTPException(400, "header_row_index fuera de rango")
+    nom_concepto = (niveles or nombres_nivel_proyecto(None))["concepto"]  # C-14
     headers = [str(c) if c is not None else "" for c in rows[header_row_index]]
     data_rows = rows[header_row_index + 1:]
 
@@ -28337,7 +30676,7 @@ def _validar_archivo_completo_evm(
         fila_num = header_row_index + 2 + i
         problemas: List[dict] = []
 
-        clave = str(clave_raw).strip() or None
+        clave = clave_a_texto(clave_raw)
         if not clave:
             problemas.append({"tipo": "campo_obligatorio_vacio", "campo": "clave", "motivo": "La clave está vacía"})
 
@@ -28345,6 +30684,17 @@ def _validar_archivo_completo_evm(
         descripcion = (str(descripcion_raw).strip() if descripcion_raw is not None else "") or None
         if not descripcion:
             problemas.append({"tipo": "campo_obligatorio_vacio", "campo": "descripcion", "motivo": "La descripción está vacía"})
+
+        # C-01: sin meta, importe ni fechas => es una PARTIDA (nodo del catálogo).
+        if es_fila_partida(celda(row, "meta"), celda(row, "importe"), celda(row, "inicio"), celda(row, "fin")):
+            filas.append({
+                "fila": fila_num, "tipo_fila": "partida", "clave": clave, "descripcion": descripcion,
+                "meta_cantidad": None, "importe_total_editable": None, "fecha_inicio": None, "fecha_fin": None,
+                "concepto_existente_id": None,
+                "partida_existente_id": (partidas_existentes or {}).get(clave) if clave else None,
+                "problemas": problemas,
+            })
+            continue
 
         def _parse_campo_numerico(raw_valor, nombre_campo: str) -> Optional[str]:
             try:
@@ -28389,18 +30739,18 @@ def _validar_archivo_completo_evm(
             problemas.append({"tipo": tipo, "campo": "fin", "motivo": f"Fecha de fin inválida o no es una celda de fecha de Excel: {fin_raw!r}"})
 
         if fecha_inicio and fecha_fin and date.fromisoformat(fecha_fin) < date.fromisoformat(fecha_inicio):
-            problemas.append({"tipo": "rango_fecha_invalido", "campo": "fin", "motivo": f"fecha_fin ({fecha_fin}) es anterior a fecha_inicio ({fecha_inicio})"})
+            problemas.append({"tipo": "rango_fecha_invalido", "campo": "fin", "motivo": f"La fecha de fin ({fecha_fin}) es anterior a la fecha de inicio ({fecha_inicio})."})
 
         concepto_existente_id = None
         if clave and clave in existing_by_clave:
             concepto_existente_id = existing_by_clave[clave]["id"]
             problemas.append({
                 "tipo": "clave_existente_proyecto", "campo": None,
-                "motivo": f"Ya existe un concepto con clave '{clave}' en esta partida",
+                "motivo": f"Ya existe {nom_concepto['indefinido']} {nom_concepto['minuscula']} con clave '{clave}' en este proyecto",
             })
 
         filas.append({
-            "fila": fila_num, "clave": clave, "descripcion": descripcion,
+            "fila": fila_num, "tipo_fila": "concepto", "clave": clave, "descripcion": descripcion,
             "meta_cantidad": meta_cantidad, "importe_total_editable": importe_total_editable,
             "fecha_inicio": fecha_inicio, "fecha_fin": fecha_fin,
             "concepto_existente_id": concepto_existente_id, "problemas": problemas,
@@ -28408,7 +30758,7 @@ def _validar_archivo_completo_evm(
     return filas
 
 
-def _calcular_vista_filas_evm(validated_rows: List[dict], correcciones: dict) -> List[dict]:
+def _calcular_vista_filas_evm(validated_rows: List[dict], correcciones: dict, contexto: Optional[dict] = None) -> List[dict]:
     """Mismo contrato que _calcular_vista_filas (catálogo legado), sobre los
     campos EVM en vez de cantidad/precio_unitario/unidad."""
     conteo_claves: dict = {}
@@ -28418,6 +30768,13 @@ def _calcular_vista_filas_evm(validated_rows: List[dict], correcciones: dict) ->
             continue
         conteo_claves[row["clave"]] = conteo_claves.get(row["clave"], 0) + 1
     claves_repetidas = {c for c, n in conteo_claves.items() if n > 1}
+
+    contexto = contexto or {}
+    tiene_destino = bool(contexto.get("tiene_destino", True))
+    claves_partida = set(contexto.get("claves_partida_existentes") or [])
+    for row in validated_rows:
+        if row.get("tipo_fila") == "partida" and row.get("clave") and not (correcciones.get(str(row["fila"])) or {}).get("descartar"):
+            claves_partida.add(row["clave"])
 
     vista: List[dict] = []
     for row in validated_rows:
@@ -28438,6 +30795,16 @@ def _calcular_vista_filas_evm(validated_rows: List[dict], correcciones: dict) ->
         importe_efectivo = correccion.get("importe_total_editable") or row["importe_total_editable"]
         fecha_inicio_efectiva = correccion.get("fecha_inicio") or row["fecha_inicio"]
         fecha_fin_efectiva = correccion.get("fecha_fin") or row["fecha_fin"]
+
+        if row.get("tipo_fila", "concepto") == "concepto" and not descartado:
+            if not tiene_destino and row.get("clave") and padre_por_prefijo(row["clave"], claves_partida) is None:
+                problemas_activos = problemas_activos + [{
+                    "tipo": "sin_partida_destino", "campo": None,
+                    "motivo": (
+                        f"La clave '{row['clave']}' no tiene una partida padre en el archivo ni en el proyecto. "
+                        "Incluye la fila de la partida o elige una partida destino."
+                    ),
+                }]
 
         if descartado:
             estado = "descartado"
@@ -28469,12 +30836,14 @@ async def _ejecutar_commit_evm_con_compensacion(
     log_bitacora: Callable[..., Any],
     pid: str,
     import_id: str,
-    partida_id: str,
+    partida_id: Optional[str],
     vista: List[dict],
     duplicados_accion: str,
     user: dict,
     filename: Optional[str],
     batch_size: int = 500,
+    partidas_col=None,
+    cadencia: str = "MENSUAL",
 ) -> dict:
     """Commit del Importador Maestro — mismo criterio de COMPENSACIÓN MANUAL
     que _ejecutar_commit_con_compensacion del catálogo legado (ver ese
@@ -28501,12 +30870,19 @@ async def _ejecutar_commit_evm_con_compensacion(
     dispositivo estaba desconectado."""
     import_batch_id = str(uuid.uuid4())
     log_local: List[dict] = []
+    sin_partida = 0
+
+    async def _registrar(entry: dict) -> None:
+        log_local.append(entry)
+        await sessions_col.update_one({"id": import_id}, {"$push": {"compensacion_log": entry}})
 
     async def _compensar() -> None:
         for entry in reversed(log_local):
             try:
                 if entry["tipo"] == "creado":
                     await conceptos_col.delete_one({"id": entry["concepto_id"]})
+                elif entry["tipo"] == "partida_creada":
+                    await partidas_col.delete_one({"id": entry["partida_id"]})
                 else:
                     await conceptos_col.update_one({"id": entry["concepto_id"]}, {"$set": entry["valor_anterior"]})
             except Exception as comp_err:
@@ -28516,6 +30892,8 @@ async def _ejecutar_commit_evm_con_compensacion(
     filas_aplicables: List[dict] = []
     for row in vista:
         estado = row["estado"]
+        if row.get("tipo_fila") == "partida":
+            continue  # las partidas se crean aparte (C-01)
         if estado in ("error", "descartado"):
             continue
         if estado == "duplicado":
@@ -28538,6 +30916,21 @@ async def _ejecutar_commit_evm_con_compensacion(
             existing_docs[d["id"]] = d
 
     try:
+        # C-01: primero las PARTIDAS del archivo (filas sin meta ni importe), de raíz a hoja.
+        mapa_partidas: Dict[str, str] = {}
+        partidas_creadas = 0
+        if partidas_col is not None:
+            async for pdoc in partidas_col.find({"project_id": pid, "activo": True}):
+                mapa_partidas[pdoc["clave"]] = pdoc["id"]
+            filas_partida = [
+                r for r in vista
+                if r.get("tipo_fila") == "partida" and r["estado"] in ("ok", "advertencia") and r.get("clave")
+            ]
+            plan = planificar_partidas(filas_partida, mapa_partidas)
+            n_antes = len(mapa_partidas)
+            mapa_partidas = await _crear_partidas_planificadas(partidas_col, pid, plan, mapa_partidas, partida_id, user, _registrar)
+            partidas_creadas = len(mapa_partidas) - n_antes
+
         for lote_inicio in range(0, len(filas_aplicables), batch_size):
             lote = filas_aplicables[lote_inicio: lote_inicio + batch_size]
             ops: List[Any] = []
@@ -28569,10 +30962,15 @@ async def _ejecutar_commit_evm_con_compensacion(
                         }},
                     ))
                 else:
+                    padre_clave = padre_por_prefijo(row["clave"], mapa_partidas) if row.get("clave") else None
+                    partida_destino = mapa_partidas[padre_clave] if padre_clave else partida_id
+                    if not partida_destino:
+                        sin_partida += 1
+                        continue
                     cid = str(uuid.uuid4())
                     lote_log.append({"tipo": "creado", "concepto_id": cid, "valor_anterior": None})
                     ops.append(InsertOne({
-                        "id": cid, "partida_id": partida_id, "project_id": pid,
+                        "id": cid, "partida_id": partida_destino, "project_id": pid,
                         "clave": row["clave"], "descripcion": row["descripcion"], "unidad": "UNIVERSAL",
                         # Campos legado (cantidad/precio_unitario/meta) se dejan en
                         # blanco/derivados mínimos para que _concepto_out no truene
@@ -28580,8 +30978,13 @@ async def _ejecutar_commit_evm_con_compensacion(
                         # legado — importe_contratado legado queda en "0" hasta que
                         # alguien lo edite a mano; el que manda para este concepto
                         # es precio_unitario_dinamico (ver _concepto_tiene_datos_evm).
-                        "cantidad": row["meta_cantidad_efectiva"], "precio_unitario": "0", "meta": row["meta_cantidad_efectiva"],
-                        "periodicidad_meta": "SEMANAL",
+                        "cantidad": row["meta_cantidad_efectiva"], "precio_unitario": "0",
+                        # C-06: meta = cantidad ÷ duración (inicio-fin de la fila) en la
+                        # cadencia del proyecto; sin fechas válidas queda vacía.
+                        "meta": meta_por_defecto(
+                            row["meta_cantidad_efectiva"], row["fecha_inicio_efectiva"], row["fecha_fin_efectiva"], cadencia,
+                        ) or "",
+                        "periodicidad_meta": cadencia,
                         "meta_cantidad": row["meta_cantidad_efectiva"],
                         "importe_total_editable": row["importe_total_editable_efectivo"],
                         "fecha_inicio": row["fecha_inicio_efectiva"], "fecha_fin": row["fecha_fin_efectiva"],
@@ -28611,7 +31014,9 @@ async def _ejecutar_commit_evm_con_compensacion(
     creados = sum(1 for e in log_local if e["tipo"] == "creado")
     actualizados = sum(1 for e in log_local if e["tipo"] == "actualizado")
     for entry in log_local:
-        if entry["tipo"] == "creado":
+        if entry["tipo"] == "partida_creada":
+            await log_bitacora(pid, "import_evm", "partida", entry["partida_id"], None, None, f"creada desde Importador Maestro ({filename})", user)
+        elif entry["tipo"] == "creado":
             await log_bitacora(pid, "import_evm", "concepto", entry["concepto_id"], None, None, f"creado desde Importador Maestro ({filename})", user)
         else:
             await log_bitacora(pid, "import_evm", "concepto", entry["concepto_id"], "importe_total_editable/fechas", None, "actualizado desde Importador Maestro", user)
@@ -28621,6 +31026,7 @@ async def _ejecutar_commit_evm_con_compensacion(
     return {
         "creados": creados, "actualizados": actualizados, "omitidos": omitidos,
         "con_error": con_error, "descartados": descartados, "import_batch_id": import_batch_id,
+        "partidas_creadas": partidas_creadas, "sin_partida": sin_partida,
     }
 
 
@@ -28684,10 +31090,11 @@ async def import_evm_headers(
 
 @api.post("/projects/{pid}/conceptos/import_evm/{import_id}/validate")
 async def import_evm_validate(pid: str, import_id: str, body: ImportValidateEvmIn, user: dict = Depends(require_role(ROLE_SUB, ROLE_COORD))):
-    await ensure_project_access(user, pid)
-    partida = await db.partidas.find_one({"id": body.partida_id, "project_id": pid})
-    if not partida:
-        raise HTTPException(404, "Partida no existe en este proyecto")
+    proyecto_evm = await ensure_project_access(user, pid)
+    if body.partida_id:
+        partida = await db.partidas.find_one({"id": body.partida_id, "project_id": pid})
+        if not partida:
+            raise HTTPException(404, "Partida no existe en este proyecto")
     session = await db.evm_import_sessions.find_one({"id": import_id, "project_id": pid})
     if not session:
         raise HTTPException(404, "Sesión de importación no existe o expiró")
@@ -28695,15 +31102,22 @@ async def import_evm_validate(pid: str, import_id: str, body: ImportValidateEvmI
         raise HTTPException(400, f"La hoja '{body.sheet}' no existe en este archivo")
 
     convencion: Optional[ConvencionDecimal] = body.convencion or session.get("convencion_decimal")
-    existing = await db.conceptos.find({"partida_id": body.partida_id, "activo": True}).to_list(length=10000)
+    # C-01: los duplicados se buscan en TODO el proyecto.
+    existing = await db.conceptos.find({"project_id": pid, "activo": True}).to_list(length=100000)
     existing_by_clave = {c["clave"]: c for c in existing}
 
-    filas = _validar_archivo_completo_evm(session["sheets"][body.sheet], body.header_row_index, body.mapping, convencion, existing_by_clave)
+    partidas_proyecto = await _claves_partida_del_proyecto(pid)
+    filas = _validar_archivo_completo_evm(
+        session["sheets"][body.sheet], body.header_row_index, body.mapping, convencion, existing_by_clave,
+        partidas_existentes=partidas_proyecto,
+        niveles=nombres_nivel_proyecto(proyecto_evm if isinstance(proyecto_evm, dict) else None),
+    )
+    contexto = {"tiene_destino": bool(body.partida_id), "claves_partida_existentes": sorted(partidas_proyecto)}
 
     update_fields = {
         "validated_rows": filas, "validated_sheet": body.sheet,
         "validated_header_row_index": body.header_row_index, "validated_mapping": body.mapping.model_dump(),
-        "validated_partida_id": body.partida_id, "convencion_usada": convencion,
+        "validated_partida_id": body.partida_id, "validated_contexto": contexto, "convencion_usada": convencion,
         "validated_at": datetime.now(timezone.utc),
     }
     if "correcciones" not in session:
@@ -28711,7 +31125,7 @@ async def import_evm_validate(pid: str, import_id: str, body: ImportValidateEvmI
         update_fields["duplicados_accion"] = "omitir"
     await db.evm_import_sessions.update_one({"id": import_id}, {"$set": update_fields})
 
-    vista = _calcular_vista_filas_evm(filas, session.get("correcciones") or {})
+    vista = _calcular_vista_filas_evm(filas, session.get("correcciones") or {}, contexto=contexto)
     return {"resumen": _resumen_de_vista(vista), "convencion_usada": convencion}
 
 
@@ -28726,7 +31140,7 @@ async def import_evm_preview(import_id: str, page: int = 1, page_size: int = 50,
         raise HTTPException(400, "Todavía no se valida esta importación. Llama primero a /validate.")
 
     correcciones = session.get("correcciones") or {}
-    vista = _calcular_vista_filas_evm(validated_rows, correcciones)
+    vista = _calcular_vista_filas_evm(validated_rows, correcciones, contexto=session.get("validated_contexto"))
     resumen = _resumen_de_vista(vista)
 
     page = max(page, 1)
@@ -28789,7 +31203,7 @@ async def import_evm_correct_row(import_id: str, fila: int, body: RowCorrectionE
         correcciones.pop(str(fila), None)
     await db.evm_import_sessions.update_one({"id": import_id}, {"$set": {"correcciones": correcciones}})
 
-    vista = _calcular_vista_filas_evm(validated_rows, correcciones)
+    vista = _calcular_vista_filas_evm(validated_rows, correcciones, contexto=session.get("validated_contexto"))
     fila_actualizada = next(r for r in vista if r["fila"] == fila)
     return {"fila": fila_actualizada, "resumen": _resumen_de_vista(vista)}
 
@@ -28815,7 +31229,7 @@ async def import_evm_descartar_sesion(pid: str, import_id: str, user: dict = Dep
 async def import_evm_commit(pid: str, import_id: str, user: dict = Depends(require_role(ROLE_SUB, ROLE_COORD))):
     """Paso 4: aplica el resultado ya validado — no recibe body, todo lo
     necesario ya quedó confirmado en la sesión de staging."""
-    await ensure_project_access(user, pid)
+    proyecto_import = await ensure_project_access(user, pid)
     session = await db.evm_import_sessions.find_one({"id": import_id, "project_id": pid})
     if not session:
         raise HTTPException(404, "Sesión de importación no existe o expiró")
@@ -28823,18 +31237,20 @@ async def import_evm_commit(pid: str, import_id: str, user: dict = Depends(requi
     if validated_rows is None:
         raise HTTPException(400, "Todavía no se valida esta importación. Llama primero a /validate.")
     partida_id = session.get("validated_partida_id")
-    partida = await db.partidas.find_one({"id": partida_id, "project_id": pid})
-    if not partida:
-        raise HTTPException(404, "La partida validada ya no existe en este proyecto")
+    if partida_id:
+        partida = await db.partidas.find_one({"id": partida_id, "project_id": pid})
+        if not partida:
+            raise HTTPException(404, "La partida validada ya no existe en este proyecto")
 
     correcciones = session.get("correcciones") or {}
     duplicados_accion = session.get("duplicados_accion", "omitir")
-    vista = _calcular_vista_filas_evm(validated_rows, correcciones)
+    vista = _calcular_vista_filas_evm(validated_rows, correcciones, contexto=session.get("validated_contexto"))
 
     try:
         resultado = await _ejecutar_commit_evm_con_compensacion(
             db.conceptos, db.evm_import_sessions, _log_bitacora,
             pid, import_id, partida_id, vista, duplicados_accion, user, session.get("filename"),
+            partidas_col=db.partidas, cadencia=cadencia_de_proyecto(proyecto_import),
         )
     finally:
         await db.evm_import_sessions.delete_one({"id": import_id})
@@ -28852,6 +31268,17 @@ async def create_avance(body: RegistroAvanceIn, user: dict = Depends(current_use
     await ensure_project_access(user, concepto["project_id"])
     project = await db.projects.find_one({"id": concepto["project_id"]})
     modo_avance = (project or {}).get("modo_avance", "CANTIDAD")
+
+    # Idempotencia offline: si ya existe un registro con el mismo client_id (de este
+    # proyecto y de este usuario), se devuelve el existente en vez de duplicar. Va
+    # ANTES de validar: un reintento de un ajuste ya guardado no debe fallar por
+    # "dejaría el acumulado en negativo" con su propio efecto ya aplicado.
+    if body.client_id:
+        dup = await db.registros_avance.find_one({
+            "client_id": body.client_id, "project_id": concepto["project_id"], "capturado_por": user["id"],
+        })
+        if dup:
+            return await _registro_avance_out(dup)
 
     # TODO(migración estacion_id→nodo_id): resuelve el campo legado antes de
     # cualquier validación de nodo_id — ver el TODO completo en
@@ -28877,25 +31304,28 @@ async def create_avance(body: RegistroAvanceIn, user: dict = Depends(current_use
         if not nodo:
             raise HTTPException(404, "nodo_id inválido para este proyecto")
 
-    # PRECIO_ALZADO (modo_avance=PORCENTAJE): el residente captura el
-    # PORCENTAJE al que llegó el concepto (0-100), no una cantidad física —
-    # validación obligatoria del plan. Un valor menor al anterior es un
-    # retroceso real de obra: se PERMITE (nunca se rechaza), pero se marca
-    # para revisión en vez de guardarse como si nada — nunca en silencio.
+    # A-01: la cantidad debe ser > 0 (o un ajuste con motivo), numérica y no futura.
+    # A-02: ya NO hay tope de 100% ni de volumen contratado — lo que excede se
+    # permite y se hace visible como volumen excedente.
+    try:
+        cantidad_dec, fecha_norm, motivo_norm = validar_avance(
+            tipo=body.tipo, cantidad=body.cantidad_ejecutada, fecha=body.fecha,
+            motivo=body.motivo, hoy=hoy_proyecto(project), modo_avance=modo_avance,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+    # PRECIO_ALZADO (modo_avance=PORCENTAJE): el residente captura el PORCENTAJE al
+    # que llegó el concepto. Un valor menor al anterior es un retroceso real de
+    # obra: se PERMITE (nunca se rechaza), pero se marca para revisión.
     es_retroceso = False
     if modo_avance == "PORCENTAJE":
-        valor = to_decimal(body.cantidad_ejecutada)
-        if valor < 0 or valor > 100:
-            raise HTTPException(400, f"El avance en modo PORCENTAJE debe estar entre 0 y 100 (recibido: {body.cantidad_ejecutada})")
         anterior = to_decimal(await _concepto_ejecutado_acumulado(body.concepto_id, "PORCENTAJE"))
-        es_retroceso = valor < anterior
-
-    # Idempotencia offline: si ya existe un registro con el mismo client_id,
-    # se devuelve el existente en vez de duplicar (mismo criterio que reports).
-    if body.client_id:
-        dup = await db.registros_avance.find_one({"client_id": body.client_id})
-        if dup:
-            return await _registro_avance_out(dup)
+        es_retroceso = cantidad_dec < anterior
+    elif body.tipo == "ajuste":
+        acumulado = to_decimal(await _concepto_ejecutado_acumulado(body.concepto_id, modo_avance))
+        if acumulado + cantidad_dec < 0:
+            raise HTTPException(400, "El ajuste dejaría el acumulado del concepto en negativo.")
 
     # --- Congelación histórica EVM (aditivo) ----------------------------
     # El precio SIEMPRE se calcula en el servidor, nunca se acepta del
@@ -28909,12 +31339,12 @@ async def create_avance(body: RegistroAvanceIn, user: dict = Depends(current_use
         precio_congelado = compute_precio_unitario_dinamico(concepto["importe_total_editable"], concepto["meta_cantidad"])
     else:
         precio_congelado = to_decimal(concepto["precio_unitario"])
-    importe_congelado = to_decimal(body.cantidad_ejecutada) * precio_congelado
+    importe_congelado = cantidad_dec * precio_congelado
 
     fuera_de_ventana = False
     if concepto.get("fecha_inicio") and concepto.get("fecha_fin"):
         try:
-            fecha_avance = date.fromisoformat(body.fecha)
+            fecha_avance = date.fromisoformat(fecha_norm)
             fuera_de_ventana = not (
                 date.fromisoformat(concepto["fecha_inicio"]) <= fecha_avance <= date.fromisoformat(concepto["fecha_fin"])
             )
@@ -28926,8 +31356,10 @@ async def create_avance(body: RegistroAvanceIn, user: dict = Depends(current_use
         "id": aid,
         "concepto_id": body.concepto_id,
         "project_id": concepto["project_id"],
-        "fecha": body.fecha,
-        "cantidad_ejecutada": body.cantidad_ejecutada,
+        "fecha": fecha_norm,
+        "cantidad_ejecutada": body.cantidad_ejecutada.strip(),
+        "tipo": body.tipo,
+        "motivo": motivo_norm,
         "nodo_id": nodo_id_efectivo,
         "reporte_id": body.reporte_id,
         "fotos": body.fotos,
@@ -28948,7 +31380,20 @@ async def create_avance(body: RegistroAvanceIn, user: dict = Depends(current_use
         "importe_ganado_congelado": dec_to_str(importe_congelado),
         "fuera_de_ventana": fuera_de_ventana,
     }
-    await db.registros_avance.insert_one(doc)
+    try:
+        await db.registros_avance.insert_one(doc)
+    except DuplicateKeyError:
+        # Dos envíos casi simultáneos con el mismo client_id (reintento de la cola
+        # mientras el POST original seguía en vuelo): gana el primero.
+        existente = await db.registros_avance.find_one({"client_id": body.client_id})
+        if existente:
+            return await _registro_avance_out(existente)
+        raise
+    if body.tipo == "ajuste":
+        await _log_bitacora(
+            concepto["project_id"], "ajuste_avance", "registro_avance", aid,
+            "cantidad_ejecutada", None, f"{body.cantidad_ejecutada.strip()} · motivo: {motivo_norm}", user,
+        )
     return await _registro_avance_out(doc)
 
 
@@ -28999,11 +31444,24 @@ async def update_avance(avance_id: str, body: RegistroAvancePatch, user: dict = 
     upd: dict = {"editado_en": datetime.now(timezone.utc)}
     if body.cantidad_ejecutada is not None:
         project = await db.projects.find_one({"id": avance["project_id"]})
-        if (project or {}).get("modo_avance") == "PORCENTAJE":
-            valor = to_decimal(body.cantidad_ejecutada)
-            if valor < 0 or valor > 100:
-                raise HTTPException(400, f"El avance en modo PORCENTAJE debe estar entre 0 y 100 (recibido: {body.cantidad_ejecutada})")
-        upd["cantidad_ejecutada"] = body.cantidad_ejecutada
+        modo_edit = (project or {}).get("modo_avance", "CANTIDAD")
+        tipo_reg = avance.get("tipo") or "normal"
+        try:
+            nueva_q, _f, _m = validar_avance(
+                tipo=tipo_reg, cantidad=body.cantidad_ejecutada, fecha=hoy_proyecto(project).isoformat(),
+                motivo=avance.get("motivo"), hoy=hoy_proyecto(project), modo_avance=modo_edit,
+            )
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        if tipo_reg == "ajuste" and modo_edit != "PORCENTAJE":
+            acumulado = to_decimal(await _concepto_ejecutado_acumulado(avance["concepto_id"], modo_edit))
+            if acumulado - to_decimal(avance["cantidad_ejecutada"]) + nueva_q < 0:
+                raise HTTPException(400, "El ajuste dejaría el acumulado del concepto en negativo.")
+        upd["cantidad_ejecutada"] = body.cantidad_ejecutada.strip()
+        # El importe congelado se recalcula con el MISMO precio congelado: antes, editar la
+        # cantidad dejaba el valor ganado con el importe anterior.
+        if avance.get("precio_unitario_congelado") is not None:
+            upd["importe_ganado_congelado"] = dec_to_str(nueva_q * to_decimal(avance["precio_unitario_congelado"]))
     if body.fotos is not None:
         upd["fotos"] = body.fotos
     if body.photo_captions is not None:
@@ -29013,6 +31471,11 @@ async def update_avance(avance_id: str, body: RegistroAvancePatch, user: dict = 
         await _log_bitacora(
             avance["project_id"], "correccion_linea_base", "registro_avance", avance_id,
             "cantidad_ejecutada", avance.get("cantidad_ejecutada"), body.cantidad_ejecutada, user,
+        )
+    if avance.get("tipo") == "ajuste" and body.cantidad_ejecutada is not None:
+        await _log_bitacora(
+            avance["project_id"], "ajuste_avance_editado", "registro_avance", avance_id,
+            "cantidad_ejecutada", avance.get("cantidad_ejecutada"), body.cantidad_ejecutada.strip(), user,
         )
     updated = await db.registros_avance.find_one({"id": avance_id})
     return await _registro_avance_out(updated)
@@ -29322,6 +31785,7 @@ async def import_avances(
     errores: List[dict] = []
     retrocesos = 0
     ahora = datetime.now(timezone.utc)
+    hoy_import = hoy_proyecto(project)
     for i, row in enumerate(data_rows):
         fila_num = i + 2  # +1 por encabezado (fila 1), +1 porque Excel es 1-based
         clave_raw = row[idx_clave] if idx_clave < len(row) else None
@@ -29331,7 +31795,7 @@ async def import_avances(
         clave = str(clave_raw).strip()
         concepto = conceptos_por_clave.get(clave)
         if not concepto:
-            errores.append({"fila": fila_num, "motivo": f"No existe ningún concepto con clave '{clave}' en este proyecto"})
+            errores.append({"fila": fila_num, "motivo": mensaje_concepto_no_existe(clave, project)})
             continue
 
         fecha_raw = row[idx_fecha] if idx_fecha < len(row) else None
@@ -29347,14 +31811,17 @@ async def import_avances(
             errores.append({"fila": fila_num, "motivo": str(e)})
             continue
 
+        try:
+            _q, fecha_iso, _m = validar_avance(
+                tipo="normal", cantidad=cantidad, fecha=fecha_iso, motivo=None,
+                hoy=hoy_import, modo_avance=modo_avance,
+            )
+        except ValueError as e:
+            errores.append({"fila": fila_num, "motivo": str(e)})
+            continue
+
         es_retroceso = False
         if modo_avance == "PORCENTAJE":
-            if cantidad < 0 or cantidad > 100:
-                errores.append({
-                    "fila": fila_num,
-                    "motivo": f"El avance en modo PORCENTAJE debe estar entre 0 y 100 (recibido: {cantidad})",
-                })
-                continue
             anterior = ultimo_valor.get(concepto["id"], to_decimal("0"))
             es_retroceso = cantidad < anterior
             if es_retroceso:
@@ -29396,7 +31863,509 @@ async def import_avances(
     )
 
 
+# === A-01 Validación de avances · A-02 Volumen excedente y sobrecosto ==========
+# Decisión de negocio: en obra es normal ejecutar más volumen o gastar más de lo
+# presupuestado, así que NO se bloquea. Se permite, se separa (volumen excedente,
+# EV contractual vs EV total) y se hace visible (Lista por excepción, EAC/ETC/VAC).
+# Lo que sí se rechaza: cantidades <= 0, texto y fechas futuras. Una corrección se
+# captura como "ajuste" con motivo obligatorio y queda en la bitácora.
+MOTIVO_AJUSTE_MIN_CARACTERES = 5
+ESTATUS_AUTORIZACION = ("pendiente_autorizacion", "autorizado", "rechazado")
+EstatusAutorizacion = Literal["pendiente_autorizacion", "autorizado", "rechazado"]
+
+
+def validar_avance(
+    *, tipo: str, cantidad: Any, fecha: str, motivo: Optional[str], hoy: date, modo_avance: str,
+) -> Tuple[Decimal, str, Optional[str]]:
+    """Valida un avance ANTES de guardarlo. Devuelve (cantidad, fecha, motivo limpio).
+    Lanza ValueError con un mensaje legible en es-MX (el handler lo vuelve 400)."""
+    try:
+        q = to_decimal(cantidad if cantidad is not None else "")
+    except (ValueError, TypeError, InvalidOperation):
+        raise ValueError("La cantidad debe ser un número.")
+    if not q.is_finite():
+        raise ValueError("La cantidad debe ser un número.")
+    try:
+        f = date.fromisoformat((fecha or "").strip())
+    except ValueError:
+        raise ValueError("La fecha debe tener el formato AAAA-MM-DD.")
+    if f > hoy:
+        raise ValueError("La fecha del avance no puede ser futura.")
+    motivo_limpio = (motivo or "").strip() or None
+    if tipo == "ajuste":
+        if modo_avance == "PORCENTAJE":
+            raise ValueError(
+                "En proyectos que capturan porcentaje no se usan ajustes: captura el porcentaje correcto."
+            )
+        if q == 0:
+            raise ValueError("El ajuste no puede ser cero.")
+        if not motivo_limpio or len(motivo_limpio) < MOTIVO_AJUSTE_MIN_CARACTERES:
+            raise ValueError(
+                f"El motivo del ajuste es obligatorio (mínimo {MOTIVO_AJUSTE_MIN_CARACTERES} caracteres)."
+            )
+    else:
+        if q <= 0:
+            raise ValueError(
+                "La cantidad debe ser mayor que cero. Para corregir un registro captura un ajuste con su motivo."
+            )
+        motivo_limpio = None
+    return q, f.isoformat(), motivo_limpio
+
+
+def cantidad_contratada(concepto: dict) -> Decimal:
+    """Volumen contratado del concepto: la meta si ya tiene datos EVM, si no la cantidad."""
+    if _concepto_tiene_datos_evm(concepto):
+        return to_decimal(concepto["meta_cantidad"])
+    return to_decimal(concepto.get("cantidad") or "0")
+
+
+def _orden_avance(a: dict):
+    creado = a.get("creado_en")
+    if isinstance(creado, datetime):
+        creado = creado.replace(tzinfo=None)
+    return (a.get("fecha") or "", creado or datetime.min)
+
+
+def repartir_avances(avances: List[dict], contratada: Decimal) -> Dict[str, Tuple[Decimal, Decimal]]:
+    """Reproduce los avances de UN concepto en orden cronológico y separa cada uno en
+    (cantidad dentro de lo contratado, cantidad excedente). Se calcula al leer, no se
+    guarda: así nunca se desincroniza si se corrige o se borra un avance."""
+    acum = Decimal("0")
+    salida: Dict[str, Tuple[Decimal, Decimal]] = {}
+    tope = max(contratada, Decimal("0"))
+    for a in sorted(avances, key=_orden_avance):
+        q = to_decimal(a["cantidad_ejecutada"])
+        nuevo = acum + q
+        dentro_antes = min(max(acum, Decimal("0")), tope)
+        dentro_despues = min(max(nuevo, Decimal("0")), tope)
+        dentro = dentro_despues - dentro_antes
+        salida[a["id"]] = (dentro, q - dentro)
+        acum = nuevo
+    return salida
+
+
+def excedente_de_concepto(ejecutado: Decimal, contratada: Decimal) -> Decimal:
+    """Volumen excedente = lo ejecutado por encima de lo contratado (nunca negativo)."""
+    return max(ejecutado - max(contratada, Decimal("0")), Decimal("0"))
+
+
+def ev_de_registro(a: dict, dentro: Decimal) -> Tuple[Decimal, Decimal]:
+    """(EV contractual, EV total) de un registro, con su importe congelado."""
+    if a.get("importe_ganado_congelado") is None:
+        return Decimal("0"), Decimal("0")
+    total = to_decimal(a["importe_ganado_congelado"])
+    q = to_decimal(a["cantidad_ejecutada"])
+    if q == 0:
+        return Decimal("0"), total
+    return total * dentro / q, total
+
+
+def calcular_ev(
+    avances: List[dict], conceptos_por_id: Dict[str, dict], modo_avance: str,
+    desde: Optional[str] = None, hasta: Optional[str] = None,
+) -> Tuple[Decimal, Decimal]:
+    """(EV contractual, EV total) de los avances con fecha en [desde, hasta].
+    El reparto se hace sobre TODO el historial del concepto (no solo la ventana), porque
+    un avance es excedente según lo que ya se llevaba acumulado. En modo PORCENTAJE el
+    avance reportado es un estado, no un incremento: no se separa (contractual = total)."""
+    por_concepto: Dict[str, List[dict]] = {}
+    for a in avances:
+        por_concepto.setdefault(a["concepto_id"], []).append(a)
+    ev_contractual = Decimal("0")
+    ev_total = Decimal("0")
+    for cid, lista in por_concepto.items():
+        reparto = None
+        if modo_avance != "PORCENTAJE" and cid in conceptos_por_id:
+            reparto = repartir_avances(lista, cantidad_contratada(conceptos_por_id[cid]))
+        for a in lista:
+            f = a.get("fecha") or ""
+            if (desde and f < desde) or (hasta and f > hasta):
+                continue
+            if reparto is None:
+                if a.get("importe_ganado_congelado") is not None:
+                    v = to_decimal(a["importe_ganado_congelado"])
+                    ev_contractual += v
+                    ev_total += v
+                continue
+            c, t = ev_de_registro(a, reparto[a["id"]][0])
+            ev_contractual += c
+            ev_total += t
+    return ev_contractual, ev_total
+
+
+def calcular_pronostico(bac: Decimal, ev_acum: Decimal, ac_acum: Decimal) -> Optional[Dict[str, Decimal]]:
+    """EAC = BAC ÷ CPI · ETC = EAC − AC · VAC = BAC − EAC, con CPI = EV total ÷ AC.
+    None mientras no se pueda calcular (sin gasto real, o sin valor ganado)."""
+    if ac_acum <= 0 or ev_acum <= 0:
+        return None
+    cpi = ev_acum / ac_acum
+    eac = bac / cpi
+    return {"eac": eac, "etc": eac - ac_acum, "vac": bac - eac}
+
+
+class ExcedenteOut(BaseModel):
+    concepto_id: str
+    clave: str
+    descripcion: str
+    unidad: str
+    extraordinario: bool = False
+    cantidad_contratada: str
+    cantidad_ejecutada: str
+    cantidad_excedente: str
+    importe_excedente: str
+    estatus: str
+    referencia: Optional[str] = None
+    comentario: Optional[str] = None
+    autorizado_por_nombre: Optional[str] = None
+    actualizado_en: Optional[datetime] = None
+
+
+class ExcedentePatch(BaseModel):
+    estatus: EstatusAutorizacion
+    referencia: Optional[str] = None  # convenio modificatorio u orden de cambio
+    comentario: Optional[str] = None
+
+
+async def _excedentes_del_proyecto(pid: str, project: dict) -> List[ExcedenteOut]:
+    modo = (project or {}).get("modo_avance", "CANTIDAD")
+    conceptos = await db.conceptos.find({"project_id": pid, "activo": True}).to_list(length=100000)
+    avances_por_concepto: Dict[str, List[dict]] = {}
+    async for a in db.registros_avance.find({"project_id": pid}):
+        avances_por_concepto.setdefault(a["concepto_id"], []).append(a)
+    docs_estatus = {d["concepto_id"]: d async for d in db.excedentes_concepto.find({"project_id": pid})}
+    salida: List[ExcedenteOut] = []
+    for c in conceptos:
+        ejecutado = _acumulado_desde_avances(avances_por_concepto.get(c["id"], []), modo)
+        importe = _concepto_importe_efectivo(c)
+        if modo == "PORCENTAJE":
+            exc = max(to_decimal(ejecutado) - Decimal("100"), Decimal("0"))
+            imp = importe * exc / Decimal("100")
+            contratada = Decimal("100")
+        else:
+            contratada = cantidad_contratada(c)
+            exc = excedente_de_concepto(to_decimal(ejecutado), contratada)
+            imp = exc * _concepto_precio_efectivo(c)
+        if exc <= 0:
+            continue
+        ed = docs_estatus.get(c["id"]) or {}
+        salida.append(ExcedenteOut(
+            concepto_id=c["id"], clave=c["clave"], descripcion=c["descripcion"], unidad=c.get("unidad", ""),
+            extraordinario=bool(c.get("extraordinario", False)),
+            cantidad_contratada=dec_to_str(contratada), cantidad_ejecutada=ejecutado,
+            cantidad_excedente=dec_to_str(exc), importe_excedente=dec_to_str(round_money(imp)),
+            estatus=ed.get("estatus") or "pendiente_autorizacion",
+            referencia=ed.get("referencia"), comentario=ed.get("comentario"),
+            autorizado_por_nombre=ed.get("autorizado_por_nombre"), actualizado_en=ed.get("actualizado_en"),
+        ))
+    return sort_by_clave(salida, clave_getter=lambda e: e.clave)
+
+
+@api.get("/projects/{pid}/excedentes", response_model=List[ExcedenteOut])
+async def list_excedentes(pid: str, user: dict = Depends(current_user)):
+    """Volumen excedente por concepto (ejecutado > contratado) con su estatus de
+    autorización. Es informativo: nunca bloquea la captura de avances."""
+    project = await ensure_project_access(user, pid)
+    return await _excedentes_del_proyecto(pid, project)
+
+
+@api.patch("/projects/{pid}/excedentes/{concepto_id}", response_model=ExcedenteOut)
+async def set_excedente_estatus(
+    pid: str, concepto_id: str, body: ExcedentePatch, user: dict = Depends(require_role(ROLE_COORD)),
+):
+    """Solo el Coordinador General autoriza o rechaza un volumen excedente (vía
+    convenio modificatorio u orden de cambio, cuya referencia es obligatoria al
+    autorizar). Queda en la bitácora."""
+    project = await ensure_project_access(user, pid)
+    excedentes = {e.concepto_id: e for e in await _excedentes_del_proyecto(pid, project)}
+    actual = excedentes.get(concepto_id)
+    if not actual:
+        c = nombres_nivel_proyecto(project)["concepto"]
+        este = "Esta" if c["genero"] == "f" else "Este"
+        raise HTTPException(404, f"{este} {c['minuscula']} no tiene volumen excedente")
+    referencia = (body.referencia or "").strip() or None
+    if body.estatus == "autorizado" and not referencia:
+        raise HTTPException(400, "Para autorizar indica el convenio modificatorio u orden de cambio.")
+    ahora = datetime.now(timezone.utc)
+    await db.excedentes_concepto.update_one(
+        {"project_id": pid, "concepto_id": concepto_id},
+        {"$set": {
+            "estatus": body.estatus, "referencia": referencia,
+            "comentario": (body.comentario or "").strip() or None,
+            "autorizado_por": user["id"], "autorizado_por_nombre": user.get("name"), "actualizado_en": ahora,
+        }, "$setOnInsert": {"id": str(uuid.uuid4())}},
+        upsert=True,
+    )
+    await _log_bitacora(pid, "excedente_estatus", "concepto", concepto_id, "estatus", actual.estatus, body.estatus, user)
+    nuevo = {e.concepto_id: e for e in await _excedentes_del_proyecto(pid, project)}
+    return nuevo[concepto_id]
+
+
+class PuExtraordinarioPatch(BaseModel):
+    pu_estatus: EstatusAutorizacion
+    referencia: Optional[str] = None
+    precio_unitario: Optional[str] = None  # al autorizar se puede fijar el P.U. definitivo
+
+    @field_validator("precio_unitario")
+    @classmethod
+    def _v_pu(cls, v):
+        if v is not None and to_decimal(v) <= 0:
+            raise ValueError("El precio unitario debe ser mayor que cero")
+        return v
+
+
+@api.patch("/conceptos/{concepto_id}/pu_estatus", response_model=ConceptoOut)
+async def set_pu_extraordinario(
+    concepto_id: str, body: PuExtraordinarioPatch, user: dict = Depends(require_role(ROLE_COORD)),
+):
+    """Autoriza o rechaza el P.U. de un concepto EXTRAORDINARIO (trabajo que no está
+    en el catálogo). Solo el Coordinador General; la referencia es obligatoria al autorizar."""
+    concepto = await db.conceptos.find_one({"id": concepto_id})
+    if not concepto:
+        raise HTTPException(404, "Concepto no existe")
+    await ensure_project_access(user, concepto["project_id"])
+    if not concepto.get("extraordinario"):
+        c = (await _niveles_de_proyecto(concepto["project_id"]))["concepto"]
+        extra = "extraordinarias" if c["genero"] == "f" else "extraordinarios"
+        raise HTTPException(
+            400, f"Solo {c['articulo_plural']} {c['plural']} {extra} tienen P.U. por autorizar",
+        )
+    referencia = (body.referencia or "").strip() or None
+    if body.pu_estatus == "autorizado" and not referencia:
+        raise HTTPException(400, "Para autorizar indica el convenio modificatorio u orden de cambio.")
+    upd: dict = {"pu_estatus": body.pu_estatus, "pu_referencia": referencia}
+    if body.precio_unitario is not None:
+        upd["precio_unitario"] = body.precio_unitario
+    await db.conceptos.update_one({"id": concepto_id}, {"$set": upd})
+    await _log_bitacora(
+        concepto["project_id"], "pu_extraordinario", "concepto", concepto_id,
+        "pu_estatus", concepto.get("pu_estatus"), body.pu_estatus, user,
+    )
+    return await _concepto_out(await db.conceptos.find_one({"id": concepto_id}))
+
+
+# === C-01 MIGRACIÓN: reubicar conceptos según el prefijo de su clave ===========
+# Los catálogos ya importados quedaron PLANOS (todos los conceptos en una partida) porque
+# el importador descartaba las filas de partida. Esta migración crea los nodos que faltan
+# (nombre = la clave, marcados "nombre pendiente" para renombrarlos: el nombre original
+# no se puede recuperar) y mueve cada concepto a su partida por prefijo de clave.
+#
+# Reglas de seguridad (proyectos reales):
+#   · Solo el Coordinador General, UN proyecto a la vez, con vista previa y confirm=true.
+#   · Los proyectos "Cablebús Línea 4" quedan EXCLUIDOS: la API se niega a tocarlos.
+#   · Idempotente (correrla otra vez no cambia nada) y REVERSIBLE (se guarda el
+#     partida_id original de cada concepto). Nunca se borra nada: las partidas creadas se
+#     dan de baja (activo=false) al revertir.
+def es_proyecto_excluido(nombre: str) -> bool:
+    n = _normalize_text(nombre or "")
+    return "cablebus" in n or re.search(r"\blinea\s*4\b", n) is not None
+
+
+def planificar_reubicacion(partidas: List[dict], conceptos: List[dict]) -> Dict[str, Any]:
+    """Plan puro (sin DB): nodos por crear y conceptos por mover. Ver el bloque de arriba."""
+    por_clave: Dict[str, str] = {p["clave"]: p["id"] for p in partidas if p.get("activo", True) and p.get("clave")}
+    creadas: Dict[str, dict] = {}
+    orden: List[str] = []
+    movimientos: List[dict] = []
+    for c in sorted(conceptos, key=lambda x: clave_sort_key(x.get("clave") or "")):
+        clave = c.get("clave") or ""
+        if "." not in clave or not c.get("activo", True):
+            continue
+        cadena = list(reversed(ancestros_de_clave(clave)))  # raíz -> hoja: ["1", "1.1"]
+        idx = -1
+        for i, a in enumerate(cadena):
+            if a in por_clave or a in creadas:
+                idx = i
+        if idx >= 0:
+            a = cadena[idx]
+            ref = ("id", por_clave[a]) if a in por_clave else ("nuevo", a)
+        else:
+            ref = ("id", c["partida_id"])  # sin ancestro conocido: se cuelga donde ya estaba
+        for a in cadena[idx + 1:]:
+            creadas[a] = {"clave": a, "padre": ref}
+            orden.append(a)
+            ref = ("nuevo", a)
+        if ref == ("id", c["partida_id"]):
+            continue  # ya está en su lugar (idempotencia)
+        movimientos.append({
+            "concepto_id": c["id"], "clave": clave, "desde": c["partida_id"], "hacia": ref,
+        })
+    return {"nodos_a_crear": [creadas[a] for a in orden], "movimientos": movimientos}
+
+
+async def _plan_reubicacion_de_proyecto(pid: str) -> Dict[str, Any]:
+    partidas = await db.partidas.find({"project_id": pid, "activo": True}).to_list(length=100000)
+    conceptos = await db.conceptos.find({"project_id": pid, "activo": True}).to_list(length=1000000)
+    return planificar_reubicacion(partidas, conceptos)
+
+
+async def _proyecto_migrable_o_error(pid: str, user: dict) -> dict:
+    proyecto = await ensure_project_access(user, pid)
+    if es_proyecto_excluido(proyecto.get("name", "")):
+        raise HTTPException(403, "Este proyecto está excluido de la migración (Cablebús Línea 4).")
+    return proyecto
+
+
+async def aplicar_reubicacion(pid: str, plan: Dict[str, Any], user: dict) -> Optional[str]:
+    """Ejecuta el plan. Registra cada paso ANTES de escribirlo; si algo falla revierte lo hecho."""
+    if not plan["nodos_a_crear"] and not plan["movimientos"]:
+        return None
+    mig_id = str(uuid.uuid4())
+    await db.migraciones_catalogo.insert_one({
+        "id": mig_id, "project_id": pid, "tipo": "catalogo_jerarquia", "estado": "aplicando",
+        "iniciada_en": datetime.now(timezone.utc), "por": user["id"], "por_nombre": user.get("name"),
+        "partidas_creadas": [], "movimientos": [],
+    })
+    ids_nuevos: Dict[str, str] = {}
+    try:
+        for orden, nodo in enumerate(plan["nodos_a_crear"]):
+            tipo_padre, valor = nodo["padre"]
+            padre_id = valor if tipo_padre == "id" else ids_nuevos[valor]
+            nuevo_id = str(uuid.uuid4())
+            await db.migraciones_catalogo.update_one({"id": mig_id}, {"$push": {"partidas_creadas": nuevo_id}})
+            await db.partidas.insert_one({
+                "id": nuevo_id, "project_id": pid, "clave": nodo["clave"], "nombre": nodo["clave"],
+                "nombre_pendiente": True, "orden": orden, "activo": True, "partida_padre_id": padre_id,
+                "peso_manual": None, "created_at": datetime.now(timezone.utc), "created_by": user["id"],
+                "migracion_id": mig_id,
+            })
+            ids_nuevos[nodo["clave"]] = nuevo_id
+        for mov in plan["movimientos"]:
+            tipo_dest, valor = mov["hacia"]
+            destino_id = valor if tipo_dest == "id" else ids_nuevos[valor]
+            await db.migraciones_catalogo.update_one(
+                {"id": mig_id},
+                {"$push": {"movimientos": {"concepto_id": mov["concepto_id"], "desde": mov["desde"], "hacia": destino_id}}},
+            )
+            await db.conceptos.update_one({"id": mov["concepto_id"]}, {"$set": {"partida_id": destino_id}})
+    except Exception as e:  # noqa: BLE001
+        log.error("[migracion_catalogo] falló, revirtiendo %s: %s", mig_id, e)
+        await revertir_migracion(mig_id, user)
+        raise HTTPException(500, f"La migración falló y se revirtió automáticamente: {e}")
+    await db.migraciones_catalogo.update_one(
+        {"id": mig_id}, {"$set": {"estado": "aplicada", "aplicada_en": datetime.now(timezone.utc)}},
+    )
+    await _log_bitacora(
+        pid, "migracion_catalogo", "proyecto", pid, None, None,
+        f"{len(plan['nodos_a_crear'])} partidas creadas, {len(plan['movimientos'])} conceptos reubicados (migración {mig_id})", user,
+    )
+    return mig_id
+
+
+async def revertir_migracion(mig_id: str, user: dict) -> Dict[str, int]:
+    """Devuelve cada concepto a su partida original y da de baja (activo=false) las partidas creadas.
+    Un concepto que alguien ya movió después no se toca. Idempotente."""
+    mig = await db.migraciones_catalogo.find_one({"id": mig_id})
+    if not mig:
+        raise HTTPException(404, "Migración no existe")
+    restaurados = 0
+    for mov in reversed(mig.get("movimientos") or []):
+        c = await db.conceptos.find_one({"id": mov["concepto_id"]})
+        if c and c.get("partida_id") == mov["hacia"]:
+            await db.conceptos.update_one({"id": mov["concepto_id"]}, {"$set": {"partida_id": mov["desde"]}})
+            restaurados += 1
+    dadas_de_baja = 0
+    for pid_nueva in mig.get("partidas_creadas") or []:
+        restantes = await db.conceptos.count_documents({"partida_id": pid_nueva, "activo": True})
+        if restantes == 0:
+            await db.partidas.update_one({"id": pid_nueva}, {"$set": {"activo": False}})
+            dadas_de_baja += 1
+    await db.migraciones_catalogo.update_one(
+        {"id": mig_id},
+        {"$set": {"estado": "revertida", "revertida_en": datetime.now(timezone.utc), "revertida_por": user["id"]}},
+    )
+    return {"conceptos_restaurados": restaurados, "partidas_dadas_de_baja": dadas_de_baja}
+
+
+class MigracionConfirmIn(BaseModel):
+    confirm: bool = False
+    migracion_id: Optional[str] = None
+
+
+@api.get("/admin/migraciones/catalogo-jerarquia")
+async def listar_migracion_catalogo(user: dict = Depends(require_role(ROLE_COORD))):
+    """Proyectos con cuántas partidas se crearían y cuántos conceptos se moverían. Solo lectura."""
+    salida = []
+    async for p in db.projects.find({"archived": {"$ne": True}}, {"id": 1, "name": 1}):
+        excluido = es_proyecto_excluido(p.get("name", ""))
+        item = {
+            "project_id": p["id"], "nombre": p.get("name", ""), "excluido": excluido,
+            "partidas_a_crear": 0, "conceptos_a_mover": 0, "ultima_migracion": None,
+        }
+        if not excluido:
+            plan = await _plan_reubicacion_de_proyecto(p["id"])
+            item["partidas_a_crear"] = len(plan["nodos_a_crear"])
+            item["conceptos_a_mover"] = len(plan["movimientos"])
+        ult = await db.migraciones_catalogo.find(
+            {"project_id": p["id"], "tipo": "catalogo_jerarquia"}, {"_id": 0, "id": 1, "estado": 1, "aplicada_en": 1, "revertida_en": 1},
+        ).sort("iniciada_en", -1).to_list(length=1)
+        item["ultima_migracion"] = ult[0] if ult else None
+        salida.append(item)
+    salida.sort(key=lambda x: (x["excluido"], x["nombre"].lower()))
+    return salida
+
+
+@api.get("/admin/migraciones/catalogo-jerarquia/{pid}/vista-previa")
+async def vista_previa_migracion_catalogo(pid: str, user: dict = Depends(require_role(ROLE_COORD))):
+    """Qué haría la migración en este proyecto (no escribe nada)."""
+    await _proyecto_migrable_o_error(pid, user)
+    plan = await _plan_reubicacion_de_proyecto(pid)
+    return {
+        "project_id": pid,
+        "partidas_a_crear": [{"clave": n["clave"], "padre": n["padre"][1] if n["padre"][0] == "nuevo" else None} for n in plan["nodos_a_crear"]],
+        "conceptos_a_mover": len(plan["movimientos"]),
+        "muestra_movimientos": [
+            {"clave": m["clave"], "hacia": m["hacia"][1] if m["hacia"][0] == "nuevo" else "(partida existente)"}
+            for m in plan["movimientos"][:200]
+        ],
+        "nota": "Las partidas nuevas se llaman igual que su clave y quedan marcadas «nombre pendiente» para que las renombres.",
+    }
+
+
+@api.post("/admin/migraciones/catalogo-jerarquia/{pid}/aplicar")
+async def aplicar_migracion_catalogo(pid: str, body: MigracionConfirmIn, user: dict = Depends(require_role(ROLE_COORD))):
+    if not body.confirm:
+        raise HTTPException(400, "Falta confirmar la migración de este proyecto (confirm=true).")
+    await _proyecto_migrable_o_error(pid, user)
+    plan = await _plan_reubicacion_de_proyecto(pid)
+    mig_id = await aplicar_reubicacion(pid, plan, user)
+    return {
+        "ok": True, "migracion_id": mig_id, "sin_cambios": mig_id is None,
+        "partidas_creadas": len(plan["nodos_a_crear"]), "conceptos_reubicados": len(plan["movimientos"]),
+    }
+
+
+@api.post("/admin/migraciones/catalogo-jerarquia/{pid}/revertir")
+async def revertir_migracion_catalogo(pid: str, body: MigracionConfirmIn, user: dict = Depends(require_role(ROLE_COORD))):
+    if not body.confirm:
+        raise HTTPException(400, "Falta confirmar la reversa (confirm=true).")
+    await _proyecto_migrable_o_error(pid, user)
+    filtro: Dict[str, Any] = {"project_id": pid, "tipo": "catalogo_jerarquia", "estado": "aplicada"}
+    if body.migracion_id:
+        filtro["id"] = body.migracion_id
+    ult = await db.migraciones_catalogo.find(filtro).sort("iniciada_en", -1).to_list(length=1)
+    if not ult:
+        raise HTTPException(404, "No hay una migración aplicada para revertir en este proyecto.")
+    r = await revertir_migracion(ult[0]["id"], user)
+    return {"ok": True, "migracion_id": ult[0]["id"], **r}
+
+
 # === Etapa EVM: Análisis de Periodos (Valor Ganado) ==========================
+def _fechas_programa_concepto(concepto: dict) -> Optional["tuple[date, date]"]:
+    """(inicio, fin) del programa lineal de un concepto, o None si no tiene datos EVM,
+    le faltan fechas, son ilegibles o el fin es anterior al inicio (rango invertido:
+    no aporta PV ni curva; el Importador Maestro y el PATCH ya lo rechazan al capturar)."""
+    if not _concepto_tiene_datos_evm(concepto) or not concepto.get("fecha_inicio") or not concepto.get("fecha_fin"):
+        return None
+    try:
+        c_ini = date.fromisoformat(concepto["fecha_inicio"])
+        c_fin = date.fromisoformat(concepto["fecha_fin"])
+    except (TypeError, ValueError):
+        return None
+    if c_fin < c_ini:
+        return None
+    return c_ini, c_fin
+
+
 def _prorrateo_concepto_en_ventana(concepto: dict, ventana_ini: date, ventana_fin: date) -> Decimal:
     """PV que aporta UN concepto a la ventana consultada.
 
@@ -29405,10 +32374,10 @@ def _prorrateo_concepto_en_ventana(concepto: dict, ventana_ini: date, ventana_fi
     miles de conceptos. Devuelve 0 si el concepto no tiene datos EVM
     todavía (ver _concepto_tiene_datos_evm) o no intersecta la ventana —
     nunca lanza, un concepto sin migrar simplemente no aporta PV."""
-    if not _concepto_tiene_datos_evm(concepto) or not concepto.get("fecha_inicio") or not concepto.get("fecha_fin"):
+    fechas = _fechas_programa_concepto(concepto)
+    if fechas is None:
         return Decimal("0")
-    c_ini = date.fromisoformat(concepto["fecha_inicio"])
-    c_fin = date.fromisoformat(concepto["fecha_fin"])
+    c_ini, c_fin = fechas
 
     overlap_ini = max(c_ini, ventana_ini)
     overlap_fin = min(c_fin, ventana_fin)
@@ -29452,10 +32421,10 @@ def _curva_mensual_concepto(concepto: dict) -> List[dict]:
     sea EXACTAMENTE importe_total_editable: cualquier residuo de la
     división se asigna al ÚLTIMO mes, nunca se pierde ni se reparte
     disperso (reparto de centavos estándar)."""
-    if not _concepto_tiene_datos_evm(concepto) or not concepto.get("fecha_inicio") or not concepto.get("fecha_fin"):
+    fechas = _fechas_programa_concepto(concepto)
+    if fechas is None:
         return []
-    c_ini = date.fromisoformat(concepto["fecha_inicio"])
-    c_fin = date.fromisoformat(concepto["fecha_fin"])
+    c_ini, c_fin = fechas
     dias_totales = (c_fin - c_ini).days + 1
     importe = to_decimal(concepto["importe_total_editable"])
 
@@ -29473,25 +32442,242 @@ def _curva_mensual_concepto(concepto: dict) -> List[dict]:
     return resultado
 
 
+# --- A-06: curva planeada del Programa desglosado (versión vigente) ---------
+# Si un concepto tiene distribución mensual en la versión VIGENTE del programa, esa
+# curva es su plan (PV y Curva S); si no, se prorratea linealmente entre fecha_inicio
+# y fecha_fin como antes. Un concepto sin ninguna de las dos no tiene programa.
+def _meses_de_distribucion(dist: Optional[dict]) -> List["tuple[date, date, Decimal]"]:
+    salida = []
+    for m in (dist or {}).get("meses") or []:
+        try:
+            ini = date.fromisoformat(m.get("fecha_inicio") or "")
+            fin = date.fromisoformat(m.get("fecha_fin") or "")
+        except (TypeError, ValueError):
+            continue
+        if fin < ini:
+            continue
+        salida.append((ini, fin, to_decimal(m.get("importe") or "0")))
+    return salida
+
+
+def _prorrateo_distribucion_en_ventana(dist: Optional[dict], ventana_ini: date, ventana_fin: date) -> Decimal:
+    total = Decimal("0")
+    for ini, fin, importe in _meses_de_distribucion(dist):
+        ov_ini, ov_fin = max(ini, ventana_ini), min(fin, ventana_fin)
+        if ov_ini > ov_fin:
+            continue
+        total += importe * Decimal((ov_fin - ov_ini).days + 1) / Decimal((fin - ini).days + 1)
+    return total
+
+
+def _curva_mensual_distribucion(dist: Optional[dict]) -> List[dict]:
+    """Valor planeado por mes calendario de una distribución (cada columna del programa
+    puede cruzar meses: se reparte por días y el residuo exacto va al último tramo)."""
+    por_mes: Dict[str, Decimal] = {}
+    for ini, fin, importe in _meses_de_distribucion(dist):
+        dias_totales = (fin - ini).days + 1
+        tramos = _rango_meses(ini, fin)
+        acumulado = Decimal("0")
+        for i, (t_ini, t_fin) in enumerate(tramos):
+            if i == len(tramos) - 1:
+                valor = importe - acumulado
+            else:
+                valor = importe * Decimal((t_fin - t_ini).days + 1) / Decimal(dias_totales)
+                acumulado += valor
+            clave = t_ini.strftime("%Y-%m")
+            por_mes[clave] = por_mes.get(clave, Decimal("0")) + valor
+    return [{"mes": m, "valor": dec_to_str(v)} for m, v in sorted(por_mes.items())]
+
+
+def _pv_de_concepto(concepto: dict, dist: Optional[dict], ventana_ini: date, ventana_fin: date) -> Decimal:
+    if _meses_de_distribucion(dist):
+        return _prorrateo_distribucion_en_ventana(dist, ventana_ini, ventana_fin)
+    return _prorrateo_concepto_en_ventana(concepto, ventana_ini, ventana_fin)
+
+
+def _curva_planeada_concepto(concepto: dict, dist: Optional[dict]) -> List[dict]:
+    if _meses_de_distribucion(dist):
+        return _curva_mensual_distribucion(dist)
+    return _curva_mensual_concepto(concepto)
+
+
+def _concepto_tiene_programa(concepto: dict, dist: Optional[dict]) -> bool:
+    return bool(_meses_de_distribucion(dist)) or _fechas_programa_concepto(concepto) is not None
+
+
+async def _distribuciones_vigentes(pid: str) -> Dict[str, dict]:
+    """concepto_id -> distribución de la versión VIGENTE del programa (vacío si no hay)."""
+    versiones = await db.programa_versiones.find({"project_id": pid, "vigente": True}).to_list(length=100)
+    if not versiones:
+        return {}
+    docs = await db.programa_distribucion.find(
+        {"programa_version_id": {"$in": [v["id"] for v in versiones]}}
+    ).to_list(length=100000)
+    return {d["concepto_id"]: d for d in docs if d.get("concepto_id")}
+
+
 class AnalisisPeriodoOut(BaseModel):
     project_id: str
     start: str
     end: str
     pv: str  # Valor Planeado
-    ev: str  # Valor Ganado
+    ev: str  # Valor Ganado TOTAL (alias de ev_total: compatibilidad con clientes viejos)
     ac: str  # Costo Real
-    spi: Optional[str] = None  # EV / PV — Schedule Performance Index
-    cpi: Optional[str] = None  # EV / AC — Cost Performance Index
-    variacion_cronograma: str  # EV - PV
-    variacion_costo: str       # EV - AC
+    spi: Optional[str] = None  # EV contractual / PV — Schedule Performance Index
+    cpi: Optional[str] = None  # EV total / AC — Cost Performance Index
+    variacion_cronograma: str  # EV contractual - PV
+    variacion_costo: Optional[str] = None  # EV total - AC (None mientras AC = 0: A-04)
+    # --- A-02: dos cifras de valor ganado + pronóstico de costo -----------
+    ev_contractual: str = "0.00"  # topado al volumen contratado
+    ev_total: str = "0.00"        # incluye el volumen excedente
+    bac: str = "0.00"             # presupuesto contratado
+    ev_acumulado: str = "0.00"    # EV total del proyecto a la fecha de corte
+    ac_acumulado: str = "0.00"    # AC del proyecto a la fecha de corte
+    eac: Optional[str] = None     # BAC / CPI  (None mientras AC = 0)
+    etc: Optional[str] = None     # EAC - AC
+    vac: Optional[str] = None     # BAC - EAC (negativo = sobrecosto proyectado)
+    # A-06: conceptos activos sin fechas ni distribución en el programa (no aportan PV).
+    conceptos_sin_programa: int = 0
+
+
+async def calcular_analisis_evm(
+    pid: str, start: str, end: str, project: Optional[dict] = None, contrato: str = "obra",
+) -> Dict[str, Any]:
+    """ÚNICO servicio de análisis EVM. Lo usan el tablero (`analisis_periodo`) y la
+    Presentación (sección Financiero), así ambos muestran lo mismo para el mismo periodo.
+    Devuelve Decimales sin redondear; quien lo muestra redondea."""
+    ventana_ini, ventana_fin = date.fromisoformat(start), date.fromisoformat(end)
+    if ventana_fin < ventana_ini:
+        raise ValueError("end no puede ser anterior a start")
+    if project is None:
+        project = await db.projects.find_one({"id": pid}) or {}
+    modo = project.get("modo_avance", "CANTIDAD")
+    conceptos, pertenece = await _conceptos_activos_contrato(pid, contrato)
+    conceptos_por_id = {c["id"]: c for c in conceptos}
+    distribuciones = await _distribuciones_vigentes(pid)
+    pv = sum(
+        (_pv_de_concepto(c, distribuciones.get(c["id"]), ventana_ini, ventana_fin) for c in conceptos),
+        start=Decimal("0"),
+    )
+    sin_programa = sum(1 for c in conceptos if not _concepto_tiene_programa(c, distribuciones.get(c["id"])))
+    avances = [a for a in await db.registros_avance.find({"project_id": pid}).to_list(length=1000000)
+               if pertenece(a.get("concepto_id"))]
+    ev_contractual, ev_total = calcular_ev(avances, conceptos_por_id, modo, start, end)
+    _, ev_acum = calcular_ev(avances, conceptos_por_id, modo, None, end)
+    ac = Decimal("0")
+    ac_acum = Decimal("0")
+    # Los gastos reales no distinguen contrato: se atribuyen a la obra.
+    async for g in db.gastos_reales.find({"project_id": pid, "fecha": {"$lte": end}} if contrato == "obra" else {"_id": None}):
+        m = to_decimal(g["monto"])
+        ac_acum += m
+        if g["fecha"] >= start:
+            ac += m
+    bac = sum((_concepto_importe_efectivo(c) for c in conceptos), start=Decimal("0"))
+    cuatro = Decimal("0.0001")
+    spi = (ev_contractual / pv).quantize(cuatro, rounding=ROUND_HALF_UP) if pv != 0 else None
+    cpi = (ev_total / ac).quantize(cuatro, rounding=ROUND_HALF_UP) if ac != 0 else None
+    return {
+        "pv": pv, "ev_contractual": ev_contractual, "ev_total": ev_total, "ac": ac,
+        "spi": spi, "cpi": cpi,
+        "variacion_cronograma": ev_contractual - pv,
+        # A-04: sin gasto real en el periodo el CV no significa nada (saldría el EV completo).
+        "variacion_costo": (ev_total - ac) if ac != 0 else None,
+        "bac": bac, "ev_acumulado": ev_acum, "ac_acumulado": ac_acum,
+        "pronostico": calcular_pronostico(bac, ev_acum, ac_acum),
+        "conceptos_sin_programa": sin_programa,
+    }
+
+
+# --- A-05: periodos del análisis financiero (tablero EVM y Presentación) --------------
+PERIODOS_FINANCIEROS = ("mes_actual", "ultimos_3_meses", "proyecto_completo")
+PERIODO_FINANCIERO_DEFECTO = "mes_actual"
+
+
+def resolver_rango_periodo(periodo: Optional[str], hasta: date, primer_mes: Optional[str] = None) -> Tuple[str, str]:
+    """ÚNICA función que traduce un periodo financiero a (inicio, fin) ISO. La usan el tablero
+    EVM (con `hasta` = hoy en la zona del proyecto) y la Presentación (con `hasta` = su fecha),
+    así ambos miden exactamente la misma ventana.
+
+    - mes_actual: del día 1 del mes de `hasta` a `hasta`.
+    - ultimos_3_meses: del día 1 de hace 3 meses a `hasta`.
+    - proyecto_completo: del primer mes con datos ("YYYY-MM") a `hasta`; sin datos, del 1 de enero.
+    """
+    periodo = periodo or PERIODO_FINANCIERO_DEFECTO
+    if periodo not in PERIODOS_FINANCIEROS:
+        raise ValueError(f"periodo debe ser uno de: {', '.join(PERIODOS_FINANCIEROS)}")
+    if periodo == "mes_actual":
+        inicio = hasta.replace(day=1)
+    elif periodo == "ultimos_3_meses":
+        mes_abs = hasta.year * 12 + (hasta.month - 1) - 3
+        inicio = date(mes_abs // 12, mes_abs % 12 + 1, 1)
+    else:
+        inicio = date.fromisoformat(f"{primer_mes}-01") if primer_mes else date(hasta.year, 1, 1)
+    if inicio > hasta:  # proyecto que arranca después de la fecha de corte
+        inicio = hasta
+    return inicio.isoformat(), hasta.isoformat()
+
+
+async def rango_financiero(pid: str, periodo: Optional[str], hasta: date, contrato: str = "obra") -> Tuple[str, str]:
+    """`resolver_rango_periodo` con el primer mes con datos del proyecto cuando hace falta."""
+    primer_mes = None
+    if (periodo or PERIODO_FINANCIERO_DEFECTO) == "proyecto_completo":
+        planeado, ganado, real = await _curva_s_por_mes(pid, contrato)
+        meses = sorted(set(planeado) | set(ganado) | set(real))
+        primer_mes = meses[0] if meses else None
+    return resolver_rango_periodo(periodo, hasta, primer_mes)
+
+
+def cifras_analisis(r: Dict[str, Any]) -> Dict[str, Any]:
+    """Cifras del análisis EVM ya redondeadas (Decimal; None si no aplica). Única traducción
+    de `calcular_analisis_evm` a lo que se muestra: el tablero (JSON) y la Presentación
+    (PPTX / vista previa) parten de aquí, así no pueden diferir."""
+    pron = r["pronostico"]
+    return {
+        "pv": round_money(r["pv"]), "ev": round_money(r["ev_total"]),
+        "ev_contractual": round_money(r["ev_contractual"]), "ev_total": round_money(r["ev_total"]),
+        "ac": round_money(r["ac"]), "spi": r["spi"], "cpi": r["cpi"],
+        "variacion_cronograma": round_money(r["variacion_cronograma"]),
+        "variacion_costo": round_money(r["variacion_costo"]) if r["variacion_costo"] is not None else None,
+        "bac": round_money(r["bac"]),
+        "ev_acumulado": round_money(r["ev_acumulado"]), "ac_acumulado": round_money(r["ac_acumulado"]),
+        "eac": round_money(pron["eac"]) if pron else None,
+        "etc": round_money(pron["etc"]) if pron else None,
+        "vac": round_money(pron["vac"]) if pron else None,
+        "conceptos_sin_programa": r["conceptos_sin_programa"],
+    }
+
+
+async def datos_financieros_presentacion(pid: str, pres: dict, project: Optional[dict] = None) -> Dict[str, Any]:
+    """Sección Financiero de una Presentación: mismo servicio (`calcular_analisis_evm`) y mismo
+    periodo que el tablero. Devuelve {periodo, start, end, cifras}. Lanza si no se puede calcular."""
+    if project is None:
+        project = await db.projects.find_one({"id": pid}) or {}
+    periodo = pres.get("periodo_financiero") or PERIODO_FINANCIERO_DEFECTO
+    if periodo not in PERIODOS_FINANCIEROS:
+        periodo = PERIODO_FINANCIERO_DEFECTO
+    start, end = await rango_financiero(pid, periodo, date.fromisoformat(pres["fecha"]))
+    r = await calcular_analisis_evm(pid, start, end, project)
+    return {"periodo": periodo, "start": start, "end": end, "cifras": cifras_analisis(r)}
 
 
 class ExcepcionEvmOut(BaseModel):
     concepto_id: str
     clave: str
     descripcion: str
-    tipo: Literal["fuera_de_ventana", "sobre_meta", "atrasado"]
+    tipo: Literal[
+        "fuera_de_ventana", "atrasado", "excedente_volumen", "sobrecosto",
+        "ajuste_negativo", "acuerdo_vencido", "sin_avance_en_ventana",
+    ]
     detalle: str
+    # A-02/A-03: excedentes, sobrecosto, ajustes negativos, acuerdos vencidos y conceptos
+    # sin avance son alertas INFORMATIVAS (nunca bloquean); llevan cantidad e importe
+    # cuando aplican.
+    severidad: Literal["alerta", "informativa"] = "alerta"
+    cantidad: Optional[str] = None
+    importe: Optional[str] = None
+    # Solo `acuerdo_vencido`: días de atraso y responsable del acuerdo.
+    dias_atraso: Optional[int] = None
+    responsable: Optional[str] = None
 
 
 class CurvaSOut(BaseModel):
@@ -29502,57 +32688,55 @@ class CurvaSOut(BaseModel):
 
 
 @api.get("/projects/{pid}/analisis_periodo", response_model=AnalisisPeriodoOut)
-async def analisis_periodo(pid: str, start: str, end: str, contrato: str = "obra", user: dict = Depends(current_user)):
+async def analisis_periodo(
+    pid: str,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    periodo: Optional[str] = None,
+    fecha: Optional[str] = None,
+    contrato: str = "obra",
+    user: dict = Depends(current_user),
+):
     """Motor EVM: PV analítico (nunca se guarda un prorrateo día por día en
     Mongo, ver _prorrateo_concepto_en_ventana), EV desde lo ya CONGELADO en
     cada RegistroAvance (nunca se recalcula con el precio de hoy — ver
     create_avance), AC desde gastos_reales (captura manual de
-    administración)."""
-    await ensure_project_access(user, pid)
+    administración).
+
+    La ventana se da como `start`+`end`, o como `periodo` (mes_actual | ultimos_3_meses |
+    proyecto_completo) con `fecha` de corte opcional (por defecto, hoy en la zona del proyecto):
+    es el mismo cálculo de rango que usa la Presentación (A-05)."""
+    project = await ensure_project_access(user, pid)
     try:
-        ventana_ini, ventana_fin = date.fromisoformat(start), date.fromisoformat(end)
+        if periodo:
+            hasta = date.fromisoformat(fecha) if fecha else hoy_proyecto(project)
+            start, end = await rango_financiero(pid, periodo, hasta, contrato)
+        elif start and end:
+            date.fromisoformat(start), date.fromisoformat(end)
+        else:
+            raise HTTPException(400, "Indica start y end, o un periodo")
+    except ValueError as e:
+        raise HTTPException(400, str(e) if "periodo" in str(e) else "start/end/fecha deben ser YYYY-MM-DD")
+    try:
+        r = await calcular_analisis_evm(pid, start, end, project, contrato)
     except ValueError:
-        raise HTTPException(400, "start/end deben ser YYYY-MM-DD")
-    if ventana_fin < ventana_ini:
         raise HTTPException(400, "end no puede ser anterior a start")
+    c = cifras_analisis(r)
 
-    conceptos, pertenece = await _conceptos_activos_contrato(pid, contrato)
-    pv_total = sum(
-        (_prorrateo_concepto_en_ventana(c, ventana_ini, ventana_fin) for c in conceptos),
-        start=Decimal("0"),
-    )
-
-    ev_total = Decimal("0")
-    async for a in db.registros_avance.find({"project_id": pid, "fecha": {"$gte": start, "$lte": end}}):
-        if not pertenece(a.get("concepto_id")):
-            continue
-        if a.get("importe_ganado_congelado") is not None:
-            ev_total += to_decimal(a["importe_ganado_congelado"])
-        # Avances capturados ANTES de la congelación (sin
-        # importe_ganado_congelado) simplemente no aportan EV — no hay
-        # precio histórico confiable que inventarles.
-
-    ac_total = Decimal("0")
-    # Los gastos reales no distinguen contrato: se atribuyen a la obra.
-    async for g in db.gastos_reales.find({"project_id": pid, "fecha": {"$gte": start, "$lte": end}} if contrato == "obra" else {"_id": None}):
-        ac_total += to_decimal(g["monto"])
-
-    # SPI/CPI son índices de desempeño, no dinero — se muestran a 4
-    # decimales (Decimal.quantize explícito con redondeo HALF_UP, nunca la
-    # división cruda: ev_total/pv_total sin redondear puede arrastrar ~28
-    # dígitos significativos del contexto de Decimal, inservible para UI).
-    CUATRO_DECIMALES = Decimal("0.0001")
-    spi = dec_to_str((ev_total / pv_total).quantize(CUATRO_DECIMALES, rounding=ROUND_HALF_UP)) if pv_total != 0 else None
-    cpi = dec_to_str((ev_total / ac_total).quantize(CUATRO_DECIMALES, rounding=ROUND_HALF_UP)) if ac_total != 0 else None
+    def _s(v):
+        return dec_to_str(v) if v is not None else None
 
     return AnalisisPeriodoOut(
         project_id=pid, start=start, end=end,
-        pv=dec_to_str(round_money(pv_total)),
-        ev=dec_to_str(round_money(ev_total)),
-        ac=dec_to_str(round_money(ac_total)),
-        spi=spi, cpi=cpi,
-        variacion_cronograma=dec_to_str(round_money(ev_total - pv_total)),
-        variacion_costo=dec_to_str(round_money(ev_total - ac_total)),
+        pv=_s(c["pv"]), ev=_s(c["ev"]), ac=_s(c["ac"]),
+        spi=_s(c["spi"]), cpi=_s(c["cpi"]),
+        variacion_cronograma=_s(c["variacion_cronograma"]),
+        variacion_costo=_s(c["variacion_costo"]),
+        ev_contractual=_s(c["ev_contractual"]), ev_total=_s(c["ev_total"]),
+        bac=_s(c["bac"]),
+        ev_acumulado=_s(c["ev_acumulado"]), ac_acumulado=_s(c["ac_acumulado"]),
+        eac=_s(c["eac"]), etc=_s(c["etc"]), vac=_s(c["vac"]),
+        conceptos_sin_programa=c["conceptos_sin_programa"],
     )
 
 
@@ -29572,18 +32756,15 @@ async def analisis_periodo_presupuesto_total(pid: str, contrato: str = "obra", u
     return {"project_id": pid, "presupuesto_total": dec_to_str(round_money(total))}
 
 
-@api.get("/projects/{pid}/analisis_periodo/curva_s", response_model=CurvaSOut)
-async def analisis_periodo_curva_s(pid: str, contrato: str = "obra", user: dict = Depends(current_user)):
-    """Curva S completa del proyecto (todos los meses que tocan sus
-    conceptos EVM), para el gráfico de 3 líneas del dashboard — no depende
-    de start/end porque la curva se ve completa, la ventana de
-    start/end es solo para las tarjetas de analisis_periodo."""
-    await ensure_project_access(user, pid)
+async def _curva_s_por_mes(pid: str, contrato: str = "obra") -> Tuple[Dict[str, Decimal], Dict[str, Decimal], Dict[str, Decimal]]:
+    """Valor planeado, ganado y real de cada mes ("YYYY-MM") del contrato del proyecto. Lo usan la
+    Curva S y el periodo "proyecto completo" (que arranca en el primer mes con datos)."""
     conceptos, pertenece = await _conceptos_activos_contrato(pid, contrato)
 
+    distribuciones = await _distribuciones_vigentes(pid)
     planeado_por_mes: Dict[str, Decimal] = {}
     for c in conceptos:
-        for punto in _curva_mensual_concepto(c):
+        for punto in _curva_planeada_concepto(c, distribuciones.get(c["id"])):
             planeado_por_mes[punto["mes"]] = planeado_por_mes.get(punto["mes"], Decimal("0")) + to_decimal(punto["valor"])
 
     ganado_por_mes: Dict[str, Decimal] = {}
@@ -29597,6 +32778,17 @@ async def analisis_periodo_curva_s(pid: str, contrato: str = "obra", user: dict 
     async for g in db.gastos_reales.find({"project_id": pid} if contrato == "obra" else {"_id": None}):
         mes = g["fecha"][:7]
         real_por_mes[mes] = real_por_mes.get(mes, Decimal("0")) + to_decimal(g["monto"])
+    return planeado_por_mes, ganado_por_mes, real_por_mes
+
+
+@api.get("/projects/{pid}/analisis_periodo/curva_s", response_model=CurvaSOut)
+async def analisis_periodo_curva_s(pid: str, contrato: str = "obra", user: dict = Depends(current_user)):
+    """Curva S completa del proyecto (todos los meses que tocan sus
+    conceptos EVM), para el gráfico de 3 líneas del dashboard — no depende
+    de start/end porque la curva se ve completa, la ventana de
+    start/end es solo para las tarjetas de analisis_periodo."""
+    await ensure_project_access(user, pid)
+    planeado_por_mes, ganado_por_mes, real_por_mes = await _curva_s_por_mes(pid, contrato)
 
     todos_los_meses = sorted(set(planeado_por_mes) | set(ganado_por_mes) | set(real_por_mes))
     planeado_acum, ganado_acum, real_acum = Decimal("0"), Decimal("0"), Decimal("0")
@@ -29612,28 +32804,162 @@ async def analisis_periodo_curva_s(pid: str, contrato: str = "obra", user: dict 
     return CurvaSOut(meses=todos_los_meses, planeado_acumulado=planeado_serie, ganado_acumulado=ganado_serie, real_acumulado=real_serie)
 
 
-@api.get("/projects/{pid}/analisis_periodo/excepciones", response_model=List[ExcepcionEvmOut])
-async def analisis_periodo_excepciones(pid: str, contrato: str = "obra", user: dict = Depends(current_user)):
-    """Lista por excepción del dashboard (Tarea 4): conceptos con avances
-    fuera de su ventana fecha_inicio/fecha_fin, cuyo acumulado ejecutado
-    superó meta_cantidad, o cuya fecha_fin YA PASÓ sin haber alcanzado la
-    meta ("atrasado") — este último es el más común en un proyecto recién
-    arrancado: un concepto sin UN SOLO avance capturado nunca puede tener
-    "avances fuera de ventana" (no hay avances que revisar), así que sin
-    este chequeo se veía como si no hubiera ninguna anomalía aunque todo el
-    catálogo estuviera vencido. Nunca bloquea nada — es solo para revisión."""
-    await ensure_project_access(user, pid)
-    project = await db.projects.find_one({"id": pid})
-    modo_avance = (project or {}).get("modo_avance", "CANTIDAD")
-    conceptos, _ = await _conceptos_activos_contrato(pid, contrato)
+# --- A-03: excepciones informativas nuevas (funciones puras, sin DB) --------
+# Precedencia entre `atrasado` y `sin_avance_en_ventana`: `atrasado` (fecha_fin ya pasó y
+# no se alcanzó la meta) gana; un concepto que ya salió como atrasado NO se repite como
+# "sin avance en su ventana", aunque la distribución mensual del programa se extienda
+# más allá de su fecha_fin.
+def _ventana_programa_concepto(concepto: dict, dist: Optional[dict]) -> Optional["tuple[date, date]"]:
+    """Ventana (inicio, fin) del programa de un concepto: de la distribución mensual vigente
+    si la tiene (primer día del primer mes al último del último), si no fecha_inicio/fecha_fin."""
+    meses = _meses_de_distribucion(dist)
+    if meses:
+        return min(m[0] for m in meses), max(m[1] for m in meses)
+    return _fechas_programa_concepto(concepto)
+
+
+def excepciones_ajustes_negativos(conceptos_por_id: Dict[str, dict], registros: List[dict]) -> List[ExcepcionEvmOut]:
+    """Un renglón por concepto con ajustes NEGATIVOS (correcciones que restan avance): cuántos,
+    cuánto restan (cantidad) y su valor (cantidad × precio efectivo). Informativo."""
+    por_concepto: Dict[str, List[dict]] = {}
+    for a in registros:
+        if a.get("tipo") != "ajuste" or a.get("concepto_id") not in conceptos_por_id:
+            continue
+        try:
+            if to_decimal(a.get("cantidad_ejecutada") or "0") >= 0:
+                continue
+        except (ValueError, TypeError, InvalidOperation):
+            continue
+        por_concepto.setdefault(a["concepto_id"], []).append(a)
+    salida: List[ExcepcionEvmOut] = []
+    for cid, lista in por_concepto.items():
+        c = conceptos_por_id[cid]
+        resta = -sum((to_decimal(a["cantidad_ejecutada"]) for a in lista), start=Decimal("0"))
+        importe = resta * _concepto_precio_efectivo(c)
+        ultimo = max(lista, key=lambda a: (a.get("fecha") or "", a.get("creado_en") or datetime.min))
+        motivo = (ultimo.get("motivo") or "").strip()
+        n = len(lista)
+        detalle = (
+            f"{n} ajuste{'s' if n != 1 else ''} negativo{'s' if n != 1 else ''}: restan "
+            f"{dec_to_str(resta)} {c.get('unidad', '')} (${dec_to_str(round_money(importe))})."
+        ).replace("  ", " ")
+        if motivo:
+            detalle += f" Último motivo: {motivo}"
+        salida.append(ExcepcionEvmOut(
+            concepto_id=cid, clave=c["clave"], descripcion=c["descripcion"], tipo="ajuste_negativo",
+            severidad="informativa", cantidad=dec_to_str(resta), importe=dec_to_str(round_money(importe)),
+            detalle=detalle,
+        ))
+    return salida
+
+
+def excepciones_acuerdos_vencidos(minutas: List[dict], hoy: date) -> List[ExcepcionEvmOut]:
+    """Acuerdos de minutas NO cumplidos cuya fecha límite ya pasó (estrictamente anterior a
+    `hoy` del proyecto: el día límite todavía no está vencido). Del más atrasado al menos."""
+    filas: List[tuple] = []
+    for m in minutas:
+        for a in (m.get("acuerdos") or []):
+            if a.get("estado"):
+                continue
+            try:
+                limite = date.fromisoformat(str(a.get("fecha_limite") or "")[:10])
+            except ValueError:
+                continue
+            if limite >= hoy:
+                continue
+            filas.append(((hoy - limite).days, limite, m, a))
+    filas.sort(key=lambda f: (-f[0], str(f[2].get("titulo") or "")))
+    salida: List[ExcepcionEvmOut] = []
+    for dias, limite, m, a in filas:
+        responsable = (a.get("responsable_name") or "").strip() or None
+        titulo = (m.get("titulo") or "").strip()
+        detalle = f"Vencido hace {dias} día{'s' if dias != 1 else ''} (límite {limite.isoformat()})."
+        if responsable:
+            detalle += f" Responsable: {responsable}."
+        if titulo:
+            detalle += f" Minuta: {titulo}."
+        salida.append(ExcepcionEvmOut(
+            concepto_id="", clave="", descripcion=((a.get("descripcion") or "").strip() or "(sin descripción)")[:160],
+            tipo="acuerdo_vencido", severidad="informativa", detalle=detalle,
+            dias_atraso=dias, responsable=responsable,
+        ))
+    return salida
+
+
+def excepciones_sin_avance_en_ventana(
+    conceptos: List[dict], distribuciones: Dict[str, dict], avances_por_concepto: Dict[str, List[dict]],
+    hoy: date, excluir_ids: set,
+) -> List[ExcepcionEvmOut]:
+    """Conceptos cuya ventana del programa incluye HOY, ya empezaron y no tienen NINGÚN avance
+    (cantidad > 0) dentro de esa ventana. `importe` = valor planeado que debió ejecutarse a la fecha."""
+    salida: List[ExcepcionEvmOut] = []
+    for c in conceptos:
+        if c["id"] in excluir_ids:
+            continue
+        dist = distribuciones.get(c["id"])
+        ventana = _ventana_programa_concepto(c, dist)
+        if ventana is None:
+            continue
+        ini, fin = ventana
+        if not (ini <= hoy <= fin):
+            continue
+        hay_avance = False
+        for a in avances_por_concepto.get(c["id"], []):
+            try:
+                if not (ini.isoformat() <= str(a.get("fecha") or "") <= fin.isoformat()):
+                    continue
+                if to_decimal(a.get("cantidad_ejecutada") or "0") > 0:
+                    hay_avance = True
+                    break
+            except (ValueError, TypeError, InvalidOperation):
+                continue
+        if hay_avance:
+            continue
+        dias = (hoy - ini).days
+        planeado = _pv_de_concepto(c, dist, ini, hoy)
+        detalle = (
+            f"Su ventana del programa ({ini.isoformat()} — {fin.isoformat()}) ya empezó hace "
+            f"{dias} día{'s' if dias != 1 else ''} y no tiene ningún avance capturado."
+        )
+        salida.append(ExcepcionEvmOut(
+            concepto_id=c["id"], clave=c["clave"], descripcion=c["descripcion"], tipo="sin_avance_en_ventana",
+            severidad="informativa", detalle=detalle,
+            importe=dec_to_str(round_money(planeado)) if planeado > 0 else None,
+        ))
+    return salida
+
+
+def _bac_y_ac(conceptos: List[dict], gastos: List[dict]) -> "tuple[Decimal, Decimal]":
+    """(presupuesto contratado, costo real acumulado): base del sobrecosto y del control de costos."""
+    bac = sum((_concepto_importe_efectivo(c) for c in conceptos), start=Decimal("0"))
+    ac = sum((to_decimal(g["monto"]) for g in gastos), start=Decimal("0"))
+    return bac, ac
+
+
+_ORDEN_TIPO_EXCEPCION = {
+    "atrasado": 0, "sin_avance_en_ventana": 1, "acuerdo_vencido": 2, "ajuste_negativo": 3,
+    "excedente_volumen": 4, "sobrecosto": 5, "fuera_de_ventana": 6,
+}
+
+
+async def calcular_excepciones_evm(pid: str, project: Optional[dict], contrato: str = "obra") -> List[ExcepcionEvmOut]:
+    """Lista por excepción del proyecto. Servicio ÚNICO: lo usan el endpoint del tablero y el
+    Resumen con IA. Nunca bloquea nada — es solo para revisión (ver el endpoint)."""
+    project = project or {}
+    modo_avance = project.get("modo_avance", "CANTIDAD")
+    conceptos, pertenece = await _conceptos_activos_contrato(pid, contrato)
     conceptos_por_id = {c["id"]: c for c in conceptos}
-    hoy = datetime.now(MX_TZ).date()
+    hoy = hoy_proyecto(project)
+
+    registros = [r for r in await db.registros_avance.find({"project_id": pid}).to_list(length=1000000)
+                 if pertenece(r.get("concepto_id"))]
+    avances_por_concepto: Dict[str, List[dict]] = {}
+    for a in registros:
+        avances_por_concepto.setdefault(a["concepto_id"], []).append(a)
 
     excepciones: List[ExcepcionEvmOut] = []
 
-    concepto_ids_fuera_de_ventana: set = set()
-    async for a in db.registros_avance.find({"project_id": pid, "fuera_de_ventana": True}):
-        concepto_ids_fuera_de_ventana.add(a["concepto_id"])
+    concepto_ids_fuera_de_ventana: set = {a["concepto_id"] for a in registros if a.get("fuera_de_ventana")}
     for cid in concepto_ids_fuera_de_ventana:
         c = conceptos_por_id.get(cid)
         if not c:
@@ -29644,41 +32970,80 @@ async def analisis_periodo_excepciones(pid: str, contrato: str = "obra", user: d
             detalle=f"Tiene avances capturados fuera de su ventana {c.get('fecha_inicio')} — {c.get('fecha_fin')}",
         ))
 
-    # El chequeo de sobre-meta/atrasado es sobre cantidad física — en modo
-    # PORCENTAJE el "ejecutado" ya es un 0-100 (estado reportado), no una
-    # cantidad comparable contra meta_cantidad.
+    # A-02: volumen excedente (ejecutado > contratado): informativo, con cantidad e importe.
+    etiqueta_estatus = {"pendiente_autorizacion": "pendiente de autorización", "autorizado": "autorizado", "rechazado": "rechazado"}
+    for e in await _excedentes_del_proyecto(pid, project or {}):
+        excepciones.append(ExcepcionEvmOut(
+            concepto_id=e.concepto_id, clave=e.clave, descripcion=e.descripcion,
+            tipo="excedente_volumen", severidad="informativa",
+            cantidad=e.cantidad_excedente, importe=e.importe_excedente,
+            detalle=(
+                f"Ejecutado {e.cantidad_ejecutada} de {e.cantidad_contratada} contratados: excede "
+                f"{e.cantidad_excedente} {e.unidad} (${e.importe_excedente}). Estatus: {etiqueta_estatus.get(e.estatus, e.estatus)}."
+            ),
+        ))
+
+    # A-02: sobrecosto (costo real acumulado > presupuesto contratado): informativo.
+    # Los gastos reales no distinguen contrato: se atribuyen a la obra.
+    gastos = (await db.gastos_reales.find({"project_id": pid}).to_list(length=1000000)) if contrato == "obra" else []
+    bac, ac_total = _bac_y_ac(conceptos, gastos)
+    if bac > 0 and ac_total > bac:
+        excepciones.append(ExcepcionEvmOut(
+            concepto_id="", clave="", descripcion="Proyecto completo",
+            tipo="sobrecosto", severidad="informativa", importe=dec_to_str(round_money(ac_total - bac)),
+            detalle=f"El costo real (${dec_to_str(round_money(ac_total))}) supera el presupuesto (${dec_to_str(round_money(bac))}).",
+        ))
+
+    # El chequeo de "atrasado" es sobre cantidad física — en modo PORCENTAJE el
+    # "ejecutado" ya es un 0-100 (estado reportado), no una cantidad comparable con la meta.
+    ids_atrasados: set = set()
     if modo_avance != "PORCENTAJE":
         for c in conceptos:
             if not _concepto_tiene_datos_evm(c):
                 continue
-            ejecutado = to_decimal(await _concepto_ejecutado_acumulado(c["id"], modo_avance))
+            ejecutado = to_decimal(_acumulado_desde_avances(avances_por_concepto.get(c["id"], []), modo_avance))
             meta = to_decimal(c["meta_cantidad"])
-            if ejecutado > meta:
-                excepciones.append(ExcepcionEvmOut(
-                    concepto_id=c["id"], clave=c["clave"], descripcion=c["descripcion"],
-                    tipo="sobre_meta",
-                    detalle=f"Ejecutado {dec_to_str(ejecutado)} supera la meta {dec_to_str(meta)}",
-                ))
-            elif c.get("fecha_fin") and date.fromisoformat(c["fecha_fin"]) < hoy and ejecutado < meta:
+            if c.get("fecha_fin") and date.fromisoformat(c["fecha_fin"]) < hoy and ejecutado < meta:
+                ids_atrasados.add(c["id"])
                 excepciones.append(ExcepcionEvmOut(
                     concepto_id=c["id"], clave=c["clave"], descripcion=c["descripcion"],
                     tipo="atrasado",
                     detalle=f"Debía terminar el {c['fecha_fin']} y lleva {dec_to_str(ejecutado)} de {dec_to_str(meta)} {c.get('unidad', 'UNIVERSAL')}",
                 ))
 
+    # A-03: ajustes negativos, acuerdos de minutas vencidos y conceptos sin avance en su
+    # ventana del programa (todas informativas; `atrasado` tiene precedencia sobre esta última).
+    excepciones.extend(excepciones_ajustes_negativos(conceptos_por_id, registros))
+    minutas = await db.minutas.find({"project_id": pid}).to_list(length=5000)
+    excepciones.extend(excepciones_acuerdos_vencidos(minutas, hoy))
+    excepciones.extend(excepciones_sin_avance_en_ventana(
+        conceptos, await _distribuciones_vigentes(pid), avances_por_concepto, hoy, ids_atrasados,
+    ))
+
     # Sin esto, el orden salía de iterar un `set` (no determinístico) y
     # luego los conceptos en el orden que Mongo los devolviera — se veía
-    # desordenado en cada refresh. Se agrupa por tipo (atrasado primero, es
-    # el más accionable — un concepto vencido sin terminar; fuera_de_ventana
-    # al final, es solo informativo) y dentro de cada grupo por clave, con
-    # el mismo comparador numérico jerárquico que usa el resto del catálogo
-    # (ver sort_by_clave) para que "C-2" no quede después de "C-10".
-    orden_tipo = {"atrasado": 0, "sobre_meta": 1, "fuera_de_ventana": 2}
-    excepciones = sorted(
+    # desordenado en cada refresh. Se agrupa por tipo (ver _ORDEN_TIPO_EXCEPCION: atrasado
+    # primero, es el más accionable; fuera_de_ventana al final, es solo informativo) y
+    # dentro de cada grupo por clave, con el mismo comparador numérico jerárquico que usa
+    # el resto del catálogo (ver sort_by_clave) para que "C-2" no quede después de "C-10".
+    # El sort es estable: los acuerdos vencidos (sin clave) conservan su orden por atraso.
+    return sorted(
         sort_by_clave(excepciones, clave_getter=lambda e: e.clave),
-        key=lambda e: orden_tipo[e.tipo],
+        key=lambda e: _ORDEN_TIPO_EXCEPCION[e.tipo],
     )
-    return excepciones
+
+
+@api.get("/projects/{pid}/analisis_periodo/excepciones", response_model=List[ExcepcionEvmOut])
+async def analisis_periodo_excepciones(pid: str, contrato: str = "obra", user: dict = Depends(current_user)):
+    """Lista por excepción del dashboard (Tarea 4): conceptos con avances fuera de su
+    ventana fecha_inicio/fecha_fin, cuya fecha_fin YA PASÓ sin alcanzar la meta ("atrasado"),
+    con volumen excedente o sobrecosto (A-02) y, desde A-03, con ajustes negativos, acuerdos
+    de minutas vencidos y conceptos sin avance dentro de su ventana del programa. Un concepto
+    sin UN SOLO avance nunca puede tener "avances fuera de ventana" (no hay avances que
+    revisar), por eso existen los chequeos de atraso y de ventana sin avance. Nunca bloquea
+    nada — es solo para revisión."""
+    project = await ensure_project_access(user, pid)
+    return await calcular_excepciones_evm(pid, project, contrato)
 
 
 class ActividadEvmOut(BaseModel):
@@ -29714,7 +33079,7 @@ async def analisis_periodo_actividades(pid: str, contrato: str = "obra", user: d
     await ensure_project_access(user, pid)
     project = await db.projects.find_one({"id": pid})
     modo_avance = (project or {}).get("modo_avance", "CANTIDAD")
-    hoy = datetime.now(MX_TZ).date()
+    hoy = hoy_proyecto(project)
     conceptos, _ = await _conceptos_activos_contrato(pid, contrato)
 
     pendientes: List[ActividadEvmOut] = []
@@ -29793,14 +33158,14 @@ async def create_gasto_real(pid: str, body: GastoRealIn, user: dict = Depends(re
     """AC (Costo Real) del motor EVM: captura simple y manual — no intenta
     reconciliar facturas/nómina automáticamente, solo registra el monto que
     administración ya calculó fuera del sistema."""
-    await ensure_project_access(user, pid)
+    proyecto_gasto = await ensure_project_access(user, pid)
     concepto_id = None
     concepto_clave = None
     if body.concepto_clave:
         clave = body.concepto_clave.strip()
         concepto = await db.conceptos.find_one({"project_id": pid, "clave": clave})
         if not concepto:
-            raise HTTPException(404, f"No existe ningún concepto con clave '{clave}' en este proyecto")
+            raise HTTPException(404, mensaje_concepto_no_existe(clave, proyecto_gasto))
         concepto_id = concepto["id"]
         concepto_clave = concepto["clave"]
     gid = str(uuid.uuid4())
@@ -29926,7 +33291,7 @@ async def import_gastos_reales(
     aquí CADA fila debe ligar a un concepto ya existente en el proyecto:
     si vas a importar miles de gastos históricos es para poder comparar
     EV vs AC por concepto, no para acumular un bulto agregado."""
-    await ensure_project_access(user, pid)
+    proyecto_gastos = await ensure_project_access(user, pid)
     content = await file.read()
     sheets = _read_workbook_sheets(file.filename or "archivo.xlsx", content)
     if not sheets:
@@ -29974,7 +33339,7 @@ async def import_gastos_reales(
         clave = str(clave_raw).strip()
         concepto = conceptos_por_clave.get(clave)
         if not concepto:
-            errores.append({"fila": fila_num, "motivo": f"No existe ningún concepto con clave '{clave}' en este proyecto"})
+            errores.append({"fila": fila_num, "motivo": mensaje_concepto_no_existe(clave, proyecto_gastos)})
             continue
 
         fecha_raw = row[idx_fecha] if idx_fecha < len(row) else None
@@ -30601,9 +33966,32 @@ def _validar_archivo_programa_completo(
         inicio = _fecha_excel_a_iso(fila_datos[idx_inicio]) if idx_inicio is not None and idx_inicio < len(fila_datos) else None
         fin = _fecha_excel_a_iso(fila_datos[idx_fin]) if idx_fin is not None and idx_fin < len(fila_datos) else None
 
+        if inicio and fin and fin < inicio:
+            problemas.append({
+                "tipo": "rango_fecha_invalido", "campo": "fin",
+                "motivo": f"La fecha de fin ({fin}) es anterior a la fecha de inicio ({inicio}).",
+            })
+
         valores_mensuales, errores_mes = extraer_distribucion_mensual_bloque(bloque["fila_importes"], idx_meses, convencion)
         for err in errores_mes:
             problemas.append({"tipo": "celda_mes_ilegible", "campo": "meses", "motivo": err})
+
+        # Un mes con importe pero sin rango de fechas legible (o con el fin antes del inicio)
+        # no se puede ubicar en el tiempo: nunca se importa en silencio como si valiera 0.
+        for i, nombre_mes in enumerate(mapping.meses):
+            rango = rangos_mes[i]
+            if valores_mensuales[i] == 0:
+                continue
+            if rango is None:
+                problemas.append({
+                    "tipo": "rango_mes_ilegible", "campo": "meses",
+                    "motivo": f"La columna «{nombre_mes}» trae importe pero su rango de fechas no se pudo leer (esperado: «DEL 1/12/25 AL 31/12/25»).",
+                })
+            elif rango[1] < rango[0]:
+                problemas.append({
+                    "tipo": "rango_mes_ilegible", "campo": "meses",
+                    "motivo": f"En la columna «{nombre_mes}» la fecha final ({rango[1]}) es anterior a la inicial ({rango[0]}).",
+                })
 
         tiene_distribucion_propia = bloque["fila_importes"] is not None
         if tiene_distribucion_propia:
@@ -30634,7 +34022,10 @@ def _validar_archivo_programa_completo(
     return filas
 
 
-_TIPOS_ERROR_PROGRAMA = {"importe_ilegible", "concepto_no_encontrado", "distribucion_no_cuadra", "celda_mes_ilegible"}
+_TIPOS_ERROR_PROGRAMA = {
+    "importe_ilegible", "concepto_no_encontrado", "distribucion_no_cuadra", "celda_mes_ilegible",
+    "rango_mes_ilegible", "rango_fecha_invalido",
+}
 
 
 def _calcular_vista_programa(filas: List[dict], correcciones: dict) -> List[dict]:

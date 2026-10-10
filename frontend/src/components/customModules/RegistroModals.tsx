@@ -21,7 +21,7 @@ function Hoja({ visible, titulo, onClose, children, pie }: {
         <View style={[styles.sheet, { paddingBottom: insets.bottom + spacing.md }]}>
           <View style={styles.head}>
             <Text style={styles.title}>{titulo}</Text>
-            <Pressable onPress={onClose} hitSlop={10}><Ionicons name="close" size={22} color={colors.text} /></Pressable>
+            <Pressable accessibilityRole="button" accessibilityLabel="Cerrar" onPress={onClose} hitSlop={10}><Ionicons name="close" size={22} color={colors.text} /></Pressable>
           </View>
           <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ paddingBottom: spacing.md }}>{children}</ScrollView>
           {pie}

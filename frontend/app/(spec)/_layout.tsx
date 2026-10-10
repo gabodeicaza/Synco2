@@ -1,4 +1,4 @@
-// SynCo v2.0 _ Layout del Especialista con Bottom Tabs.
+// Dirac · Layout del Especialista con Bottom Tabs.
 // Replica el patron de la imagen objetivo: Noticias _ Inicio _ Nuevo _ Mensajes _ Calendario.
 import React, { useEffect } from 'react';
 import { Platform, StyleSheet, View } from 'react-native';
@@ -33,6 +33,9 @@ export default function SpecLayout() {
         backBehavior="history"
         screenOptions={{
           headerShown: false,
+          // G-07: pestañas perezosas y las inactivas congeladas; los polls corren solo con foco.
+          lazy: true,
+          freezeOnBlur: true,
           tabBarActiveTintColor: colors.primary,
           tabBarInactiveTintColor: colors.textMuted,
           tabBarStyle: [
@@ -132,6 +135,8 @@ export default function SpecLayout() {
         <Tabs.Screen name="presentacion-preview" options={{ href: null }} />
         {/* Cambiar mi contraseña — alcanzable via router.push (menu hamburgues), sin tab visible. */}
         <Tabs.Screen name="cambiar-password" options={{ href: null }} />
+        {/* Mi perfil (Acerca de, legales, eliminar cuenta) — alcanzable via el menú hamburguesa. */}
+        <Tabs.Screen name="profile" options={{ href: null }} />
       </Tabs>
       <OfflineQueueIndicator />
     </View>

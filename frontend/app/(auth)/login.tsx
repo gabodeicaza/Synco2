@@ -9,6 +9,8 @@ import { Button } from '@/src/components/Button';
 import { useAuth } from '@/src/auth-context';
 import { homeRouteForRole, APP_BRAND, APP_TAGLINE } from '@/src/utils/roles';
 import { colors, radius, spacing } from '@/src/theme';
+import { t, a11y } from '@/src/i18n';
+import { LegalLinks } from '@/src/components/LegalLinks';
 
 export default function LoginScreen() {
   const insets = useSafeAreaInsets();
@@ -21,7 +23,7 @@ export default function LoginScreen() {
 
   async function onSubmit() {
     if (!email.trim() || !password) {
-      setError('Ingresa tu correo y contrasena');
+      setError('Ingresa tu correo y contraseña');
       return;
     }
     setBusy(true);
@@ -30,7 +32,7 @@ export default function LoginScreen() {
       const user = await login(email.trim().toLowerCase(), password);
       router.replace(homeRouteForRole(user.role) as any);
     } catch (e: any) {
-      setError(e?.message || 'No se pudo iniciar sesion');
+      setError(e?.message || 'No se pudo iniciar sesión');
     } finally {
       setBusy(false);
     }
@@ -50,9 +52,9 @@ export default function LoginScreen() {
         </View>
 
         <View style={styles.card}>
-          <Text style={styles.cardTitle}>Iniciar sesion</Text>
+          <Text style={styles.cardTitle}>Iniciar sesión</Text>
 
-          <Text style={styles.label}>Correo electronico</Text>
+          <Text style={styles.label}>Correo electrónico</Text>
           <View style={styles.inputWrap}>
             <Ionicons name="mail-outline" size={18} color={colors.textMuted} />
             <TextInput
@@ -69,13 +71,13 @@ export default function LoginScreen() {
             />
           </View>
 
-          <Text style={[styles.label, { marginTop: spacing.md }]}>Contrasena</Text>
+          <Text style={[styles.label, { marginTop: spacing.md }]}>Contraseña</Text>
           <View style={styles.inputWrap}>
             <Ionicons name="lock-closed-outline" size={18} color={colors.textMuted} />
             <TextInput
               value={password}
               onChangeText={setPassword}
-              placeholder="________"
+              placeholder="••••••••"
               placeholderTextColor={colors.textMuted}
               secureTextEntry={!showPwd}
               style={styles.input}
@@ -83,12 +85,12 @@ export default function LoginScreen() {
               onSubmitEditing={onSubmit}
               editable={!busy}
             />
-            <Pressable onPress={() => setShowPwd((v) => !v)} hitSlop={8}>
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y(showPwd ? 'ocultarPassword' : 'mostrarPassword')} onPress={() => setShowPwd((v) => !v)} hitSlop={8}>
               <Ionicons name={showPwd ? 'eye-off-outline' : 'eye-outline'} size={18} color={colors.textMuted} />
             </Pressable>
           </View>
 
-          <Pressable onPress={() => router.push('/(auth)/forgot-password')} hitSlop={8} style={styles.forgotRow} disabled={busy}>
+          <Pressable accessibilityRole="button" onPress={() => router.push('/(auth)/forgot-password')} hitSlop={8} style={styles.forgotRow} disabled={busy}>
             <Text style={styles.forgotText}>¿Olvidaste tu contraseña?</Text>
           </Pressable>
 
@@ -110,7 +112,7 @@ export default function LoginScreen() {
           </View>
 
           {/* Canje de invitacion in-app */}
-          <Pressable
+          <Pressable accessibilityRole="button"
             style={({ pressed }) => [styles.inviteBtn, pressed && { opacity: 0.85 }]}
             onPress={() => router.push('/(auth)/redeem')}
             disabled={busy}
@@ -119,8 +121,8 @@ export default function LoginScreen() {
               <Ionicons name="key-outline" size={18} color={colors.primary} />
             </View>
             <View style={{ flex: 1 }}>
-              <Text style={styles.inviteTitle}>Tengo un codigo de invitacion</Text>
-              <Text style={styles.inviteSubtitle}>Pega aqui el token que te envio tu Coordinador.</Text>
+              <Text style={styles.inviteTitle}>Tengo un código de invitación</Text>
+              <Text style={styles.inviteSubtitle}>Pega aquí el token que te envió tu Coordinador.</Text>
             </View>
             <Ionicons name="chevron-forward" size={18} color={colors.primary} />
           </Pressable>
@@ -128,11 +130,12 @@ export default function LoginScreen() {
           <View style={styles.infoBox}>
             <Ionicons name="information-circle-outline" size={16} color={colors.textMuted} />
             <Text style={styles.infoText}>
-              El acceso a SynCo es solo por invitacion. Tu Coordinador General te enviara un codigo por WhatsApp o correo.
+              {t('auth.accesoSoloInvitacion')}
             </Text>
           </View>
 
         </View>
+        <LegalLinks />
       </ScrollView>
     </KeyboardAvoidingView>
   );

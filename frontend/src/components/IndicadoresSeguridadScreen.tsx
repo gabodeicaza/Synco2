@@ -206,14 +206,14 @@ export default function IndicadoresSeguridadScreen({ projectId }: { projectId: s
   }
 
   const nuevo = (onPress: () => void, label: string) => (puedeEscribir ? (
-    <Pressable onPress={onPress} style={styles.addBtn}>
+    <Pressable accessibilityRole="button" onPress={onPress} style={styles.addBtn}>
       <Ionicons name="add" size={16} color={colors.primary} />
       <Text style={styles.addBtnTxt}>{label}</Text>
     </Pressable>
   ) : null);
 
   const papelera = (i: SeguridadIndicador, que: string) => (puedeEscribir ? (
-    <Pressable hitSlop={8} onPress={() => borrar(i, que)}>
+    <Pressable accessibilityRole="button" accessibilityLabel="Eliminar" hitSlop={8} onPress={() => borrar(i, que)}>
       <Ionicons name="trash-outline" size={18} color={colors.error} />
     </Pressable>
   ) : null);
@@ -222,7 +222,7 @@ export default function IndicadoresSeguridadScreen({ projectId }: { projectId: s
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <View style={[styles.headerWrap, { backgroundColor: headerColor, paddingTop: insets.top + spacing.xs }]}>
         <View style={styles.headerTopRow}>
-          <Pressable onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
+          <Pressable accessibilityRole="button" accessibilityLabel="Volver" onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
             <Ionicons name="chevron-back" size={22} color={headerTextColor} />
           </Pressable>
           <Text style={[styles.titleBar, { color: headerTextColor }]} numberOfLines={1}>Indicadores de Seguridad</Text>
@@ -232,7 +232,7 @@ export default function IndicadoresSeguridadScreen({ projectId }: { projectId: s
 
       <View style={styles.tabsRow}>
         {([['campo', 'Campo'], ['documental', 'Documental'], ['pipc', 'PIPC']] as [Tab, string][]).map(([k, label]) => (
-          <Pressable key={k} onPress={() => setTab(k)} style={[styles.tab, tab === k && styles.tabActive]}>
+          <Pressable accessibilityRole="button" key={k} onPress={() => setTab(k)} style={[styles.tab, tab === k && styles.tabActive]}>
             <Text style={[styles.tabTxt, tab === k && { color: '#fff' }]}>{label}</Text>
           </Pressable>
         ))}
@@ -247,7 +247,7 @@ export default function IndicadoresSeguridadScreen({ projectId }: { projectId: s
             </View>
             <Text style={styles.hint}>El reporte usa el último corte como "actual" y el anterior como comparativo.</Text>
             {campo.length === 0 ? <View style={[styles.card, styles.empty]}><Text style={styles.emptyTxt}>Sin cortes capturados.</Text></View> : campo.map((i, k) => (
-              <Pressable key={i.id} style={[styles.card, styles.row]} onPress={puedeEscribir ? () => formCampo(i) : undefined}>
+              <Pressable accessibilityRole="button" key={i.id} style={[styles.card, styles.row]} onPress={puedeEscribir ? () => formCampo(i) : undefined}>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.cardTitle}>{fmtFecha(i.fecha)} · {i.porcentaje}%{k === 0 ? '  (actual)' : k === 1 ? '  (anterior)' : ''}</Text>
                   {i.dias_sin_accidentes != null ? <Text style={styles.meta}>Días sin accidentes fijados a mano: {i.dias_sin_accidentes}</Text> : null}
@@ -265,7 +265,7 @@ export default function IndicadoresSeguridadScreen({ projectId }: { projectId: s
               {nuevo(() => formMensual(), 'Nuevo mes')}
             </View>
             {mensual.length === 0 ? <View style={[styles.card, styles.empty]}><Text style={styles.emptyTxt}>Sin meses capturados.</Text></View> : mensual.map((i) => (
-              <Pressable key={i.id} style={[styles.card, styles.row]} onPress={puedeEscribir ? () => formMensual(i) : undefined}>
+              <Pressable accessibilityRole="button" key={i.id} style={[styles.card, styles.row]} onPress={puedeEscribir ? () => formMensual(i) : undefined}>
                 <Text style={[styles.cardTitle, { flex: 1 }]}>{i.mes} · {i.porcentaje}%</Text>
                 {papelera(i, 'este mes')}
               </Pressable>
@@ -275,7 +275,7 @@ export default function IndicadoresSeguridadScreen({ projectId }: { projectId: s
               {nuevo(() => formSemana(), 'Nueva semana')}
             </View>
             {semanas.length === 0 ? <View style={[styles.card, styles.empty]}><Text style={styles.emptyTxt}>Sin semanas capturadas.</Text></View> : semanas.map(([semana, vals]) => (
-              <Pressable key={semana} style={[styles.card, { padding: spacing.md }]} onPress={puedeEscribir ? () => formSemana(semana, vals) : undefined}>
+              <Pressable accessibilityRole="button" key={semana} style={[styles.card, { padding: spacing.md }]} onPress={puedeEscribir ? () => formSemana(semana, vals) : undefined}>
                 <Text style={styles.cardTitle}>Semana del {fmtFecha(semana)}</Text>
                 {CATEGORIAS.map((c) => (
                   <Text key={c.key} style={styles.meta}>{c.label}: {vals[c.key]?.porcentaje != null ? `${vals[c.key]!.porcentaje}%` : '—'}</Text>
@@ -293,7 +293,7 @@ export default function IndicadoresSeguridadScreen({ projectId }: { projectId: s
             </View>
             <Text style={styles.hint}>Puntos por paso: Elaboración hasta 70; captura digital, folio y registro suman hasta 30. El total por estación es la suma.</Text>
             {pipc.length === 0 ? <View style={[styles.card, styles.empty]}><Text style={styles.emptyTxt}>Sin estaciones capturadas.</Text></View> : pipc.map((i) => (
-              <Pressable key={i.id} style={[styles.card, styles.row]} onPress={puedeEscribir ? () => formPipc(i) : undefined}>
+              <Pressable accessibilityRole="button" key={i.id} style={[styles.card, styles.row]} onPress={puedeEscribir ? () => formPipc(i) : undefined}>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.cardTitle}>{i.etiqueta} · {totalPipc(i.puntos)}%</Text>
                   <Text style={styles.meta}>{(i.puntos || []).join(' · ')}</Text>
@@ -304,7 +304,7 @@ export default function IndicadoresSeguridadScreen({ projectId }: { projectId: s
             <View style={[styles.sectionHeaderRow, { marginTop: spacing.lg }]}>
               <Text style={styles.sectionTitle}>Notas de avance</Text>
               {puedeEscribir ? (
-                <Pressable onPress={formNota} style={styles.addBtn}>
+                <Pressable accessibilityRole="button" onPress={formNota} style={styles.addBtn}>
                   <Ionicons name="create-outline" size={16} color={colors.primary} />
                   <Text style={styles.addBtnTxt}>Editar</Text>
                 </Pressable>

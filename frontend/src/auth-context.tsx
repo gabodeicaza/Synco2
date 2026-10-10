@@ -1,5 +1,11 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
-import { storage } from '@/src/utils/storage';
+import {
+  borrarSesion,
+  guardarSesion,
+  guardarUsuarioCacheado,
+  leerToken,
+  leerUsuarioCacheado,
+} from '@/src/utils/sessionKeys';
 import { api, setAuthTokenCache, User } from '@/src/api';
 import {
   registerForPushNotificationsAsync,
@@ -28,12 +34,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const me = await api.me();
       setUser(me);
-      await storage.setItem('synco_user', JSON.stringify(me));
+      await guardarUsuarioCacheado(JSON.stringify(me));
     } catch {
       setUser(null);
       setAuthTokenCache(null);
-      await storage.secureRemove('syncsite_token');
-      await storage.removeItem('synco_user');
+      await borrarSesion();
     }
   }, []);
 
@@ -42,11 +47,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     (async () => {
       // Produccion HTTPS (Batch V2): sin escape hatch de red. Se salta
       // directo a hidratar la sesion desde el storage.
-      const cached = await storage.getItem<string>('synco_user', '');
+      const cached = await leerUsuarioCacheado();
       if (cached && mounted) {
         try { setUser(JSON.parse(cached)); } catch {}
       }
-      const tok = await storage.secureGet<string>('syncsite_token', '');
+      const tok = await leerToken();
       setAuthTokenCache(tok || null);
       if (tok) await refresh();
       if (mounted) setLoading(false);
@@ -75,8 +80,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const login = useCallback(async (email: string, password: string) => {
     const { token, user: u } = await api.login(email, password);
     setAuthTokenCache(token);
-    await storage.secureSet('syncsite_token', token);
-    await storage.setItem('synco_user', JSON.stringify(u));
+    await guardarSesion(token, JSON.stringify(u));
     setUser(u);
     return u;
   }, []);
@@ -84,16 +88,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const acceptInvite = useCallback(async (token: string, password: string) => {
     const { token: jwt, user: u } = await api.acceptInvite(token, password);
     setAuthTokenCache(jwt);
-    await storage.secureSet('syncsite_token', jwt);
-    await storage.setItem('synco_user', JSON.stringify(u));
+    await guardarSesion(jwt, JSON.stringify(u));
     setUser(u);
     return u;
   }, []);
 
   const logout = useCallback(async () => {
     setAuthTokenCache(null);
-    await storage.secureRemove('syncsite_token');
-    await storage.removeItem('synco_user');
+    await borrarSesion();
     await clearCachedPushToken();
     setUser(null);
   }, []);

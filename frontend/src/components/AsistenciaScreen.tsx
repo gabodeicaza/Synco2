@@ -203,23 +203,23 @@ export function AsistenciaScreen({ projectId }: { projectId: string }) {
   return (
     <View style={[styles.flex, { paddingTop: insets.top }]}>
       <View style={styles.header}>
-        <Pressable onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
+        <Pressable accessibilityRole="button" accessibilityLabel="Volver" onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
           <Ionicons name="chevron-back" size={24} color={colors.text} />
         </Pressable>
         <Text style={styles.title} numberOfLines={1}>Asistencia</Text>
         {exportando ? <ActivityIndicator color={colors.primary} style={{ width: 32 }} /> : (
-          <Pressable onPress={() => exportar(vista)} hitSlop={8} style={styles.iconBtn}>
+          <Pressable accessibilityRole="button" accessibilityLabel="Descargar" onPress={() => exportar(vista)} hitSlop={8} style={styles.iconBtn}>
             <Ionicons name="download-outline" size={22} color={colors.primary} />
           </Pressable>
         )}
       </View>
 
       <View style={styles.exportRow}>
-        <Pressable onPress={() => exportar(vista)} disabled={exportando} style={styles.exportBtn}>
+        <Pressable accessibilityRole="button" onPress={() => exportar(vista)} disabled={exportando} style={styles.exportBtn}>
           <Ionicons name="document-text-outline" size={14} color={colors.primary} />
           <Text style={styles.exportTxt}>Excel · {vista === 'hoy' ? 'diaria' : vista === 'semana' ? 'semanal' : 'mensual'}</Text>
         </Pressable>
-        <Pressable onPress={() => exportar('total')} disabled={exportando} style={styles.exportBtn}>
+        <Pressable accessibilityRole="button" onPress={() => exportar('total')} disabled={exportando} style={styles.exportBtn}>
           <Ionicons name="documents-outline" size={14} color={colors.primary} />
           <Text style={styles.exportTxt}>Excel · total</Text>
         </Pressable>
@@ -227,7 +227,7 @@ export function AsistenciaScreen({ projectId }: { projectId: string }) {
 
       <View style={styles.tabs}>
         {VISTAS.map((v) => (
-          <Pressable key={v.value} onPress={() => cambiarVista(v.value)} style={[styles.tab, vista === v.value && styles.tabOn]}>
+          <Pressable accessibilityRole="button" key={v.value} onPress={() => cambiarVista(v.value)} style={[styles.tab, vista === v.value && styles.tabOn]}>
             <Text style={[styles.tabTxt, vista === v.value && styles.tabTxtOn]}>{v.label}</Text>
           </Pressable>
         ))}
@@ -235,11 +235,11 @@ export function AsistenciaScreen({ projectId }: { projectId: string }) {
 
       {vista !== 'hoy' ? (
         <View style={styles.nav}>
-          <Pressable onPress={() => mover(-1)} hitSlop={8} style={styles.iconBtn}>
+          <Pressable accessibilityRole="button" accessibilityLabel="Volver" onPress={() => mover(-1)} hitSlop={8} style={styles.iconBtn}>
             <Ionicons name="chevron-back" size={22} color={colors.primary} />
           </Pressable>
           <Text style={styles.navTxt}>{tituloPeriodo(vista, desde, hasta)}</Text>
-          <Pressable onPress={() => mover(1)} hitSlop={8} style={styles.iconBtn}>
+          <Pressable accessibilityRole="button" accessibilityLabel="Siguiente" onPress={() => mover(1)} hitSlop={8} style={styles.iconBtn}>
             <Ionicons name="chevron-forward" size={22} color={colors.primary} />
           </Pressable>
         </View>
@@ -260,7 +260,7 @@ export function AsistenciaScreen({ projectId }: { projectId: string }) {
         {data && vista === 'hoy' ? (
           <>
             {esSub && !miRegistroHoy ? (
-              <Pressable onPress={registrarMia} disabled={registrando} style={({ pressed }) => [styles.checkin, pressed && { opacity: 0.85 }]}>
+              <Pressable accessibilityRole="button" onPress={registrarMia} disabled={registrando} style={({ pressed }) => [styles.checkin, pressed && { opacity: 0.85 }]}>
                 {registrando ? <ActivityIndicator color={colors.textInverse} /> : <Ionicons name="location" size={20} color={colors.textInverse} />}
                 <Text style={styles.checkinTxt}>Registrar mi asistencia</Text>
               </Pressable>
@@ -288,7 +288,7 @@ export function AsistenciaScreen({ projectId }: { projectId: string }) {
 
       <Modal visible={!!sel} transparent animationType="fade" onRequestClose={() => setSel(null)}>
         <Pressable style={styles.backdrop} onPress={() => setSel(null)}>
-          <Pressable style={styles.sheet} onPress={() => {}}>
+          <Pressable accessibilityRole="button" style={styles.sheet} onPress={() => {}}>
             {sel && data ? (
               <Detalle
                 sel={sel} data={data} nota={nota} setNota={setNota} guardando={guardando}
@@ -322,7 +322,7 @@ function SeccionHoy({ titulo, personas, data, onTap }: {
         const c = celdaDe(p, data.hoy, data);
         const reg = data.registros[`${p.id}|${data.hoy}`];
         return (
-          <Pressable key={p.id} onPress={() => onTap(p, data.hoy)} style={({ pressed }) => [styles.card, pressed && { opacity: 0.85 }]}>
+          <Pressable accessibilityRole="button" key={p.id} onPress={() => onTap(p, data.hoy)} style={({ pressed }) => [styles.card, pressed && { opacity: 0.85 }]}>
             <CeldaIcon c={c} size={26} />
             <View style={{ flex: 1 }}>
               <Text style={styles.nombre} numberOfLines={1}>{p.name}</Text>
@@ -384,7 +384,7 @@ function Tabla({ data, subs, esps, onTap }: {
           {filas.map((p) => (
             <View key={p.id} style={styles.fila}>
               {lista.map((f) => (
-                <Pressable key={f} onPress={() => onTap(p, f)} style={[styles.celda, f === data.hoy && styles.celdaHoy]}>
+                <Pressable accessibilityRole="button" key={f} onPress={() => onTap(p, f)} style={[styles.celda, f === data.hoy && styles.celdaHoy]}>
                   <CeldaIcon c={celdaDe(p, f, data)} size={18} />
                 </Pressable>
               ))}
@@ -422,13 +422,13 @@ function Detalle({ sel, data, nota, setNota, guardando, editable, onGuardar, onC
           <Text style={styles.nombre}>{sel.p.name}</Text>
           <Text style={styles.sub}>{DIA_NOMBRE[d.day()]} {d.date()} de {MESES[d.month()]} · {estadoTxt}</Text>
         </View>
-        <Pressable onPress={onCerrar} hitSlop={8}><Ionicons name="close" size={22} color={colors.textMuted} /></Pressable>
+        <Pressable accessibilityRole="button" accessibilityLabel="Cerrar" onPress={onCerrar} hitSlop={8}><Ionicons name="close" size={22} color={colors.textMuted} /></Pressable>
       </View>
 
       {reg?.hora ? <Text style={styles.det}>Hora: {reg.hora} h</Text> : null}
       {reg?.ubicacion ? <Text style={styles.det}>Ubicación: {reg.ubicacion}</Text> : null}
       {reg?.lat != null && reg?.lon != null ? (
-        <Pressable onPress={() => Linking.openURL(`https://www.google.com/maps/search/?api=1&query=${reg.lat},${reg.lon}`)}>
+        <Pressable accessibilityRole="button" onPress={() => Linking.openURL(`https://www.google.com/maps/search/?api=1&query=${reg.lat},${reg.lon}`)}>
           <Text style={styles.link}>Ver en el mapa</Text>
         </Pressable>
       ) : null}
@@ -447,7 +447,7 @@ function Detalle({ sel, data, nota, setNota, guardando, editable, onGuardar, onC
             <BtnEstado txt="Falta" color={colors.error} onPress={() => onGuardar('falta')} disabled={guardando} />
           </View>
           {reg?.fuente === 'manual' ? (
-            <Pressable onPress={() => onGuardar('auto')} disabled={guardando} style={styles.reset}>
+            <Pressable accessibilityRole="button" onPress={() => onGuardar('auto')} disabled={guardando} style={styles.reset}>
               <Text style={styles.resetTxt}>Restablecer a lo que dicen los reportes</Text>
             </Pressable>
           ) : null}
@@ -459,7 +459,7 @@ function Detalle({ sel, data, nota, setNota, guardando, editable, onGuardar, onC
 
 function BtnEstado({ txt, color, onPress, disabled }: { txt: string; color: string; onPress: () => void; disabled?: boolean }) {
   return (
-    <Pressable onPress={onPress} disabled={disabled} style={({ pressed }) => [styles.btnEstado, { backgroundColor: color }, (pressed || disabled) && { opacity: 0.7 }]}>
+    <Pressable accessibilityRole="button" onPress={onPress} disabled={disabled} style={({ pressed }) => [styles.btnEstado, { backgroundColor: color }, (pressed || disabled) && { opacity: 0.7 }]}>
       <Text style={styles.btnEstadoTxt}>{txt}</Text>
     </Pressable>
   );

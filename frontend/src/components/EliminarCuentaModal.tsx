@@ -1,6 +1,6 @@
 // Confirmación de "Eliminar mi cuenta": exige la contraseña y muestra el error
-// junto al campo. El borrado real es POST /auth/delete_account, que anonimiza
-// al usuario en el servidor (los reportes quedan firmados "Usuario eliminado").
+// junto al campo (Alert.alert no funciona en web). El borrado real es el
+// endpoint POST /auth/delete_account, que anonimiza al usuario en el servidor.
 import React, { useState } from 'react';
 import { KeyboardAvoidingView, Modal, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { router } from 'expo-router';
@@ -8,7 +8,11 @@ import { Ionicons } from '@expo/vector-icons';
 import { api } from '@/src/api';
 import { useAuth } from '@/src/auth-context';
 import { Button } from '@/src/components/Button';
+import { InlineError } from '@/src/components/InlineError';
+import { t } from '@/src/i18n';
 import { colors, radius, spacing } from '@/src/theme';
+import { esErrorDeRed } from '@/src/utils/errores';
+import { showToast } from '@/src/utils/toast';
 
 export function EliminarCuentaModal({ visible, onClose }: { visible: boolean; onClose: () => void }) {
   const { logout } = useAuth();
@@ -28,7 +32,7 @@ export function EliminarCuentaModal({ visible, onClose }: { visible: boolean; on
   async function onConfirmar() {
     if (busy) return;
     if (!password) {
-      setError('Escribe tu contraseña para confirmar.');
+      setError(t('cuenta.eliminarPasswordVacia'));
       return;
     }
     setBusy(true);
@@ -38,7 +42,8 @@ export function EliminarCuentaModal({ visible, onClose }: { visible: boolean; on
       await logout();
       router.replace('/(auth)/login');
     } catch (e: any) {
-      setError(e?.message || 'No se pudo eliminar la cuenta. Inténtalo de nuevo.');
+      if (esErrorDeRed(e)) showToast(t('red.errorDeRed'));
+      else setError(e?.message || t('errores.solicitudInvalida'));
     } finally {
       setBusy(false);
     }
@@ -51,13 +56,10 @@ export function EliminarCuentaModal({ visible, onClose }: { visible: boolean; on
           <View style={styles.iconWrap}>
             <Ionicons name="warning" size={28} color={colors.error} />
           </View>
-          <Text style={styles.title} accessibilityRole="header">Eliminar mi cuenta</Text>
-          <Text style={styles.body}>
-            Se borrarán tu correo, nombre, teléfono y contraseña, y ya no podrás entrar. Los reportes y minutas que
-            capturaste se conservan en el proyecto como «Usuario eliminado». Esta acción no se puede deshacer.
-          </Text>
+          <Text style={styles.title} accessibilityRole="header">{t('cuenta.eliminarTitulo')}</Text>
+          <Text style={styles.body}>{t('cuenta.eliminarAviso')}</Text>
 
-          <Text style={styles.label}>Tu contraseña</Text>
+          <Text style={styles.label}>{t('cuenta.eliminarPassword')}</Text>
           <View style={[styles.inputWrap, error ? styles.inputError : null]}>
             <TextInput
               value={password}
@@ -69,23 +71,23 @@ export function EliminarCuentaModal({ visible, onClose }: { visible: boolean; on
               style={styles.input}
               returnKeyType="go"
               onSubmitEditing={onConfirmar}
-              accessibilityLabel="Tu contraseña"
+              accessibilityLabel={t('cuenta.eliminarPassword')}
             />
             <Pressable
               onPress={() => setVerPassword((v) => !v)}
               hitSlop={8}
               style={styles.eye}
               accessibilityRole="button"
-              accessibilityLabel={verPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'}
+              accessibilityLabel={verPassword ? t('cuenta.ocultarPassword') : t('cuenta.mostrarPassword')}
             >
               <Ionicons name={verPassword ? 'eye-off-outline' : 'eye-outline'} size={20} color={colors.textMuted} />
             </Pressable>
           </View>
-          {error ? <Text style={styles.errorText}>{error}</Text> : null}
+          <InlineError message={error} style={{ marginTop: spacing.sm }} />
 
           <View style={styles.actions}>
-            <Button label="Cancelar" variant="secondary" onPress={cerrar} disabled={busy} style={{ flex: 1 }} />
-            <Button label="Eliminar" variant="danger" onPress={onConfirmar} loading={busy} style={{ flex: 1 }} />
+            <Button label={t('cuenta.cancelar')} variant="secondary" onPress={cerrar} disabled={busy} style={{ flex: 1 }} />
+            <Button label={t('cuenta.eliminarConfirmar')} variant="danger" onPress={onConfirmar} loading={busy} style={{ flex: 1 }} />
           </View>
         </View>
       </KeyboardAvoidingView>
@@ -104,6 +106,5 @@ const styles = StyleSheet.create({
   inputError: { borderColor: colors.error },
   input: { flex: 1, paddingVertical: 12, fontSize: 15, color: colors.text },
   eye: { minWidth: 44, minHeight: 44, alignItems: 'center', justifyContent: 'center' },
-  errorText: { fontSize: 12, color: colors.error, marginTop: 4 },
   actions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md },
 });

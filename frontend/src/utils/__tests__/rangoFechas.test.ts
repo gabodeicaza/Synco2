@@ -3,21 +3,26 @@ import {
   rangoEstaSemana, rangoEsteMes, rangoMesAnterior, formatearRangoLegible, validarRango, marcarPeriodoCalendario,
 } from '../rangoFechas';
 
-describe('rangoEstaSemana — domingo de la semana actual → hoy (misma convención que el backend)', () => {
-  it('un miércoles: el domingo es 3 días atrás', () => {
-    // 2026-03-11 es miércoles, 2026-03-08 es domingo (verificado con `date -d ... +%A`).
+describe('rangoEstaSemana — lunes de la semana actual → hoy (la semana va de lunes a domingo)', () => {
+  it('un miércoles: el lunes es 2 días atrás', () => {
+    // 2026-03-11 es miércoles, 2026-03-09 es lunes.
     const hoy = dayjs('2026-03-11');
-    expect(rangoEstaSemana(hoy)).toEqual({ desde: '2026-03-08', hasta: '2026-03-11' });
+    expect(rangoEstaSemana(hoy)).toEqual({ desde: '2026-03-09', hasta: '2026-03-11' });
   });
 
-  it('un domingo: el rango es un solo día (el domingo es hoy mismo, nunca salta al que viene)', () => {
+  it('un lunes: el rango es un solo día (el lunes es hoy mismo)', () => {
+    const hoy = dayjs('2026-03-09'); // lunes
+    expect(rangoEstaSemana(hoy)).toEqual({ desde: '2026-03-09', hasta: '2026-03-09' });
+  });
+
+  it('un domingo: cierra la semana que empezó el lunes, 6 días atrás', () => {
     const hoy = dayjs('2026-03-08'); // domingo
-    expect(rangoEstaSemana(hoy)).toEqual({ desde: '2026-03-08', hasta: '2026-03-08' });
+    expect(rangoEstaSemana(hoy)).toEqual({ desde: '2026-03-02', hasta: '2026-03-08' });
   });
 
-  it('un sábado: el domingo es el de la semana que TERMINA hoy, 6 días atrás', () => {
+  it('un sábado', () => {
     const hoy = dayjs('2026-03-07'); // sábado
-    expect(rangoEstaSemana(hoy)).toEqual({ desde: '2026-03-01', hasta: '2026-03-07' });
+    expect(rangoEstaSemana(hoy)).toEqual({ desde: '2026-03-02', hasta: '2026-03-07' });
   });
 });
 

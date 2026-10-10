@@ -1,10 +1,10 @@
-// SynCo v2.0 _ Tab "Noticias" del Especialista / Sub-Coord.
+// Dirac · Tab "Noticias" del Especialista / Sub-Coord.
 // Cualquier miembro del proyecto puede crear noticias. El autor o el Coord
-// pueden editar/eliminar/fijar. Toda noticia (fijada o no) desaparece sola
-// 24h despues de publicada _ el backend deja de listarla pasado ese plazo.
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+// pueden editar/eliminar/fijar. Toda noticia (fijada o no) desaparece sola al
+// cumplirse su vigencia (6 h, 24 h por defecto, 48 h o 7 días); el backend deja de listarla.
+import React, { useCallback, useEffect, useState } from 'react';
 import {
-  ActivityIndicator, Alert, AppState, AppStateStatus, KeyboardAvoidingView,
+  ActivityIndicator, Alert, KeyboardAvoidingView,
   Modal, Platform, Pressable, RefreshControl, ScrollView, StatusBar,
   StyleSheet, Switch, Text, TextInput, View,
 } from 'react-native';
@@ -12,16 +12,30 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useAuth } from '@/src/auth-context';
+import { useProyectoActivo } from '@/src/proyecto-activo-context';
 import { api, Announcement, Area, LocationNode } from '@/src/api';
 import { colors, radius, shadow, spacing } from '@/src/theme';
+import { a11y, t } from '@/src/i18n';
+import { fmtFecha } from '@/src/utils/fechas';
+import { usePollingConFoco } from '@/src/hooks/usePollingConFoco';
+import { VigenciaSelector } from '@/src/components/VigenciaSelector';
+import {
+  etiquetaVigencia, textoTiempoRestante, VigenciaHoras, vigenciaParaGuardar, vigenciaValida, VIGENCIA_POR_DEFECTO,
+} from '@/src/utils/vigenciaNoticias';
 
 const POLL_MS = 60000;
 
-const JERARQUIA_COLORS: Record<string, { bg: string; bd: string; fg: string; label: string; icon: any }> = {
-  urgente: { bg: '#FEE2E2', bd: '#EF4444', fg: '#991B1B', label: 'Urgente', icon: 'flame' },
-  importante: { bg: '#FEF3C7', bd: '#F59E0B', fg: '#92400E', label: 'Importante', icon: 'warning' },
-  informativo: { bg: '#DBEAFE', bd: '#3B82F6', fg: '#1E40AF', label: 'Informativo', icon: 'information-circle' },
+const JERARQUIA_COLORS: Record<string, { bg: string; bd: string; fg: string; icon: any }> = {
+  urgente: { bg: '#FEE2E2', bd: '#EF4444', fg: '#991B1B', icon: 'flame' },
+  importante: { bg: '#FEF3C7', bd: '#F59E0B', fg: '#92400E', icon: 'warning' },
+  informativo: { bg: '#DBEAFE', bd: '#3B82F6', fg: '#1E40AF', icon: 'information-circle' },
 };
+
+function jerarquiaLabel(clave: string): string {
+  if (clave === 'urgente') return t('noticias.urgente');
+  if (clave === 'importante') return t('noticias.importante');
+  return t('noticias.informativo');
+}
 
 type EditorState =
   | { kind: 'create' }
@@ -31,7 +45,9 @@ type EditorState =
 export default function NoticiasScreen() {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
-  const projectId = (user?.project_ids || [])[0] || '';
+  // P-05: mismo proyecto activo que Minutas, Mensajes y Calendario (con respaldo al primero del usuario).
+  const { proyectoId } = useProyectoActivo();
+  const projectId = proyectoId || (user?.project_ids || [])[0] || '';
   const isCoord = user?.role === 'coordinador_general';
 
   const [items, setItems] = useState<Announcement[]>([]);
@@ -41,17 +57,16 @@ export default function NoticiasScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [editor, setEditor] = useState<EditorState>(null);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const load = useCallback(async (silent = false) => {
-    if (!projectId) { setLoading(false); setError('Sin proyecto asignado'); return; }
+    if (!projectId) { setLoading(false); setError(t('noticias.sinProyecto')); return; }
     try {
       if (!silent) setLoading(true);
       setError(null);
       const data = await api.listAnnouncements(projectId);
       setItems(data);
     } catch (e: any) {
-      setError(e?.message || 'No se pudieron cargar las noticias');
+      setError(e?.message || t('noticias.noSeCargaron'));
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -66,33 +81,21 @@ export default function NoticiasScreen() {
     api.listNodes(projectId).then(setNodes).catch(() => setNodes([]));
   }, [projectId]);
 
-  useEffect(() => {
-    function start() {
-      if (pollRef.current) return;
-      pollRef.current = setInterval(() => { load(true); }, POLL_MS);
-    }
-    function stop() {
-      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
-    }
-    start();
-    const sub = AppState.addEventListener('change', (s: AppStateStatus) => {
-      if (s === 'active') { load(true); start(); } else { stop(); }
-    });
-    return () => { stop(); sub.remove(); };
-  }, [load]);
+  // G-07: solo consulta con la pestaña enfocada y la app activa.
+  usePollingConFoco(() => { load(true); }, POLL_MS);
 
   const onDelete = useCallback((it: Announcement) => {
     const confirm = () => {
       api.deleteAnnouncement(it.id).then(() => load(true)).catch((e) => {
-        Alert.alert('Error', e?.message || 'No se pudo eliminar');
+        Alert.alert(t('noticias.error'), e?.message || t('noticias.noSeElimino'));
       });
     };
     if (Platform.OS === 'web') {
-      if (typeof window !== 'undefined' && window.confirm('?Eliminar esta noticia? Esta accion no se puede deshacer.')) confirm();
+      if (typeof window !== 'undefined' && window.confirm(t('noticias.eliminarPreguntaWeb'))) confirm();
     } else {
-      Alert.alert('Eliminar noticia', '?Seguro que deseas eliminarla?', [
-        { text: 'Cancelar', style: 'cancel' },
-        { text: 'Eliminar', style: 'destructive', onPress: confirm },
+      Alert.alert(t('noticias.eliminarTitulo'), t('noticias.eliminarPregunta'), [
+        { text: t('noticias.cancelar'), style: 'cancel' },
+        { text: t('noticias.eliminar'), style: 'destructive', onPress: confirm },
       ]);
     }
   }, [load]);
@@ -107,10 +110,10 @@ export default function NoticiasScreen() {
           <Ionicons name="newspaper" size={18} color="#fff" />
         </View>
         <View style={{ flex: 1 }}>
-          <Text style={styles.headerTitle}>Noticias</Text>
-          <Text style={styles.headerSubtitle}>Anuncios del equipo del proyecto</Text>
+          <Text style={styles.headerTitle}>{t('noticias.titulo')}</Text>
+          <Text style={styles.headerSubtitle}>{t('noticias.subtitulo')}</Text>
         </View>
-        <Pressable onPress={() => load(false)} hitSlop={10} style={styles.refreshBtn}>
+        <Pressable accessibilityRole="button" accessibilityLabel={a11y('actualizar')} onPress={() => load(false)} hitSlop={10} style={styles.refreshBtn}>
           <Ionicons name="refresh" size={18} color="#fff" />
         </Pressable>
       </View>
@@ -133,8 +136,8 @@ export default function NoticiasScreen() {
           <View style={styles.errorBox}>
             <Ionicons name="alert-circle-outline" size={22} color={colors.error} />
             <Text style={styles.errorTxt}>{error}</Text>
-            <Pressable onPress={() => load(false)} style={styles.retryBtn}>
-              <Text style={styles.retryTxt}>Reintentar</Text>
+            <Pressable accessibilityRole="button" onPress={() => load(false)} style={styles.retryBtn}>
+              <Text style={styles.retryTxt}>{t('noticias.reintentar')}</Text>
             </Pressable>
           </View>
         ) : items.length === 0 ? (
@@ -142,10 +145,8 @@ export default function NoticiasScreen() {
             <View style={styles.emptyIcon}>
               <Ionicons name="newspaper-outline" size={28} color={colors.primary} />
             </View>
-            <Text style={styles.emptyTitle}>Aun no hay noticias</Text>
-            <Text style={styles.emptyMsg}>
-              Toca el boton "+" para publicar el primer anuncio del proyecto.
-            </Text>
+            <Text style={styles.emptyTitle}>{t('noticias.vacioTitulo')}</Text>
+            <Text style={styles.emptyMsg}>{t('noticias.vacioMensaje')}</Text>
           </View>
         ) : (
           items.map((a) => (
@@ -161,7 +162,7 @@ export default function NoticiasScreen() {
                   ? () => {
                       api.updateAnnouncement(a.id, { pinned: !a.pinned })
                         .then(() => load(true))
-                        .catch((e) => Alert.alert('Error', e?.message || 'No se pudo actualizar'));
+                        .catch((e) => Alert.alert(t('noticias.error'), e?.message || t('noticias.noSeActualizo')));
                     }
                   : undefined
               }
@@ -170,7 +171,7 @@ export default function NoticiasScreen() {
         )}
       </ScrollView>
 
-      <Pressable onPress={() => setEditor({ kind: 'create' })} style={[styles.fab, { bottom: insets.bottom + 16 }]}>
+      <Pressable accessibilityRole="button" accessibilityLabel={a11y('agregar')} hitSlop={8} onPress={() => setEditor({ kind: 'create' })} style={[styles.fab, { bottom: insets.bottom + 16 }]}>
         <Ionicons name="add" size={26} color="#fff" />
       </Pressable>
 
@@ -216,16 +217,20 @@ function AnnouncementCard({
         {item.pinned ? (
           <View style={styles.pinnedRow}>
             <Ionicons name="pin" size={11} color={colors.primary} />
-            <Text style={styles.pinnedTxt}>Fijado</Text>
+            <Text style={styles.pinnedTxt}>{t('noticias.fijado')}</Text>
           </View>
         ) : null}
         {item.expires_at ? (
-          <Text style={styles.expiresTxt}>{formatExpiry(item.expires_at)}</Text>
+          <Text style={styles.expiresTxt}>
+            {t('noticiasVigencia.vigenciaCorta', { vigencia: etiquetaVigencia(vigenciaValida(item.vigencia_horas)) })}
+            {' · '}
+            {textoTiempoRestante(item.expires_at)}
+          </Text>
         ) : null}
         {jStyle ? (
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: jStyle.bd, paddingHorizontal: 8, paddingVertical: 2, borderRadius: 999 }}>
             <Ionicons name={jStyle.icon} size={11} color="#fff" />
-            <Text style={{ color: '#fff', fontSize: 10, fontWeight: '800', letterSpacing: 0.5 }}>{jStyle.label.toUpperCase()}</Text>
+            <Text style={{ color: '#fff', fontSize: 10, fontWeight: '800', letterSpacing: 0.5 }}>{jerarquiaLabel(jq).toUpperCase()}</Text>
           </View>
         ) : null}
         {audLabel ? (
@@ -240,21 +245,21 @@ function AnnouncementCard({
       <View style={styles.cardMeta}>
         <Ionicons name="person-circle-outline" size={13} color={colors.textMuted} />
         <Text style={styles.cardMetaTxt}>{item.author_name}</Text>
-        <Text style={styles.cardMetaDot}>_</Text>
+        <Text style={styles.cardMetaDot}>—</Text>
         <Ionicons name="time-outline" size={12} color={colors.textMuted} />
         <Text style={styles.cardMetaTxt}>{formatDate(item.created_at)}</Text>
         <View style={{ flex: 1 }} />
         {onTogglePin ? (
-          <Pressable hitSlop={8} onPress={onTogglePin} style={styles.iconBtn}>
+          <Pressable accessibilityRole="button" accessibilityLabel={a11y(item.pinned ? 'desfijar' : 'fijar')} hitSlop={8} onPress={onTogglePin} style={styles.iconBtn}>
             <Ionicons name={item.pinned ? 'pin' : 'pin-outline'} size={16} color={colors.primary} />
           </Pressable>
         ) : null}
         {canEdit ? (
           <>
-            <Pressable hitSlop={8} onPress={onEdit} style={styles.iconBtn}>
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y('editar')} hitSlop={8} onPress={onEdit} style={styles.iconBtn}>
               <Ionicons name="create-outline" size={16} color={colors.primary} />
             </Pressable>
-            <Pressable hitSlop={8} onPress={onDelete} style={styles.iconBtn}>
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y('eliminar')} hitSlop={8} onPress={onDelete} style={styles.iconBtn}>
               <Ionicons name="trash-outline" size={16} color={colors.error} />
             </Pressable>
           </>
@@ -283,11 +288,13 @@ function AnnouncementEditor({
   const [jerarquia, setJerarquia] = useState<'urgente' | 'importante' | 'informativo' | null>(null);
   const [audiencia, setAudiencia] = useState<string | null>(null);
   const [nodeId, setNodeId] = useState<string | null>(null);
+  const [vigencia, setVigencia] = useState<VigenciaHoras>(VIGENCIA_POR_DEFECTO);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
     if (!visible) return;
+    setVigencia(editor?.kind === 'edit' ? vigenciaValida(editor.item.vigencia_horas) : VIGENCIA_POR_DEFECTO);
     if (editor?.kind === 'edit') {
       setTitle(editor.item.title);
       setBody(editor.item.body);
@@ -304,26 +311,29 @@ function AnnouncementEditor({
 
   async function submit() {
     setErr(null);
-    const t = title.trim();
+    const titulo = title.trim();
     const b = body.trim();
-    if (!t) { setErr('Titulo obligatorio'); return; }
-    if (!b) { setErr('Cuerpo obligatorio'); return; }
+    if (!titulo) { setErr(t('noticias.tituloObligatorio')); return; }
+    if (!b) { setErr(t('noticias.contenidoObligatorio')); return; }
     setBusy(true);
     try {
-      const payload: any = { title: t, body: b, jerarquia, audiencia, node_id: nodeId };
+      const payload: any = { title: titulo, body: b, jerarquia, audiencia, node_id: nodeId };
       if (canPin) payload.pinned = pinned;
 
       if (editor?.kind === 'edit') {
+        // La vigencia solo se manda si cambió: cambiarla reinicia el plazo desde este momento.
+        Object.assign(payload, vigenciaParaGuardar(vigencia, vigenciaValida(editor.item.vigencia_horas)));
         await api.updateAnnouncement(editor.item.id, payload);
       } else {
+        payload.vigencia_horas = vigencia;
         await api.createAnnouncement(projectId, payload);
       }
       // [FIX 2026-07] Notificacion local inmediata
       const { triggerLocalNotification } = await import('@/src/utils/pushNotifications');
-      triggerLocalNotification('__ Nueva Noticia', `Se ha publicado: ${t.trim()}`);
+      triggerLocalNotification(t('noticias.notificacionTitulo'), t('noticias.notificacionCuerpo', { titulo }));
       onSaved();
     } catch (e: any) {
-      setErr(e?.message || 'No se pudo guardar');
+      setErr(e?.message || t('noticias.noSeGuardo'));
     } finally {
       setBusy(false);
     }
@@ -336,39 +346,39 @@ function AnnouncementEditor({
           <View style={[styles.modalCard, { paddingBottom: insets.bottom + spacing.md }]}>
             <View style={styles.modalHead}>
               <Text style={styles.modalTitle}>
-                {editor?.kind === 'edit' ? 'Editar noticia' : 'Nueva noticia'}
+                {editor?.kind === 'edit' ? t('noticias.editar') : t('noticias.nueva')}
               </Text>
-              <Pressable onPress={onClose} hitSlop={10}>
+              <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} onPress={onClose} hitSlop={10}>
                 <Ionicons name="close" size={22} color={colors.textBody} />
               </Pressable>
             </View>
             <ScrollView style={{ maxHeight: 460 }} contentContainerStyle={{ gap: spacing.sm }}>
-              <Text style={styles.modalLabel}>Titulo</Text>
+              <Text style={styles.modalLabel}>{t('noticias.tituloEtiqueta')}</Text>
               <TextInput
                 value={title} onChangeText={setTitle}
-                placeholder="Ej. Suspension de actividades 18-jul"
+                placeholder={t('noticias.tituloEjemplo')}
                 placeholderTextColor={colors.textMuted}
                 style={styles.modalInput} editable={!busy} maxLength={140}
               />
-              <Text style={styles.modalLabel}>Cuerpo</Text>
+              <Text style={styles.modalLabel}>{t('noticias.contenidoEtiqueta')}</Text>
               <TextInput
                 value={body} onChangeText={setBody}
-                placeholder="Contenido completo del anuncio_"
+                placeholder={t('noticias.contenidoEjemplo')}
                 placeholderTextColor={colors.textMuted}
                 style={[styles.modalInput, { minHeight: 120, textAlignVertical: 'top' }]}
                 multiline editable={!busy} maxLength={4000}
               />
-              <Text style={styles.modalLabel}>Jerarquia (opcional)</Text>
+              <Text style={styles.modalLabel}>{t('noticias.jerarquiaOpcional')}</Text>
               <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
                 {[
-                  { key: null, label: 'Ninguna', bd: colors.textMuted },
-                  { key: 'urgente', label: 'Urgente', bd: '#EF4444' },
-                  { key: 'importante', label: 'Importante', bd: '#F59E0B' },
-                  { key: 'informativo', label: 'Informativo', bd: '#3B82F6' },
+                  { key: null, label: t('noticias.ninguna'), bd: colors.textMuted },
+                  { key: 'urgente', label: t('noticias.urgente'), bd: '#EF4444' },
+                  { key: 'importante', label: t('noticias.importante'), bd: '#F59E0B' },
+                  { key: 'informativo', label: t('noticias.informativo'), bd: '#3B82F6' },
                 ].map((opt) => {
                   const active = jerarquia === opt.key;
                   return (
-                    <Pressable
+                    <Pressable accessibilityRole="button"
                       key={String(opt.key)}
                       onPress={() => setJerarquia(opt.key as any)}
                       disabled={busy}
@@ -383,9 +393,9 @@ function AnnouncementEditor({
                   );
                 })}
               </View>
-              <Text style={styles.modalLabel}>Audiencia (opcional)</Text>
+              <Text style={styles.modalLabel}>{t('noticias.audienciaOpcional')}</Text>
               <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-                <Pressable
+                <Pressable accessibilityRole="button"
                   onPress={() => setAudiencia(null)}
                   disabled={busy}
                   style={{
@@ -394,12 +404,12 @@ function AnnouncementEditor({
                     backgroundColor: audiencia === null ? colors.textMuted : 'transparent',
                   }}
                 >
-                  <Text style={{ color: audiencia === null ? '#fff' : colors.textMuted, fontWeight: '700', fontSize: 12 }}>Todos</Text>
+                  <Text style={{ color: audiencia === null ? '#fff' : colors.textMuted, fontWeight: '700', fontSize: 12 }}>{t('noticias.todos')}</Text>
                 </Pressable>
                 {areas.map((a) => {
                   const active = (audiencia || '').toLowerCase() === a.name.toLowerCase();
                   return (
-                    <Pressable
+                    <Pressable accessibilityRole="button"
                       key={a.id}
                       onPress={() => setAudiencia(a.name)}
                       disabled={busy}
@@ -418,18 +428,19 @@ function AnnouncementEditor({
                 <View style={styles.pinRow}>
                   <Ionicons name="pin" size={14} color={colors.primary} />
                   <View style={{ flex: 1 }}>
-                    <Text style={styles.pinLabel}>Fijar al inicio del feed</Text>
-                    <Text style={styles.pinHint}>La noticia dura maximo 24h, fijada o no</Text>
+                    <Text style={styles.pinLabel}>{t('noticias.fijarInicio')}</Text>
+                    <Text style={styles.pinHint}>{t('noticiasVigencia.ayudaFijado')}</Text>
                   </View>
                   <Switch value={pinned} onValueChange={setPinned} disabled={busy} />
                 </View>
               ) : null}
-              <Text style={styles.modalLabel}>Vincular a Nodo / Ubicacion (opcional)</Text>
+              <VigenciaSelector value={vigencia} onChange={setVigencia} disabled={busy} edicion={editor?.kind === 'edit'} />
+              <Text style={styles.modalLabel}>{t('noticias.vincular')}</Text>
               <Text style={{ fontSize: 11, color: colors.textMuted, marginTop: -4 }}>
-                Si la noticia es <Text style={{ fontWeight: '800' }}>Importante</Text> o <Text style={{ fontWeight: '800' }}>Urgente</Text>, aparecera como nota dentro de la seccion del nodo en las exportaciones.
+                {t('noticias.vincularAntes')}<Text style={{ fontWeight: '800' }}>{t('noticias.importante')}</Text>{t('noticias.vincularO')}<Text style={{ fontWeight: '800' }}>{t('noticias.urgente')}</Text>{t('noticias.vincularDespues')}
               </Text>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingVertical: 6 }}>
-                <Pressable
+                <Pressable accessibilityRole="button"
                   onPress={() => setNodeId(null)}
                   disabled={busy}
                   style={{
@@ -440,12 +451,12 @@ function AnnouncementEditor({
                   }}
                 >
                   <Ionicons name="remove-circle-outline" size={12} color={nodeId === null ? '#fff' : colors.textMuted} />
-                  <Text style={{ color: nodeId === null ? '#fff' : colors.textMuted, fontWeight: '700', fontSize: 12 }}>Sin nodo</Text>
+                  <Text style={{ color: nodeId === null ? '#fff' : colors.textMuted, fontWeight: '700', fontSize: 12 }}>{t('noticias.sinNodo')}</Text>
                 </Pressable>
                 {nodes.map((nd) => {
                   const active = nodeId === nd.id;
                   return (
-                    <Pressable
+                    <Pressable accessibilityRole="button"
                       key={nd.id}
                       onPress={() => setNodeId(nd.id)}
                       disabled={busy}
@@ -475,8 +486,8 @@ function AnnouncementEditor({
                 </View>
               ) : null}
             </ScrollView>
-            <Pressable onPress={submit} style={[styles.saveBtn, busy && { opacity: 0.7 }]} disabled={busy}>
-              {busy ? <ActivityIndicator color="#fff" /> : <Text style={styles.saveTxt}>{editor?.kind === 'edit' ? 'Guardar cambios' : 'Publicar'}</Text>}
+            <Pressable accessibilityRole="button" onPress={submit} style={[styles.saveBtn, busy && { opacity: 0.7 }]} disabled={busy}>
+              {busy ? <ActivityIndicator color="#fff" /> : <Text style={styles.saveTxt}>{editor?.kind === 'edit' ? t('noticias.guardarCambios') : t('noticias.publicar')}</Text>}
             </Pressable>
           </View>
         </KeyboardAvoidingView>
@@ -485,30 +496,19 @@ function AnnouncementEditor({
   );
 }
 
-function formatExpiry(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '';
-  const diff = d.getTime() - Date.now();
-  if (diff <= 0) return 'Por expirar';
-  const m = Math.round(diff / 60000);
-  if (m < 60) return `Vence en ${m} min`;
-  const h = Math.round(m / 60);
-  return `Vence en ${h} h`;
-}
-
 function formatDate(iso: string): string {
   const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '_';
+  if (Number.isNaN(d.getTime())) return '—';
   const now = Date.now();
   const diff = now - d.getTime();
   const m = Math.floor(diff / 60000);
-  if (m < 1) return 'Hace instantes';
-  if (m < 60) return `Hace ${m} min`;
+  if (m < 1) return t('noticias.haceInstantes');
+  if (m < 60) return t('noticias.haceMin', { n: m });
   const h = Math.floor(m / 60);
-  if (h < 24) return `Hace ${h} h`;
+  if (h < 24) return t('noticias.haceHoras', { n: h });
   const dy = Math.floor(h / 24);
-  if (dy < 7) return `Hace ${dy} d`;
-  return d.toLocaleDateString('es-MX', { day: '2-digit', month: 'short', year: 'numeric' });
+  if (dy < 7) return t('noticias.haceDias', { n: dy });
+  return fmtFecha(d);
 }
 
 const styles = StyleSheet.create({

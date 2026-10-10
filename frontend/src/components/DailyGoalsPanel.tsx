@@ -1,4 +1,4 @@
-// Panel de Metas Diarias Globales (SynCo v2 _ Sprint 2).
+// Panel de Metas Diarias Globales (Dirac · Sprint 2).
 // - Coordinador general y Sub-coordinador pueden crear / marcar / borrar metas.
 // - Especialistas en modo lectura.
 // - Persistencia via API /api/projects/{pid}/daily_goals.
@@ -11,6 +11,7 @@ import { api, DailyGoal } from '@/src/api';
 import { colors, radius, shadow, spacing } from '@/src/theme';
 import { useAuth } from '@/src/auth-context';
 import { confirm } from '@/src/utils/confirm';
+import { a11y } from '@/src/i18n';
 
 export function DailyGoalsPanel({ projectId }: { projectId: string }) {
   const { user } = useAuth();
@@ -69,7 +70,7 @@ export function DailyGoalsPanel({ projectId }: { projectId: string }) {
 
   async function onDelete(g: DailyGoal) {
     if (!canWrite) return;
-    const ok = await confirm('Eliminar meta', `?Quitar "${g.text}"?`, { confirmText: 'Eliminar', destructive: true });
+    const ok = await confirm('Eliminar meta', `¿Quitar "${g.text}"?`, { confirmText: 'Eliminar', destructive: true });
     if (!ok) return;
     try {
       await api.deleteDailyGoal(projectId, g.id);
@@ -90,9 +91,9 @@ export function DailyGoalsPanel({ projectId }: { projectId: string }) {
           <Ionicons name="checkmark-done" size={16} color="#fff" />
         </View>
         <View style={{ flex: 1 }}>
-          <Text style={styles.title}>Metas del dia</Text>
+          <Text style={styles.title}>Metas del día</Text>
           <Text style={styles.subtitle}>
-            {total === 0 ? 'Aun no hay metas registradas' : `${done}/${total} completadas _ ${pct}%`}
+            {total === 0 ? 'Aún no hay metas registradas' : `${done}/${total} completadas · ${pct}%`}
           </Text>
         </View>
         {!canWrite ? (
@@ -116,7 +117,7 @@ export function DailyGoalsPanel({ projectId }: { projectId: string }) {
         <View style={styles.errBox}>
           <Ionicons name="alert-circle-outline" size={16} color={colors.error} />
           <Text style={styles.errTxt}>{error}</Text>
-          <Pressable onPress={load} style={styles.retryBtn}>
+          <Pressable accessibilityRole="button" onPress={load} style={styles.retryBtn}>
             <Text style={styles.retryTxt}>Reintentar</Text>
           </Pressable>
         </View>
@@ -125,8 +126,8 @@ export function DailyGoalsPanel({ projectId }: { projectId: string }) {
           <Ionicons name="flag-outline" size={20} color={colors.textMuted} />
           <Text style={styles.emptyTxt}>
             {canWrite
-              ? 'Agrega la primera meta del dia para tu equipo.'
-              : 'Aun no se han publicado metas para hoy.'}
+              ? 'Agrega la primera meta del día para tu equipo.'
+              : 'Aún no se han publicado metas para hoy.'}
           </Text>
         </View>
       ) : (
@@ -134,7 +135,7 @@ export function DailyGoalsPanel({ projectId }: { projectId: string }) {
           {goals.map((g) => {
             const isLoading = togglingId === g.id;
             return (
-              <Pressable
+              <Pressable accessibilityRole="button"
                 key={g.id}
                 onPress={() => onToggle(g)}
                 disabled={!canWrite || isLoading}
@@ -157,7 +158,7 @@ export function DailyGoalsPanel({ projectId }: { projectId: string }) {
                   {g.text}
                 </Text>
                 {canWrite ? (
-                  <Pressable
+                  <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')}
                     onPress={() => onDelete(g)}
                     hitSlop={8}
                     style={styles.delBtn}
@@ -176,7 +177,7 @@ export function DailyGoalsPanel({ projectId }: { projectId: string }) {
           <TextInput
             value={text}
             onChangeText={setText}
-            placeholder="Nueva meta del dia_"
+            placeholder="Nueva meta del día…"
             placeholderTextColor={colors.textMuted}
             style={styles.input}
             editable={!busy}
@@ -184,7 +185,7 @@ export function DailyGoalsPanel({ projectId }: { projectId: string }) {
             returnKeyType="done"
             maxLength={140}
           />
-          <Pressable
+          <Pressable accessibilityRole="button" accessibilityLabel={a11y('agregar')} hitSlop={8}
             onPress={onAdd}
             disabled={busy || !text.trim()}
             style={({ pressed }) => [

@@ -92,7 +92,7 @@ export function FieldEditorModal({
         <View style={[styles.sheet, { paddingBottom: insets.bottom + spacing.md }]}>
           <View style={styles.sheetHead}>
             <Text style={styles.title}>{esNuevo ? 'Nuevo campo' : 'Editar campo'}</Text>
-            <Pressable onPress={onClose} hitSlop={10}><Ionicons name="close" size={22} color={colors.text} /></Pressable>
+            <Pressable accessibilityRole="button" accessibilityLabel="Cerrar" onPress={onClose} hitSlop={10}><Ionicons name="close" size={22} color={colors.text} /></Pressable>
           </View>
           <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ paddingBottom: spacing.md }}>
             <FieldLabel>Nombre del campo</FieldLabel>
@@ -109,7 +109,7 @@ export function FieldEditorModal({
             <FieldLabel>Tipo de campo</FieldLabel>
             <View style={styles.tipoGrid}>
               {CM_TIPOS.map((t) => (
-                <Pressable key={t.tipo} onPress={() => cambiarTipo(t.tipo)} style={[styles.tipoCard, tipo === t.tipo && styles.tipoCardOn]}>
+                <Pressable accessibilityRole="button" key={t.tipo} onPress={() => cambiarTipo(t.tipo)} style={[styles.tipoCard, tipo === t.tipo && styles.tipoCardOn]}>
                   <Ionicons name={t.icon} size={18} color={tipo === t.tipo ? '#fff' : colors.primary} />
                   <Text style={[styles.tipoTxt, tipo === t.tipo && { color: '#fff' }]} numberOfLines={2}>{t.label}</Text>
                 </Pressable>
@@ -137,7 +137,7 @@ export function FieldEditorModal({
                       onChangeText={(t) => set({ opciones: (d.opciones || []).map((x, j) => (j === i ? t : x)) })}
                       style={[inputStyle, { flex: 1 }]}
                     />
-                    <Pressable hitSlop={8} onPress={() => set({ opciones: (d.opciones || []).filter((_, j) => j !== i) })}>
+                    <Pressable accessibilityRole="button" accessibilityLabel="Eliminar" hitSlop={8} onPress={() => set({ opciones: (d.opciones || []).filter((_, j) => j !== i) })}>
                       <Ionicons name="trash-outline" size={18} color={colors.error} />
                     </Pressable>
                   </View>

@@ -10,7 +10,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { api, Project } from '@/src/api';
-import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
+import { colors, radius, shadow, spacing } from '@/src/theme';
+import { ScreenHeader } from '@/src/components/ScreenHeader';
 
 const ITEMS: { icon: keyof typeof Ionicons.glyphMap; label: string; subtitle: string; screen: string }[] = [
   { icon: 'create-outline', label: 'Registrar avance', subtitle: 'Captura de uso diario', screen: 'registrar-avance' },
@@ -43,26 +44,17 @@ export default function CatalogoConceptosHubScreen({
   useEffect(() => { load(); }, [load]);
 
   const headerColor = project?.color_institucional || project?.color_tema || colors.primary;
-  const headerTextColor = contrastText(headerColor);
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <View style={[styles.headerWrap, { backgroundColor: headerColor, paddingTop: insets.top + spacing.xs }]}>
-        <View style={styles.headerTopRow}>
-          <Pressable onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
-            <Ionicons name="chevron-back" size={22} color={headerTextColor} />
-          </Pressable>
-          <Text style={[styles.titleBar, { color: headerTextColor }]} numberOfLines={1}>Catálogo de Conceptos</Text>
-          <View style={{ width: 32 }} />
-        </View>
-      </View>
+      <ScreenHeader title="Catálogo de Conceptos" backgroundColor={headerColor} fallbackHref={basePath} />
 
       {loading ? (
         <View style={styles.center}><ActivityIndicator color={colors.primary} /></View>
       ) : (
         <ScrollView contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + spacing.xl }]}>
           {ITEMS.map((it) => (
-            <Pressable
+            <Pressable accessibilityRole="button"
               key={it.screen}
               style={styles.card}
               onPress={() => router.push({ pathname: `${basePath}/${it.screen}` as any, params: { project_id: projectId } })}
@@ -84,10 +76,6 @@ export default function CatalogoConceptosHubScreen({
 }
 
 const styles = StyleSheet.create({
-  headerWrap: { paddingHorizontal: spacing.md, paddingBottom: spacing.sm },
-  headerTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  iconBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
-  titleBar: { flex: 1, textAlign: 'center', fontWeight: '800', fontSize: 16, letterSpacing: 0.3 },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   scroll: { padding: spacing.md, gap: spacing.sm },
   card: {

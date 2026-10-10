@@ -403,3 +403,82 @@ test('cola mixta: 2 reportes + 2 avances; un fallo en avances no bloquea reporte
   expect(avancesLeft).toHaveLength(2); // los avances no se perdieron, solo quedaron 'failed'
   expect(avancesLeft.every((a) => a.status === 'failed')).toBe(true);
 });
+
+// ============================================================================
+// 11. Avances encolados: idempotencia y política de errores (T-05d)
+// ============================================================================
+const AVANCES_QUEUE_PATH = 'file:///fake-doc/synco_offline_avances_queue.json';
+
+test('un avance encolado viaja con su client_id y, una vez enviado, un segundo flush no lo reenvía', async () => {
+  const item = await enqueueAvance({ concepto_id: 'c1', cantidad_ejecutada: '5' });
+  await drainBackgroundFlush();
+  expect(item.payload.client_id).toBe(item.client_id);
+
+  netInfoFetch.mockResolvedValue({ isConnected: true, isInternetReachable: true });
+  requestMock.mockResolvedValue({ ok: true });
+
+  const primero = await flushAvanceQueue({ manual: true });
+  const segundo = await flushAvanceQueue({ manual: true });
+
+  expect(primero.synced).toBe(1);
+  expect(segundo.synced).toBe(0);
+  const enviados = requestMock.mock.calls.filter((c) => c[1] === '/avances');
+  expect(enviados).toHaveLength(1);
+  expect(enviados[0][2]).toEqual(expect.objectContaining({ concepto_id: 'c1', client_id: item.client_id }));
+  expect(await listQueuedAvances()).toHaveLength(0);
+});
+
+test('un avance guardado antes de existir el client_id en el payload se sigue enviando tal cual', async () => {
+  fsStore.set(AVANCES_QUEUE_PATH, JSON.stringify({
+    version: 1,
+    items: [{
+      client_id: 'cli_viejo', payload: { concepto_id: 'c9', cantidad_ejecutada: '2' },
+      created_at: '2026-08-01T10:00:00.000Z', status: 'pending', attempts: 0, autoRetry: true, last_error: null,
+    }],
+  }));
+  netInfoFetch.mockResolvedValue({ isConnected: true, isInternetReachable: true });
+  requestMock.mockResolvedValue({ ok: true });
+
+  const r = await flushAvanceQueue({ manual: true });
+
+  expect(r.synced).toBe(1);
+  expect(requestMock).toHaveBeenCalledWith('POST', '/avances', { concepto_id: 'c9', cantidad_ejecutada: '2' });
+  expect(await listQueuedAvances()).toHaveLength(0);
+});
+
+test('un avance que el servidor rechaza (4xx) queda como failed sin reintento automático y con su motivo', async () => {
+  const item = await enqueueAvance({ concepto_id: 'c1' });
+  await drainBackgroundFlush();
+  netInfoFetch.mockResolvedValue({ isConnected: true, isInternetReachable: true });
+  requestMock.mockRejectedValue(new ApiError(400, 'La cantidad debe ser mayor que cero.'));
+
+  const r = await flushAvanceQueue({ manual: true });
+
+  expect(r.failed).toBe(1);
+  const [guardado] = await listQueuedAvances();
+  expect(guardado.client_id).toBe(item.client_id);
+  expect(guardado.status).toBe('failed');
+  expect(guardado.autoRetry).toBe(false);
+  expect(guardado.last_error).toBe('La cantidad debe ser mayor que cero.');
+
+  // Un flush automático posterior no lo vuelve a intentar.
+  requestMock.mockClear();
+  await flushAvanceQueue({ manual: false });
+  expect(requestMock).not.toHaveBeenCalled();
+});
+
+test('un error de red conserva el avance como pending y corta el lote', async () => {
+  await enqueueAvance({ concepto_id: 'c1' });
+  await enqueueAvance({ concepto_id: 'c2' });
+  await drainBackgroundFlush();
+  netInfoFetch.mockResolvedValue({ isConnected: true, isInternetReachable: true });
+  requestMock.mockRejectedValue(new TypeError('Network request failed'));
+
+  const r = await flushAvanceQueue({ manual: true });
+
+  expect(r.synced).toBe(0);
+  expect(requestMock).toHaveBeenCalledTimes(1); // no insiste con el resto
+  const guardados = await listQueuedAvances();
+  expect(guardados).toHaveLength(2);
+  expect(guardados.every((a) => a.status === 'pending')).toBe(true);
+});

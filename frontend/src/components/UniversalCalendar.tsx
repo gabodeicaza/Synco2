@@ -1,21 +1,22 @@
-// SynCo v2.0 _ UniversalCalendar
+// Dirac · UniversalCalendar
 // Componente universal de calendario (Especialista / Sub-coordinador / Coordinador General).
 // - Calendario visual mensual (react-native-calendars) con LocaleConfig en espanol.
 // - Multi-dot por disciplina/area usando areaTone() para reflejar la jerarquia de colores.
-// - Modal "Nuevo / Editar evento" con @react-native-community/datetimepicker nativo (iOS/Android).
-//   En web (sin soporte nativo del picker en este SDK), se ofrece fallback con TextInput.
+// - El alta y edición de eventos usa el formulario común EventoForm.
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  ActivityIndicator, Alert, KeyboardAvoidingView, Modal, Platform, Pressable,
-  RefreshControl, ScrollView, StyleSheet, Text, TextInput, View,
+  ActivityIndicator, Alert, Platform, Pressable,
+  RefreshControl, ScrollView, StyleSheet, Text, View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Calendar, LocaleConfig } from 'react-native-calendars';
-import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 
 import { api, Area, ProjectEvent, User } from '@/src/api';
-import { colors, radius, shadow, spacing, areaTone } from '@/src/theme';
+import { EventoForm } from '@/src/components/EventoForm';
+import { colors, radius, shadow, spacing, areaTone, calendarioColores } from '@/src/theme';
 import { dayjs, CDMX_TZ, fmtTimeCDMX } from '@/src/utils/tz';
+import { diaDelEvento, esDiaCompleto } from '@/src/utils/fechas';
+import { a11y } from '@/src/i18n';
 
 // ---------------------------------------------------------------------------
 // LocaleConfig en espanol (meses, dias, etiquetas).
@@ -30,8 +31,8 @@ LocaleConfig.locales['es'] = {
     'Jul.', 'Ago.', 'Sep.', 'Oct.', 'Nov.', 'Dic.',
   ],
   dayNames: [
-    'Domingo', 'Lunes', 'Martes', 'Miercoles',
-    'Jueves', 'Viernes', 'Sabado',
+    'Domingo', 'Lunes', 'Martes', 'Miércoles',
+    'Jueves', 'Viernes', 'Sábado',
   ],
   dayNamesShort: ['D', 'L', 'M', 'M', 'J', 'V', 'S'],
   today: 'Hoy',
@@ -41,12 +42,6 @@ LocaleConfig.defaultLocale = 'es';
 // ---------------------------------------------------------------------------
 // Utilidades de fecha
 // ---------------------------------------------------------------------------
-function pad2(n: number): string { return n < 10 ? `0${n}` : String(n); }
-
-function ymd(d: Date): string {
-  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
-}
-
 // [FIX] `new Date()` refleja la zona horaria del dispositivo, no CDMX — el
 // día pre-seleccionado del calendario podía no coincidir con el día
 // calendario real en CDMX (mismo bug de raíz que RangoFechasPicker).
@@ -125,7 +120,7 @@ export default function UniversalCalendar({ projectId, userId, isCoord }: Props)
   const markedDates = useMemo(() => {
     const map: Record<string, { dots: Array<{ key: string; color: string }>; selected?: boolean; selectedColor?: string }> = {};
     items.forEach((e) => {
-      const day = (e.start_at || '').slice(0, 10);
+      const day = diaDelEvento(e);
       if (!day) return;
       const color = e.area_color || colors.primary;
       const key = e.area_id || 'general';
@@ -146,8 +141,8 @@ export default function UniversalCalendar({ projectId, userId, isCoord }: Props)
   // Eventos del dia seleccionado (ordenados por hora).
   const dayEvents = useMemo(() => {
     return items
-      .filter((e) => (e.start_at || '').slice(0, 10) === selectedDate)
-      .sort((a, b) => (a.start_at || '').localeCompare(b.start_at || ''));
+      .filter((e) => diaDelEvento(e) === selectedDate)
+      .sort((a, b) => Number(esDiaCompleto(b)) - Number(esDiaCompleto(a)) || (a.start_at || '').localeCompare(b.start_at || ''));
   }, [items, selectedDate]);
 
   function canEdit(e: ProjectEvent): boolean {
@@ -167,9 +162,9 @@ export default function UniversalCalendar({ projectId, userId, isCoord }: Props)
     };
     if (Platform.OS === 'web') {
       // eslint-disable-next-line no-alert
-      if (typeof window !== 'undefined' && window.confirm('?Eliminar este evento?')) exec();
+      if (typeof window !== 'undefined' && window.confirm('¿Eliminar este evento?')) exec();
     } else {
-      Alert.alert('Eliminar evento', '?Seguro que deseas eliminarlo?', [
+      Alert.alert('Eliminar evento', '¿Seguro que deseas eliminarlo?', [
         { text: 'Cancelar', style: 'cancel' },
         { text: 'Eliminar', style: 'destructive', onPress: exec },
       ]);
@@ -211,17 +206,17 @@ export default function UniversalCalendar({ projectId, userId, isCoord }: Props)
                 firstDay={0}
                 enableSwipeMonths
                 theme={{
-                  backgroundColor: '#ffffff',
-                  calendarBackground: '#ffffff',
-                  textSectionTitleColor: '#1e293b',
-                  selectedDayBackgroundColor: '#2563eb',
-                  selectedDayTextColor: '#ffffff',
-                  todayTextColor: '#2563eb',
-                  dayTextColor: '#1e293b',
-                  textDisabledColor: '#cbd5e1',
-                  monthTextColor: '#1e293b',
-                  arrowColor: '#2563eb',
-                  indicatorColor: '#2563eb',
+                  backgroundColor: calendarioColores.fondoCalendario,
+                  calendarBackground: calendarioColores.fondoCalendario,
+                  textSectionTitleColor: calendarioColores.textoSeccion,
+                  selectedDayBackgroundColor: calendarioColores.seleccionadoFondo,
+                  selectedDayTextColor: calendarioColores.seleccionadoTexto,
+                  todayTextColor: calendarioColores.hoy,
+                  dayTextColor: calendarioColores.textoDia,
+                  textDisabledColor: calendarioColores.deshabilitado,
+                  monthTextColor: calendarioColores.textoMes,
+                  arrowColor: calendarioColores.flecha,
+                  indicatorColor: calendarioColores.hoy,
                   textDayFontWeight: '600',
                   textMonthFontWeight: '800',
                   textDayHeaderFontWeight: '700',
@@ -256,8 +251,8 @@ export default function UniversalCalendar({ projectId, userId, isCoord }: Props)
                 <View style={styles.emptyIcon}>
                   <Ionicons name="calendar-outline" size={24} color={colors.primary} />
                 </View>
-                <Text style={styles.emptyTitle}>Sin eventos en este dia</Text>
-                <Text style={styles.emptyMsg}>Pulsa el boton + para programar uno.</Text>
+                <Text style={styles.emptyTitle}>Sin eventos en este día</Text>
+                <Text style={styles.emptyMsg}>Pulsa el botón + para programar uno.</Text>
               </View>
             ) : (
               dayEvents.map((e) => (
@@ -274,17 +269,17 @@ export default function UniversalCalendar({ projectId, userId, isCoord }: Props)
         )}
       </ScrollView>
 
-      <Pressable onPress={() => setEditor({ kind: 'create' })} style={styles.fab}>
+      <Pressable accessibilityRole="button" accessibilityLabel={a11y('agregar')} hitSlop={8} onPress={() => setEditor({ kind: 'create' })} style={styles.fab}>
         <Ionicons name="add" size={26} color="#fff" />
       </Pressable>
 
-      <EventEditor
+      <EventoForm
         visible={!!editor}
-        editor={editor}
+        evento={editor?.kind === 'edit' ? editor.item : null}
         projectId={projectId}
         areas={areas}
         members={members}
-        defaultDate={selectedDate}
+        fechaInicial={selectedDate}
         onClose={() => setEditor(null)}
         onSaved={() => { setEditor(null); load(true); }}
       />
@@ -305,8 +300,9 @@ function EventRow({
 }) {
   const baseColor = item.area_color || colors.primary;
   const tone = areaTone(baseColor);
-  const start = fmtHora(item.start_at);
-  const end = item.end_at ? fmtHora(item.end_at) : null;
+  const todoElDia = esDiaCompleto(item);
+  const start = todoElDia ? 'Todo el día' : fmtHora(item.start_at);
+  const end = !todoElDia && item.end_at ? fmtHora(item.end_at) : null;
   return (
     <View style={[styles.eventCard, { borderLeftColor: baseColor }]}>
       <View style={styles.timeBlock}>
@@ -349,490 +345,16 @@ function EventRow({
           <View style={{ flex: 1 }} />
           {canEdit ? (
             <>
-              <Pressable hitSlop={8} onPress={onEdit} style={styles.iconBtn}>
+              <Pressable accessibilityRole="button" accessibilityLabel={a11y('editar')} hitSlop={8} onPress={onEdit} style={styles.iconBtn}>
                 <Ionicons name="create-outline" size={15} color={colors.primary} />
               </Pressable>
-              <Pressable hitSlop={8} onPress={onDelete} style={styles.iconBtn}>
+              <Pressable accessibilityRole="button" accessibilityLabel={a11y('eliminar')} hitSlop={8} onPress={onDelete} style={styles.iconBtn}>
                 <Ionicons name="trash-outline" size={15} color={colors.error} />
               </Pressable>
             </>
           ) : null}
         </View>
       </View>
-    </View>
-  );
-}
-
-// ===========================================================================
-// Editor de evento _ modal con DateTimePicker NATIVO
-// ===========================================================================
-type PickerField = 'startDate' | 'startTime' | 'endTime' | null;
-
-function defaultStartForDate(ymdStr: string): Date {
-  const [y, m, d] = ymdStr.split('-').map((x) => parseInt(x, 10));
-  const dt = new Date(y, (m || 1) - 1, d || 1, 9, 0, 0, 0);
-  return dt;
-}
-
-// El DateTimePicker nativo solo entiende `Date` en la zona del DISPOSITIVO
-// -- no hay forma de pedirle que opere "en CDMX". Para que la hora que el
-// usuario ve/elige sea SIEMPRE hora de pared CDMX (sin importar en qué
-// zona esté el dispositivo), estos dos helpers tratan los campos del
-// `Date` (año/mes/día/hora/minuto) como dígitos CDMX puros, nunca como el
-// instante real que ese `Date` representaría en el dispositivo. Mismo
-// criterio que ya usa `(coord)/projects/[id]/events.tsx` (combineIso/
-// toLocalDateInput), solo que aquí con `Date` en vez de strings porque el
-// picker nativo lo exige.
-function cdmxIsoToPickerDate(iso: string): Date {
-  const m = dayjs.utc(iso).tz(CDMX_TZ);
-  return new Date(m.year(), m.month(), m.date(), m.hour(), m.minute(), 0, 0);
-}
-
-function pickerDateToCdmxIso(d: Date): string {
-  const pad = (n: number) => String(n).padStart(2, '0');
-  const wallClock = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-  return dayjs.tz(wallClock, CDMX_TZ).utc().toISOString();
-}
-
-function nowAsCdmxPickerDate(): Date {
-  const m = dayjs().tz(CDMX_TZ);
-  return new Date(m.year(), m.month(), m.date(), m.hour(), m.minute(), 0, 0);
-}
-
-function EventEditor({
-  visible, editor, projectId, areas, members, defaultDate, onClose, onSaved,
-}: {
-  visible: boolean;
-  editor: EditorState;
-  projectId: string;
-  areas: Area[];
-  members: User[];
-  defaultDate: string;
-  onClose: () => void;
-  onSaved: () => void;
-}) {
-  const [title, setTitle] = useState('');
-  const [desc, setDesc] = useState('');
-  const [loc, setLoc] = useState('');
-  const [areaId, setAreaId] = useState<string | null>(null);
-  const [attendeeIds, setAttendeeIds] = useState<string[]>([]);
-  const [attendeesPickerOpen, setAttendeesPickerOpen] = useState(false);
-  const [startDate, setStartDate] = useState<Date>(defaultStartForDate(defaultDate));
-  const [endDate, setEndDate] = useState<Date | null>(null);
-  const [picker, setPicker] = useState<PickerField>(null);
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-
-  // Reset al abrir
-  useEffect(() => {
-    if (!visible) return;
-    setErr(null);
-    setPicker(null);
-    setAttendeesPickerOpen(false);
-    if (editor?.kind === 'edit') {
-      const it = editor.item;
-      setTitle(it.title || '');
-      setDesc(it.description || '');
-      setLoc(it.location || '');
-      setAreaId(it.area_id || null);
-      setAttendeeIds(it.attendee_ids || []);
-      setStartDate(cdmxIsoToPickerDate(it.start_at));
-      setEndDate(it.end_at ? cdmxIsoToPickerDate(it.end_at) : null);
-    } else {
-      const d = defaultStartForDate(defaultDate);
-      // Si el dia seleccionado es hoy (CDMX), sugerir proxima hora redonda
-      const now = nowAsCdmxPickerDate();
-      if (ymd(d) === ymd(now)) {
-        d.setHours(now.getHours() + 1, 0, 0, 0);
-      }
-      setStartDate(d);
-      setEndDate(null);
-      setTitle('');
-      setDesc('');
-      setLoc('');
-      setAreaId(null);
-      setAttendeeIds([]);
-    }
-  }, [visible, editor, defaultDate]);
-
-  function toggleAttendee(uid: string) {
-    setAttendeeIds((prev) => (prev.includes(uid) ? prev.filter((x) => x !== uid) : [...prev, uid]));
-  }
-
-  function applyDateChange(field: PickerField, ev: DateTimePickerEvent, sel?: Date) {
-    // En Android se cierra automaticamente; en iOS hay que cerrarlo manualmente.
-    if (Platform.OS === 'android') setPicker(null);
-    if (ev.type === 'dismissed') {
-      setPicker(null);
-      return;
-    }
-    if (!sel) return;
-    if (field === 'startDate') {
-      const next = new Date(startDate);
-      next.setFullYear(sel.getFullYear(), sel.getMonth(), sel.getDate());
-      setStartDate(next);
-      if (endDate) {
-        const ne = new Date(endDate);
-        ne.setFullYear(sel.getFullYear(), sel.getMonth(), sel.getDate());
-        setEndDate(ne);
-      }
-    } else if (field === 'startTime') {
-      const next = new Date(startDate);
-      next.setHours(sel.getHours(), sel.getMinutes(), 0, 0);
-      setStartDate(next);
-    } else if (field === 'endTime') {
-      const base = endDate ? new Date(endDate) : new Date(startDate);
-      base.setHours(sel.getHours(), sel.getMinutes(), 0, 0);
-      setEndDate(base);
-    }
-  }
-
-  async function submit() {
-    setErr(null);
-    const t = title.trim();
-    if (!t) { setErr('Titulo obligatorio'); return; }
-    if (endDate && endDate.getTime() < startDate.getTime()) {
-      setErr('La hora de fin no puede ser anterior al inicio');
-      return;
-    }
-    setBusy(true);
-    try {
-      const payload: any = {
-        title: t,
-        description: desc.trim() || null,
-        location: loc.trim() || null,
-        start_at: pickerDateToCdmxIso(startDate),
-        end_at: endDate ? pickerDateToCdmxIso(endDate) : null,
-        area_id: areaId || null,
-        attendee_ids: attendeeIds,
-      };
-      if (editor?.kind === 'edit') {
-        await api.updateEvent(editor.item.id, payload);
-      } else {
-        await api.createEvent(projectId, payload);
-      }
-      onSaved();
-    } catch (e: any) {
-      setErr(e?.message || 'No se pudo guardar');
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  const dateLabel = `${pad2(startDate.getDate())}/${pad2(startDate.getMonth() + 1)}/${startDate.getFullYear()}`;
-  const startTimeLabel = `${pad2(startDate.getHours())}:${pad2(startDate.getMinutes())}`;
-  const endTimeLabel = endDate ? `${pad2(endDate.getHours())}:${pad2(endDate.getMinutes())}` : '_ sin definir _';
-
-  const isWeb = Platform.OS === 'web';
-
-  // Para web: TextInputs simples (formato YYYY-MM-DD / HH:MM)
-  function webDateValue(): string { return ymd(startDate); }
-  function webTimeValue(d: Date): string { return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`; }
-  function parseWebDate(s: string) {
-    const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-    if (!m) return;
-    const next = new Date(startDate);
-    next.setFullYear(parseInt(m[1], 10), parseInt(m[2], 10) - 1, parseInt(m[3], 10));
-    setStartDate(next);
-    if (endDate) {
-      const ne = new Date(endDate);
-      ne.setFullYear(parseInt(m[1], 10), parseInt(m[2], 10) - 1, parseInt(m[3], 10));
-      setEndDate(ne);
-    }
-  }
-  function parseWebTime(s: string, isEnd: boolean) {
-    const m = s.match(/^(\d{1,2}):(\d{2})$/);
-    if (!m) return;
-    const h = parseInt(m[1], 10);
-    const mi = parseInt(m[2], 10);
-    if (isEnd) {
-      const base = endDate ? new Date(endDate) : new Date(startDate);
-      base.setHours(h, mi, 0, 0);
-      setEndDate(base);
-    } else {
-      const next = new Date(startDate);
-      next.setHours(h, mi, 0, 0);
-      setStartDate(next);
-    }
-  }
-
-  return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        style={styles.modalRoot}
-      >
-        <Pressable style={styles.modalBackdrop} onPress={onClose} />
-        <View style={styles.modalCard}>
-          <View style={styles.modalHandle} />
-          <Text style={styles.modalTitle}>{editor?.kind === 'edit' ? 'Editar evento' : 'Nuevo evento'}</Text>
-
-          <ScrollView style={{ maxHeight: 520 }} contentContainerStyle={{ gap: spacing.sm, paddingBottom: spacing.sm }} keyboardShouldPersistTaps="handled">
-            <Field label="Titulo">
-              <TextInput
-                value={title}
-                onChangeText={setTitle}
-                placeholder="Ej. Junta de obra"
-                placeholderTextColor={colors.textMuted}
-                style={styles.input}
-                editable={!busy}
-                maxLength={140}
-              />
-            </Field>
-
-            {/* Selector de disciplina/area */}
-            {areas.length > 0 ? (
-              <Field label="Disciplina">
-                <View style={styles.areasWrap}>
-                  <Pressable
-                    onPress={() => setAreaId(null)}
-                    style={[styles.areaSelectChip, !areaId && styles.areaSelectChipActive]}
-                  >
-                    <Text style={[styles.areaSelectTxt, !areaId && styles.areaSelectTxtActive]}>Sin disciplina</Text>
-                  </Pressable>
-                  {areas.map((a) => {
-                    const active = areaId === a.id;
-                    const tone = areaTone(a.color);
-                    return (
-                      <Pressable
-                        key={a.id}
-                        onPress={() => setAreaId(a.id)}
-                        style={[
-                          styles.areaSelectChip,
-                          {
-                            backgroundColor: active ? (a.color || colors.primary) : tone.bg,
-                            borderColor: active ? (a.color || colors.primary) : tone.border,
-                          },
-                        ]}
-                      >
-                        <View style={[styles.areaDot, { backgroundColor: active ? '#fff' : (a.color || colors.primary) }]} />
-                        <Text style={[styles.areaSelectTxt, { color: active ? '#fff' : tone.text }]} numberOfLines={1}>{a.name}</Text>
-                      </Pressable>
-                    );
-                  })}
-                </View>
-              </Field>
-            ) : null}
-
-            {/* Fecha y horas */}
-            {isWeb ? (
-              <>
-                <Field label="Fecha (YYYY-MM-DD)">
-                  <TextInput
-                    value={webDateValue()}
-                    onChangeText={parseWebDate}
-                    placeholder="2026-06-20"
-                    placeholderTextColor={colors.textMuted}
-                    style={styles.input}
-                    editable={!busy}
-                    maxLength={10}
-                  />
-                </Field>
-                <View style={{ flexDirection: 'row', gap: spacing.sm }}>
-                  <View style={{ flex: 1 }}>
-                    <Field label="Hora inicio">
-                      <TextInput
-                        value={webTimeValue(startDate)}
-                        onChangeText={(s) => parseWebTime(s, false)}
-                        placeholder="09:00"
-                        placeholderTextColor={colors.textMuted}
-                        style={styles.input}
-                        editable={!busy}
-                        maxLength={5}
-                      />
-                    </Field>
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Field label="Hora fin (opc.)">
-                      <TextInput
-                        value={endDate ? webTimeValue(endDate) : ''}
-                        onChangeText={(s) => {
-                          if (!s.trim()) { setEndDate(null); return; }
-                          parseWebTime(s, true);
-                        }}
-                        placeholder="11:00"
-                        placeholderTextColor={colors.textMuted}
-                        style={styles.input}
-                        editable={!busy}
-                        maxLength={5}
-                      />
-                    </Field>
-                  </View>
-                </View>
-              </>
-            ) : (
-              <>
-                <Field label="Fecha">
-                  <Pressable onPress={() => setPicker('startDate')} style={styles.pickerBtn} disabled={busy}>
-                    <Ionicons name="calendar-outline" size={16} color={colors.primary} />
-                    <Text style={styles.pickerTxt}>{dateLabel}</Text>
-                  </Pressable>
-                </Field>
-                <View style={{ flexDirection: 'row', gap: spacing.sm }}>
-                  <View style={{ flex: 1 }}>
-                    <Field label="Hora inicio">
-                      <Pressable onPress={() => setPicker('startTime')} style={styles.pickerBtn} disabled={busy}>
-                        <Ionicons name="time-outline" size={16} color={colors.primary} />
-                        <Text style={styles.pickerTxt}>{startTimeLabel}</Text>
-                      </Pressable>
-                    </Field>
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Field label="Hora fin (opc.)">
-                      <View style={{ flexDirection: 'row', gap: 4 }}>
-                        <Pressable onPress={() => setPicker('endTime')} style={[styles.pickerBtn, { flex: 1 }]} disabled={busy}>
-                          <Ionicons name="time-outline" size={16} color={colors.primary} />
-                          <Text style={styles.pickerTxt} numberOfLines={1}>{endTimeLabel}</Text>
-                        </Pressable>
-                        {endDate ? (
-                          <Pressable onPress={() => setEndDate(null)} style={styles.clearBtn} disabled={busy}>
-                            <Ionicons name="close" size={14} color={colors.error} />
-                          </Pressable>
-                        ) : null}
-                      </View>
-                    </Field>
-                  </View>
-                </View>
-
-                {picker ? (
-                  <DateTimePicker
-                    value={picker === 'endTime' ? (endDate || startDate) : startDate}
-                    mode={picker === 'startDate' ? 'date' : 'time'}
-                    is24Hour
-                    display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-                    themeVariant="light"
-                    textColor="#000000"
-                    onChange={(ev, sel) => applyDateChange(picker, ev, sel)}
-                  />
-                ) : null}
-              </>
-            )}
-
-            <Field label="Ubicacion (opcional)">
-              <TextInput
-                value={loc}
-                onChangeText={setLoc}
-                placeholder="Ej. Caseta principal _ Tramo 2"
-                placeholderTextColor={colors.textMuted}
-                style={styles.input}
-                editable={!busy}
-                maxLength={200}
-              />
-            </Field>
-
-            <Field label="Descripcion (opcional)">
-              <TextInput
-                value={desc}
-                onChangeText={setDesc}
-                placeholder="Detalles, agenda, asistentes esperados_"
-                placeholderTextColor={colors.textMuted}
-                style={[styles.input, { minHeight: 90, textAlignVertical: 'top' }]}
-                multiline
-                editable={!busy}
-                maxLength={2000}
-              />
-            </Field>
-
-            <View style={styles.sepRow}>
-              <Text style={styles.label}>Asistentes</Text>
-              <Pressable onPress={() => setAttendeesPickerOpen(true)} style={styles.addRow} disabled={busy}>
-                <Ionicons name="person-add-outline" size={16} color={colors.primary} />
-                <Text style={styles.addRowTxt}>
-                  {attendeeIds.length > 0 ? `Editar (${attendeeIds.length})` : 'Anadir personas'}
-                </Text>
-              </Pressable>
-            </View>
-            {attendeeIds.length === 0 ? (
-              <Text style={styles.attendeesEmptyTxt}>Sin asistentes adicionales.</Text>
-            ) : (
-              <View style={styles.attendeesFormWrap}>
-                {attendeeIds.map((uid) => {
-                  const u = members.find((m) => m.id === uid);
-                  if (!u) return null;
-                  return (
-                    <View key={uid} style={styles.attendeeFormChip}>
-                      <Ionicons name="person" size={11} color={colors.primary} />
-                      <Text style={styles.attendeeFormChipTxt}>{u.name}</Text>
-                      <Pressable onPress={() => toggleAttendee(uid)} hitSlop={8}>
-                        <Ionicons name="close" size={12} color={colors.textMuted} />
-                      </Pressable>
-                    </View>
-                  );
-                })}
-              </View>
-            )}
-
-            {err ? (
-              <View style={styles.errInline}>
-                <Ionicons name="alert-circle" size={14} color={colors.error} />
-                <Text style={styles.errInlineTxt}>{err}</Text>
-              </View>
-            ) : null}
-          </ScrollView>
-
-          <View style={styles.modalActions}>
-            <Pressable onPress={onClose} style={[styles.btn, styles.btnGhost]} disabled={busy}>
-              <Text style={styles.btnGhostTxt}>Cancelar</Text>
-            </Pressable>
-            <Pressable onPress={submit} style={[styles.btn, styles.btnPrimary, busy && { opacity: 0.6 }]} disabled={busy}>
-              {busy ? <ActivityIndicator color="#fff" /> : (
-                <Text style={styles.btnPrimaryTxt}>{editor?.kind === 'edit' ? 'Guardar' : 'Crear evento'}</Text>
-              )}
-            </Pressable>
-          </View>
-        </View>
-      </KeyboardAvoidingView>
-
-      {attendeesPickerOpen ? (
-        <Modal
-          transparent
-          animationType="fade"
-          visible={attendeesPickerOpen}
-          onRequestClose={() => setAttendeesPickerOpen(false)}
-        >
-          <View style={styles.pickerBackdrop}>
-            <View style={styles.pickerSheet}>
-              <View style={styles.pickerHeader}>
-                <Text style={styles.pickerTitle}>Asistentes ({attendeeIds.length})</Text>
-                <Pressable onPress={() => setAttendeesPickerOpen(false)} hitSlop={8}>
-                  <Text style={styles.pickerDoneTxt}>Listo</Text>
-                </Pressable>
-              </View>
-              <ScrollView style={{ maxHeight: 420 }}>
-                {members.length === 0 ? (
-                  <Text style={styles.pickerEmptyTxt}>No hay miembros en el proyecto.</Text>
-                ) : (
-                  members.map((m) => {
-                    const on = attendeeIds.includes(m.id);
-                    return (
-                      <Pressable key={m.id} onPress={() => toggleAttendee(m.id)} style={styles.pickerRow}>
-                        <Ionicons
-                          name={on ? 'checkbox' : 'square-outline'}
-                          size={20}
-                          color={on ? colors.primary : colors.textMuted}
-                        />
-                        <View style={{ flex: 1 }}>
-                          <Text style={styles.pickerRowName}>{m.name}</Text>
-                          <Text style={styles.pickerRowRole}>{(m.role || '').replace('_', ' ')}</Text>
-                        </View>
-                      </Pressable>
-                    );
-                  })
-                )}
-              </ScrollView>
-            </View>
-          </View>
-        </Modal>
-      ) : null}
-    </Modal>
-  );
-}
-
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <View>
-      <Text style={styles.label}>{label}</Text>
-      {children}
     </View>
   );
 }
@@ -864,7 +386,7 @@ const styles = StyleSheet.create({
   legendTxt: { fontSize: 11, fontWeight: '700' },
 
   dayHeader: {
-    fontSize: 13, fontWeight: '800', color: '#fff',
+    fontSize: 13, fontWeight: '800', color: calendarioColores.tituloDia,
     textTransform: 'capitalize', marginTop: spacing.sm, paddingHorizontal: 4,
   },
 
@@ -943,91 +465,4 @@ const styles = StyleSheet.create({
     backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center',
     ...shadow.card,
   },
-
-  // Modal
-  modalRoot: { flex: 1, justifyContent: 'flex-end' },
-  modalBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(15,23,42,0.55)' },
-  modalCard: {
-    backgroundColor: colors.surface,
-    borderTopLeftRadius: 24, borderTopRightRadius: 24,
-    padding: spacing.md, paddingBottom: spacing.lg, maxHeight: '92%',
-  },
-  modalHandle: {
-    alignSelf: 'center', width: 40, height: 4, borderRadius: 2,
-    backgroundColor: colors.border, marginBottom: spacing.sm,
-  },
-  modalTitle: { fontSize: 17, fontWeight: '800', color: colors.text, marginBottom: spacing.sm },
-  label: { fontSize: 11, fontWeight: '800', color: colors.textMuted, marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.4 },
-  input: {
-    backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border,
-    borderRadius: radius.md, paddingHorizontal: 12, paddingVertical: 10,
-    fontSize: 14, color: colors.text,
-  },
-
-  pickerBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: 8,
-    backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border,
-    borderRadius: radius.md, paddingHorizontal: 12, paddingVertical: 12,
-  },
-  pickerTxt: { fontSize: 14, color: colors.text, fontWeight: '700', flex: 1 },
-  clearBtn: {
-    width: 38, alignItems: 'center', justifyContent: 'center',
-    backgroundColor: colors.errorBg, borderRadius: radius.md,
-    borderWidth: 1, borderColor: colors.error + '55',
-  },
-
-  areasWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
-  areaSelectChip: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    paddingHorizontal: 10, paddingVertical: 6, borderRadius: radius.full,
-    borderWidth: 1, borderColor: colors.border, backgroundColor: colors.bg,
-  },
-  areaSelectChipActive: { backgroundColor: colors.primary, borderColor: colors.primary },
-  areaSelectTxt: { fontSize: 12, fontWeight: '700', color: colors.textBody },
-  areaSelectTxtActive: { color: '#fff' },
-
-  errInline: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    backgroundColor: colors.errorBg, padding: 8, borderRadius: radius.sm,
-  },
-  errInlineTxt: { color: colors.error, fontSize: 12, fontWeight: '700' },
-
-  sepRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 4 },
-  addRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  addRowTxt: { fontSize: 12, fontWeight: '800', color: colors.primary },
-  attendeesEmptyTxt: { color: colors.textMuted, fontSize: 12, fontStyle: 'italic' },
-  attendeesFormWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
-  attendeeFormChip: {
-    flexDirection: 'row', alignItems: 'center', gap: 5,
-    backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border,
-    paddingHorizontal: 8, paddingVertical: 5, borderRadius: radius.full,
-  },
-  attendeeFormChipTxt: { fontSize: 11, color: colors.text, fontWeight: '700' },
-
-  pickerBackdrop: { flex: 1, backgroundColor: 'rgba(15,23,42,0.55)', justifyContent: 'center', padding: spacing.lg },
-  pickerSheet: {
-    backgroundColor: colors.surface, borderRadius: radius.lg, maxHeight: '80%',
-    ...shadow.card,
-  },
-  pickerHeader: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    padding: 12, borderBottomWidth: 1, borderBottomColor: colors.border,
-  },
-  pickerTitle: { fontSize: 15, fontWeight: '800', color: colors.text },
-  pickerDoneTxt: { color: colors.primary, fontWeight: '800', fontSize: 14 },
-  pickerEmptyTxt: { padding: 16, color: colors.textMuted },
-  pickerRow: {
-    flexDirection: 'row', alignItems: 'center', gap: 10,
-    paddingHorizontal: 14, paddingVertical: 12,
-    borderBottomWidth: 1, borderBottomColor: colors.border,
-  },
-  pickerRowName: { fontWeight: '700', color: colors.text, fontSize: 14 },
-  pickerRowRole: { color: colors.textMuted, fontSize: 12, textTransform: 'capitalize' },
-
-  modalActions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm },
-  btn: { flex: 1, paddingVertical: 12, borderRadius: radius.md, alignItems: 'center', justifyContent: 'center' },
-  btnGhost: { backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border },
-  btnGhostTxt: { color: colors.text, fontWeight: '800', fontSize: 14 },
-  btnPrimary: { backgroundColor: colors.primary },
-  btnPrimaryTxt: { color: '#fff', fontWeight: '800', fontSize: 14 },
 });

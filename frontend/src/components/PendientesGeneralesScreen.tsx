@@ -114,7 +114,7 @@ export default function PendientesGeneralesScreen({ projectId }: { projectId: st
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <View style={[styles.headerWrap, { backgroundColor: headerColor, paddingTop: insets.top + spacing.xs }]}>
         <View style={styles.headerTopRow}>
-          <Pressable onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
+          <Pressable accessibilityRole="button" accessibilityLabel="Volver" onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
             <Ionicons name="chevron-back" size={22} color={headerTextColor} />
           </Pressable>
           <Text style={[styles.titleBar, { color: headerTextColor }]} numberOfLines={1}>Pendientes Generales</Text>
@@ -128,7 +128,7 @@ export default function PendientesGeneralesScreen({ projectId }: { projectId: st
             <View style={styles.sectionHeaderRow}>
               <Text style={styles.sectionTitle}>{CONTRATO_LABEL[contrato]}</Text>
               {puedeEscribir ? (
-                <Pressable onPress={() => setDraft({ id: null, contrato, titulo: '', descripcion: '' })} style={styles.addBtn}>
+                <Pressable accessibilityRole="button" onPress={() => setDraft({ id: null, contrato, titulo: '', descripcion: '' })} style={styles.addBtn}>
                   <Ionicons name="add" size={16} color={colors.primary} />
                   <Text style={styles.addBtnTxt}>Nuevo pendiente</Text>
                 </Pressable>
@@ -139,12 +139,12 @@ export default function PendientesGeneralesScreen({ projectId }: { projectId: st
                 <Text style={styles.emptyTxt}>Sin pendientes de {CONTRATO_LABEL[contrato].toLowerCase()}.</Text>
               </View>
             ) : rows.map((it) => (
-              <Pressable
+              <Pressable accessibilityRole="button" accessibilityLabel="Marcar como resuelto"
                 key={it.id} style={[styles.card, styles.row, it.resuelto && { opacity: 0.55 }]}
                 onPress={puedeEscribir ? () => setDraft({ id: it.id, contrato: it.contrato, titulo: it.titulo, descripcion: it.descripcion || '' }) : undefined}
               >
                 {puedeEscribir ? (
-                  <Pressable hitSlop={8} onPress={() => toggleResuelto(it)}>
+                  <Pressable accessibilityRole="button" accessibilityLabel="Marcar como resuelto" hitSlop={8} onPress={() => toggleResuelto(it)}>
                     <Ionicons
                       name={it.resuelto ? 'checkbox' : 'square-outline'} size={22}
                       color={it.resuelto ? colors.primary : colors.textMuted}
@@ -157,7 +157,7 @@ export default function PendientesGeneralesScreen({ projectId }: { projectId: st
                   {it.resuelto ? <Text style={styles.meta}>Resuelto — ya no se imprime en el reporte</Text> : null}
                 </View>
                 {puedeBorrar ? (
-                  <Pressable hitSlop={8} onPress={() => onDelete(it)}>
+                  <Pressable accessibilityRole="button" accessibilityLabel="Eliminar" hitSlop={8} onPress={() => onDelete(it)}>
                     <Ionicons name="trash-outline" size={18} color={colors.error} />
                   </Pressable>
                 ) : null}

@@ -7,12 +7,12 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { View, Text, StyleSheet, ActivityIndicator, Pressable, FlatList, Alert, useWindowDimensions, Linking, Platform } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import {
   api, AnalisisPeriodo, EstudioDisciplinaAvance, LocationNode, ModuloAutoOutline, PlanoAvance, Presentacion, PresentacionSeccionTipoAuto, Project, Report,
 } from '@/src/api';
 import { colors, radius, spacing, contrastText } from '@/src/theme';
+import { ScreenHeader } from '@/src/components/ScreenHeader';
 import { SlidePortada } from '@/src/components/presentacion/SlidePortada';
 import { SlideMapaGeneral } from '@/src/components/presentacion/SlideMapaGeneral';
 import { SlideDivisor } from '@/src/components/presentacion/SlideDivisor';
@@ -24,21 +24,14 @@ import { SlideAvanceGrafico } from '@/src/components/presentacion/SlideAvanceGra
 import { SlideReportesSemana } from '@/src/components/presentacion/SlideReportesSemana';
 import { SlideCierre } from '@/src/components/presentacion/SlideCierre';
 import { SlideModuloAuto } from '@/src/components/presentacion/SlideModuloAuto';
+import { a11y } from '@/src/i18n';
+import { periodoDePresentacion, textoRangoPeriodo } from '@/src/utils/finanzas';
 
 const AUTO_TITULO: Record<PresentacionSeccionTipoAuto, string> = {
   ambiental: 'Ambiental', social: 'Social / Impacto urbano', seguridad: 'Seguridad',
   proyecto: 'Estudios y proyecto ejecutivo', calidad: 'Calidad', pendientes: 'Pendientes generales', electromecanico: 'Sistema electromecánico',
 };
 const isAuto = (t: string): t is PresentacionSeccionTipoAuto => t in AUTO_TITULO;
-
-/** `fecha - 6 días` en calendario puro (sin zona horaria) — ventana semanal
- * que cierra en la fecha del reporte, para las tarjetas de Financiero. */
-function weekStart(fechaIso: string): string {
-  const [y, m, d] = fechaIso.split('-').map((v) => parseInt(v, 10));
-  const dt = new Date(Date.UTC(y, (m || 1) - 1, d || 1));
-  dt.setUTCDate(dt.getUTCDate() - 6);
-  return dt.toISOString().slice(0, 10);
-}
 
 export default function PresentacionPreview({ projectId, presentacionId }: { projectId: string; presentacionId: string }) {
   const insets = useSafeAreaInsets();
@@ -91,10 +84,9 @@ export default function PresentacionPreview({ projectId, presentacionId }: { pro
       }
 
       if (secciones.some((s) => s.tipo === 'financiero')) {
-        const end = pres.fecha;
-        const start = weekStart(pres.fecha);
+        // Mismo servicio y mismo periodo que el tablero EVM (A-05): el servidor resuelve la ventana.
         const [an, pt] = await Promise.all([
-          api.analisisPeriodo(projectId, start, end).catch(() => null),
+          api.analisisPeriodoPorPeriodo(projectId, periodoDePresentacion(pres.periodo_financiero), pres.fecha).catch(() => null),
           api.analisisPeriodoPresupuestoTotal(projectId).catch(() => null),
         ]);
         setAnalisis(an);
@@ -155,7 +147,7 @@ export default function PresentacionPreview({ projectId, presentacionId }: { pro
         else Alert.alert('Exportar', 'No se pudo abrir el enlace de exportación.');
       }
     } catch (e: any) {
-      Alert.alert('No se pudo exportar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo exportar', e?.message || 'Inténtalo nuevamente.');
     } finally {
       setExporting(false);
     }
@@ -171,17 +163,15 @@ export default function PresentacionPreview({ projectId, presentacionId }: { pro
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <View style={[styles.headerWrap, { backgroundColor: headerColor, paddingTop: insets.top + spacing.xs }]}>
-        <View style={styles.headerTopRow}>
-          <Pressable onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
-            <Ionicons name="chevron-back" size={22} color={headerTextColor} />
-          </Pressable>
-          <Text style={[styles.titleBar, { color: headerTextColor }]} numberOfLines={1}>{presentacion.titulo}</Text>
-          <Pressable onPress={onExport} hitSlop={10} style={styles.iconBtn} disabled={exporting}>
+      <ScreenHeader
+        title={presentacion.titulo}
+        backgroundColor={headerColor}
+        right={(
+          <Pressable accessibilityRole="button" accessibilityLabel={a11y('compartir')} onPress={onExport} hitSlop={10} style={styles.iconBtn} disabled={exporting}>
             {exporting ? <ActivityIndicator size="small" color={headerTextColor} /> : <Ionicons name="share-outline" size={20} color={headerTextColor} />}
           </Pressable>
-        </View>
-      </View>
+        )}
+      />
 
       {secciones.length === 0 ? (
         <View style={styles.center}>
@@ -204,7 +194,7 @@ export default function PresentacionPreview({ projectId, presentacionId }: { pro
                 ) : item.tipo === 'divisor' ? (
                   <SlideDivisor titulo={item.titulo || ''} colorTema={headerColor} />
                 ) : item.tipo === 'financiero' ? (
-                  <SlideFinanciero analisis={analisis} presupuestoTotal={presupuestoTotal} colorTema={headerColor} />
+                  <SlideFinanciero analisis={analisis} presupuestoTotal={presupuestoTotal} colorTema={headerColor} periodoTexto={textoRangoPeriodo(analisis?.start, analisis?.end)} />
                 ) : item.tipo === 'seguimiento_estudios' ? (
                   <SlideSeguimientoEstudios rows={disciplinaRows} nodesById={nodesById} colorTema={headerColor} />
                 ) : item.tipo === 'croquis_estacion' ? (
@@ -240,10 +230,7 @@ export default function PresentacionPreview({ projectId, presentacionId }: { pro
 const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg },
   emptyTxt: { color: colors.textMuted, fontSize: 13, textAlign: 'center', padding: spacing.lg },
-  headerWrap: { paddingHorizontal: spacing.md, paddingBottom: spacing.sm },
-  headerTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  iconBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
-  titleBar: { flex: 1, fontWeight: '800', fontSize: 15, letterSpacing: 0.3, textAlign: 'center' },
+  iconBtn: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
   slideFrame: { flex: 1, borderRadius: radius.lg, overflow: 'hidden', borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface },
   footer: { alignItems: 'center', paddingTop: spacing.xs, backgroundColor: colors.surface, borderTopWidth: 1, borderTopColor: colors.border },
   footerTxt: { fontSize: 11, color: colors.textMuted, fontWeight: '600' },

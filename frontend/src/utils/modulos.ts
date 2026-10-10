@@ -19,6 +19,7 @@
 // se conserva por si alguna pantalla lo necesita para otra cosa.
 import type { Ionicons } from '@expo/vector-icons';
 import type { CustomModule, ModuloCategoria, ModulosConfig } from '@/src/api';
+import { t } from '@/src/i18n';
 
 export type ModuloDef = {
   key: string;
@@ -41,48 +42,48 @@ export type ModuloDef = {
 export const MODULOS: ModuloDef[] = [
   {
     key: 'seguridad_higiene',
-    label: 'Seguridad e Higiene',
-    subtitle: 'Reporte de accidentes y checklist preventivo/correctivo',
+    label: t('modulosObra.modulos.seguridadHigiene.titulo'),
+    subtitle: t('modulosObra.modulos.seguridadHigiene.subtitulo'),
     icon: 'shield-checkmark-outline',
     screen: 'seguridad-higiene',
     area: 'Seguridad',
   },
   {
     key: 'forestal_arbolado',
-    label: 'Forestal y Arbolado',
-    subtitle: 'Podas, trasplantes y derribos por estación',
+    label: t('modulosObra.modulos.forestalArbolado.titulo'),
+    subtitle: t('modulosObra.modulos.forestalArbolado.subtitulo'),
     icon: 'leaf-outline',
     screen: 'forestal-arbolado',
     area: 'Ambiental',
   },
   {
     key: 'gestion_riesgos',
-    label: 'Gestión de Riesgos',
-    subtitle: 'Matriz de riesgos por estación/poste y propuesta de control',
+    label: t('modulosObra.modulos.gestionRiesgos.titulo'),
+    subtitle: t('modulosObra.modulos.gestionRiesgos.subtitulo'),
     icon: 'warning-outline',
     screen: 'gestion-riesgos',
     area: 'Riesgos',
   },
   {
     key: 'estudios_proyecto',
-    label: 'Estudios y Proyecto Ejecutivo',
-    subtitle: 'Avance por disciplina y bitácora de campo',
+    label: t('modulosObra.modulos.estudiosProyecto.titulo'),
+    subtitle: t('modulosObra.modulos.estudiosProyecto.subtitulo'),
     icon: 'document-text-outline',
     screen: 'estudios-proyecto',
     area: 'Ingeniería',
   },
   {
     key: 'impacto_ambiental',
-    label: 'Impacto Ambiental',
-    subtitle: 'Auditoría de cumplimientos e incumplimientos',
+    label: t('modulosObra.modulos.impactoAmbiental.titulo'),
+    subtitle: t('modulosObra.modulos.impactoAmbiental.subtitulo'),
     icon: 'earth-outline',
     screen: 'impacto-ambiental',
     area: 'Ambiental',
   },
   {
     key: 'tabla_resumen',
-    label: 'Tabla Resumen',
-    subtitle: 'Avance acumulado por estación e inter-tramos (%), armable desde cero',
+    label: t('modulosObra.modulos.tablaResumen.titulo'),
+    subtitle: t('modulosObra.modulos.tablaResumen.subtitulo'),
     icon: 'grid-outline',
     screen: 'tabla-resumen',
     area: 'Ingeniería',
@@ -191,16 +192,16 @@ export const MODULOS: ModuloDef[] = [
   },
   {
     key: 'estado_tiempo',
-    label: 'Estado del Tiempo',
-    subtitle: 'Temperatura, viento, precipitación y calidad del aire por estación',
+    label: t('modulosObra.modulos.estadoTiempo.titulo'),
+    subtitle: t('modulosObra.modulos.estadoTiempo.subtitulo'),
     icon: 'partly-sunny-outline',
     screen: 'estado-tiempo',
     area: 'Ingeniería',
   },
   {
     key: 'control_obra',
-    label: 'Control de Obra',
-    subtitle: 'Avance de postes, cimentación y perforadoras',
+    label: t('modulosObra.modulos.controlObra.titulo'),
+    subtitle: t('modulosObra.modulos.controlObra.subtitulo'),
     icon: 'construct-outline',
     screen: 'control-obra',
     area: 'Ingeniería',
@@ -208,9 +209,9 @@ export const MODULOS: ModuloDef[] = [
 ];
 
 export const CATEGORIA_LABEL: Record<ModuloCategoria, string> = {
-  reportes_diarios: 'Diario',
-  reportes_semanales: 'Semanal',
-  reportes_mensuales: 'Mensual',
+  reportes_diarios: t('modulosObra.categoriaDiario'),
+  reportes_semanales: t('modulosObra.categoriaSemanal'),
+  reportes_mensuales: t('modulosObra.categoriaMensual'),
 };
 
 export const CATEGORIA_ORDEN: ModuloCategoria[] = ['reportes_diarios', 'reportes_semanales', 'reportes_mensuales'];

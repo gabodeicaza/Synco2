@@ -16,8 +16,8 @@ const engine = createOfflineQueueEngine<Record<string, any>>({
   maxAutoRetryAttempts: 10,
   logTag: 'avanceQueue',
   maxQueueItemsErrorMessage: (max) =>
-    `Ya hay ${max} registros de avance esperando conexion en este dispositivo. ` +
-    'Conectate y espera a que se sincronicen antes de capturar mas.',
+    `Ya hay ${max} registros de avance esperando conexión en este dispositivo. ` +
+    'Conéctate y espera a que se sincronicen antes de capturar mas.',
 });
 
 export const subscribeAvanceQueueChanges = engine.subscribeQueueChanges;

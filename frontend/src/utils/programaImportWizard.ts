@@ -7,6 +7,7 @@
 // que YA existe, así que la única corrección posible es descartar la fila.
 import { ProgramaImportMapping, ProgramaImportResumen, ProgramaSesionPendiente } from '@/src/api';
 import { WizardStep } from '@/src/utils/importWizard';
+import { t } from '@/src/i18n';
 
 export { WizardStep, pasoSiguienteTrasSubir, pasoAnterior } from '@/src/utils/importWizard';
 
@@ -20,7 +21,7 @@ export function filasFueraCount(resumen: ProgramaImportResumen | null): number {
 
 export function quedanFueraLabel(resumen: ProgramaImportResumen | null): string {
   const n = filasFueraCount(resumen);
-  return n > 0 ? ` (${n} quedarán fuera)` : '';
+  return n > 0 ? t('programa.quedanFuera', { n }) : '';
 }
 
 /** Gate del botón "Validar archivo completo": código + importe mapeados y

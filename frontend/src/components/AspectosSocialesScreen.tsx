@@ -180,7 +180,7 @@ export default function AspectosSocialesScreen({ projectId }: { projectId: strin
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <View style={[styles.headerWrap, { backgroundColor: headerColor, paddingTop: insets.top + spacing.xs }]}>
         <View style={styles.headerTopRow}>
-          <Pressable onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
+          <Pressable accessibilityRole="button" accessibilityLabel="Volver" onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
             <Ionicons name="chevron-back" size={22} color={headerTextColor} />
           </Pressable>
           <Text style={[styles.titleBar, { color: headerTextColor }]} numberOfLines={1}>Aspectos Sociales</Text>
@@ -190,7 +190,7 @@ export default function AspectosSocialesScreen({ projectId }: { projectId: strin
 
       <View style={styles.tabsRow}>
         {([['levantamientos', 'Levantamientos'], ['salvamento', 'Salvamento arqueológico']] as [Tab, string][]).map(([k, label]) => (
-          <Pressable key={k} onPress={() => setTab(k)} style={[styles.tab, tab === k && styles.tabActive]}>
+          <Pressable accessibilityRole="button" key={k} onPress={() => setTab(k)} style={[styles.tab, tab === k && styles.tabActive]}>
             <Text style={[styles.tabTxt, tab === k && { color: '#fff' }]}>{label}</Text>
           </Pressable>
         ))}
@@ -205,7 +205,7 @@ export default function AspectosSocialesScreen({ projectId }: { projectId: strin
                 const l = levPorClave.get(`${t.key}|${a.key}`);
                 const pct = l && l.total_requerido ? (l.realizados / l.total_requerido) * 100 : 0;
                 return (
-                  <Pressable
+                  <Pressable accessibilityRole="button"
                     key={a.key} style={[styles.card, { padding: spacing.md }]}
                     onPress={puedeEscribir ? () => editarLev(t.key, a.key) : undefined}
                   >
@@ -230,7 +230,7 @@ export default function AspectosSocialesScreen({ projectId }: { projectId: strin
                 <View style={styles.sectionHeaderRow}>
                   <Text style={styles.sectionTitle}>Por {a.plural}</Text>
                   {puedeEscribir ? (
-                    <Pressable
+                    <Pressable accessibilityRole="button"
                       onPress={() => setSalvDraft({ id: null, ambito: a.key, etiqueta: '', inicio: hoyISO(), liberacion: '', obs: '' })}
                       style={styles.addBtn}
                     >
@@ -246,7 +246,7 @@ export default function AspectosSocialesScreen({ projectId }: { projectId: strin
                 ) : rows.map((r) => {
                   const puedeBorrar = puedeEscribir && (puedeBorrarTodo || r.created_by === user?.id);
                   return (
-                    <Pressable
+                    <Pressable accessibilityRole="button"
                       key={r.id} style={[styles.card, styles.row]}
                       onPress={puedeEscribir ? () => setSalvDraft({
                         id: r.id, ambito: r.ambito, etiqueta: r.etiqueta, inicio: r.fecha_inicio,
@@ -262,7 +262,7 @@ export default function AspectosSocialesScreen({ projectId }: { projectId: strin
                         {r.observaciones ? <Text style={styles.meta} numberOfLines={2}>{r.observaciones}</Text> : null}
                       </View>
                       {puedeBorrar ? (
-                        <Pressable hitSlop={8} onPress={() => borrarSalv(r)}>
+                        <Pressable accessibilityRole="button" accessibilityLabel="Eliminar" hitSlop={8} onPress={() => borrarSalv(r)}>
                           <Ionicons name="trash-outline" size={18} color={colors.error} />
                         </Pressable>
                       ) : null}

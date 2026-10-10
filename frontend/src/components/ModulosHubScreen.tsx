@@ -18,7 +18,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { api, Area, CustomModule, Project } from '@/src/api';
-import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
+import { ScreenHeader } from '@/src/components/ScreenHeader';
+import { colors, radius, shadow, spacing } from '@/src/theme';
 import {
   agruparModulosPorArea, asignacionesConPersonalizados, modulosActivos, modulosPersonalizadosDef, ModuloDef, SIN_AREA_ID,
 } from '@/src/utils/modulos';
@@ -64,7 +65,6 @@ export default function ModulosHubScreen({
   const plano = grupos.length === 1 && grupos[0].areaId === SIN_AREA_ID;
   const grupoSel = !plano && areaSel ? grupos.find((g) => g.areaId === areaSel) || null : null;
   const headerColor = project?.color_institucional || project?.color_tema || colors.primary;
-  const headerTextColor = contrastText(headerColor);
 
   const atras = useCallback(() => {
     if (grupoSel) setAreaSel(null);
@@ -85,7 +85,7 @@ export default function ModulosHubScreen({
     });
 
   const tarjetaModulo = (m: ModuloDef) => (
-    <Pressable key={m.key} style={styles.card} onPress={() => abrir(m)}>
+    <Pressable accessibilityRole="button" key={m.key} style={styles.card} onPress={() => abrir(m)}>
       <View style={styles.cardIcon}>
         <Ionicons name={m.icon} size={20} color="#fff" />
       </View>
@@ -99,17 +99,7 @@ export default function ModulosHubScreen({
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <View style={[styles.headerWrap, { backgroundColor: headerColor, paddingTop: insets.top + spacing.xs }]}>
-        <View style={styles.headerTopRow}>
-          <Pressable onPress={atras} hitSlop={10} style={styles.iconBtn}>
-            <Ionicons name="chevron-back" size={22} color={headerTextColor} />
-          </Pressable>
-          <Text style={[styles.titleBar, { color: headerTextColor }]} numberOfLines={1}>
-            {grupoSel ? grupoSel.nombre : 'Módulos'}
-          </Text>
-          <View style={{ width: 32 }} />
-        </View>
-      </View>
+      <ScreenHeader title={grupoSel ? grupoSel.nombre : 'Módulos'} backgroundColor={headerColor} onBack={atras} fallbackHref={basePath} />
 
       {loading ? (
         <View style={styles.center}><ActivityIndicator color={colors.primary} /></View>
@@ -123,7 +113,7 @@ export default function ModulosHubScreen({
             grupoSel.modulos.map(tarjetaModulo)
           ) : (
             grupos.map((g) => (
-              <Pressable key={g.areaId} style={styles.card} onPress={() => setAreaSel(g.areaId)}>
+              <Pressable accessibilityRole="button" key={g.areaId} style={styles.card} onPress={() => setAreaSel(g.areaId)}>
                 <View style={[styles.cardIcon, { backgroundColor: g.color || colors.primary }]}>
                   <Ionicons name={g.areaId === SIN_AREA_ID ? 'apps-outline' : 'folder-open-outline'} size={20} color="#fff" />
                 </View>
@@ -144,10 +134,6 @@ export default function ModulosHubScreen({
 }
 
 const styles = StyleSheet.create({
-  headerWrap: { paddingHorizontal: spacing.md, paddingBottom: spacing.sm },
-  headerTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  iconBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
-  titleBar: { flex: 1, textAlign: 'center', fontWeight: '800', fontSize: 16, letterSpacing: 0.3 },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   scroll: { padding: spacing.md, gap: spacing.sm },
   empty: { textAlign: 'center', color: colors.textMuted, marginTop: 40, fontStyle: 'italic' },

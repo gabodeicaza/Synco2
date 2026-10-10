@@ -1,19 +1,28 @@
 import React, { useCallback, useMemo, useState, useRef, useEffect } from 'react';
 import {
-  View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, Alert,
+  View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator,
   Modal, TextInput, KeyboardAvoidingView, Platform, RefreshControl, Share,
   useWindowDimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
+import { useFocusEffect, useLocalSearchParams } from 'expo-router';
+import { ScreenHeader } from '@/src/components/ScreenHeader';
 import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import { Button } from '@/src/components/Button';
+import { FormField } from '@/src/components/FormField';
+import { InlineError } from '@/src/components/InlineError';
 import { api, ApiError, Invitation, Area } from '@/src/api';
+import { useEnvio } from '@/src/hooks/useEnvio';
+import { useFormErrors } from '@/src/hooks/useFormErrors';
+import { esErrorDeRed } from '@/src/utils/errores';
+import { showToast } from '@/src/utils/toast';
+import { validarArea, validarIdentidad } from '@/src/utils/validacionInvitacion';
 import { colors, radius, spacing, shadow } from '@/src/theme';
 import { roleLabel, ROLE_SUB, ROLE_ESP, ROLE_JEFE } from '@/src/utils/roles';
 import { confirm, notify } from '@/src/utils/confirm';
 import { ImportarInvitacionesModal } from '@/src/components/ImportarInvitacionesModal';
+import { t, a11y } from '@/src/i18n';
 
 type WizardStep = 0 | 1 | 2 | 3;
 type WizardRole = 'sub_coordinador' | 'especialista' | 'jefe_proyecto';
@@ -39,8 +48,9 @@ export default function InvitationsScreen() {
   const [puesto, setPuesto] = useState('');
   const [noControl, setNoControl] = useState('');
   const [areaId, setAreaId] = useState<string | null>(null);
-  const [wizardErr, setWizardErr] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
+  const wizardForm = useFormErrors<'name' | 'email' | 'area'>();
+  const envioInvitacion = useEnvio();
+  const [errorAccion, setErrorAccion] = useState<string | null>(null);
 
   const wizardScrollRef = useRef<ScrollView>(null);
 
@@ -61,7 +71,7 @@ export default function InvitationsScreen() {
       setInvitations(items || []);
       setAreas(a || []);
     } catch (e: any) {
-      setError(e?.message || 'Error al cargar invitaciones');
+      setError(e?.message || t('invitaciones.errorCargar'));
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -86,7 +96,7 @@ export default function InvitationsScreen() {
       let group = map.get(key);
       if (!group) {
         const areaName = inv.area_id
-          ? areas.find((a) => a.id === inv.area_id)?.name || 'Area desconocida'
+          ? areas.find((a) => a.id === inv.area_id)?.name || t('invitacionesLista.areaDesconocida')
           : NO_AREA_LABEL;
         group = { areaName, items: [] };
         map.set(key, group);
@@ -100,46 +110,34 @@ export default function InvitationsScreen() {
     setStep(0); setRole('especialista');
     setName(''); setEmail(''); setPuesto(''); setNoControl('');
     setAreaId(null);
-    setWizardErr(null); setWizardOpen(true);
+    wizardForm.limpiarTodo(); setWizardOpen(true);
     try {
       const a = await api.listAreas(pid);
       setAreas(a || []);
     } catch {}
   }
 
-  const wizardCanProceed = useMemo(() => {
-    if (step === 0) return true;
-    if (step === 1) return name.trim().length > 0 && email.trim().length > 0;
-    if (step === 2) {
-      if (role === ROLE_ESP) return !!areaId;
-      return true;
-    }
-    return true;
-  }, [step, role, name, email, areaId]);
-
   function next() {
-    setWizardErr(null);
+    wizardForm.limpiarTodo();
     if (step === 0) setStep(1);
     else if (step === 1) {
-      if (!name.trim()) return setWizardErr('Ingresa el nombre');
-      if (!email.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) return setWizardErr('Correo no válido');
+      if (wizardForm.ponerTodos(validarIdentidad({ name, email }))) return;
       role === ROLE_JEFE ? setStep(3) : setStep(2);
     } else if (step === 2) {
-      if (role === ROLE_ESP && !areaId) return setWizardErr('Selecciona el área');
+      if (wizardForm.ponerTodos({ area: validarArea(role === ROLE_ESP, areaId) })) return;
       setStep(3);
     }
   }
 
   function back() {
-    setWizardErr(null);
+    wizardForm.limpiarTodo();
     if (step === 3 && role === ROLE_JEFE) setStep(1);
     else setStep((s) => (s > 0 ? ((s - 1) as WizardStep) : s));
   }
 
   async function submitInvite() {
-    setWizardErr(null);
-    setSubmitting(true);
-    try {
+    await envioInvitacion.ejecutar(async () => {
+      wizardForm.limpiarTodo();
       const body: any = {
         project_id: pid,
         email: email.trim().toLowerCase(),
@@ -149,20 +147,26 @@ export default function InvitationsScreen() {
         no_control: noControl.trim() || null,
         area_id: areaId,
       };
-      const inv: any = await api.createInvitation(pid, body);
+      let inv: any;
+      try {
+        inv = await api.createInvitation(pid, body);
+      } catch (e: any) {
+        if (e instanceof ApiError && e.status === 409) {
+          wizardForm.poner('email', t('invitaciones.correoDuplicado'));
+          setStep(1);
+        } else {
+          wizardForm.errorDeGuardado(e, t('invitaciones.noSeCreo'));
+        }
+        return;
+      }
       setWizardOpen(false);
       if (inv && inv.status === 'auto_linked') {
-        await load();
-        Alert.alert('Usuario vinculado');
+        showToast(t('invitaciones.usuarioVinculado'));
       } else {
         setCreatedInvite(inv);
-        await load();
       }
-    } catch (e: any) {
-      setWizardErr(e?.message || 'Error al crear');
-    } finally {
-      setSubmitting(false);
-    }
+      await load();
+    });
   }
 
   async function copyToken(token: string) {
@@ -178,15 +182,22 @@ export default function InvitationsScreen() {
 
   async function shareInvite(inv: Invitation) {
     const url = `https://apm-app.mx/invite/${inv.token}`;
-    const msg = `Hola ${inv.name}, te invito a SynCo.\nEnlace: ${url}\nToken: ${inv.token}`;
+    const msg = t('marca.invitacion', { nombre: inv.name, enlace: url, token: inv.token });
     try { await Share.share({ message: msg }); } catch {}
   }
 
   async function revoke(inv: Invitation) {
-    const ok = await confirm('Revocar', '¿Revocar invitación?', { destructive: true });
+    const ok = await confirm(t('invitacionesLista.revocar'), t('invitacionesLista.revocarInvitacion'), { destructive: true });
     if (!ok) return;
+    setErrorAccion(null);
     try { await api.revokeInvitation(inv.id); await load(); }
-    catch (e: any) { Alert.alert('Error', e?.message); }
+    catch (e: any) { mostrarErrorAccion(e, t('invitaciones.noSePudoRevocar')); }
+  }
+
+  // Un fallo de una acción de la lista (fuera de un formulario): red -> toast; otro -> aviso sobre la lista.
+  function mostrarErrorAccion(e: unknown, respaldo: string) {
+    if (esErrorDeRed(e)) showToast(t('red.errorDeRed'));
+    else setErrorAccion((e as any)?.message || respaldo);
   }
 
   // === Edición / baja de miembros ya aceptados (Sub-coordinador / Especialista) ===
@@ -196,7 +207,8 @@ export default function InvitationsScreen() {
   const [editPuesto, setEditPuesto] = useState('');
   const [editNoControl, setEditNoControl] = useState('');
   const [editAreaId, setEditAreaId] = useState<string | null>(null);
-  const [editSaving, setEditSaving] = useState(false);
+  const editForm = useFormErrors<'name' | 'email' | 'area'>();
+  const envioEdicion = useEnvio();
   const [resettingPassword, setResettingPassword] = useState(false);
   const [tempPassword, setTempPassword] = useState<string | null>(null);
 
@@ -207,50 +219,52 @@ export default function InvitationsScreen() {
     setEditPuesto(inv.puesto || '');
     setEditNoControl(inv.no_control || '');
     setEditAreaId(inv.area_id || null);
+    editForm.limpiarTodo();
   }
 
   async function saveEdit() {
-    if (!editTarget?.accepted_user_id || editSaving) return;
-    const name = editName.trim();
-    const email = editEmail.trim().toLowerCase();
-    if (!name) return Alert.alert('Campo requerido', 'Ingresa el nombre');
-    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return Alert.alert('Correo inválido', 'Ingresa un correo válido');
-    if (editTarget.role === ROLE_ESP && !editAreaId) return Alert.alert('Campo requerido', 'Selecciona el área');
-    try {
-      setEditSaving(true);
-      await api.updateTeamMember(pid, editTarget.accepted_user_id, {
-        name,
-        email,
-        puesto: (editTarget.role === ROLE_ESP || editTarget.role === ROLE_SUB) ? (editPuesto.trim() || undefined) : undefined,
-        no_control: editNoControl.trim() || undefined,
-        area_id: editAreaId || '',
-      });
+    const objetivo = editTarget;
+    if (!objetivo?.accepted_user_id) return;
+    await envioEdicion.ejecutar(async () => {
+      const name = editName.trim();
+      const email = editEmail.trim().toLowerCase();
+      const problemas = {
+        ...validarIdentidad({ name, email }),
+        area: validarArea(objetivo.role === ROLE_ESP, editAreaId),
+      };
+      if (editForm.ponerTodos(problemas)) return;
+      try {
+        await api.updateTeamMember(pid, objetivo.accepted_user_id!, {
+          name,
+          email,
+          puesto: (objetivo.role === ROLE_ESP || objetivo.role === ROLE_SUB) ? (editPuesto.trim() || undefined) : undefined,
+          no_control: editNoControl.trim() || undefined,
+          area_id: editAreaId || '',
+        });
+      } catch (e: any) {
+        if (e instanceof ApiError && e.status === 409) editForm.poner('email', t('invitaciones.correoDuplicado'));
+        else editForm.errorDeGuardado(e, t('invitaciones.noSePudoGuardar'));
+        return;
+      }
       setEditTarget(null);
       await load();
-    } catch (e: any) {
-      if (e instanceof ApiError && e.status === 409) {
-        Alert.alert('Correo duplicado', 'Ya existe un usuario con ese correo.');
-      } else {
-        Alert.alert('No se pudo guardar', e?.message || 'Intentalo nuevamente.');
-      }
-    } finally {
-      setEditSaving(false);
-    }
+    });
   }
 
   async function resetPassword() {
     if (!editTarget?.accepted_user_id || resettingPassword) return;
     const ok = await confirm(
-      'Restablecer contraseña',
-      `Se generará una contraseña temporal nueva para ${editTarget.name}. La contraseña anterior dejará de funcionar. ¿Continuar?`,
+      t('invitacionesLista.restablecerContrasena'),
+      t('invitacionesLista.restablecerPregunta', { nombre: editTarget.name }),
     );
     if (!ok) return;
+    editForm.limpiarTodo();
     try {
       setResettingPassword(true);
       const res = await api.resetTeamMemberPassword(pid, editTarget.accepted_user_id);
       setTempPassword(res.temp_password);
     } catch (e: any) {
-      Alert.alert('No se pudo restablecer', e?.message || 'Intentalo nuevamente.');
+      editForm.errorDeGuardado(e, t('invitaciones.noSePudoRestablecer'));
     } finally {
       setResettingPassword(false);
     }
@@ -259,47 +273,48 @@ export default function InvitationsScreen() {
   async function removeMember(inv: Invitation) {
     if (!inv.accepted_user_id) return;
     const ok = await confirm(
-      'Sacar del proyecto',
-      `¿Quitar a ${inv.name} del proyecto? Perderá acceso a la app de inmediato.`,
-      { confirmText: 'Sacar', destructive: true },
+      t('invitacionesLista.sacarDelProyecto'),
+      t('invitacionesLista.sacarPregunta', { nombre: inv.name }),
+      { confirmText: t('invitacionesLista.sacarBoton'), destructive: true },
     );
     if (!ok) return;
+    setErrorAccion(null);
     try {
       await api.removeTeamMember(pid, inv.accepted_user_id);
       await load();
     } catch (e: any) {
-      Alert.alert('No se pudo quitar', e?.message || 'Intentalo nuevamente.');
+      mostrarErrorAccion(e, t('invitaciones.noSePudoQuitar'));
     }
   }
 
   return (
     <View style={styles.root}>
       <View style={[styles.flex1, { paddingTop: insets.top }]}>
-        <View style={styles.header}>
-          <Pressable onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
-            <Ionicons name="chevron-back" size={24} color={colors.text} />
-          </Pressable>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.title}>Invitaciones</Text>
-            <Text style={styles.subtitle}>{invitations.length} en total</Text>
-          </View>
-          <Pressable onPress={() => setBulkImportOpen(true)} hitSlop={8} style={styles.importHeaderBtn}>
-            <Ionicons name="document-attach-outline" size={16} color={colors.primary} />
-            <Text style={styles.importHeaderBtnTxt}>Importar Excel</Text>
-          </Pressable>
-        </View>
+        <ScreenHeader
+          title={t('invitaciones.titulo')}
+          subtitle={t('invitaciones.enTotal', { n: invitations.length })}
+          fallbackHref={{ pathname: '/(coord)/projects/[id]', params: { id: pid } }}
+          safeArea={false}
+          right={(
+            <Pressable accessibilityRole="button" onPress={() => setBulkImportOpen(true)} hitSlop={8} style={styles.importHeaderBtn}>
+              <Ionicons name="document-attach-outline" size={16} color={colors.primary} />
+              <Text style={styles.importHeaderBtnTxt}>{t('invitaciones.importarExcel')}</Text>
+            </Pressable>
+          )}
+        />
 
         <View style={styles.searchBar}>
           <Ionicons name="search" size={18} color={colors.textMuted} />
           <TextInput
             value={search}
             onChangeText={setSearch}
-            placeholder="Buscar por nombre o correo..."
+            placeholder={t('invitaciones.buscar')}
             style={styles.searchInput}
+            accessibilityLabel={t('invitaciones.buscar')}
             autoCapitalize="none"
           />
           {!!search && (
-            <Pressable onPress={() => setSearch('')} hitSlop={10}>
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y('quitar')} onPress={() => setSearch('')} hitSlop={10}>
               <Ionicons name="close-circle" size={18} color={colors.textMuted} />
             </Pressable>
           )}
@@ -310,11 +325,12 @@ export default function InvitationsScreen() {
           contentContainerStyle={{ flexGrow: 1, padding: spacing.md, paddingBottom: 120 }}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={colors.primary} />}
         >
+          <InlineError message={errorAccion} style={{ marginBottom: spacing.sm }} />
           {loading ? (
             <ActivityIndicator color={colors.primary} style={{ marginTop: 40 }} />
           ) : groupedInvitations.length === 0 ? (
             <Text style={styles.emptyText}>
-              {search ? `Sin resultados para "${search}"` : 'Aun no hay invitaciones.'}
+              {search ? t('invitaciones.sinResultados', { busqueda: search }) : t('invitaciones.vacio')}
             </Text>
           ) : groupedInvitations.map((group) => (
             <View key={group.areaName} style={styles.group}>
@@ -340,9 +356,9 @@ export default function InvitationsScreen() {
           ))}
         </ScrollView>
 
-        <Pressable style={[styles.fab, { bottom: insets.bottom + 20 }]} onPress={openWizard}>
+        <Pressable accessibilityRole="button" style={[styles.fab, { bottom: insets.bottom + 20 }]} onPress={openWizard}>
           <Ionicons name="add" size={26} color={colors.textInverse} />
-          <Text style={styles.fabText}>Nueva invitación</Text>
+          <Text style={styles.fabText}>{t('invitaciones.nueva')}</Text>
         </Pressable>
       </View>
 
@@ -351,8 +367,8 @@ export default function InvitationsScreen() {
           <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.flex1}>
             <View style={[styles.modalCard, { height: windowHeight * 0.9, marginTop: windowHeight * 0.1 }]}>
               <View style={styles.modalHeader}>
-                <Text style={styles.modalTitle}>Nueva invitación - Paso {step + 1}</Text>
-                <Pressable onPress={() => setWizardOpen(false)} hitSlop={15}><Ionicons name="close" size={24} color={colors.text} /></Pressable>
+                <Text style={styles.modalTitle}>{t('invitaciones.pasoTitulo', { n: step + 1 })}</Text>
+                <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} onPress={() => setWizardOpen(false)} hitSlop={15}><Ionicons name="close" size={24} color={colors.text} /></Pressable>
               </View>
 
               <View style={styles.flex1}>
@@ -365,27 +381,35 @@ export default function InvitationsScreen() {
                   {step === 0 ? <StepRole role={role} onChange={setRole} /> :
                   step === 1 ? (
                     <StepIdentity
-                      name={name} setName={setName} email={email} setEmail={setEmail}
+                      name={name} setName={wizardForm.alCambiar<string>('name', setName)}
+                      email={email} setEmail={wizardForm.alCambiar<string>('email', setEmail)}
                       role={role} puesto={puesto} setPuesto={setPuesto}
                       noControl={noControl} setNoControl={setNoControl}
+                      errores={wizardForm.errores}
+                      onSubmit={next}
                     />
                   ) :
-                  step === 2 ? <StepArea role={role} areas={areas} areaId={areaId} onArea={setAreaId} /> :
+                  step === 2 ? (
+                    <StepArea
+                      role={role} areas={areas} areaId={areaId}
+                      onArea={wizardForm.alCambiar<string | null>('area', setAreaId)}
+                      error={wizardForm.errores.area}
+                    />
+                  ) :
                   <StepReview role={role} name={name} email={email} areas={areas} areaId={areaId} />}
 
-                  {wizardErr && <Text style={styles.errorTextInline}>{wizardErr}</Text>}
+                  <InlineError message={wizardForm.errorGeneral} style={{ marginTop: 10 }} />
                 </ScrollView>
               </View>
 
               <View style={[styles.wizardActions, { paddingBottom: Math.max(insets.bottom, 20) }]}>
                 {step > 0 && (
-                  <Pressable onPress={back} style={styles.backBtn}><Text style={styles.backText}>Atrás</Text></Pressable>
+                  <Pressable accessibilityRole="button" onPress={back} style={styles.backBtn}><Text style={styles.backText}>{t('invitaciones.atras')}</Text></Pressable>
                 )}
                 <Button
-                  label={step === 3 ? "Generar" : "Continuar"}
+                  label={step === 3 ? t('invitaciones.generar') : t('invitaciones.continuar')}
                   onPress={step === 3 ? submitInvite : next}
-                  loading={submitting}
-                  disabled={!wizardCanProceed}
+                  loading={envioInvitacion.guardando}
                 />
               </View>
             </View>
@@ -397,24 +421,24 @@ export default function InvitationsScreen() {
         <View style={styles.modalBackdrop}>
           <View style={styles.successCard}>
             <Ionicons name="checkmark-circle" size={60} color={colors.success} />
-            <Text style={styles.successTitle}>¡Listo!</Text>
+            <Text style={styles.successTitle}>{t('invitacionesLista.listo')}</Text>
             <View style={styles.tokenBox}>
-              <Text style={styles.tokenLabel}>TOKEN</Text>
+              <Text style={styles.tokenLabel}>{t('invitacionesLista.token')}</Text>
               <Text selectable style={styles.tokenValueText}>{createdInvite?.token}</Text>
             </View>
 
             <View style={styles.successActions}>
-              <Pressable style={styles.actionPill} onPress={() => createdInvite && copyToken(createdInvite.token)}>
+              <Pressable accessibilityRole="button" style={styles.actionPill} onPress={() => createdInvite && copyToken(createdInvite.token)}>
                 <Ionicons name="copy-outline" size={16} color={colors.primary} />
-                <Text style={styles.actionPillText}>Token</Text>
+                <Text style={styles.actionPillText}>{t('invitacionesLista.token2')}</Text>
               </Pressable>
-              <Pressable style={styles.actionPill} onPress={() => createdInvite && shareInvite(createdInvite)}>
+              <Pressable accessibilityRole="button" style={styles.actionPill} onPress={() => createdInvite && shareInvite(createdInvite)}>
                 <Ionicons name="share-social-outline" size={16} color={colors.primary} />
-                <Text style={styles.actionPillText}>Compartir</Text>
+                <Text style={styles.actionPillText}>{t('invitacionesLista.compartir')}</Text>
               </Pressable>
             </View>
 
-            <Button label="Cerrar" fullWidth onPress={() => setCreatedInvite(null)} />
+            <Button label={t('invitacionesLista.cerrar')} fullWidth onPress={() => setCreatedInvite(null)} />
           </View>
         </View>
       </Modal>
@@ -424,62 +448,63 @@ export default function InvitationsScreen() {
           <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.flex1} pointerEvents="box-none">
             <View style={styles.editCard}>
               <View style={styles.modalHeader}>
-                <Text style={styles.modalTitle}>Editar {editTarget ? roleLabel(editTarget.role) : ''}</Text>
-                <Pressable onPress={() => setEditTarget(null)} hitSlop={15}>
+                <Text style={styles.modalTitle}>{t('invitaciones.editarTitulo', { rol: editTarget ? roleLabel(editTarget.role) : '' })}</Text>
+                <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} onPress={() => setEditTarget(null)} hitSlop={15}>
                   <Ionicons name="close" size={22} color={colors.text} />
                 </Pressable>
               </View>
 
-              <Text style={styles.label}>Nombre completo</Text>
-              <TextInput value={editName} onChangeText={setEditName} style={styles.inputSimple} placeholder="Nombre completo" />
-
-              <Text style={styles.label}>Correo electrónico</Text>
-              <TextInput
+              <FormField
+                label={t('invitaciones.nombreCompleto')}
+                value={editName}
+                onChangeText={editForm.alCambiar<string>('name', setEditName)}
+                error={editForm.errores.name}
+                obligatorio
+              />
+              <FormField
+                label={t('invitaciones.correo')}
                 value={editEmail}
-                onChangeText={setEditEmail}
-                style={styles.inputSimple}
-                placeholder="Correo electrónico"
+                onChangeText={editForm.alCambiar<string>('email', setEditEmail)}
+                error={editForm.errores.email}
                 keyboardType="email-address"
                 autoCapitalize="none"
+                autoCorrect={false}
+                obligatorio
               />
-
               {(editTarget?.role === ROLE_ESP || editTarget?.role === ROLE_SUB) && (
-                <>
-                  <Text style={styles.label}>Puesto</Text>
-                  <TextInput value={editPuesto} onChangeText={setEditPuesto} style={styles.inputSimple} placeholder="Puesto" />
-                </>
+                <FormField label={t('invitaciones.puesto')} value={editPuesto} onChangeText={setEditPuesto} />
               )}
-
-              <Text style={styles.label}>No. de Control (opcional)</Text>
-              <TextInput value={editNoControl} onChangeText={setEditNoControl} style={styles.inputSimple} placeholder="No. de Control" />
+              <FormField label={t('invitaciones.noControl')} value={editNoControl} onChangeText={setEditNoControl} />
 
               {(editTarget?.role === ROLE_ESP || editTarget?.role === ROLE_SUB) && (
                 <>
-                  <Text style={styles.label}>Área {editTarget?.role === ROLE_SUB ? '(opcional)' : ''}</Text>
+                  <Text style={styles.label}>{t('invitacionesLista.area')} {editTarget?.role === ROLE_SUB ? t('invitacionesLista.opcional') : ''}</Text>
                   <View style={styles.areaRow}>
                     {editTarget?.role === ROLE_SUB && (
-                      <Pressable onPress={() => setEditAreaId(null)} style={[styles.areaPill, !editAreaId && styles.areaPillOn]}>
-                        <Text>Obra Civil</Text>
+                      <Pressable accessibilityRole="button" onPress={() => { editForm.limpiar('area'); setEditAreaId(null); }} style={[styles.areaPill, !editAreaId && styles.areaPillOn]}>
+                        <Text>{t('invitacionesLista.obraCivil')}</Text>
                       </Pressable>
                     )}
                     {areas.map((a) => (
-                      <Pressable key={a.id} onPress={() => setEditAreaId(a.id)} style={[styles.areaPill, editAreaId === a.id && styles.areaPillOn]}>
+                      <Pressable accessibilityRole="button" key={a.id} onPress={() => { editForm.limpiar('area'); setEditAreaId(a.id); }} style={[styles.areaPill, editAreaId === a.id && styles.areaPillOn]}>
                         <Text>{a.name}</Text>
                       </Pressable>
                     ))}
                   </View>
+                  <InlineError message={editForm.errores.area} style={{ marginTop: 6 }} />
                 </>
               )}
 
+              <InlineError message={editForm.errorGeneral} style={{ marginTop: 12 }} />
               <View style={{ marginTop: 20 }}>
-                <Button label="Guardar cambios" fullWidth onPress={saveEdit} loading={editSaving} />
+                <Button label={t('invitaciones.guardarCambios')} fullWidth onPress={saveEdit} loading={envioEdicion.guardando} />
               </View>
 
-              <Pressable onPress={resetPassword} style={styles.resetPasswordBtn} disabled={resettingPassword}>
+              <Pressable accessibilityRole="button" onPress={resetPassword} style={styles.resetPasswordBtn} disabled={resettingPassword}>
                 {resettingPassword ? <ActivityIndicator color={colors.error} /> : (
                   <>
                     <Ionicons name="key-outline" size={16} color={colors.error} />
-                    <Text style={styles.resetPasswordBtnTxt}>Restablecer contraseña</Text>
+                    <Text style={styles.resetPasswordBtnTxt}>{t('invitacionesLista.restablecerContrasena')}</Text>
                   </>
                 )}
               </Pressable>
@@ -492,23 +517,23 @@ export default function InvitationsScreen() {
         <View style={styles.modalBackdrop}>
           <View style={styles.successCard}>
             <Ionicons name="key" size={48} color={colors.primary} />
-            <Text style={styles.successTitle}>Contraseña nueva</Text>
+            <Text style={styles.successTitle}>{t('invitacionesLista.contrasenaNueva')}</Text>
             <Text style={{ color: colors.textMuted, fontSize: 12, textAlign: 'center', marginBottom: 10 }}>
-              Compártesela a {editTarget?.name}. Solo se muestra una vez.
+              {t('invitacionesLista.comparteselaMsg', { nombre: editTarget?.name ?? '' })}
             </Text>
             <View style={styles.tokenBox}>
-              <Text style={styles.tokenLabel}>CONTRASEÑA TEMPORAL</Text>
+              <Text style={styles.tokenLabel}>{t('invitacionesLista.contrasenaTemporal')}</Text>
               <Text selectable style={styles.tokenValueText}>{tempPassword}</Text>
             </View>
-            <Pressable
+            <Pressable accessibilityRole="button"
               style={styles.actionPill}
               onPress={async () => { if (tempPassword) { await Clipboard.setStringAsync(tempPassword); notify('Copiado', 'Contraseña copiada'); } }}
             >
               <Ionicons name="copy-outline" size={16} color={colors.primary} />
-              <Text style={styles.actionPillText}>Copiar</Text>
+              <Text style={styles.actionPillText}>{t('invitacionesLista.copiar')}</Text>
             </Pressable>
             <View style={{ marginTop: 16, width: '100%' }}>
-              <Button label="Cerrar" fullWidth onPress={() => setTempPassword(null)} />
+              <Button label={t('invitacionesLista.cerrar')} fullWidth onPress={() => setTempPassword(null)} />
             </View>
           </View>
         </View>
@@ -527,12 +552,12 @@ export default function InvitationsScreen() {
 function StepRole({ role, onChange }: any) {
   return (
     <View style={{ gap: 12 }}>
-      <Text style={styles.stepTitle}>Selecciona el rol</Text>
+      <Text style={styles.stepTitle}>{t('invitacionesLista.seleccionaElRol')}</Text>
       {[ROLE_ESP, ROLE_SUB, ROLE_JEFE].map((r) => (
-        <Pressable key={r} onPress={() => onChange(r)} style={[styles.roleCard, role === r && styles.roleCardOn]}>
+        <Pressable accessibilityRole="button" key={r} onPress={() => onChange(r)} style={[styles.roleCard, role === r && styles.roleCardOn]}>
           <View>
             <Text style={styles.roleTitle}>{roleLabel(r)}</Text>
-            <Text style={styles.roleDesc}>{r === ROLE_ESP ? 'Captura mediciones' : r === ROLE_SUB ? 'Supervisa tramos' : 'Solo lectura global'}</Text>
+            <Text style={styles.roleDesc}>{r === ROLE_ESP ? t('invitacionesLista.capturaMediciones') : r === ROLE_SUB ? 'Supervisa tramos' : 'Solo lectura global'}</Text>
           </View>
           {role === r && <Ionicons name="checkmark-circle" size={22} color={colors.primary} />}
         </Pressable>
@@ -541,46 +566,55 @@ function StepRole({ role, onChange }: any) {
   );
 }
 
-function StepIdentity({ name, setName, email, setEmail, role, puesto, setPuesto, noControl, setNoControl }: any) {
+function StepIdentity({ name, setName, email, setEmail, role, puesto, setPuesto, noControl, setNoControl, errores, onSubmit }: any) {
   return (
-    <View style={{ gap: 12 }}>
-      <Text style={styles.stepTitle}>Datos básicos</Text>
-      <TextInput value={name} onChangeText={setName} style={styles.inputSimple} placeholder="Nombre completo" />
-      <TextInput value={email} onChangeText={setEmail} style={styles.inputSimple} placeholder="Correo electrónico" keyboardType="email-address" autoCapitalize="none" />
-      {(role === ROLE_ESP || role === ROLE_SUB) && <TextInput value={puesto} onChangeText={setPuesto} style={styles.inputSimple} placeholder="Puesto" />}
-      <TextInput value={noControl} onChangeText={setNoControl} style={styles.inputSimple} placeholder="No. de Control (opcional)" />
+    <View style={{ gap: 4 }}>
+      <Text style={styles.stepTitle}>{t('invitacionesLista.datosBasicos')}</Text>
+      <FormField
+        label={t('invitaciones.nombreCompleto')} value={name} onChangeText={setName}
+        error={errores?.name} obligatorio returnKeyType="next"
+      />
+      <FormField
+        label={t('invitaciones.correo')} value={email} onChangeText={setEmail}
+        error={errores?.email} obligatorio keyboardType="email-address"
+        autoCapitalize="none" autoCorrect={false} returnKeyType={(role === ROLE_ESP || role === ROLE_SUB) ? 'next' : 'done'}
+        onSubmitEditing={(role === ROLE_ESP || role === ROLE_SUB) ? undefined : onSubmit}
+      />
+      {(role === ROLE_ESP || role === ROLE_SUB) && <FormField label={t('invitaciones.puesto')} value={puesto} onChangeText={setPuesto} />}
+      <FormField label={t('invitaciones.noControl')} value={noControl} onChangeText={setNoControl} returnKeyType="done" onSubmitEditing={onSubmit} />
     </View>
   );
 }
 
-function StepArea({ role, areas, areaId, onArea }: any) {
+function StepArea({ role, areas, areaId, onArea, error }: any) {
   return (
     <View style={{ gap: 15 }}>
-      <Text style={styles.stepTitle}>Área / Disciplina</Text>
-      <Text style={styles.label}>{role === ROLE_ESP ? 'Selecciona el área' : 'Selecciona el área (opcional)'}</Text>
+      <Text style={styles.stepTitle}>{t('invitacionesLista.areaDisciplina')}</Text>
+      <Text style={styles.label}>{role === ROLE_ESP ? t('invitacionesLista.seleccionaElArea') : t('invitacionesLista.seleccionaElAreaOpcional')}</Text>
       <View style={styles.areaRow}>
         {role === ROLE_SUB && (
-          <Pressable onPress={() => onArea(null)} style={[styles.areaPill, !areaId && styles.areaPillOn]}><Text>Obra Civil</Text></Pressable>
+          <Pressable accessibilityRole="button" onPress={() => onArea(null)} style={[styles.areaPill, !areaId && styles.areaPillOn]}><Text>{t('invitacionesLista.obraCivil')}</Text></Pressable>
         )}
         {areas.map((a: any) => (
-          <Pressable key={a.id} onPress={() => onArea(a.id)} style={[styles.areaPill, areaId === a.id && styles.areaPillOn]}><Text>{a.name}</Text></Pressable>
+          <Pressable accessibilityRole="button" key={a.id} onPress={() => onArea(a.id)} style={[styles.areaPill, areaId === a.id && styles.areaPillOn]}><Text>{a.name}</Text></Pressable>
         ))}
       </View>
+      <InlineError message={error} />
     </View>
   );
 }
 
 function StepReview({ name, email, role, areas, areaId }: any) {
-  const areaName = areas.find((a: any) => a.id === areaId)?.name || 'Obra Civil';
+  const areaName = areas.find((a: any) => a.id === areaId)?.name || t('invitacionesLista.obraCivil');
 
   return (
     <View style={{ gap: 12 }}>
-      <Text style={styles.stepTitle}>Resumen</Text>
+      <Text style={styles.stepTitle}>{t('invitacionesLista.resumen')}</Text>
       <View style={styles.reviewCard}>
-        <ReviewRow label="Nombre" value={name} />
-        <ReviewRow label="Correo" value={email} />
-        <ReviewRow label="Rol" value={roleLabel(role)} />
-        {role !== ROLE_JEFE && <ReviewRow label="Área" value={areaName} />}
+        <ReviewRow label={t('invitacionesLista.nombre')} value={name} />
+        <ReviewRow label={t('invitacionesLista.correo')} value={email} />
+        <ReviewRow label={t('invitacionesLista.rol')} value={roleLabel(role)} />
+        {role !== ROLE_JEFE && <ReviewRow label={t('invitacionesLista.area')} value={areaName} />}
       </View>
     </View>
   );
@@ -603,23 +637,23 @@ function InviteCard({ inv, onCopyToken, onCopyLink, onShare, onRevoke, onEdit, o
       <View style={{ flex: 1 }}>
         <Text style={{ fontWeight: '800' }}>{inv.name}</Text>
         <Text style={{ color: colors.textMuted, fontSize: 12 }}>{inv.email} • {roleLabel(inv.role)}</Text>
-        {isPending && <Text style={styles.tokenInline}>Token: {inv.token}</Text>}
-        {isAccepted && !!inv.puesto && <Text style={styles.tokenInline}>Puesto: {inv.puesto}</Text>}
-        {!!inv.no_control && <Text style={styles.tokenInline}>No. Control: {inv.no_control}</Text>}
+        {isPending && <Text style={styles.tokenInline}>{t('invitacionesLista.token3')} {inv.token}</Text>}
+        {isAccepted && !!inv.puesto && <Text style={styles.tokenInline}>{t('invitacionesLista.puesto')} {inv.puesto}</Text>}
+        {!!inv.no_control && <Text style={styles.tokenInline}>{t('invitacionesLista.noControl')} {inv.no_control}</Text>}
       </View>
       <View style={{ alignItems: 'flex-end', gap: 10 }}>
         <Text style={{ fontSize: 11, color: colors.primary, fontWeight: '800' }}>{inv.status.toUpperCase()}</Text>
         {isPending && (
           <View style={{ flexDirection: 'row', gap: 12 }}>
-            <Pressable onPress={onCopyToken}><Ionicons name="copy-outline" size={18} color={colors.primary} /></Pressable>
-            <Pressable onPress={onShare}><Ionicons name="share-social-outline" size={18} color={colors.primary} /></Pressable>
-            <Pressable onPress={onRevoke}><Ionicons name="trash-outline" size={18} color={colors.error} /></Pressable>
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y('copiar')} hitSlop={8} onPress={onCopyToken}><Ionicons name="copy-outline" size={18} color={colors.primary} /></Pressable>
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y('compartir')} hitSlop={8} onPress={onShare}><Ionicons name="share-social-outline" size={18} color={colors.primary} /></Pressable>
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y('eliminar')} hitSlop={8} onPress={onRevoke}><Ionicons name="trash-outline" size={18} color={colors.error} /></Pressable>
           </View>
         )}
         {isAccepted && (
           <View style={{ flexDirection: 'row', gap: 12 }}>
-            <Pressable onPress={onEdit}><Ionicons name="create-outline" size={18} color={colors.primary} /></Pressable>
-            <Pressable onPress={onRemove}><Ionicons name="person-remove-outline" size={18} color={colors.error} /></Pressable>
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y('editar')} hitSlop={8} onPress={onEdit}><Ionicons name="create-outline" size={18} color={colors.primary} /></Pressable>
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y('quitarPersona')} hitSlop={8} onPress={onRemove}><Ionicons name="person-remove-outline" size={18} color={colors.error} /></Pressable>
           </View>
         )}
       </View>
@@ -630,10 +664,6 @@ function InviteCard({ inv, onCopyToken, onCopyLink, onShare, onRevoke, onEdit, o
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: 'white' },
   flex1: { flex: 1 },
-  header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 15, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: colors.border },
-  title: { fontSize: 18, fontWeight: '900' },
-  subtitle: { fontSize: 12, color: colors.textMuted },
-  iconBtn: { padding: 5, marginRight: 10 },
   importHeaderBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, borderWidth: 1, borderColor: colors.primary, borderRadius: 20, paddingHorizontal: 10, paddingVertical: 6 },
   importHeaderBtnTxt: { fontSize: 11, fontWeight: '800', color: colors.primary },
 
@@ -655,8 +685,6 @@ const styles = StyleSheet.create({
   stepTitle: { fontSize: 18, fontWeight: '800', marginBottom: 10 },
   label: { fontSize: 13, fontWeight: '700', color: colors.textMuted, marginTop: 5 },
 
-  inputSimple: { borderBottomWidth: 1, borderBottomColor: colors.border, paddingVertical: 12, fontSize: 16 },
-
   roleCard: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 15, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: '#f9f9f9', marginBottom: 8 },
   roleCardOn: { borderColor: colors.primary, backgroundColor: colors.primaryLight + '20' },
   roleTitle: { fontWeight: '700' },
@@ -672,8 +700,6 @@ const styles = StyleSheet.create({
   wizardActions: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 20, borderTopWidth: 1, borderTopColor: colors.border, backgroundColor: 'white' },
   backBtn: { padding: 10 },
   backText: { fontWeight: '700', color: colors.textMuted },
-
-  errorTextInline: { color: colors.error, fontWeight: '700', marginTop: 10 },
 
   fab: { position: 'absolute', right: 20, flexDirection: 'row', alignItems: 'center', backgroundColor: colors.primary, paddingHorizontal: 20, paddingVertical: 12, borderRadius: 30, elevation: 5 },
   fabText: { color: 'white', fontWeight: '800', marginLeft: 8 },

@@ -111,15 +111,15 @@ async def _sembrar_con_supervision(db):
     c_s, p_s, r_s = _datos_supervision()
     await db.conceptos.insert_many(c_s)
     await db.partidas.insert_many([{**p, "project_id": "p1"} for p in p_s])
-    await db.registros_avance.insert_many([{**r, "project_id": "p1"} for r in r_s])
+    await db.registros_avance.insert_many([{"id": f"rs{i}", "cantidad_ejecutada": "1", "tipo": "normal", **r, "project_id": "p1"} for i, r in enumerate(r_s)])
 
 
 def test_dashboard_evm_filtra_por_contrato_y_por_defecto_es_obra():
     async def go(db):
         await _sembrar_con_supervision(db)
         ini, fin = INI.isoformat(), FIN.isoformat()
-        obra = await server.analisis_periodo("p1", ini, fin, "obra", USER)
-        sup = await server.analisis_periodo("p1", ini, fin, "supervision", USER)
+        obra = await server.analisis_periodo("p1", ini, fin, contrato="obra", user=USER)
+        sup = await server.analisis_periodo("p1", ini, fin, contrato="supervision", user=USER)
         por_defecto = await server.analisis_periodo("p1", ini, fin, user=USER)
         assert obra.ev == por_defecto.ev == "100.00" and sup.ev == "50.00"
         assert sup.ac == "0.00"  # los gastos reales no distinguen contrato: son de la obra

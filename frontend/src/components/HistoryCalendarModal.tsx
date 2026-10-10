@@ -6,6 +6,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { colors, radius, shadow, spacing } from '@/src/theme';
 import { FeedItem } from '@/src/api';
 import { toISODateCDMX } from '@/src/utils/tz';
+import { a11y } from '@/src/i18n';
+import { fmtFecha } from '@/src/utils/fechas';
 
 // Localizacion a espanol.
 LocaleConfig.locales['es'] = {
@@ -14,8 +16,8 @@ LocaleConfig.locales['es'] = {
     'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre',
   ],
   monthNamesShort: ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'],
-  dayNames: ['Domingo', 'Lunes', 'Martes', 'Miercoles', 'Jueves', 'Viernes', 'Sabado'],
-  dayNamesShort: ['Dom', 'Lun', 'Mar', 'Mie', 'Jue', 'Vie', 'Sab'],
+  dayNames: ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'],
+  dayNamesShort: ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'],
   today: 'Hoy',
 };
 LocaleConfig.defaultLocale = 'es';
@@ -62,10 +64,10 @@ export function HistoryCalendarModal({
             <View style={{ flex: 1 }}>
               <Text style={styles.title}>Historial por fecha</Text>
               <Text style={styles.subtitle}>
-                {selectedDate ? `Filtrando: ${formatDate(selectedDate)}` : 'Toca un dia para filtrar reportes'}
+                {selectedDate ? `Filtrando: ${formatDate(selectedDate)}` : 'Toca un día para filtrar reportes'}
               </Text>
             </View>
-            <Pressable onPress={onClose} hitSlop={10} style={styles.closeBtn}>
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} onPress={onClose} hitSlop={10} style={styles.closeBtn}>
               <Ionicons name="close" size={20} color={colors.text} />
             </Pressable>
           </View>
@@ -99,7 +101,7 @@ export function HistoryCalendarModal({
           />
 
           <View style={styles.actions}>
-            <Pressable
+            <Pressable accessibilityRole="button"
               onPress={() => onPickDate(null)}
               style={({ pressed }) => [
                 styles.btnGhost,
@@ -109,7 +111,7 @@ export function HistoryCalendarModal({
               <Ionicons name="refresh" size={16} color={colors.primary} />
               <Text style={styles.btnGhostTxt}>Quitar filtro</Text>
             </Pressable>
-            <Pressable
+            <Pressable accessibilityRole="button"
               onPress={onClose}
               style={({ pressed }) => [
                 styles.btnPrimary,
@@ -127,9 +129,7 @@ export function HistoryCalendarModal({
 
 function formatDate(iso: string): string {
   try {
-    const [y, m, d] = iso.split('-');
-    const date = new Date(Number(y), Number(m) - 1, Number(d));
-    return date.toLocaleDateString('es-MX', { day: '2-digit', month: 'long', year: 'numeric' });
+    return fmtFecha(iso);
   } catch {
     return iso;
   }

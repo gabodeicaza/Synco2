@@ -159,7 +159,7 @@ export default function ElectromecanicaScreen({ projectId }: { projectId: string
     <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1, backgroundColor: colors.bg }}>
       <View style={[styles.headerWrap, { backgroundColor: headerColor, paddingTop: insets.top + spacing.xs }]}>
         <View style={styles.headerTopRow}>
-          <Pressable onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
+          <Pressable accessibilityRole="button" accessibilityLabel="Volver" onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
             <Ionicons name="chevron-back" size={22} color={headerTextColor} />
           </Pressable>
           <Text style={[styles.titleBar, { color: headerTextColor }]}>Sistema Electromecánico</Text>
@@ -222,7 +222,7 @@ export default function ElectromecanicaScreen({ projectId }: { projectId: string
         <View style={styles.sectionHeaderRow}>
           <Text style={styles.sectionTitle}>Documentación y actividades</Text>
           {puedeEscribir ? (
-            <Pressable onPress={() => setDocs((c) => [...c, { id: null, titulo: '', estatus: null, nota: '' }])} style={styles.addBtn}>
+            <Pressable accessibilityRole="button" onPress={() => setDocs((c) => [...c, { id: null, titulo: '', estatus: null, nota: '' }])} style={styles.addBtn}>
               <Ionicons name="add" size={16} color={colors.primary} /><Text style={styles.addBtnTxt}>Agregar</Text>
             </Pressable>
           ) : null}
@@ -238,7 +238,7 @@ export default function ElectromecanicaScreen({ projectId }: { projectId: string
               {ESTATUS.map((s) => {
                 const on = d.estatus === s.key;
                 return (
-                  <Pressable
+                  <Pressable accessibilityRole="button"
                     key={s.key} disabled={!puedeEscribir}
                     onPress={() => setDocs((c) => c.map((x, j) => (j === i ? { ...x, estatus: on ? null : s.key } : x)))}
                     style={[styles.chip, on && { backgroundColor: s.color, borderColor: s.color }]}
@@ -253,7 +253,7 @@ export default function ElectromecanicaScreen({ projectId }: { projectId: string
               editable={puedeEscribir} placeholder="Observación (opcional)" placeholderTextColor={colors.textMuted} style={[styles.input, { marginTop: spacing.xs }]}
             />
             {puedeEscribir ? (
-              <Pressable onPress={() => setDocs((c) => c.filter((_, j) => j !== i))} style={styles.removeBtn}>
+              <Pressable accessibilityRole="button" onPress={() => setDocs((c) => c.filter((_, j) => j !== i))} style={styles.removeBtn}>
                 <Ionicons name="trash-outline" size={16} color={colors.error} /><Text style={styles.removeTxt}>Quitar</Text>
               </Pressable>
             ) : null}
@@ -263,7 +263,7 @@ export default function ElectromecanicaScreen({ projectId }: { projectId: string
         <View style={styles.sectionHeaderRow}>
           <Text style={styles.sectionTitle}>Observaciones</Text>
           {puedeEscribir ? (
-            <Pressable onPress={() => setObs((c) => [...c, { id: null, titulo: '', texto: '' }])} style={styles.addBtn}>
+            <Pressable accessibilityRole="button" onPress={() => setObs((c) => [...c, { id: null, titulo: '', texto: '' }])} style={styles.addBtn}>
               <Ionicons name="add" size={16} color={colors.primary} /><Text style={styles.addBtnTxt}>Agregar</Text>
             </Pressable>
           ) : null}
@@ -281,7 +281,7 @@ export default function ElectromecanicaScreen({ projectId }: { projectId: string
               style={[styles.input, { marginTop: spacing.xs, minHeight: 60 }]}
             />
             {puedeEscribir ? (
-              <Pressable onPress={() => setObs((c) => c.filter((_, j) => j !== i))} style={styles.removeBtn}>
+              <Pressable accessibilityRole="button" onPress={() => setObs((c) => c.filter((_, j) => j !== i))} style={styles.removeBtn}>
                 <Ionicons name="trash-outline" size={16} color={colors.error} /><Text style={styles.removeTxt}>Quitar</Text>
               </Pressable>
             ) : null}

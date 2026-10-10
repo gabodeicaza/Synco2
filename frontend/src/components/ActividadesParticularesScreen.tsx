@@ -155,7 +155,7 @@ export default function ActividadesParticularesScreen({ projectId }: { projectId
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <View style={[styles.headerWrap, { backgroundColor: headerColor, paddingTop: insets.top + spacing.xs }]}>
         <View style={styles.headerTopRow}>
-          <Pressable onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
+          <Pressable accessibilityRole="button" accessibilityLabel="Volver" onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
             <Ionicons name="chevron-back" size={22} color={headerTextColor} />
           </Pressable>
           <Text style={[styles.titleBar, { color: headerTextColor }]} numberOfLines={1}>Actividades particulares</Text>
@@ -166,7 +166,7 @@ export default function ActividadesParticularesScreen({ projectId }: { projectId
       <ScrollView contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + spacing.xl }]}>
         {puedeCatalogo ? (
           <View style={{ marginBottom: spacing.lg }}>
-            <Pressable style={styles.sectionHeaderRow} onPress={() => setVerCats((v) => !v)}>
+            <Pressable accessibilityRole="button" style={styles.sectionHeaderRow} onPress={() => setVerCats((v) => !v)}>
               <Text style={styles.sectionTitle}>Categorías ({cats.length})</Text>
               <Ionicons name={verCats ? 'chevron-up' : 'chevron-down'} size={16} color={colors.textMuted} />
             </Pressable>
@@ -177,7 +177,7 @@ export default function ActividadesParticularesScreen({ projectId }: { projectId
                     <Text style={styles.emptyTxt}>Aún no hay categorías. Carga las sugeridas del reporte semanal o crea las tuyas.</Text>
                   </View>
                 ) : cats.map((c) => (
-                  <Pressable key={c.id} style={[styles.card, { padding: spacing.md }]}
+                  <Pressable accessibilityRole="button" key={c.id} style={[styles.card, { padding: spacing.md }]}
                     onPress={() => setCatDraft({ id: c.id, nombre: c.nombre, subs: c.subcategorias.join('\n') })}>
                     <Text style={styles.cardTitle}>{c.nombre}</Text>
                     <Text style={styles.meta}>{c.subcategorias.length ? c.subcategorias.join(' · ') : 'Sin subcategorías'}</Text>
@@ -195,7 +195,7 @@ export default function ActividadesParticularesScreen({ projectId }: { projectId
         <View style={styles.sectionHeaderRow}>
           <Text style={styles.sectionTitle}>Actividades</Text>
           {puedeEscribir ? (
-            <Pressable
+            <Pressable accessibilityRole="button"
               onPress={() => (cats.length === 0
                 ? Alert.alert('Sin categorías', 'El Coordinador o Sub-Coordinador debe definir las categorías primero.')
                 : setDraft({ id: null, node_id: null, categoria_id: null, subcategoria: '', texto: '', fecha: hoyISO(), jerarquia: JERARQUIA_DEFAULT }))}
@@ -217,7 +217,7 @@ export default function ActividadesParticularesScreen({ projectId }: { projectId
             {rows.map((r) => {
               const puedeBorrar = puedeEscribir && (puedeCatalogo || r.created_by === user?.id);
               return (
-                <Pressable key={r.id} style={[styles.card, styles.row]}
+                <Pressable accessibilityRole="button" key={r.id} style={[styles.card, styles.row]}
                   onPress={puedeEscribir ? () => setDraft({
                     id: r.id, node_id: r.node_id, categoria_id: r.categoria_id, subcategoria: r.subcategoria || '', texto: r.texto, fecha: r.fecha,
                     jerarquia: r.jerarquia || JERARQUIA_DEFAULT,
@@ -227,7 +227,7 @@ export default function ActividadesParticularesScreen({ projectId }: { projectId
                     <Text style={styles.desc}>{r.texto}</Text>
                   </View>
                   {puedeBorrar ? (
-                    <Pressable hitSlop={8} onPress={() => onDelete(r)}>
+                    <Pressable accessibilityRole="button" accessibilityLabel="Eliminar" hitSlop={8} onPress={() => onDelete(r)}>
                       <Ionicons name="trash-outline" size={18} color={colors.error} />
                     </Pressable>
                   ) : null}
@@ -249,7 +249,7 @@ export default function ActividadesParticularesScreen({ projectId }: { projectId
               <Text style={styles.fieldLabel}>Categoría</Text>
               <View style={styles.chips}>
                 {cats.map((c) => (
-                  <Pressable key={c.id} onPress={() => setDraft((d) => (d ? { ...d, categoria_id: c.id, subcategoria: '' } : d))}
+                  <Pressable accessibilityRole="button" key={c.id} onPress={() => setDraft((d) => (d ? { ...d, categoria_id: c.id, subcategoria: '' } : d))}
                     style={[styles.chip, draft?.categoria_id === c.id && styles.chipOn]}>
                     <Text style={[styles.chipTxt, draft?.categoria_id === c.id && { color: '#fff' }]}>{c.nombre}</Text>
                   </Pressable>
@@ -260,7 +260,7 @@ export default function ActividadesParticularesScreen({ projectId }: { projectId
                   <Text style={styles.fieldLabel}>Subcategoría</Text>
                   <View style={styles.chips}>
                     {catSel.subcategorias.map((s) => (
-                      <Pressable key={s} onPress={() => setDraft((d) => (d ? { ...d, subcategoria: d.subcategoria === s ? '' : s } : d))}
+                      <Pressable accessibilityRole="button" key={s} onPress={() => setDraft((d) => (d ? { ...d, subcategoria: d.subcategoria === s ? '' : s } : d))}
                         style={[styles.chip, draft?.subcategoria === s && styles.chipOn]}>
                         <Text style={[styles.chipTxt, draft?.subcategoria === s && { color: '#fff' }]}>{s}</Text>
                       </Pressable>

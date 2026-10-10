@@ -14,7 +14,7 @@ export function Chip({
 }) {
   const color = on ? '#fff' : tone === 'danger' ? colors.error : colors.text;
   return (
-    <Pressable
+    <Pressable accessibilityRole="button"
       onPress={onPress} disabled={disabled}
       style={[styles.chip, on && styles.chipOn, disabled && { opacity: 0.45 }]}
     >
@@ -68,7 +68,7 @@ export function Header({
   const fg = contrastText(color);
   return (
     <View style={[styles.header, { backgroundColor: color, paddingTop: insets.top + spacing.xs }]}>
-      <Pressable onPress={onBack} hitSlop={10} style={styles.headerBtn}>
+      <Pressable accessibilityRole="button" accessibilityLabel="Volver" onPress={onBack} hitSlop={10} style={styles.headerBtn}>
         <Ionicons name={icon} size={22} color={fg} />
       </Pressable>
       <Text style={[styles.headerTitle, { color: fg }]} numberOfLines={1}>{title}</Text>

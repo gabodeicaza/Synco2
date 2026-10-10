@@ -13,23 +13,25 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, FlatList, RefreshControl,
-  Modal, TextInput, KeyboardAvoidingView, Platform, Alert, useWindowDimensions,
+  Alert, useWindowDimensions,
 } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import Svg, { Polyline, Line as SvgLine, Text as SvgText, Circle } from 'react-native-svg';
 import * as DocumentPicker from 'expo-document-picker';
 
-import { api, ContratoFin, AnalisisPeriodo, CurvaS, ExcepcionEvm, ActividadEvm, ActividadesEvm, GastoReal, GastoRealImportResult, RegistroAvanceImportResult } from '@/src/api';
+import { EXCEPCION_META, claveTituloExcepcion, etiquetaExcepcion } from '@/src/utils/excepcionesMeta';
+import { api, ContratoFin, AnalisisPeriodo, CurvaS, PeriodoFinanciero, ExcepcionEvm, ActividadEvm, ActividadesEvm, GastoReal, GastoRealImportResult, RegistroAvanceImportResult } from '@/src/api';
 import { colors, spacing, radius, shadow } from '@/src/theme';
 import { Button } from '@/src/components/Button';
 import { confirm } from '@/src/utils/confirm';
-import { formatMoney, isValidDecimalInput } from '@/src/utils/money';
+import { formatMoney } from '@/src/utils/money';
 import { downloadBlob } from '@/src/utils/downloadBlob';
-import { dayjs, CDMX_TZ } from '@/src/utils/tz';
+import { variacionCostoUI } from '@/src/utils/finanzas';
+import { a11y, t } from '@/src/i18n';
+import { ExcedentesSection } from '@/src/components/ExcedentesSection';
+import { GastoRealForm } from '@/src/components/GastoRealForm';
+import { ScreenHeader } from '@/src/components/ScreenHeader';
 
-const FECHA_ISO_RE = /^\d{4}-\d{2}-\d{2}$/;
 type TabActividades = 'pendientes' | 'actuales' | 'por_venir';
 const TABS_ACTIVIDADES: { key: TabActividades; label: string }[] = [
   { key: 'pendientes', label: 'Pendientes' },
@@ -37,20 +39,7 @@ const TABS_ACTIVIDADES: { key: TabActividades; label: string }[] = [
   { key: 'por_venir', label: 'Por venir' },
 ];
 
-type RangoRapido = 'mes_actual' | 'ultimos_3_meses' | 'proyecto_completo';
-
-function rangoDesde(rango: RangoRapido, curva: CurvaS | null): { start: string; end: string } {
-  const hoy = dayjs().tz(CDMX_TZ);
-  if (rango === 'mes_actual') {
-    return { start: hoy.startOf('month').format('YYYY-MM-DD'), end: hoy.format('YYYY-MM-DD') };
-  }
-  if (rango === 'ultimos_3_meses') {
-    return { start: hoy.subtract(3, 'month').startOf('month').format('YYYY-MM-DD'), end: hoy.format('YYYY-MM-DD') };
-  }
-  // proyecto_completo: desde el primer mes con datos en la Curva S hasta hoy.
-  const primerMes = curva && curva.meses.length ? `${curva.meses[0]}-01` : hoy.startOf('year').format('YYYY-MM-DD');
-  return { start: primerMes, end: hoy.format('YYYY-MM-DD') };
-}
+type RangoRapido = PeriodoFinanciero;
 
 /** SPI/CPI vienen como string decimal (ver server.py: quantize a 4
  * decimales, nunca la división cruda) — Number() aquí es seguro porque es
@@ -140,7 +129,7 @@ function CurvaSChart({ curva }: { curva: CurvaS }) {
   if (!curva.meses.length) {
     return (
       <View style={styles.curvaVacia}>
-        <Text style={styles.curvaVaciaTxt}>Todavía no hay conceptos con fechas de inicio/fin capturadas para trazar la Curva S.</Text>
+        <Text style={styles.curvaVaciaTxt}>{t('tableroEvm.todaviaNoHayConceptosCon')}</Text>
       </View>
     );
   }
@@ -149,7 +138,7 @@ function CurvaSChart({ curva }: { curva: CurvaS }) {
 
   return (
     <View>
-      <Text style={styles.ejeYTitulo}>Importe acumulado (MXN)</Text>
+      <Text style={styles.ejeYTitulo}>{t('tableroEvm.importeAcumuladoMxn')}</Text>
       <ScrollView horizontal showsHorizontalScrollIndicator>
         <Svg width={width} height={height}>
           {yTicks.map((v, i) => {
@@ -188,11 +177,11 @@ function CurvaSChart({ curva }: { curva: CurvaS }) {
           ))}
         </Svg>
       </ScrollView>
-      <Text style={styles.ejeXTitulo}>Mes</Text>
+      <Text style={styles.ejeXTitulo}>{t('tableroEvm.mes')}</Text>
       <View style={styles.leyendaRow}>
-        <LeyendaItem color={colors.textMuted} label="Planeado" dash="8,5" valor={curva.planeado_acumulado[curva.planeado_acumulado.length - 1]} />
-        <LeyendaItem color={colors.primary} label="Ganado" valor={curva.ganado_acumulado[curva.ganado_acumulado.length - 1]} />
-        <LeyendaItem color={colors.error} label="Real" dash="1,4" valor={curva.real_acumulado[curva.real_acumulado.length - 1]} />
+        <LeyendaItem color={colors.textMuted} label={t('tableroEvm.planeado')} dash="8,5" valor={curva.planeado_acumulado[curva.planeado_acumulado.length - 1]} />
+        <LeyendaItem color={colors.primary} label={t('tableroEvm.ganado')} valor={curva.ganado_acumulado[curva.ganado_acumulado.length - 1]} />
+        <LeyendaItem color={colors.error} label={t('tableroEvm.real')} dash="1,4" valor={curva.real_acumulado[curva.real_acumulado.length - 1]} />
       </View>
     </View>
   );
@@ -216,20 +205,16 @@ function LeyendaItem({ color, label, dash, valor }: { color: string; label: stri
   );
 }
 
-const EXCEPCION_META: Record<ExcepcionEvm['tipo'], { icon: keyof typeof Ionicons.glyphMap; color: string }> = {
-  fuera_de_ventana: { icon: 'time-outline', color: colors.warning },
-  sobre_meta: { icon: 'trending-up-outline', color: colors.error },
-  atrasado: { icon: 'alert-circle-outline', color: colors.error },
-};
-
 function ExcepcionRow({ item }: { item: ExcepcionEvm }) {
   const meta = EXCEPCION_META[item.tipo];
   return (
     <View style={styles.excepcionRow}>
       <Ionicons name={meta.icon} size={18} color={meta.color} />
       <View style={{ flex: 1 }}>
-        <Text style={styles.excepcionClave}>{item.clave} · {item.descripcion}</Text>
+        <Text style={styles.excepcionInfo}>{t(claveTituloExcepcion(item.tipo))}</Text>
+        <Text style={styles.excepcionClave}>{etiquetaExcepcion(item)}</Text>
         <Text style={styles.excepcionDetalle}>{item.detalle}</Text>
+        {item.severidad === 'informativa' ? <Text style={styles.excepcionInfo}>{t('excedentes.informativa')}</Text> : null}
       </View>
     </View>
   );
@@ -242,7 +227,7 @@ function ActividadCard({ item, tab }: { item: ActividadEvm; tab: TabActividades 
       <Text style={styles.actividadClave}>{item.clave} · {item.descripcion}</Text>
       <Text style={styles.actividadFechas}>{item.fecha_inicio} → {item.fecha_fin}</Text>
       <View style={styles.actividadFooterRow}>
-        <Text style={styles.actividadEjecutado}>{item.ejecutado} de {item.meta_cantidad} {item.unidad}</Text>
+        <Text style={styles.actividadEjecutado}>{t('tableroEvm.ejecutadoDe', { ejecutado: item.ejecutado, meta: item.meta_cantidad, unidad: item.unidad })}</Text>
         <Text style={[styles.actividadPct, { color: acento }]}>{item.porcentaje_avance}%</Text>
       </View>
     </View>
@@ -250,7 +235,6 @@ function ActividadCard({ item, tab }: { item: ActividadEvm; tab: TabActividades 
 }
 
 export default function DashboardEVM({ projectId }: { projectId: string }) {
-  const insets = useSafeAreaInsets();
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -266,16 +250,7 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
   const [contrato, setContrato] = useState<ContratoFin>('obra');
   const [haySupervision, setHaySupervision] = useState(false);
 
-  // Modal "Registrar gasto real (AC)" — fecha libre en vez de selector nativo
-  // (mismo criterio que fecha_reunion en MinutasView.tsx): así se puede
-  // capturar un gasto de un mes anterior que no se registró a tiempo, no
-  // solo el gasto de hoy.
   const [gastoFormOpen, setGastoFormOpen] = useState(false);
-  const [gastoFecha, setGastoFecha] = useState(() => dayjs().tz(CDMX_TZ).format('YYYY-MM-DD'));
-  const [gastoMonto, setGastoMonto] = useState('');
-  const [gastoDescripcion, setGastoDescripcion] = useState('');
-  const [gastoClave, setGastoClave] = useState('');
-  const [savingGasto, setSavingGasto] = useState(false);
   const [importandoGastos, setImportandoGastos] = useState(false);
   const [descargandoPlantilla, setDescargandoPlantilla] = useState(false);
   const [importandoAvances, setImportandoAvances] = useState(false);
@@ -285,13 +260,13 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
     if (!projectId) return;
     setError(null);
     try {
-      // La Curva S se pide primero porque "proyecto completo" necesita su
-      // primer mes para saber desde dónde arrancar la ventana de analisisPeriodo.
       const curvaResp = await api.analisisPeriodoCurvaS(projectId, contrato);
       setCurva(curvaResp);
-      const { start, end } = rangoDesde(rangoActual, curvaResp || curvaPrevia);
-      const [analisisResp, excepcionesResp, actividadesResp, gastosResp] = await Promise.all([
-        api.analisisPeriodo(projectId, start, end, contrato),
+      // El servidor resuelve la ventana del periodo (la misma función que usa la Presentación)
+      // y la devuelve en start/end: de ahí sale también el rango de la lista de gastos.
+      const analisisResp = await api.analisisPeriodoPorPeriodo(projectId, rangoActual, undefined, contrato);
+      const { start, end } = analisisResp;
+      const [excepcionesResp, actividadesResp, gastosResp] = await Promise.all([
         api.analisisPeriodoExcepciones(projectId, contrato),
         api.analisisPeriodoActividades(projectId, contrato),
         // Acotado al mismo rango que las tarjetas — un proyecto con miles de
@@ -304,44 +279,17 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
       setActividades(actividadesResp);
       setGastos(gastosResp);
     } catch (e: any) {
-      setError(e?.message || 'No se pudo cargar el dashboard EVM');
+      setError(e?.message || t('tableroEvm.noSePudoCargarEl'));
     }
   }, [projectId, contrato]);
 
   function openGastoForm() {
-    setGastoFecha(dayjs().tz(CDMX_TZ).format('YYYY-MM-DD'));
-    setGastoMonto('');
-    setGastoDescripcion('');
-    setGastoClave('');
     setGastoFormOpen(true);
   }
 
-  async function onSaveGasto() {
-    if (!FECHA_ISO_RE.test(gastoFecha)) {
-      Alert.alert('Fecha inválida', 'Usa el formato AAAA-MM-DD, por ejemplo 2026-02-15.');
-      return;
-    }
-    if (!isValidDecimalInput(gastoMonto) || Number(gastoMonto) <= 0) {
-      Alert.alert('Monto inválido', 'Ingresa un número mayor a 0, con hasta 2 decimales.');
-      return;
-    }
-    if (!gastoDescripcion.trim()) {
-      Alert.alert('Falta información', 'Describe brevemente el gasto (ej. "Nómina semana 12").');
-      return;
-    }
-    try {
-      setSavingGasto(true);
-      await api.createGastoReal(projectId, {
-        fecha: gastoFecha, monto: gastoMonto, concepto_texto: gastoDescripcion.trim(),
-        concepto_clave: gastoClave.trim() || undefined,
-      });
-      setGastoFormOpen(false);
-      await cargar(rango, curva);
-    } catch (e: any) {
-      Alert.alert('No se pudo guardar', e?.message || 'Intentalo nuevamente.');
-    } finally {
-      setSavingGasto(false);
-    }
+  async function onGastoGuardado() {
+    setGastoFormOpen(false);
+    await cargar(rango, curva);
   }
 
   async function onDescargarPlantillaGastos() {
@@ -351,7 +299,7 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
       const { blob, filename } = await api.downloadGastosRealesPlantilla();
       await downloadBlob(blob, filename, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     } catch (e: any) {
-      Alert.alert('No se pudo descargar la plantilla', e?.message || 'Intentalo nuevamente.');
+      Alert.alert(t('tableroEvm.noSePudoDescargarLa'), e?.message || t('tableroEvm.intentaloNuevamente'));
     } finally {
       setDescargandoPlantilla(false);
     }
@@ -388,7 +336,7 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
       );
       if (res.creados > 0) await cargar(rango, curva);
     } catch (e: any) {
-      Alert.alert('No se pudo importar el archivo', e?.message || 'Intentalo nuevamente.');
+      Alert.alert(t('tableroEvm.noSePudoImportarEl'), e?.message || t('tableroEvm.intentaloNuevamente'));
     } finally {
       setImportandoGastos(false);
     }
@@ -401,7 +349,7 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
       const { blob, filename } = await api.downloadAvanceImportPlantilla(projectId);
       await downloadBlob(blob, filename, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     } catch (e: any) {
-      Alert.alert('No se pudo descargar la plantilla', e?.message || 'Intentalo nuevamente.');
+      Alert.alert(t('tableroEvm.noSePudoDescargarLa'), e?.message || t('tableroEvm.intentaloNuevamente'));
     } finally {
       setDescargandoPlantillaAvance(false);
     }
@@ -438,7 +386,7 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
       );
       if (res.creados > 0) await cargar(rango, curva);
     } catch (e: any) {
-      Alert.alert('No se pudo importar el archivo', e?.message || 'Intentalo nuevamente.');
+      Alert.alert(t('tableroEvm.noSePudoImportarEl'), e?.message || t('tableroEvm.intentaloNuevamente'));
     } finally {
       setImportandoAvances(false);
     }
@@ -446,16 +394,16 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
 
   async function onDeleteGasto(g: GastoReal) {
     const ok = await confirm(
-      'Borrar gasto real',
-      `¿Borrar "${g.concepto_texto}" (${formatMoney(g.monto)}, ${g.fecha})? Esto afecta el AC y el CPI ya calculados.`,
-      { confirmText: 'Borrar', destructive: true },
+      t('tableroEvm.borrarGastoReal'),
+      t('tableroEvm.borrarGastoPregunta', { concepto: g.concepto_texto, monto: formatMoney(g.monto), fecha: g.fecha }),
+      { confirmText: t('tableroEvm.borrarBoton'), destructive: true },
     );
     if (!ok) return;
     try {
       await api.deleteGastoReal(g.id);
       await cargar(rango, curva);
     } catch (e: any) {
-      Alert.alert('No se pudo borrar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert(t('tableroEvm.noSePudoBorrar'), e?.message || t('tableroEvm.intentaloNuevamente'));
     }
   }
 
@@ -517,14 +465,7 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <View style={[styles.headerWrap, { paddingTop: insets.top + spacing.xs, backgroundColor: colors.primary }]}>
-        <View style={styles.headerTopRow}>
-          <Pressable onPress={() => router.back()} hitSlop={10} style={styles.headerBackBtn}>
-            <Ionicons name="chevron-back" size={22} color="#fff" />
-          </Pressable>
-          <Text style={styles.headerTitle}>Control de Obra — Valor Ganado</Text>
-        </View>
-      </View>
+      <ScreenHeader title={t('tableroEvm.controlDeObraValorGanado')} backgroundColor={colors.primary} />
 
       <ScrollView
         contentContainerStyle={{ padding: spacing.md, paddingBottom: 40 }}
@@ -533,7 +474,7 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
         {haySupervision ? (
           <View style={styles.rangoRow}>
             {(['obra', 'supervision'] as ContratoFin[]).map((c) => (
-              <Pressable
+              <Pressable accessibilityRole="button"
                 key={c}
                 onPress={() => setContrato(c)}
                 style={[styles.rangoChip, contrato === c && { backgroundColor: colors.primary, borderColor: colors.primary }]}
@@ -547,13 +488,13 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
         ) : null}
         <View style={styles.rangoRow}>
           {(['mes_actual', 'ultimos_3_meses', 'proyecto_completo'] as RangoRapido[]).map((r) => (
-            <Pressable
+            <Pressable accessibilityRole="button"
               key={r}
               onPress={() => setRango(r)}
               style={[styles.rangoChip, rango === r && { backgroundColor: colors.primary, borderColor: colors.primary }]}
             >
               <Text style={[styles.rangoChipTxt, rango === r && { color: '#fff' }]}>
-                {r === 'mes_actual' ? 'Mes actual' : r === 'ultimos_3_meses' ? 'Últimos 3 meses' : 'Proyecto completo'}
+                {r === 'mes_actual' ? t('tableroEvm.mesActual') : r === 'ultimos_3_meses' ? 'Últimos 3 meses' : 'Proyecto completo'}
               </Text>
             </Pressable>
           ))}
@@ -570,62 +511,103 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
           <>
             <View style={styles.kpiRow}>
               <KpiCard
-                label="SPI (tiempo)"
+                label={t('tableroEvm.spiTiempo')}
                 valor={analisis.spi ?? '—'}
                 sub={analisis.spi === null ? 'Sin planeado en el periodo' : undefined}
                 color={colorIndice(analisis.spi)}
               />
               <KpiCard
-                label="CPI (costo)"
+                label={t('tableroEvm.cpiCosto')}
                 valor={analisis.cpi ?? '—'}
                 sub={analisis.cpi === null ? 'Sin gasto real capturado' : undefined}
                 color={colorIndice(analisis.cpi)}
               />
-              <KpiCard
-                label="Variación de costo"
-                valor={formatMoney(analisis.variacion_costo)}
-                sub="Ganado − Real"
-                color={Number(analisis.variacion_costo) >= 0 ? colors.success : colors.error}
-              />
+              {(() => {
+                const cv = variacionCostoUI(analisis.variacion_costo);
+                return (
+                  <KpiCard
+                    label={t('tableroEvm.variacionDeCosto')}
+                    valor={cv.valor}
+                    sub={cv.nota}
+                    color={cv.tono === 'positivo' ? colors.success : cv.tono === 'negativo' ? colors.error : colors.textMuted}
+                  />
+                );
+              })()}
             </View>
 
             <View style={styles.pvEvAcRow}>
-              <Text style={styles.pvEvAcTxt}>PV {formatMoney(analisis.pv)}</Text>
-              <Text style={styles.pvEvAcTxt}>EV {formatMoney(analisis.ev)}</Text>
-              <Text style={styles.pvEvAcTxt}>AC {formatMoney(analisis.ac)}</Text>
+              <Text style={styles.pvEvAcTxt}>{t('tableroEvm.pv')} {formatMoney(analisis.pv)}</Text>
+              <Text style={styles.pvEvAcTxt}>{t('tableroEvm.ac')} {formatMoney(analisis.ac)}</Text>
+            </View>
+            {/* A-02: dos cifras de valor ganado, claramente etiquetadas. El excedente
+                no cuenta en la contractual pero sí en la total. */}
+            <View style={styles.evDosRow}>
+              <View style={styles.evDosCard}>
+                <Text style={styles.evDosLabel}>{t('evm.evContractual')}</Text>
+                <Text style={styles.evDosValor}>{formatMoney(analisis.ev_contractual ?? analisis.ev)}</Text>
+                <Text style={styles.evDosSub}>{t('evm.evContractualAyuda')}</Text>
+              </View>
+              <View style={styles.evDosCard}>
+                <Text style={styles.evDosLabel}>{t('evm.evTotal')}</Text>
+                <Text style={styles.evDosValor}>{formatMoney(analisis.ev_total ?? analisis.ev)}</Text>
+                <Text style={styles.evDosSub}>{t('evm.evTotalAyuda')}</Text>
+              </View>
+            </View>
+
+            <Text style={styles.seccionTitulo}>{t('evm.pronostico')}</Text>
+            <View style={styles.kpiRow}>
+              <KpiCard label={t('evm.bac')} valor={formatMoney(analisis.bac ?? '0')} sub={t('evm.bacAyuda')} color={colors.textMuted} />
+              <KpiCard
+                label={t('evm.eac')}
+                valor={analisis.eac != null ? formatMoney(analisis.eac) : '—'}
+                sub={analisis.eac == null ? t('evm.sinGasto') : t('evm.eacAyuda')}
+                color={colors.textMuted}
+              />
+            </View>
+            <View style={styles.kpiRow}>
+              <KpiCard
+                label={t('evm.etc')}
+                valor={analisis.etc != null ? formatMoney(analisis.etc) : '—'}
+                sub={analisis.etc == null ? t('evm.sinGasto') : t('evm.etcAyuda')}
+                color={colors.textMuted}
+              />
+              <KpiCard
+                label={t('evm.vac')}
+                valor={analisis.vac != null ? formatMoney(analisis.vac) : '—'}
+                sub={analisis.vac == null ? t('evm.sinGasto') : Number(analisis.vac) < 0 ? t('evm.vacSobrecosto') : t('evm.vacAhorro')}
+                color={analisis.vac == null ? colors.textMuted : Number(analisis.vac) >= 0 ? colors.success : colors.error}
+              />
             </View>
           </>
         ) : null}
 
         <View style={styles.seccionHeaderRow}>
-          <Text style={styles.seccionTitulo}>Gasto real (AC)</Text>
-          <Pressable onPress={openGastoForm} style={styles.addBtn}>
+          <Text style={styles.seccionTitulo}>{t('tableroEvm.gastoRealAc')}</Text>
+          <Pressable accessibilityRole="button" onPress={openGastoForm} style={styles.addBtn}>
             <Ionicons name="add" size={16} color={colors.primary} />
-            <Text style={styles.addBtnTxt}>Registrar gasto</Text>
+            <Text style={styles.addBtnTxt}>{t('tableroEvm.registrarGasto')}</Text>
           </Pressable>
         </View>
         <View style={styles.importRow}>
-          <Pressable onPress={onImportarGastosExcel} disabled={importandoGastos} style={styles.importBtn}>
+          <Pressable accessibilityRole="button" onPress={onImportarGastosExcel} disabled={importandoGastos} style={styles.importBtn}>
             {importandoGastos ? (
               <ActivityIndicator size="small" color={colors.primary} />
             ) : (
               <Ionicons name="document-attach-outline" size={16} color={colors.primary} />
             )}
-            <Text style={styles.addBtnTxt}>Importar desde Excel</Text>
+            <Text style={styles.addBtnTxt}>{t('tableroEvm.importarDesdeExcel')}</Text>
           </Pressable>
-          <Pressable onPress={onDescargarPlantillaGastos} disabled={descargandoPlantilla} style={styles.importBtn}>
+          <Pressable accessibilityRole="button" onPress={onDescargarPlantillaGastos} disabled={descargandoPlantilla} style={styles.importBtn}>
             <Ionicons name="download-outline" size={16} color={colors.textMuted} />
-            <Text style={styles.plantillaTxt}>Descargar plantilla</Text>
+            <Text style={styles.plantillaTxt}>{t('tableroEvm.descargarPlantilla')}</Text>
           </Pressable>
         </View>
         <Text style={styles.gastoAvisoTxt}>
-          Esto registra dinero gastado (AC), no avance físico. El % de avance de cada concepto solo cambia si capturas o
-          importas un Registro de Avance — ver "Control de actividades" más abajo.
+          {t('tableroEvm.estoRegistraDineroGastadoAc')}
         </Text>
         {gastos.length === 0 ? (
           <Text style={styles.sinExcepciones}>
-            Aún no has capturado ningún gasto real — por eso CPI y Variación de costo no reflejan nada. Registra uno,
-            aunque sea de un mes anterior que no se haya capturado a tiempo, o importa un Excel con miles de una vez.
+            {t('tableroEvm.aunNoHasCapturadoNingun')}
           </Text>
         ) : (
           <FlatList
@@ -646,7 +628,7 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
                   </Text>
                 </View>
                 <Text style={styles.gastoMonto}>{formatMoney(item.monto)}</Text>
-                <Pressable onPress={() => onDeleteGasto(item)} hitSlop={8} style={{ marginLeft: 8 }}>
+                <Pressable accessibilityRole="button" accessibilityLabel={a11y('eliminar')} onPress={() => onDeleteGasto(item)} hitSlop={8} style={{ marginLeft: 8 }}>
                   <Ionicons name="trash-outline" size={16} color={colors.error} />
                 </Pressable>
               </View>
@@ -654,19 +636,20 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
           />
         )}
 
-        <Text style={styles.seccionTitulo}>Curva S</Text>
+        <Text style={styles.seccionTitulo}>{t('tableroEvm.curvaS')}</Text>
         {curva ? <CurvaSChart curva={curva} /> : null}
         {soloHayGastoSinAvance ? (
           <Text style={styles.gastoAvisoTxt}>
-            La línea "Ganado" está en $0 porque todavía no se ha capturado ningún Registro de Avance en este proyecto —
-            no significa que no haya avance real, solo que aún no se ha registrado en el sistema (distinto del gasto,
-            que sí se ha capturado).
+            {t('tableroEvm.laLineaGanadoEstaEn')}
           </Text>
         ) : null}
 
-        <Text style={styles.seccionTitulo}>Lista por excepción ({excepciones.length})</Text>
+        <Text style={styles.seccionTitulo}>{t('excedentes.titulo')}</Text>
+        <ExcedentesSection projectId={projectId} onChanged={() => cargar(rango, curva)} />
+
+        <Text style={styles.seccionTitulo}>{t('excepciones.titulo', { n: excepciones.length })}</Text>
         {excepciones.length === 0 ? (
-          <Text style={styles.sinExcepciones}>Sin anomalías: ningún avance fuera de ventana, concepto sobre meta, ni actividad atrasada.</Text>
+          <Text style={styles.sinExcepciones}>{t('excepciones.vacio')}</Text>
         ) : (
           <FlatList
             data={excepciones}
@@ -676,30 +659,29 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
           />
         )}
 
-        <Text style={styles.seccionTitulo}>Control de actividades</Text>
+        <Text style={styles.seccionTitulo}>{t('tableroEvm.controlDeActividades')}</Text>
         <View style={styles.importRow}>
-          <Pressable onPress={onImportarAvancesExcel} disabled={importandoAvances} style={styles.importBtn}>
+          <Pressable accessibilityRole="button" onPress={onImportarAvancesExcel} disabled={importandoAvances} style={styles.importBtn}>
             {importandoAvances ? (
               <ActivityIndicator size="small" color={colors.primary} />
             ) : (
               <Ionicons name="document-attach-outline" size={16} color={colors.primary} />
             )}
-            <Text style={styles.addBtnTxt}>Importar avance desde Excel</Text>
+            <Text style={styles.addBtnTxt}>{t('tableroEvm.importarAvanceDesdeExcel')}</Text>
           </Pressable>
-          <Pressable onPress={onDescargarPlantillaAvance} disabled={descargandoPlantillaAvance} style={styles.importBtn}>
+          <Pressable accessibilityRole="button" onPress={onDescargarPlantillaAvance} disabled={descargandoPlantillaAvance} style={styles.importBtn}>
             <Ionicons name="download-outline" size={16} color={colors.textMuted} />
-            <Text style={styles.plantillaTxt}>Descargar plantilla</Text>
+            <Text style={styles.plantillaTxt}>{t('tableroEvm.descargarPlantilla')}</Text>
           </Pressable>
         </View>
         <Text style={styles.gastoAvisoTxt}>
-          Esto SÍ mueve el % de avance de cada concepto (EV) — es la importación complementaria a "Gasto real (AC)" de
-          arriba, para cargar de golpe avance físico histórico en vez de capturarlo día por día desde la app.
+          {t('tableroEvm.estoSiMueveElDe')}
         </Text>
         <View style={styles.tabsRow}>
           {TABS_ACTIVIDADES.map((t) => {
             const count = actividades ? actividades[t.key].length : 0;
             return (
-              <Pressable
+              <Pressable accessibilityRole="button"
                 key={t.key}
                 onPress={() => setTabActividades(t.key)}
                 style={[styles.tabBtn, tabActividades === t.key && styles.tabBtnActive]}
@@ -713,7 +695,7 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
         </View>
         {!actividades || actividades[tabActividades].length === 0 ? (
           <Text style={styles.sinExcepciones}>
-            {tabActividades === 'pendientes' ? 'Ninguna actividad atrasada.'
+            {tabActividades === 'pendientes' ? t('tableroEvm.ningunaActividadAtrasada')
               : tabActividades === 'actuales' ? 'Ninguna actividad dentro de su ventana hoy.'
               : 'Ninguna actividad programada todavía sin empezar.'}
           </Text>
@@ -727,66 +709,18 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
         )}
       </ScrollView>
 
-      <Modal visible={gastoFormOpen} transparent animationType="slide" onRequestClose={() => setGastoFormOpen(false)}>
-        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
-          <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>Registrar gasto real</Text>
-
-            <Text style={styles.fieldLabel}>Fecha (AAAA-MM-DD)</Text>
-            <TextInput
-              value={gastoFecha}
-              onChangeText={setGastoFecha}
-              placeholder="2026-02-15"
-              placeholderTextColor={colors.textMuted}
-              style={styles.input}
-            />
-
-            <Text style={styles.fieldLabel}>Monto</Text>
-            <TextInput
-              value={gastoMonto}
-              onChangeText={setGastoMonto}
-              keyboardType="decimal-pad"
-              placeholder="200000.00"
-              placeholderTextColor={colors.textMuted}
-              style={styles.input}
-            />
-
-            <Text style={styles.fieldLabel}>Descripción</Text>
-            <TextInput
-              value={gastoDescripcion}
-              onChangeText={setGastoDescripcion}
-              placeholder="Ej. Nómina semana 12, Factura #445..."
-              placeholderTextColor={colors.textMuted}
-              style={styles.input}
-            />
-
-            <Text style={styles.fieldLabel}>Clave del concepto (opcional)</Text>
-            <TextInput
-              value={gastoClave}
-              onChangeText={setGastoClave}
-              placeholder="Ej. C-001 — déjalo vacío si es gasto general"
-              placeholderTextColor={colors.textMuted}
-              autoCapitalize="characters"
-              style={styles.input}
-            />
-
-            <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
-              <Button label="Cancelar" variant="secondary" onPress={() => setGastoFormOpen(false)} style={{ flex: 1 }} />
-              <Button label="Guardar" loading={savingGasto} onPress={onSaveGasto} style={{ flex: 1 }} />
-            </View>
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
+      <GastoRealForm
+        visible={gastoFormOpen}
+        projectId={projectId}
+        onClose={() => setGastoFormOpen(false)}
+        onSaved={onGastoGuardado}
+      />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  headerWrap: { paddingHorizontal: spacing.md, paddingBottom: spacing.md },
-  headerTopRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  headerBackBtn: { width: 28, height: 28, alignItems: 'center', justifyContent: 'center', marginLeft: -6 },
-  headerTitle: { fontSize: 18, fontWeight: '700', color: '#fff', flex: 1 },
   rangoRow: { flexDirection: 'row', gap: 8, marginBottom: spacing.md },
   rangoChip: {
     paddingHorizontal: 12, paddingVertical: 6, borderRadius: radius.full,
@@ -827,6 +761,15 @@ const styles = StyleSheet.create({
   },
   excepcionClave: { fontSize: 13, fontWeight: '700', color: colors.text },
   excepcionDetalle: { fontSize: 12, color: colors.textMuted, marginTop: 2 },
+  excepcionInfo: { fontSize: 10, fontWeight: '800', color: colors.primary, marginTop: 2, textTransform: 'uppercase' },
+  evDosRow: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm },
+  evDosCard: {
+    flex: 1, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border,
+    padding: spacing.sm, gap: 2,
+  },
+  evDosLabel: { fontSize: 10, fontWeight: '800', color: colors.textMuted, textTransform: 'uppercase' },
+  evDosValor: { fontSize: 16, fontWeight: '800', color: colors.text },
+  evDosSub: { fontSize: 10, color: colors.textMuted },
   seccionHeaderRow: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     marginTop: spacing.md, marginBottom: 8,
@@ -860,12 +803,4 @@ const styles = StyleSheet.create({
   actividadFooterRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 6 },
   actividadEjecutado: { fontSize: 12, color: colors.textBody },
   actividadPct: { fontSize: 13, fontWeight: '800' },
-  modalBackdrop: { flex: 1, backgroundColor: 'rgba(15,23,42,0.45)', justifyContent: 'flex-end' },
-  modalCard: { backgroundColor: colors.surface, borderTopLeftRadius: radius.lg, borderTopRightRadius: radius.lg, padding: spacing.lg },
-  modalTitle: { fontSize: 16, fontWeight: '800', color: colors.text, marginBottom: spacing.md },
-  fieldLabel: { fontSize: 12, fontWeight: '700', color: colors.textMuted, marginBottom: 6, marginTop: spacing.sm },
-  input: {
-    borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, paddingHorizontal: 12, paddingVertical: 10,
-    fontSize: 14, color: colors.text, backgroundColor: colors.bg,
-  },
 });

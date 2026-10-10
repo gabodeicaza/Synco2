@@ -309,7 +309,7 @@ export default function CustomModuleScreen({ projectId, moduloId }: { projectId:
       <Header
         title={modulo.nombre} color={headerColor} onBack={() => router.back()}
         right={(
-          <Pressable onPress={() => setVerMenu(true)} hitSlop={10} disabled={exportando}>
+          <Pressable accessibilityRole="button" accessibilityLabel="Más opciones" onPress={() => setVerMenu(true)} hitSlop={10} disabled={exportando}>
             {exportando ? <ActivityIndicator size="small" color="#fff" /> : <Ionicons name="ellipsis-vertical" size={20} color="#fff" />}
           </Pressable>
         )}
@@ -325,12 +325,12 @@ export default function CustomModuleScreen({ projectId, moduloId }: { projectId:
             value={filtros.texto} onChangeText={(t) => setFiltros((f) => ({ ...f, texto: t }))} placeholder="Buscar…"
             placeholderTextColor={colors.textMuted} style={[inputStyle, { flex: 1 }]}
           />
-          <Pressable onPress={() => setVerFiltros(true)} style={[styles.filtroBtn, nFiltros > 0 && { backgroundColor: colors.primary }]}>
+          <Pressable accessibilityRole="button" accessibilityLabel="Filtrar" onPress={() => setVerFiltros(true)} style={[styles.filtroBtn, nFiltros > 0 && { backgroundColor: colors.primary }]}>
             <Ionicons name="funnel-outline" size={18} color={nFiltros > 0 ? '#fff' : colors.primary} />
           </Pressable>
         </View>
         {(hayFiltros(filtros) || filtros.texto) ? (
-          <Pressable onPress={() => setFiltros(FILTROS_VACIOS)} style={styles.limpiar}>
+          <Pressable accessibilityRole="button" onPress={() => setFiltros(FILTROS_VACIOS)} style={styles.limpiar}>
             <Text style={styles.limpiarTxt}>Mostrando {filtrados.length} de {todos.length} · Quitar filtros</Text>
           </Pressable>
         ) : null}
@@ -341,7 +341,7 @@ export default function CustomModuleScreen({ projectId, moduloId }: { projectId:
               const cerrado = (estatus?.cierre || []).includes(o);
               const on = filtros.estatus === o;
               return (
-                <Pressable
+                <Pressable accessibilityRole="button"
                   key={o} onPress={() => setFiltros((f) => ({ ...f, estatus: on ? null : o }))}
                   style={[styles.estChip, { borderColor: cerrado ? colors.success : colors.warning }, on && { backgroundColor: cerrado ? colors.success : colors.warning }]}
                 >
@@ -374,7 +374,7 @@ export default function CustomModuleScreen({ projectId, moduloId }: { projectId:
           const cerrado = estaCerrado(campos, r);
           const cierre = estatus && r.cierres?.[estatus.id];
           return (
-            <Pressable key={r.id} style={[styles.card, r.sincronizado === false && { borderColor: colors.warning }]} onPress={() => (puedeEditar(r) || r.sincronizado === false ? abrir(r) : undefined)}>
+            <Pressable accessibilityRole="button" key={r.id} style={[styles.card, r.sincronizado === false && { borderColor: colors.warning }]} onPress={() => (puedeEditar(r) || r.sincronizado === false ? abrir(r) : undefined)}>
               <View style={styles.cardTop}>
                 <View style={{ flex: 1 }}>
                   {r.folio ? <Text style={styles.folio}>{r.folio}</Text> : null}
@@ -402,7 +402,7 @@ export default function CustomModuleScreen({ projectId, moduloId }: { projectId:
                 {r.sincronizado === false ? <Text style={[styles.badge, { backgroundColor: colors.warningBg, color: '#92400E' }]}>Sin sincronizar</Text> : null}
                 {modulo.usar_jerarquia && r.jerarquia ? <Text style={styles.badge}>{r.jerarquia}</Text> : null}
                 {puedeEditar(r) ? (
-                  <Pressable hitSlop={8} onPress={() => borrar(r)}><Ionicons name="trash-outline" size={18} color={colors.error} /></Pressable>
+                  <Pressable accessibilityRole="button" accessibilityLabel="Eliminar" hitSlop={8} onPress={() => borrar(r)}><Ionicons name="trash-outline" size={18} color={colors.error} /></Pressable>
                 ) : null}
               </View>
             </Pressable>
@@ -411,7 +411,7 @@ export default function CustomModuleScreen({ projectId, moduloId }: { projectId:
       </ScrollView>
 
       {puedeEscribir && modulo.activo ? (
-        <Pressable onPress={nuevo} style={[styles.fab, { bottom: insets.bottom + spacing.md }]}>
+        <Pressable accessibilityRole="button" onPress={nuevo} style={[styles.fab, { bottom: insets.bottom + spacing.md }]}>
           <Ionicons name="add" size={22} color="#fff" />
           <Text style={styles.fabTxt}>Nuevo registro</Text>
         </Pressable>
@@ -426,9 +426,9 @@ export default function CustomModuleScreen({ projectId, moduloId }: { projectId:
                 {draft?.id ? 'Editar' : 'Nuevo'} registro{draft?.folio ? ` ${draft.folio}` : ''} · {modulo.nombre}
               </Text>
               {draft?.id ? (
-                <Pressable onPress={() => verHistorial(draft.id as string)} hitSlop={10}><Ionicons name="time-outline" size={22} color={colors.primary} /></Pressable>
+                <Pressable accessibilityRole="button" accessibilityLabel="Historial" onPress={() => verHistorial(draft.id as string)} hitSlop={10}><Ionicons name="time-outline" size={22} color={colors.primary} /></Pressable>
               ) : null}
-              <Pressable onPress={() => setDraft(null)} hitSlop={10}><Ionicons name="close" size={22} color={colors.text} /></Pressable>
+              <Pressable accessibilityRole="button" accessibilityLabel="Cerrar" onPress={() => setDraft(null)} hitSlop={10}><Ionicons name="close" size={22} color={colors.text} /></Pressable>
             </View>
             <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ paddingBottom: spacing.md }}>
               {draft ? (
@@ -487,7 +487,7 @@ export default function CustomModuleScreen({ projectId, moduloId }: { projectId:
 
 function MenuItem({ icon, label, onPress }: { icon: keyof typeof Ionicons.glyphMap; label: string; onPress: () => void }) {
   return (
-    <Pressable onPress={onPress} style={styles.menuItem}>
+    <Pressable accessibilityRole="button" onPress={onPress} style={styles.menuItem}>
       <Ionicons name={icon} size={18} color={colors.primary} />
       <Text style={styles.menuTxt}>{label}</Text>
     </Pressable>

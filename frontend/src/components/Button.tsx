@@ -13,7 +13,7 @@ interface Props extends Omit<PressableProps, 'children'> {
 export function Button({ label, loading, variant = 'primary', icon, fullWidth, disabled, style, ...rest }: Props) {
   const isDisabled = disabled || loading;
   return (
-    <Pressable
+    <Pressable accessibilityRole="button"
       {...rest}
       disabled={isDisabled}
       style={({ pressed }) => [

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Network Security Configuration for SynCo Android APK.
+  Network Security Configuration for Dirac Android APK.
 
   Política: HTTPS-only estricto en producción (base-config).
   El backend de producción es https://apm-app.mx y usa TLS válido con

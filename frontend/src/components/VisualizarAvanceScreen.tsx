@@ -1,21 +1,23 @@
 // Visualizar avance — reporte por periodo (uso de oficina). Lista los
 // registros de avance del proyecto en un rango de fechas, con filtro por
 // partida y totales agrupados por concepto.
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, StatusBar, Alert,
 } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 
 import { api, AvancesResumen, Concepto, Partida, Project, RegistroAvance } from '@/src/api';
 import { colors, radius, shadow, spacing } from '@/src/theme';
 import { APP_BRAND } from '@/src/utils/roles';
+import { ScreenHeader } from '@/src/components/ScreenHeader';
 import { formatCantidad, formatMoney } from '@/src/utils/money';
 import { downloadBlob } from '@/src/utils/downloadBlob';
 import { confirm } from '@/src/utils/confirm';
 import { RangoFechasPicker } from '@/src/components/RangoFechasPicker';
+import { a11y, t } from '@/src/i18n';
+import { nombreNivel } from '@/src/utils/nombresNivel';
+import { alTocarPartida, filasDeChips } from '@/src/utils/partidasJerarquia';
 import {
   RangoFechas, rangoEstaSemana, rangoEsteMes, rangoMesAnterior, formatearRangoLegible,
 } from '@/src/utils/rangoFechas';
@@ -27,11 +29,11 @@ const ATAJO_LABELS: Record<AtajoRango, string> = {
 };
 
 export default function VisualizarAvanceScreen({ projectId }: { projectId: string }) {
-  const insets = useSafeAreaInsets();
   const [project, setProject] = useState<Project | null>(null);
   const [partidas, setPartidas] = useState<Partida[]>([]);
   const [conceptosById, setConceptosById] = useState<Record<string, Concepto>>({});
   const [partidaFiltro, setPartidaFiltro] = useState<string | null>(null);
+  const filasPartidas = useMemo(() => filasDeChips(partidas, partidaFiltro), [partidas, partidaFiltro]);
 
   // null = "Todo el proyecto" (sin filtro de fecha). El atajo activo es
   // independiente del rango resultante: "Personalizado" también puede
@@ -90,7 +92,7 @@ export default function VisualizarAvanceScreen({ projectId }: { projectId: strin
         setConceptosById((prev) => ({ ...prev, ...map }));
       }
     } catch (e: any) {
-      setError(e?.message || 'No se pudo cargar el avance');
+      setError(e?.message || t('avanceNiveles.noSePudoCargarAvance'));
     } finally {
       setLoading(false);
     }
@@ -110,7 +112,7 @@ export default function VisualizarAvanceScreen({ projectId }: { projectId: strin
       });
       await downloadBlob(blob, filename, 'application/pdf');
     } catch (e: any) {
-      Alert.alert('No se pudo generar el PDF', e?.message || 'Intentalo nuevamente.');
+      Alert.alert(t('avanceNiveles.noSePudoGenerarPdf'), e?.message || t('avanceNiveles.reintentar'));
     } finally {
       setExportando(false);
     }
@@ -127,7 +129,7 @@ export default function VisualizarAvanceScreen({ projectId }: { projectId: strin
       });
       await downloadBlob(blob, filename, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     } catch (e: any) {
-      Alert.alert('No se pudo generar el Excel', e?.message || 'Intentalo nuevamente.');
+      Alert.alert(t('avanceNiveles.noSePudoGenerarExcel'), e?.message || t('avanceNiveles.reintentar'));
     } finally {
       setExportandoXlsx(false);
     }
@@ -136,44 +138,40 @@ export default function VisualizarAvanceScreen({ projectId }: { projectId: strin
   const onDeleteAvance = useCallback(async (a: RegistroAvance) => {
     const c = conceptosById[a.concepto_id];
     const ok = await confirm(
-      'Borrar registro de avance',
-      `¿Borrar el avance de "${c ? c.clave : a.concepto_id}" del ${a.fecha} (${formatCantidad(a.cantidad_ejecutada)} ${c?.unidad || ''})? Esto afecta el % de avance y el EV ya calculados.`,
-      { confirmText: 'Borrar', destructive: true },
+      t('avanceNiveles.borrarRegistro'),
+      t('avanceNiveles.borrarRegistroCuerpo', {
+        clave: c ? c.clave : a.concepto_id, fecha: a.fecha, cantidad: formatCantidad(a.cantidad_ejecutada), unidad: c?.unidad || '',
+      }),
+      { confirmText: t('avanceNiveles.borrar'), destructive: true },
     );
     if (!ok) return;
     try {
       await api.deleteAvance(a.id);
       await load();
     } catch (e: any) {
-      Alert.alert('No se pudo borrar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert(t('avanceNiveles.noSePudoBorrar'), e?.message || t('avanceNiveles.reintentar'));
     }
   }, [conceptosById, load]);
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <StatusBar barStyle="light-content" />
-      <View style={[styles.header, { paddingTop: insets.top + spacing.xs }]}>
-        <Pressable onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
-          <Ionicons name="chevron-back" size={22} color="#fff" />
-        </Pressable>
-        <Text style={styles.brand}>{APP_BRAND}</Text>
-        <View style={{ width: 32 }} />
-      </View>
-      <Text style={styles.titleBar}>VISUALIZAR AVANCE — {(project?.name || '').toUpperCase()}</Text>
+      <ScreenHeader title={APP_BRAND} backgroundColor={colors.primary} />
+      <Text style={styles.titleBar}>{t('avanceNiveles.tituloVisualizar', { proyecto: (project?.name || '').toUpperCase() })}</Text>
       <View style={styles.rangoRow}>
         <Text style={styles.rangoTxt}>
-          {rango ? formatearRangoLegible(rango.desde, rango.hasta) : 'Todo el proyecto'}
+          {rango ? formatearRangoLegible(rango.desde, rango.hasta) : t('avanceNiveles.todoElProyecto')}
         </Text>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
           {atajo === 'personalizado' ? (
-            <Pressable onPress={() => elegirAtajo('todo')} style={styles.limpiarFiltroBtn} hitSlop={8}>
+            <Pressable accessibilityRole="button" onPress={() => elegirAtajo('todo')} style={styles.limpiarFiltroBtn} hitSlop={8}>
               <Ionicons name="close-circle-outline" size={13} color={colors.primary} />
-              <Text style={styles.limpiarFiltroTxt}>Limpiar filtro</Text>
+              <Text style={styles.limpiarFiltroTxt}>{t('avanceNiveles.limpiarFiltro')}</Text>
             </Pressable>
           ) : null}
           {avances.length > 0 ? (
             <>
-              <Pressable
+              <Pressable accessibilityRole="button"
                 onPress={exportarXlsx}
                 disabled={exportandoXlsx}
                 style={[styles.exportXlsxBtn, exportandoXlsx && { opacity: 0.6 }]}
@@ -184,9 +182,9 @@ export default function VisualizarAvanceScreen({ projectId }: { projectId: strin
                 ) : (
                   <Ionicons name="grid-outline" size={13} color="#fff" />
                 )}
-                <Text style={styles.exportXlsxTxt}>Exportar Excel</Text>
+                <Text style={styles.exportXlsxTxt}>{t('avanceNiveles.exportarExcel')}</Text>
               </Pressable>
-              <Pressable
+              <Pressable accessibilityRole="button"
                 onPress={exportarPdf}
                 disabled={exportando}
                 style={[styles.exportPdfBtn, exportando && { opacity: 0.6 }]}
@@ -197,7 +195,7 @@ export default function VisualizarAvanceScreen({ projectId }: { projectId: strin
                 ) : (
                   <Ionicons name="document-text-outline" size={13} color={colors.primary} />
                 )}
-                <Text style={styles.exportPdfTxt}>PDF</Text>
+                <Text style={styles.exportPdfTxt}>{t('avanceNiveles.pdf')}</Text>
               </Pressable>
             </>
           ) : null}
@@ -208,22 +206,38 @@ export default function VisualizarAvanceScreen({ projectId }: { projectId: strin
         {(['esta_semana', 'este_mes', 'mes_anterior', 'todo', 'personalizado'] as AtajoRango[]).map((a) => {
           const active = atajo === a;
           return (
-            <Pressable key={a} onPress={() => elegirAtajo(a)} style={[styles.chip, active && styles.chipActive]}>
+            <Pressable accessibilityRole="button" key={a} onPress={() => elegirAtajo(a)} style={[styles.chip, active && styles.chipActive]}>
               {a === 'personalizado' ? <Ionicons name="calendar-outline" size={13} color={active ? '#fff' : colors.textBody} /> : null}
               <Text style={[styles.chipTxt, active && styles.chipTxtActive]}>{ATAJO_LABELS[a]}</Text>
             </Pressable>
           );
         })}
-        <View style={styles.chipDivider} />
-        {partidas.map((p) => {
-          const active = partidaFiltro === p.id;
-          return (
-            <Pressable key={p.id} onPress={() => setPartidaFiltro(active ? null : p.id)} style={[styles.chip, active && styles.chipActive]}>
-              <Text style={[styles.chipTxt, active && styles.chipTxtActive]} numberOfLines={1}>{p.clave}</Text>
-            </Pressable>
-          );
-        })}
       </ScrollView>
+
+      {filasPartidas.length > 0 ? (
+        <View style={styles.partidasBox}>
+          <Text style={styles.partidasAyuda}>{t('visualizarAvance.incluyeContenido', { nivel: nombreNivel(project, 0).toLowerCase() })}</Text>
+          {filasPartidas.map((fila) => (
+            <View key={fila.nivel} style={styles.partidasFila}>
+              <Text style={styles.partidasNivel} numberOfLines={1}>{nombreNivel(project, fila.nivel)}</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6, paddingRight: spacing.md }}>
+                {fila.chips.map((c) => (
+                  <Pressable
+                    key={c.id}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: c.enRuta }}
+                    accessibilityLabel={`${c.clave} ${c.nombre}`}
+                    onPress={() => setPartidaFiltro(alTocarPartida(partidas, partidaFiltro, c.id))}
+                    style={[styles.chip, c.enRuta && styles.chipActive]}
+                  >
+                    <Text style={[styles.chipTxt, c.enRuta && styles.chipTxtActive]} numberOfLines={1}>{c.clave}</Text>
+                  </Pressable>
+                ))}
+              </ScrollView>
+            </View>
+          ))}
+        </View>
+      ) : null}
 
       {error ? (
         <View style={styles.errorBox}>
@@ -237,7 +251,7 @@ export default function VisualizarAvanceScreen({ projectId }: { projectId: strin
       ) : (
         <ScrollView contentContainerStyle={styles.scroll}>
           {avances.length === 0 ? (
-            <Text style={styles.empty}>Sin registros de avance en este periodo.</Text>
+            <Text style={styles.empty}>{t('avanceNiveles.sinRegistros')}</Text>
           ) : (
             avances.map((a) => {
               const c = conceptosById[a.concepto_id];
@@ -249,10 +263,10 @@ export default function VisualizarAvanceScreen({ projectId }: { projectId: strin
                       {!a.sincronizado ? (
                         <View style={styles.pendingBadge}>
                           <Ionicons name="cloud-offline-outline" size={11} color={colors.warning} />
-                          <Text style={styles.pendingTxt}>Pendiente de sincronizar</Text>
+                          <Text style={styles.pendingTxt}>{t('avanceNiveles.pendienteSincronizar')}</Text>
                         </View>
                       ) : null}
-                      <Pressable onPress={() => onDeleteAvance(a)} hitSlop={8}>
+                      <Pressable accessibilityRole="button" accessibilityLabel={a11y('eliminar')} onPress={() => onDeleteAvance(a)} hitSlop={8}>
                         <Ionicons name="trash-outline" size={16} color={colors.error} />
                       </Pressable>
                     </View>
@@ -261,12 +275,16 @@ export default function VisualizarAvanceScreen({ projectId }: { projectId: strin
                     {c ? `${c.clave} — ${c.descripcion}` : a.concepto_id}
                   </Text>
                   <Text style={styles.avanceCantidad}>
-                    {formatCantidad(a.cantidad_ejecutada)} {c?.unidad || ''} · {a.capturado_por_nombre || 'Usuario'}
+                    {formatCantidad(a.cantidad_ejecutada)} {c?.unidad || ''} · {a.capturado_por_nombre || t('avanceNiveles.usuario')}
                   </Text>
                   {a.importe_ganado_congelado != null ? (
                     <Text style={styles.avanceImporte}>
-                      Valor ganado: {formatMoney(a.importe_ganado_congelado)}
-                      {a.precio_unitario_congelado != null ? ` (${formatMoney(a.precio_unitario_congelado)}/${c?.unidad || 'unidad'})` : ''}
+                      {t('avanceNiveles.valorGanado', { valor: formatMoney(a.importe_ganado_congelado) })}
+                      {a.precio_unitario_congelado != null
+                        ? t('avanceNiveles.precioPorUnidad', {
+                          precio: formatMoney(a.precio_unitario_congelado), unidad: c?.unidad || t('avanceNiveles.unidadGenerica'),
+                        })
+                        : ''}
                     </Text>
                   ) : null}
                 </View>
@@ -278,11 +296,11 @@ export default function VisualizarAvanceScreen({ projectId }: { projectId: strin
 
       <View style={styles.footerFixed}>
         <View>
-          <Text style={styles.footerLabel}>REGISTROS EN EL PERIODO</Text>
+          <Text style={styles.footerLabel}>{t('avanceNiveles.registrosPeriodo')}</Text>
           <Text style={styles.footerValue}>{avances.length}</Text>
         </View>
         <View style={{ alignItems: 'flex-end' }}>
-          <Text style={styles.footerLabel}>IMPORTE DEL PERIODO</Text>
+          <Text style={styles.footerLabel}>{t('avanceNiveles.importePeriodo')}</Text>
           <Text style={styles.footerValue}>{formatMoney(resumen?.importe_total ?? '0')}</Text>
         </View>
       </View>
@@ -299,9 +317,6 @@ export default function VisualizarAvanceScreen({ projectId }: { projectId: strin
 }
 
 const styles = StyleSheet.create({
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: spacing.md, backgroundColor: colors.primary, paddingBottom: spacing.sm },
-  iconBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
-  brand: { color: '#fff', fontWeight: '800', fontSize: 15 },
   titleBar: { fontSize: 14, fontWeight: '800', color: colors.text, paddingHorizontal: spacing.md, paddingTop: spacing.sm },
   rangoRow: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
@@ -332,6 +347,10 @@ const styles = StyleSheet.create({
   chipTxt: { fontSize: 12, fontWeight: '700', color: colors.textBody },
   chipTxtActive: { color: '#fff' },
   chipDivider: { width: 1, backgroundColor: colors.border, marginVertical: 4 },
+  partidasBox: { paddingHorizontal: spacing.md, paddingTop: 8, gap: 6 },
+  partidasAyuda: { fontSize: 11, color: colors.textMuted },
+  partidasFila: { gap: 4 },
+  partidasNivel: { fontSize: 11, fontWeight: '700', color: colors.textMuted },
 
   errorBox: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: colors.errorBg, padding: 10, borderRadius: 10, marginHorizontal: spacing.md, marginTop: spacing.sm },
   errorText: { flex: 1, color: colors.error, fontSize: 12, fontWeight: '600' },

@@ -4,12 +4,12 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, RefreshControl, Alert } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { api, PasswordResetRequest } from '@/src/api';
 import { colors, radius, spacing } from '@/src/theme';
 import { roleLabel } from '@/src/utils/roles';
 import { confirm } from '@/src/utils/confirm';
+import { ScreenHeader } from '@/src/components/ScreenHeader';
 
 export default function PasswordResetRequestsScreen() {
   const insets = useSafeAreaInsets();
@@ -24,7 +24,7 @@ export default function PasswordResetRequestsScreen() {
       const data = await api.listPasswordResetRequests();
       setItems(data);
     } catch (e: any) {
-      Alert.alert('No se pudo cargar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo cargar', e?.message || 'Inténtalo nuevamente.');
     }
   }, []);
 
@@ -51,7 +51,7 @@ export default function PasswordResetRequestsScreen() {
       setResolved({ id: req.id, name: res.user_name, temp_password: res.temp_password });
       setItems((prev) => prev.filter((it) => it.id !== req.id));
     } catch (e: any) {
-      Alert.alert('No se pudo restablecer', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo restablecer', e?.message || 'Inténtalo nuevamente.');
     } finally {
       setBusyId(null);
     }
@@ -66,21 +66,15 @@ export default function PasswordResetRequestsScreen() {
       await api.dismissPasswordResetRequest(req.id);
       setItems((prev) => prev.filter((it) => it.id !== req.id));
     } catch (e: any) {
-      Alert.alert('No se pudo descartar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert('No se pudo descartar', e?.message || 'Inténtalo nuevamente.');
     } finally {
       setBusyId(null);
     }
   }
 
   return (
-    <View style={[styles.flex, { paddingTop: insets.top }]}>
-      <View style={styles.header}>
-        <Pressable onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
-          <Ionicons name="chevron-back" size={24} color={colors.text} />
-        </Pressable>
-        <Text style={styles.title}>Solicitudes de contraseña</Text>
-        <View style={{ width: 32 }} />
-      </View>
+    <View style={styles.flex}>
+      <ScreenHeader title="Solicitudes de contraseña" fallbackHref="/(coord)" />
 
       {loading ? (
         <View style={styles.center}><ActivityIndicator color={colors.primary} /></View>
@@ -97,7 +91,7 @@ export default function PasswordResetRequestsScreen() {
                 <Text style={styles.tokenLabel}>CONTRASEÑA TEMPORAL</Text>
                 <Text selectable style={styles.tokenValueText}>{resolved.temp_password}</Text>
               </View>
-              <Pressable onPress={() => setResolved(null)} style={styles.tokenDismiss}>
+              <Pressable accessibilityRole="button" onPress={() => setResolved(null)} style={styles.tokenDismiss}>
                 <Text style={styles.tokenDismissText}>Entendido</Text>
               </Pressable>
             </View>
@@ -122,14 +116,14 @@ export default function PasswordResetRequestsScreen() {
                   </View>
                 </View>
                 <View style={styles.cardActions}>
-                  <Pressable
+                  <Pressable accessibilityRole="button"
                     onPress={() => onDismiss(req)}
                     style={({ pressed }) => [styles.actionBtn, styles.actionBtnGhost, pressed && { opacity: 0.85 }]}
                     disabled={busyId === req.id}
                   >
                     <Text style={styles.actionBtnGhostText}>Descartar</Text>
                   </Pressable>
-                  <Pressable
+                  <Pressable accessibilityRole="button"
                     onPress={() => onResolve(req)}
                     style={({ pressed }) => [styles.actionBtn, styles.actionBtnPrimary, pressed && { opacity: 0.85 }]}
                     disabled={busyId === req.id}
@@ -155,12 +149,6 @@ export default function PasswordResetRequestsScreen() {
 
 const styles = StyleSheet.create({
   flex: { flex: 1, backgroundColor: colors.bg },
-  header: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
-  },
-  iconBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
-  title: { fontSize: 17, fontWeight: '800', color: colors.text },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   scroll: { paddingHorizontal: spacing.lg, gap: spacing.md },
 

@@ -10,7 +10,6 @@ import {
 import { Image } from 'expo-image';
 import { pickPhotoDataUrl } from '@/src/utils/photoPicker';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import {
   api, SeguridadReporte, SeguridadChecklist, SeguridadChecklistItem, SeguridadTipoRegistro, SeguridadCruz, JerarquiaInforme, Project,
@@ -21,6 +20,8 @@ import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
 import { Button } from '@/src/components/Button';
 import { useAuth } from '@/src/auth-context';
 import { ROLE_COORD } from '@/src/utils/roles';
+import { ScreenHeader } from '@/src/components/ScreenHeader';
+import { t, a11y  } from '@/src/i18n';
 
 type Tab = 'reportes' | 'cruz' | 'checklist';
 const CRUZ_CELDA = 30;                 // lado de cada casilla de la cruz (px)
@@ -232,7 +233,7 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
       setReportes(reps);
       setChecklists(checks);
     } catch (e: any) {
-      Alert.alert('Error', e?.message || 'No se pudo cargar el módulo Seguridad e Higiene.');
+      Alert.alert(t('seguridadHigiene.error'), e?.message || t('seguridadHigiene.noSePudoCargarEl'));
     } finally {
       setLoading(false);
     }
@@ -293,7 +294,7 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
       setFormOpen(false);
       await load();
     } catch (e: any) {
-      Alert.alert('No se pudo guardar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert(t('seguridadHigiene.noSePudoGuardar'), e?.message || t('seguridadHigiene.intentaloNuevamente'));
     } finally {
       setSaving(false);
     }
@@ -316,7 +317,7 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
 
   async function onSaveChecklist() {
     if (checklistDraft.length === 0) {
-      Alert.alert('Checklist vacío', 'Agrega al menos un elemento antes de guardar.');
+      Alert.alert(t('seguridadHigiene.checklistVacio'), t('seguridadHigiene.agregaAlMenosUnElemento'));
       return;
     }
     try {
@@ -324,9 +325,9 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
       await api.createSeguridadChecklist(projectId, { items: checklistDraft });
       setChecklistDraft([]);
       await load();
-      Alert.alert('Guardado', 'El checklist del día se guardó correctamente.');
+      Alert.alert(t('seguridadHigiene.guardado'), t('seguridadHigiene.elChecklistDelDiaSe'));
     } catch (e: any) {
-      Alert.alert('No se pudo guardar', e?.message || 'Intentalo nuevamente.');
+      Alert.alert(t('seguridadHigiene.noSePudoGuardar'), e?.message || t('seguridadHigiene.intentaloNuevamente'));
     } finally {
       setChecklistSaving(false);
     }
@@ -342,22 +343,16 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <View style={[styles.headerWrap, { backgroundColor: headerColor, paddingTop: insets.top + spacing.xs }]}>
-        <View style={styles.headerTopRow}>
-          <Pressable onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
-            <Ionicons name="chevron-back" size={22} color={headerTextColor} />
-          </Pressable>
-          <Text style={[styles.titleBar, { color: headerTextColor }]} numberOfLines={1}>Seguridad e Higiene</Text>
-          <View style={{ width: 32 }} />
-        </View>
+      <View style={{ backgroundColor: headerColor }}>
+        <ScreenHeader title={t('seguridadHigiene.seguridadEHigiene')} backgroundColor={headerColor} />
         <View style={styles.tabRow}>
-          <Pressable onPress={() => setTab('reportes')} style={[styles.tabBtn, tab === 'reportes' && styles.tabBtnActive]}>
-            <Text style={[styles.tabTxt, { color: tab === 'reportes' ? headerColor : headerTextColor }]}>Reportes</Text>
+          <Pressable accessibilityRole="button" onPress={() => setTab('reportes')} style={[styles.tabBtn, tab === 'reportes' && styles.tabBtnActive]}>
+            <Text style={[styles.tabTxt, { color: tab === 'reportes' ? headerColor : headerTextColor }]}>{t('seguridadHigiene.reportes')}</Text>
           </Pressable>
-          <Pressable onPress={() => setTab('cruz')} style={[styles.tabBtn, tab === 'cruz' && styles.tabBtnActive]}>
+          <Pressable accessibilityRole="button" onPress={() => setTab('cruz')} style={[styles.tabBtn, tab === 'cruz' && styles.tabBtnActive]}>
             <Text style={[styles.tabTxt, { color: tab === 'cruz' ? headerColor : headerTextColor }]}>Cruz</Text>
           </Pressable>
-          <Pressable onPress={() => setTab('checklist')} style={[styles.tabBtn, tab === 'checklist' && styles.tabBtnActive]}>
+          <Pressable accessibilityRole="button" onPress={() => setTab('checklist')} style={[styles.tabBtn, tab === 'checklist' && styles.tabBtnActive]}>
             <Text style={[styles.tabTxt, { color: tab === 'checklist' ? headerColor : headerTextColor }]}>Checklist</Text>
           </Pressable>
         </View>
@@ -369,7 +364,7 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
             {reportes.length === 0 ? (
               <View style={styles.empty}>
                 <Ionicons name="shield-checkmark-outline" size={22} color={colors.textMuted} />
-                <Text style={styles.emptyTxt}>Aún no hay reportes de accidentes.</Text>
+                <Text style={styles.emptyTxt}>{t('seguridadHigiene.aunNoHayReportesDe')}</Text>
               </View>
             ) : (
               reportes.map((r, idx) => {
@@ -377,7 +372,7 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
                 const badgeColor = tipo?.color ?? SEVERIDAD_LEGACY_COLOR[r.severidad] ?? colors.textMuted;
                 const foto = r.images?.[0];
                 return (
-                  <Pressable
+                  <Pressable accessibilityRole="button"
                     key={r.id}
                     onPress={() => openForm(r)}
                     style={[styles.repRow, idx > 0 && styles.rowBorder]}
@@ -419,11 +414,11 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
       ) : tab === 'cruz' ? (
         <ScrollView contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + spacing.xl }]}>
           <View style={styles.cruzNav}>
-            <Pressable hitSlop={10} onPress={() => setCruzMes((m) => mesDesplazado(m, -1))}>
+            <Pressable accessibilityRole="button" accessibilityLabel="Volver" hitSlop={10} onPress={() => setCruzMes((m) => mesDesplazado(m, -1))}>
               <Ionicons name="chevron-back" size={22} color={colors.text} />
             </Pressable>
             <Text style={styles.cruzMes}>{cruz?.mes_label ?? cruzMes}</Text>
-            <Pressable hitSlop={10} onPress={() => setCruzMes((m) => mesDesplazado(m, 1))}>
+            <Pressable accessibilityRole="button" accessibilityLabel="Siguiente" hitSlop={10} onPress={() => setCruzMes((m) => mesDesplazado(m, 1))}>
               <Ionicons name="chevron-forward" size={22} color={colors.text} />
             </Pressable>
           </View>
@@ -455,7 +450,7 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
                   <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                     <Text style={[styles.sectionTitle, { flex: 1 }]}>Parámetros de Seguridad</Text>
                     {esCoord ? (
-                      <Pressable onPress={abrirParamHub} hitSlop={8} style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                      <Pressable accessibilityRole="button" onPress={abrirParamHub} hitSlop={8} style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
                         <Ionicons name="settings-outline" size={16} color={colors.primary} />
                         <Text style={{ color: colors.primary, fontWeight: '700', fontSize: 12 }}>Configurar</Text>
                       </Pressable>
@@ -501,21 +496,21 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
                             maxLength={60}
                             style={[styles.input, { flex: 1, marginTop: 0 }]}
                           />
-                          <Pressable onPress={() => setParamHubDraft((l) => l.filter((_, j) => j !== i))} hitSlop={8}>
+                          <Pressable accessibilityRole="button" accessibilityLabel="Eliminar" onPress={() => setParamHubDraft((l) => l.filter((_, j) => j !== i))} hitSlop={8}>
                             <Ionicons name="trash-outline" size={20} color={colors.error} />
                           </Pressable>
                         </View>
                       ))}
-                      <Pressable onPress={() => setParamHubDraft((l) => [...l, { nombre: '' }])} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 8 }}>
+                      <Pressable accessibilityRole="button" onPress={() => setParamHubDraft((l) => [...l, { nombre: '' }])} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 8 }}>
                         <Ionicons name="add-circle-outline" size={20} color={colors.primary} />
                         <Text style={{ color: colors.primary, fontWeight: '700' }}>Añadir parámetro</Text>
                       </Pressable>
                     </ScrollView>
                     <View style={{ flexDirection: 'row', gap: 8 }}>
-                      <Pressable onPress={() => setParamHubOpen(false)} style={{ flex: 1, padding: 12, alignItems: 'center' }}>
+                      <Pressable accessibilityRole="button" onPress={() => setParamHubOpen(false)} style={{ flex: 1, padding: 12, alignItems: 'center' }}>
                         <Text style={{ color: colors.textMuted, fontWeight: '700' }}>Cancelar</Text>
                       </Pressable>
-                      <Pressable onPress={guardarParamHub} disabled={paramHubSaving} style={{ flex: 1, padding: 12, alignItems: 'center', backgroundColor: colors.primary, borderRadius: 10 }}>
+                      <Pressable accessibilityRole="button" onPress={guardarParamHub} disabled={paramHubSaving} style={{ flex: 1, padding: 12, alignItems: 'center', backgroundColor: colors.primary, borderRadius: 10 }}>
                         {paramHubSaving ? <ActivityIndicator color="#fff" /> : <Text style={{ color: '#fff', fontWeight: '800' }}>Guardar</Text>}
                       </Pressable>
                     </View>
@@ -599,11 +594,11 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
         </ScrollView>
       ) : (
         <ScrollView contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + spacing.xl }]}>
-          <Text style={styles.sectionTitle}>Checklist de hoy</Text>
+          <Text style={styles.sectionTitle}>{t('seguridadHigiene.checklistDeHoy')}</Text>
           <View style={styles.card}>
             {checklistDraft.length === 0 ? (
               <View style={styles.empty}>
-                <Text style={styles.emptyTxt}>Agrega elementos preventivos o correctivos.</Text>
+                <Text style={styles.emptyTxt}>{t('seguridadHigiene.agregaElementosPreventivosOCorrectivos')}</Text>
               </View>
             ) : (
               checklistDraft.map((it, idx) => (
@@ -615,9 +610,9 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
                   />
                   <View style={{ flex: 1 }}>
                     <Text style={[styles.checkTxt, it.cumplido && styles.checkTxtDone]}>{it.item}</Text>
-                    <Text style={styles.checkTipo}>{it.tipo === 'preventiva' ? 'Preventiva' : 'Correctiva'}</Text>
+                    <Text style={styles.checkTipo}>{it.tipo === 'preventiva' ? t('seguridadHigiene.preventiva') : t('seguridadHigiene.correctiva')}</Text>
                   </View>
-                  <Pressable hitSlop={8} onPress={() => removeChecklistItem(idx)}>
+                  <Pressable accessibilityRole="button" accessibilityLabel={a11y('quitar')} hitSlop={8} onPress={() => removeChecklistItem(idx)}>
                     <Ionicons name="close-circle" size={20} color={colors.textMuted} />
                   </Pressable>
                 </View>
@@ -626,28 +621,28 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
           </View>
 
           <View style={styles.addItemRow}>
-            <Pressable
+            <Pressable accessibilityRole="button"
               onPress={() => setTipoItemDraft(tipoItemDraft === 'preventiva' ? 'correctiva' : 'preventiva')}
               style={styles.tipoToggle}
             >
-              <Text style={styles.tipoToggleTxt}>{tipoItemDraft === 'preventiva' ? 'Preventiva' : 'Correctiva'}</Text>
+              <Text style={styles.tipoToggleTxt}>{tipoItemDraft === 'preventiva' ? t('seguridadHigiene.preventiva') : t('seguridadHigiene.correctiva')}</Text>
               <Ionicons name="swap-horizontal-outline" size={14} color={colors.primary} />
             </Pressable>
             <TextInput
               value={itemDraft}
               onChangeText={setItemDraft}
-              placeholder="Nueva acción..."
+              placeholder={t('seguridadHigiene.nuevaAccion')}
               placeholderTextColor={colors.textMuted}
               style={[styles.input, { flex: 1 }]}
               onSubmitEditing={addChecklistItem}
             />
-            <Pressable style={styles.addBtn} onPress={addChecklistItem}>
+            <Pressable accessibilityRole="button" accessibilityLabel={a11y('agregar')} hitSlop={8} style={styles.addBtn} onPress={addChecklistItem}>
               <Ionicons name="add" size={20} color="#fff" />
             </Pressable>
           </View>
 
           <Button
-            label="Guardar checklist del día"
+            label={t('seguridadHigiene.guardarChecklistDelDia')}
             loading={checklistSaving}
             onPress={onSaveChecklist}
             style={{ marginTop: spacing.md }}
@@ -655,13 +650,13 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
 
           {checklists.length > 0 && (
             <>
-              <Text style={[styles.sectionTitle, { marginTop: spacing.lg }]}>Checklists anteriores</Text>
+              <Text style={[styles.sectionTitle, { marginTop: spacing.lg }]}>{t('seguridadHigiene.checklistsAnteriores')}</Text>
               <View style={styles.card}>
                 {checklists.slice(0, 10).map((c, idx) => (
                   <View key={c.id} style={[styles.repRow, idx > 0 && styles.rowBorder]}>
                     <Ionicons name="checkbox-outline" size={18} color={colors.primary} />
                     <View style={{ flex: 1 }}>
-                      <Text style={styles.repDesc}>{c.fecha} · {c.items.length} elemento(s)</Text>
+                      <Text style={styles.repDesc}>{c.fecha} · {t('seguridadHigiene.elementosN', { n: c.items.length })}</Text>
                       <Text style={styles.repAutor}>{c.captured_by_name}</Text>
                     </View>
                   </View>
@@ -673,7 +668,7 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
       )}
 
       {tab === 'reportes' && (
-        <Pressable style={styles.fab} onPress={() => openForm()}>
+        <Pressable accessibilityRole="button" accessibilityLabel="Agregar" style={styles.fab} onPress={() => openForm()}>
           <Ionicons name="add" size={26} color="#fff" />
         </Pressable>
       )}
@@ -698,7 +693,7 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
             <Text style={styles.fieldLabel}>Registro</Text>
             <View style={styles.chipWrap}>
               {TIPOS.map((t) => (
-                <Pressable
+                <Pressable accessibilityRole="button"
                   key={t.value}
                   onPress={() => setTipoDraft(t.value)}
                   style={[styles.chip, tipoDraft === t.value && { backgroundColor: t.color, borderColor: t.color }]}
@@ -722,7 +717,7 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
             {contratistas.length > 0 && (
               <View style={[styles.chipWrap, { marginBottom: 6 }]}>
                 {contratistas.map((c) => (
-                  <Pressable
+                  <Pressable accessibilityRole="button"
                     key={c}
                     onPress={() => setContratistaDraft(c)}
                     style={[styles.chip, contratistaDraft === c && { backgroundColor: colors.primary, borderColor: colors.primary }]}
@@ -757,7 +752,7 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
             <TextInput
               value={descripcionDraft}
               onChangeText={setDescripcionDraft}
-              placeholder="¿Qué sucedió?"
+              placeholder={t('seguridadHigiene.queSucedio')}
               placeholderTextColor={colors.textMuted}
               style={[styles.input, { minHeight: 70, textAlignVertical: 'top' }]}
               multiline
@@ -773,14 +768,14 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
               multiline
             />
 
-            <Text style={styles.fieldLabel}>Foto (opcional)</Text>
-            <Pressable style={styles.fotoPicker} onPress={onPickFoto}>
+            <Text style={styles.fieldLabel}>{t('seguridadHigiene.fotoOpcional')}</Text>
+            <Pressable accessibilityRole="button" style={styles.fotoPicker} onPress={onPickFoto}>
               {fotoDraft ? (
                 <Image source={{ uri: fotoDraft }} style={styles.fotoPreview} contentFit="cover" />
               ) : (
                 <>
                   <Ionicons name="camera-outline" size={22} color={colors.textMuted} />
-                  <Text style={styles.fotoPickerTxt}>Adjuntar foto</Text>
+                  <Text style={styles.fotoPickerTxt}>{t('seguridadHigiene.adjuntarFoto')}</Text>
                 </>
               )}
             </Pressable>
@@ -788,8 +783,8 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
             <JerarquiaInformePicker value={jerarquiaDraft} onChange={setJerarquiaDraft} />
 
             <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
-              <Button label="Cancelar" variant="secondary" onPress={() => setFormOpen(false)} style={{ flex: 1 }} />
-              <Button label="Guardar" loading={saving} onPress={onSaveReporte} style={{ flex: 1 }} />
+              <Button label={t('seguridadHigiene.cancelar')} variant="secondary" onPress={() => setFormOpen(false)} style={{ flex: 1 }} />
+              <Button label={t('seguridadHigiene.guardar')} loading={saving} onPress={onSaveReporte} style={{ flex: 1 }} />
             </View>
           </ScrollView>
         </KeyboardAvoidingView>
@@ -800,11 +795,7 @@ export default function SeguridadHigieneScreen({ projectId }: { projectId: strin
 
 const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg },
-  headerWrap: { paddingHorizontal: spacing.md, paddingBottom: spacing.sm },
-  headerTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  iconBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
-  titleBar: { fontWeight: '800', fontSize: 16, letterSpacing: 0.3 },
-  tabRow: { flexDirection: 'row', gap: 8, marginTop: spacing.sm },
+  tabRow: { flexDirection: 'row', gap: 8, paddingHorizontal: spacing.md, paddingBottom: spacing.sm },
   tabBtn: { flex: 1, paddingVertical: 8, borderRadius: radius.md, alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.15)' },
   tabBtnActive: { backgroundColor: '#fff' },
   tabTxt: { fontSize: 13, fontWeight: '700' },

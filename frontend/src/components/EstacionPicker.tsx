@@ -34,7 +34,7 @@ export function EstacionPicker({
 
 function Chip({ label, active, onPress }: { label: string; active: boolean; onPress: () => void }) {
   return (
-    <Pressable onPress={onPress} style={[styles.chip, active && styles.chipActive]}>
+    <Pressable accessibilityRole="button" onPress={onPress} style={[styles.chip, active && styles.chipActive]}>
       <Text style={[styles.chipTxt, active && { color: '#fff' }]} numberOfLines={1}>{label}</Text>
     </Pressable>
   );

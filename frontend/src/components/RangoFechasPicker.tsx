@@ -18,7 +18,7 @@ import { marcarPeriodoCalendario, validarRango, formatearRangoLegible } from '@/
 LocaleConfig.locales['es'] = {
   monthNames: ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'],
   monthNamesShort: ['Ene.', 'Feb.', 'Mar.', 'Abr.', 'May.', 'Jun.', 'Jul.', 'Ago.', 'Sep.', 'Oct.', 'Nov.', 'Dic.'],
-  dayNames: ['Domingo', 'Lunes', 'Martes', 'Miercoles', 'Jueves', 'Viernes', 'Sabado'],
+  dayNames: ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'],
   dayNamesShort: ['D', 'L', 'M', 'M', 'J', 'V', 'S'],
   today: 'Hoy',
 };
@@ -113,10 +113,10 @@ export function RangoFechasPicker({ visible, desdeInicial, hastaInicial, onCance
           ) : null}
 
           <View style={styles.actions}>
-            <Pressable onPress={onCancelar} style={[styles.btn, styles.btnGhost]}>
+            <Pressable accessibilityRole="button" onPress={onCancelar} style={[styles.btn, styles.btnGhost]}>
               <Text style={styles.btnGhostTxt}>Cancelar</Text>
             </Pressable>
-            <Pressable
+            <Pressable accessibilityRole="button"
               onPress={() => { if (puedeConfirmar && desde && hasta) onConfirmar(desde, hasta); }}
               disabled={!puedeConfirmar}
               style={[styles.btn, styles.btnPrimary, !puedeConfirmar && { opacity: 0.5 }]}

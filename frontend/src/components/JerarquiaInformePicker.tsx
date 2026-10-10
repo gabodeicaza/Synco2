@@ -38,7 +38,7 @@ export function JerarquiaInformePicker({
         {OPCIONES.map((o) => {
           const on = o.key === actual;
           return (
-            <Pressable key={o.key} onPress={() => onChange(o.key)} style={[styles.chip, on && styles.chipOn]}>
+            <Pressable accessibilityRole="button" key={o.key} onPress={() => onChange(o.key)} style={[styles.chip, on && styles.chipOn]}>
               <Text style={[styles.chipTxt, on && styles.chipTxtOn]}>{o.label}</Text>
             </Pressable>
           );
