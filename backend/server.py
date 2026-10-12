@@ -619,6 +619,10 @@ class ProjectPatch(BaseModel):
     cadencia_reporte: Optional[Literal["DIARIA", "SEMANAL", "MENSUAL"]] = None
     dia_inicio_semana: Optional[Literal["LUNES", "MARTES", "MIERCOLES", "JUEVES", "VIERNES", "SABADO", "DOMINGO"]] = None
     zona_horaria: Optional[str] = None
+    # Turno nocturno del proyecto: "HH:MM" de inicio y fin (pueden cruzar la
+    # medianoche). Ambos "" desactivan el turno nocturno.
+    turno_nocturno_inicio: Optional[str] = None
+    turno_nocturno_fin: Optional[str] = None
     separador_decimal: Optional[Literal[".", ","]] = None
     # Banderas de intención explícita — mismo idioma que `quitar_padre` en
     # PartidaPatch. Dos flags independientes (no una sola) porque
@@ -673,6 +677,8 @@ class ProjectOut(BaseModel):
     cadencia_reporte: str = "MENSUAL"
     dia_inicio_semana: str = "LUNES"
     zona_horaria: str = "America/Mexico_City"
+    turno_nocturno_inicio: Optional[str] = None
+    turno_nocturno_fin: Optional[str] = None
     separador_decimal: str = "."
     hoy: Optional[str] = None  # fecha de hoy en la zona del proyecto (YYYY-MM-DD)
     tz_offset_min: Optional[int] = None  # desfase actual respecto a UTC, en minutos
@@ -1371,6 +1377,74 @@ def semana_de(hoy: date, dia_inicio: Optional[str] = "LUNES") -> Tuple[date, dat
     """(primer día, último día) de la semana que contiene `hoy`."""
     ini = inicio_semana(hoy, dia_inicio)
     return ini, ini + timedelta(days=6)
+
+
+# === TURNO NOCTURNO DEL PROYECTO ===============================================
+# Un horario único por proyecto (ej. 20:00 a 06:00, puede cruzar la medianoche).
+# Las capturas hechas dentro de esa ventana, en la hora LOCAL del proyecto, son
+# del turno nocturno de la MISMA estación: los informes diario/semanal/mensual
+# las separan en su propia hoja de resumen con la etiqueta "TURNO NOCTURNO",
+# sin crear otra estación ni otra numeración.
+TURNO_NOCTURNO_ETIQUETA = "TURNO NOCTURNO"
+
+
+def normalizar_hora_hhmm(valor: Optional[str]) -> Optional[str]:
+    """"H:MM"/"HH:MM" -> "HH:MM". Vacío/None -> None. Inválido -> ValueError."""
+    v = (valor or "").strip()
+    if not v:
+        return None
+    m = re.match(r"^(\d{1,2}):(\d{2})$", v)
+    if not m or int(m.group(1)) > 23 or int(m.group(2)) > 59:
+        raise ValueError(f"Hora no válida: {v} (use HH:MM, de 00:00 a 23:59)")
+    return f"{int(m.group(1)):02d}:{m.group(2)}"
+
+
+def _minutos_hhmm(v: str) -> int:
+    h, m = v.split(":")
+    return int(h) * 60 + int(m)
+
+
+def turno_nocturno_ventana(project: Optional[dict]) -> Optional[Tuple[int, int]]:
+    """(inicio, fin) en minutos desde 00:00, o None si el proyecto no tiene
+    turno nocturno configurado (o la configuración es inválida)."""
+    p = project or {}
+    try:
+        ini = normalizar_hora_hhmm(p.get("turno_nocturno_inicio"))
+        fin = normalizar_hora_hhmm(p.get("turno_nocturno_fin"))
+    except ValueError:
+        return None
+    if not ini or not fin or ini == fin:
+        return None
+    return _minutos_hhmm(ini), _minutos_hhmm(fin)
+
+
+def es_turno_nocturno(instante: Optional[datetime], project: Optional[dict]) -> bool:
+    """¿`instante` cae dentro del turno nocturno del proyecto (hora local)?
+    Ventana [inicio, fin): 20:00–06:00 incluye 20:00 y 05:59, no 06:00."""
+    ventana = turno_nocturno_ventana(project)
+    if ventana is None or not isinstance(instante, datetime):
+        return False
+    if instante.tzinfo is None:
+        instante = instante.replace(tzinfo=timezone.utc)
+    local = instante.astimezone(zona_proyecto(project))
+    minuto = local.hour * 60 + local.minute
+    ini, fin = ventana
+    return (ini <= minuto < fin) if ini < fin else (minuto >= ini or minuto < fin)
+
+
+def separar_reportes_por_turno(reports_by_node: dict, project: Optional[dict]) -> Tuple[dict, dict]:
+    """(diurno, nocturno): divide {node_id: [reportes]} según la hora de
+    captura (`created_at`). Sin turno nocturno configurado, todo es diurno y
+    `nocturno` queda vacío — el informe sale exactamente igual que antes."""
+    if turno_nocturno_ventana(project) is None:
+        return reports_by_node, {}
+    dia: dict = {}
+    noche: dict = {}
+    for node_id, reps in reports_by_node.items():
+        for r in reps:
+            destino = noche if es_turno_nocturno(r.get("created_at"), project) else dia
+            destino.setdefault(node_id, []).append(r)
+    return dia, noche
 
 
 async def hoy_de(pid: str) -> date:
@@ -2722,6 +2796,14 @@ def _zona_o_400(nombre: Optional[str]) -> str:
         raise HTTPException(400, str(e))
 
 
+def _hora_hhmm_o_400(valor: Optional[str]) -> Optional[str]:
+    """"HH:MM" normalizado (24 h); vacío -> None; formato inválido -> 400."""
+    try:
+        return normalizar_hora_hhmm(valor)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
 COLOR_HEX_ESTRICTO = re.compile(r"^#[0-9A-Fa-f]{6}$")
 
 
@@ -2892,6 +2974,8 @@ async def get_project(pid: str, user: dict = Depends(current_user)):
     p.setdefault("dia_inicio_semana", "LUNES")
     p["zona_horaria"] = p.get("zona_horaria") or ZONA_POR_DEFECTO
     p.setdefault("separador_decimal", ".")
+    p.setdefault("turno_nocturno_inicio", None)
+    p.setdefault("turno_nocturno_fin", None)
     p["hoy"] = hoy_proyecto(p).isoformat()
     p["tz_offset_min"] = offset_min_proyecto(p)
     p["modulos"] = _sanitize_modulos(p.get("modulos"))
@@ -3007,6 +3091,17 @@ async def update_project(pid: str, body: ProjectPatch, user: dict = Depends(requ
         upd["dia_inicio_semana"] = body.dia_inicio_semana
     if body.zona_horaria is not None:
         upd["zona_horaria"] = _zona_o_400(body.zona_horaria)
+    if body.turno_nocturno_inicio is not None or body.turno_nocturno_fin is not None:
+        ini = _hora_hhmm_o_400(body.turno_nocturno_inicio if body.turno_nocturno_inicio is not None
+                               else existing.get("turno_nocturno_inicio"))
+        fin = _hora_hhmm_o_400(body.turno_nocturno_fin if body.turno_nocturno_fin is not None
+                               else existing.get("turno_nocturno_fin"))
+        if bool(ini) != bool(fin):
+            raise HTTPException(400, "El turno nocturno necesita hora de inicio y hora de fin")
+        if ini and ini == fin:
+            raise HTTPException(400, "La hora de inicio y la de fin del turno nocturno no pueden ser iguales")
+        upd["turno_nocturno_inicio"] = ini
+        upd["turno_nocturno_fin"] = fin
     if body.separador_decimal is not None:
         upd["separador_decimal"] = body.separador_decimal
 
@@ -3059,6 +3154,8 @@ def _project_public(p: dict) -> dict:
     p.setdefault("dia_inicio_semana", "LUNES")
     p["zona_horaria"] = p.get("zona_horaria") or ZONA_POR_DEFECTO
     p.setdefault("separador_decimal", ".")
+    p.setdefault("turno_nocturno_inicio", None)
+    p.setdefault("turno_nocturno_fin", None)
     p["hoy"] = hoy_proyecto(p).isoformat()
     p["tz_offset_min"] = offset_min_proyecto(p)
     p["modulos"] = _sanitize_modulos(p.get("modulos"))
@@ -16793,7 +16890,14 @@ async def export_reports_pdf(
     # clima y filas de Fuerza de Trabajo/Maquinaria SIN agrupar (cada
     # captura individual es su propia fila — ver `_workforce_raw_rows_by_subtramo`).
     resource_raw_rows_by_subtramo = _workforce_raw_rows_by_subtramo(workforce_reports_by_node, nodes_by_id)
-    actividades_by_subtramo = _actividades_by_subtramo(workforce_reports_by_node, nodes_by_id)
+    # Turno nocturno (horario único por proyecto): la hoja de resumen de la
+    # estación se parte en turno diurno + turno nocturno de la MISMA estación.
+    # Sin turno configurado, `_wf_noche` queda vacío y nada cambia.
+    _wf_dia, _wf_noche = separar_reportes_por_turno(workforce_reports_by_node, proj)
+    resource_raw_rows_dia_by_subtramo = _workforce_raw_rows_by_subtramo(_wf_dia, nodes_by_id)
+    resource_raw_rows_noche_by_subtramo = _workforce_raw_rows_by_subtramo(_wf_noche, nodes_by_id)
+    actividades_by_subtramo = _actividades_by_subtramo(_wf_dia, nodes_by_id)
+    actividades_noche_by_subtramo = _actividades_by_subtramo(_wf_noche, nodes_by_id)
     # Numeración "ESTACIÓN N." del título de la página-resumen por Subtramo
     # (formato de referencia del cliente) — orden del árbol del proyecto
     # completo (no solo los subtramos con datos en este período), mismo
@@ -16835,7 +16939,9 @@ async def export_reports_pdf(
         pid, start_dt, end_dt, user, nodes_by_id,
     )
     for _sid, _textos in actividades_curadas_by_subtramo.items():
-        if _textos:
+        # El texto curado del hub mezcla ambos turnos: en estaciones con
+        # reportes nocturnos se conservan las actividades de cada turno.
+        if _textos and _sid not in actividades_noche_by_subtramo:
             actividades_by_subtramo[_sid] = _textos
     # Tabla consolidada "Actividades por Área" (justo después de Datos
     # Generales, ver `_draw_actividades_por_area_section` más abajo) —
@@ -18253,7 +18359,8 @@ async def export_reports_pdf(
                                         actividades: list, situacion_social: Optional[str],
                                         acceso_predio: Optional[str], weather: Optional[dict],
                                         mostrar_acceso_predio: bool = True,
-                                        acceso_node_label: Optional[str] = None) -> None:
+                                        acceso_node_label: Optional[str] = None,
+                                        turno_label: Optional[str] = None) -> None:
             """Página de resumen por Subtramo — layout de 2 columnas separadas
             por una línea vertical delgada (color de marca):
 
@@ -18302,6 +18409,17 @@ async def export_reports_pdf(
             # de las tablas de recursos usa su propio color crudo, ver más
             # abajo).
             BRAND = HexColor(_readable_dark_hex(project_color))
+
+            # Etiqueta de turno hasta arriba (ej. "TURNO NOCTURNO"): franja
+            # de color de marca a todo lo ancho; el resto de la página baja.
+            if turno_label:
+                _tl_h = 0.7 * cm
+                c.setFillColor(BRAND)
+                c.rect(MARGIN_X, top_y - _tl_h, content_w, _tl_h, fill=1, stroke=0)
+                c.setFillColor(WHITE)
+                c.setFont("Helvetica-Bold", 11)
+                c.drawCentredString(MARGIN_X + content_w / 2, top_y - _tl_h / 2 - 0.14 * cm, turno_label.upper())
+                top_y -= _tl_h + 0.3 * cm
 
             BADGE_R = 0.42 * cm
             # Título grande de la página: el nombre del nodo que REALMENTE
@@ -19620,15 +19738,23 @@ async def export_reports_pdf(
             nonlocal page_num
             if not subtramo_id:
                 return
-            totals = resource_raw_rows_by_subtramo.get(subtramo_id)
             subtramo_node = nodes_by_id.get(subtramo_id) or {}
+            es_intertramo = subtramo_node.get("tipo_nodo") == "intertramo"
+            # El turno nocturno solo parte la hoja de ESTACIÓN; el Intertramo
+            # conserva una sola hoja con ambos turnos juntos.
+            if es_intertramo:
+                totals = resource_raw_rows_by_subtramo.get(subtramo_id)
+                _acts_sub = (actividades_by_subtramo.get(subtramo_id) or []) + \
+                    (actividades_noche_by_subtramo.get(subtramo_id) or [])
+            else:
+                totals = resource_raw_rows_dia_by_subtramo.get(subtramo_id)
+                _acts_sub = actividades_by_subtramo.get(subtramo_id) or []
             # Nodo que realmente representa Acceso al Predio/Situación Social
             # para este Subtramo — respeta el toggle `acceso_predio_habilitado`
             # (a cualquier profundidad, ver hub). None si el coordinador NO
             # habilitó nada para esta ubicación (antes se imprimía "Sin
             # especificar" en TODOS los subtramos sin importar el hub).
             acceso_node = _resolve_acceso_predio_node(subtramo_id, subtramo_node, nodes_by_subtramo)
-            es_intertramo = subtramo_node.get("tipo_nodo") == "intertramo"
             # Postes = hijos DIRECTOS del nodo Intertramo (no todo el
             # subárbol), ordenados igual que el resto del árbol — filas de
             # la tabla "Actividad en Postes" (ver `draw_intertramo_summary_page`).
@@ -19650,34 +19776,53 @@ async def export_reports_pdf(
             has_persistent_content = bool(
                 (acceso_node and (acceso_node.get("acceso_predio") or "").strip())
                 or (acceso_node and (acceso_node.get("situacion_social") or "").strip())
-                or (actividades_by_subtramo.get(subtramo_id) or [])
+                or _acts_sub
                 or postes
             )
-            if not totals and not has_persistent_content:
+            _noche = None if es_intertramo else resource_raw_rows_noche_by_subtramo.get(subtramo_id)
+            if not totals and not has_persistent_content and not _noche:
                 return
-            _indice_mark(f"sub:{subtramo_id}", f"Resumen · {subtramo_node.get('name') or 'Subtramo'}")
-            personal_rows = (totals or {}).get("personal") or []
-            maquinaria_rows = (totals or {}).get("maquinaria") or []
-            if es_intertramo:
-                draw_intertramo_summary_page(
-                    subtramo_node, personal_rows, maquinaria_rows,
-                    actividades_by_subtramo.get(subtramo_id) or [],
-                    acceso_node.get("situacion_social") if acceso_node else None,
-                    postes,
-                    mostrar_situacion=acceso_node is not None,
-                )
-            else:
+            if totals or has_persistent_content:
+                _indice_mark(f"sub:{subtramo_id}", f"Resumen · {subtramo_node.get('name') or 'Subtramo'}")
+                personal_rows = (totals or {}).get("personal") or []
+                maquinaria_rows = (totals or {}).get("maquinaria") or []
+                if es_intertramo:
+                    draw_intertramo_summary_page(
+                        subtramo_node, personal_rows, maquinaria_rows,
+                        _acts_sub,
+                        acceso_node.get("situacion_social") if acceso_node else None,
+                        postes,
+                        mostrar_situacion=acceso_node is not None,
+                    )
+                else:
+                    draw_subtramo_summary_page(
+                        subtramo_node, personal_rows, maquinaria_rows,
+                        _acts_sub,
+                        acceso_node.get("situacion_social") if acceso_node else None,
+                        acceso_node.get("acceso_predio") if acceso_node else None,
+                        weather_by_subtramo.get(subtramo_id),
+                        mostrar_acceso_predio=acceso_node is not None,
+                        acceso_node_label=(acceso_node.get("name") if acceso_node else None),
+                    )
+                c.showPage()
+                page_num += 1
+            if _noche:
+                # Misma estación (mismo "ESTACIÓN N.", mismo nombre), segunda
+                # hoja con SOLO lo capturado en el turno nocturno.
+                _indice_mark(f"sub-noche:{subtramo_id}",
+                             f"Resumen · {subtramo_node.get('name') or 'Subtramo'} · {TURNO_NOCTURNO_ETIQUETA.title()}")
                 draw_subtramo_summary_page(
-                    subtramo_node, personal_rows, maquinaria_rows,
-                    actividades_by_subtramo.get(subtramo_id) or [],
+                    subtramo_node, _noche.get("personal") or [], _noche.get("maquinaria") or [],
+                    actividades_noche_by_subtramo.get(subtramo_id) or [],
                     acceso_node.get("situacion_social") if acceso_node else None,
                     acceso_node.get("acceso_predio") if acceso_node else None,
                     weather_by_subtramo.get(subtramo_id),
                     mostrar_acceso_predio=acceso_node is not None,
                     acceso_node_label=(acceso_node.get("name") if acceso_node else None),
+                    turno_label=TURNO_NOCTURNO_ETIQUETA,
                 )
-            c.showPage()
-            page_num += 1
+                c.showPage()
+                page_num += 1
 
         for n in leaf_nodes:
             n_subtramo_id = _subtramo_id_for(n["id"], nodes_by_id)
@@ -23504,7 +23649,13 @@ async def export_reports_pptx(
     # desglose por día ni autor), actividades y clima usados en el PDF
     # ejecutivo — reemplaza el panel dual agrupado por Tramo (nodo raíz).
     resource_consolidated_by_subtramo = _workforce_consolidated_by_subtramo(workforce_reports_by_node, nodes_by_id)
-    actividades_by_subtramo = _actividades_by_subtramo(workforce_reports_by_node, nodes_by_id)
+    # Turno nocturno (ver export_reports_pdf): hoja diurna + hoja nocturna de
+    # la misma estación; sin turno configurado `_wf_noche` queda vacío.
+    _wf_dia, _wf_noche = separar_reportes_por_turno(workforce_reports_by_node, proj)
+    resource_consolidated_dia_by_subtramo = _workforce_consolidated_by_subtramo(_wf_dia, nodes_by_id)
+    resource_consolidated_noche_by_subtramo = _workforce_consolidated_by_subtramo(_wf_noche, nodes_by_id)
+    actividades_by_subtramo = _actividades_by_subtramo(_wf_dia, nodes_by_id)
+    actividades_noche_by_subtramo = _actividades_by_subtramo(_wf_noche, nodes_by_id)
     # Numeración "ESTACIÓN N." del título de la slide-resumen por Subtramo —
     # ver la misma nota en export_reports_pdf.
     _subtramo_ordinal = {
@@ -23536,7 +23687,7 @@ async def export_reports_pptx(
         pid, start_dt, end_dt, user, nodes_by_id,
     )
     for _sid, _textos in actividades_curadas_by_subtramo.items():
-        if _textos:
+        if _textos and _sid not in actividades_noche_by_subtramo:
             actividades_by_subtramo[_sid] = _textos
     # Resumen de actividades POR FRENTE, al inicio del PPTX con el formato del
     # reporte semanal de referencia — mismas actividades que muestra el hub
@@ -23896,7 +24047,8 @@ async def export_reports_pptx(
                                          actividades: list, situacion_social: Optional[str],
                                          acceso_predio: Optional[str], weather: Optional[dict],
                                          mostrar_acceso_predio: bool = True,
-                                         acceso_node_label: Optional[str] = None) -> None:
+                                         acceso_node_label: Optional[str] = None,
+                                         turno_label: Optional[str] = None) -> None:
             """Slide de resumen por Subtramo — MISMO layout de 2 columnas que
             `draw_subtramo_summary_page` (motor PDF), con primitivas
             python-pptx: IZQUIERDA (título con ícono de estructura, Acceso al
@@ -23915,6 +24067,15 @@ async def export_reports_pptx(
             divider_x = MARGIN_X + col_w + int(GUTTER / 2)
             top_y = TOP_MARGIN
             bottom_y = SH - BOTTOM_MARGIN
+
+            # Etiqueta de turno hasta arriba (ej. "TURNO NOCTURNO"): franja de
+            # color de marca a todo lo ancho; el resto de la slide baja.
+            if turno_label:
+                _tl_h = int(Cm(0.8))
+                _wf_rect(slide, MARGIN_X, top_y, content_w, _tl_h, fill_rgb=BRAND_RGB)
+                add_text(slide, MARGIN_X, top_y, content_w, _tl_h, turno_label.upper(),
+                         size=13, bold=True, color=WF_WHITE_RGB, align=PP_ALIGN.CENTER)
+                top_y += _tl_h + int(Cm(0.3))
 
             BADGE_R = int(Cm(0.5))
             # Título grande de la página: el nombre del nodo que REALMENTE
@@ -25188,8 +25349,18 @@ async def export_reports_pptx(
             subtramo ya impreso no se vuelve a emitir."""
             if not subtramo_id or subtramo_id in resumen_subtramos_emitidos:
                 return
-            totals = resource_consolidated_by_subtramo.get(subtramo_id)
             subtramo_node = nodes_by_id.get(subtramo_id) or {}
+            es_intertramo = subtramo_node.get("tipo_nodo") == "intertramo"
+            # El turno nocturno solo parte la slide de ESTACIÓN; el Intertramo
+            # conserva una sola slide con ambos turnos juntos.
+            if es_intertramo:
+                totals = resource_consolidated_by_subtramo.get(subtramo_id)
+                _acts_base = (actividades_by_subtramo.get(subtramo_id) or []) + \
+                    (actividades_noche_by_subtramo.get(subtramo_id) or [])
+            else:
+                totals = resource_consolidated_dia_by_subtramo.get(subtramo_id)
+                _acts_base = actividades_by_subtramo.get(subtramo_id) or []
+            _noche = None if es_intertramo else resource_consolidated_noche_by_subtramo.get(subtramo_id)
             # Nodo que realmente representa Acceso al Predio/Situación Social
             # para este Subtramo — respeta el toggle `acceso_predio_habilitado`
             # (a cualquier profundidad, ver hub). None si nada fue habilitado
@@ -25198,7 +25369,6 @@ async def export_reports_pptx(
             acceso_node = _resolve_acceso_predio_node(subtramo_id, subtramo_node, nodes_by_subtramo)
             personal_rows = (totals or {}).get("personal") or []
             maquinaria_rows = (totals or {}).get("maquinaria") or []
-            es_intertramo = subtramo_node.get("tipo_nodo") == "intertramo"
             postes = sorted(
                 (n for n in nodes_by_id.values() if n.get("parent_id") == subtramo_id),
                 key=lambda n: (n.get("order", 0), n.get("name", "")),
@@ -25212,31 +25382,48 @@ async def export_reports_pptx(
             has_persistent_content = bool(
                 (acceso_node and (acceso_node.get("acceso_predio") or "").strip())
                 or (acceso_node and (acceso_node.get("situacion_social") or "").strip())
-                or (actividades_by_subtramo.get(subtramo_id) or [])
+                or _acts_base
                 or postes
             )
-            if not forzar and not personal_rows and not maquinaria_rows and not has_persistent_content:
+            _hay_dia = bool(forzar or personal_rows or maquinaria_rows or has_persistent_content)
+            if not _hay_dia and not _noche:
                 return
             resumen_subtramos_emitidos.add(subtramo_id)
-            _acts_sub = actividades_by_subtramo.get(subtramo_id) or (["Sin actividad"] if forzar else [])
-            _indice_mark(f"sub:{subtramo_id}", f"Resumen · {subtramo_node.get('name') or 'Subtramo'}")
-            if es_intertramo:
-                draw_intertramo_summary_slide(
-                    subtramo_node, personal_rows, maquinaria_rows,
-                    _acts_sub,
-                    acceso_node.get("situacion_social") if acceso_node else None,
-                    postes,
-                    mostrar_situacion=acceso_node is not None,
-                )
-            else:
+            if _hay_dia:
+                _acts_sub = _acts_base or (["Sin actividad"] if forzar else [])
+                _indice_mark(f"sub:{subtramo_id}", f"Resumen · {subtramo_node.get('name') or 'Subtramo'}")
+                if es_intertramo:
+                    draw_intertramo_summary_slide(
+                        subtramo_node, personal_rows, maquinaria_rows,
+                        _acts_sub,
+                        acceso_node.get("situacion_social") if acceso_node else None,
+                        postes,
+                        mostrar_situacion=acceso_node is not None,
+                    )
+                else:
+                    draw_subtramo_summary_slide(
+                        subtramo_node, personal_rows, maquinaria_rows,
+                        _acts_sub,
+                        acceso_node.get("situacion_social") if acceso_node else None,
+                        acceso_node.get("acceso_predio") if acceso_node else None,
+                        weather_by_subtramo.get(subtramo_id),
+                        mostrar_acceso_predio=acceso_node is not None,
+                        acceso_node_label=(acceso_node.get("name") if acceso_node else None),
+                    )
+            if _noche:
+                # Misma estación (mismo "ESTACIÓN N.", mismo nombre), segunda
+                # slide con SOLO lo capturado en el turno nocturno.
+                _indice_mark(f"sub-noche:{subtramo_id}",
+                             f"Resumen · {subtramo_node.get('name') or 'Subtramo'} · {TURNO_NOCTURNO_ETIQUETA.title()}")
                 draw_subtramo_summary_slide(
-                    subtramo_node, personal_rows, maquinaria_rows,
-                    _acts_sub,
+                    subtramo_node, _noche.get("personal") or [], _noche.get("maquinaria") or [],
+                    actividades_noche_by_subtramo.get(subtramo_id) or [],
                     acceso_node.get("situacion_social") if acceso_node else None,
                     acceso_node.get("acceso_predio") if acceso_node else None,
                     weather_by_subtramo.get(subtramo_id),
                     mostrar_acceso_predio=acceso_node is not None,
                     acceso_node_label=(acceso_node.get("name") if acceso_node else None),
+                    turno_label=TURNO_NOCTURNO_ETIQUETA,
                 )
 
         # Frentes (Estación/Intertramo) SIN ningún reporte en el período: se

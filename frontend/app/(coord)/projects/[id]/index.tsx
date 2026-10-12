@@ -43,6 +43,7 @@ import { SinReportesAviso } from '@/src/components/SinReportesAviso';
 import { ReportesVacio } from '@/src/components/ReportesVacio';
 import { verificarConteoExportacion } from '@/src/utils/conteoExportacion';
 import { validarNombreNivel, validarUnidadPersonalizada } from '@/src/utils/unidades';
+import { validarTurnoNocturno } from '@/src/utils/turnoNocturno';
 import { unir } from '@/src/utils/texto';
 import { useAuth } from '@/src/auth-context';
 import { ROLE_COORD } from '@/src/utils/roles';
@@ -278,6 +279,8 @@ export default function ProjectDetailScreen() {
   const [modoAvanceDraft, setModoAvanceDraft] = useState<'CANTIDAD' | 'PORCENTAJE' | 'MATRIZ'>('CANTIDAD');
   const [cadenciaDraft, setCadenciaDraft] = useState<'DIARIA' | 'SEMANAL' | 'MENSUAL'>('MENSUAL');
   const [zonaHorariaDraft, setZonaHorariaDraft] = useState<string>('America/Mexico_City');
+  const [turnoNocturnoInicioDraft, setTurnoNocturnoInicioDraft] = useState('');
+  const [turnoNocturnoFinDraft, setTurnoNocturnoFinDraft] = useState('');
   const [separadorDecimalDraft, setSeparadorDecimalDraft] = useState<'.' | ','>('.');
   const [diaInicioSemanaDraft, setDiaInicioSemanaDraft] = useState<
     'LUNES' | 'MARTES' | 'MIERCOLES' | 'JUEVES' | 'VIERNES' | 'SABADO' | 'DOMINGO'
@@ -976,6 +979,8 @@ export default function ProjectDetailScreen() {
     setCadenciaDraft(p.cadencia_reporte || 'MENSUAL');
     setDiaInicioSemanaDraft(p.dia_inicio_semana || 'LUNES');
     setZonaHorariaDraft(p.zona_horaria || 'America/Mexico_City');
+    setTurnoNocturnoInicioDraft(p.turno_nocturno_inicio || '');
+    setTurnoNocturnoFinDraft(p.turno_nocturno_fin || '');
     setSeparadorDecimalDraft(p.separador_decimal === ',' ? ',' : '.');
     setNombresNivelesDraft(p.nombres_niveles_partida || []);
     setNombreNivelPartidaDraft('');
@@ -1018,9 +1023,16 @@ export default function ProjectDetailScreen() {
   // aparte que podria desincronizarse de la real.
   async function saveCatalogoConfig(confirmar?: { tipoContrato?: boolean; modoAvance?: boolean }) {
     if (!pid || catalogoConfigSaving) return;
+    const turno = validarTurnoNocturno(turnoNocturnoInicioDraft, turnoNocturnoFinDraft);
+    if (!turno.ok) {
+      Alert.alert(t('turnoNocturno.titulo'), t(turno.motivo === 'iguales' ? 'turnoNocturno.iguales' : 'turnoNocturno.invalido'));
+      return;
+    }
     try {
       setCatalogoConfigSaving(true);
       const upd = await api.updateProject(pid, {
+        turno_nocturno_inicio: turno.inicio,
+        turno_nocturno_fin: turno.fin,
         tipo_contrato: tipoContratoDraft,
         modo_avance: modoAvanceDraft,
         cadencia_reporte: cadenciaDraft,
@@ -2456,6 +2468,31 @@ export default function ProjectDetailScreen() {
                     );
                   })}
                 </ScrollView>
+              </View>
+
+              <View>
+                <Text style={styles.catLabel}>{t('turnoNocturno.titulo')}</Text>
+                <Text style={styles.catHelper}>{t('turnoNocturno.ayuda')}</Text>
+                <View style={{ flexDirection: 'row', gap: 8 }}>
+                  <TextInput
+                    value={turnoNocturnoInicioDraft}
+                    onChangeText={setTurnoNocturnoInicioDraft}
+                    placeholder={t('turnoNocturno.inicio')}
+                    accessibilityLabel={t('turnoNocturno.inicio')}
+                    keyboardType="numbers-and-punctuation"
+                    maxLength={5}
+                    style={[styles.catInput, { flex: 1 }]}
+                  />
+                  <TextInput
+                    value={turnoNocturnoFinDraft}
+                    onChangeText={setTurnoNocturnoFinDraft}
+                    placeholder={t('turnoNocturno.fin')}
+                    accessibilityLabel={t('turnoNocturno.fin')}
+                    keyboardType="numbers-and-punctuation"
+                    maxLength={5}
+                    style={[styles.catInput, { flex: 1 }]}
+                  />
+                </View>
               </View>
 
               <View>
