@@ -87,6 +87,7 @@ const PERIOD_OPTIONS: { value: ReportPeriod; label: string; sub: string; icon: k
   { value: 'today',     label: t('proyectoPantalla.hoy'),         sub: t('proyectoPantalla.informeDiarioSoloJerarquiaDiario'),  icon: 'today-outline' },
   { value: 'yesterday', label: t('proyectoPantalla.ayer'),        sub: t('proyectoPantalla.reportesDelDiaAnterior'), icon: 'calendar-clear-outline' },
   { value: 'week',      label: t('proyectoPantalla.estaSemana'), sub: t('proyectoPantalla.informeSemanalSoloJerarquiaSemanal'),            icon: 'calendar-outline' },
+  { value: 'last_week', label: t('proyectoPantalla.semanaPasada'), sub: t('proyectoPantalla.informeSemanaPasadaLunesADomingo'), icon: 'calendar-outline' },
   { value: 'month',     label: t('proyectoPantalla.esteMes'),    sub: t('proyectoPantalla.informeMensualSoloJerarquiaMensual'),           icon: 'calendar-number-outline' },
 ];
 

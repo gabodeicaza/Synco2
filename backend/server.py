@@ -15508,6 +15508,11 @@ def _period_range(period: str, project: Optional[dict] = None) -> tuple:
     if p in ("week", "semana", "semanal"):
         # Semana natural: lunes a domingo (o el `dia_inicio_semana` del proyecto).
         return _inicio_semana_local(now_mx, project).astimezone(timezone.utc), now_utc, "Semana natural"
+    if p in ("last_week", "lastweek", "semana_pasada"):
+        # Semana natural anterior completa: lunes 00:00 → lunes 00:00 de la actual.
+        end_mx = _inicio_semana_local(now_mx, project)
+        start_mx = _inicio_semana_local(end_mx - timedelta(days=1), project)
+        return start_mx.astimezone(timezone.utc), end_mx.astimezone(timezone.utc), "Semana pasada"
     if p in ("month", "mes", "mensual"):
         # REGLA ESTRICTA: Día 1 del mes calendario CDMX 00:00 → ahora.
         start_mx = now_mx.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
@@ -20388,7 +20393,7 @@ async def _export_reports_query(
         raise HTTPException(404, "Proyecto no existe")
 
     pt_norm = _normalize_period_type(period_type)
-    if pt_norm:
+    if pt_norm and (period or "").lower().strip() not in ("last_week", "lastweek", "semana_pasada"):
         start_dt, end_dt, period_label = _period_range_for_type(pt_norm, proj)
     else:
         start_dt, end_dt, period_label = _period_range(period, proj)
@@ -20632,7 +20637,7 @@ def _modulos_categoria_para_export(period_type: Optional[str], period: str) -> s
     if pt == "mensual":
         return "reportes_mensuales"
     p = (period or "today").lower().strip()
-    if p in ("week", "semana", "semanal"):
+    if p in ("week", "semana", "semanal", "last_week", "lastweek", "semana_pasada"):
         return "reportes_semanales"
     if p in ("month", "mes", "mensual"):
         return "reportes_mensuales"

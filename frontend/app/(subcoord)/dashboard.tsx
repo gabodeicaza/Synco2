@@ -90,7 +90,7 @@ export default function SubCoordDashboard() {
 
   // P4 - Estado del modal de exportacion avanzada
   const [expFormat, setExpFormat] = useState<'xlsx' | 'pdf' | 'docx' | 'pptx'>('xlsx');
-  const [expPeriod, setExpPeriod] = useState<'today' | 'yesterday' | 'week' | 'month'>('today');
+  const [expPeriod, setExpPeriod] = useState<'today' | 'yesterday' | 'week' | 'last_week' | 'month'>('today');
   // P0 Mega-Feature: filtro por Area para exportacion (Supervisores)
   const [expAreas, setExpAreas] = useState<{ id: string; name: string; color?: string }[]>([]);
   const [expAreaId, setExpAreaId] = useState<string | null>(null); // null = "Todas las areas"
@@ -1083,6 +1083,7 @@ export default function SubCoordDashboard() {
                     { k: 'today', l: 'Hoy' },
                     { k: 'yesterday', l: 'Ayer' },
                     { k: 'week', l: 'Semana' },
+                    { k: 'last_week', l: 'Semana pasada' },
                     { k: 'month', l: 'Mes' },
                   ] as const).map((p) => {
                     const active = expPeriod === p.k;
@@ -1103,11 +1104,12 @@ export default function SubCoordDashboard() {
                   <Text style={styles.advHint}>
                     {t('panelSubcoord.notaXlsxExportaTodosLos')}
                   </Text>
-                ) : (expPeriod === 'today' || expPeriod === 'week' || expPeriod === 'month') && (
+                ) : (expPeriod === 'today' || expPeriod === 'week' || expPeriod === 'last_week' || expPeriod === 'month') && (
                   <Text style={styles.advHint}>
                     {expPeriod === 'today' && t('panelSubcoord.informeDiarioSoloReportesCon')}
                     {expPeriod === 'week' && t('panelSubcoord.informeSemanalSoloReportesCon')}
                     {expPeriod === 'month' && t('panelSubcoord.informeMensualSoloReportesCon')}
+                    {expPeriod === 'last_week' && 'Informe Semanal · lunes a domingo de la semana anterior'}
                   </Text>
                 )}
               </View>

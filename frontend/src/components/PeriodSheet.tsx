@@ -3,7 +3,7 @@ import { Modal, View, Text, Pressable, StyleSheet, Platform } from 'react-native
 import { Ionicons } from '@expo/vector-icons';
 import { colors, radius, spacing } from '@/src/theme';
 
-export type ReportPeriod = 'today' | 'yesterday' | 'week' | 'month';
+export type ReportPeriod = 'today' | 'yesterday' | 'week' | 'last_week' | 'month';
 
 /**
  * Traduce el periodo elegido en el wizard de exportacion al `period_type`
@@ -18,7 +18,7 @@ export type ReportPeriod = 'today' | 'yesterday' | 'week' | 'month';
  */
 export function periodToInformeType(period: ReportPeriod): 'diario' | 'semanal' | 'mensual' | undefined {
   if (period === 'today') return 'diario';
-  if (period === 'week') return 'semanal';
+  if (period === 'week' || period === 'last_week') return 'semanal';
   if (period === 'month') return 'mensual';
   return undefined;
 }
@@ -27,6 +27,7 @@ const OPTIONS: { value: ReportPeriod; label: string; sub: string; icon: any }[] 
   { value: 'today', label: 'Hoy', sub: 'Reportes capturados hoy (UTC)', icon: 'today-outline' },
   { value: 'yesterday', label: 'Ayer', sub: 'Reportes del día anterior', icon: 'calendar-clear-outline' },
   { value: 'week', label: 'Última semana', sub: 'Últimos 7 días', icon: 'calendar-outline' },
+  { value: 'last_week', label: 'Semana pasada', sub: 'Lunes a domingo de la semana anterior', icon: 'calendar-outline' },
   { value: 'month', label: 'Último mes', sub: 'Últimos 30 días', icon: 'calendar-number-outline' },
 ];
 

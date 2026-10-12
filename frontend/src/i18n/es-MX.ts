@@ -1009,6 +1009,8 @@ export const esMX = {
     errorDeSubidaDatosGenerales: 'Error de subida (Datos Generales)',
     errorDesconocidoAlSubirEl: 'Error desconocido al subir el archivo.',
     estaSemana: 'Esta semana',
+    semanaPasada: 'Semana pasada',
+    informeSemanaPasadaLunesADomingo: 'Informe Semanal · lunes a domingo de la semana anterior',
     estatusDeAccesoYSituacion: 'Estatus de acceso y situación social por subtramo',
     esteMes: 'Este mes',
     esteProyectoAunNoTiene: 'Este proyecto aún no tiene áreas configuradas. Se exportarán todos los reportes.',

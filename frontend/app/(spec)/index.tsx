@@ -46,7 +46,8 @@ const PERIOD_OPTIONS: { value: ReportPeriod; label: string; sub: string; icon: k
   { value: 'today',     label: 'Hoy',         sub: 'Informe Diario · solo jerarquía "Diario"',  icon: 'today-outline' },
   { value: 'yesterday', label: 'Ayer',        sub: 'Reportes del día anterior', icon: 'calendar-clear-outline' },
   { value: 'week',      label: 'Esta semana', sub: 'Informe Semanal · solo jerarquía "Semanal"',            icon: 'calendar-outline' },
-  { value: 'month',     label: 'Este mes',    sub: 'Informe Mensual · solo jerarquía "Mensual"',           icon: 'calendar-number-outline' },
+  { value: 'last_week', label: 'Semana pasada', sub: 'Informe Semanal · lunes a domingo de la semana anterior', icon: 'calendar-outline' },
+  { value: 'month',     label: 'Este mes',   sub: 'Informe Mensual · solo jerarquía "Mensual"',           icon: 'calendar-number-outline' },
 ];
 
 const FORMAT_OPTIONS: { value: ExportFormat; label: string; sub: string; icon: keyof typeof Ionicons.glyphMap; tint: string }[] = [
