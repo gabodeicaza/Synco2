@@ -18,7 +18,7 @@ import { api, LocationNode, PosteEstatus } from '@/src/api';
 import { colors, radius, shadow, spacing } from '@/src/theme';
 import { a11y } from '@/src/i18n';
 
-type AccesoValue = 'Con acceso' | 'Sin acceso' | null;
+type AccesoValue = 'Con acceso' | 'Acceso parcial al predio' | 'Sin acceso' | null;
 type TipoNodo = 'estacion' | 'intertramo';
 export type PosteCampo = 'pilas' | 'cabezal' | 'fuste' | 'poste';
 
@@ -282,6 +282,14 @@ export function AccesoPredioManager({ projectId }: { projectId: string }) {
                       <Text style={[styles.toggleTxt, acceso === 'Con acceso' && styles.toggleTxtOn]}>Con acceso</Text>
                     </Pressable>
                     <Pressable accessibilityRole="button"
+                      onPress={() => setAcceso(s.id, acceso === 'Acceso parcial al predio' ? null : 'Acceso parcial al predio')}
+                      disabled={!!accesoBusy[s.id]}
+                      style={[styles.toggleBtn, acceso === 'Acceso parcial al predio' && styles.toggleBtnOnAmber]}
+                    >
+                      <Ionicons name="remove-circle-outline" size={18} color={acceso === 'Acceso parcial al predio' ? '#fff' : colors.textBody} />
+                      <Text style={[styles.toggleTxt, acceso === 'Acceso parcial al predio' && styles.toggleTxtOn]}>Acceso parcial al predio</Text>
+                    </Pressable>
+                    <Pressable accessibilityRole="button"
                       onPress={() => setAcceso(s.id, acceso === 'Sin acceso' ? null : 'Sin acceso')}
                       disabled={!!accesoBusy[s.id]}
                       style={[styles.toggleBtn, acceso === 'Sin acceso' && styles.toggleBtnOnRed]}
@@ -471,12 +479,13 @@ const styles = StyleSheet.create({
   card: { backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.md, ...shadow.card, gap: 10 },
   tramoLabel: { fontSize: 11, fontWeight: '700', color: colors.textMuted, textTransform: 'uppercase' },
   subtramoName: { fontSize: 16, fontWeight: '800', color: colors.text },
-  toggleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  toggleRow: { flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
   toggleBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 8,
     borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.bg,
   },
   toggleBtnOnGreen: { backgroundColor: '#16A34A', borderColor: '#16A34A' },
+  toggleBtnOnAmber: { backgroundColor: '#D97706', borderColor: '#D97706' },
   toggleBtnOnRed: { backgroundColor: '#DC2626', borderColor: '#DC2626' },
   toggleTxt: { fontSize: 13, fontWeight: '700', color: colors.textBody },
   toggleTxtOn: { color: '#fff' },

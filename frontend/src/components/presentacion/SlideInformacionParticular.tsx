@@ -11,7 +11,7 @@ import type { InformacionParticularBloque, LocationNode, PresentacionSeccion } f
 const ACCESO_COLOR: Record<string, string> = {
   'con acceso': '#16A34A', 'acceso al predio': '#16A34A', liberado: '#16A34A', libre: '#16A34A', si: '#16A34A', sí: '#16A34A',
   'sin acceso': '#DC2626', bloqueado: '#DC2626', denegado: '#DC2626', no: '#DC2626',
-  parcial: '#D97706', restringido: '#D97706',
+  parcial: '#D97706', restringido: '#D97706', 'acceso parcial al predio': '#D97706',
 };
 
 function Bullets({ items, empty }: { items: string[]; empty: string }) {
