@@ -813,6 +813,7 @@ function NodeEditorModal({
                       {([
                         { key: null, label: 'Sin especificar', icon: 'help-circle-outline' },
                         { key: 'Con acceso', label: 'Con acceso', icon: 'checkmark-circle-outline' },
+                        { key: 'Acceso parcial al predio', label: 'Acceso parcial al predio', icon: 'remove-circle-outline' },
                         { key: 'Sin acceso', label: 'Sin acceso', icon: 'close-circle-outline' },
                       ] as const).map((opt) => (
                         <Pressable accessibilityRole="button"

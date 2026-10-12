@@ -18352,7 +18352,7 @@ async def export_reports_pdf(
             "con acceso": "#16A34A", "permitido": "#16A34A", "acceso permitido": "#16A34A",
             "liberado": "#16A34A", "libre": "#16A34A", "si": "#16A34A", "sí": "#16A34A",
             "sin acceso": "#DC2626", "bloqueado": "#DC2626", "denegado": "#DC2626", "no": "#DC2626",
-            "parcial": "#D97706", "restringido": "#D97706",
+            "parcial": "#D97706", "restringido": "#D97706", "acceso parcial al predio": "#D97706",
         }
 
         def draw_subtramo_summary_page(subtramo_node: dict, personal_rows: list, maquinaria_rows: list,
@@ -23986,7 +23986,7 @@ async def export_reports_pptx(
             "con acceso": (0x16, 0xA3, 0x4A), "permitido": (0x16, 0xA3, 0x4A), "acceso permitido": (0x16, 0xA3, 0x4A),
             "liberado": (0x16, 0xA3, 0x4A), "libre": (0x16, 0xA3, 0x4A), "si": (0x16, 0xA3, 0x4A), "sí": (0x16, 0xA3, 0x4A),
             "sin acceso": (0xDC, 0x26, 0x26), "bloqueado": (0xDC, 0x26, 0x26), "denegado": (0xDC, 0x26, 0x26), "no": (0xDC, 0x26, 0x26),
-            "parcial": (0xD9, 0x77, 0x06), "restringido": (0xD9, 0x77, 0x06),
+            "parcial": (0xD9, 0x77, 0x06), "restringido": (0xD9, 0x77, 0x06), "acceso parcial al predio": (0xD9, 0x77, 0x06),
         }
 
         def _wf_structure_icon(slide, cx: int, cy: int, r: int) -> None:
