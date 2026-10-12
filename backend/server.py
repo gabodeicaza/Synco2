@@ -1702,6 +1702,8 @@ async def startup_event():
 
     # Loop en segundo plano: recordatorios push de reuniones (1h antes).
     asyncio.create_task(_meeting_reminder_loop())
+    # Loop en segundo plano: clima automático cada hora por Estación.
+    asyncio.create_task(_clima_auto_loop())
 
     log.info("[startup] Dirac ready")
 
@@ -14624,6 +14626,114 @@ def _weather_coords_for_subtramo(subtramo_id: Optional[str], nodes_by_id: dict, 
             if isinstance(lat, (int, float)) and isinstance(lon, (int, float)) and not (lat == 0 and lon == 0):
                 return lat, lon
     return None, None
+
+
+async def _clima_auto_capturar_proyecto(proj: dict) -> int:
+    """Guarda en `weather_logs` el clima de la hora actual (CDMX) para cada
+    Estación habilitada del proyecto que aún no tenga captura de esa hora.
+    Nunca pisa una captura existente (manual o automática): si alguien la
+    capturó a mano, esa manda; si el fetch falla, se reintenta en la
+    siguiente vuelta del loop. Devuelve cuántas capturas nuevas creó."""
+    pid = proj["id"]
+    try:
+        _ensure_modulo_activo(proj, "estado_tiempo")
+    except HTTPException:
+        return 0
+    nodes = await db.location_nodes.find({"project_id": pid}, {"_id": 0}).to_list(length=20000)
+    nodes_by_id = {n["id"]: n for n in nodes}
+    estaciones = [n for n in nodes if _node_es_estacion_habilitada(n)]
+    if not estaciones:
+        return 0
+    now = datetime.now(timezone.utc)
+    fecha_cdmx = hoy_proyecto(proj).isoformat()
+    hora_cdmx = f"{now.astimezone(MX_TZ).hour:02d}"
+    ya = {
+        d["node_id"] for d in await db.weather_logs.find(
+            {"project_id": pid, "fecha_cdmx": fecha_cdmx, "hora_cdmx": hora_cdmx}, {"node_id": 1},
+        ).to_list(length=5000)
+    }
+    creadas = 0
+    cache: dict = {}
+    for est in estaciones:
+        if est["id"] in ya:
+            continue
+        # Coordenadas: la propia estación si es hoja, o la primera hoja
+        # descendiente con target_lat/lon; si no, las capturadas en campo
+        # en algún reporte de esas hojas.
+        def _desciende(n: dict) -> bool:
+            cur, seen = n, set()
+            while cur and cur["id"] not in seen:
+                if cur["id"] == est["id"]:
+                    return True
+                seen.add(cur["id"])
+                cur = nodes_by_id.get(cur.get("parent_id"))
+            return False
+        hojas = [n for n in nodes if n.get("is_leaf") and _desciende(n)]
+        lat = lon = None
+        for h in hojas:
+            if h.get("target_lat") is not None and h.get("target_lon") is not None:
+                lat, lon = h["target_lat"], h["target_lon"]
+                break
+        if lat is None and hojas:
+            async for r in db.reports.find(
+                {"project_id": pid, "node_id": {"$in": [h["id"] for h in hojas]},
+                 "measurement_value.lat": {"$exists": True}},
+                {"measurement_value": 1},
+            ).sort("created_at", -1).limit(20):
+                mv = r.get("measurement_value") or {}
+                la, lo = mv.get("lat"), mv.get("lon")
+                if isinstance(la, (int, float)) and isinstance(lo, (int, float)) and not (la == 0 and lo == 0):
+                    lat, lon = la, lo
+                    break
+        if lat is None or lon is None:
+            continue
+        key = (round(lat, 2), round(lon, 2))
+        if key not in cache:
+            cache[key] = await _fetch_weather_for_export(lat, lon)
+        w = cache[key]
+        if not w or all(w.get(k) is None for k in ("temperature_c", "wind_kmh", "precipitation_mm", "us_aqi")):
+            continue
+        doc = {
+            "id": str(uuid.uuid4()),
+            "project_id": pid, "node_id": est["id"], "fecha_cdmx": fecha_cdmx, "hora_cdmx": hora_cdmx,
+            "node_name": est.get("name") or "",
+            "temperature_c": w.get("temperature_c"),
+            "wind_kmh": w.get("wind_kmh"),
+            "precipitation_mm": w.get("precipitation_mm"),
+            "us_aqi": w.get("us_aqi"),
+            "captured_by": None, "captured_by_name": "Automático (Open-Meteo)",
+            "created_at": now, "updated_at": now,
+        }
+        try:
+            await db.weather_logs.insert_one(doc)
+            creadas += 1
+        except Exception:
+            # Carrera con una captura manual de la misma hora (índice único): gana la manual.
+            pass
+    return creadas
+
+
+async def _clima_auto_loop() -> None:
+    """Loop en segundo plano (arrancado en startup_event): cada 10 min revisa
+    todos los proyectos activos y completa el clima de la hora actual en las
+    Estaciones que no lo tengan, de modo que se llena cada hora sin que nadie
+    haga un reporte ni abra la pantalla. Revisar cada 10 min (en vez de una
+    vez por hora) reintenta rápido si Open-Meteo falló y se recupera tras un
+    reinicio del servidor."""
+    await asyncio.sleep(30)
+    while True:
+        try:
+            proyectos = await db.projects.find({"archived": {"$ne": True}}).to_list(length=1000)
+            for proj in proyectos:
+                try:
+                    n = await _clima_auto_capturar_proyecto(proj)
+                    if n:
+                        log.info("[clima] %s: %d captura(s) automática(s)", proj.get("name") or proj["id"], n)
+                except Exception:
+                    log.exception("[clima] fallo en proyecto %s", proj.get("id"))
+        except Exception:
+            log.exception("[clima] _clima_auto_loop: error en la iteración")
+        await asyncio.sleep(600)
 
 
 def _format_workforce_desc(desc: str) -> tuple:
