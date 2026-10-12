@@ -16,6 +16,11 @@ export interface ReportTextSource {
   captured_by_name?: string | null;
   /** Reporte estructurado (opcional): valores capturados por plantilla dinámica. */
   dynamic_data?: Record<string, any> | null;
+  /** Campos libres del Área (p. ej. banderilleros) con su valor. */
+  campos_extra?: { nombre: string; valor: number | string; unidad?: string | null }[] | null;
+  /** false cuando el Área del reporte no captura Personal / Equipo. */
+  captura_personal?: boolean | null;
+  captura_equipo?: boolean | null;
 }
 
 export interface ReportTextOptions {
@@ -74,8 +79,12 @@ export function buildReportShareText(report: ReportTextSource, opts: ReportTextO
   if (report.observaciones) sections.push(`*Observaciones:*\n${report.observaciones}`);
   if (report.incidencias) sections.push(`Incidencias:\n${report.incidencias}`);
 
-  sections.push(`Personal:\n${(report.personnel || []).join('\n') || '-'}`);
-  sections.push(`Equipo:\n${(report.equipment || []).join('\n') || '-'}`);
+  if (report.captura_personal !== false) sections.push(`Personal:\n${(report.personnel || []).join('\n') || '-'}`);
+  if (report.captura_equipo !== false) sections.push(`Equipo:\n${(report.equipment || []).join('\n') || '-'}`);
+  const extras = report.campos_extra || [];
+  if (extras.length > 0) {
+    sections.push(extras.map((c) => `${c.nombre}: ${c.valor}${c.unidad ? ` ${c.unidad}` : ''}`).join('\n'));
+  }
 
   return sections.join('\n\n');
 }

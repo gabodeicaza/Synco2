@@ -12,7 +12,7 @@ import * as Location from 'expo-location';
 import * as Clipboard from 'expo-clipboard';
 import * as Sharing from 'expo-sharing';
 import * as FileSystem from 'expo-file-system/legacy';
-import { api, Project, LocationNode, LocationNodeTree, Report, ReportTemplate } from '@/src/api';
+import { api, Area, Project, LocationNode, LocationNodeTree, Report, ReportTemplate } from '@/src/api';
 import { colors, radius, shadow, spacing, areaTone } from '@/src/theme';
 import { storage } from '@/src/utils/storage';
 import { useAuth } from '@/src/auth-context';
@@ -81,6 +81,14 @@ export default function NewReportScreen() {
   const [contratista, setContratista] = useState('');
   const [personal, setPersonal] = useState<DynItem[]>([]);
   const [equipo, setEquipo] = useState<DynItem[]>([]);
+  // Lo que el Coordinador definió que captura el área del especialista:
+  // Personal, Equipo y campos libres (p. ej. banderilleros). Sin área o sin
+  // configuración, se captura Personal y Equipo como siempre.
+  const [areaConfig, setAreaConfig] = useState<Area | null>(null);
+  const [camposExtra, setCamposExtra] = useState<Record<string, string>>({});
+  const capturaPersonal = areaConfig?.captura_personal !== false;
+  const capturaEquipo = areaConfig?.captura_equipo !== false;
+  const camposArea = areaConfig?.campos_extra || [];
   const [images, setImages] = useState<string[]>([]);
   const [captions, setCaptions] = useState<string[]>(['', '']);
   const [annotatorIdx, setAnnotatorIdx] = useState<number | null>(null);
@@ -189,6 +197,17 @@ export default function NewReportScreen() {
     };
   }, [params.project_id, params.node_id]);
 
+  useEffect(() => {
+    const pid = project?.id;
+    const aid = user?.area_id;
+    if (!pid || !aid) { setAreaConfig(null); return; }
+    let vivo = true;
+    api.listAreas(pid)
+      .then((list) => { if (vivo) setAreaConfig((list || []).find((a) => a.id === aid) || null); })
+      .catch(() => { if (vivo) setAreaConfig(null); });
+    return () => { vivo = false; };
+  }, [project?.id, user?.area_id]);
+
   const loadProjectTree = async (pid: string) => {
     setLoadingTree(true);
     try {
@@ -231,6 +250,7 @@ export default function NewReportScreen() {
     setAvance('');
     setPersonal([]);
     setEquipo([]);
+    setCamposExtra({});
     setImages([]);
     setCaptions(['', '']);
     setPath([]);
@@ -347,6 +367,13 @@ export default function NewReportScreen() {
         }
       }
 
+      // Solo los campos que el área define y que se llenaron.
+      const valoresCamposExtra: Record<string, string> = {};
+      for (const c of camposArea) {
+        const v = (camposExtra[c.id || ''] || '').trim();
+        if (c.id && v) valoresCamposExtra[c.id] = v;
+      }
+
       const payload = {
         project_id: project!.id,
         node_id: selectedLeaf.id,
@@ -361,8 +388,9 @@ export default function NewReportScreen() {
         incidencias: incidencias.trim(),
         avance: registrarLecturas ? (avanceCalculado || '0').toString() : '0',
         contratista: project?.constructora || '',
-        personnel: personal.filter(p => p.desc).map(p => `${p.qty} ${typeof p.desc === 'string' ? p.desc : p.desc.nombre}`),
-        equipment: equipo.filter(e => e.desc).map(e => `${e.qty} ${typeof e.desc === 'string' ? e.desc : e.desc.nombre}`),
+        campos_extra: valoresCamposExtra,
+        personnel: !capturaPersonal ? [] : personal.filter(p => p.desc).map(p => `${p.qty} ${typeof p.desc === 'string' ? p.desc : p.desc.nombre}`),
+        equipment: !capturaEquipo ? [] : equipo.filter(e => e.desc).map(e => `${e.qty} ${typeof e.desc === 'string' ? e.desc : e.desc.nombre}`),
         images,
         photo_captions: captions,
         measurement_value: {},
@@ -376,7 +404,17 @@ export default function NewReportScreen() {
       // `res.node_path_names` solo viene calculado del backend cuando el
       // envio fue real; en modo encolado (offline) lo derivamos del `path`
       // local para que `buildReportShareText` funcione igual en los dos casos.
-      setSuccessReport({ ...res, node_path_names: path.map((n) => n.name) });
+      // `campos_extra` y las marcas de captura se rearman localmente: si el
+      // envio quedo encolado (sin senal) la respuesta trae solo los valores crudos.
+      setSuccessReport({
+        ...res,
+        node_path_names: path.map((n) => n.name),
+        campos_extra: camposArea
+          .filter((c) => c.id && valoresCamposExtra[c.id])
+          .map((c) => ({ ...c, valor: c.tipo === 'numero' ? Number(valoresCamposExtra[c.id!].replace(',', '.')) : valoresCamposExtra[c.id!] })),
+        captura_personal: capturaPersonal,
+        captura_equipo: capturaEquipo,
+      });
 
       // Save catalogs
       const nextP = Array.from(new Set([...personal.map(p => p.desc).filter(Boolean), ...catalogPersonal])).slice(0, MAX_CATALOG_SIZE);
@@ -662,8 +700,32 @@ export default function NewReportScreen() {
         {/* PERSONAL & EQUIPO (Imagen 1, 4, 6) */}
         {selectedLeaf && (
           <>
-            <DynSectionRestored title={t('nuevoReporte.personal')} items={personal} onAdd={() => addItem('personal')} onRemove={(id: string) => setPersonal(personal.filter(x => x.id !== id))} onUpdate={(id: string, p: any) => setPersonal(prev => prev.map(it => it.id === id ? { ...it, ...p } : it))} catalog={effectiveCatalogPersonal} />
-            <DynSectionRestored title={t('nuevoReporte.equipo')} items={equipo} onAdd={() => addItem('equipo')} onRemove={(id: string) => setEquipo(equipo.filter(x => x.id !== id))} onUpdate={(id: string, p: any) => setEquipo(prev => prev.map(it => it.id === id ? { ...it, ...p } : it))} catalog={effectiveCatalogEquipo} isEquipo />
+            {capturaPersonal && <DynSectionRestored title={t('nuevoReporte.personal')} items={personal} onAdd={() => addItem('personal')} onRemove={(id: string) => setPersonal(personal.filter(x => x.id !== id))} onUpdate={(id: string, p: any) => setPersonal(prev => prev.map(it => it.id === id ? { ...it, ...p } : it))} catalog={effectiveCatalogPersonal} />}
+            {capturaEquipo && <DynSectionRestored title={t('nuevoReporte.equipo')} items={equipo} onAdd={() => addItem('equipo')} onRemove={(id: string) => setEquipo(equipo.filter(x => x.id !== id))} onUpdate={(id: string, p: any) => setEquipo(prev => prev.map(it => it.id === id ? { ...it, ...p } : it))} catalog={effectiveCatalogEquipo} isEquipo />}
+            {camposArea.length > 0 && (
+              <View style={styles.card}>
+                <View style={styles.cardHeader}>
+                  <View style={styles.cardIconBox}><Ionicons name="clipboard-outline" size={18} color={colors.primary} /></View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.cardLabel}>{t('nuevoReporte.camposAdicionales')}</Text>
+                  </View>
+                </View>
+                {camposArea.map((c) => (
+                  <View key={c.id} style={{ marginTop: 8 }}>
+                    <Text style={styles.cardHelp}>{c.nombre}{c.unidad ? ` (${c.unidad})` : ''}</Text>
+                    <TextInput
+                      style={styles.input}
+                      value={camposExtra[c.id || ''] || ''}
+                      onChangeText={(v) => setCamposExtra((prev) => ({ ...prev, [c.id || '']: v }))}
+                      keyboardType={c.tipo === 'numero' ? 'decimal-pad' : 'default'}
+                      placeholder={c.nombre}
+                      placeholderTextColor={colors.textMuted}
+                      accessibilityLabel={c.nombre}
+                    />
+                  </View>
+                ))}
+              </View>
+            )}
           </>
         )}
 

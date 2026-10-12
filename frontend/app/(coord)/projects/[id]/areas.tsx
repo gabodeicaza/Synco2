@@ -11,6 +11,9 @@ import { ScreenHeader } from '@/src/components/ScreenHeader';
 import { FormField } from '@/src/components/FormField';
 import { InlineError } from '@/src/components/InlineError';
 import { api, ApiError, Area } from '@/src/api';
+import {
+  AreaCapturaEditor, AreaCapturaValor, camposLimpios, problemaCampos,
+} from '@/src/components/AreaCapturaEditor';
 import { useEnvio } from '@/src/hooks/useEnvio';
 import { useFormErrors } from '@/src/hooks/useFormErrors';
 import { esNombreRepetido } from '@/src/utils/nombres';
@@ -19,6 +22,24 @@ import { showToast } from '@/src/utils/toast';
 import { colors, radius, spacing, shadow } from '@/src/theme';
 import { confirm } from '@/src/utils/confirm';
 import { a11y, t } from '@/src/i18n';
+
+const CAPTURA_INICIAL: AreaCapturaValor = { capturaPersonal: true, capturaEquipo: true, camposExtra: [] };
+
+function capturaDeArea(a: Area): AreaCapturaValor {
+  return {
+    capturaPersonal: a.captura_personal !== false,
+    capturaEquipo: a.captura_equipo !== false,
+    camposExtra: (a.campos_extra || []).map((c) => ({ ...c })),
+  };
+}
+
+function resumenCaptura(a: Area): string {
+  const partes: string[] = [];
+  if (a.captura_personal !== false) partes.push(t('areas.resumenPersonal'));
+  if (a.captura_equipo !== false) partes.push(t('areas.resumenEquipo'));
+  for (const c of a.campos_extra || []) partes.push(c.nombre);
+  return partes.length ? partes.join(' · ') : t('areas.resumenSinPersonalEquipo');
+}
 
 const PALETTE = [
   '#0EA5E9', '#22C55E', '#F59E0B', '#EF4444',
@@ -37,6 +58,10 @@ export default function AreasScreen() {
   const [showCreate, setShowCreate] = useState(false);
   const [newName, setNewName] = useState('');
   const [newColor, setNewColor] = useState(PALETTE[0]);
+  const [captura, setCaptura] = useState<AreaCapturaValor>(CAPTURA_INICIAL);
+  // Área en edición: el mismo formulario sirve para crear (null) y para
+  // cambiar lo que captura un área existente.
+  const [editando, setEditando] = useState<Area | null>(null);
   const { guardando, ejecutar } = useEnvio();
   const form = useFormErrors<'nombre'>();
   const [errorAccion, setErrorAccion] = useState<string | null>(null);
@@ -59,6 +84,15 @@ export default function AreasScreen() {
   function openCreate() {
     setNewName('');
     setNewColor(PALETTE[areas.length % PALETTE.length]);
+    setCaptura(CAPTURA_INICIAL);
+    setEditando(null);
+    form.limpiarTodo();
+    setShowCreate(true);
+  }
+
+  function openConfig(area: Area) {
+    setEditando(area);
+    setCaptura(capturaDeArea(area));
     form.limpiarTodo();
     setShowCreate(true);
   }
@@ -72,10 +106,31 @@ export default function AreasScreen() {
 
   async function onCreate() {
     await ejecutar(async () => {
+      const problemaCampo = problemaCampos(captura.camposExtra);
+      const config = {
+        captura_personal: captura.capturaPersonal,
+        captura_equipo: captura.capturaEquipo,
+        campos_extra: camposLimpios(captura.camposExtra),
+      };
+      if (editando) {
+        if (problemaCampo) { form.setErrorGeneral(problemaCampo); return; }
+        try {
+          await api.updateAreaConfig(editando.id, config);
+        } catch (e: any) {
+          form.errorDeGuardado(e, t('areas.noSePudoGuardar'));
+          return;
+        }
+        setEditando(null);
+        form.limpiarTodo();
+        setShowCreate(false);
+        await load();
+        return;
+      }
       const problema = validarNombre();
       if (form.ponerTodos({ nombre: problema ?? undefined })) return;
+      if (problemaCampo) { form.setErrorGeneral(problemaCampo); return; }
       try {
-        await api.createArea(pid, { project_id: pid, name: newName.trim(), color: newColor });
+        await api.createArea(pid, { project_id: pid, name: newName.trim(), color: newColor, ...config });
       } catch (e: any) {
         if (e instanceof ApiError && e.status === 409) form.poner('nombre', t('areas.nombreDuplicado'));
         else form.errorDeGuardado(e, t('areas.noSePudoCrear'));
@@ -142,7 +197,11 @@ export default function AreasScreen() {
                 />
                 <View style={{ flex: 1 }}>
                   <Text style={styles.cardName}>{a.name}</Text>
+                  <Text style={styles.cardResumen}>{resumenCaptura(a)}</Text>
                 </View>
+                <Pressable accessibilityRole="button" accessibilityLabel={t('areas.configurar')} onPress={() => openConfig(a)} hitSlop={8} style={styles.deleteBtn}>
+                  <Ionicons name="options-outline" size={20} color={colors.primary} />
+                </Pressable>
                 <Pressable accessibilityRole="button" accessibilityLabel={a11y('eliminar')} onPress={() => onDelete(a)} hitSlop={8} style={styles.deleteBtn}>
                   <Ionicons name="trash-outline" size={18} color={colors.error} />
                 </Pressable>
@@ -162,10 +221,12 @@ export default function AreasScreen() {
           <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ width: '100%' }}>
             <View style={[styles.modalCard, { paddingBottom: insets.bottom + spacing.md }]}>
               <View style={styles.modalHeader}>
-                <Text style={styles.modalTitle}>{t('areas.nueva')}</Text>
+                <Text style={styles.modalTitle}>{editando ? t('areas.configurarTitulo', { nombre: editando.name }) : t('areas.nueva')}</Text>
                 <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} onPress={() => setShowCreate(false)} hitSlop={8}><Ionicons name="close" size={24} color={colors.text} /></Pressable>
               </View>
 
+              <ScrollView keyboardShouldPersistTaps="handled" style={{ flexGrow: 0 }}>
+              {!editando ? (<>
               <FormField
                 label={t('areas.nombreDisciplina')}
                 value={newName}
@@ -194,10 +255,17 @@ export default function AreasScreen() {
                 ))}
               </View>
 
+              </>) : null}
+
+              <View style={{ marginTop: editando ? 0 : spacing.lg }}>
+                <AreaCapturaEditor value={captura} onChange={setCaptura} disabled={guardando} />
+              </View>
+              </ScrollView>
+
               <InlineError message={form.errorGeneral} style={{ marginTop: spacing.md }} />
 
               <View style={{ height: spacing.md }} />
-              <Button label={t('areas.crear')} onPress={onCreate} loading={guardando} fullWidth />
+              <Button label={editando ? t('areas.guardar') : t('areas.crear')} onPress={onCreate} loading={guardando} fullWidth />
             </View>
           </KeyboardAvoidingView>
         </View>
@@ -218,6 +286,7 @@ const styles = StyleSheet.create({
   card: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.md, borderWidth: 1, borderColor: colors.border },
   dot: { width: 36, height: 36, borderRadius: radius.md },
   cardName: { fontSize: 15, fontWeight: '800', color: colors.text },
+  cardResumen: { fontSize: 12, color: colors.textMuted, marginTop: 2 },
   deleteBtn: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
   fab: { position: 'absolute', right: spacing.lg, flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: colors.primary, paddingHorizontal: 18, paddingVertical: 12, borderRadius: radius.full, ...shadow.card },
   fabText: { color: colors.textInverse, fontWeight: '800', fontSize: 14 },

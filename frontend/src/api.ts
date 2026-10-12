@@ -1314,11 +1314,29 @@ export interface LocationNodeTree extends LocationNode {
   children: LocationNodeTree[];
 }
 
+/** Campo libre que el Coordinador define para un Área (p. ej. Banderilleros). */
+export interface AreaCampoExtra {
+  /** Se asigna en el servidor al guardar; se conserva al renombrar. */
+  id?: string;
+  nombre: string;
+  tipo: 'numero' | 'texto';
+  unidad?: string | null;
+}
+
 export interface Area {
   id: string;
   project_id: string;
   name: string;
   color: string;
+  /** Si los reportes del área llevan Personal / Equipo (por omisión sí). */
+  captura_personal?: boolean;
+  captura_equipo?: boolean;
+  campos_extra?: AreaCampoExtra[];
+}
+
+/** Valor capturado de un campo extra, tal como queda guardado en el reporte. */
+export interface ReporteCampoExtra extends AreaCampoExtra {
+  valor: number | string;
 }
 
 export interface Invitation {
@@ -1415,6 +1433,11 @@ export interface Report {
    * valores capturados para sus campos dinámicos. Ver ReportTemplate. */
   template_id?: string | null;
   dynamic_data?: Record<string, any>;
+  /** Campos libres del Área con su valor (p. ej. banderilleros). */
+  campos_extra?: ReporteCampoExtra[];
+  /** false cuando el Área del reporte no captura Personal / Equipo. */
+  captura_personal?: boolean;
+  captura_equipo?: boolean;
 }
 
 export interface ReportTemplateField {
@@ -2743,6 +2766,10 @@ export const api = {
 
   listAreas: (pid: string) => request<Area[]>('GET', `/projects/${pid}/areas`),
   createArea: (pid: string, body: any) => request<Area>('POST', `/projects/${pid}/areas`, body),
+  updateAreaConfig: (
+    aid: string,
+    body: { captura_personal?: boolean; captura_equipo?: boolean; campos_extra?: AreaCampoExtra[] },
+  ) => request<Area>('PATCH', `/areas/${aid}/config`, body),
   deleteArea: (aid: string) => request<{ ok: boolean }>('DELETE', `/areas/${aid}`),
 
   setProjectCatalogos: (pid: string, body: any) => request<Project>('PUT', `/projects/${pid}/catalogos`, body),

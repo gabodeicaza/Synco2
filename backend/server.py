@@ -762,10 +762,29 @@ class LocationNodeOut(BaseModel):
     path: List[str] = Field(default_factory=list)  # cadena de ids desde raíz hasta self
 
 
+class AreaCampoExtraIn(BaseModel):
+    """Campo libre que el Coordinador define para un Área (p. ej. Banderilleros).
+    `id` es opcional al crearlo: se deriva del nombre y se conserva al editar."""
+    id: Optional[str] = None
+    nombre: str
+    tipo: Literal["numero", "texto"] = "numero"
+    unidad: Optional[str] = None
+
+
 class AreaIn(BaseModel):
     project_id: str
     name: str
     color: Optional[str] = "#1E40AF"
+    captura_personal: bool = True
+    captura_equipo: bool = True
+    campos_extra: List[AreaCampoExtraIn] = Field(default_factory=list)
+
+
+class AreaConfigIn(BaseModel):
+    """Edición parcial de lo que el Área captura en sus reportes."""
+    captura_personal: Optional[bool] = None
+    captura_equipo: Optional[bool] = None
+    campos_extra: Optional[List[AreaCampoExtraIn]] = None
 
 
 class AreaOut(BaseModel):
@@ -774,6 +793,57 @@ class AreaOut(BaseModel):
     name: str
     color: str
     created_at: datetime
+    captura_personal: bool = True
+    captura_equipo: bool = True
+    campos_extra: List[dict] = Field(default_factory=list)
+
+
+MAX_CAMPOS_EXTRA_AREA = 20
+
+
+def _slug_campo(nombre: str) -> str:
+    flat = "".join(
+        ch for ch in unicodedata.normalize("NFD", nombre.strip().lower())
+        if unicodedata.category(ch) != "Mn"
+    )
+    return re.sub(r"[^a-z0-9]+", "_", flat).strip("_")[:40]
+
+
+def _normalizar_campos_extra(campos: List["AreaCampoExtraIn"]) -> List[dict]:
+    """Valida y normaliza los campos libres de un Área: nombre obligatorio y
+    único, id estable (se deriva del nombre si no viene), tope de cantidad."""
+    if len(campos) > MAX_CAMPOS_EXTRA_AREA:
+        raise HTTPException(400, f"Máximo {MAX_CAMPOS_EXTRA_AREA} campos por área")
+    out: List[dict] = []
+    ids: set = set()
+    nombres: set = set()
+    for c in campos:
+        nombre = " ".join((c.nombre or "").split())[:60]
+        if not nombre:
+            raise HTTPException(400, "Cada campo necesita un nombre")
+        clave = _slug_campo(nombre)
+        if not clave:
+            raise HTTPException(400, f"Nombre de campo no válido: {nombre}")
+        if clave in nombres:
+            raise HTTPException(400, f"Campo repetido: {nombre}")
+        nombres.add(clave)
+        cid = _slug_campo(c.id) if c.id else clave
+        base, n = cid, 2
+        while cid in ids:
+            cid, n = f"{base}_{n}", n + 1
+        ids.add(cid)
+        unidad = " ".join((c.unidad or "").split())[:12] or None
+        out.append({"id": cid, "nombre": nombre, "tipo": c.tipo, "unidad": unidad})
+    return out
+
+
+def _area_con_defaults(a: dict) -> dict:
+    """Áreas anteriores a esta función no traen la configuración: por omisión
+    capturan Personal y Equipo y no tienen campos extra."""
+    a["captura_personal"] = a.get("captura_personal", True) is not False
+    a["captura_equipo"] = a.get("captura_equipo", True) is not False
+    a["campos_extra"] = a.get("campos_extra") or []
+    return a
 
 
 class InvitationIn(BaseModel):
@@ -898,6 +968,9 @@ class ReportIn(BaseModel):
     # equipo. No exige valor de medición del nodo (no aplica) pero sí al menos
     # una categoría de personal o de equipo.
     solo_fuerza_trabajo: bool = False
+    # Valores de los campos libres que el Área define (p. ej. banderilleros):
+    # {id_del_campo: valor}. Solo se guardan los que el Área tiene configurados.
+    campos_extra: Dict[str, Any] = Field(default_factory=dict)
 
 
 class ReportOut(BaseModel):
@@ -937,6 +1010,43 @@ class ReportOut(BaseModel):
     created_at: datetime
     template_id: Optional[str] = None
     dynamic_data: dict = Field(default_factory=dict)
+    # Campos libres del Área con su valor, tal como se capturaron:
+    # [{id, nombre, tipo, unidad, valor}] (copia del nombre, no se pierde si
+    # luego el Coordinador renombra o quita el campo).
+    campos_extra: List[dict] = Field(default_factory=list)
+    # False cuando el Área del reporte no captura Personal / Equipo (el texto y
+    # los informes omiten esa sección en vez de mostrar "-").
+    captura_personal: bool = True
+    captura_equipo: bool = True
+
+
+def _campos_extra_para_reporte(area: Optional[dict], valores: Dict[str, Any]) -> List[dict]:
+    """Cruza los valores enviados con los campos que el Área tiene definidos.
+    Ignora ids desconocidos y valores vacíos; los numéricos deben ser >= 0."""
+    if not area or not valores:
+        return []
+    out: List[dict] = []
+    for c in area.get("campos_extra") or []:
+        v = valores.get(c["id"])
+        if v is None or (isinstance(v, str) and not v.strip()):
+            continue
+        if c.get("tipo") == "numero":
+            try:
+                num = float(str(v).replace(",", "."))
+            except ValueError:
+                raise HTTPException(400, f"«{c['nombre']}» debe ser un número")
+            if num < 0 or num != num or num in (float("inf"), float("-inf")):
+                raise HTTPException(400, f"«{c['nombre']}» debe ser un número mayor o igual a 0")
+            v = int(num) if num == int(num) else num
+        else:
+            v = str(v).strip()[:500]
+        out.append({**{k: c.get(k) for k in ("id", "nombre", "tipo", "unidad")}, "valor": v})
+    return out
+
+
+def _campo_extra_texto(c: dict) -> str:
+    unidad = f" {c['unidad']}" if c.get("unidad") else ""
+    return f"{c.get('nombre')}: {c.get('valor')}{unidad}"
 
 
 # === Plantillas de reporte estructurado (formularios dinámicos) ============
@@ -10519,6 +10629,7 @@ async def list_areas(pid: str, user: dict = Depends(current_user)):
     items = await db.areas.find({"project_id": pid}).sort("name", 1).to_list(length=200)
     for it in items:
         it.pop("_id", None)
+        _area_con_defaults(it)
     return items
 
 
@@ -10551,10 +10662,35 @@ async def create_area(pid: str, body: AreaIn, user: dict = Depends(require_role(
         "name": name,
         "color": validar_color_hex(body.color, "Color del área") or "#1E40AF",
         "created_at": datetime.now(timezone.utc),
+        "captura_personal": body.captura_personal,
+        "captura_equipo": body.captura_equipo,
+        "campos_extra": _normalizar_campos_extra(body.campos_extra),
     }
     await db.areas.insert_one(doc)
     doc.pop("_id", None)
     return doc
+
+
+@api.patch("/areas/{aid}/config")
+async def update_area_config(aid: str, body: AreaConfigIn, user: dict = Depends(require_role(ROLE_COORD))):
+    """Define qué captura el Área en sus reportes: Personal, Equipo y campos
+    libres (p. ej. Banderilleros). Los reportes ya capturados no cambian."""
+    a = await db.areas.find_one({"id": aid})
+    if not a:
+        raise HTTPException(404, "Área no existe")
+    await ensure_project_access(user, a["project_id"])
+    cambios: dict = {}
+    if body.captura_personal is not None:
+        cambios["captura_personal"] = body.captura_personal
+    if body.captura_equipo is not None:
+        cambios["captura_equipo"] = body.captura_equipo
+    if body.campos_extra is not None:
+        cambios["campos_extra"] = _normalizar_campos_extra(body.campos_extra)
+    if cambios:
+        await db.areas.update_one({"id": aid}, {"$set": cambios})
+    a = await db.areas.find_one({"id": aid})
+    a.pop("_id", None)
+    return _area_con_defaults(a)
 
 
 @api.delete("/areas/{aid}")
@@ -11151,19 +11287,33 @@ async def create_report(body: ReportIn, user: dict = Depends(current_user)):
                 pre_mv["coord_source"] = "node_metadata"
                 body.measurement_value = pre_mv
 
+    area_doc = None
+    area_name = None
+    area_id_efectivo = body.area_id or user.get("area_id")
+    if area_id_efectivo:
+        area_doc = await db.areas.find_one({"id": area_id_efectivo, "project_id": body.project_id})
+    if body.area_id:
+        if area_doc:
+            area_name = area_doc["name"]
+    elif user.get("area"):
+        area_name = user["area"]
+    # Lo que el Área captura (Personal, Equipo, campos libres) lo define el
+    # Coordinador; lo que el Área no captura se descarta aunque el cliente lo mande.
+    if area_doc:
+        area_doc = _area_con_defaults(area_doc)
+        if not area_doc["captura_personal"]:
+            body.personnel = []
+        if not area_doc["captura_equipo"]:
+            body.equipment = []
+    campos_extra_rep = _campos_extra_para_reporte(area_doc, body.campos_extra)
     if body.solo_fuerza_trabajo:
-        if not any((p or "").strip() for p in body.personnel) and not any((e or "").strip() for e in body.equipment):
+        if (not any((p or "").strip() for p in body.personnel)
+                and not any((e or "").strip() for e in body.equipment)
+                and not campos_extra_rep):
             raise HTTPException(400, "Captura al menos una categoría de personal o de equipo")
     if not (body.solo_fuerza_trabajo and not body.measurement_value):
         validate_measurement_value(node["measurement_type"], body.measurement_value)
     path_names = await node_path_names(body.node_id)
-    area_name = None
-    if body.area_id:
-        a = await db.areas.find_one({"id": body.area_id, "project_id": body.project_id})
-        if a:
-            area_name = a["name"]
-    elif user.get("area"):
-        area_name = user["area"]
     # Persistimos lecturas P/U también dentro de measurement_value para que el
     # endpoint /history pueda devolverlas a la siguiente captura del nodo.
     mv = dict(body.measurement_value or {})
@@ -11260,7 +11410,12 @@ async def create_report(body: ReportIn, user: dict = Depends(current_user)):
         "created_at": effective_created_at,
         "template_id": body.template_id or None,
         "dynamic_data": body.dynamic_data or {},
+        "campos_extra": campos_extra_rep,
     }
+    if area_doc and not area_doc["captura_personal"]:
+        doc["captura_personal"] = False
+    if area_doc and not area_doc["captura_equipo"]:
+        doc["captura_equipo"] = False
     if body.solo_fuerza_trabajo:
         doc["solo_fuerza_trabajo"] = True
     if body.client_id:
@@ -11374,8 +11529,13 @@ def _whatsapp_texto_reporte(
         secciones.append(f"*Observaciones:*\n{doc['observaciones']}")
     if doc.get("incidencias"):
         secciones.append(f"Incidencias:\n{doc['incidencias']}")
-    secciones.append("Personal:\n" + ("\n".join(doc.get("personnel") or []) or "-"))
-    secciones.append("Equipo:\n" + ("\n".join(doc.get("equipment") or []) or "-"))
+    if doc.get("captura_personal") is not False:
+        secciones.append("Personal:\n" + ("\n".join(doc.get("personnel") or []) or "-"))
+    if doc.get("captura_equipo") is not False:
+        secciones.append("Equipo:\n" + ("\n".join(doc.get("equipment") or []) or "-"))
+    extras = doc.get("campos_extra") or []
+    if extras:
+        secciones.append("\n".join(_campo_extra_texto(c) for c in extras))
     return "\n\n".join(secciones)
 
 
@@ -14897,6 +15057,7 @@ async def export_reports_xlsx(pid: str, user: dict = Depends(current_user)):
         "Capturado por",
         "Fecha de captura",
         "ID Reporte",
+        "Campos adicionales",       # campos libres del Área (p. ej. banderilleros)
     ]
     ws.append(headers)
 
@@ -14930,7 +15091,7 @@ async def export_reports_xlsx(pid: str, user: dict = Depends(current_user)):
                 target_lon if target_lon is not None else "",
                 target_elev if target_elev is not None else "",
                 "(sin reporte)",
-                "", "", "", "", "", "", "", "", "",
+                "", "", "", "", "", "", "", "", "", "",
             ])
             continue
         for r in node_reports:
@@ -14958,14 +15119,15 @@ async def export_reports_xlsx(pid: str, user: dict = Depends(current_user)):
                 _excel_safe(r.get("captured_by_name")),
                 _excel_safe(r.get("created_at")),
                 r.get("id"),
+                _excel_safe([_campo_extra_texto(c) for c in (r.get("campos_extra") or [])]),
             ])
 
     # Anchos de columna
-    widths = [7, 18, 44, 22, 16, 16, 16, 24, 14, 18, 30, 26, 36, 18, 22, 22, 38]
+    widths = [7, 18, 44, 22, 16, 16, 16, 24, 14, 18, 30, 26, 36, 18, 22, 22, 38, 30]
     for i, w in enumerate(widths, start=1):
         ws.column_dimensions[ws.cell(row=1, column=i).column_letter].width = w
     # Wrap en columnas largas
-    wrap_cols = {3, 11, 12, 13}  # Ruta, Personal, Equipo, Notas
+    wrap_cols = {3, 11, 12, 13, 18}  # Ruta, Personal, Equipo, Notas, Campos adicionales
     for row in ws.iter_rows(min_row=2):
         for cell in row:
             if cell.column in wrap_cols:
@@ -26108,6 +26270,7 @@ def construir_entrada_resumen_ia(
             f"Avance: {r.get('avance') or '—'} | Actividades: {(r.get('actividades') or '').strip() or '—'} | "
             f"Contratista: {r.get('contratista') or '—'} | Personal: {', '.join(r.get('personnel') or []) or '—'} | "
             f"Equipo: {', '.join(r.get('equipment') or []) or '—'} | Capturó: {r.get('captured_by_name') or '—'}"
+            + (" | " + "; ".join(_campo_extra_texto(c) for c in r["campos_extra"]) if r.get("campos_extra") else "")
         )
     body = "\n".join(reporte_lines) if reporte_lines else f"(sin reportes en {periodo_label})"
 
