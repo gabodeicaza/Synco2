@@ -1223,6 +1223,9 @@ export interface Project {
   dia_inicio_semana?: 'LUNES' | 'MARTES' | 'MIERCOLES' | 'JUEVES' | 'VIERNES' | 'SABADO' | 'DOMINGO';
   /** Zona horaria IANA del proyecto (defecto America/Mexico_City). */
   zona_horaria?: string;
+  /** Turno nocturno del proyecto ("HH:MM", puede cruzar la medianoche). Vacío/null = sin turno nocturno. */
+  turno_nocturno_inicio?: string | null;
+  turno_nocturno_fin?: string | null;
   /** Separador decimal con que se capturan los números en el proyecto (defecto "."). */
   separador_decimal?: '.' | ',';
   /** Tipo de obra (decide módulos y plantillas por defecto). "legado" = proyecto anterior sin el campo. */

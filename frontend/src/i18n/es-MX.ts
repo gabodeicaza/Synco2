@@ -114,6 +114,14 @@ export const esMX = {
     titulo: 'Zona horaria del proyecto',
     ayuda: 'Define qué es «hoy» y cuándo empieza cada día para las capturas, los reportes y el calendario. Por defecto, la del Centro de México.',
   },
+  turnoNocturno: {
+    titulo: 'Turno nocturno',
+    ayuda: 'Horario único para todo el proyecto. Lo capturado dentro de este horario (hora local del proyecto) sale en los informes diario, semanal y mensual como «Turno nocturno» de la misma estación, en su propia hoja. Déjalo vacío si no hay turno nocturno.',
+    inicio: 'Desde (HH:MM)',
+    fin: 'Hasta (HH:MM)',
+    invalido: 'Escribe las dos horas con formato HH:MM (de 00:00 a 23:59), o deja ambas vacías.',
+    iguales: 'La hora de inicio y la de fin no pueden ser iguales.',
+  },
   migracion: {
     titulo: 'Reorganizar catálogos importados',
     intro:
