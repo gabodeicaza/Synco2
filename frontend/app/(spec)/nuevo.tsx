@@ -1,5 +1,5 @@
 // Dirac · Pantalla "Nuevo Reporte" (RESTAURADA - PIXEL PERFECT + CRASH FIX)
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, ActivityIndicator, Pressable, Alert,
   TextInput, KeyboardAvoidingView, Platform, Modal, Image, TouchableOpacity, FlatList, Linking,
@@ -22,6 +22,9 @@ import { buildReportShareText } from '@/src/utils/reportText';
 import { PhotoAnnotator } from '@/src/components/PhotoAnnotator';
 import { requestCameraPermission } from '@/src/utils/permissions';
 import { confirm } from '@/src/utils/confirm';
+import { showToast } from '@/src/utils/toast';
+import { leerBorrador, suscribirBorradores } from '@/src/utils/borradores';
+import { useBorradorAutoguardado } from '@/src/hooks/useBorradorAutoguardado';
 import { t, a11y } from '@/src/i18n';
 
 // Persistence Keys
@@ -38,7 +41,7 @@ interface DynItem {
 export default function NewReportScreen() {
   const insets = useSafeAreaInsets();
   const { user } = useAuth(); // [FIX] Re-adding missing useAuth hook to prevent ReferenceError
-  const params = useLocalSearchParams<{ project_id: string; node_id: string }>();
+  const params = useLocalSearchParams<{ project_id: string; node_id: string; borrador_id?: string; borrador_ts?: string }>();
 
   // --- ESTRUCTURA ---
   const [projects, setProjects] = useState<Project[]>([]);
@@ -145,6 +148,22 @@ export default function NewReportScreen() {
   const [catalogPersonal, setCatalogPersonal] = useState<string[]>([]);
   const [catalogEquipo, setCatalogEquipo] = useState<any[]>([]);
 
+  // --- BORRADOR (autoguardado en el teléfono; se retoma desde Inicio) ---
+  const borrador = useBorradorAutoguardado(
+    user?.id || '',
+    {
+      projectId: project?.id || params.project_id || '',
+      nodeId: selectedLeaf?.id || path[path.length - 1]?.id || '',
+      ubicacion: path.map((n) => n.name),
+      datos: {
+        nombre, severidad: Array.from(severidadUI), registrarLecturas, unidad, primeraLectura, ultimaLectura,
+        actividades, observaciones, incidencias, personal, equipo, camposExtra, images, captions,
+        templateId: selectedTemplateId, dynamicData,
+      },
+    },
+    !loading,
+  );
+
   useEffect(() => {
     (async () => {
       try {
@@ -184,18 +203,63 @@ export default function NewReportScreen() {
           const tpls = await api.getReportTemplates();
           setReportTemplates(tpls || []);
         } catch (e) { console.log('Error fetching report templates', e); }
+
+        if (params.borrador_id) await restaurarBorrador(params.borrador_id);
       } catch (e) { Alert.alert(t('nuevoReporte.error'), t('nuevoReporte.noSePudoIniciar')); }
       finally { setLoading(false); }
     })();
 
     // Initialize with a clean form
     resetForm();
+    borrador.adoptar(params.borrador_id || null);
 
     return () => {
+      // Lo capturado a medias queda como borrador antes de limpiar: así salir del
+      // formulario (o abrir otro borrador) no pierde nada.
+      borrador.guardarAhora();
+      borrador.soltar();
       // Auto-reset when screen is closed to ensure fresh start next time
       resetForm();
     };
-  }, [params.project_id, params.node_id]);
+  }, [params.project_id, params.node_id, params.borrador_id, params.borrador_ts]);
+
+  // Vuelca un borrador guardado en el formulario. La ubicación (proyecto/nodo) ya la
+  // restauró la carga de arriba a partir de los parámetros de la ruta.
+  async function restaurarBorrador(id: string) {
+    const b = await leerBorrador(user?.id || '', id);
+    if (!b) {
+      borrador.adoptar(null);
+      Alert.alert(t('nuevoReporte.error'), t('borradores.noEncontrado'));
+      return;
+    }
+    const d = b.datos;
+    setNombre(d.nombre);
+    setSeveridadUI(new Set((d.severidad as SeveridadUI[]).length ? (d.severidad as SeveridadUI[]) : ['Informativo']));
+    setRegistrarLecturas(d.registrarLecturas);
+    setUnidad(d.unidad);
+    setPrimeraLectura(d.primeraLectura);
+    setUltimaLectura(d.ultimaLectura);
+    setActividades(d.actividades);
+    setObservaciones(d.observaciones);
+    setIncidencias(d.incidencias);
+    setPersonal(d.personal);
+    setEquipo(d.equipo);
+    setCamposExtra(d.camposExtra);
+    setImages(d.images);
+    setCaptions(d.captions.length ? d.captions : ['', '']);
+    if (d.templateId) setSelectedTemplateId(d.templateId);
+    setDynamicData(d.dynamicData);
+    showToast(t('borradores.recuperado'));
+  }
+
+  // Si este mismo borrador se descarta desde la lista, el formulario (que sigue vivo en su
+  // pestaña) se limpia: si no, el autoguardado lo volvería a crear.
+  useEffect(() => suscribirBorradores((c) => {
+    if (c.tipo === 'eliminado' && c.id === borrador.idActual()) {
+      borrador.soltar();
+      resetRef.current();
+    }
+  }), []);
 
   useEffect(() => {
     const pid = project?.id;
@@ -262,6 +326,11 @@ export default function NewReportScreen() {
     setSelectedTemplateId(generalTemplate?.id || '');
     setDynamicData({});
   };
+
+  // Versión vigente de resetForm para los callbacks de larga vida (la de la primera render
+  // vería `generalTemplate` todavía vacío).
+  const resetRef = useRef(resetForm);
+  resetRef.current = resetForm;
 
   const addItem = (type: 'personal' | 'equipo') => {
     const newItem: DynItem = { id: Math.random().toString(36).substring(7), desc: '', qty: 1 };
@@ -401,6 +470,7 @@ export default function NewReportScreen() {
       };
 
       const res = await api.createReport(payload);
+      borrador.marcarEnviado();
       // `res.node_path_names` solo viene calculado del backend cuando el
       // envio fue real; en modo encolado (offline) lo derivamos del `path`
       // local para que `buildReportShareText` funcione igual en los dos casos.
@@ -428,6 +498,21 @@ export default function NewReportScreen() {
     }
   }
 
+  // Guarda ya (sin esperar la pausa del autoguardado) y avisa al usuario.
+  async function onSaveDraftPressed() {
+    const res = await borrador.guardarAhora();
+    if (res === 'ok') showToast(t('borradores.guardado'));
+    else if (res === 'vacio') showToast(t('borradores.nadaQueGuardar'));
+    else Alert.alert(t('nuevoReporte.error'), t('borradores.noSePudoGuardar'));
+  }
+
+  // Salir del formulario nunca pierde lo capturado: queda guardado como borrador.
+  async function onClosePressed() {
+    const res = await borrador.guardarAhora();
+    if (res === 'ok') showToast(t('borradores.guardado'));
+    router.back();
+  }
+
   async function onPickImage(mode: 'cam' | 'gal') {
     const dataUrl = await pickPhotoDataUrl(mode === 'cam' ? 'camera' : 'library');
     if (dataUrl) setImages((cur) => [...cur, dataUrl]);
@@ -446,8 +531,9 @@ export default function NewReportScreen() {
     <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.flex}>
       {/* Header (Imagen 1) */}
       <View style={[styles.header, { paddingTop: insets.top }]}>
-        <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} hitSlop={8} onPress={() => router.back()} style={styles.headerBtn}><Ionicons name="close" size={24} color={colors.text} /></Pressable>
+        <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} hitSlop={8} onPress={onClosePressed} style={styles.headerBtn}><Ionicons name="close" size={24} color={colors.text} /></Pressable>
         <Text style={styles.headerTitle}>{t('nuevoReporte.nuevoReporte')}</Text>
+        <Pressable accessibilityRole="button" accessibilityLabel={t('borradores.guardarBorrador')} hitSlop={8} onPress={onSaveDraftPressed} style={styles.headerBtn}><Ionicons name="bookmark-outline" size={22} color={colors.primary} /></Pressable>
       </View>
 
       <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
@@ -786,7 +872,7 @@ export default function NewReportScreen() {
       </View>
 
       {/* MODAL EXITO (Imagen 7) */}
-      <SuccessModal visible={!!successReport} report={successReport} project={project} user={user} reportTemplates={reportTemplates} onClose={() => { resetForm(); router.back(); }} />
+      <SuccessModal visible={!!successReport} report={successReport} project={project} user={user} reportTemplates={reportTemplates} onClose={() => { borrador.soltar(); resetForm(); router.back(); }} />
 
       {/* ADVERTENCIA: reporte sin fotos o sin descripciones de fotos */}
       <ConfirmWarningModal

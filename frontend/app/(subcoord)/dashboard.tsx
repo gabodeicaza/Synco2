@@ -29,6 +29,7 @@ import { APP_BRAND, roleLabel } from '@/src/utils/roles';
 import { HeaderMenu } from '@/src/components/HeaderMenu';
 import { DailyGoalsPanel } from '@/src/components/DailyGoalsPanel';
 import { MyMeetingsPanel } from '@/src/components/MyMeetingsPanel';
+import { BorradoresCard } from '@/src/components/BorradoresCard';
 import { ReportPreviewSheet } from '@/src/components/ReportPreviewSheet';
 import { periodToInformeType } from '@/src/components/PeriodSheet';
 import { HistoryCalendarModal } from '@/src/components/HistoryCalendarModal';
@@ -783,6 +784,7 @@ export default function SubCoordDashboard() {
           </View>
         ) : (
           <>
+            <BorradoresCard basePath="/(subcoord)" />
             <MyMeetingsPanel items={myMeetings} loading={myMeetingsLoading} />
 
             {/* DailyGoalsPanel */}
