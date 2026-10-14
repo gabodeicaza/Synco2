@@ -203,8 +203,6 @@ export default function ProjectDetailScreen() {
   const calendarOpen = modal.visible('calendario');
   const setCalendarOpen = modal.ponerVisible('calendario');
 
-  // Badge del Hub de Minutas (acuerdos asignados / urgentes al usuario).
-  const [minutasBadge, setMinutasBadge] = useState<{ assigned_pending: number; urgent: number } | null>(null);
 
   // Filtrado cruzado: Nodo (Tramo/Subtramo/Poste) x Area (Disciplina) x Tiempo
   const [selectedNodeFilter, setSelectedNodeFilter] = useState<string | null>(null);
@@ -436,22 +434,10 @@ export default function ProjectDetailScreen() {
     }
   }, [pid, reports, selectedTimeFilter, selectedNodeFilter, selectedAreaFilter, selectedDate]);
 
-  // Badge del Hub de Minutas (silencioso: si falla, no rompe el dashboard).
-  const loadMinutasBadge = useCallback(async () => {
-    if (!pid) return;
-    try {
-      const b = await api.minutasBadge(pid);
-      setMinutasBadge(b);
-    } catch {
-      // silencioso
-    }
-  }, [pid]);
-
   useFocusEffect(useCallback(() => {
     load();
-    loadMinutasBadge();
     checkForNewReports();
-  }, [load, loadMinutasBadge, checkForNewReports]));
+  }, [load, checkForNewReports]));
 
   // === Resumen Ejecutivo con IA ===========================================
   async function openAiSummary() {
@@ -1667,6 +1653,19 @@ export default function ProjectDetailScreen() {
                   subtitle={t('proyectoPantalla.marcadoresDeEstadoSobrePlanos')}
                   onPress={() => router.push({ pathname: '/(coord)/projects/[id]/plano-avance' as any, params: { id: pid } })}
                 />
+                <ActionTile
+                  icon="shield-checkmark-outline"
+                  title={t('proyectoPantalla.accesoAlPredio')}
+                  subtitle={t('proyectoPantalla.estatusDeAccesoYSituacion')}
+                  onPress={() => router.push({ pathname: '/(coord)/projects/[id]/acceso-predio', params: { id: pid } })}
+                />
+                {/* Generales y Por Ubicación son tabs de la misma pantalla. */}
+                <ActionTile
+                  icon="reader-outline"
+                  title={t('proyectoPantalla.actividadesGenerales')}
+                  subtitle={t('proyectoPantalla.actividadesSinNodoAsociadoNotas')}
+                  onPress={() => router.push({ pathname: '/(coord)/projects/[id]/actividades-generales' as any, params: { id: pid, nivel: 'GENERAL' } })}
+                />
               </View>
             </ScrollView>
           ) : (
@@ -1678,21 +1677,6 @@ export default function ProjectDetailScreen() {
               <View style={styles.card}>
                 <ResumenProyecto project={project} />
               </View>
-
-              {/* Calendario historico */}
-              <Pressable accessibilityRole="button"
-                onPress={() => setCalendarOpen(true)}
-                style={({ pressed }) => [styles.calendarBtn, pressed && { opacity: 0.9 }]}
-              >
-                <View style={styles.tileIcon}>
-                  <Ionicons name="calendar-outline" size={20} color={colors.primary} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.tileTitle}>{t('proyectoPantalla.calendarioHistorico')}</Text>
-                  <Text style={styles.tileSub}>{t('proyectoPantalla.exploraActividadPorDiaHeatmap')}</Text>
-                </View>
-                <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
-              </Pressable>
 
               <Text style={styles.sectionTitle}>{t('proyectoPantalla.configuracionDelProyecto')}</Text>
 
@@ -1725,12 +1709,6 @@ export default function ProjectDetailScreen() {
                 title={t('proyectoPantalla.arbolDeNodos')}
                 subtitle={t('proyectoPantalla.estructuraEspacialRecursivaTramosEstaciones')}
                 onPress={() => router.push({ pathname: '/(coord)/projects/[id]/tree', params: { id: pid } })}
-              />
-              <ActionTile
-                icon="shield-checkmark-outline"
-                title={t('proyectoPantalla.accesoAlPredio')}
-                subtitle={t('proyectoPantalla.estatusDeAccesoYSituacion')}
-                onPress={() => router.push({ pathname: '/(coord)/projects/[id]/acceso-predio', params: { id: pid } })}
               />
               <ActionTile
                 icon="color-palette-outline"
@@ -1796,18 +1774,6 @@ export default function ProjectDetailScreen() {
                 subtitle={t('proyectoPantalla.programaVisitasHitosYReuniones')}
                 onPress={() => router.push({ pathname: '/(coord)/projects/[id]/events' as any, params: { id: pid } })}
               />
-              <ActionTile
-                icon="clipboard-outline"
-                title={t('proyectoPantalla.hubDeMinutas')}
-                subtitle={
-                  minutasBadge && (minutasBadge.urgent || minutasBadge.assigned_pending)
-                    ? t('proyectoPantalla.minutasAsignadosUrgentes', { a: minutasBadge.assigned_pending, u: minutasBadge.urgent })
-                    : t('proyectoPantalla.acuerdosYSeguimientoDeReuniones')
-                }
-                badge={minutasBadge?.urgent || 0}
-                onPress={() => router.push({ pathname: '/(coord)/projects/[id]/minutas' as any, params: { id: pid } })}
-              />
-
               {/* ===== Catalogo de Conceptos (consulta/administracion — Registrar y
                   Visualizar avance viven en la pestaña Operacion, no aqui) ===== */}
               <Text style={styles.sectionTitle}>{t('proyectoPantalla.catalogoDeConceptos')}</Text>
@@ -1824,23 +1790,6 @@ export default function ProjectDetailScreen() {
                 onPress={openCatalogoConfigModal}
               />
               <ProgramaObraSection projectId={pid} zona={project as any} />
-
-              {/* ===== Actividades Generales: vista curada de las actividades ya
-                  capturadas en reportes — Generales, o por Ubicacion (fusiona
-                  los antiguos "Por Estacion"/"Por Poste") ===== */}
-              <Text style={styles.sectionTitle}>{t('proyectoPantalla.actividadesGenerales')}</Text>
-              <ActionTile
-                icon="globe-outline"
-                title={t('proyectoPantalla.generales')}
-                subtitle={t('proyectoPantalla.actividadesSinNodoAsociadoNotas')}
-                onPress={() => router.push({ pathname: '/(coord)/projects/[id]/actividades-generales' as any, params: { id: pid, nivel: 'GENERAL' } })}
-              />
-              <ActionTile
-                icon="location-outline"
-                title={t('proyectoPantalla.porUbicacion')}
-                subtitle={t('proyectoPantalla.agrupadasPorSubtramoONodo')}
-                onPress={() => router.push({ pathname: '/(coord)/projects/[id]/actividades-generales' as any, params: { id: pid, nivel: 'NODO' } })}
-              />
 
               {/* ===== Archivos de Consulta ===== */}
               <Text style={styles.sectionTitle}>{t('proyectoPantalla.archivosDeConsulta')}</Text>
@@ -3290,13 +3239,6 @@ const styles = StyleSheet.create({
   soonBadge: { fontSize: 9, fontWeight: '800', color: colors.primary, backgroundColor: colors.primaryLight, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, textTransform: 'uppercase', letterSpacing: 0.5 },
   archiveBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, padding: spacing.md, marginTop: spacing.md, borderRadius: radius.md, borderWidth: 1, borderColor: colors.errorBg },
   archiveText: { color: colors.error, fontSize: 13, fontWeight: '700' },
-
-  // Boton grande Calendario
-  calendarBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: 12,
-    backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.md,
-    borderWidth: 1, borderColor: colors.border,
-  },
 
   // Archivos de Consulta
   refCard: {
