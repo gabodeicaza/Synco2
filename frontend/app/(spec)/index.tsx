@@ -30,6 +30,7 @@ import { ReportesVacio } from '@/src/components/ReportesVacio';
 import { verificarConteoExportacion } from '@/src/utils/conteoExportacion';
 import { DailyGoalsPanel } from '@/src/components/DailyGoalsPanel';
 import { MyMeetingsPanel } from '@/src/components/MyMeetingsPanel';
+import { BorradoresCard } from '@/src/components/BorradoresCard';
 import { ReportPreviewSheet } from '@/src/components/ReportPreviewSheet';
 import { HistoryCalendarModal } from '@/src/components/HistoryCalendarModal';
 import { a11y, t } from '@/src/i18n';
@@ -348,6 +349,8 @@ export default function SpecFeedScreen() {
         <StatCard label={t('inicioEspecialista.mios')} value={stats.mine} icon="person" tint="#0EA5E9" />
         <StatCard label={t('inicioEspecialista.companeros')} value={stats.others} icon="people-outline" tint="#10B981" />
       </View>
+
+      <BorradoresCard basePath="/(spec)" />
 
       {projectId ? (
         <>

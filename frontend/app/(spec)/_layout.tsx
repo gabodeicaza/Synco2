@@ -136,6 +136,8 @@ export default function SpecLayout() {
         {/* Cambiar mi contraseña — alcanzable via router.push (menu hamburgues), sin tab visible. */}
         <Tabs.Screen name="cambiar-password" options={{ href: null }} />
         {/* Mi perfil (Acerca de, legales, eliminar cuenta) — alcanzable via el menú hamburguesa. */}
+        {/* Borradores del reporte Nuevo — alcanzable desde Inicio y el menú, sin tab visible. */}
+        <Tabs.Screen name="borradores" options={{ href: null }} />
         <Tabs.Screen name="profile" options={{ href: null }} />
       </Tabs>
       <OfflineQueueIndicator />
