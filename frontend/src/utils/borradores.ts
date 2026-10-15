@@ -23,6 +23,8 @@ export interface BorradorItem {
 export interface BorradorDatos {
   nombre: string;
   severidad: string[];
+  /** Semáforo de gravedad (verde / amarillo / rojo). Borradores anteriores no lo traen. */
+  gravedad?: string;
   registrarLecturas: boolean;
   unidad: 'km' | 'm' | 'cm';
   primeraLectura: string;

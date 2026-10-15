@@ -1415,6 +1415,8 @@ export interface Report {
   // Selección múltiple de jerarquías (p.ej. ["diario", "urgente"] para que
   // el reporte aparezca en el informe Diario Y en el Mensual).
   severidad?: string[];
+  /** Semáforo de gravedad: verde (informativo) / amarillo (relevante) / rojo (grave). */
+  gravedad?: 'verde' | 'amarillo' | 'rojo';
   contratista?: string | null;
   personnel: string[];
   equipment: string[];
@@ -1501,6 +1503,7 @@ export interface FeedItem {
   contratista?: string | null;
   incidencias?: string | null;
   severidad?: string[] | null;
+  gravedad?: 'verde' | 'amarillo' | 'rojo' | null;
   personnel: string[];
   equipment: string[];
   captured_by: string;
@@ -3391,6 +3394,8 @@ export const api = {
   // a la vez (p.ej. ["diario", "urgente"] = Diario + Mensual).
   updateReportSeverity: (rid: string, severidad: string[]) =>
     request<Report>('PATCH', `/reports/${rid}/severity`, { severidad }),
+  updateReportGravedad: (rid: string, gravedad: 'verde' | 'amarillo' | 'rojo') =>
+    request<Report>('PATCH', `/reports/${rid}/gravedad`, { gravedad }),
   updateWorkforceEntry: (rid: string, field: 'personnel' | 'equipment', index: number, value: string | null) =>
     request<Report>('PATCH', `/reports/${rid}/workforce-entry`, { field, index, value }),
   nodeHistory: (pid: string, nid: string) =>

@@ -174,8 +174,24 @@ export function ReportPreviewSheet({
     }
   }, [reportId]);
 
+  // Semáforo de gravedad (verde / amarillo / rojo); mismos permisos que la severidad.
+  const [savingGrav, setSavingGrav] = React.useState(false);
+  const updateGravedad = React.useCallback(async (next: 'verde' | 'amarillo' | 'rojo') => {
+    if (!reportId) return;
+    setSavingGrav(true);
+    try {
+      const updated = await api.updateReportGravedad(reportId, next);
+      setFullReport(updated);
+    } catch (e: any) {
+      Alert.alert(t('vistaPreviaReporte.error'), e?.message || t('vistaPreviaReporte.noSeActualizoSeveridad'));
+    } finally {
+      setSavingGrav(false);
+    }
+  }, [reportId]);
+
   // Use fullReport if loaded to get the most accurate data (including title keys).
   const source = (fullReport || it) as Record<string, any>;
+  const currentGravedad: string = source.gravedad === 'amarillo' || source.gravedad === 'rojo' ? source.gravedad : 'verde';
 
   // Lista de severidades vigentes del reporte (acepta datos legacy en los
   // que `severidad` llegaba como string único).
@@ -437,6 +453,26 @@ export function ReportPreviewSheet({
                   <Text style={[styles.sevBtnTxt, currentSeveridad.includes('urgente') ? { color: '#fff' } : { color: '#DC2626' }]}>{t('vistaPreviaReporte.sevMensual')}</Text>
                 </TouchableOpacity>
                 {savingSev && <ActivityIndicator size="small" color="#1E40AF" />}
+              </View>
+            )}
+
+            {/* ===== Gravedad (semaforo verde / amarillo / rojo) ===== */}
+            {reportId && (
+              <View style={styles.sevRowPreview}>
+                {([
+                  ['verde', '#16A34A', t('nuevoReporte.gravedadVerde')],
+                  ['amarillo', '#EAB308', t('nuevoReporte.gravedadAmarillo')],
+                  ['rojo', '#DC2626', t('nuevoReporte.gravedadRojo')],
+                ] as const).map(([key, color, label]) => (
+                  <TouchableOpacity accessibilityRole="button" key={key}
+                    disabled={!canEditSeverity}
+                    onPress={() => updateGravedad(key)}
+                    style={[styles.sevBtnSmall, { borderColor: color }, currentGravedad === key && { backgroundColor: color }, !canEditSeverity && { opacity: 0.6 }]}
+                  >
+                    <Text style={[styles.sevBtnTxt, currentGravedad === key ? { color: '#fff' } : { color }]}>{label}</Text>
+                  </TouchableOpacity>
+                ))}
+                {savingGrav && <ActivityIndicator size="small" color="#1E40AF" />}
               </View>
             )}
 

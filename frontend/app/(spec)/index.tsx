@@ -31,6 +31,7 @@ import { verificarConteoExportacion } from '@/src/utils/conteoExportacion';
 import { DailyGoalsPanel } from '@/src/components/DailyGoalsPanel';
 import { MyMeetingsPanel } from '@/src/components/MyMeetingsPanel';
 import { BorradoresCard } from '@/src/components/BorradoresCard';
+import { GravedadDot } from '@/src/components/GravedadDot';
 import { ReportPreviewSheet } from '@/src/components/ReportPreviewSheet';
 import { HistoryCalendarModal } from '@/src/components/HistoryCalendarModal';
 import { a11y, t } from '@/src/i18n';
@@ -63,7 +64,7 @@ function feedItemsShallowEqual(a: FeedItem, b: FeedItem): boolean {
   return (
     a.title === b.title && a.nombre === b.nombre && a.actividades === b.actividades &&
     a.observaciones === b.observaciones && a.avance === b.avance && a.area_name === b.area_name &&
-    a.area_color === b.area_color && a.is_mine === b.is_mine && a.captured_by_name === b.captured_by_name &&
+    a.area_color === b.area_color && a.gravedad === b.gravedad && a.is_mine === b.is_mine && a.captured_by_name === b.captured_by_name &&
     a.created_at === b.created_at && a.images_count === b.images_count &&
     a.thumbnail_base64 === b.thumbnail_base64 &&
     (a.personnel || []).join('|') === (b.personnel || []).join('|') &&
@@ -732,7 +733,10 @@ const FeedCard = memo(function FeedCard({ item, onPreview }: FeedCardProps) {
     <Pressable accessibilityRole="button" onPress={handlePreview} style={styles.feedCard}>
       <View style={styles.feedCardIcon}><Ionicons name="document-text-outline" size={18} color={colors.primary} /></View>
       <View style={{ flex: 1, minWidth: 0 }}>
-        <Text style={styles.feedCardTitle} numberOfLines={1}>{item.title || item.nombre || item.titulo || item.name || 'Reporte'}</Text>
+        <View style={styles.feedCompactRow}>
+          <GravedadDot gravedad={item.gravedad} />
+          <Text style={[styles.feedCardTitle, { flex: 1 }]} numberOfLines={1}>{item.title || item.nombre || item.titulo || item.name || 'Reporte'}</Text>
+        </View>
         <View style={styles.feedCompactRow}>
           <Ionicons name="location-outline" size={12} color={colors.textMuted} />
           <Text style={styles.feedCardSub} numberOfLines={1}>{leafName}</Text>
