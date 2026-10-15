@@ -17746,17 +17746,36 @@ async def export_reports_pdf(
                             t = f.get("total")
                             row.append(Paragraph(f"{t:.2f}%" if t is not None else "—", val_style))
                         data.append(row)
-                    style = [
-                        ("BACKGROUND", (0, 0), (-1, 0), HexColor("#F1F5F9")),
-                        ("GRID", (0, 0), (-1, -1), 0.4, BORDER),
-                        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                        ("TOPPADDING", (0, 0), (-1, -1), 3),
-                        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-                    ] + bg_cmds
-                    tbl = Table(data, colWidths=widths)
-                    tbl.setStyle(TableStyle(style))
-                    _ensure_space(2.2 * cm)
-                    tw, th = tbl.wrapOn(c, content_w, y - bottom_y)
+                    # La tabla (y su leyenda, en el último tramo) debe caber
+                    # COMPLETA en la hoja: se reduce el relleno de las filas
+                    # hasta que quepa; si ni así cabe en el espacio restante,
+                    # pasa a una hoja nueva.
+                    legend_reserve = 20 + 8 if is_last else 8
+
+                    def _build_tbl(pad: float):
+                        style = [
+                            ("BACKGROUND", (0, 0), (-1, 0), HexColor("#F1F5F9")),
+                            ("GRID", (0, 0), (-1, -1), 0.4, BORDER),
+                            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                            ("TOPPADDING", (0, 0), (-1, -1), pad),
+                            ("BOTTOMPADDING", (0, 0), (-1, -1), pad),
+                        ] + bg_cmds
+                        t_ = Table(data, colWidths=widths)
+                        t_.setStyle(TableStyle(style))
+                        return t_, t_.wrapOn(c, content_w, 10000)[1]
+
+                    tbl, th = None, 0.0
+                    for attempt in range(2):
+                        for pad in (3, 2, 1, 0.5):
+                            tbl, th = _build_tbl(pad)
+                            if th + legend_reserve <= y - bottom_y:
+                                break
+                        if th + legend_reserve <= y - bottom_y or attempt == 1:
+                            break
+                        # No cabe ni compacta: hoja nueva y reintenta.
+                        c.showPage()
+                        page_num += 1
+                        y = top_y
                     tbl.drawOn(c, left_x, y - th)
                     y -= th + 8
                     col_offset += len(chunk)
@@ -18094,6 +18113,73 @@ async def export_reports_pdf(
                 _draw_cover_outlined_text(_cover_x_left, _proj_y, _proj_upper, _proj_size)
         c.showPage()
         page_num += 1
+
+        # --- TABLA RESUMEN DE AVANCE (hasta arriba, justo tras la portada) ----
+        # SOLO la tabla ACTIVIDAD / AVANCE con el % final (columna Total) de
+        # cada fila de la Tabla de Avance Acumulado — sin título ni leyenda.
+        _res_ini_filas = [
+            f for f in (((modulos_data.get("tabla_resumen") or {}).get("blocks") or [{}])[0].get("filas") or [])
+        ]
+        if _res_ini_filas:
+            _indice_mark("resumen_avance", "Resumen de avance")
+            _ri_x = 1.5 * cm
+            _ri_w = PW - 3.0 * cm
+            _ri_brand_hex = _sanitize_color_hex(project_color) or "#003366"
+            _ri_head_txt = WHITE if _hex_luminance(_ri_brand_hex) <= 0.6 else HexColor("#1A1A1A")
+            _ri_grid = HexColor("#A6A6A6")
+            _ri_fracs = (0.78, 0.22)
+            _ri_pad = 8
+            _ri_head_st = ParagraphStyle("RIHead", fontName="Helvetica-Bold", fontSize=12, leading=14,
+                                         textColor=_ri_head_txt, alignment=1)
+            _ri_act_st = ParagraphStyle("RIAct", fontName="Helvetica", fontSize=10.5, leading=13, textColor=TEXT)
+            _ri_sec_st = ParagraphStyle("RISec", fontName="Helvetica-Bold", fontSize=10.5, leading=13, textColor=TEXT)
+            _ri_val_st = ParagraphStyle("RIVal", fontName="Helvetica", fontSize=10.5, leading=13, textColor=TEXT, alignment=1)
+            _ri_act_w = _ri_w * _ri_fracs[0] - 2 * _ri_pad
+            _ri_rows = []  # (celdas, alto, es_seccion)
+            for f in _res_ini_filas:
+                if f.get("seccion"):
+                    p = Paragraph(_xml_escape(f["actividad"]), _ri_sec_st)
+                    _ri_rows.append(([p, ""], p.wrap(_ri_w - 2 * _ri_pad, 10000)[1] + 10, True))
+                    continue
+                t = f.get("total")
+                p = Paragraph(_xml_escape(f["actividad"]), _ri_act_st)
+                v = Paragraph(f"{t:.2f}%" if t is not None else "—", _ri_val_st)
+                _ri_rows.append(([p, v], p.wrap(_ri_act_w, 10000)[1] + 10, False))
+            _ri_head_h = 28
+            _ri_i = 0
+            while _ri_i < len(_ri_rows):
+                _ri_y = PH - TOP_MARGIN_PDF
+                _ri_avail = _ri_y - BOTTOM_MARGIN_PDF
+                _ri_used = _ri_head_h
+                _ri_pg = []
+                while _ri_i < len(_ri_rows):
+                    if _ri_used + _ri_rows[_ri_i][1] > _ri_avail and _ri_pg:
+                        break
+                    _ri_pg.append(_ri_rows[_ri_i])
+                    _ri_used += _ri_rows[_ri_i][1]
+                    _ri_i += 1
+                _ri_data = [[Paragraph("ACTIVIDAD", _ri_head_st), Paragraph("AVANCE", _ri_head_st)]]
+                _ri_hs = [_ri_head_h]
+                _ri_cmds = []
+                for k, (cells, h, es_sec) in enumerate(_ri_pg, start=1):
+                    _ri_data.append(cells)
+                    _ri_hs.append(h)
+                    if es_sec:
+                        _ri_cmds += [("SPAN", (0, k), (1, k)), ("BACKGROUND", (0, k), (1, k), HexColor("#D9D9D9"))]
+                _ri_tbl = Table(_ri_data, colWidths=[_ri_w * _ri_fracs[0], _ri_w * _ri_fracs[1]], rowHeights=_ri_hs)
+                _ri_tbl.setStyle(TableStyle([
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), _ri_pad),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), _ri_pad),
+                    ("TOPPADDING", (0, 0), (-1, -1), 3),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                    ("BACKGROUND", (0, 0), (-1, 0), HexColor(_ri_brand_hex)),
+                    ("GRID", (0, 0), (-1, -1), 0.5, _ri_grid),
+                ] + _ri_cmds))
+                _, _ri_th = _ri_tbl.wrapOn(c, _ri_w, _ri_avail)
+                _ri_tbl.drawOn(c, _ri_x, _ri_y - _ri_th)
+                c.showPage()
+                page_num += 1
 
         # --- SECCIÓN "ACTIVIDADES POR ÁREA" (justo después de Datos Generales) ---
         # Tabla de 2 columnas (Ubicación / Actividad) por cada Área del
@@ -26024,6 +26110,65 @@ async def export_reports_pptx(
                             add_text(sl, x + lw + vw, ty, vw, row_h, v2, size=f_tbl,
                                      color=WF_TEXT_RGB, align=PP_ALIGN.CENTER)
                         ty += row_h
+
+        # ===== SLIDE RESUMEN DE AVANCE (hasta arriba, tras la portada) =====
+        # SOLO la tabla ACTIVIDAD / AVANCE con el % final (Total) de cada
+        # fila de la Tabla de Avance Acumulado — sin título ni leyenda.
+        def _emit_resumen_avance_slides() -> None:
+            filas = ((modulos_data.get("tabla_resumen") or {}).get("blocks") or [{}])[0].get("filas") or []
+            if not filas:
+                return
+            GRIS = (0xA6, 0xA6, 0xA6)
+            x0 = Cm(1.5)
+            tw_ = SW - 2 * x0
+            act_w = int(tw_ * 0.78)
+            val_w = tw_ - act_w
+            head_h = Cm(0.9)
+            base_h = Cm(0.7)
+            top = TOP_MARGIN
+            lim = SH - BOTTOM_MARGIN
+            filas_h = []
+            for f in filas:
+                n = _pptx_texto_lineas(f["actividad"], act_w - Cm(0.4), 11)
+                filas_h.append(max(base_h, int(Cm(0.35)) + int(n * Pt(11) * 1.2)))
+            i = 0
+            primera = True
+            while i < len(filas):
+                sl = _clone_membrete()
+                if primera:
+                    _indice_mark("resumen_avance", "Resumen de avance")
+                    primera = False
+                y = top
+                _wf_rect(sl, x0, y, act_w, head_h, fill_rgb=BRAND_RGB, line_rgb=GRIS, line_pt=0.5)
+                add_text(sl, x0, y, act_w, head_h, "ACTIVIDAD", size=13, bold=True,
+                         color=HEADER_TEXT_RGB, align=PP_ALIGN.CENTER, tight=True)
+                _wf_rect(sl, x0 + act_w, y, val_w, head_h, fill_rgb=BRAND_RGB, line_rgb=GRIS, line_pt=0.5)
+                add_text(sl, x0 + act_w, y, val_w, head_h, "AVANCE", size=13, bold=True,
+                         color=HEADER_TEXT_RGB, align=PP_ALIGN.CENTER, tight=True)
+                y += head_h
+                n_pag = 0
+                while i < len(filas):
+                    h = filas_h[i]
+                    if y + h > lim and n_pag:
+                        break
+                    f = filas[i]
+                    if f.get("seccion"):
+                        _wf_rect(sl, x0, y, tw_, h, fill_rgb=(0xD9, 0xD9, 0xD9), line_rgb=GRIS, line_pt=0.5)
+                        add_text(sl, x0 + Cm(0.2), y, tw_ - Cm(0.4), h, f["actividad"], size=11, bold=True,
+                                 color=WF_TEXT_RGB, tight=True)
+                    else:
+                        t = f.get("total")
+                        _wf_rect(sl, x0, y, act_w, h, fill_rgb=WF_WHITE_RGB, line_rgb=GRIS, line_pt=0.5)
+                        add_text(sl, x0 + Cm(0.2), y, act_w - Cm(0.4), h, f["actividad"], size=11,
+                                 color=WF_TEXT_RGB, tight=True)
+                        _wf_rect(sl, x0 + act_w, y, val_w, h, fill_rgb=WF_WHITE_RGB, line_rgb=GRIS, line_pt=0.5)
+                        add_text(sl, x0 + act_w, y, val_w, h, f"{t:.2f}%" if t is not None else "—",
+                                 size=11, color=WF_TEXT_RGB, align=PP_ALIGN.CENTER, tight=True)
+                    y += h
+                    i += 1
+                    n_pag += 1
+
+        _emit_resumen_avance_slides()
 
         _emit_contrato_slide()
 
