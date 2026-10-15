@@ -90,7 +90,7 @@ def test_texto_identico_a_la_vista_previa():
         "6 de octubre de 2026.\nGabriel\n\n\n"
         "Constructora: Jeje\nNo de contrato: Jruei\n\n"
         "C19\n\n"
-        "*Actividades:*\nActividades\n\n"
+        "*Actividades:*🟢\nActividades\n\n"
         "*Observaciones:*\nA ver si funciona\n\n"
         "Personal:\n1 ING. Civil\n\n"
         "Equipo:\n1 Cortadora de varilla"

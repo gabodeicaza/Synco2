@@ -11659,7 +11659,8 @@ def _whatsapp_texto_reporte(
     if hoja:
         secciones.append(hoja)
     if doc.get("actividades"):
-        secciones.append(f"*Actividades:*\n{doc['actividades']}")
+        emoji = _GRAVEDAD_EMOJI[_normalize_gravedad(doc.get("gravedad"))]
+        secciones.append(f"*Actividades:*{emoji}\n{doc['actividades']}")
 
     dyn = doc.get("dynamic_data") or {}
     if dyn:

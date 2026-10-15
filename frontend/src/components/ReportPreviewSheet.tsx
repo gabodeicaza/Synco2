@@ -47,6 +47,8 @@ interface ReportPreviewSheetProps {
   onShare?: (item: FeedItem) => void | Promise<void>;
   /** Cuando true, deshabilita el boton "Compartir" y muestra spinner. */
   sharing?: boolean;
+  /** Se llama tras cambiar el semáforo de gravedad, para refrescar la tarjeta del Inicio. */
+  onGravedadChange?: (id: string, gravedad: 'verde' | 'amarillo' | 'rojo') => void;
 }
 
 export function ReportPreviewSheet({
@@ -56,6 +58,7 @@ export function ReportPreviewSheet({
   onClose,
   onShare,
   sharing = false,
+  onGravedadChange,
 }: ReportPreviewSheetProps) {
   const { user } = useAuth();
   // Defensive: tolerate legacy/alt field names from the backend.
@@ -182,12 +185,13 @@ export function ReportPreviewSheet({
     try {
       const updated = await api.updateReportGravedad(reportId, next);
       setFullReport(updated);
+      onGravedadChange?.(reportId, next);
     } catch (e: any) {
       Alert.alert(t('vistaPreviaReporte.error'), e?.message || t('vistaPreviaReporte.noSeActualizoSeveridad'));
     } finally {
       setSavingGrav(false);
     }
-  }, [reportId]);
+  }, [reportId, onGravedadChange]);
 
   // Use fullReport if loaded to get the most accurate data (including title keys).
   const source = (fullReport || it) as Record<string, any>;

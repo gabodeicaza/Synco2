@@ -26,6 +26,7 @@ import { DailyGoalsPanel } from '@/src/components/DailyGoalsPanel';
 import { WeatherWidget } from '@/src/components/WeatherWidget';
 import { HistoryCalendarModal } from '@/src/components/HistoryCalendarModal';
 import { ReportPreviewSheet } from '@/src/components/ReportPreviewSheet';
+import { GravedadDot, GravedadFiltro, filtrarPorGravedad, type GravedadFiltroValor } from '@/src/components/GravedadDot';
 import { fmtDateTimeCDMX } from '@/src/utils/tz';
 import {
   agruparModulosPorArea, asignacionesConPersonalizados, modulosActivos, modulosPersonalizadosDef, ModuloDef, SIN_AREA_ID,
@@ -135,9 +136,12 @@ const ReportFeedItem = React.memo(function ReportFeedItem({ report, onPress }: {
       )}
       <View style={{ flex: 1, minWidth: 0, gap: 4 }}>
         {/* Nombre del reporte (estricto title, nombre, titulo, name, description) */}
-        <Text style={styles.feedTitle} numberOfLines={1}>
-          {r.title || r.nombre || r.titulo || r.name || r.description || r.descripcion || t('proyectoPantalla.sinTitulo')}
-        </Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+          <GravedadDot gravedad={(r as any).gravedad} />
+          <Text style={[styles.feedTitle, { flex: 1 }]} numberOfLines={1}>
+            {r.title || r.nombre || r.titulo || r.name || r.description || r.descripcion || t('proyectoPantalla.sinTitulo')}
+          </Text>
+        </View>
         {(hasIncidencia || severidadList.includes('urgente') || severidadList.includes('importante')) && (
           <View style={styles.badgeRow}>
             {hasIncidencia && (
@@ -214,6 +218,7 @@ export default function ProjectDetailScreen() {
   const [selectedTimeFilter, setSelectedTimeFilter] = useState<'today' | 'week' | 'month' | 'all'>('today');
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [selectedStatusFilter, setSelectedStatusFilter] = useState<'incidencia' | 'avance' | null>(null);
+  const [gravedadFiltro, setGravedadFiltro] = useState<GravedadFiltroValor>('todas');
 
   // Busqueda de texto libre (nodo / autor) sobre lo ya paginado en memoria.
   // Debounce 350ms antes de aplicar el filtro para no recalcular en cada tecla.
@@ -1186,8 +1191,8 @@ export default function ProjectDetailScreen() {
         return isNaN(num) || num !== 0;
       });
     }
-    return list;
-  }, [reports, debouncedSearch, selectedStatusFilter]);
+    return filtrarPorGravedad(list, gravedadFiltro);
+  }, [reports, debouncedSearch, selectedStatusFilter, gravedadFiltro]);
 
   // Plantillas fijas encendidas + módulos del Creador de módulos (activos).
   const gruposModulos = agruparModulosPorArea(
@@ -1419,6 +1424,11 @@ export default function ProjectDetailScreen() {
                             {t('proyectoPantalla.avance')}
                           </Text>
                         </Pressable>
+                      </View>
+
+                      {/* Filtro por semaforo de gravedad */}
+                      <View style={{ marginTop: 8, marginHorizontal: -16 }}>
+                        <GravedadFiltro valor={gravedadFiltro} onChange={setGravedadFiltro} />
                       </View>
 
                       {/* Barra de busqueda: texto libre por nodo o autor (debounce 350ms) */}
@@ -2112,6 +2122,7 @@ export default function ProjectDetailScreen() {
         item={previewItem}
         project={project}
         onClose={() => setPreviewItem(null)}
+        onGravedadChange={(id, g) => setReports((prev) => prev.map((r) => (r.id === id ? { ...r, gravedad: g } : r)))}
       />
 
       {/* ===== Modal: Resumen Ejecutivo con IA ===== */}

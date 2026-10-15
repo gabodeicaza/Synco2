@@ -30,7 +30,7 @@ import { HeaderMenu } from '@/src/components/HeaderMenu';
 import { DailyGoalsPanel } from '@/src/components/DailyGoalsPanel';
 import { MyMeetingsPanel } from '@/src/components/MyMeetingsPanel';
 import { BorradoresCard } from '@/src/components/BorradoresCard';
-import { GravedadDot } from '@/src/components/GravedadDot';
+import { GravedadDot, GravedadFiltro, filtrarPorGravedad, type GravedadFiltroValor } from '@/src/components/GravedadDot';
 import { ReportPreviewSheet } from '@/src/components/ReportPreviewSheet';
 import { periodToInformeType } from '@/src/components/PeriodSheet';
 import { HistoryCalendarModal } from '@/src/components/HistoryCalendarModal';
@@ -69,6 +69,7 @@ export default function SubCoordDashboard() {
 
   // Estado para compartir reporte individual
   const [sharingReportId, setSharingReportId] = useState<string | null>(null);
+  const [gravedadFiltro, setGravedadFiltro] = useState<GravedadFiltroValor>('todas');
 
   // Badge del Hub de Minutas (acuerdos asignados / urgentes al usuario).
   const [minutasBadge, setMinutasBadge] = useState<{ assigned_pending: number; urgent: number } | null>(null);
@@ -246,8 +247,8 @@ export default function SubCoordDashboard() {
       base = base.filter((r) => r.area_name && selectedAreas.has(r.area_name));
     }
 
-    return base;
-  }, [reports, selectedAreas, selectedDate, period, debouncedQuery]);
+    return filtrarPorGravedad(base, gravedadFiltro);
+  }, [reports, selectedAreas, selectedDate, period, debouncedQuery, gravedadFiltro]);
 
   // Nombre del nodo tramo (scope_node_id) para Hero Card (Task 2)
   const scopeNodeName = useMemo(() => {
@@ -862,6 +863,7 @@ export default function SubCoordDashboard() {
                 ) : null}
               </View>
             </View>
+            <GravedadFiltro valor={gravedadFiltro} onChange={setGravedadFiltro} />
             <View style={styles.feedHeaderRow}>
               <Text style={styles.feedTitle}>
                 {debouncedQuery ? t('panelSubcoord.resultados') : t('panelSubcoord.reportesRecientes')}
@@ -1020,6 +1022,7 @@ export default function SubCoordDashboard() {
         onClose={() => setPreviewItem(null)}
         onShare={shareReportWhatsApp}
         sharing={!!previewItem && sharingReportId === previewItem.id}
+        onGravedadChange={(id, g) => setReports((prev) => prev.map((r) => (r.id === id ? { ...r, gravedad: g } : r)))}
       />
 
       {/* ===== Modal: Calendario historico ===== */}

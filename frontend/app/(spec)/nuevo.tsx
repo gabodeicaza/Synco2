@@ -485,6 +485,7 @@ export default function NewReportScreen() {
       setSuccessReport({
         ...res,
         node_path_names: path.map((n) => n.name),
+        gravedad,
         campos_extra: camposArea
           .filter((c) => c.id && valoresCamposExtra[c.id])
           .map((c) => ({ ...c, valor: c.tipo === 'numero' ? Number(valoresCamposExtra[c.id!].replace(',', '.')) : valoresCamposExtra[c.id!] })),

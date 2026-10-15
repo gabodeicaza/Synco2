@@ -31,7 +31,7 @@ import { verificarConteoExportacion } from '@/src/utils/conteoExportacion';
 import { DailyGoalsPanel } from '@/src/components/DailyGoalsPanel';
 import { MyMeetingsPanel } from '@/src/components/MyMeetingsPanel';
 import { BorradoresCard } from '@/src/components/BorradoresCard';
-import { GravedadDot } from '@/src/components/GravedadDot';
+import { GravedadDot, GravedadFiltro, filtrarPorGravedad, type GravedadFiltroValor } from '@/src/components/GravedadDot';
 import { ReportPreviewSheet } from '@/src/components/ReportPreviewSheet';
 import { HistoryCalendarModal } from '@/src/components/HistoryCalendarModal';
 import { a11y, t } from '@/src/i18n';
@@ -123,6 +123,7 @@ export default function SpecFeedScreen() {
   }, [feed]);
 
   const [searchQuery, setSearchQuery] = useState('');
+  const [gravedadFiltro, setGravedadFiltro] = useState<GravedadFiltroValor>('todas');
   const [debouncedQuery, setDebouncedQuery] = useState('');
 
   // Debounce del input de busqueda (350ms) _ evita spam de requests.
@@ -339,8 +340,8 @@ export default function SpecFeedScreen() {
     if (selectedDate) {
       base = base.filter((r) => toISODateCDMX(r.created_at) === selectedDate);
     }
-    return base;
-  }, [reports, selectedDate, debouncedQuery]);
+    return filtrarPorGravedad(base, gravedadFiltro);
+  }, [reports, selectedDate, debouncedQuery, gravedadFiltro]);
 
   const ListHeader = useMemo(() => (
     <>
@@ -402,6 +403,8 @@ export default function SpecFeedScreen() {
         </View>
       </View>
 
+      <GravedadFiltro valor={gravedadFiltro} onChange={setGravedadFiltro} />
+
       <View style={styles.feedHeaderRow}>
         <Text style={styles.feedTitle}>{debouncedQuery ? t('inicioEspecialista.resultados') : t('inicioEspecialista.actividadReciente')}</Text>
         {reports.length > 0 && <Text style={styles.feedCount}>{reports.length}</Text>}
@@ -411,7 +414,7 @@ export default function SpecFeedScreen() {
         <View style={styles.centerPad}><ActivityIndicator color={colors.primary} /></View>
       )}
     </>
-  ), [user, project, stats, projectId, reports, exportBusy, aiBusy, selectedDate, range, searchQuery, loading, filteredReports, debouncedQuery, onPickRange, myMeetings, myMeetingsLoading]);
+  ), [user, project, stats, projectId, reports, exportBusy, aiBusy, selectedDate, range, searchQuery, loading, filteredReports, debouncedQuery, gravedadFiltro, onPickRange, myMeetings, myMeetingsLoading]);
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
@@ -454,7 +457,8 @@ export default function SpecFeedScreen() {
       />
 
       <HistoryCalendarModal visible={calendarOpen} reports={reports} onClose={() => setCalendarOpen(false)} selectedDate={selectedDate} onPickDate={(d) => { setSelectedDate(d); setCalendarOpen(false); }} />
-      <ReportPreviewSheet visible={!!previewItem} item={previewItem} project={project} onClose={() => setPreviewItem(null)} />
+      <ReportPreviewSheet visible={!!previewItem} item={previewItem} project={project} onClose={() => setPreviewItem(null)}
+        onGravedadChange={(id, g) => setFeed((f) => (f ? { ...f, reports: f.reports.map((r) => (r.id === id ? { ...r, gravedad: g } : r)) } : f))} />
 
       <AiSummaryModal
         visible={aiOpen}
