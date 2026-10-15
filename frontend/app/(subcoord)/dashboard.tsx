@@ -32,6 +32,7 @@ import { MyMeetingsPanel } from '@/src/components/MyMeetingsPanel';
 import { BorradoresCard } from '@/src/components/BorradoresCard';
 import { GravedadDot, GravedadFiltro, filtrarPorGravedad, type GravedadFiltroValor } from '@/src/components/GravedadDot';
 import { ReportPreviewSheet } from '@/src/components/ReportPreviewSheet';
+import { suscribirReporteEditado } from '@/src/utils/reportEdit';
 import { periodToInformeType } from '@/src/components/PeriodSheet';
 import { HistoryCalendarModal } from '@/src/components/HistoryCalendarModal';
 import { ReportesVacio } from '@/src/components/ReportesVacio';
@@ -176,6 +177,11 @@ export default function SubCoordDashboard() {
     if (!pid || loadedStructureForPid.current !== pid) return;
     loadFeed(pid).catch((e: any) => setError(e?.message || t('panelSubcoord.noSePudoCargarLa')));
   }, [debouncedQuery, period, pid, loadFeed]);
+
+  // Un reporte editado (pantalla de captura en modo edición) refresca el feed.
+  useEffect(() => suscribirReporteEditado(() => {
+    if (pid) loadFeed(pid).catch(() => {});
+  }), [pid, loadFeed]);
 
   const onRefresh = useCallback(async () => {
     if (!pid) return;

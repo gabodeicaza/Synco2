@@ -1429,6 +1429,8 @@ export interface Report {
   captured_by: string;
   captured_by_name: string;
   created_at: string;
+  /** Última edición completa hecha por el autor (ver `updateReport`). */
+  edited_at?: string | null;
   /** true si el reporte no pudo enviarse y quedo encolado para reintentar
    * cuando haya conexion (ver src/utils/offlineQueue.ts). El `id` en ese
    * caso es un placeholder local (`local-<client_id>`), no un id real del
@@ -3388,6 +3390,9 @@ export const api = {
       throw e; // ApiError real (400/403/404/422/500...): igual que antes.
     }
   },
+  // Edición completa del reporte por su autor (hasta 8 h después de capturarlo).
+  // Sin cola offline: editar exige conexión para no pisar la versión del servidor.
+  updateReport: (rid: string, body: any) => request<Report>('PUT', `/reports/${rid}`, body),
   updateReportCaptions: (rid: string, photo_captions: string[]) =>
     request<Report>('PATCH', `/reports/${rid}/captions`, { photo_captions }),
   // `severidad` es una lista: el reporte puede pertenecer a varios informes
