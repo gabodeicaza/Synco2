@@ -30,6 +30,7 @@ import { HeaderMenu } from '@/src/components/HeaderMenu';
 import { DailyGoalsPanel } from '@/src/components/DailyGoalsPanel';
 import { MyMeetingsPanel } from '@/src/components/MyMeetingsPanel';
 import { BorradoresCard } from '@/src/components/BorradoresCard';
+import { GravedadDot } from '@/src/components/GravedadDot';
 import { ReportPreviewSheet } from '@/src/components/ReportPreviewSheet';
 import { periodToInformeType } from '@/src/components/PeriodSheet';
 import { HistoryCalendarModal } from '@/src/components/HistoryCalendarModal';
@@ -1246,9 +1247,12 @@ const FeedCard = memo(({ r, tone, subtitle, onPreview, onShare, isSharing }: any
           ) : null}
           <Text style={styles.feedTime}>{fmtTimeCDMX(r.created_at)}</Text>
         </View>
-        <Text style={styles.feedCardTitle} numberOfLines={1}>
-          {r.title || r.nombre || r.titulo || r.name || r.description || r.descripcion || subtitle || t('panelSubcoord.reporteDeObra')}
-        </Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+          <GravedadDot gravedad={r.gravedad} />
+          <Text style={[styles.feedCardTitle, { flex: 1 }]} numberOfLines={1}>
+            {r.title || r.nombre || r.titulo || r.name || r.description || r.descripcion || subtitle || t('panelSubcoord.reporteDeObra')}
+          </Text>
+        </View>
         <Text style={styles.feedCardSub} numberOfLines={1}>
           {subtitle}
         </Text>

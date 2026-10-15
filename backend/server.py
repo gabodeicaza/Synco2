@@ -895,6 +895,16 @@ class AcceptInviteIn(BaseModel):
 
 _VALID_SEVERIDADES = ("informativo", "diario", "importante", "urgente")
 
+# Semáforo de GRAVEDAD del reporte (distinto del semáforo de periodo `severidad`):
+# verde = solo informativo, amarillo = algo relevante, rojo = algo grave.
+_VALID_GRAVEDADES = ("verde", "amarillo", "rojo")
+_GRAVEDAD_EMOJI = {"verde": "🟢", "amarillo": "🟡", "rojo": "🔴"}
+
+
+def _normalize_gravedad(raw: Any) -> str:
+    v = str(raw or "").strip().lower()
+    return v if v in _VALID_GRAVEDADES else "verde"
+
 
 def _normalize_severidad_list(raw: Any) -> List[str]:
     """Normaliza la severidad de un reporte a una lista de valores válidos.
@@ -944,6 +954,8 @@ class ReportIn(BaseModel):
     # jerarquías: p.ej. ["diario", "urgente"]). Se normaliza con
     # `_normalize_severidad_list` antes de guardar.
     severidad: Optional[Any] = "informativo"
+    # Semáforo de gravedad (verde / amarillo / rojo). Independiente de `severidad`.
+    gravedad: Optional[str] = "verde"
     contratista: Optional[str] = None
     personnel: List[str] = Field(default_factory=list)
     equipment: List[str] = Field(default_factory=list)
@@ -994,6 +1006,12 @@ class ReportOut(BaseModel):
     observaciones: Optional[str] = None
     incidencias: Optional[str] = None
     severidad: List[str] = Field(default_factory=lambda: ["informativo"])
+    gravedad: str = "verde"
+
+    @field_validator("gravedad", mode="before")
+    @classmethod
+    def _v_gravedad(cls, v: Any) -> str:
+        return _normalize_gravedad(v)
 
     @field_validator("severidad", mode="before")
     @classmethod
@@ -11518,6 +11536,7 @@ async def create_report(body: ReportIn, user: dict = Depends(current_user)):
         "observaciones": (body.observaciones or "").strip() or None,
         "incidencias": (body.incidencias or "").strip() or None,
         "severidad": sev_list,
+        "gravedad": _normalize_gravedad(body.gravedad),
         "contratista": (body.contratista or "").strip() or None,
         "personnel": body.personnel,
         "equipment": body.equipment,
@@ -12190,6 +12209,7 @@ async def list_reports(pid: str, user: dict = Depends(current_user)):
     for it in items:
         it.pop("_id", None)
         it["severidad"] = _normalize_severidad_list(it.get("severidad"))
+        it["gravedad"] = _normalize_gravedad(it.get("gravedad"))
     return items
 
 
@@ -12459,6 +12479,7 @@ async def reports_feed(
             "contratista": it.get("contratista"),
             "incidencias": it.get("incidencias"),
             "severidad": _normalize_severidad_list(it.get("severidad")),
+            "gravedad": _normalize_gravedad(it.get("gravedad")),
             "personnel": it.get("personnel") or [],
             "equipment": it.get("equipment") or [],
             "captured_by": it.get("captured_by"),
@@ -12491,6 +12512,7 @@ async def get_report(rid: str, user: dict = Depends(current_user)):
     # Sub-coordinador / Especialista sin scope: acceso GLOBAL (sin filtro).
     r.pop("_id", None)
     r["severidad"] = _normalize_severidad_list(r.get("severidad"))
+    r["gravedad"] = _normalize_gravedad(r.get("gravedad"))
     return r
 
 
@@ -12662,6 +12684,28 @@ async def patch_report_severity(
     )
     updated = await db.reports.find_one({"id": rid}, {"_id": 0})
     return updated
+
+
+# --- Edición de la gravedad (semáforo verde/amarillo/rojo) -------------------
+class ReportGravedadPatch(BaseModel):
+    gravedad: Literal["verde", "amarillo", "rojo"]
+
+
+@api.patch("/reports/{rid}/gravedad", response_model=ReportOut)
+async def patch_report_gravedad(
+    rid: str,
+    body: ReportGravedadPatch,
+    user: dict = Depends(current_user),
+):
+    r = await db.reports.find_one({"id": rid})
+    if not r:
+        raise HTTPException(404, "Reporte no existe")
+    is_author = r.get("captured_by") == user["id"]
+    is_mgmt = user.get("role") in (ROLE_COORD, ROLE_SUB)
+    if not (is_author or is_mgmt):
+        raise HTTPException(403, "No tienes permiso para cambiar la gravedad de este reporte")
+    await db.reports.update_one({"id": rid}, {"$set": {"gravedad": body.gravedad}})
+    return await db.reports.find_one({"id": rid}, {"_id": 0})
 
 
 # --- Edición de una entrada de Fuerza de Trabajo/Maquinaria -----------------

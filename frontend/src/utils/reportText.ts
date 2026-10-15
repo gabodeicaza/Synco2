@@ -8,6 +8,8 @@ export interface ReportTextSource {
   node_path_names?: string[] | null;
   location?: { lat?: number | string; lon?: number | string; elev?: number | string } | null;
   actividades?: string | null;
+  /** Semáforo de gravedad; se muestra como emoji junto a "Actividades". */
+  gravedad?: string | null;
   activities?: string | null;
   observaciones?: string | null;
   incidencias?: string | null;
@@ -33,6 +35,9 @@ export interface ReportTextOptions {
   /** Campos de la plantilla elegida (para mostrar label en vez de key en `dynamic_data`). */
   templateFields?: { key: string; label: string }[] | null;
 }
+
+/** Emoji del semáforo de gravedad (mismo mapa que el backend, `_GRAVEDAD_EMOJI`). */
+export const GRAVEDAD_EMOJI: Record<string, string> = { verde: '🟢', amarillo: '🟡', rojo: '🔴' };
 
 /** Formatea un valor de `dynamic_data` para texto plano (booleanos → Sí/No, listas → join). */
 export function formatDynamicValue(v: any): string {
@@ -63,7 +68,7 @@ export function buildReportShareText(report: ReportTextSource, opts: ReportTextO
   sections.push(`Constructora: ${project?.constructora || ''}\nNo de contrato: ${project?.contract_number || ''}`);
   if (leafPart) sections.push(leafPart);
 
-  if (activitiesText) sections.push(`*Actividades:*\n${activitiesText}`);
+  if (activitiesText) sections.push(`*Actividades:*${GRAVEDAD_EMOJI[report.gravedad || ''] || GRAVEDAD_EMOJI.verde}\n${activitiesText}`);
 
   // Datos del reporte (plantilla dinámica): va justo después de la
   // ubicación y de las actividades (si las hay), antes de observaciones/

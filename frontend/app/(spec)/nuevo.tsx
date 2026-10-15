@@ -71,6 +71,9 @@ export default function NewReportScreen() {
       return next;
     });
   }, []);
+  // Semáforo de gravedad del reporte (independiente del semáforo de periodo):
+  // verde = solo informativo, amarillo = algo relevante, rojo = algo grave.
+  const [gravedad, setGravedad] = useState<'verde' | 'amarillo' | 'rojo'>('verde');
   // El bloque de lecturas solo se despliega si el usuario marca que quiere
   // capturarlas (muchos reportes no llevan primera/ultima lectura).
   const [registrarLecturas, setRegistrarLecturas] = useState(false);
@@ -156,7 +159,7 @@ export default function NewReportScreen() {
       nodeId: selectedLeaf?.id || path[path.length - 1]?.id || '',
       ubicacion: path.map((n) => n.name),
       datos: {
-        nombre, severidad: Array.from(severidadUI), registrarLecturas, unidad, primeraLectura, ultimaLectura,
+        nombre, severidad: Array.from(severidadUI), gravedad, registrarLecturas, unidad, primeraLectura, ultimaLectura,
         actividades, observaciones, incidencias, personal, equipo, camposExtra, images, captions,
         templateId: selectedTemplateId, dynamicData,
       },
@@ -235,6 +238,7 @@ export default function NewReportScreen() {
     const d = b.datos;
     setNombre(d.nombre);
     setSeveridadUI(new Set((d.severidad as SeveridadUI[]).length ? (d.severidad as SeveridadUI[]) : ['Informativo']));
+    setGravedad(d.gravedad === 'amarillo' || d.gravedad === 'rojo' ? d.gravedad : 'verde');
     setRegistrarLecturas(d.registrarLecturas);
     setUnidad(d.unidad);
     setPrimeraLectura(d.primeraLectura);
@@ -304,6 +308,7 @@ export default function NewReportScreen() {
   const resetForm = () => {
     setNombre('');
     setSeveridadUI(new Set(['Informativo']));
+    setGravedad('verde');
     setRegistrarLecturas(false);
     setUnidad('m');
     setPrimeraLectura('');
@@ -448,6 +453,7 @@ export default function NewReportScreen() {
         node_id: selectedLeaf.id,
         title: nombre.trim(),
         severidad: finalSeveridad as any,
+        gravedad,
         unidad,
         primera_lectura: registrarLecturas ? (parseFloat(primeraLectura) || 0) : 0,
         ultima_lectura: registrarLecturas ? (parseFloat(ultimaLectura) || 0) : 0,
@@ -779,6 +785,32 @@ export default function NewReportScreen() {
                 <Ionicons name="flash" size={16} color={severidadUI.has('Mensual') ? '#fff' : '#DC2626'} />
                 <Text style={[styles.sevTxt, { color: severidadUI.has('Mensual') ? '#fff' : '#DC2626' }]}>{t('nuevoReporte.mensual')}</Text>
               </TouchableOpacity>
+            </View>
+          </View>
+        )}
+
+        {/* GRAVEDAD (SEMAFORO verde / amarillo / rojo) */}
+        {selectedLeaf && (
+          <View style={styles.card}>
+            <View style={styles.cardHeader}>
+              <View style={styles.cardIconBox}><Ionicons name="ellipse" size={16} color={colors.primary} /></View>
+              <Text style={styles.cardLabel}>{t('nuevoReporte.gravedadSemaforo')}</Text>
+            </View>
+            <Text style={styles.sevHint}>{t('nuevoReporte.gravedadAyuda')}</Text>
+            <View style={styles.sevRow}>
+              {([
+                ['verde', '#16A34A', t('nuevoReporte.gravedadVerde')],
+                ['amarillo', '#EAB308', t('nuevoReporte.gravedadAmarillo')],
+                ['rojo', '#DC2626', t('nuevoReporte.gravedadRojo')],
+              ] as const).map(([key, color, label]) => (
+                <TouchableOpacity accessibilityRole="button" key={key}
+                  onPress={() => setGravedad(key)}
+                  style={[styles.sevBtn, { borderColor: color }, gravedad === key ? { backgroundColor: color } : { backgroundColor: '#F8FAFC' }]}
+                >
+                  <View style={{ width: 12, height: 12, borderRadius: 6, backgroundColor: gravedad === key ? '#fff' : color }} />
+                  <Text style={[styles.sevTxt, { color: gravedad === key ? '#fff' : color }]}>{label}</Text>
+                </TouchableOpacity>
+              ))}
             </View>
           </View>
         )}
