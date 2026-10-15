@@ -26669,24 +26669,48 @@ async def export_reports_pptx(
         def _emit_resumen_actividades_frente_slides() -> None:
             if not actividades_resumen_frente:
                 return
-            RF_MARGIN_X = Cm(1.5)
-            RF_GUTTER = Cm(1.0)
-            rf_content_w = SW - 2 * RF_MARGIN_X
-            rf_col_w = int((rf_content_w - RF_GUTTER) / 2)
-            RF_FONT = 12
+            # Layout del reporte de referencia: el membrete ya trae el título
+            # "ACTIVIDADES GENERALES" en la banda; tres columnas iguales
+            # separadas por líneas verticales del color de marca, el nombre
+            # del Área (con ícono) arriba de la 1ª columna, encabezados en
+            # negritas negras y viñetas justificadas.
+            con_membrete = tpl_master_slide is not None
+            RF_COLS = 3
+            RF_PAD = Cm(0.35)
+            RF_FONT = 14
             RF_LINE = int(RF_FONT * 1.2 * 12700)
-            RF_GAP = int(Pt(4))
-            RF_SPC_ANTES_H = int(Pt(6))
+            RF_GAP = int(Pt(3))
+            RF_SPC_ANTES_H = int(Pt(16))
             RF_INDENT = int(Cm(0.6))
-            col_top = TOP_MARGIN + Cm(1.3) + Cm(1.0)
-            col_h = int((SH - BOTTOM_MARGIN) - col_top - Cm(0.2))
+            rf_band_h = Cm(2.15) if con_membrete else TOP_MARGIN + Cm(1.3)
+            rf_bottom = (SH - Cm(0.63) - Cm(0.1)) if con_membrete else (SH - BOTTOM_MARGIN)
+            rf_col_w = int(SW / RF_COLS)
+            rf_txt_w = rf_col_w - 2 * RF_PAD
+            head_y = rf_band_h + Cm(0.25)
+            head_h = Cm(1.4)
+            col_top = head_y + head_h + Cm(0.15)
+            col_h = int(rf_bottom - col_top - Cm(0.2))
+
+            def _icono_area(slide, x, y):
+                """Pictograma de estructura (losa + columnas + base) en color de marca."""
+                w, h = Cm(2.3), Cm(1.1)
+                _wf_rect(slide, x, y, w, int(h * 0.16), fill_rgb=None, line_rgb=READABLE_BRAND_RGB, line_pt=1.75)
+                n = 9
+                for i in range(n):
+                    cx = x + int(w * 0.12) + int((w * 0.76) * i / (n - 1))
+                    _wf_rect(slide, cx, y + int(h * 0.16), int(Pt(1.25)), int(h * 0.5),
+                             fill_rgb=READABLE_BRAND_RGB)
+                _wf_rect(slide, x + int(w * 0.1), y + int(h * 0.16), int(w * 0.8), int(h * 0.5),
+                         fill_rgb=None, line_rgb=READABLE_BRAND_RGB, line_pt=1.25)
+                _wf_rect(slide, x + int(w * 0.04), y + int(h * 0.82), int(w * 0.92), int(h * 0.1),
+                         fill_rgb=None, line_rgb=READABLE_BRAND_RGB, line_pt=1.75)
 
             for grp in actividades_resumen_frente:
                 entradas: list = []
                 for b in grp["bloques"]:
-                    entradas.append(("h", b["titulo"], RF_LINE * _pptx_texto_lineas(b["titulo"], rf_col_w, RF_FONT) + RF_GAP + RF_SPC_ANTES_H))
+                    entradas.append(("h", b["titulo"], RF_LINE * _pptx_texto_lineas(b["titulo"], rf_txt_w, RF_FONT) + RF_GAP + RF_SPC_ANTES_H))
                     for ln in b["lineas"]:
-                        entradas.append(("b", ln, RF_LINE * _pptx_texto_lineas(ln, rf_col_w - RF_INDENT, RF_FONT) + RF_GAP))
+                        entradas.append(("b", ln, RF_LINE * _pptx_texto_lineas(ln, rf_txt_w - RF_INDENT, RF_FONT) + RF_GAP))
                 columnas: list = []
                 cur: list = []
                 usado = 0
@@ -26701,17 +26725,23 @@ async def export_reports_pptx(
                 if cur:
                     columnas.append(cur)
 
-                for pi in range(0, len(columnas), 2):
+                for pi in range(0, len(columnas), RF_COLS):
                     if pi == 0:
                         _indice_mark(f"actfrente:{grp['area']}", f"Resumen de actividades · {grp['area']}")
                     slide = _clone_membrete()
-                    add_text(slide, RF_MARGIN_X, TOP_MARGIN, rf_content_w, Cm(1.3), "ACTIVIDADES GENERALES",
-                             size=26, bold=True, color=READABLE_BRAND_RGB, align=PP_ALIGN.CENTER)
-                    add_text(slide, RF_MARGIN_X, TOP_MARGIN + Cm(1.3), rf_content_w, Cm(0.9),
+                    if not con_membrete:
+                        add_text(slide, Cm(1.5), TOP_MARGIN, SW - Cm(3.0), Cm(1.3), "ACTIVIDADES GENERALES",
+                                 size=26, bold=True, color=READABLE_BRAND_RGB, align=PP_ALIGN.CENTER)
+                    for ci in range(1, RF_COLS):
+                        ln = slide.shapes.add_connector(1, rf_col_w * ci, int(rf_band_h), rf_col_w * ci, int(rf_bottom))
+                        ln.line.color.rgb = PRGBColor(*READABLE_BRAND_RGB)
+                        ln.line.width = Pt(2.25)
+                    _icono_area(slide, RF_PAD, head_y + Cm(0.15))
+                    add_text(slide, RF_PAD + Cm(2.6), head_y, rf_col_w - RF_PAD - Cm(2.7), head_h,
                              grp["area"].upper() + ("  (CONTINÚA)" if pi else ""),
-                             size=18, bold=True, color=WF_TEXT_RGB)
-                    for ci, col in enumerate(columnas[pi:pi + 2]):
-                        tb = slide.shapes.add_textbox(RF_MARGIN_X + ci * (rf_col_w + RF_GUTTER), col_top, rf_col_w, col_h)
+                             size=22 if len(grp["area"]) <= 14 else 16, bold=True, color=READABLE_BRAND_RGB)
+                    for ci, col in enumerate(columnas[pi:pi + RF_COLS]):
+                        tb = slide.shapes.add_textbox(ci * rf_col_w + RF_PAD, col_top, rf_txt_w, col_h)
                         tf = tb.text_frame
                         tf.word_wrap = True
                         for k, (tipo, texto) in enumerate(col):
@@ -26721,14 +26751,15 @@ async def export_reports_pptx(
                             run.font.size = Pt(RF_FONT)
                             run.font.bold = tipo == "h"
                             run.font.color.rgb = PRGBColor(*WF_TEXT_RGB)
-                            par.space_after = Pt(4)
+                            par.space_after = Pt(3)
                             if tipo == "h" and k > 0:
-                                par.space_before = Pt(6)
+                                par.space_before = Pt(16)
                             if tipo == "b":
+                                par.alignment = PP_ALIGN.JUSTIFY
                                 pPr = par._p.get_or_add_pPr()
                                 pPr.set("marL", str(RF_INDENT))
                                 pPr.set("indent", str(-RF_INDENT))
-                                _ET.SubElement(pPr, _qn("a:buChar")).set("char", "\u2022")
+                                _ET.SubElement(pPr, _qn("a:buChar")).set("char", "•")
 
         # ===== SLIDE DATOS DE CONTRATO =====================================
         # Formato del informe diario de referencia: dos columnas (OBRA y
