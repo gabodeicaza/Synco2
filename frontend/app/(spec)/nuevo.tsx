@@ -25,6 +25,7 @@ import { confirm } from '@/src/utils/confirm';
 import { showToast } from '@/src/utils/toast';
 import { leerBorrador, suscribirBorradores } from '@/src/utils/borradores';
 import { useBorradorAutoguardado } from '@/src/hooks/useBorradorAutoguardado';
+import { emitirReporteEditado, puedeEditarReporte } from '@/src/utils/reportEdit';
 import { t, a11y } from '@/src/i18n';
 
 // Persistence Keys
@@ -41,7 +42,11 @@ interface DynItem {
 export default function NewReportScreen() {
   const insets = useSafeAreaInsets();
   const { user } = useAuth(); // [FIX] Re-adding missing useAuth hook to prevent ReferenceError
-  const params = useLocalSearchParams<{ project_id: string; node_id: string; borrador_id?: string; borrador_ts?: string }>();
+  const params = useLocalSearchParams<{ project_id: string; node_id: string; borrador_id?: string; borrador_ts?: string; editar_id?: string; editar_ts?: string }>();
+  // Modo edición: el autor reabre un reporte propio (≤ 8 h) con todo precargado; al guardar se
+  // actualiza el mismo reporte. No usa borradores ni la cola offline.
+  const editarId = params.editar_id || '';
+  const editando = !!editarId;
 
   // --- ESTRUCTURA ---
   const [projects, setProjects] = useState<Project[]>([]);
@@ -164,7 +169,7 @@ export default function NewReportScreen() {
         templateId: selectedTemplateId, dynamicData,
       },
     },
-    !loading,
+    !loading && !editando,
   );
 
   useEffect(() => {
@@ -174,14 +179,29 @@ export default function NewReportScreen() {
         const list = await api.listProjects();
         setProjects(list || []);
 
-        const activePid = params.project_id || (list && list.length > 0 ? list[0].id : '');
+        let reporteEdit: Report | null = null;
+        if (editarId) {
+          try { reporteEdit = await api.getReport(editarId); }
+          catch (e: any) {
+            Alert.alert(t('nuevoReporte.error'), e?.message || t('nuevoReporte.noSePudoCargarReporte'));
+            router.back();
+            return;
+          }
+          if (!puedeEditarReporte(reporteEdit, user?.id)) {
+            Alert.alert(t('nuevoReporte.error'), t('nuevoReporte.ventanaEdicionVencida'));
+            router.back();
+            return;
+          }
+        }
+        const activePid = reporteEdit?.project_id || params.project_id || (list && list.length > 0 ? list[0].id : '');
         if (activePid) {
           const p = await api.getProject(activePid);
           setProject(p);
           const t = await api.getTree(activePid);
           setTree(t || []);
 
-          if (params.node_id) {
+          const nodoInicial = reporteEdit?.node_id || params.node_id;
+          if (nodoInicial) {
             const findAndSetLeaf = (nodes: LocationNodeTree[], targetId: string, currentPath: LocationNodeTree[] = []): boolean => {
               for (const n of nodes) {
                 if (n.id === targetId) {
@@ -193,7 +213,7 @@ export default function NewReportScreen() {
               }
               return false;
             };
-            findAndSetLeaf(t || [], params.node_id);
+            findAndSetLeaf(t || [], nodoInicial);
           }
         }
 
@@ -207,7 +227,8 @@ export default function NewReportScreen() {
           setReportTemplates(tpls || []);
         } catch (e) { console.log('Error fetching report templates', e); }
 
-        if (params.borrador_id) await restaurarBorrador(params.borrador_id);
+        if (reporteEdit) cargarReporteParaEditar(reporteEdit);
+        else if (params.borrador_id) await restaurarBorrador(params.borrador_id);
       } catch (e) { Alert.alert(t('nuevoReporte.error'), t('nuevoReporte.noSePudoIniciar')); }
       finally { setLoading(false); }
     })();
@@ -218,13 +239,52 @@ export default function NewReportScreen() {
 
     return () => {
       // Lo capturado a medias queda como borrador antes de limpiar: así salir del
-      // formulario (o abrir otro borrador) no pierde nada.
-      borrador.guardarAhora();
+      // formulario (o abrir otro borrador) no pierde nada. Editar un reporte ya enviado
+      // no genera borradores.
+      if (!editarId) borrador.guardarAhora();
       borrador.soltar();
       // Auto-reset when screen is closed to ensure fresh start next time
       resetForm();
     };
-  }, [params.project_id, params.node_id, params.borrador_id, params.borrador_ts]);
+  }, [params.project_id, params.node_id, params.borrador_id, params.borrador_ts, editarId, params.editar_ts]);
+
+  // Vuelca un reporte ya enviado en el formulario para editarlo (misma pantalla de captura).
+  function cargarReporteParaEditar(r: Report) {
+    const SEV_BACKEND_TO_UI: Record<string, SeveridadUI> = {
+      informativo: 'Informativo', diario: 'Diario', importante: 'Semanal', urgente: 'Mensual',
+    };
+    const sevs = (Array.isArray(r.severidad) ? r.severidad : r.severidad ? [r.severidad as any] : [])
+      .map((s) => SEV_BACKEND_TO_UI[s]).filter(Boolean);
+    // "3 Peón" → cantidad 3 + descripción "Peón" (formato con el que se guarda la fuerza de trabajo).
+    const aItems = (lista: string[] | undefined): DynItem[] => (lista || []).map((txt) => {
+      const m = /^(\d+)\s+(.*)$/.exec((txt || '').trim());
+      return { id: Math.random().toString(36).substring(7), desc: m ? m[2] : txt, qty: m ? parseInt(m[1], 10) : 1 };
+    });
+    setNombre(r.title || '');
+    setSeveridadUI(new Set(sevs.length ? sevs : ['Informativo']));
+    setGravedad(r.gravedad === 'amarillo' || r.gravedad === 'rojo' ? r.gravedad : 'verde');
+    const unidadRep = r.unidad === 'km' || r.unidad === 'cm' ? r.unidad : 'm';
+    setUnidad(unidadRep);
+    const conLecturas = !!(r.primera_lectura || r.ultima_lectura);
+    setRegistrarLecturas(conLecturas);
+    setPrimeraLectura(conLecturas && r.primera_lectura != null ? String(r.primera_lectura) : '');
+    setUltimaLectura(conLecturas && r.ultima_lectura != null ? String(r.ultima_lectura) : '');
+    setActividades(r.actividades || '');
+    setObservaciones(r.observaciones || '');
+    setIncidencias(r.incidencias || '');
+    setPersonal(aItems(r.personnel));
+    setEquipo(aItems(r.equipment));
+    const extras: Record<string, string> = {};
+    for (const c of r.campos_extra || []) if (c.id && c.valor != null) extras[c.id] = String(c.valor);
+    setCamposExtra(extras);
+    setImages((r.images || []).filter(Boolean).map((i) => (/^(data:|https?:)/.test(i) ? i : `data:image/jpeg;base64,${i}`)));
+    const caps = r.photo_captions || [];
+    setCaptions([caps[0] || '', caps[1] || '']);
+    if (r.template_id) setSelectedTemplateId(r.template_id);
+    const dyn: Record<string, any> = {};
+    for (const [k, v] of Object.entries(r.dynamic_data || {})) dyn[k] = typeof v === 'number' ? String(v) : v;
+    setDynamicData(dyn);
+  }
 
   // Vuelca un borrador guardado en el formulario. La ubicación (proyecto/nodo) ya la
   // restauró la carga de arriba a partir de los parámetros de la ruta.
@@ -475,8 +535,11 @@ export default function NewReportScreen() {
         dynamic_data: finalDynamicData,
       };
 
-      const res = await api.createReport(payload);
+      const res = editando
+        ? await api.updateReport(editarId, { ...payload, captured_at: undefined })
+        : await api.createReport(payload);
       borrador.marcarEnviado();
+      if (editando) emitirReporteEditado();
       // `res.node_path_names` solo viene calculado del backend cuando el
       // envio fue real; en modo encolado (offline) lo derivamos del `path`
       // local para que `buildReportShareText` funcione igual en los dos casos.
@@ -515,6 +578,7 @@ export default function NewReportScreen() {
 
   // Salir del formulario nunca pierde lo capturado: queda guardado como borrador.
   async function onClosePressed() {
+    if (editando) { router.back(); return; }
     const res = await borrador.guardarAhora();
     if (res === 'ok') showToast(t('borradores.guardado'));
     router.back();
@@ -539,8 +603,10 @@ export default function NewReportScreen() {
       {/* Header (Imagen 1) */}
       <View style={[styles.header, { paddingTop: insets.top }]}>
         <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} hitSlop={8} onPress={onClosePressed} style={styles.headerBtn}><Ionicons name="close" size={24} color={colors.text} /></Pressable>
-        <Text style={styles.headerTitle}>{t('nuevoReporte.nuevoReporte')}</Text>
-        <Pressable accessibilityRole="button" accessibilityLabel={t('borradores.guardarBorrador')} hitSlop={8} onPress={onSaveDraftPressed} style={styles.headerBtn}><Ionicons name="bookmark-outline" size={22} color={colors.primary} /></Pressable>
+        <Text style={styles.headerTitle}>{editando ? t('nuevoReporte.editarReporte') : t('nuevoReporte.nuevoReporte')}</Text>
+        {editando
+          ? <View style={styles.headerBtn} />
+          : <Pressable accessibilityRole="button" accessibilityLabel={t('borradores.guardarBorrador')} hitSlop={8} onPress={onSaveDraftPressed} style={styles.headerBtn}><Ionicons name="bookmark-outline" size={22} color={colors.primary} /></Pressable>}
       </View>
 
       <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">

@@ -1032,6 +1032,7 @@ class ReportOut(BaseModel):
     captured_by: str
     captured_by_name: str
     created_at: datetime
+    edited_at: Optional[datetime] = None
     template_id: Optional[str] = None
     dynamic_data: dict = Field(default_factory=dict)
     # Campos libres del Área con su valor, tal como se capturaron:
@@ -11380,6 +11381,79 @@ async def create_report(body: ReportIn, user: dict = Depends(current_user)):
         if existing:
             existing.pop("_id", None)
             return existing
+    doc, node, path_names = await _preparar_doc_reporte(body, user)
+    if body.client_id:
+        # Solo se agrega si hay valor: el índice es sparse, y una clave con
+        # `None` explícito en todos los docs rompería esa exclusión.
+        doc["client_id"] = body.client_id
+    try:
+        await db.reports.insert_one(doc)
+    except DuplicateKeyError:
+        # Dos reintentos casi simultáneos con el mismo client_id (ej. flush
+        # automático y un tap manual de "reintentar" a la vez).
+        existing = await db.reports.find_one({"client_id": body.client_id})
+        if existing:
+            existing.pop("_id", None)
+            return existing
+        raise
+    doc.pop("_id", None)
+    await _agendar_avisos_reporte_nuevo(doc, body, user, node, path_names)
+    return doc
+
+
+# Ventana (horas desde la captura) en que el autor puede editar su reporte completo.
+REPORTE_EDITABLE_HORAS = 8
+
+
+def reporte_editable_hasta(r: dict) -> Optional[datetime]:
+    ts = r.get("created_at")
+    if not isinstance(ts, datetime):
+        return None
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return ts + timedelta(hours=REPORTE_EDITABLE_HORAS)
+
+
+def reporte_editable_por(r: dict, user: dict, ahora: Optional[datetime] = None) -> bool:
+    """El autor puede editar su reporte durante las 8 h siguientes a su captura."""
+    if r.get("captured_by") != user.get("id"):
+        return False
+    limite = reporte_editable_hasta(r)
+    return limite is not None and (ahora or datetime.now(timezone.utc)) <= limite
+
+
+@api.put("/reports/{rid}")
+async def update_report(rid: str, body: ReportIn, user: dict = Depends(current_user)):
+    """Edita el reporte completo (mismo formulario que la captura). Solo su autor
+    y solo durante las `REPORTE_EDITABLE_HORAS` h posteriores a la captura."""
+    r = await db.reports.find_one({"id": rid})
+    if not r:
+        raise HTTPException(404, "Reporte no existe")
+    if r.get("captured_by") != user["id"]:
+        raise HTTPException(403, "Solo el autor puede editar el reporte")
+    if not reporte_editable_por(r, user):
+        raise HTTPException(403, f"Ya pasaron las {REPORTE_EDITABLE_HORAS} horas para editar este reporte")
+    if body.project_id != r.get("project_id"):
+        raise HTTPException(400, "No se puede cambiar el proyecto de un reporte")
+    doc, _node, _path = await _preparar_doc_reporte(body, user)
+    # Se conservan identidad, autoría y fecha de captura (la ventana no se reinicia).
+    doc["id"] = r["id"]
+    doc["captured_by"] = r["captured_by"]
+    doc["captured_by_name"] = r.get("captured_by_name") or doc["captured_by_name"]
+    doc["created_at"] = r["created_at"]
+    if r.get("client_id"):
+        doc["client_id"] = r["client_id"]
+    doc["edited_at"] = datetime.now(timezone.utc)
+    await db.reports.replace_one({"id": rid}, doc)
+    doc.pop("_id", None)
+    return doc
+
+
+async def _preparar_doc_reporte(body: ReportIn, user: dict):
+    """Valida el cuerpo y arma el documento del reporte (sin guardarlo).
+    Devuelve (doc, node, path_names). Compartido por captura y edición."""
+    if user["role"] not in (ROLE_ESPECIALISTA, ROLE_COORD, ROLE_SUB, ROLE_JEFE):
+        raise HTTPException(403, "Tu rol no puede capturar reportes")
     await ensure_project_access(user, body.project_id)
     node = await db.location_nodes.find_one({"id": body.node_id, "project_id": body.project_id})
     if not node:
@@ -11560,22 +11634,10 @@ async def create_report(body: ReportIn, user: dict = Depends(current_user)):
         doc["captura_equipo"] = False
     if body.solo_fuerza_trabajo:
         doc["solo_fuerza_trabajo"] = True
-    if body.client_id:
-        # Solo se agrega si hay valor: el índice es sparse, y una clave con
-        # `None` explícito en todos los docs rompería esa exclusión.
-        doc["client_id"] = body.client_id
-    try:
-        await db.reports.insert_one(doc)
-    except DuplicateKeyError:
-        # Dos reintentos casi simultáneos con el mismo client_id (ej. flush
-        # automático y un tap manual de "reintentar" a la vez).
-        existing = await db.reports.find_one({"client_id": body.client_id})
-        if existing:
-            existing.pop("_id", None)
-            return existing
-        raise
-    doc.pop("_id", None)
+    return doc, node, path_names
 
+
+async def _agendar_avisos_reporte_nuevo(doc: dict, body: ReportIn, user: dict, node: dict, path_names: list) -> None:
     # ====================================================================
     # PUSH NOTIFICATION DISPATCH (background, fire-and-forget)
     # --------------------------------------------------------------------
@@ -11609,8 +11671,6 @@ async def create_report(body: ReportIn, user: dict = Depends(current_user)):
         asyncio.create_task(_whatsapp_enviar_reporte(doc))
     except Exception as exc:
         log.exception("[whatsapp] no se pudo agendar el envío: %s", exc)
-
-    return doc
 
 
 _WHATSAPP_MAX_FOTOS = 10  # tope por reporte para no saturar el grupo

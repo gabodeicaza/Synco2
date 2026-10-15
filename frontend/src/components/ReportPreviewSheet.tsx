@@ -23,6 +23,8 @@ import {
   TouchableOpacity,
 } from 'react-native';
 import { Image } from 'expo-image';
+import { router } from 'expo-router';
+import { puedeEditarReporte, rutaEditarReporte } from '@/src/utils/reportEdit';
 import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import * as Sharing from 'expo-sharing';
@@ -225,6 +227,16 @@ export function ReportPreviewSheet({
       user.role === 'coordinador_general' ||
       user.role === 'sub_coordinador');
 
+  // Edición completa: el autor, hasta 8 h después de capturar. Abre la pantalla de
+  // captura con el reporte ya cargado.
+  const rutaEditar = rutaEditarReporte(user?.role);
+  const puedeEditarCompleto = !!rutaEditar && puedeEditarReporte(source as any, user?.id);
+  const onEditarCompleto = React.useCallback(() => {
+    if (!rutaEditar || !reportId) return;
+    onClose();
+    router.push({ pathname: rutaEditar, params: { editar_id: reportId, editar_ts: String(Date.now()) } } as any);
+  }, [rutaEditar, reportId, onClose]);
+
   // Titulo: strictly check valid keys (title, nombre, titulo, name).
   // DO NOT use description/notes for title as they contain activities/observations.
   const title =
@@ -402,6 +414,11 @@ export function ReportPreviewSheet({
               <Text style={styles.title} numberOfLines={1}>
                 {title}
               </Text>
+              {puedeEditarCompleto && (
+                <Pressable accessibilityRole="button" accessibilityLabel={t('vistaPreviaReporte.editarReporte')} hitSlop={10} onPress={onEditarCompleto} style={{ marginRight: 14 }}>
+                  <Ionicons name="create-outline" size={22} color="#1E40AF" />
+                </Pressable>
+              )}
               <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} hitSlop={10} onPress={onClose}>
                 <Ionicons name="close" size={22} color="#0F172A" />
               </Pressable>

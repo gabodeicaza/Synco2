@@ -33,6 +33,7 @@ import { MyMeetingsPanel } from '@/src/components/MyMeetingsPanel';
 import { BorradoresCard } from '@/src/components/BorradoresCard';
 import { GravedadDot, GravedadFiltro, filtrarPorGravedad, type GravedadFiltroValor } from '@/src/components/GravedadDot';
 import { ReportPreviewSheet } from '@/src/components/ReportPreviewSheet';
+import { suscribirReporteEditado } from '@/src/utils/reportEdit';
 import { HistoryCalendarModal } from '@/src/components/HistoryCalendarModal';
 import { a11y, t } from '@/src/i18n';
 import {
@@ -201,6 +202,9 @@ export default function SpecFeedScreen() {
     if (!projectId) return;
     loadFeed(range, true, debouncedQuery);
   }, [debouncedQuery]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Un reporte editado (pantalla de captura en modo edición) refresca el feed.
+  useEffect(() => suscribirReporteEditado(() => { loadFeed(range, true, debouncedQuery); }), [loadFeed, range, debouncedQuery]);
 
   const onPickRange = useCallback((r: RangeKey) => {
     setRange(r);
