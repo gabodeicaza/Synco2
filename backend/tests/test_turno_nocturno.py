@@ -60,6 +60,50 @@ def test_separar_reportes_por_turno():
     assert n == {"a": [noche], "b": [noche]}
 
 
+def _en_rango(instante, rango):
+    return rango[0] <= instante <= rango[1]
+
+
+def test_informe_diario_en_curso_cubre_la_noche_previa_y_deja_la_de_hoy_para_manana():
+    # Hoy 16 oct 19:00 CDMX (= 17 oct 01:00 UTC). Diario nominal: 16 00:00 CDMX -> ahora.
+    ahora = utc(2026, 10, 17, 1, 0)
+    nominal = (utc(2026, 10, 16, 6, 0), ahora)
+    rango = server.rango_reportes_con_turno(*nominal, PROY, ahora)
+    assert _en_rango(utc(2026, 10, 16, 5, 0), rango)    # 15 oct 23:00 CDMX -> sale en el del 16
+    assert _en_rango(utc(2026, 10, 16, 8, 0), rango)    # 16 oct 02:00 -> sale en el del 16
+    assert _en_rango(utc(2026, 10, 16, 20, 0), rango)   # 16 oct 14:00 (turno de dia)
+    assert not _en_rango(utc(2026, 10, 16, 1, 59), rango)  # 15 oct 19:59: lo cubrio el informe del 15
+
+
+def test_informe_en_curso_no_incluye_la_noche_que_apenas_empezo():
+    # Hoy 15 oct 23:00 CDMX (= 16 oct 05:00 UTC): esa captura es del informe del 16.
+    ahora = utc(2026, 10, 16, 5, 0)
+    rango = server.rango_reportes_con_turno(utc(2026, 10, 15, 6, 0), ahora, PROY, ahora)
+    assert not _en_rango(utc(2026, 10, 16, 4, 59), rango)  # 22:59 CDMX del 15
+    assert _en_rango(utc(2026, 10, 16, 1, 59), rango)      # 19:59 CDMX del 15
+
+
+def test_informe_a_las_2am_incluye_lo_capturado_de_madrugada():
+    ahora = utc(2026, 10, 16, 8, 0)  # 16 oct 02:00 CDMX
+    rango = server.rango_reportes_con_turno(utc(2026, 10, 16, 6, 0), ahora, PROY, ahora)
+    assert _en_rango(utc(2026, 10, 16, 7, 0), rango)       # 01:00 del 16
+    assert _en_rango(utc(2026, 10, 16, 3, 0), rango)       # 21:00 del 15
+
+
+def test_rango_cerrado_se_recorre_completo():
+    ahora = utc(2026, 10, 20, 12, 0)
+    ini, fin = server.rango_reportes_con_turno(utc(2026, 10, 15, 6, 0), utc(2026, 10, 16, 6, 0), PROY, ahora)
+    assert ini == utc(2026, 10, 15, 2, 0) and fin == utc(2026, 10, 16, 2, 0)  # 14 20:00 -> 15 20:00 CDMX
+
+
+def test_rango_sin_cambio_si_no_hay_turno_o_no_cruza_medianoche():
+    ahora = utc(2026, 10, 17, 1, 0)
+    nominal = (utc(2026, 10, 16, 6, 0), ahora)
+    assert server.rango_reportes_con_turno(*nominal, {}, ahora) == nominal
+    mismo_dia = {"turno_nocturno_inicio": "01:00", "turno_nocturno_fin": "05:00"}
+    assert server.rango_reportes_con_turno(*nominal, mismo_dia, ahora) == nominal
+
+
 def test_separar_sin_turno_deja_todo_en_el_dia():
     por_nodo = {"a": [{"id": "x", "created_at": utc(2026, 9, 29, 4, 0)}]}
     d, n = server.separar_reportes_por_turno(por_nodo, {})

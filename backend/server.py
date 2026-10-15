@@ -1557,6 +1557,32 @@ def separar_reportes_por_turno(reports_by_node: dict, project: Optional[dict]) -
     return dia, noche
 
 
+def rango_reportes_con_turno(start_utc: datetime, end_utc: datetime, project: Optional[dict],
+                             ahora_utc: Optional[datetime] = None) -> Tuple[datetime, datetime]:
+    """Rango de captura (`created_at`) de los reportes de un informe cuando el
+    proyecto tiene turno nocturno que CRUZA la medianoche (ej. 20:00–06:00).
+
+    El informe diario se entrega por la tarde, así que el informe del día D
+    cubre el turno nocturno que lo precede: desde las `inicio` del día D-1
+    hasta las `inicio` del día D. Una captura de las 23:00 del 15 sale en el
+    informe del 16, y una de las 02:00 del 16 también. Equivale a correr
+    todo el rango 24h − `inicio` hacia atrás; si el rango termina "ahora"
+    (informe en curso) el fin se recorta a las `inicio` de hoy para que lo
+    capturado esa noche espere al informe de mañana. Sin turno nocturno, o
+    si no cruza la medianoche, el rango no cambia."""
+    ventana = turno_nocturno_ventana(project)
+    if ventana is None or ventana[0] < ventana[1]:
+        return start_utc, end_utc
+    desplazamiento = timedelta(minutes=1440 - ventana[0])
+    ahora = ahora_utc or datetime.now(timezone.utc)
+    nuevo_inicio = start_utc - desplazamiento
+    if end_utc >= ahora - timedelta(seconds=5):  # informe en curso: termina "ahora"
+        hoy_local = ahora.astimezone(zona_proyecto(project)).replace(hour=0, minute=0, second=0, microsecond=0)
+        corte = (hoy_local + timedelta(minutes=ventana[0])).astimezone(timezone.utc)
+        return nuevo_inicio, min(end_utc, corte)
+    return nuevo_inicio, end_utc - desplazamiento
+
+
 async def hoy_de(pid: str) -> date:
     """`hoy_proyecto` a partir del id del proyecto (una consulta ligera)."""
     proj = await db.projects.find_one({"id": pid}, {"zona_horaria": 1})
@@ -20405,9 +20431,13 @@ async def _export_reports_query(
     sev_filter = _severity_set_for_period_type(pt_norm, default_sev_filter)
 
     # --- Construir query base con filtros institucionales ---
+    # Con turno nocturno, el informe del día D incluye la noche que lo precede
+    # (ver `rango_reportes_con_turno`); solo cambia QUÉ reportes entran, no las
+    # fechas nominales del informe (portada, módulos, firmas).
+    rep_ini, rep_fin = rango_reportes_con_turno(start_dt, end_dt, proj)
     q: dict = {
         "project_id": pid,
-        "created_at": {"$gte": start_dt, "$lte": end_dt},
+        "created_at": {"$gte": rep_ini, "$lte": rep_fin},
         "severidad": {"$in": list(sev_filter)},
     }
 
