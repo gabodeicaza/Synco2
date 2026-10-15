@@ -14369,6 +14369,9 @@ def _lidar_devolver_restantes(modulos_data: dict, por_sub: dict) -> None:
                                        "blocks": [{"type": "fotos_comparativa", "items": items}]}
 
 
+_MODULOS_SIN_PORTADA = ("fotos_lidar", "fotos_lidar_estacion")
+
+
 def _lidar_modulo_estacion(nombre: str, items: list) -> dict:
     return {"titulo": f"VUELO LIDAR · {nombre}".upper(),
             "blocks": [{"type": "fotos_comparativa", "items": items}]}
@@ -17979,7 +17982,10 @@ async def export_reports_pdf(
                     _resumen_tramo_pendiente = False
                 if datos is None:
                     _indice_mark(f"mod:{_mod_key}", _mod_data["titulo"])
-                _section_header(_mod_data["titulo"])
+                # Fotos/Vuelo LiDAR van directo a las fotos, sin el encabezado
+                # grande de sección (título + período) que hacía de portada.
+                if _mod_key not in _MODULOS_SIN_PORTADA:
+                    _section_header(_mod_data["titulo"])
                 for block in _mod_data["blocks"]:
                     _BLOCK_RENDERERS[block["type"]](block)
                 c.showPage()
@@ -24957,8 +24963,10 @@ async def export_reports_pptx(
             bottom_y = SH - Cm(1.2)
             HEADING_RGB = {"good": (0x16, 0xA3, 0x4A), "bad": (0xDC, 0x26, 0x26)}
 
-            def _new_slide(titulo: str):
+            def _new_slide(titulo: Optional[str]):
                 slide = _clone_membrete()
+                if not titulo:  # sin encabezado de sección (Vuelo LiDAR)
+                    return slide, top_y
                 add_text(slide, MARGIN_X, top_y, content_w, Cm(1.3), titulo,
                          size=32, bold=True, color=READABLE_BRAND_RGB, align=PP_ALIGN.CENTER)
                 add_text(slide, MARGIN_X, top_y + Cm(1.3), content_w, Cm(0.8),
@@ -25519,8 +25527,9 @@ async def export_reports_pptx(
                 titulo = _mod_data["titulo"]
                 if datos is None:
                     _indice_mark(f"mod:{_mod_key}", titulo)
-                state["slide"], state["y"] = _new_slide(titulo)
-                titulo_continua = f"{titulo} (continúa)"
+                sin_portada = _mod_key in _MODULOS_SIN_PORTADA
+                state["slide"], state["y"] = _new_slide(None if sin_portada else titulo)
+                titulo_continua = None if sin_portada else f"{titulo} (continúa)"
                 for block in _mod_data["blocks"]:
                     _BLOCK_RENDERERS[block["type"]](titulo_continua, block)
 
