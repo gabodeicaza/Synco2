@@ -18559,8 +18559,15 @@ async def export_reports_pdf(
                                         acceso_predio: Optional[str], weather: Optional[dict],
                                         mostrar_acceso_predio: bool = True,
                                         acceso_node_label: Optional[str] = None,
-                                        turno_label: Optional[str] = None) -> None:
+                                        turno_label: Optional[str] = None,
+                                        continuacion: bool = False) -> list:
             """Página de resumen por Subtramo — layout de 2 columnas separadas
+
+            CONTINUACIÓN: las actividades que no caben ya NO se cortan con
+            "+N más…"; la función devuelve las que sobraron y el llamador
+            emite otra página de la MISMA estación (`continuacion=True`:
+            mismo encabezado/título, solo la lista de actividades, sin
+            Acceso al Predio, Situación Social ni columna derecha).
             por una línea vertical delgada (color de marca):
 
             IZQUIERDA: título (ícono de estructura + nombre en mayúsculas),
@@ -18693,11 +18700,14 @@ async def export_reports_pdf(
                 c.drawString(x, y - 0.36 * cm, text.upper())
                 return y - 0.58 * cm
 
-            def _draw_bullets(x: float, y_top: float, w: float, items: list, avail_h: float, max_items: int) -> float:
+            def _draw_bullets(x: float, y_top: float, w: float, items: list, avail_h: float, max_items: int,
+                              resto_out: Optional[list] = None) -> float:
                 """Lista de viñetas real (`Paragraph` con `bulletText='•'`,
                 wrapping automático) — sustituye el texto suelto envuelto a
                 mano. Trunca por CANTIDAD de ítems (`max_items`) y por alto
-                disponible (`avail_h`): página fija, sin paginación."""
+                disponible (`avail_h`). Con `resto_out` (lista) NO imprime
+                "+N más…": deposita ahí los ítems que no cupieron para que
+                el llamador los continúe en otra página."""
                 if not items:
                     p = Paragraph("Sin información registrada", BULLET_EMPTY_STYLE)
                     _, h = p.wrapOn(c, w, avail_h)
@@ -18716,6 +18726,9 @@ async def export_reports_pdf(
                     y -= h
                     shown_h += h
                     n_shown += 1
+                if resto_out is not None:
+                    resto_out.extend(items[n_shown:])
+                    return y
                 overflow = len(items) - n_shown
                 if overflow > 0 and (avail_h - shown_h) > 0:
                     p = Paragraph(f"+ {overflow} más…", BULLET_MORE_STYLE)
@@ -18755,7 +18768,7 @@ async def export_reports_pdf(
             # Predio para esta ubicación en el hub (ver `mostrar_acceso_predio`
             # / `_resolve_acceso_predio_node`) — antes se imprimía "Sin
             # especificar" en TODOS los subtramos sin importar el hub.
-            if mostrar_acceso_predio:
+            if mostrar_acceso_predio and not continuacion:
                 # Ya no hace falta repetir el nombre del nodo aquí como
                 # subtítulo: es el título GRANDE de toda la página (ver
                 # `subtramo_name` arriba, resuelto vía `acceso_node_label`).
@@ -18783,7 +18796,12 @@ async def export_reports_pdf(
             # --- ACTIVIDADES ---------------------------------------------------
             y = _section_title(left_x, y, col_w, "Se supervisa las siguientes actividades")
             act_h = max(1.0 * cm, y - bottom_y)
-            _draw_bullets(left_x, y, col_w, actividades or [], act_h, max_items=6)
+            _acts_all = list(actividades or [])
+            _acts_resto: list = []
+            _draw_bullets(left_x, y, col_w, _acts_all, act_h, max_items=max(1, len(_acts_all)),
+                          resto_out=_acts_resto)
+            if continuacion:
+                return _acts_resto
 
             # =================================================================
             # LÍNEA DIVISORIA VERTICAL (delgada, color de marca)
@@ -19013,6 +19031,7 @@ async def export_reports_pdf(
 
             _draw_resource_table(right_x, "PERSONAL", personal_shown, personal_overflow, personal_total)
             _draw_resource_table(right_x + tbl_w + tbl_gutter, "MAQUINARIA Y EQUIPO", maquinaria_shown, maquinaria_overflow, maquinaria_total)
+            return _acts_resto
 
         _POSTE_ESTATUS_LABEL = {
             "sin_iniciar": "Sin iniciar", "en_proceso": "En proceso", "concluido": "Concluido",
@@ -19994,7 +20013,7 @@ async def export_reports_pdf(
                         mostrar_situacion=acceso_node is not None,
                     )
                 else:
-                    draw_subtramo_summary_page(
+                    _resto = draw_subtramo_summary_page(
                         subtramo_node, personal_rows, maquinaria_rows,
                         _acts_sub,
                         acceso_node.get("situacion_social") if acceso_node else None,
@@ -20003,6 +20022,20 @@ async def export_reports_pdf(
                         mostrar_acceso_predio=acceso_node is not None,
                         acceso_node_label=(acceso_node.get("name") if acceso_node else None),
                     )
+                    # Actividades que no cupieron: páginas de continuación
+                    # de la misma estación (la lista sigue igual).
+                    while _resto:
+                        c.showPage()
+                        page_num += 1
+                        _n_prev = len(_resto)
+                        _resto = draw_subtramo_summary_page(
+                            subtramo_node, [], [], _resto, None, None, None,
+                            mostrar_acceso_predio=False,
+                            acceso_node_label=(acceso_node.get("name") if acceso_node else None),
+                            continuacion=True,
+                        )
+                        if len(_resto) >= _n_prev:
+                            break
                 c.showPage()
                 page_num += 1
             if _noche:
@@ -20010,7 +20043,7 @@ async def export_reports_pdf(
                 # hoja con SOLO lo capturado en el turno nocturno.
                 _indice_mark(f"sub-noche:{subtramo_id}",
                              f"Resumen · {subtramo_node.get('name') or 'Subtramo'} · {TURNO_NOCTURNO_ETIQUETA.title()}")
-                draw_subtramo_summary_page(
+                _resto = draw_subtramo_summary_page(
                     subtramo_node, _noche.get("personal") or [], _noche.get("maquinaria") or [],
                     actividades_noche_by_subtramo.get(subtramo_id) or [],
                     acceso_node.get("situacion_social") if acceso_node else None,
@@ -20020,6 +20053,18 @@ async def export_reports_pdf(
                     acceso_node_label=(acceso_node.get("name") if acceso_node else None),
                     turno_label=TURNO_NOCTURNO_ETIQUETA,
                 )
+                while _resto:
+                    c.showPage()
+                    page_num += 1
+                    _n_prev = len(_resto)
+                    _resto = draw_subtramo_summary_page(
+                        subtramo_node, [], [], _resto, None, None, None,
+                        mostrar_acceso_predio=False,
+                        acceso_node_label=(acceso_node.get("name") if acceso_node else None),
+                        turno_label=TURNO_NOCTURNO_ETIQUETA, continuacion=True,
+                    )
+                    if len(_resto) >= _n_prev:
+                        break
                 c.showPage()
                 page_num += 1
 
@@ -24214,15 +24259,32 @@ async def export_reports_pptx(
                 return text
             return text[:max(1, max_chars - 1)].rstrip() + "…"
 
-        def _wf_bullets(slide, x: int, y: int, w: int, h: int, items: list, max_items: int, font_size: float = 11) -> None:
+        def _wf_bullets(slide, x: int, y: int, w: int, h: int, items: list, max_items: int, font_size: float = 11,
+                        resto_out: Optional[list] = None) -> None:
             """Textbox con viñetas (una por párrafo). Trunca por CANTIDAD de
-            ítems (`max_items`) y por longitud de cada ítem — no hay
-            paginación: mismo criterio de 'página fija, truncar' del PDF."""
+            ítems (`max_items`) y por longitud de cada ítem. Con `resto_out`
+            (lista) no imprime "+N más…": estima el alto de cada viñeta
+            (líneas × interlineado), muestra las que caben en `h` y deposita
+            el resto en `resto_out` para que el llamador las continúe en
+            otra slide de la misma estación."""
             tb = slide.shapes.add_textbox(x, y, w, h)
             tf = tb.text_frame
             tf.word_wrap = True
             shown = (items or [])[:max_items]
             max_chars = max(40, int((w / 360000.0) * 5.4 * 2))
+            if resto_out is not None and items:
+                cpl = max(20, int((w / 360000.0) / (font_size * 0.0176)))   # caracteres por línea
+                line_h = font_size * 1.25 * 12700                            # EMU por línea
+                max_lines = max(1, int(h / line_h) - 1)
+                shown, usadas = [], 0
+                for t in items:
+                    n_lin = max(1, -(-(len((t or "").strip()) + 3) // cpl))
+                    if usadas + n_lin > max_lines and shown:
+                        break
+                    shown.append(t)
+                    usadas += n_lin
+                resto_out.extend(items[len(shown):])
+                max_chars = cpl * max_lines
             if not shown:
                 p = tf.paragraphs[0]
                 run = p.add_run()
@@ -24238,7 +24300,7 @@ async def export_reports_pptx(
                 run.font.size = Pt(font_size)
                 run.font.color.rgb = PRGBColor(*WF_TEXT_RGB)
             overflow = len(items or []) - len(shown)
-            if overflow > 0:
+            if overflow > 0 and resto_out is None:
                 p = tf.add_paragraph()
                 run = p.add_run()
                 run.text = f"+ {overflow} más…"
@@ -24251,8 +24313,13 @@ async def export_reports_pptx(
                                          acceso_predio: Optional[str], weather: Optional[dict],
                                          mostrar_acceso_predio: bool = True,
                                          acceso_node_label: Optional[str] = None,
-                                         turno_label: Optional[str] = None) -> None:
-            """Slide de resumen por Subtramo — MISMO layout de 2 columnas que
+                                         turno_label: Optional[str] = None,
+                                         continuacion: bool = False) -> list:
+            """(CONTINUACIÓN: devuelve las actividades que no cupieron; el
+            llamador emite otra slide de la misma estación con
+            `continuacion=True` — solo título + lista de actividades.)
+
+            Slide de resumen por Subtramo — MISMO layout de 2 columnas que
             `draw_subtramo_summary_page` (motor PDF), con primitivas
             python-pptx: IZQUIERDA (título con ícono de estructura, Acceso al
             Predio con badge semántico, Situación Social, Actividades) y
@@ -24320,7 +24387,7 @@ async def export_reports_pptx(
             # Predio para esta ubicación en el hub (ver `mostrar_acceso_predio`
             # / `_resolve_acceso_predio_node`) — antes se imprimía "Sin
             # especificar" en TODOS los subtramos sin importar el hub.
-            if mostrar_acceso_predio:
+            if mostrar_acceso_predio and not continuacion:
                 # Ya no hace falta repetir el nombre del nodo aquí como
                 # subtítulo: es el título GRANDE de toda la slide (ver
                 # `subtramo_name` arriba, resuelto vía `acceso_node_label`).
@@ -24345,7 +24412,12 @@ async def export_reports_pptx(
             # --- Actividades ------------------------------------------------------
             y = _section_title(left_x, y, col_w, "Se supervisa las siguientes actividades")
             act_h = max(Cm(1.5), bottom_y - y)
-            _wf_bullets(slide, left_x, y, col_w, act_h, actividades or [], max_items=6, font_size=10.5)
+            _acts_all = list(actividades or [])
+            _acts_resto: list = []
+            _wf_bullets(slide, left_x, y, col_w, act_h, _acts_all, max_items=max(1, len(_acts_all)),
+                        font_size=10.5, resto_out=_acts_resto)
+            if continuacion:
+                return _acts_resto
 
             # ---- LÍNEA DIVISORIA VERTICAL (delgada, color de marca) ---------
             _wf_rect(slide, divider_x, top_y, Pt(1.3), bottom_y - top_y, fill_rgb=BRAND_RGB)
@@ -24454,6 +24526,7 @@ async def export_reports_pptx(
             _draw_mini_table(right_x, y, tbl_w, "Fuerza de Trabajo", personal_rows, "person", col1_header="PERSONAL")
             _draw_mini_table(right_x + tbl_w + tbl_gutter, y, tbl_w, "Maquinaria y Equipo", maquinaria_rows, "gear",
                               col1_header="MAQUINARIA Y EQUIPO")
+            return _acts_resto
 
         _POSTE_ESTATUS_LABEL_PPTX = {
             "sin_iniciar": "Sin iniciar", "en_proceso": "En proceso", "concluido": "Concluido",
@@ -25607,7 +25680,7 @@ async def export_reports_pptx(
                         mostrar_situacion=acceso_node is not None,
                     )
                 else:
-                    draw_subtramo_summary_slide(
+                    _resto = draw_subtramo_summary_slide(
                         subtramo_node, personal_rows, maquinaria_rows,
                         _acts_sub,
                         acceso_node.get("situacion_social") if acceso_node else None,
@@ -25616,12 +25689,22 @@ async def export_reports_pptx(
                         mostrar_acceso_predio=acceso_node is not None,
                         acceso_node_label=(acceso_node.get("name") if acceso_node else None),
                     )
+                    while _resto:
+                        _n_prev = len(_resto)
+                        _resto = draw_subtramo_summary_slide(
+                            subtramo_node, [], [], _resto, None, None, None,
+                            mostrar_acceso_predio=False,
+                            acceso_node_label=(acceso_node.get("name") if acceso_node else None),
+                            continuacion=True,
+                        )
+                        if len(_resto) >= _n_prev:
+                            break
             if _noche:
                 # Misma estación (mismo "ESTACIÓN N.", mismo nombre), segunda
                 # slide con SOLO lo capturado en el turno nocturno.
                 _indice_mark(f"sub-noche:{subtramo_id}",
                              f"Resumen · {subtramo_node.get('name') or 'Subtramo'} · {TURNO_NOCTURNO_ETIQUETA.title()}")
-                draw_subtramo_summary_slide(
+                _resto = draw_subtramo_summary_slide(
                     subtramo_node, _noche.get("personal") or [], _noche.get("maquinaria") or [],
                     actividades_noche_by_subtramo.get(subtramo_id) or [],
                     acceso_node.get("situacion_social") if acceso_node else None,
@@ -25631,6 +25714,16 @@ async def export_reports_pptx(
                     acceso_node_label=(acceso_node.get("name") if acceso_node else None),
                     turno_label=TURNO_NOCTURNO_ETIQUETA,
                 )
+                while _resto:
+                    _n_prev = len(_resto)
+                    _resto = draw_subtramo_summary_slide(
+                        subtramo_node, [], [], _resto, None, None, None,
+                        mostrar_acceso_predio=False,
+                        acceso_node_label=(acceso_node.get("name") if acceso_node else None),
+                        turno_label=TURNO_NOCTURNO_ETIQUETA, continuacion=True,
+                    )
+                    if len(_resto) >= _n_prev:
+                        break
 
         # Frentes (Estación/Intertramo) SIN ningún reporte en el período: se
         # imprimen igual, con "Sin actividad", en su lugar del orden del árbol
