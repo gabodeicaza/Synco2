@@ -9790,6 +9790,49 @@ def _force_pptx_theme_font(prs, font_name: str = "Roboto") -> None:
         pass  # Nunca debe tronar un export por esto — degradar a tema original.
 
 
+def _pptx_aplicar_fuente(prs, font_name: str = "Roboto") -> None:
+    """Fuerza `font_name` en TODO el PPTX justo antes de guardarlo: tema de cada
+    master (latin/ea/cs de majorFont y minorFont, parcheando el XML del part
+    aunque python-pptx lo cargue como blob) y cada run de textboxes, tablas y
+    grupos de cada slide. Sin esto los runs sin fuente explícita heredan el tema
+    de la plantilla del Coordinador (p. ej. Aptos)."""
+    try:
+        from pptx.opc.constants import RELATIONSHIP_TYPE as _RT
+        for _master in prs.slide_masters:
+            _part = _master.part.part_related_by(_RT.THEME)
+            _xml = _part.blob.decode("utf-8")
+            def _fix(m):
+                return re.sub(r'(<a:(?:latin|ea|cs) [^>]*?typeface=")[^"]*(")',
+                              lambda k: k.group(1) + (font_name if "latin" in k.group(0)[:9] else "") + k.group(2), m.group(0))
+            _nuevo = re.sub(r"<a:(?P<t>majorFont|minorFont)>.*?</a:(?P=t)>", _fix, _xml, flags=re.S)
+            _part._blob = _nuevo.encode("utf-8")
+    except Exception:
+        logging.getLogger(__name__).exception("PPTX: no se pudo parchear la fuente del tema")
+
+    def _runs_de(tf):
+        for par in tf.paragraphs:
+            for run in par.runs:
+                run.font.name = font_name
+
+    def _recorre(shapes):
+        for sh in shapes:
+            try:
+                if sh.shape_type == 6:  # grupo
+                    _recorre(sh.shapes)
+                    continue
+                if getattr(sh, "has_text_frame", False) and sh.has_text_frame:
+                    _runs_de(sh.text_frame)
+                if getattr(sh, "has_table", False) and sh.has_table:
+                    for fila in sh.table.rows:
+                        for celda in fila.cells:
+                            _runs_de(celda.text_frame)
+            except Exception:
+                logging.getLogger(__name__).exception("PPTX: fuente en shape")
+
+    for _slide in prs.slides:
+        _recorre(_slide.shapes)
+
+
 @api.get("/projects/{pid}/presentaciones/{pres_id}/export.pptx")
 async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(current_user)):
     """Exporta una Presentación como PPTX real, reusando el mismo patrón de
@@ -10589,6 +10632,7 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
 
         buf = io.BytesIO()
         _quitar_emoji_pptx(prs)
+        _pptx_aplicar_fuente(prs, "Roboto")
         prs.save(buf)
         return buf.getvalue()
 
@@ -27226,6 +27270,7 @@ async def export_reports_pptx(
 
         buf = io.BytesIO()
         _quitar_emoji_pptx(prs)
+        _pptx_aplicar_fuente(prs, "Roboto")
         prs.save(buf)
         return buf.getvalue()
 
