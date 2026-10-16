@@ -1,16 +1,13 @@
-// Fuerza de Trabajo — tabla derivada 100% de los reportes de campo
-// (personnel/equipment ya capturados en cada reporte). Sin captura manual:
-// 3 columnas (Autor | Ubicacion | Personal o Maquinaria).
+// Fuerza de Trabajo — lista derivada 100% de los reportes de campo
+// (personnel/equipment ya capturados en cada reporte). Sin captura manual.
+// Una fila por reporte: Quien reporto | Ubicacion | cuantas personas y/o
+// maquinaria subio. Al tocar la fila se despliega todo el detalle capturado.
 //
-// Cascada de agregacion (regla de negocio):
-//   Diario  -> base absoluta (reportes crudos de ese dia).
-//   Semanal -> resume EXCLUSIVAMENTE los reportes diarios de esa semana
-//              (un grupo por dia, con subtotal por dia).
-//   Mensual -> resume EXCLUSIVAMENTE los reportes semanales de ese mes
-//              (un grupo por semana natural, con subtotal por semana).
+// Agrupacion: Diario y Semanal agrupan por dia; Mensual agrupa por semana
+// natural.
 //
 // Coordinador General y Sub-Coordinador pueden editar/eliminar cada entrada
-// (fila) directamente sobre el reporte original.
+// del detalle desplegado directamente sobre el reporte original.
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator, Alert, Modal, Pressable, StyleSheet, Text, TextInput, View,
@@ -55,16 +52,22 @@ interface EntryRow {
   texto: string;
 }
 
+// Un reporte de campo = una fila de la lista (autor + ubicacion + totales).
+interface ReportRow {
+  id: string;
+  autor: string;
+  ubicacion: string;
+  hora: string;
+  personas: number;
+  maquinas: number;
+  personal: EntryRow[];
+  maquinaria: EntryRow[];
+}
+
 interface Group {
   key: string;
   label: string;
-  rows: EntryRow[];
-  subtotal: { desc: string; qty: number }[];
-}
-
-interface TableData {
-  groups: Group[];
-  total: { desc: string; qty: number }[];
+  rows: ReportRow[];
 }
 
 function groupKeyLabel(created: dayjs.Dayjs, groupBy: GroupBy): { key: string; label: string } {
@@ -80,115 +83,156 @@ function groupKeyLabel(created: dayjs.Dayjs, groupBy: GroupBy): { key: string; l
   return { key: created.format('YYYY-MM-DD'), label: capitalize(created.format('dddd DD MMM')) };
 }
 
-function buildTableData(reports: FeedItem[], field: Field, groupBy: GroupBy): TableData {
-  const byGroup = new Map<string, { label: string; rows: EntryRow[]; subtotal: Map<string, number> }>();
+function sumQty(rows: EntryRow[]): number {
+  return rows.reduce((acc, r) => acc + parseQtyDesc(r.texto).qty, 0);
+}
+
+function buildGroups(reports: FeedItem[], groupBy: GroupBy): Group[] {
+  const byGroup = new Map<string, Group>();
   for (const r of reports) {
-    const entries = ((r as any)[field] || []) as string[];
-    if (!entries.length) continue;
-    const created = dayjs.utc(r.created_at).tz(CDMX_TZ);
-    const { key, label } = groupKeyLabel(created, groupBy);
-    if (!byGroup.has(key)) byGroup.set(key, { label, rows: [], subtotal: new Map() });
-    const bucket = byGroup.get(key)!;
     // Último nodo de la ruta = el nodo hijo (hoja) elegido al capturar, no el Tramo raíz.
     const path = r.node_path_names || [];
     const ubicacion = path.length ? path[path.length - 1] : '—';
     const autor = r.captured_by_name || 'Especialista';
-    entries.forEach((texto, i) => {
-      bucket.rows.push({ id: `${r.id}-${field}-${i}`, reportId: r.id, field, index: i, autor, ubicacion, texto });
-      const { qty, desc } = parseQtyDesc(texto);
-      if (!desc) return;
-      bucket.subtotal.set(desc, (bucket.subtotal.get(desc) || 0) + qty);
+    const toRows = (field: Field): EntryRow[] =>
+      (((r as any)[field] || []) as string[]).map((texto, i) => ({
+        id: `${r.id}-${field}-${i}`, reportId: r.id, field, index: i, autor, ubicacion, texto,
+      }));
+    const personal = toRows('personnel');
+    const maquinaria = toRows('equipment');
+    if (!personal.length && !maquinaria.length) continue;
+
+    const created = dayjs.utc(r.created_at).tz(CDMX_TZ);
+    const { key, label } = groupKeyLabel(created, groupBy);
+    if (!byGroup.has(key)) byGroup.set(key, { key, label, rows: [] });
+    byGroup.get(key)!.rows.push({
+      id: r.id, autor, ubicacion, hora: created.format('HH:mm'),
+      personas: sumQty(personal), maquinas: sumQty(maquinaria), personal, maquinaria,
     });
   }
-
-  const keys = Array.from(byGroup.keys()).sort();
-  const totalMap = new Map<string, number>();
-  const groups: Group[] = keys.map((key) => {
-    const b = byGroup.get(key)!;
-    const subtotal = Array.from(b.subtotal.entries())
-      .sort((a, b2) => a[0].localeCompare(b2[0]))
-      .map(([desc, qty]) => ({ desc, qty }));
-    subtotal.forEach(({ desc, qty }) => totalMap.set(desc, (totalMap.get(desc) || 0) + qty));
-    return { key, label: b.label, rows: b.rows, subtotal };
-  });
-  const total = Array.from(totalMap.entries())
-    .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(([desc, qty]) => ({ desc, qty }));
-  return { groups, total };
+  return Array.from(byGroup.values()).sort((a, b) => (a.key < b.key ? -1 : 1));
 }
 
-function WorkforceTable({
-  data, col3Header, canEdit, onEditRow, onDeleteRow, deletingId,
+function EntryList({
+  title, icon, rows, canEdit, onEditRow, onDeleteRow, deletingId,
 }: {
-  data: TableData;
-  col3Header: string;
+  title: string;
+  icon: React.ComponentProps<typeof Ionicons>['name'];
+  rows: EntryRow[];
   canEdit: boolean;
   onEditRow: (row: EntryRow) => void;
   onDeleteRow: (row: EntryRow) => void;
   deletingId: string | null;
 }) {
-  if (data.groups.length === 0) {
+  if (!rows.length) return null;
+  return (
+    <View style={styles.detailBlock}>
+      <View style={styles.detailTitleRow}>
+        <Ionicons name={icon} size={13} color={colors.textMuted} />
+        <Text style={styles.detailTitle}>{title}</Text>
+      </View>
+      {rows.map((r) => (
+        <View key={r.id} style={styles.detailRow}>
+          <Text style={styles.detailTxt}>{'•'} {r.texto}</Text>
+          {canEdit && (
+            <View style={styles.rowActions}>
+              <Pressable accessibilityRole="button" accessibilityLabel={a11y('editar')} onPress={() => onEditRow(r)} style={styles.editBtn} hitSlop={8}>
+                <Ionicons name="pencil-outline" size={14} color={colors.primary} />
+              </Pressable>
+              <Pressable accessibilityRole="button" accessibilityLabel={a11y('eliminar')}
+                onPress={() => onDeleteRow(r)}
+                disabled={deletingId === r.id}
+                style={styles.editBtn}
+                hitSlop={8}
+              >
+                {deletingId === r.id ? (
+                  <ActivityIndicator size="small" color="#DC2626" />
+                ) : (
+                  <Ionicons name="trash-outline" size={14} color="#DC2626" />
+                )}
+              </Pressable>
+            </View>
+          )}
+        </View>
+      ))}
+    </View>
+  );
+}
+
+function ReportItem({
+  row, canEdit, onEditRow, onDeleteRow, deletingId,
+}: {
+  row: ReportRow;
+  canEdit: boolean;
+  onEditRow: (row: EntryRow) => void;
+  onDeleteRow: (row: EntryRow) => void;
+  deletingId: string | null;
+}) {
+  const [open, setOpen] = useState(false);
+  const resumen = [
+    row.personas > 0 ? `${row.personas} ${row.personas === 1 ? 'persona' : 'personas'}` : '',
+    row.maquinas > 0 ? `${row.maquinas} ${row.maquinas === 1 ? 'maquinaria' : 'maquinarias'}` : '',
+  ].filter(Boolean).join(' · ');
+  return (
+    <View>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityState={{ expanded: open }}
+        accessibilityLabel={`${row.autor}, ${row.ubicacion}, ${resumen}`}
+        onPress={() => setOpen((v) => !v)}
+        style={styles.dataRow}
+      >
+        <View style={styles.colAutor}>
+          <Text style={styles.autorTxt} numberOfLines={2}>{row.autor}</Text>
+          <Text style={styles.horaTxt}>{row.hora}</Text>
+        </View>
+        <Text style={[styles.dataCell, styles.colUbic]} numberOfLines={2}>{row.ubicacion}</Text>
+        <Text style={[styles.dataCell, styles.colVal, styles.resumenTxt]} numberOfLines={2}>{resumen}</Text>
+        <Ionicons name={open ? 'chevron-up' : 'chevron-down'} size={16} color={colors.textMuted} />
+      </Pressable>
+      {open && (
+        <View style={styles.detailWrap}>
+          <EntryList title="Personal" icon="people-outline" rows={row.personal}
+            canEdit={canEdit} onEditRow={onEditRow} onDeleteRow={onDeleteRow} deletingId={deletingId} />
+          <EntryList title="Maquinaria y Equipo" icon="construct-outline" rows={row.maquinaria}
+            canEdit={canEdit} onEditRow={onEditRow} onDeleteRow={onDeleteRow} deletingId={deletingId} />
+        </View>
+      )}
+    </View>
+  );
+}
+
+function WorkforceList({
+  groups, canEdit, onEditRow, onDeleteRow, deletingId,
+}: {
+  groups: Group[];
+  canEdit: boolean;
+  onEditRow: (row: EntryRow) => void;
+  onDeleteRow: (row: EntryRow) => void;
+  deletingId: string | null;
+}) {
+  if (groups.length === 0) {
     return <Text style={styles.emptyTxt}>Ningún reporte capturado en este periodo.</Text>;
   }
   return (
     <View style={styles.table}>
       <View style={styles.headerRowTable}>
-        <Text style={[styles.headerCell, styles.colAutor]}>AUTOR</Text>
+        <Text style={[styles.headerCell, styles.colAutor]}>REPORTÓ</Text>
         <Text style={[styles.headerCell, styles.colUbic]}>UBICACIÓN</Text>
-        <Text style={[styles.headerCell, styles.colVal]}>{col3Header}</Text>
-        {canEdit && <View style={styles.colActionsHeader} />}
+        <Text style={[styles.headerCell, styles.colVal]}>CANTIDAD</Text>
+        <View style={styles.colChevronHeader} />
       </View>
-      {data.groups.map((g) => (
+      {groups.map((g) => (
         <View key={g.key}>
           <View style={styles.dayBand}>
             <Text style={styles.dayBandTxt}>{g.label.toUpperCase()}</Text>
           </View>
           {g.rows.map((r) => (
-            <View key={r.id} style={styles.dataRow}>
-              <Text style={[styles.dataCell, styles.colAutor]} numberOfLines={2}>{r.autor}</Text>
-              <Text style={[styles.dataCell, styles.colUbic]} numberOfLines={2}>{r.ubicacion}</Text>
-              <Text style={[styles.dataCell, styles.colVal]} numberOfLines={2}>{r.texto}</Text>
-              {canEdit && (
-                <View style={styles.rowActions}>
-                  <Pressable accessibilityRole="button" accessibilityLabel={a11y('editar')} onPress={() => onEditRow(r)} style={styles.editBtn} hitSlop={8}>
-                    <Ionicons name="pencil-outline" size={14} color={colors.primary} />
-                  </Pressable>
-                  <Pressable accessibilityRole="button" accessibilityLabel={a11y('eliminar')}
-                    onPress={() => onDeleteRow(r)}
-                    disabled={deletingId === r.id}
-                    style={styles.editBtn}
-                    hitSlop={8}
-                  >
-                    {deletingId === r.id ? (
-                      <ActivityIndicator size="small" color="#DC2626" />
-                    ) : (
-                      <Ionicons name="trash-outline" size={14} color="#DC2626" />
-                    )}
-                  </Pressable>
-                </View>
-              )}
-            </View>
+            <ReportItem key={r.id} row={r} canEdit={canEdit}
+              onEditRow={onEditRow} onDeleteRow={onDeleteRow} deletingId={deletingId} />
           ))}
-          <View style={styles.subtotalBand}>
-            <Text style={styles.subtotalLabel}>SUBTOTAL — {g.label.toUpperCase()}</Text>
-            <View style={styles.bandList}>
-              {g.subtotal.map(({ desc, qty }) => (
-                <Text key={desc} style={styles.bandListItem} numberOfLines={2}>{'•'} {qty} {desc}</Text>
-              ))}
-            </View>
-          </View>
         </View>
       ))}
-      {data.groups.length > 1 && (
-        <View style={styles.totalBand}>
-          <Text style={styles.totalLabel}>TOTAL DEL PERÍODO</Text>
-          <View style={styles.bandList}>
-            {data.total.map(({ desc, qty }) => (
-              <Text key={desc} style={styles.totalListItem} numberOfLines={2}>{'•'} {qty} {desc}</Text>
-            ))}
-          </View>
-        </View>
-      )}
     </View>
   );
 }
@@ -277,8 +321,7 @@ export function WorkforceTracker({ projectId }: { projectId: string }) {
       .sort((a, b) => (a.created_at < b.created_at ? -1 : 1));
   }, [reports, period]);
 
-  const personalData = useMemo(() => buildTableData(filteredReports, 'personnel', groupBy), [filteredReports, groupBy]);
-  const maquinariaData = useMemo(() => buildTableData(filteredReports, 'equipment', groupBy), [filteredReports, groupBy]);
+  const groups = useMemo(() => buildGroups(filteredReports, groupBy), [filteredReports, groupBy]);
 
   async function saveEdit(value: string) {
     if (!editRow) return;
@@ -371,37 +414,15 @@ export function WorkforceTracker({ projectId }: { projectId: string }) {
           </Pressable>
         </View>
       ) : (
-        <>
-          <View style={styles.section}>
-            <View style={styles.sectionHeader}>
-              <Ionicons name="people-outline" size={15} color={colors.text} />
-              <Text style={styles.sectionTitle}>Personal</Text>
-            </View>
-            <WorkforceTable
-              data={personalData}
-              col3Header="PERSONAL"
-              canEdit={canEdit}
-              onEditRow={setEditRow}
-              onDeleteRow={confirmDeleteRow}
-              deletingId={deletingId}
-            />
-          </View>
-
-          <View style={[styles.section, styles.lastSection]}>
-            <View style={styles.sectionHeader}>
-              <Ionicons name="construct-outline" size={15} color={colors.text} />
-              <Text style={styles.sectionTitle}>Maquinaria y Equipo</Text>
-            </View>
-            <WorkforceTable
-              data={maquinariaData}
-              col3Header="MAQUINARIA"
-              canEdit={canEdit}
-              onEditRow={setEditRow}
-              onDeleteRow={confirmDeleteRow}
-              deletingId={deletingId}
-            />
-          </View>
-        </>
+        <View style={styles.lastSection}>
+          <WorkforceList
+            groups={groups}
+            canEdit={canEdit}
+            onEditRow={setEditRow}
+            onDeleteRow={confirmDeleteRow}
+            deletingId={deletingId}
+          />
+        </View>
       )}
 
       {editRow && (
@@ -459,7 +480,7 @@ const styles = StyleSheet.create({
   colAutor: { flex: 0.9 },
   colUbic: { flex: 1 },
   colVal: { flex: 1.3 },
-  colActionsHeader: { width: 52 },
+  colChevronHeader: { width: 16 },
 
   headerRowTable: {
     flexDirection: 'row', alignItems: 'center', backgroundColor: colors.primary,
@@ -472,29 +493,23 @@ const styles = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border,
   },
   dataCell: { fontSize: 11, color: colors.text, paddingRight: 4, lineHeight: 15 },
+  autorTxt: { fontSize: 11, color: colors.text, fontWeight: '700', lineHeight: 15, paddingRight: 4 },
+  horaTxt: { fontSize: 10, color: colors.textMuted, fontWeight: '600' },
+  resumenTxt: { fontWeight: '700' },
+  detailWrap: {
+    backgroundColor: colors.bg, paddingHorizontal: 12, paddingVertical: 8, gap: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border,
+  },
+  detailBlock: { gap: 2 },
+  detailTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 5, marginBottom: 2 },
+  detailTitle: { fontSize: 10, fontWeight: '800', color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.4 },
+  detailRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
+  detailTxt: { flex: 1, fontSize: 12, color: colors.text, lineHeight: 17 },
   rowActions: { flexDirection: 'row', width: 52, alignItems: 'center', justifyContent: 'flex-end' },
   editBtn: { width: 26, alignItems: 'center', justifyContent: 'center' },
 
   dayBand: { backgroundColor: '#EEF2FF', paddingHorizontal: 10, paddingVertical: 7 },
   dayBandTxt: { fontSize: 10, fontWeight: '800', color: '#3730A3', letterSpacing: 0.3 },
-
-  // Subtotal / Total: mucho padding + lista con viñetas (una categoría por
-  // línea) en vez de un párrafo corrido, para que no se amontone el texto.
-  subtotalBand: {
-    backgroundColor: '#FEF3C7', paddingHorizontal: 12, paddingVertical: 10,
-    gap: 4,
-  },
-  subtotalLabel: { fontSize: 9.5, fontWeight: '800', color: '#92400E', letterSpacing: 0.3 },
-
-  totalBand: {
-    backgroundColor: colors.primary, paddingHorizontal: 12, paddingVertical: 12,
-    gap: 4, marginBottom: 2,
-  },
-  totalLabel: { fontSize: 10, fontWeight: '800', color: '#fff', letterSpacing: 0.3 },
-
-  bandList: { gap: 3 },
-  bandListItem: { fontSize: 11.5, fontWeight: '700', color: '#78350F', lineHeight: 16 },
-  totalListItem: { fontSize: 12, fontWeight: '700', color: '#fff', lineHeight: 17 },
 
   modalBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(15,23,42,0.45)' },
   modalCard: {
