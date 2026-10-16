@@ -901,6 +901,102 @@ _VALID_GRAVEDADES = ("verde", "amarillo", "rojo")
 _GRAVEDAD_EMOJI = {"verde": "🟢", "amarillo": "🟡", "rojo": "🔴"}
 
 
+# Emoji (semáforo 🟢🟡🔴, etc.): código interno de la app. En las EXPORTACIONES
+# (PDF/DOCX/PPTX) no deben salir — a la contratista no le concierne. Los datos
+# guardados y la app los conservan; solo se limpia la copia que se exporta.
+# Deja intactos los símbolos de texto (• → · › — ° ✓ ☐ ☑).
+_EMOJI_RE = re.compile(
+    "[\U0001F000-\U0001FAFF☀-☏☓-⛿✅✨❌❎❓-❕❗"
+    "➕-➗➰➿⬛⬜⭐⭕⌚⌛⏩-⏿️‍⃣]"
+)
+
+
+def _quitar_emoji(texto):
+    """Quita emoji de un texto de exportación (y el espacio que quedaba
+    pegado). Cualquier otro valor se devuelve tal cual."""
+    if not isinstance(texto, str) or not _EMOJI_RE.search(texto):
+        return texto
+    limpio = _EMOJI_RE.sub("", texto)
+    limpio = re.sub(r"[ \t]{2,}", " ", limpio)
+    return limpio.lstrip(" \t") if _EMOJI_RE.match(texto) else limpio
+
+
+def _quitar_emoji_deep(obj):
+    """`_quitar_emoji` recursivo sobre dict/list/tuple (reportes, listas de
+    actividades). Muta dicts y listas en sitio y devuelve el objeto."""
+    if isinstance(obj, str):
+        return _quitar_emoji(obj)
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if isinstance(v, (str, dict, list, tuple)):
+                obj[k] = _quitar_emoji_deep(v)
+        return obj
+    if isinstance(obj, list):
+        for i, v in enumerate(obj):
+            if isinstance(v, (str, dict, list, tuple)):
+                obj[i] = _quitar_emoji_deep(v)
+        return obj
+    if isinstance(obj, tuple):
+        return tuple(_quitar_emoji_deep(v) for v in obj)
+    return obj
+
+
+_EMOJI_CAMPOS_REPORTE = ("title", "actividades", "notes", "avance", "observaciones", "incidencias",
+                         "dynamic_data", "campos_extra", "photo_captions")
+
+
+def _quitar_emoji_reportes(reportes: list) -> None:
+    """Limpia (en la copia en memoria del export) los campos de texto de los
+    reportes; no toca imágenes/archivos ni lo guardado en la base de datos."""
+    for r in reportes:
+        for campo in _EMOJI_CAMPOS_REPORTE:
+            if campo in r:
+                r[campo] = _quitar_emoji_deep(r[campo])
+
+
+def _quitar_emoji_pptx(prs) -> None:
+    """Red de seguridad: quita emoji de TODOS los textos del PPTX ya armado
+    (formas, grupos y tablas), sin alterar nada más."""
+    def _tf(tf):
+        for par in tf.paragraphs:
+            for run in par.runs:
+                if _EMOJI_RE.search(run.text or ""):
+                    run.text = _quitar_emoji(run.text)
+
+    def _forma(sh):
+        if getattr(sh, "has_text_frame", False) and sh.has_text_frame:
+            _tf(sh.text_frame)
+        if getattr(sh, "has_table", False) and sh.has_table:
+            for fila in sh.table.rows:
+                for cel in fila.cells:
+                    _tf(cel.text_frame)
+        if sh.shape_type == 6:  # grupo
+            for sub in sh.shapes:
+                _forma(sub)
+
+    for sl in prs.slides:
+        for sh in sl.shapes:
+            try:
+                _forma(sh)
+            except Exception:
+                continue
+
+
+def _quitar_emoji_docx(doc) -> None:
+    """Igual que `_quitar_emoji_pptx` para un documento Word."""
+    def _pars(pars):
+        for par in pars:
+            for run in par.runs:
+                if _EMOJI_RE.search(run.text or ""):
+                    run.text = _quitar_emoji(run.text)
+
+    _pars(doc.paragraphs)
+    for t in doc.tables:
+        for fila in t.rows:
+            for cel in fila.cells:
+                _pars(cel.paragraphs)
+
+
 def _normalize_gravedad(raw: Any) -> str:
     v = str(raw or "").strip().lower()
     return v if v in _VALID_GRAVEDADES else "verde"
@@ -10144,6 +10240,7 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                 break
 
         buf = io.BytesIO()
+        _quitar_emoji_pptx(prs)
         prs.save(buf)
         return buf.getvalue()
 
@@ -20817,6 +20914,7 @@ async def _gather_export_data(
     role = user["role"]
 
     reports = await db.reports.find(q).to_list(length=20000)
+    _quitar_emoji_reportes(reports)
     reports_by_node: dict = {}
     for r in reports:
         reports_by_node.setdefault(r.get("node_id"), []).append(r)
@@ -20826,6 +20924,7 @@ async def _gather_export_data(
     # `q_workforce` (ver `_export_reports_query`) no filtra por severidad: el
     # personal/maquinaria capturado cuenta sin importar la severidad del reporte.
     reports_workforce = await db.reports.find(q_workforce).to_list(length=20000)
+    _quitar_emoji_reportes(reports_workforce)
     reports_by_node_workforce: dict = {}
     for r in reports_workforce:
         reports_by_node_workforce.setdefault(r.get("node_id"), []).append(r)
@@ -24035,6 +24134,7 @@ async def export_reports_docx(
                     _r.font.color.rgb = _color
 
         buf = io.BytesIO()
+        _quitar_emoji_docx(doc)
         doc.save(buf)
         return buf.getvalue()
 
@@ -24151,9 +24251,9 @@ async def export_reports_pptx(
     # Resumen de actividades POR FRENTE, al inicio del PPTX con el formato del
     # reporte semanal de referencia — mismas actividades que muestra el hub
     # (`_actividades_generales_core`) para el rango exacto del informe.
-    _actividades_items_resumen = await _actividades_generales_core(
+    _actividades_items_resumen = _quitar_emoji_deep(await _actividades_generales_core(
         pid, None, {"$gte": start_dt, "$lte": end_dt}, user, incluir_ocultas=False,
-    )
+    ))
     actividades_resumen_frente = _actividades_resumen_por_frente(_actividades_items_resumen, nodes_by_id)
     # Clima: misma prioridad manual > automático que `export_reports_pdf` —
     # ver módulo "Estado del Tiempo" más arriba.
@@ -24415,7 +24515,28 @@ async def export_reports_pptx(
             sh.line.fill.background()
             return sh
 
+        def _wf_png_icon(slide, nombre: str, cx: int, cy: int, r: int) -> bool:
+            """Pictograma institucional (backend/assets/iconos/<nombre>.png, del
+            PDF de iconos del cliente) centrado en (cx, cy) y ajustado a un
+            cuadro de 2r x 2r (el mismo espacio que ocupaba el círculo) sin deformarlo. False si el
+            archivo no existe: se dibuja la figura de respaldo."""
+            ruta = Path(__file__).resolve().parent / "assets" / "iconos" / f"{nombre}.png"
+            if not ruta.is_file():
+                return False
+            try:
+                from PIL import Image as _PILImage
+                with _PILImage.open(ruta) as _im:
+                    iw, ih = _im.size
+                esc = min(2 * r / iw, 2 * r / ih)
+                w, h = int(iw * esc), int(ih * esc)
+                slide.shapes.add_picture(str(ruta), cx - w // 2, cy - h // 2, w, h)
+                return True
+            except Exception:
+                return False
+
         def _wf_person_icon(slide, cx: int, cy: int, r: int) -> None:
+            if _wf_png_icon(slide, "fuerza_trabajo", cx, cy, r):
+                return
             _wf_oval(slide, cx - r, cy - r, 2 * r, 2 * r, BRAND_RGB)
             head_r = int(r * 0.30)
             _wf_oval(slide, cx - head_r, cy - int(r * 0.30) - head_r, 2 * head_r, 2 * head_r, WF_WHITE_RGB)
@@ -24423,6 +24544,8 @@ async def export_reports_pptx(
             _wf_oval(slide, cx - body_w // 2, cy + int(r * 0.02) - body_h, body_w, body_h, WF_WHITE_RGB)
 
         def _wf_gear_icon(slide, cx: int, cy: int, r: int) -> None:
+            if _wf_png_icon(slide, "maquinaria", cx, cy, r):
+                return
             _wf_oval(slide, cx - r, cy - r, 2 * r, 2 * r, BRAND_RGB)
             body_r = int(r * 0.52)
             _wf_oval(slide, cx - body_r, cy - body_r, 2 * body_r, 2 * body_r, WF_WHITE_RGB)
@@ -24449,6 +24572,8 @@ async def export_reports_pptx(
         }
 
         def _wf_structure_icon(slide, cx: int, cy: int, r: int) -> None:
+            if _wf_png_icon(slide, "estacion", cx, cy, r):
+                return
             _wf_oval(slide, cx - r, cy - r, 2 * r, 2 * r, BRAND_RGB)
             node_r = int(r * 0.17)
             top = (cx, cy - int(r * 0.38))
@@ -26727,6 +26852,7 @@ async def export_reports_pptx(
             log.warning("[pptx] no se pudo numerar las diapositivas: %s", _e_num)
 
         buf = io.BytesIO()
+        _quitar_emoji_pptx(prs)
         prs.save(buf)
         return buf.getvalue()
 
@@ -28305,7 +28431,7 @@ async def _actividades_curadas_resumen_por_subtramo(pid: str, start_dt: datetime
     por-Área)."""
     rango = {"$gte": start_dt, "$lte": end_dt}
     items = await _actividades_generales_core(pid, None, rango, user, incluir_ocultas=False)
-    return _actividades_por_subtramo_index(items, nodes_by_id)
+    return _quitar_emoji_deep(_actividades_por_subtramo_index(items, nodes_by_id))
 
 
 def _actividades_resumen_para_bloque(idx: dict, node_id: str, subtramo_id: Optional[str],
@@ -28346,7 +28472,7 @@ async def _actividades_curadas_resumen_por_area(pid: str, start_dt: datetime, en
     O(1) dentro del loop de impresión."""
     rango = {"$gte": start_dt, "$lte": end_dt}
     items = await _actividades_generales_core(pid, None, rango, user, incluir_ocultas=False)
-    return _actividades_por_area_index(items)
+    return _quitar_emoji_deep(_actividades_por_area_index(items))
 
 
 async def _actividades_tabla_por_area(pid: str, start_dt: datetime, end_dt: datetime, user: dict) -> dict:
@@ -28362,7 +28488,7 @@ async def _actividades_tabla_por_area(pid: str, start_dt: datetime, end_dt: date
     Retorna dict `area_name -> [{"ubicacion", "texto"}, ...]`, en el mismo
     orden de árbol que ya trae `_actividades_generales_core`."""
     rango = {"$gte": start_dt, "$lte": end_dt}
-    items = await _actividades_generales_core(pid, None, rango, user, incluir_ocultas=False)
+    items = _quitar_emoji_deep(await _actividades_generales_core(pid, None, rango, user, incluir_ocultas=False))
     out: dict = {}
     for it in items:
         texto = (it.get("texto") or "").strip()
@@ -28506,7 +28632,7 @@ async def _actividades_resumen_por_tramo_prefetch(pid: str, start_dt: datetime, 
     """Prefetch (antes del render bloqueante) del resumen por tramo — mismo
     rango exacto del informe, misma fuente que el hub."""
     rango = {"$gte": start_dt, "$lte": end_dt}
-    items = await _actividades_generales_core(pid, None, rango, user, incluir_ocultas=False)
+    items = _quitar_emoji_deep(await _actividades_generales_core(pid, None, rango, user, incluir_ocultas=False))
     return _actividades_resumen_por_tramo(items, nodes_by_id)
 
 
