@@ -901,6 +901,102 @@ _VALID_GRAVEDADES = ("verde", "amarillo", "rojo")
 _GRAVEDAD_EMOJI = {"verde": "🟢", "amarillo": "🟡", "rojo": "🔴"}
 
 
+# Emoji (semáforo 🟢🟡🔴, etc.): código interno de la app. En las EXPORTACIONES
+# (PDF/DOCX/PPTX) no deben salir — a la contratista no le concierne. Los datos
+# guardados y la app los conservan; solo se limpia la copia que se exporta.
+# Deja intactos los símbolos de texto (• → · › — ° ✓ ☐ ☑).
+_EMOJI_RE = re.compile(
+    "[\U0001F000-\U0001FAFF☀-☏☓-⛿✅✨❌❎❓-❕❗"
+    "➕-➗➰➿⬛⬜⭐⭕⌚⌛⏩-⏿️‍⃣]"
+)
+
+
+def _quitar_emoji(texto):
+    """Quita emoji de un texto de exportación (y el espacio que quedaba
+    pegado). Cualquier otro valor se devuelve tal cual."""
+    if not isinstance(texto, str) or not _EMOJI_RE.search(texto):
+        return texto
+    limpio = _EMOJI_RE.sub("", texto)
+    limpio = re.sub(r"[ \t]{2,}", " ", limpio)
+    return limpio.lstrip(" \t") if _EMOJI_RE.match(texto) else limpio
+
+
+def _quitar_emoji_deep(obj):
+    """`_quitar_emoji` recursivo sobre dict/list/tuple (reportes, listas de
+    actividades). Muta dicts y listas en sitio y devuelve el objeto."""
+    if isinstance(obj, str):
+        return _quitar_emoji(obj)
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if isinstance(v, (str, dict, list, tuple)):
+                obj[k] = _quitar_emoji_deep(v)
+        return obj
+    if isinstance(obj, list):
+        for i, v in enumerate(obj):
+            if isinstance(v, (str, dict, list, tuple)):
+                obj[i] = _quitar_emoji_deep(v)
+        return obj
+    if isinstance(obj, tuple):
+        return tuple(_quitar_emoji_deep(v) for v in obj)
+    return obj
+
+
+_EMOJI_CAMPOS_REPORTE = ("title", "actividades", "notes", "avance", "observaciones", "incidencias",
+                         "dynamic_data", "campos_extra", "photo_captions")
+
+
+def _quitar_emoji_reportes(reportes: list) -> None:
+    """Limpia (en la copia en memoria del export) los campos de texto de los
+    reportes; no toca imágenes/archivos ni lo guardado en la base de datos."""
+    for r in reportes:
+        for campo in _EMOJI_CAMPOS_REPORTE:
+            if campo in r:
+                r[campo] = _quitar_emoji_deep(r[campo])
+
+
+def _quitar_emoji_pptx(prs) -> None:
+    """Red de seguridad: quita emoji de TODOS los textos del PPTX ya armado
+    (formas, grupos y tablas), sin alterar nada más."""
+    def _tf(tf):
+        for par in tf.paragraphs:
+            for run in par.runs:
+                if _EMOJI_RE.search(run.text or ""):
+                    run.text = _quitar_emoji(run.text)
+
+    def _forma(sh):
+        if getattr(sh, "has_text_frame", False) and sh.has_text_frame:
+            _tf(sh.text_frame)
+        if getattr(sh, "has_table", False) and sh.has_table:
+            for fila in sh.table.rows:
+                for cel in fila.cells:
+                    _tf(cel.text_frame)
+        if sh.shape_type == 6:  # grupo
+            for sub in sh.shapes:
+                _forma(sub)
+
+    for sl in prs.slides:
+        for sh in sl.shapes:
+            try:
+                _forma(sh)
+            except Exception:
+                continue
+
+
+def _quitar_emoji_docx(doc) -> None:
+    """Igual que `_quitar_emoji_pptx` para un documento Word."""
+    def _pars(pars):
+        for par in pars:
+            for run in par.runs:
+                if _EMOJI_RE.search(run.text or ""):
+                    run.text = _quitar_emoji(run.text)
+
+    _pars(doc.paragraphs)
+    for t in doc.tables:
+        for fila in t.rows:
+            for cel in fila.cells:
+                _pars(cel.paragraphs)
+
+
 def _normalize_gravedad(raw: Any) -> str:
     v = str(raw or "").strip().lower()
     return v if v in _VALID_GRAVEDADES else "verde"
@@ -10144,6 +10240,7 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                 break
 
         buf = io.BytesIO()
+        _quitar_emoji_pptx(prs)
         prs.save(buf)
         return buf.getvalue()
 
@@ -14479,7 +14576,7 @@ _MODULOS_SIN_PORTADA = ("fotos_lidar", "fotos_lidar_estacion")
 
 def _lidar_modulo_estacion(nombre: str, items: list) -> dict:
     return {"titulo": f"VUELO LIDAR · {nombre}".upper(),
-            "blocks": [{"type": "fotos_comparativa", "items": items}]}
+            "blocks": [{"type": "fotos_comparativa", "items": items, "icono": "estacion"}]}
 
 
 def _subtramo_id_for(node_id: str, nodes_by_id: dict) -> str:
@@ -15494,6 +15591,20 @@ def _fmt_fecha_dd_mm_yyyy(dt) -> str:
         return dt.strftime("%d-%m-%Y")
     except Exception:
         return "—"
+
+
+def _fecha_portada_larga(start_dt, end_dt) -> str:
+    """Fecha de la portada en el formato de los informes reales: '16 DE
+    OCTUBRE DE 2026' (un día) o 'DEL 12 AL 16 DE OCTUBRE DE 2026' (rango)."""
+    ini, fin = _fmt_fecha_dd_mm_yyyy(start_dt), _fmt_fecha_dd_mm_yyyy(end_dt)
+    try:
+        d1 = datetime.strptime(ini, "%d-%m-%Y").date()
+        d2 = datetime.strptime(fin, "%d-%m-%Y").date()
+    except ValueError:
+        return f"{ini} a {fin}"
+    if d1 == d2:
+        return f"{d1.day} DE {_MESES_ES_COMPLETO[d1.month - 1].upper()} DE {d1.year}"
+    return _fmt_rango_dias_es(d1.isoformat(), d2.isoformat())
 
 
 def _fmt_fecha_dd_mm_yyyy_hhmm(dt) -> str:
@@ -16640,14 +16751,16 @@ def _indice_plan(ranges: List[dict], cfg: dict, pre_count: int, first_cap: int, 
     `pre_count` = páginas previas a la primera sección (portada), que van
     antes del índice."""
     by_key = {r["key"]: r for r in ranges}
-    ordered = [by_key[k] for k in _indice_apply_order([r["key"] for r in ranges], cfg["order"])]
     hidden = set(cfg["hidden"])
-    n_visibles = sum(1 for r in ordered if r["key"] not in hidden)
-    counts = _indice_page_counts(n_visibles, first_cap, next_cap) if cfg["enabled"] else []
+    # Una sección oculta (ojo tachado en el editor) NO se imprime: ni entrada
+    # en el índice ni sus páginas/diapositivas en el documento.
+    ordered = [by_key[k] for k in _indice_apply_order([r["key"] for r in ranges], cfg["order"])
+               if k not in hidden]
+    counts = _indice_page_counts(len(ordered), first_cap, next_cap) if cfg["enabled"] else []
     page = pre_count + len(counts) + 1
     entries: List[tuple] = []
     for r in ordered:
-        if cfg["enabled"] and r["key"] not in hidden:
+        if cfg["enabled"]:
             entries.append((cfg["titles"].get(r["key"]) or r["title"], page))
         page += r["n"]
     return {"ordered": ordered, "counts": counts, "entries": entries}
@@ -16861,12 +16974,10 @@ def _pdf_apply_indice(pdf_bytes: bytes, marks: List[tuple], cfg: dict, *, templa
     if index_pages:
         writer.add_outline_item(cfg["titulo"], pre_count)
     cursor = pre_count + len(index_pages)
-    hidden = set(cfg["hidden"])
     for r in plan["ordered"]:
         for i in range(r["start"], r["start"] + r["n"]):
             writer.add_page(reader.pages[i])
-        if r["key"] not in hidden:
-            writer.add_outline_item(cfg["titles"].get(r["key"]) or r["title"], cursor)
+        writer.add_outline_item(cfg["titles"].get(r["key"]) or r["title"], cursor)
         cursor += r["n"]
     # Páginas posteriores a la última marca no existen (la última sección
     # llega hasta `total`), y las previas a la primera ya se copiaron arriba.
@@ -16918,7 +17029,8 @@ def _pptx_apply_indice(prs, marks: List[tuple], cfg: dict, *, master_separate: b
             + shell_els
             + [e for r in plan["ordered"] for e in els[r["start"]: r["start"] + r["n"]]]
         )
-        if len(final) != len(els) - (1 if master_el is not None else 0) + len(shell_els):
+        n_ocultas = sum(r["n"] for r in ranges) - sum(r["n"] for r in plan["ordered"])
+        if len(final) != len(els) - (1 if master_el is not None else 0) - n_ocultas + len(shell_els):
             raise RuntimeError("el reordenamiento perdería diapositivas")
     except Exception as exc:
         for e in list(lst)[len(els):]:
@@ -16937,6 +17049,11 @@ def _pptx_apply_indice(prs, marks: List[tuple], cfg: dict, *, master_separate: b
         lst.append(e)
     if master_el is not None:
         prs.part.drop_rel(master_el.rId)
+    # Secciones ocultas: sus diapositivas ya no están en la lista; se sueltan
+    # también las relaciones para que no queden en el archivo.
+    for e in els:
+        if e is not master_el and e not in final:
+            prs.part.drop_rel(e.rId)
     return estructura
 
 
@@ -16998,7 +17115,7 @@ async def preview_indice(pid: str, periodo: str, body: dict,
         "entradas": [{"titulo": tit, "pagina": pag} for tit, pag in plan["entries"]],
         "paginas_portada": pre_count,
         "paginas_indice": paginas_indice,
-        "total_paginas": pre_count + paginas_indice + sum(r["n"] for r in ranges),
+        "total_paginas": pre_count + paginas_indice + sum(r["n"] for r in plan["ordered"]),
     }
 
 
@@ -20797,6 +20914,7 @@ async def _gather_export_data(
     role = user["role"]
 
     reports = await db.reports.find(q).to_list(length=20000)
+    _quitar_emoji_reportes(reports)
     reports_by_node: dict = {}
     for r in reports:
         reports_by_node.setdefault(r.get("node_id"), []).append(r)
@@ -20806,6 +20924,7 @@ async def _gather_export_data(
     # `q_workforce` (ver `_export_reports_query`) no filtra por severidad: el
     # personal/maquinaria capturado cuenta sin importar la severidad del reporte.
     reports_workforce = await db.reports.find(q_workforce).to_list(length=20000)
+    _quitar_emoji_reportes(reports_workforce)
     reports_by_node_workforce: dict = {}
     for r in reports_workforce:
         reports_by_node_workforce.setdefault(r.get("node_id"), []).append(r)
@@ -24015,6 +24134,7 @@ async def export_reports_docx(
                     _r.font.color.rgb = _color
 
         buf = io.BytesIO()
+        _quitar_emoji_docx(doc)
         doc.save(buf)
         return buf.getvalue()
 
@@ -24131,9 +24251,9 @@ async def export_reports_pptx(
     # Resumen de actividades POR FRENTE, al inicio del PPTX con el formato del
     # reporte semanal de referencia — mismas actividades que muestra el hub
     # (`_actividades_generales_core`) para el rango exacto del informe.
-    _actividades_items_resumen = await _actividades_generales_core(
+    _actividades_items_resumen = _quitar_emoji_deep(await _actividades_generales_core(
         pid, None, {"$gte": start_dt, "$lte": end_dt}, user, incluir_ocultas=False,
-    )
+    ))
     actividades_resumen_frente = _actividades_resumen_por_frente(_actividades_items_resumen, nodes_by_id)
     # Clima: misma prioridad manual > automático que `export_reports_pdf` —
     # ver módulo "Estado del Tiempo" más arriba.
@@ -24395,7 +24515,28 @@ async def export_reports_pptx(
             sh.line.fill.background()
             return sh
 
+        def _wf_png_icon(slide, nombre: str, cx: int, cy: int, r: int) -> bool:
+            """Pictograma institucional (backend/assets/iconos/<nombre>.png, del
+            PDF de iconos del cliente) centrado en (cx, cy) y ajustado a un
+            cuadro de 2r x 2r (el mismo espacio que ocupaba el círculo) sin deformarlo. False si el
+            archivo no existe: se dibuja la figura de respaldo."""
+            ruta = Path(__file__).resolve().parent / "assets" / "iconos" / f"{nombre}.png"
+            if not ruta.is_file():
+                return False
+            try:
+                from PIL import Image as _PILImage
+                with _PILImage.open(ruta) as _im:
+                    iw, ih = _im.size
+                esc = min(2 * r / iw, 2 * r / ih)
+                w, h = int(iw * esc), int(ih * esc)
+                slide.shapes.add_picture(str(ruta), cx - w // 2, cy - h // 2, w, h)
+                return True
+            except Exception:
+                return False
+
         def _wf_person_icon(slide, cx: int, cy: int, r: int) -> None:
+            if _wf_png_icon(slide, "fuerza_trabajo", cx, cy, r):
+                return
             _wf_oval(slide, cx - r, cy - r, 2 * r, 2 * r, BRAND_RGB)
             head_r = int(r * 0.30)
             _wf_oval(slide, cx - head_r, cy - int(r * 0.30) - head_r, 2 * head_r, 2 * head_r, WF_WHITE_RGB)
@@ -24403,6 +24544,8 @@ async def export_reports_pptx(
             _wf_oval(slide, cx - body_w // 2, cy + int(r * 0.02) - body_h, body_w, body_h, WF_WHITE_RGB)
 
         def _wf_gear_icon(slide, cx: int, cy: int, r: int) -> None:
+            if _wf_png_icon(slide, "maquinaria", cx, cy, r):
+                return
             _wf_oval(slide, cx - r, cy - r, 2 * r, 2 * r, BRAND_RGB)
             body_r = int(r * 0.52)
             _wf_oval(slide, cx - body_r, cy - body_r, 2 * body_r, 2 * body_r, WF_WHITE_RGB)
@@ -24429,6 +24572,8 @@ async def export_reports_pptx(
         }
 
         def _wf_structure_icon(slide, cx: int, cy: int, r: int) -> None:
+            if _wf_png_icon(slide, "estacion", cx, cy, r):
+                return
             _wf_oval(slide, cx - r, cy - r, 2 * r, 2 * r, BRAND_RGB)
             node_r = int(r * 0.17)
             top = (cx, cy - int(r * 0.38))
@@ -24976,6 +25121,15 @@ async def export_reports_pptx(
             ROW_FONT = 14
             HEADER_FONT = 13
 
+            def _row_alto(r: dict, tiene_poste: bool) -> int:
+                """Alto de la fila: crece si el nombre se parte en varias líneas
+                (antes era fijo y el texto se encimaba con la fila siguiente)."""
+                qx0, nx0 = (0.78, 0.26) if tiene_poste else (0.80, 0.0)
+                main, _ = _format_workforce_desc(r["desc"])
+                w = int(tbl_w * (qx0 - nx0)) - Cm(0.3)
+                lineas = _pptx_texto_lineas(main or "—", w, ROW_FONT)
+                return max(ROW_H, int(lineas * ROW_FONT * 1.2 * 12700) + Cm(0.35))
+
             def _draw_big_table(x: int, y_top: int, title: str, items: list, draw_total: bool, total_qty,
                                  tiene_poste: bool) -> int:
                 # Con columna POSTE (nivel de agregación por encima de hoja —
@@ -24986,7 +25140,7 @@ async def export_reports_pptx(
                     # (13 pt, negritas) no cabe en menos y se partía en dos líneas.
                     poste_x0, name_x0, qty_x0 = 0.0, 0.26, 0.78
                 else:
-                    poste_x0, name_x0, qty_x0 = None, 0.0, 0.62
+                    poste_x0, name_x0, qty_x0 = None, 0.0, 0.80
                 _wf_rect(slide, x, y_top, tbl_w, HEADER_H, fill_rgb=BRAND_RGB)
                 if tiene_poste:
                     add_text(slide, x + Cm(0.2), y_top + Cm(0.15), int(tbl_w * (name_x0 - poste_x0) - Cm(0.2)),
@@ -24999,8 +25153,9 @@ async def export_reports_pptx(
                          align=PP_ALIGN.RIGHT)
                 yy = y_top + HEADER_H
                 for idx, r in enumerate(items):
+                    row_h = _row_alto(r, tiene_poste)
                     if idx % 2 == 1:
-                        _wf_rect(slide, x, yy, tbl_w, ROW_H, fill_rgb=WF_ZEBRA_TINT_RGB)
+                        _wf_rect(slide, x, yy, tbl_w, row_h, fill_rgb=WF_ZEBRA_TINT_RGB)
                     if tiene_poste:
                         add_text(slide, x + Cm(0.2), yy + Cm(0.12), int(tbl_w * (name_x0 - poste_x0)) - Cm(0.3),
                                  ROW_H - Cm(0.2), str(r.get("poste") or "—"), size=ROW_FONT - 2, color=WF_MUTED_RGB)
@@ -25011,8 +25166,8 @@ async def export_reports_pptx(
                     add_text(slide, x + int(tbl_w * qty_x0), yy + Cm(0.12), int(tbl_w * (1 - qty_x0)) - Cm(0.2),
                              ROW_H - Cm(0.2), str(r["qty"]), size=ROW_FONT, bold=True, color=READABLE_BRAND_RGB,
                              align=PP_ALIGN.RIGHT)
-                    _wf_rect(slide, x, yy + ROW_H - Pt(0.9), tbl_w, Pt(0.9), fill_rgb=WF_BORDER_RGB)
-                    yy += ROW_H
+                    _wf_rect(slide, x, yy + row_h - Pt(0.9), tbl_w, Pt(0.9), fill_rgb=WF_BORDER_RGB)
+                    yy += row_h
                 if not items:
                     add_text(slide, x + Cm(0.2), yy + Cm(0.12), tbl_w - Cm(0.4), ROW_H - Cm(0.2),
                              "Sin registros", size=ROW_FONT, italic=True, color=WF_MUTED_RGB)
@@ -25064,7 +25219,8 @@ async def export_reports_pptx(
                 title_reserved = Cm(1.3) if not _emitted_recuento_general_title else Cm(0)
                 subtitle_reserved = Cm(1.0) + (Cm(0.8) if show_path else Cm(0))
                 avail_h = (SH - BOTTOM_MARGIN) - TOP_MARGIN - title_reserved - subtitle_reserved - HEADER_H - TOTAL_H
-                rows_per_slide = max(1, int(avail_h / ROW_H))
+                alto_p = [_row_alto(r, tiene_poste) for r in personal_rows_e]
+                alto_m = [_row_alto(r, tiene_poste) for r in maquinaria_rows_e]
 
                 idx = 0
                 page_in_nodo = 0
@@ -25088,7 +25244,17 @@ async def export_reports_pptx(
                                   size=11, color=WF_MUTED_RGB, align=PP_ALIGN.CENTER)
                         y += Cm(0.8)  # aire bajo la ruta: el encabezado de la tabla la tapaba
 
-                    chunk_end = min(idx + rows_per_slide, n_total)
+                    # Pagina por ALTO real: las dos tablas llevan las mismas filas
+                    # por hoja y ninguna puede pasar del área disponible.
+                    chunk_end, acum_p, acum_m = idx, 0, 0
+                    while chunk_end < n_total:
+                        ap = alto_p[chunk_end] if chunk_end < len(alto_p) else 0
+                        am = alto_m[chunk_end] if chunk_end < len(alto_m) else 0
+                        if chunk_end > idx and (acum_p + ap > avail_h or acum_m + am > avail_h):
+                            break
+                        acum_p += ap
+                        acum_m += am
+                        chunk_end += 1
                     is_last_chunk = chunk_end >= n_total
                     _draw_big_table(pair_x, y, "Personal", personal_rows_e[idx:chunk_end], is_last_chunk,
                                      personal_total, tiene_poste)
@@ -25223,7 +25389,9 @@ async def export_reports_pptx(
             el motor PDF)."""
             MARGIN_X = Cm(1.5)
             content_w = SW - 2 * MARGIN_X
-            top_y = Cm(1.6)
+            # Debajo de la franja del membrete (≈2.1 cm): antes arrancaba en
+            # 1.6 cm y los títulos/fotos (Vuelo LiDAR) quedaban encimados.
+            top_y = Cm(2.9)
             bottom_y = SH - Cm(1.2)
             HEADING_RGB = {"good": (0x16, 0xA3, 0x4A), "bad": (0xDC, 0x26, 0x26)}
 
@@ -25641,7 +25809,16 @@ async def export_reports_pptx(
                 for idx, it in enumerate(block.get("items") or []):
                     if idx > 0 or state["y"] > top_y + Cm(2.6):
                         state["slide"], state["y"] = _new_slide(titulo_continua)
-                    if it.get("titulo"):
+                    if it.get("titulo") and block.get("icono") == "estacion":
+                        # Vuelo LiDAR de una estación: pictograma de estación
+                        # (PDF de iconos del cliente) junto al nombre.
+                        _ir = Cm(0.65)
+                        _wf_structure_icon(state["slide"], MARGIN_X + _ir, state["y"] + _ir, _ir)
+                        add_text(state["slide"], MARGIN_X + 2 * _ir + Cm(0.3), state["y"] + Cm(0.25),
+                                 content_w - 2 * _ir - Cm(0.3), Cm(0.9), it["titulo"],
+                                 size=17, bold=True, color=READABLE_BRAND_RGB)
+                        state["y"] += 2 * _ir + Cm(0.3)
+                    elif it.get("titulo"):
                         _draw_heading(titulo_continua, it["titulo"])
                     y0 = state["y"]
                     if _foto_comp_desc(it, "original") or _foto_comp_desc(it, "actual"):
@@ -25686,6 +25863,12 @@ async def export_reports_pptx(
                             add_text(state["slide"], lx + Cm(0.5), ly, Cm(2.8), Cm(0.5), label,
                                      size=10, color=WF_TEXT_RGB)
                             lx += Cm(3.4)
+                    # Divisor vertical entre las dos fotos (como el informe real).
+                    _div_top = y0
+                    _div_h = int(y_end + Cm(0.9) - _div_top)
+                    if _div_h > 0:
+                        _wf_rect(state["slide"], MARGIN_X + col_w + int(gap / 2) - Pt(0.5), _div_top,
+                                 Pt(1.0), _div_h, fill_rgb=WF_BORDER_RGB)
                     state["y"] = bottom_y
 
             def _draw_imagen_block(titulo_continua: str, block: dict) -> None:
@@ -26566,21 +26749,23 @@ async def export_reports_pptx(
         # ==============================================================
         if tpl_cover_slide is not None:
             _cx_left = Cm(1.5)
-            _cy_top = Cm(6.0)
+            _cy_top = Cm(5.5)
             _cw_full = SW - Cm(3.0)
+            # Jerarquía de los informes reales: título 66 pt, fecha larga 36 pt
+            # y la descripción de la obra más pequeña debajo.
             add_text(
-                tpl_cover_slide, _cx_left, _cy_top, _cw_full, Cm(3.0),
-                report_title, size=54, bold=True,
+                tpl_cover_slide, _cx_left, _cy_top, _cw_full, Cm(3.1),
+                report_title, size=66, bold=True,
                 color=COVER_TEXT_COLOR, align=PP_ALIGN.LEFT,
             )
             add_text(
-                tpl_cover_slide, _cx_left, _cy_top + Cm(3.2), _cw_full, Cm(1.2),
-                fechas_label, size=22, bold=True,
+                tpl_cover_slide, _cx_left, _cy_top + Cm(3.4), _cw_full, Cm(1.8),
+                _fecha_portada_larga(start_dt, end_dt), size=36, bold=True,
                 color=COVER_TEXT_COLOR, align=PP_ALIGN.LEFT,
             )
             add_text(
-                tpl_cover_slide, _cx_left, _cy_top + Cm(4.6), _cw_full, Cm(2.0),
-                project_name, size=28, bold=True,
+                tpl_cover_slide, _cx_left, _cy_top + Cm(5.6), _cw_full, Cm(2.0),
+                project_name, size=20, bold=True,
                 color=COVER_TEXT_COLOR, align=PP_ALIGN.LEFT,
             )
 
@@ -26658,7 +26843,25 @@ async def export_reports_pptx(
         except Exception as _e_idx:
             log.warning("[pptx] no se pudo aplicar el índice editable: %s", _e_idx)
 
+        # Número de diapositiva en el hueco derecho de la barra inferior del
+        # membrete (como los informes reales). Va DESPUÉS del reordenamiento,
+        # así coincide con los números del índice. La portada no lleva.
+        try:
+            for _n, _sl in enumerate(prs.slides, 1):
+                if _n == 1:
+                    continue
+                for _sh in _sl.shapes:
+                    _en_esquina = (_sh.top is not None and _sh.left is not None
+                                   and _sh.top > SH * 0.9 and _sh.left > SW * 0.9 and _sh.width < Cm(3))
+                    if _en_esquina and not (_sh.has_text_frame and _sh.text_frame.text.strip()):
+                        add_text(_sl, _sh.left, _sh.top, _sh.width, _sh.height, str(_n), size=10,
+                                 bold=True, color=HEADER_TEXT_RGB, align=PP_ALIGN.CENTER, tight=True)
+                        break
+        except Exception as _e_num:
+            log.warning("[pptx] no se pudo numerar las diapositivas: %s", _e_num)
+
         buf = io.BytesIO()
+        _quitar_emoji_pptx(prs)
         prs.save(buf)
         return buf.getvalue()
 
@@ -28237,7 +28440,7 @@ async def _actividades_curadas_resumen_por_subtramo(pid: str, start_dt: datetime
     por-Área)."""
     rango = {"$gte": start_dt, "$lte": end_dt}
     items = await _actividades_generales_core(pid, None, rango, user, incluir_ocultas=False)
-    return _actividades_por_subtramo_index(items, nodes_by_id)
+    return _quitar_emoji_deep(_actividades_por_subtramo_index(items, nodes_by_id))
 
 
 def _actividades_resumen_para_bloque(idx: dict, node_id: str, subtramo_id: Optional[str],
@@ -28278,7 +28481,7 @@ async def _actividades_curadas_resumen_por_area(pid: str, start_dt: datetime, en
     O(1) dentro del loop de impresión."""
     rango = {"$gte": start_dt, "$lte": end_dt}
     items = await _actividades_generales_core(pid, None, rango, user, incluir_ocultas=False)
-    return _actividades_por_area_index(items)
+    return _quitar_emoji_deep(_actividades_por_area_index(items))
 
 
 async def _actividades_tabla_por_area(pid: str, start_dt: datetime, end_dt: datetime, user: dict) -> dict:
@@ -28294,7 +28497,7 @@ async def _actividades_tabla_por_area(pid: str, start_dt: datetime, end_dt: date
     Retorna dict `area_name -> [{"ubicacion", "texto"}, ...]`, en el mismo
     orden de árbol que ya trae `_actividades_generales_core`."""
     rango = {"$gte": start_dt, "$lte": end_dt}
-    items = await _actividades_generales_core(pid, None, rango, user, incluir_ocultas=False)
+    items = _quitar_emoji_deep(await _actividades_generales_core(pid, None, rango, user, incluir_ocultas=False))
     out: dict = {}
     for it in items:
         texto = (it.get("texto") or "").strip()
@@ -28438,7 +28641,7 @@ async def _actividades_resumen_por_tramo_prefetch(pid: str, start_dt: datetime, 
     """Prefetch (antes del render bloqueante) del resumen por tramo — mismo
     rango exacto del informe, misma fuente que el hub."""
     rango = {"$gte": start_dt, "$lte": end_dt}
-    items = await _actividades_generales_core(pid, None, rango, user, incluir_ocultas=False)
+    items = _quitar_emoji_deep(await _actividades_generales_core(pid, None, rango, user, incluir_ocultas=False))
     return _actividades_resumen_por_tramo(items, nodes_by_id)
 
 

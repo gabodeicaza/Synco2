@@ -85,8 +85,8 @@ def test_plan_numera_paginas_despues_de_portada_e_indice():
     ]
     plan = _indice_plan(ranges, cfg(order=["c", "b", "a"], hidden=["b"], titles={"c": "Cierre"}), 1, 10, 10)
     # portada (1) + 1 pág. de índice (2) → la 1ª sección empieza en la 3.
-    assert [r["key"] for r in plan["ordered"]] == ["c", "b", "a"]
-    assert plan["entries"] == [("Cierre", 3), ("A", 7)]  # b oculta: sin entrada, pero ocupa su página
+    assert [r["key"] for r in plan["ordered"]] == ["c", "a"]  # b oculta: no se imprime
+    assert plan["entries"] == [("Cierre", 3), ("A", 6)]
     assert plan["counts"] == [2]
     assert _indice_plan(ranges, cfg(enabled=False), 1, 10, 10)["entries"] == []
 
@@ -150,11 +150,11 @@ def test_pdf_reordena_secciones_y_el_indice_sigue_el_nuevo_orden():
     out, _ = _apply(pdf, MARKS_PDF, conf)
     paginas = _textos(out)
     ent = _entradas(paginas[1])
-    assert "Datos generales" not in ent  # oculta del índice…
-    assert any("CONTENIDO-1" in p for p in paginas)  # …pero sus páginas siguen en el documento
-    # orden físico de las secciones: recuento (5,6) → E2 (4) → E1 (2,3) → gd (1)
+    assert "Datos generales" not in ent  # oculta: sin entrada en el índice…
+    assert not any("CONTENIDO-1" in p for p in paginas)  # …y sus páginas no se imprimen
+    # orden físico de las secciones: recuento (5,6) → E2 (4) → E1 (2,3); gd (1) oculta
     fisico = [t.split("CONTENIDO-")[1][:1] for t in paginas[2:]]
-    assert fisico == ["5", "6", "4", "2", "3", "1"]
+    assert fisico == ["5", "6", "4", "2", "3"]
     assert "CONTENIDO-5" in paginas[ent["Recuento general"] - 1]
     assert "CONTENIDO-4" in paginas[ent["Tramo 1 › E2"] - 1]
     assert "CONTENIDO-2" in paginas[ent["Estación Uno"] - 1]  # título renombrado
@@ -298,6 +298,25 @@ def test_pptx_sin_marcas_solo_retira_el_membrete():
     est = _aplicar_pptx(prs, [], cfg(), master_separate=True)
     txt = [_txt(s) for s in prs.slides]
     assert est == [] and len(txt) == 3 and "MEMBRETE" not in "".join(txt)
+
+
+def test_pptx_seccion_oculta_no_se_imprime():
+    prs = _prs(6, False)
+    marks = [("gd", "Datos generales", 1), ("node:1", "Nodo 1", 2), ("node:2", "Nodo 2", 4)]
+    _aplicar_pptx(prs, marks, cfg(hidden=["gd"]), master_separate=False)
+    txt = [_txt(s) for s in prs.slides]
+    assert not any("C-0" in t for t in txt)  # la diapositiva de "gd" (C-0) no se imprime
+    assert len(txt) == 1 + 1 + 5  # portada + índice + las 5 de los nodos
+    ent = _entradas_pptx(list(prs.slides))
+    assert "Datos generales" not in ent and set(ent) == {"Nodo 1", "Nodo 2"}
+
+
+def test_fecha_de_portada_larga():
+    from server import _fecha_portada_larga
+    from datetime import datetime, timezone
+    d = datetime(2026, 10, 16, 18, 0, tzinfo=timezone.utc)
+    assert _fecha_portada_larga(d, d) == "16 DE OCTUBRE DE 2026"
+    assert _fecha_portada_larga(datetime(2026, 10, 12, 18, tzinfo=timezone.utc), d) == "DEL 12 AL 16 DE OCTUBRE DE 2026"
 
 
 def test_pptx_fallo_al_dibujar_deja_el_documento_como_antes():
