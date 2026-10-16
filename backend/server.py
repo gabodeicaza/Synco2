@@ -60,6 +60,33 @@ from pydantic import BaseModel, Field, EmailStr, field_validator, model_validato
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 
+
+def _registrar_roboto() -> None:
+    """Registra Roboto (Regular/Bold/Italic de backend/assets/fonts) en ReportLab
+    para todos los PDF. Si faltan los TTF cae a Helvetica para no tronar."""
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    from reportlab.lib.fonts import addMapping
+    fdir = ROOT_DIR / "assets" / "fonts"
+    try:
+        for nombre, archivo in (("Roboto", "Roboto-Regular.ttf"), ("Roboto-Bold", "Roboto-Bold.ttf"),
+                                ("Roboto-Italic", "Roboto-Italic.ttf")):
+            pdfmetrics.registerFont(TTFont(nombre, str(fdir / archivo)))
+        pdfmetrics.registerFontFamily("Roboto", normal="Roboto", bold="Roboto-Bold",
+                                      italic="Roboto-Italic", boldItalic="Roboto-Bold")
+    except Exception:
+        logging.getLogger(__name__).warning("Roboto no disponible, PDF usa Helvetica")
+        from reportlab.pdfbase.pdfmetrics import registerFontFamily
+        for nombre, base in (("Roboto", "Helvetica"), ("Roboto-Bold", "Helvetica-Bold"),
+                             ("Roboto-Italic", "Helvetica-Oblique")):
+            try:
+                pdfmetrics.registerFont(pdfmetrics.Font(nombre, base, "WinAnsiEncoding"))
+            except Exception:
+                pass
+
+
+_registrar_roboto()
+
 MONGO_URL = os.environ["MONGO_URL"]
 DB_NAME = os.environ["DB_NAME"]
 JWT_SECRET = os.environ["JWT_SECRET"]
@@ -9727,7 +9754,7 @@ async def update_informacion_particular(
     return seccion
 
 
-def _force_pptx_theme_font(prs, font_name: str = "Arial") -> None:
+def _force_pptx_theme_font(prs, font_name: str = "Roboto") -> None:
     """Fuerza majorFont/minorFont del tema de cada slide master a `font_name`.
 
     Ningún run del motor PPTX (`export_presentacion_pptx`/`export_reports_pptx`
@@ -9735,9 +9762,9 @@ def _force_pptx_theme_font(prs, font_name: str = "Arial") -> None:
     decenas de `paragraph.add_run(...)` sin tocar la tipografía. Sin esta
     llamada, ese texto hereda el tema por default de PowerPoint (Calibri) o el
     de la plantilla subida por el Coordinador, mientras que el motor PDF usa
-    Helvetica en todo el documento — de ahí que el PPTX se vea con una
+    Roboto en todo el documento — de ahí que el PPTX se vea con una
     tipografía distinta al PDF pese a ser "el mismo" reporte. Arial es el
-    sustituto más cercano a Helvetica realmente instalado en Windows/Office.
+    sustituto más cercano a Roboto realmente instalado en Windows/Office.
     Se llama UNA vez, justo después de resolver `prs` (venga de plantilla o
     en blanco) y antes de dibujar cualquier slide — así cualquier run sin
     `font.name` explícito hereda esto en vez del tema original."""
@@ -9865,7 +9892,7 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
             prs = Presentation()
             prs.slide_width = _Cm(29.7)
             prs.slide_height = _Cm(21.0)
-        _force_pptx_theme_font(prs, "Arial")
+        _force_pptx_theme_font(prs, "Roboto")
         SW, SH = prs.slide_width, prs.slide_height
         MARGIN_X = _Cm(1.5)
         TOP_MARGIN = _Cm(2.2)
@@ -10082,12 +10109,12 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                     par.space_after = _Pt(5)
                     r1 = par.add_run()
                     r1.text = "• " + lbl + " "
-                    r1.font.size = _Pt(10)
+                    r1.font.size = _Pt(12)
                     r1.font.bold = True
                     r1.font.color.rgb = _PRGBColor(*TEXT_RGB)
                     r2 = par.add_run()
                     r2.text = val
-                    r2.font.size = _Pt(10)
+                    r2.font.size = _Pt(12)
                     r2.font.color.rgb = _PRGBColor(*TEXT_RGB)
                 if blq["filas"]:
                     rows = [[lbl, v1, v2] for lbl, v1, v2, _u in blq["filas"]]
@@ -10274,7 +10301,7 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                 yy = int(yy + _Cm(0.6))
                 acts = bloque.get("actividades") or []
                 acts_text = "\n".join(f"• {a}" for a in acts) if acts else "Sin actividades capturadas"
-                add_text(slide, MARGIN_X, yy, left_w, int(SH - BOTTOM_MARGIN - yy), acts_text, size=9, color=TEXT_RGB)
+                add_text(slide, MARGIN_X, yy, left_w, int(SH - BOTTOM_MARGIN - yy), acts_text, size=12, color=TEXT_RGB)
 
                 fotos = (bloque.get("fotos") or [])[:7]
                 right_x = int(MARGIN_X + left_w + _Cm(0.4))
@@ -10330,7 +10357,7 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                              size=16, bold=True, color=BRAND_RGB)
                     y = int(y + _Cm(1.5))
                     if meta:
-                        add_text(slide, MARGIN_X, y, left_w, _Cm(0.8), meta, size=9, color=MUTED_RGB)
+                        add_text(slide, MARGIN_X, y, left_w, _Cm(0.8), meta, size=12, color=MUTED_RGB)
                         y = int(y + _Cm(0.9))
                     if ci == 0:
                         for rot, txt in partes:
@@ -10340,7 +10367,7 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                             body_txt = "\n".join(f"• {ln}" for ln in lineas_t) if len(lineas_t) > 1 else txt
                             n_lines = sum(max(1, math.ceil(len(ln) / 55)) for ln in (lineas_t or [txt]))
                             h_t = int(min(_Cm(0.42) * n_lines + _Cm(0.2), SH - BOTTOM_MARGIN - y))
-                            add_text(slide, MARGIN_X, y, left_w, h_t, body_txt, size=9, color=TEXT_RGB)
+                            add_text(slide, MARGIN_X, y, left_w, h_t, body_txt, size=12, color=TEXT_RGB)
                             y = int(y + h_t + _Cm(0.15))
                     if chunk:
                         right_x = int(MARGIN_X + left_w + _Cm(0.4))
@@ -10427,7 +10454,7 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                             par.space_after = _Pt(6)
                             r1 = par.add_run()
                             r1.text = "• " + ((it.get("title") + ": ") if it.get("title") else "") + (it.get("body") or "")
-                            r1.font.size = _Pt(11)
+                            r1.font.size = _Pt(12)
                             r1.font.color.rgb = _PRGBColor(*TEXT_RGB)
                             if it.get("meta"):
                                 r2 = par.add_run()
@@ -10469,7 +10496,7 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                                 par.space_after = _Pt(6)
                                 r1 = par.add_run()
                                 r1.text = "• " + str(txt)
-                                r1.font.size = _Pt(11)
+                                r1.font.size = _Pt(12)
                                 r1.font.color.rgb = _PRGBColor(*TEXT_RGB)
                 elif t == "seguridad_accidentes":
                     rows = [[r.get("fecha") or "", r.get("trabajador") or "", r.get("contratista") or "", r.get("registro") or "",
@@ -10495,7 +10522,7 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                         par.space_after = _Pt(4)
                         r1 = par.add_run()
                         r1.text = "• " + str(txt)
-                        r1.font.size = _Pt(11)
+                        r1.font.size = _Pt(12)
                         r1.font.color.rgb = _PRGBColor(*TEXT_RGB)
 
         def slide_auto(tipo):
@@ -17111,19 +17138,19 @@ def _render_indice_pdf(entries: List[tuple], counts: List[int], titulo: str, sub
     left, right = margin_x, PW - margin_x
     top_y = PH - top_margin
     TEXT, MUTED, LINE = HexColor("#0F172A"), HexColor("#64748B"), HexColor("#94A3B8")
-    FONT, SIZE = "Helvetica", 13
+    FONT, SIZE = "Roboto", 12
 
     idx = 0
     for pi, cnt in enumerate(counts):
         y = top_y
         if pi == 0:
             c.setFillColor(HexColor(_readable_dark_hex(brand_hex)))
-            c.setFont("Helvetica-Bold", 26)
+            c.setFont("Roboto-Bold", 26)
             c.drawCentredString(PW / 2, y, titulo)
             y -= 26 * 1.4
             if subtitulo:
                 c.setFillColor(MUTED)
-                c.setFont("Helvetica", 11)
+                c.setFont("Roboto", 11)
                 c.drawCentredString(PW / 2, y, subtitulo)
             y -= _INDICE_PDF_HEAD_H - 26 * 1.4
         for text, page_no in entries[idx: idx + cnt]:
@@ -17196,22 +17223,22 @@ def _render_indice_pptx_maqueta(entries: List[tuple], counts: List[int], titulo:
         y = PH - top
         if pi == 0:
             c.setFillColor(HexColor(_readable_dark_hex(brand_hex)))
-            c.setFont("Helvetica-Bold", 26)
+            c.setFont("Roboto-Bold", 26)
             c.drawCentredString(PW / 2, y - 26, titulo)
             c.setFillColor(tenue)
-            c.setFont("Helvetica", 12)
+            c.setFont("Roboto", 12)
             c.drawCentredString(PW / 2, y - 1.1 * cm - 12, subtitulo)
             y -= head_h
         for text, page_no in entries[idx: idx + cnt]:
             num = str(page_no)
-            c.setFont("Helvetica-Bold", 14)
-            num_w = c.stringWidth(num, "Helvetica-Bold", 14)
-            text = _indice_truncate(text, lambda s: c.stringWidth(s, "Helvetica", 14) <= (right - left) - num_w - 20)
+            c.setFont("Roboto-Bold", 14)
+            num_w = c.stringWidth(num, "Roboto-Bold", 14)
+            text = _indice_truncate(text, lambda s: c.stringWidth(s, "Roboto", 14) <= (right - left) - num_w - 20)
             base = y - row_h * 0.68
             c.setFillColor(texto)
-            c.setFont("Helvetica", 14)
+            c.setFont("Roboto", 14)
             c.drawString(left, base, text)
-            c.setFont("Helvetica-Bold", 14)
+            c.setFont("Roboto-Bold", 14)
             c.drawRightString(right, base, num)
             c.setStrokeColor(borde)
             c.setLineWidth(0.75)
@@ -17857,21 +17884,21 @@ async def export_reports_pdf(
             bottom_y = BOTTOM_MARGIN_PDF
             y = top_y
             body_style = ParagraphStyle(
-                "modulosBody", fontName="Helvetica", fontSize=10, leading=13, textColor=TEXT,
+                "modulosBody", fontName="Roboto", fontSize=12, leading=15, textColor=TEXT,
             )
             cell_style = ParagraphStyle(
-                "modulosCell", fontName="Helvetica", fontSize=9, leading=11, textColor=TEXT,
+                "modulosCell", fontName="Roboto", fontSize=9, leading=11, textColor=TEXT,
             )
             HEADING_COLORS = {"good": HexColor("#16A34A"), "bad": HexColor("#DC2626")}
 
             def _section_header(titulo: str) -> None:
                 nonlocal y
                 c.setFillColor(TEXT)
-                c.setFont("Helvetica-Bold", 28)
+                c.setFont("Roboto-Bold", 28)
                 c.drawCentredString(PW / 2, top_y, titulo)
                 y = top_y - 28 * 1.4
                 c.setFillColor(MUTED)
-                c.setFont("Helvetica", 11)
+                c.setFont("Roboto", 11)
                 c.drawCentredString(PW / 2, y, f"Período: {fechas_label}")
                 y -= 11 * 2.2
 
@@ -17886,14 +17913,14 @@ async def export_reports_pdf(
                 nonlocal y
                 _ensure_space(1.2 * cm)
                 c.setFillColor(HEADING_COLORS.get(color_key, TEXT))
-                c.setFont("Helvetica-Bold", 13)
+                c.setFont("Roboto-Bold", 13)
                 c.drawString(left_x, y, text)
                 y -= 13 * 1.8
 
             def _draw_empty(text: str) -> None:
                 nonlocal y
                 c.setFillColor(MUTED)
-                c.setFont("Helvetica-Oblique", 11)
+                c.setFont("Roboto-Italic", 11)
                 c.drawString(left_x, y, text)
                 y -= 11 * 2.0
 
@@ -17901,7 +17928,7 @@ async def export_reports_pdf(
                 nonlocal y
                 _ensure_space(2.0 * cm)
                 c.setFillColor(TEXT)
-                c.setFont("Helvetica-Bold", 14)
+                c.setFont("Roboto-Bold", 14)
                 c.drawCentredString(PW / 2, y, block["text"])
                 y -= 14 * 2.2
 
@@ -17952,7 +17979,7 @@ async def export_reports_pdf(
                 tbl.setStyle(TableStyle([
                     ("BACKGROUND", (0, 0), (-1, 0), BRAND),
                     ("TEXTCOLOR", (0, 0), (-1, 0), WHITE),
-                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("FONTNAME", (0, 0), (-1, 0), "Roboto-Bold"),
                     ("FONTSIZE", (0, 0), (-1, 0), 10),
                     ("VALIGN", (0, 0), (-1, -1), "TOP"),
                     ("GRID", (0, 0), (-1, -1), 0.5, BORDER),
@@ -17973,7 +18000,7 @@ async def export_reports_pdf(
                     _ensure_space(2.5 * cm)
                     if it.get("title"):
                         c.setFillColor(TEXT)
-                        c.setFont("Helvetica-Bold", 11)
+                        c.setFont("Roboto-Bold", 11)
                         c.drawString(left_x, y, it["title"])
                         y -= 11 * 1.5
                     body_p = Paragraph(_xml_escape(it.get("body") or ""), body_style)
@@ -17987,7 +18014,7 @@ async def export_reports_pdf(
                         y -= ph2 + 3
                     if it.get("meta"):
                         c.setFillColor(MUTED)
-                        c.setFont("Helvetica-Oblique", 9)
+                        c.setFont("Roboto-Italic", 9)
                         c.drawString(left_x, y, it["meta"])
                         y -= 9 * 2.0
                     else:
@@ -18014,7 +18041,7 @@ async def export_reports_pdf(
                 c.setFillColor(bg)
                 c.rect(left_x, y - h, content_w, h, fill=1, stroke=0)
                 c.setFillColor(text_color or SHEET_TITLE)
-                c.setFont("Helvetica-Bold", 10)
+                c.setFont("Roboto-Bold", 10)
                 c.drawCentredString(PW / 2, y - h / 2 - 3, text.upper())
                 y -= h + 8
 
@@ -18035,8 +18062,8 @@ async def export_reports_pdf(
                 style = [
                     ("BACKGROUND", (0, 0), (-1, 0), SHEET_GREEN),
                     ("TEXTCOLOR", (0, 0), (-1, 0), WHITE),
-                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                    ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
+                    ("FONTNAME", (0, 0), (-1, 0), "Roboto-Bold"),
+                    ("FONTNAME", (0, -1), (-1, -1), "Roboto-Bold"),
                     ("BACKGROUND", (0, -1), (-1, -1), SHEET_GREEN_TOTAL),
                     ("LINEABOVE", (0, -1), (-1, -1), 1.2, SHEET_GREEN),
                     ("FONTSIZE", (0, 0), (-1, -1), 9),
@@ -18057,7 +18084,7 @@ async def export_reports_pdf(
 
                 _ensure_space(1.2 * cm)
                 c.setFillColor(TEXT)
-                c.setFont("Helvetica-Bold", 12)
+                c.setFont("Roboto-Bold", 12)
                 c.drawCentredString(
                     PW / 2, y,
                     f"Podas: {contadores['poda']}/{total['poda']}    "
@@ -18085,8 +18112,8 @@ async def export_reports_pdf(
                     d_style = [
                         ("BACKGROUND", (0, 0), (-1, 0), HexColor("#F1F5F9")),
                         ("TEXTCOLOR", (0, 0), (-1, 0), MUTED),
-                        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                        ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
+                        ("FONTNAME", (0, 0), (-1, 0), "Roboto-Bold"),
+                        ("FONTNAME", (0, -1), (-1, -1), "Roboto-Bold"),
                         ("BACKGROUND", (0, -1), (-1, -1), SHEET_SUBTOTAL),
                         ("FONTSIZE", (0, 0), (-1, -1), 9),
                         ("GRID", (0, 0), (-1, -1), 0.5, BORDER),
@@ -18133,7 +18160,7 @@ async def export_reports_pdf(
                 style = [
                     ("BACKGROUND", (0, 0), (-1, 0), SHEET_MAROON),
                     ("TEXTCOLOR", (0, 0), (-1, 0), WHITE),
-                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("FONTNAME", (0, 0), (-1, 0), "Roboto-Bold"),
                     ("FONTSIZE", (0, 0), (-1, -1), 9),
                     ("BOX", (0, 0), (-1, 0), 0.5, BORDER),
                     ("GRID", (1, 0), (-1, -1), 0.5, BORDER),
@@ -18150,7 +18177,7 @@ async def export_reports_pdf(
                 nonlocal y
                 _ensure_space(1.2 * cm)
                 c.setFillColor(SHEET_MAROON)
-                c.setFont("Helvetica-Bold", 13)
+                c.setFont("Roboto-Bold", 13)
                 c.drawString(left_x, y, (block.get("subtitulo") or "").upper())
                 y -= 13 * 1.8
                 items = block.get("items") or []
@@ -18158,7 +18185,7 @@ async def export_reports_pdf(
                     _draw_empty("Sin acciones correctivas pendientes.")
                     return
                 bullet_style = ParagraphStyle(
-                    "segBullet", fontName="Helvetica", fontSize=10.5, leading=14.5, textColor=TEXT,
+                    "segBullet", fontName="Roboto", fontSize=12, leading=16, textColor=TEXT,
                     leftIndent=14, bulletIndent=0,
                 )
                 for text in items:
@@ -18173,7 +18200,7 @@ async def export_reports_pdf(
                 _draw_bar("Avances", SHEET_MAROON, text_color=WHITE)
                 grupos = block.get("grupos") or []
                 disc_style = ParagraphStyle(
-                    "estDisc", fontName="Helvetica-Bold", fontSize=9.5, leading=13, textColor=TEXT,
+                    "estDisc", fontName="Roboto-Bold", fontSize=9.5, leading=13, textColor=TEXT,
                 )
                 data = []
                 span_cmds = []
@@ -18241,12 +18268,12 @@ async def export_reports_pdf(
                 max_cols = max(1, int(avail / min_col_w))
                 chunks = [columnas[i:i + max_cols] for i in range(0, len(columnas), max_cols)]
                 head_style = ParagraphStyle(
-                    "trHead", fontName="Helvetica-Bold", fontSize=7.5, leading=9.5, textColor=TEXT, alignment=1,
+                    "trHead", fontName="Roboto-Bold", fontSize=7.5, leading=9.5, textColor=TEXT, alignment=1,
                 )
-                act_style = ParagraphStyle("trAct", fontName="Helvetica-Bold", fontSize=8.5, leading=11, textColor=TEXT)
-                val_style = ParagraphStyle("trVal", fontName="Helvetica", fontSize=8, leading=10, textColor=TEXT, alignment=1)
+                act_style = ParagraphStyle("trAct", fontName="Roboto-Bold", fontSize=8.5, leading=11, textColor=TEXT)
+                val_style = ParagraphStyle("trVal", fontName="Roboto", fontSize=8, leading=10, textColor=TEXT, alignment=1)
                 val_style_white = ParagraphStyle(
-                    "trValW", fontName="Helvetica-Bold", fontSize=8, leading=10, textColor=WHITE, alignment=1,
+                    "trValW", fontName="Roboto-Bold", fontSize=8, leading=10, textColor=WHITE, alignment=1,
                 )
                 col_offset = 0
                 for chunk_idx, chunk in enumerate(chunks):
@@ -18321,9 +18348,9 @@ async def export_reports_pdf(
                     c.setFillColor(colr)
                     c.circle(lx + 4, y - 3.5, 4, fill=1, stroke=0)
                     c.setFillColor(TEXT)
-                    c.setFont("Helvetica", 9)
+                    c.setFont("Roboto", 9)
                     c.drawString(lx + 12, y - 7, label)
-                    lx += 12 + c.stringWidth(label, "Helvetica", 9) + 20
+                    lx += 12 + c.stringWidth(label, "Roboto", 9) + 20
                 y -= 20
 
             def _pdf_fit_image(b64_str, x, y_top, max_w, max_h) -> float:
@@ -18354,10 +18381,10 @@ async def export_reports_pdf(
                             x = left_x + col * (col_w + gap)
                             c.setFillColor(TEXT)
                             if it.get("desc_encabezado"):
-                                c.setFont("Helvetica-Bold", 10)
+                                c.setFont("Roboto-Bold", 10)
                                 c.drawString(x, y - 10, it["desc_encabezado"])
-                            c.setFont("Helvetica", 10)
-                            for i, ln in enumerate(simpleSplit(_foto_comp_desc(it, key), "Helvetica", 10, col_w)[:4]):
+                            c.setFont("Roboto", 10)
+                            for i, ln in enumerate(simpleSplit(_foto_comp_desc(it, key), "Roboto", 10, col_w)[:4]):
                                 c.drawString(x, y - 24 - i * 12, ln)
                         y -= 76
                     img_h = min(8.5 * cm, y - bottom_y - 1.4 * cm)
@@ -18373,25 +18400,25 @@ async def export_reports_pdf(
                             c.setStrokeColor(BORDER)
                             c.rect(x, y - img_h, col_w, img_h, stroke=1, fill=0)
                             c.setFillColor(MUTED)
-                            c.setFont("Helvetica-Oblique", 11)
+                            c.setFont("Roboto-Italic", 11)
                             c.drawCentredString(x + col_w / 2, y - img_h / 2, "Sin foto")
                             h = img_h
                         drawn_h = max(drawn_h, h)
                         c.setFillColor(TEXT)
-                        c.setFont("Helvetica-Bold", 11)
+                        c.setFont("Roboto-Bold", 11)
                         c.drawCentredString(x + col_w / 2, y - img_h - 13,
                                             _foto_comp_etiqueta(it, key, lbl))
                     y -= img_h + 13 + 18
                     if block.get("leyenda"):
-                        lw_tot = sum(12 + c.stringWidth(lb, "Helvetica", 9) + 20 for lb, _ in block["leyenda"])
+                        lw_tot = sum(12 + c.stringWidth(lb, "Roboto", 9) + 20 for lb, _ in block["leyenda"])
                         lx = PW / 2 - lw_tot / 2
                         for lb, hexcolor in block["leyenda"]:
                             c.setFillColor(HexColor(hexcolor))
                             c.circle(lx + 4, y - 3.5, 4, fill=1, stroke=0)
                             c.setFillColor(TEXT)
-                            c.setFont("Helvetica", 9)
+                            c.setFont("Roboto", 9)
                             c.drawString(lx + 12, y - 7, lb)
-                            lx += 12 + c.stringWidth(lb, "Helvetica", 9) + 20
+                            lx += 12 + c.stringWidth(lb, "Roboto", 9) + 20
                         y -= 20
 
             def _draw_imagen_block(block: dict) -> None:
@@ -18404,7 +18431,7 @@ async def export_reports_pdf(
                 y -= (h or 0) + 10
                 if block.get("caption"):
                     c.setFillColor(TEXT)
-                    c.setFont("Helvetica-Bold", 11)
+                    c.setFont("Roboto-Bold", 11)
                     c.drawCentredString(PW / 2, y - 6, block["caption"])
                     y -= 11 * 2.0
                 lx = left_x
@@ -18412,9 +18439,9 @@ async def export_reports_pdf(
                     c.setFillColor(HexColor(hexcolor))
                     c.circle(lx + 4, y - 3.5, 4, fill=1, stroke=0)
                     c.setFillColor(TEXT)
-                    c.setFont("Helvetica", 9)
+                    c.setFont("Roboto", 9)
                     c.drawString(lx + 12, y - 7, label)
-                    lx += 12 + c.stringWidth(label, "Helvetica", 9) + 20
+                    lx += 12 + c.stringWidth(label, "Roboto", 9) + 20
                 y -= 26
 
             def _draw_seguridad_accidentes_block(block: dict) -> None:
@@ -18434,8 +18461,8 @@ async def export_reports_pdf(
                 col_w = [content_w * f for f in fracs]
                 PAD = 4
                 head_color = WHITE if _hex_luminance(project_color) <= 0.6 else HexColor("#1A1A1A")
-                cell_st = ParagraphStyle("segAccCell", fontName="Helvetica", fontSize=8.5, leading=10.5, textColor=TEXT)
-                head_st = ParagraphStyle("segAccHead", fontName="Helvetica-Bold", fontSize=8.5, leading=10,
+                cell_st = ParagraphStyle("segAccCell", fontName="Roboto", fontSize=8.5, leading=10.5, textColor=TEXT)
+                head_st = ParagraphStyle("segAccHead", fontName="Roboto-Bold", fontSize=8.5, leading=10,
                                          textColor=head_color)
                 text_keys = ["fecha", "mes", "trabajador", "contratista", "registro", "ubicacion",
                              "descripcion", None, "seguimiento"]
@@ -18596,7 +18623,7 @@ async def export_reports_pdf(
         _cover_title_hex = _sanitize_color_hex(proj.get("color_tema")) or "#003366"
 
         def _draw_cover_outlined_text(x: float, y: float, text: str, font_size: float, ow: float = 0.9) -> None:
-            c.setFont("Helvetica-Bold", font_size)
+            c.setFont("Roboto-Bold", font_size)
             c.setFillColor(WHITE)
             for dx, dy in ((-ow, 0), (ow, 0), (0, -ow), (0, ow), (-ow, -ow), (ow, ow), (-ow, ow), (ow, -ow)):
                 c.drawString(x + dx, y + dy, text)
@@ -18605,7 +18632,7 @@ async def export_reports_pdf(
 
         # Título "REPORTE" (grande, color_tema con contorno, izquierda).
         _title_size = 44
-        while c.stringWidth(_report_title, "Helvetica-Bold", _title_size) > _cover_w_full and _title_size > 20:
+        while c.stringWidth(_report_title, "Roboto-Bold", _title_size) > _cover_w_full and _title_size > 20:
             _title_size -= 2
         _draw_cover_outlined_text(_cover_x_left, _cover_block_top_y, _report_title, _title_size)
         # Rango de fechas (medio, color_tema con contorno).
@@ -18616,17 +18643,17 @@ async def export_reports_pdf(
         _proj_y = _dates_y - 1.8 * cm
         if _proj_upper:
             _proj_size = 26
-            while c.stringWidth(_proj_upper, "Helvetica-Bold", _proj_size) > _cover_w_full and _proj_size > 14:
+            while c.stringWidth(_proj_upper, "Roboto-Bold", _proj_size) > _cover_w_full and _proj_size > 14:
                 _proj_size -= 1
-            c.setFont("Helvetica-Bold", _proj_size)
+            c.setFont("Roboto-Bold", _proj_size)
             # Si aún no cabe → envolver en máx 2 líneas por palabras (word-wrap inline).
-            if c.stringWidth(_proj_upper, "Helvetica-Bold", _proj_size) > _cover_w_full:
+            if c.stringWidth(_proj_upper, "Roboto-Bold", _proj_size) > _cover_w_full:
                 _words = _proj_upper.split()
                 _cover_lines: List[str] = []
                 _cur = ""
                 for _w in _words:
                     _cand = (_cur + " " + _w).strip() if _cur else _w
-                    if c.stringWidth(_cand, "Helvetica-Bold", _proj_size) <= _cover_w_full:
+                    if c.stringWidth(_cand, "Roboto-Bold", _proj_size) <= _cover_w_full:
                         _cur = _cand
                     else:
                         if _cur:
@@ -18661,11 +18688,11 @@ async def export_reports_pdf(
             _ri_grid = HexColor("#A6A6A6")
             _ri_fracs = (0.78, 0.22)
             _ri_pad = 8
-            _ri_head_st = ParagraphStyle("RIHead", fontName="Helvetica-Bold", fontSize=12, leading=14,
+            _ri_head_st = ParagraphStyle("RIHead", fontName="Roboto-Bold", fontSize=12, leading=14,
                                          textColor=_ri_head_txt, alignment=1)
-            _ri_act_st = ParagraphStyle("RIAct", fontName="Helvetica", fontSize=10.5, leading=13, textColor=TEXT)
-            _ri_sec_st = ParagraphStyle("RISec", fontName="Helvetica-Bold", fontSize=10.5, leading=13, textColor=TEXT)
-            _ri_val_st = ParagraphStyle("RIVal", fontName="Helvetica", fontSize=10.5, leading=13, textColor=TEXT, alignment=1)
+            _ri_act_st = ParagraphStyle("RIAct", fontName="Roboto", fontSize=12, leading=15, textColor=TEXT)
+            _ri_sec_st = ParagraphStyle("RISec", fontName="Roboto-Bold", fontSize=12, leading=15, textColor=TEXT)
+            _ri_val_st = ParagraphStyle("RIVal", fontName="Roboto", fontSize=12, leading=15, textColor=TEXT, alignment=1)
             _ri_act_w = _ri_w * _ri_fracs[0] - 2 * _ri_pad
             _ri_rows = []  # (celdas, alto, es_seccion)
             for f in _res_ini_filas:
@@ -18738,21 +18765,21 @@ async def export_reports_pdf(
             AA_LINE_GRAY = HexColor("#D0D0D0")
             AA_CONTENT_GRAY = HexColor("#333333")
 
-            AA_ROW_FONT_SIZE = 10.5
+            AA_ROW_FONT_SIZE = 12
             AA_HEADER_H = 26
             AA_UBIC_FRAC, AA_TXT_FRAC = 0.28, 0.72
             AA_PAD_L, AA_PAD_R = 8, 8
 
             AA_UBIC_STYLE = ParagraphStyle(
-                "AAUbic", fontName="Helvetica-Bold", fontSize=AA_ROW_FONT_SIZE,
+                "AAUbic", fontName="Roboto-Bold", fontSize=AA_ROW_FONT_SIZE,
                 leading=AA_ROW_FONT_SIZE * 1.3, textColor=AA_CONTENT_GRAY,
             )
             AA_TXT_STYLE = ParagraphStyle(
-                "AATxt", fontName="Helvetica", fontSize=AA_ROW_FONT_SIZE,
+                "AATxt", fontName="Roboto", fontSize=AA_ROW_FONT_SIZE,
                 leading=AA_ROW_FONT_SIZE * 1.3, textColor=AA_CONTENT_GRAY,
             )
             AA_HEADER_STYLE = ParagraphStyle(
-                "AAHeader", fontName="Helvetica-Bold", fontSize=AA_ROW_FONT_SIZE,
+                "AAHeader", fontName="Roboto-Bold", fontSize=AA_ROW_FONT_SIZE,
                 leading=AA_ROW_FONT_SIZE * 1.2, textColor=AA_HEADER_TEXT,
             )
 
@@ -18766,12 +18793,12 @@ async def export_reports_pdf(
                 y = aa_top_y
                 if is_first_aa_page:
                     c.setFillColor(AA_TITLE_COLOR)
-                    c.setFont("Helvetica-Bold", 26)
+                    c.setFont("Roboto-Bold", 26)
                     c.drawCentredString(PW / 2, y, "ACTIVIDADES POR ÁREA")
                     y -= 26 * 1.4
                     is_first_aa_page = False
                 c.setFillColor(TEXT)
-                c.setFont("Helvetica-Bold", 15)
+                c.setFont("Roboto-Bold", 15)
                 c.drawString(AA_MARGIN_X, y, area_name.upper())
                 y -= 15 * 1.6
                 return y
@@ -18859,21 +18886,21 @@ async def export_reports_pdf(
             RT_LINE_GRAY = HexColor("#D0D0D0")
             RT_CONTENT_GRAY = HexColor("#333333")
 
-            RT_ROW_FONT_SIZE = 10.5
+            RT_ROW_FONT_SIZE = 12
             RT_HEADER_H = 26
             RT_FRACS = (0.24, 0.16, 0.60)  # Ubicación / Área / Actividad
             RT_PAD_L, RT_PAD_R = 8, 8
 
             RT_BOLD_STYLE = ParagraphStyle(
-                "RTBold", fontName="Helvetica-Bold", fontSize=RT_ROW_FONT_SIZE,
+                "RTBold", fontName="Roboto-Bold", fontSize=RT_ROW_FONT_SIZE,
                 leading=RT_ROW_FONT_SIZE * 1.3, textColor=RT_CONTENT_GRAY,
             )
             RT_TXT_STYLE = ParagraphStyle(
-                "RTTxt", fontName="Helvetica", fontSize=RT_ROW_FONT_SIZE,
+                "RTTxt", fontName="Roboto", fontSize=RT_ROW_FONT_SIZE,
                 leading=RT_ROW_FONT_SIZE * 1.3, textColor=RT_CONTENT_GRAY,
             )
             RT_HEADER_STYLE = ParagraphStyle(
-                "RTHeader", fontName="Helvetica-Bold", fontSize=RT_ROW_FONT_SIZE,
+                "RTHeader", fontName="Roboto-Bold", fontSize=RT_ROW_FONT_SIZE,
                 leading=RT_ROW_FONT_SIZE * 1.2, textColor=RT_HEADER_TEXT,
             )
             rt_col_w = [rt_content_w * f - RT_PAD_L - RT_PAD_R for f in RT_FRACS]
@@ -18885,12 +18912,12 @@ async def export_reports_pdf(
                 y = rt_top_y
                 if is_first_rt_page:
                     c.setFillColor(RT_TITLE_COLOR)
-                    c.setFont("Helvetica-Bold", 24)
+                    c.setFont("Roboto-Bold", 24)
                     c.drawCentredString(PW / 2, y, "RESUMEN DE ACTIVIDADES POR TRAMO")
                     y -= 24 * 1.4
                     is_first_rt_page = False
                 c.setFillColor(TEXT)
-                c.setFont("Helvetica-Bold", 15)
+                c.setFont("Roboto-Bold", 15)
                 c.drawString(RT_MARGIN_X, y, tramo_name.upper() + ("  (continúa)" if continua else ""))
                 y -= 15 * 1.6
                 return y
@@ -19012,7 +19039,7 @@ async def export_reports_pdf(
             _gd_page_count = 1
             _indice_mark("gd", "Datos generales")
             c.setFillColor(MUTED)
-            c.setFont("Helvetica-Oblique", 12)
+            c.setFont("Roboto-Italic", 12)
             c.drawCentredString(PW / 2, PH / 2,
                                 "Sube imágenes de Datos Generales para el proyecto (presupuesto, programa, planos, mapa…).")
             c.showPage()
@@ -19036,14 +19063,14 @@ async def export_reports_pdf(
             _ct_margin = 1.5 * cm
             _ct_gap = 1.2 * cm
             _ct_w = (PW - 2 * _ct_margin - _ct_gap * (len(_contrato_blq) - 1)) / len(_contrato_blq)
-            _ct_lbl = ParagraphStyle("ctLbl", fontName="Helvetica", fontSize=11, leading=15, textColor=TEXT, spaceAfter=6)
-            _ct_cell = ParagraphStyle("ctCell", fontName="Helvetica", fontSize=10, leading=12, textColor=TEXT, alignment=1)
-            _ct_cell_w = ParagraphStyle("ctCellW", parent=_ct_cell, fontName="Helvetica-Bold", textColor=WHITE)
+            _ct_lbl = ParagraphStyle("ctLbl", fontName="Roboto", fontSize=12, leading=16, textColor=TEXT, spaceAfter=6)
+            _ct_cell = ParagraphStyle("ctCell", fontName="Roboto", fontSize=12, leading=14, textColor=TEXT, alignment=1)
+            _ct_cell_w = ParagraphStyle("ctCellW", parent=_ct_cell, fontName="Roboto-Bold", textColor=WHITE)
             for _ci, _blq in enumerate(_contrato_blq):
                 _cx = _ct_margin + _ci * (_ct_w + _ct_gap)
                 _cy = PH - TOP_MARGIN_PDF
                 c.setFillColor(BRAND)
-                c.setFont("Helvetica-Bold", 18)
+                c.setFont("Roboto-Bold", 18)
                 c.drawString(_cx, _cy, "DATOS DE CONTRATO")
                 _cy -= 0.8 * cm
                 for _lbl, _val in _blq["lineas"]:
@@ -19089,7 +19116,7 @@ async def export_reports_pdf(
             # informativa y el flujo normal continúa — cada sección decide por
             # su cuenta si tiene algo que imprimir.
             c.setFillColor(MUTED)
-            c.setFont("Helvetica-Oblique", 14)
+            c.setFont("Roboto-Italic", 14)
             c.drawCentredString(PW / 2, PH / 2, "No hay reportes para el período seleccionado.")
             c.showPage()
             page_num += 1
@@ -19158,10 +19185,10 @@ async def export_reports_pdf(
             jerarquía institucional."""
             title = _normalize_area_name(area_name or "SIN ÁREA", user_role=user.get("role"), user_area=user.get("area")).upper()
             size = 34  # mismo tamaño que "REPORTE X" en la portada
-            while c.stringWidth(title, "Helvetica-Bold", size) > PW - 3.0 * cm and size > 18:
+            while c.stringWidth(title, "Roboto-Bold", size) > PW - 3.0 * cm and size > 18:
                 size -= 2
             c.setFillColor(WHITE)
-            c.setFont("Helvetica-Bold", size)
+            c.setFont("Roboto-Bold", size)
             _y = PH * 0.32 + 1.6 * cm
             c.drawCentredString(PW / 2, _y, title)
 
@@ -19241,7 +19268,7 @@ async def export_reports_pdf(
                 c.setFillColor(BRAND)
                 c.rect(MARGIN_X, top_y - _tl_h, content_w, _tl_h, fill=1, stroke=0)
                 c.setFillColor(WHITE)
-                c.setFont("Helvetica-Bold", 11)
+                c.setFont("Roboto-Bold", 11)
                 c.drawCentredString(MARGIN_X + content_w / 2, top_y - _tl_h / 2 - 0.14 * cm, turno_label.upper())
                 top_y -= _tl_h + 0.3 * cm
 
@@ -19257,14 +19284,14 @@ async def export_reports_pdf(
             subtramo_name = acceso_node_label or (subtramo_node or {}).get("name") or "Subtramo"
 
             BULLET_STYLE = ParagraphStyle(
-                "SubtramoBullet", fontName="Helvetica", fontSize=8.3, leading=10.5,
+                "SubtramoBullet", fontName="Roboto", fontSize=8.3, leading=10.5,
                 textColor=TEXT, leftIndent=0.32 * cm, bulletIndent=0, spaceAfter=1,
             )
             BULLET_EMPTY_STYLE = ParagraphStyle(
-                "SubtramoBulletEmpty", fontName="Helvetica-Oblique", fontSize=8.3, leading=10.5, textColor=MUTED,
+                "SubtramoBulletEmpty", fontName="Roboto-Italic", fontSize=8.3, leading=10.5, textColor=MUTED,
             )
             BULLET_MORE_STYLE = ParagraphStyle(
-                "SubtramoBulletMore", fontName="Helvetica-Oblique", fontSize=7.5, leading=9.5, textColor=MUTED,
+                "SubtramoBulletMore", fontName="Roboto-Italic", fontSize=7.5, leading=9.5, textColor=MUTED,
                 leftIndent=0.32 * cm,
             )
 
@@ -19314,7 +19341,7 @@ async def export_reports_pdf(
 
             def _section_title(x: float, y: float, w: float, text: str) -> float:
                 c.setFillColor(BRAND)
-                c.setFont("Helvetica-Bold", 10.5)
+                c.setFont("Roboto-Bold", 10.5)
                 c.drawString(x, y - 0.36 * cm, text.upper())
                 return y - 0.58 * cm
 
@@ -19367,12 +19394,12 @@ async def export_reports_pdf(
             c.setFillColor(BRAND)
             _chico, _grande = _estacion_titulos(_ordinal, subtramo_name)
             if _chico:
-                c.setFont("Helvetica-Bold", 10.5)
+                c.setFont("Roboto-Bold", 10.5)
                 c.drawString(left_x + 2 * BADGE_R + 0.3 * cm, y - BADGE_R - 0.05 * cm - 10.5 * 0.32 + 0.16 * cm,
                              _chico)
-            c.setFont("Helvetica-Bold", 15)
+            c.setFont("Roboto-Bold", 15)
             title_txt = _grande.upper()
-            while c.stringWidth(title_txt, "Helvetica-Bold", 15) > col_w - (2 * BADGE_R + 0.3 * cm) and len(title_txt) > 8:
+            while c.stringWidth(title_txt, "Roboto-Bold", 15) > col_w - (2 * BADGE_R + 0.3 * cm) and len(title_txt) > 8:
                 title_txt = title_txt[:-2] + "…"
             c.drawString(left_x + 2 * BADGE_R + 0.3 * cm, y - BADGE_R - 0.05 * cm - 15 * 0.32 - 0.42 * cm, title_txt)
             y -= 1.75 * cm
@@ -19396,7 +19423,7 @@ async def export_reports_pdf(
                 c.setFillColor(acceso_color)
                 c.rect(left_x, y - box_h, col_w, box_h, fill=1, stroke=0)
                 c.setFillColor(WHITE)
-                c.setFont("Helvetica-Bold", 11)
+                c.setFont("Roboto-Bold", 11)
                 status_label = (acceso_predio or "Sin especificar").strip().upper()
                 c.drawCentredString(left_x + col_w / 2, y - box_h / 2 - 0.14 * cm, status_label)
                 # FIX: se quita la nota de vigencia ("Refleja el estatus...")
@@ -19434,7 +19461,7 @@ async def export_reports_pdf(
             y = top_y
             _draw_badge_icon(right_x + BADGE_R, y - BADGE_R - 0.05 * cm, BADGE_R, "weather")
             c.setFillColor(BRAND)
-            c.setFont("Helvetica-Bold", 12)
+            c.setFont("Roboto-Bold", 12)
             c.drawString(right_x + 2 * BADGE_R + 0.3 * cm, y - BADGE_R - 0.05 * cm - 12 * 0.32, "ESTADO DEL TIEMPO")
             y -= 1.1 * cm
 
@@ -19459,10 +19486,10 @@ async def export_reports_pdf(
             for i, (label, val) in enumerate(cells):
                 cx = right_x + i * cell_w
                 c.setFillColor(TEXT)
-                c.setFont("Helvetica-Bold", 7.5)
-                for ln in _wrap_lines(label, cell_w - 0.15 * cm, "Helvetica-Bold", 7.5, 2):
+                c.setFont("Roboto-Bold", 7.5)
+                for ln in _wrap_lines(label, cell_w - 0.15 * cm, "Roboto-Bold", 7.5, 2):
                     c.drawString(cx, grid_top - 0.34 * cm, ln)
-                c.setFont("Helvetica-Bold", 10.5)
+                c.setFont("Roboto-Bold", 10.5)
                 c.drawString(cx, grid_top - cell_h + 0.28 * cm, val)
             y = grid_top - cell_h - 0.3 * cm
 
@@ -19497,23 +19524,23 @@ async def export_reports_pdf(
             NAME_COL_FRAC, QTY_COL_FRAC = 0.70, 0.30
 
             NAME_STYLE = ParagraphStyle(
-                "WFRowName", fontName="Helvetica", fontSize=ROW_FONT_SIZE,
+                "WFRowName", fontName="Roboto", fontSize=ROW_FONT_SIZE,
                 leading=ROW_FONT_SIZE * 1.3, textColor=CONTENT_GRAY,
             )
             QTY_STYLE = ParagraphStyle(
-                "WFRowQty", fontName="Helvetica", fontSize=ROW_FONT_SIZE,
+                "WFRowQty", fontName="Roboto", fontSize=ROW_FONT_SIZE,
                 leading=ROW_FONT_SIZE * 1.3, textColor=CONTENT_GRAY, alignment=TA_CENTER,
             )
             HEADER_STYLE = ParagraphStyle(
-                "WFHeader", fontName="Helvetica-Bold", fontSize=ROW_FONT_SIZE,
+                "WFHeader", fontName="Roboto-Bold", fontSize=ROW_FONT_SIZE,
                 leading=11, textColor=WF_HEADER_TEXT, alignment=TA_CENTER,
             )
             TOTAL_LABEL_STYLE = ParagraphStyle(
-                "WFTotalLabel", fontName="Helvetica-Bold", fontSize=ROW_FONT_SIZE,
+                "WFTotalLabel", fontName="Roboto-Bold", fontSize=ROW_FONT_SIZE,
                 leading=ROW_FONT_SIZE * 1.3, textColor=CONTENT_GRAY, alignment=TA_CENTER,
             )
             OVERFLOW_STYLE = ParagraphStyle(
-                "WFOverflow", fontName="Helvetica-Oblique", fontSize=ROW_FONT_SIZE,
+                "WFOverflow", fontName="Roboto-Italic", fontSize=ROW_FONT_SIZE,
                 leading=ROW_FONT_SIZE * 1.3, textColor=CONTENT_GRAY,
             )
 
@@ -19536,7 +19563,7 @@ async def export_reports_pdf(
                 # marca del proyecto es un pastel (mismo bug que ya resolvía
                 # el resto de los títulos de esta página, ver `BRAND` arriba).
                 c.setFillColor(BRAND)
-                c.setFont("Helvetica-Bold", 11)
+                c.setFont("Roboto-Bold", 11)
                 c.drawString(x + 2 * r + 0.2 * cm, cy - 11 * 0.32, title.upper())
                 return y_top - 2 * r - 0.04 * cm - 8  # ~8pt antes de la tabla
 
@@ -19690,14 +19717,14 @@ async def export_reports_pdf(
             intertramo_name = (intertramo_node or {}).get("name") or "Intertramo"
 
             BULLET_STYLE = ParagraphStyle(
-                "IntertramoBullet", fontName="Helvetica", fontSize=8.3, leading=10.5,
+                "IntertramoBullet", fontName="Roboto", fontSize=8.3, leading=10.5,
                 textColor=TEXT, leftIndent=0.32 * cm, bulletIndent=0, spaceAfter=1,
             )
             BULLET_EMPTY_STYLE = ParagraphStyle(
-                "IntertramoBulletEmpty", fontName="Helvetica-Oblique", fontSize=8.3, leading=10.5, textColor=MUTED,
+                "IntertramoBulletEmpty", fontName="Roboto-Italic", fontSize=8.3, leading=10.5, textColor=MUTED,
             )
             BULLET_MORE_STYLE = ParagraphStyle(
-                "IntertramoBulletMore", fontName="Helvetica-Oblique", fontSize=7.5, leading=9.5, textColor=MUTED,
+                "IntertramoBulletMore", fontName="Roboto-Italic", fontSize=7.5, leading=9.5, textColor=MUTED,
                 leftIndent=0.32 * cm,
             )
 
@@ -19739,7 +19766,7 @@ async def export_reports_pdf(
 
             def _section_title(x: float, y: float, w: float, text: str) -> float:
                 c.setFillColor(BRAND)
-                c.setFont("Helvetica-Bold", 10.5)
+                c.setFont("Roboto-Bold", 10.5)
                 c.drawString(x, y - 0.36 * cm, text.upper())
                 return y - 0.58 * cm
 
@@ -19776,11 +19803,11 @@ async def export_reports_pdf(
             y = top_y
             _draw_badge_icon(left_x + BADGE_R, y - BADGE_R - 0.05 * cm, BADGE_R, "structure")
             c.setFillColor(BRAND)
-            c.setFont("Helvetica-Bold", 10.5)
+            c.setFont("Roboto-Bold", 10.5)
             c.drawString(left_x + 2 * BADGE_R + 0.3 * cm, y - BADGE_R - 0.05 * cm - 10.5 * 0.32 + 0.16 * cm, "INTERTRAMO")
-            c.setFont("Helvetica-Bold", 15)
+            c.setFont("Roboto-Bold", 15)
             title_txt = intertramo_name.upper()
-            while c.stringWidth(title_txt, "Helvetica-Bold", 15) > col_w - (2 * BADGE_R + 0.3 * cm) and len(title_txt) > 8:
+            while c.stringWidth(title_txt, "Roboto-Bold", 15) > col_w - (2 * BADGE_R + 0.3 * cm) and len(title_txt) > 8:
                 title_txt = title_txt[:-2] + "…"
             c.drawString(left_x + 2 * BADGE_R + 0.3 * cm, y - BADGE_R - 0.05 * cm - 15 * 0.32 - 0.42 * cm, title_txt)
             y -= 1.75 * cm
@@ -19832,11 +19859,11 @@ async def export_reports_pdf(
                 lead = size * 1.2
                 # Encabezado a lo más 8.5 pt: "UBICACIÓN" en negritas no cabe en su columna con letra grande.
                 h_size = min(size, 8.5)
-                h_style = ParagraphStyle("PosteHeader", fontName="Helvetica-Bold", fontSize=h_size, leading=h_size * 1.2,
+                h_style = ParagraphStyle("PosteHeader", fontName="Roboto-Bold", fontSize=h_size, leading=h_size * 1.2,
                                          textColor=POSTE_HEADER_FG, alignment=TA_CENTER)
-                c_style = ParagraphStyle("PosteCell", fontName="Helvetica", fontSize=size, leading=lead,
+                c_style = ParagraphStyle("PosteCell", fontName="Roboto", fontSize=size, leading=lead,
                                          textColor=HexColor("#333333"), alignment=TA_CENTER)
-                o_style = ParagraphStyle("PosteOverflow", fontName="Helvetica-Oblique", fontSize=size, leading=lead,
+                o_style = ParagraphStyle("PosteOverflow", fontName="Roboto-Italic", fontSize=size, leading=lead,
                                          textColor=MUTED)
                 data = [[Paragraph(h, h_style) for h in POSTE_COLS]]
                 for fila in filas:
@@ -19923,23 +19950,23 @@ async def export_reports_pdf(
             NAME_COL_FRAC, QTY_COL_FRAC = 0.66, 0.34
 
             NAME_STYLE = ParagraphStyle(
-                "IntWFRowName", fontName="Helvetica", fontSize=ROW_FONT_SIZE,
+                "IntWFRowName", fontName="Roboto", fontSize=ROW_FONT_SIZE,
                 leading=ROW_FONT_SIZE * 1.3, textColor=CONTENT_GRAY,
             )
             QTY_STYLE = ParagraphStyle(
-                "IntWFRowQty", fontName="Helvetica", fontSize=ROW_FONT_SIZE,
+                "IntWFRowQty", fontName="Roboto", fontSize=ROW_FONT_SIZE,
                 leading=ROW_FONT_SIZE * 1.3, textColor=CONTENT_GRAY, alignment=TA_CENTER,
             )
             HEADER_STYLE = ParagraphStyle(
-                "IntWFHeader", fontName="Helvetica-Bold", fontSize=HEADER_FONT_SIZE,
+                "IntWFHeader", fontName="Roboto-Bold", fontSize=HEADER_FONT_SIZE,
                 leading=HEADER_FONT_SIZE * 1.25, textColor=WF_HEADER_TEXT, alignment=TA_CENTER,
             )
             TOTAL_LABEL_STYLE = ParagraphStyle(
-                "IntWFTotalLabel", fontName="Helvetica-Bold", fontSize=ROW_FONT_SIZE,
+                "IntWFTotalLabel", fontName="Roboto-Bold", fontSize=ROW_FONT_SIZE,
                 leading=ROW_FONT_SIZE * 1.3, textColor=CONTENT_GRAY, alignment=TA_CENTER,
             )
             OVERFLOW_STYLE = ParagraphStyle(
-                "IntWFOverflow", fontName="Helvetica-Oblique", fontSize=ROW_FONT_SIZE,
+                "IntWFOverflow", fontName="Roboto-Italic", fontSize=ROW_FONT_SIZE,
                 leading=ROW_FONT_SIZE * 1.3, textColor=CONTENT_GRAY,
             )
 
@@ -19953,7 +19980,7 @@ async def export_reports_pdf(
                     c.setFillColor(WF_BRAND)
                     c.circle(cx, cy, r * 0.20, stroke=0, fill=1)
                 c.setFillColor(BRAND)
-                c.setFont("Helvetica-Bold", 11)
+                c.setFont("Roboto-Bold", 11)
                 c.drawString(x + 2 * r + 0.2 * cm, cy - 11 * 0.32, title.upper())
                 return y_top - 2 * r - 0.04 * cm - 8
 
@@ -20102,19 +20129,19 @@ async def export_reports_pdf(
             pair_x = MARGIN_X + (content_w - pair_w) / 2.0
 
             NAME_STYLE = ParagraphStyle(
-                "RGRowName", fontName="Helvetica", fontSize=ROW_FONT_SIZE,
+                "RGRowName", fontName="Roboto", fontSize=ROW_FONT_SIZE,
                 leading=ROW_FONT_SIZE * 1.3, textColor=CONTENT_GRAY,
             )
             QTY_STYLE = ParagraphStyle(
-                "RGRowQty", fontName="Helvetica", fontSize=ROW_FONT_SIZE,
+                "RGRowQty", fontName="Roboto", fontSize=ROW_FONT_SIZE,
                 leading=ROW_FONT_SIZE * 1.3, textColor=CONTENT_GRAY, alignment=TA_CENTER,
             )
             HEADER_STYLE = ParagraphStyle(
-                "RGHeader", fontName="Helvetica-Bold", fontSize=ROW_FONT_SIZE,
+                "RGHeader", fontName="Roboto-Bold", fontSize=ROW_FONT_SIZE,
                 leading=ROW_FONT_SIZE * 1.2, textColor=RG_HEADER_TEXT, alignment=TA_CENTER,
             )
             TOTAL_LABEL_STYLE = ParagraphStyle(
-                "RGTotalLabel", fontName="Helvetica-Bold", fontSize=ROW_FONT_SIZE,
+                "RGTotalLabel", fontName="Roboto-Bold", fontSize=ROW_FONT_SIZE,
                 leading=ROW_FONT_SIZE * 1.3, textColor=CONTENT_GRAY, alignment=TA_CENTER,
             )
 
@@ -20225,12 +20252,12 @@ async def export_reports_pdf(
                 y = top_y
                 if is_first_page_ever:
                     c.setFillColor(RG_TITLE)
-                    c.setFont("Helvetica-Bold", 28)
+                    c.setFont("Roboto-Bold", 28)
                     c.drawCentredString(PW / 2, y, "RECUENTO GENERAL")
                     y -= 28 * 1.4
                     is_first_page_ever = False
                 c.setFillColor(TEXT)
-                c.setFont("Helvetica-Bold", 18)
+                c.setFont("Roboto-Bold", 18)
                 subtitle = nodo_name.upper()
                 if page_n > 1:
                     subtitle += f"  (CONTINÚA · PÁG. {page_n})"
@@ -20238,10 +20265,10 @@ async def export_reports_pdf(
                 y -= 18 * 1.35
                 if nodo_path and nodo_path.upper() != nodo_name.upper():
                     path_size = 10.5
-                    while c.stringWidth(nodo_path, "Helvetica", path_size) > content_w and path_size > 7:
+                    while c.stringWidth(nodo_path, "Roboto", path_size) > content_w and path_size > 7:
                         path_size -= 0.5
                     c.setFillColor(MUTED)
-                    c.setFont("Helvetica", path_size)
+                    c.setFont("Roboto", path_size)
                     c.drawCentredString(PW / 2, y, nodo_path)
                 y -= 10.5 * 1.6
                 return y
@@ -20257,7 +20284,7 @@ async def export_reports_pdf(
                     # (`incluir_sin_datos=True`): leyenda, nunca tabla vacía.
                     y = _draw_titulo_subtitulo(nodo_name, nodo_path, 1)
                     c.setFillColor(MUTED)
-                    c.setFont("Helvetica-Oblique", 12)
+                    c.setFont("Roboto-Italic", 12)
                     c.drawCentredString(PW / 2, y - 0.3 * cm, "Sin actividad en el periodo")
                     c.showPage()
                     page_num += 1
@@ -20342,11 +20369,11 @@ async def export_reports_pdf(
             PAD_L, PAD_R = 10, 8
 
             ROW_STYLE = ParagraphStyle(
-                "AAAreaRow", fontName="Helvetica", fontSize=ROW_FONT_SIZE,
+                "AAAreaRow", fontName="Roboto", fontSize=ROW_FONT_SIZE,
                 leading=ROW_FONT_SIZE * 1.3, textColor=CONTENT_GRAY,
             )
             HEADER_STYLE = ParagraphStyle(
-                "AAAreaHeader", fontName="Helvetica-Bold", fontSize=ROW_FONT_SIZE,
+                "AAAreaHeader", fontName="Roboto-Bold", fontSize=ROW_FONT_SIZE,
                 leading=ROW_FONT_SIZE * 1.2, textColor=AA_HEADER_TEXT,
             )
 
@@ -20387,25 +20414,25 @@ async def export_reports_pdf(
                 page_in_area += 1
                 y = top_y
                 c.setFillColor(AA_TITLE)
-                c.setFont("Helvetica-Bold", 20)
+                c.setFont("Roboto-Bold", 20)
                 title = "RESUMEN DE ACTIVIDADES"
                 if page_in_area > 1:
                     title += f"  (CONTINÚA · PÁG. {page_in_area})"
                 c.drawCentredString(PW / 2, y, title)
                 y -= 20 * 1.4
                 c.setFillColor(TEXT)
-                c.setFont("Helvetica-Bold", 14)
+                c.setFont("Roboto-Bold", 14)
                 area_title = area_name.upper()
-                while c.stringWidth(area_title, "Helvetica-Bold", 14) > content_w and len(area_title) > 8:
+                while c.stringWidth(area_title, "Roboto-Bold", 14) > content_w and len(area_title) > 8:
                     area_title = area_title[:-2] + "…"
                 c.drawCentredString(PW / 2, y, area_title)
                 y -= 14 * 1.35
                 if node_path:
                     path_size = 9.5
-                    while c.stringWidth(node_path, "Helvetica", path_size) > content_w and path_size > 7:
+                    while c.stringWidth(node_path, "Roboto", path_size) > content_w and path_size > 7:
                         path_size -= 0.5
                     c.setFillColor(MUTED)
-                    c.setFont("Helvetica", path_size)
+                    c.setFont("Roboto", path_size)
                     c.drawCentredString(PW / 2, y, node_path)
                 y -= 9.5 * 1.6
 
@@ -20508,7 +20535,7 @@ async def export_reports_pdf(
                 c.setLineWidth(0.5)
                 c.rect(x, y_photo, EXEC_PHOTO_W, EXEC_PHOTO_H, stroke=1, fill=0)
                 c.setFillColor(MUTED)
-                c.setFont("Helvetica-Oblique", 10)
+                c.setFont("Roboto-Italic", 10)
                 c.drawCentredString(x + EXEC_PHOTO_W / 2,
                                     y_photo + EXEC_PHOTO_H / 2,
                                     "(sin imagen)")
@@ -20516,7 +20543,7 @@ async def export_reports_pdf(
             # `drawString` pinta en la LÍNEA BASE: sin bajar el tamaño de la
             # letra, la 1ª línea del pie se encimaba con el borde de la foto.
             caption_top = y_photo - 0.35 * cm - EXEC_CAPTION_SIZE
-            font = "Helvetica"
+            font = "Roboto"
             wrapped = _wrap_lines(caption or "—",
                                   EXEC_PHOTO_W,
                                   font, EXEC_CAPTION_SIZE, 4)
@@ -20894,9 +20921,9 @@ async def export_reports_pdf(
         if _orphan_by_bucket:
             _indice_mark("orphan", "Actividades generales (áreas sin reportes)")
             c.setFillColor(HexColor(_readable_dark_hex(project_color)))
-            c.setFont("Helvetica-Bold", 20)
+            c.setFont("Roboto-Bold", 20)
             c.drawCentredString(PW / 2, PH / 2 + 0.3 * cm, "ACTIVIDADES GENERALES")
-            c.setFont("Helvetica", 11)
+            c.setFont("Roboto", 11)
             c.setFillColor(MUTED)
             c.drawCentredString(PW / 2, PH / 2 - 0.5 * cm, "Áreas sin reportes de campo en el período exportado")
             c.showPage()
@@ -20920,15 +20947,15 @@ async def export_reports_pdf(
 
         if firma_cierre:
             c.setFillColor(HexColor(_readable_dark_hex(project_color)))
-            c.setFont("Helvetica-Bold", 36)
+            c.setFont("Roboto-Bold", 36)
             c.drawCentredString(PW / 2, PH * 0.62, firma_cierre["titulo"])
             c.setFillColor(TEXT)
-            c.setFont("Helvetica-Bold", 16)
+            c.setFont("Roboto-Bold", 16)
             c.drawCentredString(PW / 2, PH * 0.62 - 1.6 * cm, firma_cierre["periodo"])
-            c.setFont("Helvetica-Bold", 20)
+            c.setFont("Roboto-Bold", 20)
             c.drawCentredString(PW / 2, PH * 0.62 - 4.6 * cm, firma_cierre["nombre"])
             c.setFillColor(MUTED)
-            c.setFont("Helvetica-Bold", 13)
+            c.setFont("Roboto-Bold", 13)
             c.drawCentredString(PW / 2, PH * 0.62 - 5.6 * cm, firma_cierre["cargo"])
             c.showPage()
             page_num += 1
@@ -24665,7 +24692,7 @@ async def export_reports_pptx(
             prs = Presentation()
             prs.slide_width = Cm(29.7)
             prs.slide_height = Cm(21.0)
-        _force_pptx_theme_font(prs, "Arial")
+        _force_pptx_theme_font(prs, "Roboto")
         SW, SH = prs.slide_width, prs.slide_height
         # Margen superior seguro para no invadir logos/encabezado del membrete.
         TOP_MARGIN = Cm(3.5)
@@ -35217,7 +35244,7 @@ async def export_avance_periodo_pdf(
                 ("TEXTCOLOR", (0, 0), (-1, 0), white),
                 ("GRID", (0, 0), (-1, -2), 0.4, HexColor("#CBD5E1")),
                 ("LINEABOVE", (0, -1), (-1, -1), 0.8, HexColor("#94A3B8")),
-                ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
+                ("FONTNAME", (0, -1), (-1, -1), "Roboto-Bold"),
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
                 ("ROWBACKGROUNDS", (0, 1), (-1, -2), [white, HexColor("#F8FAFC")]),
             ]))
