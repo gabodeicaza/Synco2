@@ -162,7 +162,7 @@ export default function IndiceEditorScreen({ projectId: pid }: { projectId: stri
         <Text style={styles.helpTxt}>
           El índice se inserta después de la portada del PDF y del PowerPoint con los números de
           página reales. El orden que definas aquí es el orden en que quedan las secciones en el
-          documento. Cada informe (Diario, Semanal, Mensual) tiene su propio índice.
+          documento. El ojo tachado quita la sección del informe (no se imprime). Cada informe (Diario, Semanal, Mensual) tiene su propio índice.
         </Text>
 
         <View style={styles.tabs}>
@@ -254,7 +254,7 @@ export default function IndiceEditorScreen({ projectId: pid }: { projectId: stri
                         onPress={() => editar((c) => alternarOculta(c, s.key))}
                         hitSlop={6}
                         style={styles.secBtn}
-                        accessibilityLabel={oculta ? 'Mostrar en el índice' : 'Ocultar del índice'}
+                        accessibilityLabel={oculta ? 'Mostrar en el informe' : 'No imprimir en el informe'}
                       >
                         <Ionicons
                           name={oculta ? 'eye-off-outline' : 'eye-outline'}

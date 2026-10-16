@@ -16640,14 +16640,16 @@ def _indice_plan(ranges: List[dict], cfg: dict, pre_count: int, first_cap: int, 
     `pre_count` = páginas previas a la primera sección (portada), que van
     antes del índice."""
     by_key = {r["key"]: r for r in ranges}
-    ordered = [by_key[k] for k in _indice_apply_order([r["key"] for r in ranges], cfg["order"])]
     hidden = set(cfg["hidden"])
-    n_visibles = sum(1 for r in ordered if r["key"] not in hidden)
-    counts = _indice_page_counts(n_visibles, first_cap, next_cap) if cfg["enabled"] else []
+    # Una sección oculta (ojo tachado en el editor) NO se imprime: ni entrada
+    # en el índice ni sus páginas/diapositivas en el documento.
+    ordered = [by_key[k] for k in _indice_apply_order([r["key"] for r in ranges], cfg["order"])
+               if k not in hidden]
+    counts = _indice_page_counts(len(ordered), first_cap, next_cap) if cfg["enabled"] else []
     page = pre_count + len(counts) + 1
     entries: List[tuple] = []
     for r in ordered:
-        if cfg["enabled"] and r["key"] not in hidden:
+        if cfg["enabled"]:
             entries.append((cfg["titles"].get(r["key"]) or r["title"], page))
         page += r["n"]
     return {"ordered": ordered, "counts": counts, "entries": entries}
@@ -16861,12 +16863,10 @@ def _pdf_apply_indice(pdf_bytes: bytes, marks: List[tuple], cfg: dict, *, templa
     if index_pages:
         writer.add_outline_item(cfg["titulo"], pre_count)
     cursor = pre_count + len(index_pages)
-    hidden = set(cfg["hidden"])
     for r in plan["ordered"]:
         for i in range(r["start"], r["start"] + r["n"]):
             writer.add_page(reader.pages[i])
-        if r["key"] not in hidden:
-            writer.add_outline_item(cfg["titles"].get(r["key"]) or r["title"], cursor)
+        writer.add_outline_item(cfg["titles"].get(r["key"]) or r["title"], cursor)
         cursor += r["n"]
     # Páginas posteriores a la última marca no existen (la última sección
     # llega hasta `total`), y las previas a la primera ya se copiaron arriba.
@@ -16918,7 +16918,8 @@ def _pptx_apply_indice(prs, marks: List[tuple], cfg: dict, *, master_separate: b
             + shell_els
             + [e for r in plan["ordered"] for e in els[r["start"]: r["start"] + r["n"]]]
         )
-        if len(final) != len(els) - (1 if master_el is not None else 0) + len(shell_els):
+        n_ocultas = sum(r["n"] for r in ranges) - sum(r["n"] for r in plan["ordered"])
+        if len(final) != len(els) - (1 if master_el is not None else 0) - n_ocultas + len(shell_els):
             raise RuntimeError("el reordenamiento perdería diapositivas")
     except Exception as exc:
         for e in list(lst)[len(els):]:
@@ -16937,6 +16938,11 @@ def _pptx_apply_indice(prs, marks: List[tuple], cfg: dict, *, master_separate: b
         lst.append(e)
     if master_el is not None:
         prs.part.drop_rel(master_el.rId)
+    # Secciones ocultas: sus diapositivas ya no están en la lista; se sueltan
+    # también las relaciones para que no queden en el archivo.
+    for e in els:
+        if e is not master_el and e not in final:
+            prs.part.drop_rel(e.rId)
     return estructura
 
 
@@ -16998,7 +17004,7 @@ async def preview_indice(pid: str, periodo: str, body: dict,
         "entradas": [{"titulo": tit, "pagina": pag} for tit, pag in plan["entries"]],
         "paginas_portada": pre_count,
         "paginas_indice": paginas_indice,
-        "total_paginas": pre_count + paginas_indice + sum(r["n"] for r in ranges),
+        "total_paginas": pre_count + paginas_indice + sum(r["n"] for r in plan["ordered"]),
     }
 
 
@@ -24976,6 +24982,15 @@ async def export_reports_pptx(
             ROW_FONT = 14
             HEADER_FONT = 13
 
+            def _row_alto(r: dict, tiene_poste: bool) -> int:
+                """Alto de la fila: crece si el nombre se parte en varias líneas
+                (antes era fijo y el texto se encimaba con la fila siguiente)."""
+                qx0, nx0 = (0.78, 0.26) if tiene_poste else (0.80, 0.0)
+                main, _ = _format_workforce_desc(r["desc"])
+                w = int(tbl_w * (qx0 - nx0)) - Cm(0.3)
+                lineas = _pptx_texto_lineas(main or "—", w, ROW_FONT)
+                return max(ROW_H, int(lineas * ROW_FONT * 1.2 * 12700) + Cm(0.35))
+
             def _draw_big_table(x: int, y_top: int, title: str, items: list, draw_total: bool, total_qty,
                                  tiene_poste: bool) -> int:
                 # Con columna POSTE (nivel de agregación por encima de hoja —
@@ -24986,7 +25001,7 @@ async def export_reports_pptx(
                     # (13 pt, negritas) no cabe en menos y se partía en dos líneas.
                     poste_x0, name_x0, qty_x0 = 0.0, 0.26, 0.78
                 else:
-                    poste_x0, name_x0, qty_x0 = None, 0.0, 0.62
+                    poste_x0, name_x0, qty_x0 = None, 0.0, 0.80
                 _wf_rect(slide, x, y_top, tbl_w, HEADER_H, fill_rgb=BRAND_RGB)
                 if tiene_poste:
                     add_text(slide, x + Cm(0.2), y_top + Cm(0.15), int(tbl_w * (name_x0 - poste_x0) - Cm(0.2)),
@@ -24999,8 +25014,9 @@ async def export_reports_pptx(
                          align=PP_ALIGN.RIGHT)
                 yy = y_top + HEADER_H
                 for idx, r in enumerate(items):
+                    row_h = _row_alto(r, tiene_poste)
                     if idx % 2 == 1:
-                        _wf_rect(slide, x, yy, tbl_w, ROW_H, fill_rgb=WF_ZEBRA_TINT_RGB)
+                        _wf_rect(slide, x, yy, tbl_w, row_h, fill_rgb=WF_ZEBRA_TINT_RGB)
                     if tiene_poste:
                         add_text(slide, x + Cm(0.2), yy + Cm(0.12), int(tbl_w * (name_x0 - poste_x0)) - Cm(0.3),
                                  ROW_H - Cm(0.2), str(r.get("poste") or "—"), size=ROW_FONT - 2, color=WF_MUTED_RGB)
@@ -25011,8 +25027,8 @@ async def export_reports_pptx(
                     add_text(slide, x + int(tbl_w * qty_x0), yy + Cm(0.12), int(tbl_w * (1 - qty_x0)) - Cm(0.2),
                              ROW_H - Cm(0.2), str(r["qty"]), size=ROW_FONT, bold=True, color=READABLE_BRAND_RGB,
                              align=PP_ALIGN.RIGHT)
-                    _wf_rect(slide, x, yy + ROW_H - Pt(0.9), tbl_w, Pt(0.9), fill_rgb=WF_BORDER_RGB)
-                    yy += ROW_H
+                    _wf_rect(slide, x, yy + row_h - Pt(0.9), tbl_w, Pt(0.9), fill_rgb=WF_BORDER_RGB)
+                    yy += row_h
                 if not items:
                     add_text(slide, x + Cm(0.2), yy + Cm(0.12), tbl_w - Cm(0.4), ROW_H - Cm(0.2),
                              "Sin registros", size=ROW_FONT, italic=True, color=WF_MUTED_RGB)
@@ -25064,7 +25080,8 @@ async def export_reports_pptx(
                 title_reserved = Cm(1.3) if not _emitted_recuento_general_title else Cm(0)
                 subtitle_reserved = Cm(1.0) + (Cm(0.8) if show_path else Cm(0))
                 avail_h = (SH - BOTTOM_MARGIN) - TOP_MARGIN - title_reserved - subtitle_reserved - HEADER_H - TOTAL_H
-                rows_per_slide = max(1, int(avail_h / ROW_H))
+                alto_p = [_row_alto(r, tiene_poste) for r in personal_rows_e]
+                alto_m = [_row_alto(r, tiene_poste) for r in maquinaria_rows_e]
 
                 idx = 0
                 page_in_nodo = 0
@@ -25088,7 +25105,17 @@ async def export_reports_pptx(
                                   size=11, color=WF_MUTED_RGB, align=PP_ALIGN.CENTER)
                         y += Cm(0.8)  # aire bajo la ruta: el encabezado de la tabla la tapaba
 
-                    chunk_end = min(idx + rows_per_slide, n_total)
+                    # Pagina por ALTO real: las dos tablas llevan las mismas filas
+                    # por hoja y ninguna puede pasar del área disponible.
+                    chunk_end, acum_p, acum_m = idx, 0, 0
+                    while chunk_end < n_total:
+                        ap = alto_p[chunk_end] if chunk_end < len(alto_p) else 0
+                        am = alto_m[chunk_end] if chunk_end < len(alto_m) else 0
+                        if chunk_end > idx and (acum_p + ap > avail_h or acum_m + am > avail_h):
+                            break
+                        acum_p += ap
+                        acum_m += am
+                        chunk_end += 1
                     is_last_chunk = chunk_end >= n_total
                     _draw_big_table(pair_x, y, "Personal", personal_rows_e[idx:chunk_end], is_last_chunk,
                                      personal_total, tiene_poste)
@@ -25223,7 +25250,9 @@ async def export_reports_pptx(
             el motor PDF)."""
             MARGIN_X = Cm(1.5)
             content_w = SW - 2 * MARGIN_X
-            top_y = Cm(1.6)
+            # Debajo de la franja del membrete (≈2.1 cm): antes arrancaba en
+            # 1.6 cm y los títulos/fotos (Vuelo LiDAR) quedaban encimados.
+            top_y = Cm(2.9)
             bottom_y = SH - Cm(1.2)
             HEADING_RGB = {"good": (0x16, 0xA3, 0x4A), "bad": (0xDC, 0x26, 0x26)}
 
