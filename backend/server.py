@@ -15496,6 +15496,20 @@ def _fmt_fecha_dd_mm_yyyy(dt) -> str:
         return "—"
 
 
+def _fecha_portada_larga(start_dt, end_dt) -> str:
+    """Fecha de la portada en el formato de los informes reales: '16 DE
+    OCTUBRE DE 2026' (un día) o 'DEL 12 AL 16 DE OCTUBRE DE 2026' (rango)."""
+    ini, fin = _fmt_fecha_dd_mm_yyyy(start_dt), _fmt_fecha_dd_mm_yyyy(end_dt)
+    try:
+        d1 = datetime.strptime(ini, "%d-%m-%Y").date()
+        d2 = datetime.strptime(fin, "%d-%m-%Y").date()
+    except ValueError:
+        return f"{ini} a {fin}"
+    if d1 == d2:
+        return f"{d1.day} DE {_MESES_ES_COMPLETO[d1.month - 1].upper()} DE {d1.year}"
+    return _fmt_rango_dias_es(d1.isoformat(), d2.isoformat())
+
+
 def _fmt_fecha_dd_mm_yyyy_hhmm(dt) -> str:
     """Formato DD-MM-YYYY HH:MM en zona horaria America/Mexico_City."""
     try:
@@ -25715,6 +25729,12 @@ async def export_reports_pptx(
                             add_text(state["slide"], lx + Cm(0.5), ly, Cm(2.8), Cm(0.5), label,
                                      size=10, color=WF_TEXT_RGB)
                             lx += Cm(3.4)
+                    # Divisor vertical entre las dos fotos (como el informe real).
+                    _div_top = y0
+                    _div_h = int(y_end + Cm(0.9) - _div_top)
+                    if _div_h > 0:
+                        _wf_rect(state["slide"], MARGIN_X + col_w + int(gap / 2) - Pt(0.5), _div_top,
+                                 Pt(1.0), _div_h, fill_rgb=WF_BORDER_RGB)
                     state["y"] = bottom_y
 
             def _draw_imagen_block(titulo_continua: str, block: dict) -> None:
@@ -26595,21 +26615,23 @@ async def export_reports_pptx(
         # ==============================================================
         if tpl_cover_slide is not None:
             _cx_left = Cm(1.5)
-            _cy_top = Cm(6.0)
+            _cy_top = Cm(5.5)
             _cw_full = SW - Cm(3.0)
+            # Jerarquía de los informes reales: título 66 pt, fecha larga 36 pt
+            # y la descripción de la obra más pequeña debajo.
             add_text(
-                tpl_cover_slide, _cx_left, _cy_top, _cw_full, Cm(3.0),
-                report_title, size=54, bold=True,
+                tpl_cover_slide, _cx_left, _cy_top, _cw_full, Cm(3.1),
+                report_title, size=66, bold=True,
                 color=COVER_TEXT_COLOR, align=PP_ALIGN.LEFT,
             )
             add_text(
-                tpl_cover_slide, _cx_left, _cy_top + Cm(3.2), _cw_full, Cm(1.2),
-                fechas_label, size=22, bold=True,
+                tpl_cover_slide, _cx_left, _cy_top + Cm(3.4), _cw_full, Cm(1.8),
+                _fecha_portada_larga(start_dt, end_dt), size=36, bold=True,
                 color=COVER_TEXT_COLOR, align=PP_ALIGN.LEFT,
             )
             add_text(
-                tpl_cover_slide, _cx_left, _cy_top + Cm(4.6), _cw_full, Cm(2.0),
-                project_name, size=28, bold=True,
+                tpl_cover_slide, _cx_left, _cy_top + Cm(5.6), _cw_full, Cm(2.0),
+                project_name, size=20, bold=True,
                 color=COVER_TEXT_COLOR, align=PP_ALIGN.LEFT,
             )
 
@@ -26686,6 +26708,23 @@ async def export_reports_pptx(
             ))
         except Exception as _e_idx:
             log.warning("[pptx] no se pudo aplicar el índice editable: %s", _e_idx)
+
+        # Número de diapositiva en el hueco derecho de la barra inferior del
+        # membrete (como los informes reales). Va DESPUÉS del reordenamiento,
+        # así coincide con los números del índice. La portada no lleva.
+        try:
+            for _n, _sl in enumerate(prs.slides, 1):
+                if _n == 1:
+                    continue
+                for _sh in _sl.shapes:
+                    _en_esquina = (_sh.top is not None and _sh.left is not None
+                                   and _sh.top > SH * 0.9 and _sh.left > SW * 0.9 and _sh.width < Cm(3))
+                    if _en_esquina and not (_sh.has_text_frame and _sh.text_frame.text.strip()):
+                        add_text(_sl, _sh.left, _sh.top, _sh.width, _sh.height, str(_n), size=10,
+                                 bold=True, color=HEADER_TEXT_RGB, align=PP_ALIGN.CENTER, tight=True)
+                        break
+        except Exception as _e_num:
+            log.warning("[pptx] no se pudo numerar las diapositivas: %s", _e_num)
 
         buf = io.BytesIO()
         prs.save(buf)

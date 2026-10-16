@@ -311,6 +311,14 @@ def test_pptx_seccion_oculta_no_se_imprime():
     assert "Datos generales" not in ent and set(ent) == {"Nodo 1", "Nodo 2"}
 
 
+def test_fecha_de_portada_larga():
+    from server import _fecha_portada_larga
+    from datetime import datetime, timezone
+    d = datetime(2026, 10, 16, 18, 0, tzinfo=timezone.utc)
+    assert _fecha_portada_larga(d, d) == "16 DE OCTUBRE DE 2026"
+    assert _fecha_portada_larga(datetime(2026, 10, 12, 18, tzinfo=timezone.utc), d) == "DEL 12 AL 16 DE OCTUBRE DE 2026"
+
+
 def test_pptx_fallo_al_dibujar_deja_el_documento_como_antes():
     prs = _prs(4, True)
     marks = [("a", "A", 2), ("b", "B", 4)]
