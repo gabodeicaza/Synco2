@@ -26830,10 +26830,14 @@ async def export_reports_pptx(
             i = 0
             primera = True
             while i < len(filas):
-                sl = _clone_membrete()
+                # La marca va ANTES de crear la diapositiva: registra la posición
+                # de la primera de la sección. Después, apuntaba a la siguiente,
+                # la sección quedaba vacía, se descartaba y la diapositiva se
+                # contaba como portada (fija antes del índice, sin poder moverse).
                 if primera:
                     _indice_mark("resumen_avance", "Resumen de avance")
                     primera = False
+                sl = _clone_membrete()
                 y = top
                 _wf_rect(sl, x0, y, act_w, head_h, fill_rgb=BRAND_RGB, line_rgb=GRIS, line_pt=0.5)
                 add_text(sl, x0, y, act_w, head_h, "ACTIVIDAD", size=13, bold=True,
