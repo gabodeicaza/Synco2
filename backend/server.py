@@ -24649,7 +24649,7 @@ async def export_reports_pptx(
     _actividades_items_resumen = _quitar_emoji_deep(await _actividades_generales_core(
         pid, None, {"$gte": start_dt, "$lte": end_dt}, user, incluir_ocultas=False,
     ))
-    actividades_resumen_frente = _actividades_resumen_por_frente(_actividades_items_resumen, nodes_by_id)
+    actividades_resumen_frente = _actividades_resumen_por_frente(_actividades_items_resumen, nodes_by_id, solo_general=True)
     # Clima: misma prioridad manual > automático que `export_reports_pdf` —
     # ver módulo "Estado del Tiempo" más arriba.
     _fecha_cdmx_hoy = datetime.now(timezone.utc).astimezone(MX_TZ).date().isoformat()
@@ -26708,7 +26708,8 @@ async def export_reports_pptx(
             for grp in actividades_resumen_frente:
                 entradas: list = []
                 for b in grp["bloques"]:
-                    entradas.append(("h", b["titulo"], RF_LINE * _pptx_texto_lineas(b["titulo"], rf_txt_w, RF_FONT) + RF_GAP + RF_SPC_ANTES_H))
+                    if b["titulo"]:
+                        entradas.append(("h", b["titulo"], RF_LINE * _pptx_texto_lineas(b["titulo"], rf_txt_w, RF_FONT) + RF_GAP + RF_SPC_ANTES_H))
                     for ln in b["lineas"]:
                         entradas.append(("b", ln, RF_LINE * _pptx_texto_lineas(ln, rf_txt_w - RF_INDENT, RF_FONT) + RF_GAP))
                 columnas: list = []
@@ -28961,7 +28962,7 @@ async def _actividades_tabla_por_area(pid: str, start_dt: datetime, end_dt: date
     return out
 
 
-def _actividades_resumen_por_frente(items: list, nodes_by_id: dict) -> list:
+def _actividades_resumen_por_frente(items: list, nodes_by_id: dict, solo_general: bool = False) -> list:
     """Resumen de Actividades Generales POR FRENTE para el PPTX (formato del
     reporte semanal de referencia: "ACTIVIDADES GENERALES", un encabezado en
     negritas por Estación/Intertramo y debajo sus actividades con viñeta).
@@ -28995,6 +28996,8 @@ def _actividades_resumen_por_frente(items: list, nodes_by_id: dict) -> list:
         if it.get("nivel") == NIVEL_GENERAL:
             a["general"].append(texto)
             continue
+        if solo_general:
+            continue
         node_id = it.get("node_id")
         nodo = nodes_by_id.get(node_id) or {}
         frente = _subtramo_id_for(node_id, nodes_by_id) if node_id else None
@@ -29009,6 +29012,11 @@ def _actividades_resumen_por_frente(items: list, nodes_by_id: dict) -> list:
     for area in sorted(por_area, key=lambda s_: s_.upper()):
         a = por_area[area]
         bloques = []
+        if solo_general:
+            # Solo lo de la pestaña "Generales" del hub: sin encabezados por frente.
+            if a["general"]:
+                out.append({"area": area, "bloques": [{"titulo": "", "lineas": a["general"]}]})
+            continue
         if a["general"]:
             bloques.append({"titulo": "General", "lineas": a["general"]})
         for f in frentes:
