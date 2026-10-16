@@ -326,3 +326,5 @@ def test_pptx_vuelo_lidar_de_estacion_lleva_el_icono_de_estacion():
     fotos = [sh for sh in lidar[0].shapes if sh.shape_type == 13 and sh.name.startswith("Picture")]
     # icono de estación + las dos fotos
     assert len(fotos) >= 3
+    iconos = [sh for sh in fotos if sh.width / sh.height > 1.8]  # el pictograma es ancho (~2:1)
+    assert len(iconos) == 1 and iconos[0].width >= 2.5 * 360000, "el icono de estación debe verse grande (≥ 2.5 cm)"
