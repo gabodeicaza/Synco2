@@ -290,3 +290,39 @@ def test_por_frente_una_entrada_por_area_con_actividad_y_general_primero():
     assert out[0]["bloques"][0] == {"titulo": "General", "lineas": ["reunión general"]}
     assert [b["lineas"] for b in out[1]["bloques"]][0] == ["de seguridad"]
     assert _actividades_resumen_por_frente([], NODOS_FRENTE) == []
+
+
+def test_pptx_vuelo_lidar_de_estacion_lleva_el_icono_de_estacion():
+    """La diapositiva de Vuelo LiDAR de una estación trae el pictograma de
+    estación (PNG del PDF de iconos) junto al nombre."""
+    from mongomock_motor import AsyncMongoMockClient
+    from pptx import Presentation
+
+    db = AsyncMongoMockClient()["t"]
+    old_db = server.db
+    server.db = db
+    try:
+        async def go():
+            for coro in _sembrar(db, False):
+                await coro
+            await db.projects.update_one({"id": "p1"}, {"$set": {"modulos.reportes_diarios.fotos_lidar": True}})
+            await db.fotos_lidar.insert_one({
+                "id": "f1", "project_id": "p1", "node_id": "s2", "titulo": "Estación Dos", "orden": 0,
+                "foto_original": _PNG, "foto_actual": _PNG,
+                "foto_original_fecha": "2026-09-30", "foto_actual_fecha": "2026-10-09",
+                "created_at": datetime.now(timezone.utc),
+            })
+            user = {"id": "u1", "role": server.ROLE_COORD, "name": "Coord", "email": "c@x.mx"}
+            resp = await server.export_reports_pptx(
+                pid="p1", period="today", period_type="diario", area_id=None, scope=None,
+                recuento_nivel=None, recuento_node_ids=None, recuento_sin_datos=None, user=user)
+            return b"".join([c async for c in resp.body_iterator])
+        data = asyncio.run(go())
+    finally:
+        server.db = old_db
+    prs = Presentation(io.BytesIO(data))
+    lidar = [s for s in prs.slides if any(sh.has_text_frame and sh.text_frame.text == "Estación Dos" for sh in s.shapes)]
+    assert len(lidar) == 1, "debe haber una diapositiva de Vuelo LiDAR para la estación"
+    fotos = [sh for sh in lidar[0].shapes if sh.shape_type == 13 and sh.name.startswith("Picture")]
+    # icono de estación + las dos fotos
+    assert len(fotos) >= 3

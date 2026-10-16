@@ -14576,7 +14576,7 @@ _MODULOS_SIN_PORTADA = ("fotos_lidar", "fotos_lidar_estacion")
 
 def _lidar_modulo_estacion(nombre: str, items: list) -> dict:
     return {"titulo": f"VUELO LIDAR · {nombre}".upper(),
-            "blocks": [{"type": "fotos_comparativa", "items": items}]}
+            "blocks": [{"type": "fotos_comparativa", "items": items, "icono": "estacion"}]}
 
 
 def _subtramo_id_for(node_id: str, nodes_by_id: dict) -> str:
@@ -25809,7 +25809,16 @@ async def export_reports_pptx(
                 for idx, it in enumerate(block.get("items") or []):
                     if idx > 0 or state["y"] > top_y + Cm(2.6):
                         state["slide"], state["y"] = _new_slide(titulo_continua)
-                    if it.get("titulo"):
+                    if it.get("titulo") and block.get("icono") == "estacion":
+                        # Vuelo LiDAR de una estación: pictograma de estación
+                        # (PDF de iconos del cliente) junto al nombre.
+                        _ir = Cm(0.65)
+                        _wf_structure_icon(state["slide"], MARGIN_X + _ir, state["y"] + _ir, _ir)
+                        add_text(state["slide"], MARGIN_X + 2 * _ir + Cm(0.3), state["y"] + Cm(0.25),
+                                 content_w - 2 * _ir - Cm(0.3), Cm(0.9), it["titulo"],
+                                 size=17, bold=True, color=READABLE_BRAND_RGB)
+                        state["y"] += 2 * _ir + Cm(0.3)
+                    elif it.get("titulo"):
                         _draw_heading(titulo_continua, it["titulo"])
                     y0 = state["y"]
                     if _foto_comp_desc(it, "original") or _foto_comp_desc(it, "actual"):
