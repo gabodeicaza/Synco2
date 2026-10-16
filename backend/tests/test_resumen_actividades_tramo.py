@@ -243,6 +243,44 @@ def test_pptx_indice_apunta_al_resumen_por_area():
     assert "ACTIVIDADES GENERALES" in slides[pagina - 1]
 
 
+def _pptx_con_orden(orden):
+    """PPTX diario con `indice_config.diario.order` = `orden`; devuelve el texto por diapositiva."""
+    from mongomock_motor import AsyncMongoMockClient
+
+    db = AsyncMongoMockClient()["t"]
+    old_db = server.db
+    server.db = db
+    try:
+        async def go():
+            for coro in _sembrar(db, True):
+                await coro
+            await db.projects.update_one({"id": "p1"}, {"$set": {"indice_config": {"diario": {"order": orden}}}})
+            user = {"id": "u1", "role": server.ROLE_COORD, "name": "Coord", "email": "c@x.mx"}
+            resp = await server.export_reports_pptx(
+                pid="p1", period="today", period_type="diario", area_id=None, scope=None,
+                recuento_nivel=None, recuento_node_ids=None, recuento_sin_datos=None, user=user)
+            return b"".join([c async for c in resp.body_iterator])
+        return _slides_pptx(asyncio.run(go()))
+    finally:
+        server.db = old_db
+
+
+def test_pptx_indice_va_justo_despues_de_la_portada_y_lista_el_resumen_de_avance():
+    """Regresión: la marca de 'Resumen de avance' apuntaba a la diapositiva siguiente, su sección
+    quedaba vacía y se contaba como portada: el índice salía DESPUÉS de ella y no se podía reordenar."""
+    slides = _paginas("pptx", con_tabla_resumen=True)
+    assert "ÍNDICE" in slides[1], "el índice debe ser la diapositiva 2 (justo tras la portada)"
+    assert "Resumen de avance" in slides[1]
+
+
+def test_pptx_mover_una_seccion_arriba_del_resumen_de_avance_funciona():
+    natural = _pptx_con_orden([])
+    i_nat_res = next(i for i, t in enumerate(natural) if "ACTIVIDAD" in t and "AVANCE" in t and "TABLA" not in t)
+    movido = _pptx_con_orden(["gd:0", "gd:1", "resumen_avance"])
+    i_res = next(i for i, t in enumerate(movido) if "ACTIVIDAD" in t and "AVANCE" in t and "TABLA" not in t)
+    assert i_res > i_nat_res, "con gd:0 y gd:1 antes, el resumen de avance debe quedar más abajo"
+
+
 # ── Puro: agrupación por frente ────────────────────────────────────────────
 from server import _actividades_resumen_por_frente  # noqa: E402
 
