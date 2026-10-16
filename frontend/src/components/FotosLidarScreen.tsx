@@ -62,6 +62,9 @@ export default function FotosLidarScreen({ projectId }: { projectId: string }) {
   const [viewerLoading, setViewerLoading] = useState(false);
   const [fechaDraft, setFechaDraft] = useState(hoyISO());
   const [saving, setSaving] = useState(false);
+  // Giro pendiente de guardar sobre la foto ya cargada en el visor.
+  const [girado, setGirado] = useState(false);
+  const [girando, setGirando] = useState(false);
 
   const headerColor = project?.color_institucional || project?.color_tema || colors.primary;
   const headerTextColor = contrastText(headerColor);
@@ -118,6 +121,7 @@ export default function FotosLidarScreen({ projectId }: { projectId: string }) {
   async function openViewer(it: FotoLidar, slot: FotoLidarSlot) {
     setViewer({ id: it.id, titulo: it.titulo, slot });
     setViewerImg(null);
+    setGirado(false);
     setViewerFecha(slot === 'original' ? it.foto_original_fecha || null : it.foto_actual_fecha || null);
     setFechaDraft(hoyISO());
     const tiene = slot === 'original' ? it.tiene_original : it.tiene_actual;
@@ -171,6 +175,43 @@ export default function FotosLidarScreen({ projectId }: { projectId: string }) {
       await load();
     } catch (e: any) {
       Alert.alert('No se pudo guardar la foto', e?.message || 'Intentalo nuevamente.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  // Gira 90° la foto del visor (sentido horario o antihorario). No se sube
+  // hasta pulsar "Guardar giro"; así se puede girar varias veces.
+  async function girar(grados: 90 | -90) {
+    if (!viewerImg) return;
+    try {
+      setGirando(true);
+      const r = await ImageManipulator.manipulateAsync(
+        viewerImg, [{ rotate: grados }],
+        { compress: 0.9, format: ImageManipulator.SaveFormat.JPEG, base64: true },
+      );
+      if (!r.base64) throw new Error('No se pudo girar la imagen.');
+      setViewerImg(`data:image/jpeg;base64,${r.base64}`);
+      setGirado(true);
+    } catch (e: any) {
+      Alert.alert('No se pudo girar', e?.message || 'Intentalo nuevamente.');
+    } finally {
+      setGirando(false);
+    }
+  }
+
+  async function guardarGiro() {
+    if (!viewer || !viewerImg) return;
+    try {
+      setSaving(true);
+      await api.setFotoLidarFoto(projectId, viewer.id, viewer.slot, {
+        image: viewerImg,
+        fecha: viewerFecha || undefined,
+      });
+      setViewer(null);
+      await load();
+    } catch (e: any) {
+      Alert.alert('No se pudo guardar el giro', e?.message || 'Intentalo nuevamente.');
     } finally {
       setSaving(false);
     }
@@ -314,6 +355,13 @@ export default function FotosLidarScreen({ projectId }: { projectId: string }) {
                 <>
                   <Image source={{ uri: viewerImg }} style={styles.viewerImg} resizeMode="contain" />
                   {viewerFecha ? <Text style={styles.slotFecha}>Tomada el {fmtFecha(viewerFecha)}</Text> : null}
+                  <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm }}>
+                    <Button label="↺ Girar izq." variant="secondary" disabled={girando || saving} onPress={() => girar(-90)} style={{ flex: 1 }} />
+                    <Button label="Girar der. ↻" variant="secondary" disabled={girando || saving} onPress={() => girar(90)} style={{ flex: 1 }} />
+                  </View>
+                  {girado ? (
+                    <Button label="Guardar giro" loading={saving} onPress={guardarGiro} style={{ marginTop: spacing.sm }} />
+                  ) : null}
                 </>
               ) : (
                 <View style={[styles.viewerImg, styles.thumbEmpty]}>
