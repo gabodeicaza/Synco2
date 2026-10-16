@@ -24822,14 +24822,15 @@ async def export_reports_pptx(
             sh.line.fill.background()
             return sh
 
-        def _wf_png_icon(slide, nombre: str, cx: int, cy: int, r: int) -> bool:
+        def _wf_png_icon(slide, nombre: str, cx: int, cy: int, r: int, ancho_f: float = 2.0, izq: bool = False) -> int:
             """Pictograma institucional (`_ICONOS_B64`, del PDF de iconos del
             cliente) centrado en (cx, cy) y ajustado a un
-            cuadro de 2r x 2r (el mismo espacio que ocupaba el círculo) sin deformarlo. False si el
-            icono no existe: se dibuja la figura de respaldo."""
+            cuadro de 2r x 2r (el mismo espacio que ocupaba el círculo) sin deformarlo. `ancho_f` agranda el cuadro a lo ancho (iconos
+            anchos) e `izq` lo alinea a la izquierda de (cx - r). Devuelve el ancho
+            dibujado (EMU), 0 si no existe: se dibuja la figura de respaldo."""
             b64 = _ICONOS_B64.get(nombre)
             if not b64:
-                return False
+                return 0
             try:
                 import base64 as _b64
                 from PIL import Image as _PILImage
@@ -24840,12 +24841,13 @@ async def export_reports_pptx(
                 buf_i = io.BytesIO()
                 png.save(buf_i, "PNG")
                 buf_i.seek(0)
-                esc = min(2 * r / iw, 2 * r / ih)
+                esc = min(ancho_f * r / iw, 2 * r / ih)
                 w, h = int(iw * esc), int(ih * esc)
-                slide.shapes.add_picture(buf_i, cx - w // 2, cy - h // 2, w, h)
-                return True
+                x0 = (cx - r) if izq else (cx - w // 2)
+                slide.shapes.add_picture(buf_i, x0, cy - h // 2, w, h)
+                return w
             except Exception:
-                return False
+                return 0
 
         def _wf_person_icon(slide, cx: int, cy: int, r: int) -> None:
             if _wf_png_icon(slide, "fuerza_trabajo", cx, cy, r):
@@ -24884,9 +24886,13 @@ async def export_reports_pptx(
             "parcial": (0xD9, 0x77, 0x06), "restringido": (0xD9, 0x77, 0x06), "acceso parcial al predio": (0xD9, 0x77, 0x06),
         }
 
-        def _wf_structure_icon(slide, cx: int, cy: int, r: int) -> None:
-            if _wf_png_icon(slide, "estacion", cx, cy, r):
-                return
+        def _wf_structure_icon(slide, cx: int, cy: int, r: int) -> int:
+            """Icono de estación; devuelve el ancho que ocupa (EMU) para que el
+            título se coloque a su derecha. El pictograma es ancho: se dibuja
+            ~2.2 veces más grande que el círculo de respaldo."""
+            _w = _wf_png_icon(slide, "estacion", cx, cy, r, ancho_f=4.4, izq=True)
+            if _w:
+                return _w
             _wf_oval(slide, cx - r, cy - r, 2 * r, 2 * r, BRAND_RGB)
             node_r = int(r * 0.17)
             top = (cx, cy - int(r * 0.38))
@@ -24894,6 +24900,7 @@ async def export_reports_pptx(
             br = (cx + int(r * 0.40), cy + int(r * 0.32))
             for (nx, ny) in (top, bl, br):
                 _wf_oval(slide, nx - node_r, ny - node_r, 2 * node_r, 2 * node_r, WF_WHITE_RGB)
+            return 2 * r
 
         def _wf_weather_icon(slide, cx: int, cy: int, r: int) -> None:
             _wf_oval(slide, cx - r, cy - r, 2 * r, 2 * r, BRAND_RGB)
@@ -25018,14 +25025,14 @@ async def export_reports_pptx(
             y = top_y
             _ordinal = _subtramo_ordinal.get((subtramo_node or {}).get("id"))
             cx, cy = left_x + BADGE_R, y + BADGE_R
-            _wf_structure_icon(slide, cx, cy, BADGE_R)
+            _ico_w = _wf_structure_icon(slide, cx, cy, BADGE_R)
             _chico, _grande = _estacion_titulos(_ordinal, subtramo_name)
             if _chico:
-                add_text(slide, left_x + 2 * BADGE_R + Cm(0.3), y + int(BADGE_R * 0.1),
-                         col_w - 2 * BADGE_R - Cm(0.3), Cm(0.5),
+                add_text(slide, left_x + _ico_w + Cm(0.3), y + int(BADGE_R * 0.1),
+                         col_w - _ico_w - Cm(0.3), Cm(0.5),
                          _chico, size=12, bold=True, color=READABLE_BRAND_RGB)
-            add_text(slide, left_x + 2 * BADGE_R + Cm(0.3), y + int(BADGE_R * 0.35) + Cm(0.42),
-                     col_w - 2 * BADGE_R - Cm(0.3), Cm(0.8),
+            add_text(slide, left_x + _ico_w + Cm(0.3), y + int(BADGE_R * 0.35) + Cm(0.42),
+                     col_w - _ico_w - Cm(0.3), Cm(0.8),
                      _grande.upper(), size=17, bold=True, color=READABLE_BRAND_RGB)
             y += Cm(1.8)
             _wf_rect(slide, left_x, y, col_w, Pt(1.6), fill_rgb=BRAND_RGB)
@@ -25218,12 +25225,12 @@ async def export_reports_pptx(
             # se numeran, ver `draw_intertramo_summary_page`) ----------------
             y = top_y
             cx, cy = left_x + BADGE_R, y + BADGE_R
-            _wf_structure_icon(slide, cx, cy, BADGE_R)
-            add_text(slide, left_x + 2 * BADGE_R + Cm(0.3), y + int(BADGE_R * 0.1),
-                     col_w - 2 * BADGE_R - Cm(0.3), Cm(0.5),
+            _ico_w = _wf_structure_icon(slide, cx, cy, BADGE_R)
+            add_text(slide, left_x + _ico_w + Cm(0.3), y + int(BADGE_R * 0.1),
+                     col_w - _ico_w - Cm(0.3), Cm(0.5),
                      "INTERTRAMO", size=12, bold=True, color=READABLE_BRAND_RGB)
-            add_text(slide, left_x + 2 * BADGE_R + Cm(0.3), y + int(BADGE_R * 0.35) + Cm(0.42),
-                     col_w - 2 * BADGE_R - Cm(0.3), Cm(0.8),
+            add_text(slide, left_x + _ico_w + Cm(0.3), y + int(BADGE_R * 0.35) + Cm(0.42),
+                     col_w - _ico_w - Cm(0.3), Cm(0.8),
                      intertramo_name.upper(), size=17, bold=True, color=READABLE_BRAND_RGB)
             y += Cm(1.8)
             _wf_rect(slide, left_x, y, col_w, Pt(1.6), fill_rgb=BRAND_RGB)
@@ -26126,9 +26133,9 @@ async def export_reports_pptx(
                         # Vuelo LiDAR de una estación: pictograma de estación
                         # (PDF de iconos del cliente) junto al nombre.
                         _ir = Cm(0.65)
-                        _wf_structure_icon(state["slide"], MARGIN_X + _ir, state["y"] + _ir, _ir)
-                        add_text(state["slide"], MARGIN_X + 2 * _ir + Cm(0.3), state["y"] + Cm(0.25),
-                                 content_w - 2 * _ir - Cm(0.3), Cm(0.9), it["titulo"],
+                        _ico_w = _wf_structure_icon(state["slide"], MARGIN_X + _ir, state["y"] + _ir, _ir)
+                        add_text(state["slide"], MARGIN_X + _ico_w + Cm(0.3), state["y"] + Cm(0.25),
+                                 content_w - _ico_w - Cm(0.3), Cm(0.9), it["titulo"],
                                  size=17, bold=True, color=READABLE_BRAND_RGB)
                         state["y"] += 2 * _ir + Cm(0.3)
                     elif it.get("titulo"):
