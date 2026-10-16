@@ -176,11 +176,15 @@ def especialista_z(admin_headers, project_id, area_z_id, poste_a1_id) -> dict:
     )
 
 
-def _crear_reporte(headers, project_id, node_id, actividades: str, measurement_value=None) -> dict:
+def _crear_reporte(headers, project_id, node_id, actividades: str, measurement_value=None,
+                   severidad: str = "diario") -> dict:
+    # "informativo" no llega al hub de Actividades Generales, así que por
+    # defecto el helper crea reportes "diario" para que sus actividades cuenten.
     payload = {
         "project_id": project_id, "node_id": node_id,
         "measurement_value": measurement_value or {"nivel": 1.0},
         "actividades": actividades,
+        "severidad": severidad,
     }
     r = requests.post(f"{API}/reports", headers=headers, json=payload, timeout=TIMEOUT)
     assert r.status_code == 200, r.text
@@ -196,6 +200,18 @@ def _get_actividades(headers, project_id, **params) -> list:
 # ============================================================================
 # 1) Identidad 'virtual:{reporte_id}' — sin colisión ni contaminación cruzada
 # ============================================================================
+def test_reporte_informativo_no_llega_al_hub(especialista_a, project_id, poste_a1_id, poste_a2_id):
+    """Un reporte solo 'informativo' no aparece en el hub de Actividades
+    Generales (ni, por lo mismo, en lo que se imprime); uno 'diario' sí."""
+    r_info = _crear_reporte(especialista_a["headers"], project_id, poste_a1_id,
+                            "Actividad informativa", severidad="informativo")
+    r_diario = _crear_reporte(especialista_a["headers"], project_id, poste_a2_id,
+                              "Actividad diaria", severidad="diario")
+    ids = {it.get("reporte_origen_id") for it in _get_actividades(especialista_a["headers"], project_id)}
+    assert r_diario["id"] in ids
+    assert r_info["id"] not in ids
+
+
 def test_editar_una_actividad_no_afecta_a_las_otras(especialista_a, project_id, poste_a1_id, poste_a2_id, poste_a3_id):
     """Aislamiento ENTRE REPORTES distintos (complementa
     test_editar_una_linea_no_afecta_a_las_otras_lineas_del_mismo_reporte,
