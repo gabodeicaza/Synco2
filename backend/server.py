@@ -7107,7 +7107,7 @@ ACT_PART_SUGERIDAS = [
     ("INSTALACIONES ESPECIALES", []),
     ("CERTIFICACIÓN", []),
 ]
-ACT_PART_SIN_ACTIVIDAD = "Sin actividades ésta semana"
+ACT_PART_SIN_ACTIVIDAD = "Sin actividades"
 
 
 def _act_part_subcats(valores) -> List[str]:
@@ -10353,7 +10353,7 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                 add_text(slide, MARGIN_X, yy, left_w, _Cm(0.5), "ACTIVIDADES", size=10, bold=True, color=BRAND_RGB)
                 yy = int(yy + _Cm(0.6))
                 acts = bloque.get("actividades") or []
-                acts_text = "\n".join(f"• {a}" for a in acts) if acts else "Sin actividades capturadas"
+                acts_text = "\n".join(f"• {a}" for a in acts) if acts else "Sin actividades"
                 add_text(slide, MARGIN_X, yy, left_w, int(SH - BOTTOM_MARGIN - yy), acts_text, size=12, color=TEXT_RGB)
 
                 fotos = (bloque.get("fotos") or [])[:7]
@@ -25257,7 +25257,7 @@ async def export_reports_pptx(
                              color=WF_MUTED_RGB, tight=True)
                     yy += ROW_H
                 if not rows:
-                    add_text(slide, x + pad, yy, w - 2 * pad, ROW_H, "Sin registros", size=9, italic=True,
+                    add_text(slide, x + pad, yy, w - 2 * pad, ROW_H, "", size=9, italic=True,
                              color=WF_MUTED_RGB, tight=True)
                     yy += ROW_H
                 _wf_rect(slide, x, yy, w, TOTAL_H, fill_rgb=WF_TOTAL_TINT_RGB)
@@ -25488,7 +25488,7 @@ async def export_reports_pptx(
                              color=WF_MUTED_RGB, tight=True)
                     yy += ROW_H
                 if not rows:
-                    add_text(slide, x + pad, yy, w - 2 * pad, ROW_H, "Sin registros", size=9, italic=True,
+                    add_text(slide, x + pad, yy, w - 2 * pad, ROW_H, "", size=9, italic=True,
                              color=WF_MUTED_RGB, tight=True)
                     yy += ROW_H
                 _wf_rect(slide, x, yy, w, TOTAL_H, fill_rgb=WF_TOTAL_TINT_RGB)
@@ -25578,7 +25578,7 @@ async def export_reports_pptx(
                     yy += row_h
                 if not items:
                     add_text(slide, x + Cm(0.2), yy + Cm(0.12), tbl_w - Cm(0.4), ROW_H - Cm(0.2),
-                             "Sin registros", size=ROW_FONT, italic=True, color=WF_MUTED_RGB)
+                             "", size=ROW_FONT, italic=True, color=WF_MUTED_RGB)
                     yy += ROW_H
                 if draw_total:
                     _wf_rect(slide, x, yy, tbl_w, TOTAL_H, fill_rgb=WF_TOTAL_TINT_RGB)
