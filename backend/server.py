@@ -67,7 +67,13 @@ def _registrar_roboto() -> None:
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.ttfonts import TTFont
     from reportlab.lib.fonts import addMapping
-    fdir = ROOT_DIR / "assets" / "fonts"
+    candidatos = [ROOT_DIR / "assets" / "fonts"]
+    try:  # paquete pip `font-roboto` (requirements.txt): no depende de copiar archivos
+        import font_roboto
+        candidatos.append(Path(font_roboto.__file__).parent / "files")
+    except Exception:
+        pass
+    fdir = next((d for d in candidatos if (d / "Roboto-Regular.ttf").exists()), candidatos[0])
     try:
         for nombre, archivo in (("Roboto", "Roboto-Regular.ttf"), ("Roboto-Bold", "Roboto-Bold.ttf"),
                                 ("Roboto-Italic", "Roboto-Italic.ttf")):
@@ -75,7 +81,7 @@ def _registrar_roboto() -> None:
         pdfmetrics.registerFontFamily("Roboto", normal="Roboto", bold="Roboto-Bold",
                                       italic="Roboto-Italic", boldItalic="Roboto-Bold")
     except Exception:
-        logging.getLogger(__name__).warning("Roboto no disponible, PDF usa Helvetica")
+        logging.getLogger(__name__).error("Roboto NO disponible (%s), PDF usa Helvetica", [str(d) for d in candidatos])
         from reportlab.pdfbase.pdfmetrics import registerFontFamily
         for nombre, base in (("Roboto", "Helvetica"), ("Roboto-Bold", "Helvetica-Bold"),
                              ("Roboto-Italic", "Helvetica-Oblique")):
@@ -9960,6 +9966,7 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
             run = p.add_run()
             run.text = str(text)
             run.font.size = _Pt(size)
+            run.font.name = "Roboto"
             run.font.bold = bold
             run.font.color.rgb = _PRGBColor(*color)
             return tb
@@ -10045,6 +10052,7 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                 run = para.add_run()
                 run.text = str(text)
                 run.font.size = _Pt(size)
+                run.font.name = "Roboto"
                 run.font.bold = bold
                 run.font.color.rgb = _PRGBColor(*fg)
 
@@ -10110,11 +10118,13 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                     r1 = par.add_run()
                     r1.text = "• " + lbl + " "
                     r1.font.size = _Pt(12)
+                    r1.font.name = "Roboto"
                     r1.font.bold = True
                     r1.font.color.rgb = _PRGBColor(*TEXT_RGB)
                     r2 = par.add_run()
                     r2.text = val
                     r2.font.size = _Pt(12)
+                    r2.font.name = "Roboto"
                     r2.font.color.rgb = _PRGBColor(*TEXT_RGB)
                 if blq["filas"]:
                     rows = [[lbl, v1, v2] for lbl, v1, v2, _u in blq["filas"]]
@@ -10455,11 +10465,13 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                             r1 = par.add_run()
                             r1.text = "• " + ((it.get("title") + ": ") if it.get("title") else "") + (it.get("body") or "")
                             r1.font.size = _Pt(12)
+                            r1.font.name = "Roboto"
                             r1.font.color.rgb = _PRGBColor(*TEXT_RGB)
                             if it.get("meta"):
                                 r2 = par.add_run()
                                 r2.text = "  (" + it["meta"] + ")"
                                 r2.font.size = _Pt(9)
+                                r2.font.name = "Roboto"
                                 r2.font.color.rgb = _PRGBColor(*MUTED_RGB)
                 elif t == "fotos_comparativa":
                     for it in b.get("items") or []:
@@ -10497,6 +10509,7 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                                 r1 = par.add_run()
                                 r1.text = "• " + str(txt)
                                 r1.font.size = _Pt(12)
+                                r1.font.name = "Roboto"
                                 r1.font.color.rgb = _PRGBColor(*TEXT_RGB)
                 elif t == "seguridad_accidentes":
                     rows = [[r.get("fecha") or "", r.get("trabajador") or "", r.get("contratista") or "", r.get("registro") or "",
@@ -10523,6 +10536,7 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                         r1 = par.add_run()
                         r1.text = "• " + str(txt)
                         r1.font.size = _Pt(12)
+                        r1.font.name = "Roboto"
                         r1.font.color.rgb = _PRGBColor(*TEXT_RGB)
 
         def slide_auto(tipo):
