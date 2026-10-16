@@ -15322,6 +15322,9 @@ def _actividades_by_subtramo(reports_by_node: dict, nodes_by_id: dict) -> dict:
         subtramo_id = _subtramo_id_for(node_id, nodes_by_id)
         bucket = out.setdefault(subtramo_id, [])
         for r in sorted(reps, key=_created_at_key):
+            # Reporte solo "informativo": sus actividades no se imprimen.
+            if _normalize_severidad_list(r.get("severidad")) == ["informativo"]:
+                continue
             texto = (r.get("actividades") or "").strip()
             if texto and (not bucket or bucket[-1] != texto):
                 bucket.append(texto)
@@ -28437,6 +28440,12 @@ async def _derive_actividades_from_reports_by_range(pid: str, area_id: Optional[
 
     groups: dict = {}
     for r in reps:
+        # Un reporte marcado solo como "informativo" no alimenta el hub de
+        # Actividades Generales y, por lo mismo, tampoco se imprime en
+        # PDF/PPTX (misma fuente). Si trae otra jerarquía además, sí entra
+        # (ver `_normalize_severidad_list`: "informativo" es excluyente).
+        if _normalize_severidad_list(r.get("severidad")) == ["informativo"]:
+            continue
         for idx, texto in enumerate(_lineas_de_bloque(r.get("actividades"))):
             key = (r.get("node_id"), texto)
             g = groups.setdefault(key, {
