@@ -1,5 +1,5 @@
 """Frentes (Estación/Intertramo) sin reportes en el período, en el PPTX: se
-imprimen igual con "Sin actividad", en su lugar del orden del árbol (el reporte
+imprimen igual con "Sin actividades", en su lugar del orden del árbol (el reporte
 semanal de referencia muestra siempre todos los frentes)."""
 import asyncio
 import io
@@ -80,13 +80,13 @@ def _idx(slides, *fragmentos):
 def test_frentes_sin_reportes_salen_con_sin_actividad_en_su_lugar_del_arbol():
     slides = _slides(con_reportes=True)
     (i1,) = _idx(slides, "ESTACIÓN 1.", "UNIVERSIDAD", "ACCESO AL PREDIO")
-    (i2,) = _idx(slides, "ESTACIÓN 2.", "CANTERA", "ACCESO AL PREDIO", "Sin actividad")
+    (i2,) = _idx(slides, "ESTACIÓN 2.", "CANTERA", "ACCESO AL PREDIO", "Sin actividades")
     (i12,) = _idx(slides, "INTERTRAMO E1-E2", "FUERZA DE TRABAJO", "ACTIVIDAD EN POSTES")
-    (i3,) = _idx(slides, "ESTACIÓN 3.", "PERISUR", "ACCESO AL PREDIO", "Sin actividad")
+    (i3,) = _idx(slides, "ESTACIÓN 3.", "PERISUR", "ACCESO AL PREDIO", "Sin actividades")
     # orden del árbol: E1, E2 (sin reportes), intertramo E1-E2, E3 (sin reportes)
     assert i1 < i2 < i12 < i3
-    # los frentes con reportes NO dicen "Sin actividad"
-    assert "Sin actividad" not in slides[i1] and "Sin actividad" not in slides[i12]
+    # los frentes con reportes NO dicen "Sin actividades"
+    assert "Sin actividades" not in slides[i1] and "Sin actividades" not in slides[i12]
     # cada frente sin reportes se imprime UNA sola vez
     assert len(_idx(slides, "ESTACIÓN 2.", "CANTERA", "ACCESO AL PREDIO")) == 1
     assert len(_idx(slides, "ESTACIÓN 3.", "PERISUR", "ACCESO AL PREDIO")) == 1
@@ -101,7 +101,7 @@ def test_el_resumen_inicial_tambien_lista_los_frentes_sin_actividad():
 
 def test_sin_ningun_reporte_no_se_imprimen_diapositivas_de_sin_actividad():
     slides = _slides(con_reportes=False)
-    assert not _idx(slides, "Sin actividad", "ACCESO AL PREDIO")
+    assert not _idx(slides, "Sin actividades", "ACCESO AL PREDIO")
     assert any("Sin reportes en el período" in t for t in slides)
 
 
