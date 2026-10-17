@@ -23,6 +23,8 @@ import { PhotoAnnotator } from '@/src/components/PhotoAnnotator';
 import { requestCameraPermission } from '@/src/utils/permissions';
 import { confirm } from '@/src/utils/confirm';
 import { showToast } from '@/src/utils/toast';
+import { BotonRecetas, RecetasFuerzaTrabajo } from '@/src/components/RecetasFuerzaTrabajo';
+import type { EntradaReceta, Receta } from '@/src/utils/recetasFuerzaTrabajo';
 import { leerBorrador, suscribirBorradores } from '@/src/utils/borradores';
 import { useBorradorAutoguardado } from '@/src/hooks/useBorradorAutoguardado';
 import { emitirReporteEditado, puedeEditarReporte } from '@/src/utils/reportEdit';
@@ -110,6 +112,7 @@ export default function NewReportScreen() {
   const [contratista, setContratista] = useState('');
   const [personal, setPersonal] = useState<DynItem[]>([]);
   const [equipo, setEquipo] = useState<DynItem[]>([]);
+  const [verRecetas, setVerRecetas] = useState(false);
   // Lo que el Coordinador definió que captura el área del especialista:
   // Personal, Equipo y campos libres (p. ej. banderilleros). Sin área o sin
   // configuración, se captura Personal y Equipo como siempre.
@@ -418,6 +421,17 @@ export default function NewReportScreen() {
     const newItem: DynItem = { id: Math.random().toString(36).substring(7), desc: '', qty: 1 };
     if (type === 'personal') setPersonal([...personal, newItem]);
     else setEquipo([...equipo, newItem]);
+  };
+
+  // Carga una receta anterior como punto de partida: reemplaza personal y equipo (los que este
+  // reporte captura) y el ingeniero ajusta lo que cambie.
+  const aplicarReceta = (receta: Receta) => {
+    const aItems = (lista: EntradaReceta[]): DynItem[] =>
+      lista.map((e) => ({ id: Math.random().toString(36).substring(7), desc: e.nombre, qty: e.qty }));
+    if (capturaPersonal) setPersonal(aItems(receta.personal));
+    if (capturaEquipo) setEquipo(aItems(receta.equipo));
+    setVerRecetas(false);
+    showToast(t('recetas.aplicada'));
   };
 
   const currentOptions = useMemo(() => {
@@ -910,6 +924,13 @@ export default function NewReportScreen() {
         {/* PERSONAL & EQUIPO (Imagen 1, 4, 6) */}
         {selectedLeaf && (
           <>
+            {(capturaPersonal || capturaEquipo) && <BotonRecetas onPress={() => setVerRecetas(true)} />}
+            <RecetasFuerzaTrabajo
+              projectId={project?.id || params.project_id || ''}
+              visible={verRecetas}
+              onClose={() => setVerRecetas(false)}
+              onElegir={aplicarReceta}
+            />
             {capturaPersonal && <DynSectionRestored title={t('nuevoReporte.personal')} items={personal} onAdd={() => addItem('personal')} onRemove={(id: string) => setPersonal(personal.filter(x => x.id !== id))} onUpdate={(id: string, p: any) => setPersonal(prev => prev.map(it => it.id === id ? { ...it, ...p } : it))} catalog={effectiveCatalogPersonal} />}
             {capturaEquipo && <DynSectionRestored title={t('nuevoReporte.equipo')} items={equipo} onAdd={() => addItem('equipo')} onRemove={(id: string) => setEquipo(equipo.filter(x => x.id !== id))} onUpdate={(id: string, p: any) => setEquipo(prev => prev.map(it => it.id === id ? { ...it, ...p } : it))} catalog={effectiveCatalogEquipo} isEquipo />}
             {camposArea.length > 0 && (

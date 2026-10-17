@@ -880,6 +880,22 @@ export const esMX = {
     tituloReporte: 'Fuerza de trabajo',
     cerrar: 'Cerrar',
   },
+  recetas: {
+    abrir: 'Recetas anteriores',
+    titulo: 'Recetas anteriores',
+    ayuda: 'Combinaciones de personal y maquinaria que ya reportaste. Toca una para cargarla y ajusta lo que cambie.',
+    vacio: 'Aún no tienes reportes con personal o maquinaria. Cuando captures el primero aparecerá aquí.',
+    errorCarga: 'No se pudo cargar el historial.',
+    cerrar: 'Cerrar',
+    unaPersona: '1 persona',
+    personas: '{n} personas',
+    unEquipo: '1 equipo',
+    equipos: '{n} equipos',
+    veces: 'usada {n} veces',
+    usarA11y: 'Usar receta: {resumen}, del {fecha}',
+    aplicada: 'Receta cargada',
+    aplicadaOmitidas: 'Receta cargada. {n} entradas ya no están en el catálogo y se omitieron.',
+  },
   excepciones: {
     titulo: 'Lista por excepción ({n})',
     vacio:

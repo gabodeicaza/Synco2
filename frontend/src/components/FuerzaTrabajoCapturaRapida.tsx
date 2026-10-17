@@ -17,6 +17,8 @@ import {
   CATALOGO_EQUIPO_KEY, CATALOGO_PERSONAL_KEY, categoriasEquipo, categoriasPersonal, claveCampo, filtrarHojas,
   HojaConRuta, hojasConRuta, validarCapturaRapida,
 } from '@/src/utils/capturaRapidaFuerzaTrabajo';
+import { BotonRecetas, RecetasFuerzaTrabajo } from '@/src/components/RecetasFuerzaTrabajo';
+import { cantidadesDesdeReceta, Receta } from '@/src/utils/recetasFuerzaTrabajo';
 import { storage } from '@/src/utils/storage';
 import { showToast } from '@/src/utils/toast';
 
@@ -51,6 +53,7 @@ export function FuerzaTrabajoCapturaRapida({
   const [eligiendo, setEligiendo] = useState(false);
   const [busqueda, setBusqueda] = useState('');
   const [cantidades, setCantidades] = useState<Record<string, string>>({});
+  const [verRecetas, setVerRecetas] = useState(false);
   const { errores, errorGeneral, ponerTodos, limpiar, limpiarTodo, errorDeGuardado } = useFormErrors<string>();
   const { guardando, ejecutar } = useEnvio();
 
@@ -94,6 +97,15 @@ export function FuerzaTrabajoCapturaRapida({
     limpiar(clave);
     limpiar('cantidades');
     setCantidades((prev) => ({ ...prev, [clave]: valor }));
+  }
+
+  // Reemplaza las cantidades capturadas por las de la receta (solo categorías vigentes del catálogo).
+  function aplicarReceta(receta: Receta) {
+    const { cantidades: nuevas, omitidas } = cantidadesDesdeReceta(receta, personal, equipo);
+    setCantidades(nuevas);
+    limpiarTodo();
+    setVerRecetas(false);
+    showToast(omitidas > 0 ? t('recetas.aplicadaOmitidas', { n: omitidas }) : t('recetas.aplicada'));
   }
 
   async function guardar() {
@@ -148,6 +160,7 @@ export function FuerzaTrabajoCapturaRapida({
   }
 
   return (
+    <>
     <Modal visible={visible} transparent animationType="slide" onRequestClose={() => { if (!guardando) onClose(); }}>
       <View style={styles.fondo}>
         <View style={styles.hoja}>
@@ -203,6 +216,7 @@ export function FuerzaTrabajoCapturaRapida({
               ) : null}
 
               {sinCategorias ? <Text style={styles.vacio}>{t('fuerzaTrabajo.sinCategorias')}</Text> : null}
+              {!sinCategorias ? <BotonRecetas onPress={() => setVerRecetas(true)} /> : null}
               {grupo(t('fuerzaTrabajo.personal'), personal, 'personal')}
               {grupo(t('fuerzaTrabajo.equipo'), equipo, 'equipo')}
 
@@ -229,6 +243,10 @@ export function FuerzaTrabajoCapturaRapida({
         </View>
       </View>
     </Modal>
+    <RecetasFuerzaTrabajo
+      projectId={projectId} visible={verRecetas} onClose={() => setVerRecetas(false)} onElegir={aplicarReceta}
+    />
+    </>
   );
 }
 
