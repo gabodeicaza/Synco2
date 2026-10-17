@@ -314,7 +314,7 @@ def test_por_frente_todos_los_frentes_en_orden_del_arbol_con_sin_actividad():
     por = {b["titulo"]: b["lineas"] for b in grupo["bloques"]}
     assert por["Estación 1 UNIVERSIDAD"] == ["Armado de columna"]
     assert por["Inter-tramo E1-E2"] == ["Poste S3 reconstrucción de muro", "Poste S4 montaje de poste"]
-    assert por["Estación 9 OTRO TRAMO"] == ["Sin actividad"]
+    assert por["Estación 9 OTRO TRAMO"] == ["Sin actividades"]
 
 
 def test_por_frente_una_entrada_por_area_con_actividad_y_general_primero():

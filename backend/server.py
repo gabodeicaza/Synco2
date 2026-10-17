@@ -15380,7 +15380,7 @@ def _recuento_general_by_nodo(reports_by_node: dict, nodes_by_id: dict, root_ids
     `incluir_sin_datos`: si True, los nodos de agrupación sin ningún
     personal/maquinaria en el período SÍ generan una entrada
     (`"sin_datos": True`, ambas listas vacías) para que el renderer imprima
-    la leyenda "Sin actividad en el periodo" en vez de omitir la tabla. Si
+    la leyenda "Sin actividades" en vez de omitir la tabla. Si
     False (default), esos nodos se omiten — comportamiento histórico.
 
     Orden: `_flatten_tree_in_order` (Tramo → Subtramo → Poste), igual que
@@ -20406,7 +20406,7 @@ async def export_reports_pdf(
                     y = _draw_titulo_subtitulo(nodo_name, nodo_path, 1)
                     c.setFillColor(MUTED)
                     c.setFont("Roboto-Italic", 12)
-                    c.drawCentredString(PW / 2, y - 0.3 * cm, "Sin actividad en el periodo")
+                    c.drawCentredString(PW / 2, y - 0.3 * cm, "Sin actividades")
                     c.showPage()
                     page_num += 1
                     continue
@@ -25222,7 +25222,7 @@ async def export_reports_pptx(
             _acts_all = list(actividades or [])
             _acts_resto: list = []
             _wf_bullets(slide, left_x, y, col_w, act_h, _acts_all, max_items=max(1, len(_acts_all)),
-                        font_size=10.5, resto_out=_acts_resto)
+                        font_size=10.5, resto_out=_acts_resto, empty_text="Sin actividades")
             if continuacion:
                 return _acts_resto
 
@@ -25486,7 +25486,7 @@ async def export_reports_pptx(
             # tabla, en la misma columna izquierda) -----------------------
             y2 = _section_title(left_x, table_bottom_y, col_w, "Se supervisa las siguientes actividades")
             act_h = max(Cm(1.0), bottom_y - y2)
-            _wf_bullets(slide, left_x, y2, col_w, act_h, actividades or [], max_items=6, font_size=10.5)
+            _wf_bullets(slide, left_x, y2, col_w, act_h, actividades or [], max_items=6, font_size=10.5, empty_text="Sin actividades")
 
             # ---- LÍNEA DIVISORIA VERTICAL — a TODO lo alto de la slide, igual
             # que en `draw_subtramo_summary_slide` (no solo bajo la tabla) ----
@@ -25677,7 +25677,7 @@ async def export_reports_pptx(
                         add_text(slide, MARGIN_X, y, content_w, Cm(0.55), nodo_path,
                                   size=11, color=WF_MUTED_RGB, align=PP_ALIGN.CENTER)
                         y += Cm(0.55)
-                    add_text(slide, MARGIN_X, y + Cm(0.3), content_w, Cm(0.7), "Sin actividad en el periodo",
+                    add_text(slide, MARGIN_X, y + Cm(0.3), content_w, Cm(0.7), "Sin actividades",
                               size=13, italic=True, color=WF_MUTED_RGB, align=PP_ALIGN.CENTER)
                     continue
 
@@ -26514,7 +26514,7 @@ async def export_reports_pptx(
                 return
             resumen_subtramos_emitidos.add(subtramo_id)
             if _hay_dia:
-                _acts_sub = _acts_base or (["Sin actividad"] if forzar else [])
+                _acts_sub = _acts_base or (["Sin actividades"] if forzar else [])
                 _indice_mark(f"sub:{subtramo_id}", f"Resumen · {subtramo_node.get('name') or 'Subtramo'}")
                 if es_intertramo:
                     draw_intertramo_summary_slide(
@@ -29084,7 +29084,7 @@ def _actividades_resumen_por_frente(items: list, nodes_by_id: dict, solo_general
             bloques.append({"titulo": "General", "lineas": a["general"]})
         for f in frentes:
             lineas = [t for _, t in sorted(a["frentes"].get(f["id"], []), key=lambda x: x[0])]
-            bloques.append({"titulo": f.get("name") or "—", "lineas": lineas or ["Sin actividad"]})
+            bloques.append({"titulo": f.get("name") or "—", "lineas": lineas or ["Sin actividades"]})
         for nombre, filas in a["otros"].items():
             bloques.append({"titulo": nombre, "lineas": [t for _, t in sorted(filas, key=lambda x: x[0])]})
         out.append({"area": area, "bloques": bloques})
