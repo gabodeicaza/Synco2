@@ -1342,6 +1342,26 @@ def _normalize_gravedad(raw: Any) -> str:
     return v if v in _VALID_GRAVEDADES else "verde"
 
 
+def _normalize_actividades_items(raw: Any) -> List[dict]:
+    """Actividades del reporte como [{texto, gravedad}]; descarta las vacías."""
+    out: List[dict] = []
+    for it in raw or []:
+        if not isinstance(it, dict):
+            continue
+        texto = str(it.get("texto") or "").strip()
+        if texto:
+            out.append({"texto": texto, "gravedad": _normalize_gravedad(it.get("gravedad"))})
+    return out
+
+
+def _gravedad_maxima(items: List[dict], default: str = "verde") -> str:
+    """La más grave de las actividades (rojo > amarillo > verde); sin actividades, `default`."""
+    if not items:
+        return _normalize_gravedad(default)
+    orden = {g: i for i, g in enumerate(_VALID_GRAVEDADES)}
+    return max((_normalize_gravedad(i.get("gravedad")) for i in items), key=lambda g: orden[g])
+
+
 def _normalize_severidad_list(raw: Any) -> List[str]:
     """Normaliza la severidad de un reporte a una lista de valores válidos.
 
@@ -1392,6 +1412,9 @@ class ReportIn(BaseModel):
     severidad: Optional[Any] = "informativo"
     # Semáforo de gravedad (verde / amarillo / rojo). Independiente de `severidad`.
     gravedad: Optional[str] = "verde"
+    # Actividades con su propio semáforo: [{texto, gravedad}]. Si vienen, `actividades`
+    # se deriva de ellas y `gravedad` del reporte es la más grave.
+    actividades_items: List[dict] = Field(default_factory=list)
     contratista: Optional[str] = None
     personnel: List[str] = Field(default_factory=list)
     equipment: List[str] = Field(default_factory=list)
@@ -1443,6 +1466,7 @@ class ReportOut(BaseModel):
     incidencias: Optional[str] = None
     severidad: List[str] = Field(default_factory=lambda: ["informativo"])
     gravedad: str = "verde"
+    actividades_items: List[dict] = Field(default_factory=list)
 
     @field_validator("gravedad", mode="before")
     @classmethod
@@ -12066,6 +12090,7 @@ async def _preparar_doc_reporte(body: ReportIn, user: dict):
     # desaparece silenciosamente del informe Diario del día en que en
     # realidad se capturó. Se tolera un rango razonable alrededor de "ahora"
     # para no confiar ciegamente en relojes de dispositivo mal configurados.
+    act_items = _normalize_actividades_items(body.actividades_items)
     now_utc = datetime.now(timezone.utc)
     effective_created_at = now_utc
     if body.captured_at is not None:
@@ -12093,13 +12118,14 @@ async def _preparar_doc_reporte(body: ReportIn, user: dict):
         "area_id": body.area_id or user.get("area_id"),
         "area_name": area_name,
         "title": (body.title or "").strip()[:200] or None,
-        "actividades": (body.actividades or "").strip() or None,
+        "actividades": ("\n".join(i["texto"] for i in act_items) if act_items else (body.actividades or "").strip()) or None,
+        "actividades_items": act_items,
         "notes": (body.notes or "").strip() or None,
         "avance": (body.avance or "").strip() or None,
         "observaciones": (body.observaciones or "").strip() or None,
         "incidencias": (body.incidencias or "").strip() or None,
         "severidad": sev_list,
-        "gravedad": _normalize_gravedad(body.gravedad),
+        "gravedad": _gravedad_maxima(act_items, body.gravedad),
         "contratista": (body.contratista or "").strip() or None,
         "personnel": body.personnel,
         "equipment": body.equipment,
@@ -12207,7 +12233,12 @@ def _whatsapp_texto_reporte(
     ]
     if hoja:
         secciones.append(hoja)
-    if doc.get("actividades"):
+    act_items = _normalize_actividades_items(doc.get("actividades_items"))
+    if act_items:
+        # Cada actividad lleva su propio semáforo al inicio de la línea.
+        lineas_act = [f"{_GRAVEDAD_EMOJI[i['gravedad']]} {i['texto']}" for i in act_items]
+        secciones.append("*Actividades:*\n" + "\n".join(lineas_act))
+    elif doc.get("actividades"):
         emoji = _GRAVEDAD_EMOJI[_normalize_gravedad(doc.get("gravedad"))]
         secciones.append(f"*Actividades:*{emoji}\n{doc['actividades']}")
 
@@ -13030,6 +13061,7 @@ async def reports_feed(
             "incidencias": it.get("incidencias"),
             "severidad": _normalize_severidad_list(it.get("severidad")),
             "gravedad": _normalize_gravedad(it.get("gravedad")),
+            "actividades_items": _normalize_actividades_items(it.get("actividades_items")),
             "personnel": it.get("personnel") or [],
             "equipment": it.get("equipment") or [],
             "captured_by": it.get("captured_by"),
@@ -13255,6 +13287,37 @@ async def patch_report_gravedad(
     if not (is_author or is_mgmt):
         raise HTTPException(403, "No tienes permiso para cambiar la gravedad de este reporte")
     await db.reports.update_one({"id": rid}, {"$set": {"gravedad": body.gravedad}})
+    return await db.reports.find_one({"id": rid}, {"_id": 0})
+
+
+# --- Edición del semáforo de cada actividad -----------------------------------
+class ReportActividadesGravedadPatch(BaseModel):
+    # Un valor por actividad, en el mismo orden en que se guardaron.
+    gravedades: List[Literal["verde", "amarillo", "rojo"]]
+
+
+@api.patch("/reports/{rid}/actividades-gravedad", response_model=ReportOut)
+async def patch_report_actividades_gravedad(
+    rid: str,
+    body: ReportActividadesGravedadPatch,
+    user: dict = Depends(current_user),
+):
+    r = await db.reports.find_one({"id": rid})
+    if not r:
+        raise HTTPException(404, "Reporte no existe")
+    is_author = r.get("captured_by") == user["id"]
+    is_mgmt = user.get("role") in (ROLE_COORD, ROLE_SUB)
+    if not (is_author or is_mgmt):
+        raise HTTPException(403, "No tienes permiso para cambiar la gravedad de este reporte")
+    items = _normalize_actividades_items(r.get("actividades_items"))
+    if not items or len(body.gravedades) != len(items):
+        raise HTTPException(400, "Las gravedades no coinciden con las actividades del reporte")
+    for it, g in zip(items, body.gravedades):
+        it["gravedad"] = g
+    await db.reports.update_one(
+        {"id": rid},
+        {"$set": {"actividades_items": items, "gravedad": _gravedad_maxima(items)}},
+    )
     return await db.reports.find_one({"id": rid}, {"_id": 0})
 
 

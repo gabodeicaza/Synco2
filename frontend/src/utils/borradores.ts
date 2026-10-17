@@ -30,6 +30,8 @@ export interface BorradorDatos {
   primeraLectura: string;
   ultimaLectura: string;
   actividades: string;
+  /** Actividades con su semáforo. Borradores anteriores solo traen `actividades` (texto único). */
+  actividadesItems?: { texto: string; gravedad: string }[];
   observaciones: string;
   incidencias: string;
   personal: BorradorItem[];

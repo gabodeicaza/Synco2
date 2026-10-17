@@ -38,6 +38,7 @@ import { shareWithAutoRecover } from '@/src/utils/share';
 import { showToast } from '@/src/utils/toast';
 import { unirOVacio } from '@/src/utils/texto';
 import { a11y, t } from '@/src/i18n';
+import { GravedadDot } from '@/src/components/GravedadDot';
 
 interface ReportPreviewSheetProps {
   visible: boolean;
@@ -197,6 +198,28 @@ export function ReportPreviewSheet({
 
   // Use fullReport if loaded to get the most accurate data (including title keys).
   const source = (fullReport || it) as Record<string, any>;
+  // Actividades con semáforo propio (reportes nuevos). Los anteriores solo traen texto.
+  const actividadesItems: { texto: string; gravedad: 'verde' | 'amarillo' | 'rojo' }[] = (
+    Array.isArray(source.actividades_items) ? source.actividades_items : []
+  ).filter((a: any) => a && String(a.texto || '').trim())
+    .map((a: any) => ({ texto: String(a.texto), gravedad: a.gravedad === 'amarillo' || a.gravedad === 'rojo' ? a.gravedad : 'verde' }));
+  // Toca el punto de una actividad: verde → amarillo → rojo → verde.
+  const cycleActividadGravedad = async (idx: number) => {
+    if (!reportId || savingGrav) return;
+    const orden = ['verde', 'amarillo', 'rojo'] as const;
+    const next = actividadesItems.map((a) => a.gravedad) as ('verde' | 'amarillo' | 'rojo')[];
+    next[idx] = orden[(orden.indexOf(next[idx]) + 1) % 3];
+    setSavingGrav(true);
+    try {
+      const updated = await api.updateActividadesGravedad(reportId, next);
+      setFullReport(updated);
+      onGravedadChange?.(reportId, (updated.gravedad as any) || 'verde');
+    } catch (e: any) {
+      Alert.alert(t('vistaPreviaReporte.error'), e?.message || t('vistaPreviaReporte.noSeActualizoSeveridad'));
+    } finally {
+      setSavingGrav(false);
+    }
+  };
   const currentGravedad: string = source.gravedad === 'amarillo' || source.gravedad === 'rojo' ? source.gravedad : 'verde';
 
   // Lista de severidades vigentes del reporte (acepta datos legacy en los
@@ -478,7 +501,7 @@ export function ReportPreviewSheet({
             )}
 
             {/* ===== Gravedad (semaforo verde / amarillo / rojo) ===== */}
-            {reportId && (
+            {reportId && actividadesItems.length === 0 && (
               <View style={styles.sevRowPreview}>
                 {([
                   ['verde', '#16A34A', t('nuevoReporte.gravedadVerde')],
@@ -565,11 +588,36 @@ export function ReportPreviewSheet({
             ) : null}
 
             {/* Actividades & Observaciones: vital blocks for the field crew. */}
-            <Block
-              title={t('vistaPreviaReporte.actividades')}
-              body={hasActividades ? actividades : t('vistaPreviaReporte.sinActividades')}
-              muted={!hasActividades}
-            />
+            {actividadesItems.length > 0 ? (
+              <View style={styles.block}>
+                <Text style={styles.blockTitle}>{t('vistaPreviaReporte.actividades')}</Text>
+                {actividadesItems.map((a, idx) => (
+                  <View key={idx} style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginBottom: 6 }}>
+                    <TouchableOpacity
+                      accessibilityRole="button"
+                      accessibilityLabel={`${t('nuevoReporte.gravedadSemaforo')}: ${a.gravedad}`}
+                      disabled={!canEditSeverity || savingGrav}
+                      hitSlop={8}
+                      onPress={() => cycleActividadGravedad(idx)}
+                      style={{ paddingTop: 3 }}
+                    >
+                      <GravedadDot gravedad={a.gravedad} size={16} />
+                    </TouchableOpacity>
+                    <Text style={[styles.blockTxt, { flex: 1 }]}>{a.texto}</Text>
+                  </View>
+                ))}
+                {canEditSeverity && (
+                  <Text style={{ fontSize: 11, color: '#94A3B8' }}>{t('vistaPreviaReporte.tocaSemaforoActividad')}</Text>
+                )}
+                {savingGrav && <ActivityIndicator size="small" color="#1E40AF" />}
+              </View>
+            ) : (
+              <Block
+                title={t('vistaPreviaReporte.actividades')}
+                body={hasActividades ? actividades : t('vistaPreviaReporte.sinActividades')}
+                muted={!hasActividades}
+              />
+            )}
 
             <Block
               title={t('vistaPreviaReporte.observaciones')}

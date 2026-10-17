@@ -76,16 +76,34 @@ export default function NewReportScreen() {
       return next;
     });
   }, []);
-  // Semáforo de gravedad del reporte (independiente del semáforo de periodo):
-  // verde = solo informativo, amarillo = algo relevante, rojo = algo grave.
-  const [gravedad, setGravedad] = useState<'verde' | 'amarillo' | 'rojo'>('verde');
+  // Cada actividad lleva su propio semáforo de gravedad (independiente del semáforo de
+  // periodo): verde = informativo, amarillo = relevante, rojo = grave. Siempre hay al
+  // menos una caja; sin elegir semáforo queda en verde.
+  type Grav = 'verde' | 'amarillo' | 'rojo';
+  type ActividadForm = { id: string; texto: string; gravedad: Grav };
+  const nuevaActividad = (texto = '', gravedad: Grav = 'verde'): ActividadForm =>
+    ({ id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, texto, gravedad });
+  const [actividadesItems, setActividadesItems] = useState<ActividadForm[]>(() => [nuevaActividad()]);
+  const actividadesDesde = (items?: { texto: string; gravedad?: string | null }[] | null, texto?: string | null): ActividadForm[] => {
+    const lista = (items || []).filter((i) => (i.texto || '').trim())
+      .map((i) => nuevaActividad(i.texto, i.gravedad === 'amarillo' || i.gravedad === 'rojo' ? i.gravedad : 'verde'));
+    if (lista.length) return lista;
+    return [nuevaActividad(texto || '')];
+  };
+  const actividadesValidas = actividadesItems.filter((a) => a.texto.trim());
+  const actividades = actividadesValidas.map((a) => a.texto.trim()).join('\n');
+  const gravedad: Grav = actividadesValidas.some((a) => a.gravedad === 'rojo') ? 'rojo'
+    : actividadesValidas.some((a) => a.gravedad === 'amarillo') ? 'amarillo' : 'verde';
+  const updateActividad = (id: string, patch: Partial<ActividadForm>) =>
+    setActividadesItems((prev) => prev.map((a) => (a.id === id ? { ...a, ...patch } : a)));
+  const removeActividad = (id: string) =>
+    setActividadesItems((prev) => (prev.length <= 1 ? [nuevaActividad()] : prev.filter((a) => a.id !== id)));
   // El bloque de lecturas solo se despliega si el usuario marca que quiere
   // capturarlas (muchos reportes no llevan primera/ultima lectura).
   const [registrarLecturas, setRegistrarLecturas] = useState(false);
   const [unidad, setUnidad] = useState<'km' | 'm' | 'cm'>('m');
   const [primeraLectura, setPrimeraLectura] = useState('');
   const [ultimaLectura, setUltimaLectura] = useState('');
-  const [actividades, setActividades] = useState('');
   const [observaciones, setObservaciones] = useState('');
   const [incidencias, setIncidencias] = useState('');
   const [avance, setAvance] = useState('');
@@ -165,7 +183,8 @@ export default function NewReportScreen() {
       ubicacion: path.map((n) => n.name),
       datos: {
         nombre, severidad: Array.from(severidadUI), gravedad, registrarLecturas, unidad, primeraLectura, ultimaLectura,
-        actividades, observaciones, incidencias, personal, equipo, camposExtra, images, captions,
+        actividades, actividadesItems: actividadesItems.map(({ texto, gravedad: g }) => ({ texto, gravedad: g })),
+        observaciones, incidencias, personal, equipo, camposExtra, images, captions,
         templateId: selectedTemplateId, dynamicData,
       },
     },
@@ -262,14 +281,13 @@ export default function NewReportScreen() {
     });
     setNombre(r.title || '');
     setSeveridadUI(new Set(sevs.length ? sevs : ['Informativo']));
-    setGravedad(r.gravedad === 'amarillo' || r.gravedad === 'rojo' ? r.gravedad : 'verde');
     const unidadRep = r.unidad === 'km' || r.unidad === 'cm' ? r.unidad : 'm';
     setUnidad(unidadRep);
     const conLecturas = !!(r.primera_lectura || r.ultima_lectura);
     setRegistrarLecturas(conLecturas);
     setPrimeraLectura(conLecturas && r.primera_lectura != null ? String(r.primera_lectura) : '');
     setUltimaLectura(conLecturas && r.ultima_lectura != null ? String(r.ultima_lectura) : '');
-    setActividades(r.actividades || '');
+    setActividadesItems(actividadesDesde(r.actividades_items, r.actividades));
     setObservaciones(r.observaciones || '');
     setIncidencias(r.incidencias || '');
     setPersonal(aItems(r.personnel));
@@ -298,12 +316,12 @@ export default function NewReportScreen() {
     const d = b.datos;
     setNombre(d.nombre);
     setSeveridadUI(new Set((d.severidad as SeveridadUI[]).length ? (d.severidad as SeveridadUI[]) : ['Informativo']));
-    setGravedad(d.gravedad === 'amarillo' || d.gravedad === 'rojo' ? d.gravedad : 'verde');
     setRegistrarLecturas(d.registrarLecturas);
     setUnidad(d.unidad);
     setPrimeraLectura(d.primeraLectura);
     setUltimaLectura(d.ultimaLectura);
-    setActividades(d.actividades);
+    // Borradores anteriores guardaron las actividades como un solo texto (sin semáforo).
+    setActividadesItems(actividadesDesde(d.actividadesItems, d.actividades));
     setObservaciones(d.observaciones);
     setIncidencias(d.incidencias);
     setPersonal(d.personal);
@@ -368,12 +386,11 @@ export default function NewReportScreen() {
   const resetForm = () => {
     setNombre('');
     setSeveridadUI(new Set(['Informativo']));
-    setGravedad('verde');
     setRegistrarLecturas(false);
     setUnidad('m');
     setPrimeraLectura('');
     setUltimaLectura('');
-    setActividades('');
+    setActividadesItems([nuevaActividad()]);
     setObservaciones('');
     setIncidencias('');
     setAvance('');
@@ -517,8 +534,9 @@ export default function NewReportScreen() {
         unidad,
         primera_lectura: registrarLecturas ? (parseFloat(primeraLectura) || 0) : 0,
         ultima_lectura: registrarLecturas ? (parseFloat(ultimaLectura) || 0) : 0,
-        actividades: actividades.trim(),
-        activities: actividades.trim(), // [P0] SEND BOTH FOR SERVER COMPAT
+        actividades,
+        activities: actividades, // [P0] SEND BOTH FOR SERVER COMPAT
+        actividades_items: actividadesValidas.map((a) => ({ texto: a.texto.trim(), gravedad: a.gravedad })),
         observaciones: observaciones.trim(),
         incidencias: incidencias.trim(),
         avance: registrarLecturas ? (avanceCalculado || '0').toString() : '0',
@@ -549,6 +567,7 @@ export default function NewReportScreen() {
         ...res,
         node_path_names: path.map((n) => n.name),
         gravedad,
+        actividades_items: actividadesValidas.map((a) => ({ texto: a.texto.trim(), gravedad: a.gravedad })),
         campos_extra: camposArea
           .filter((c) => c.id && valoresCamposExtra[c.id])
           .map((c) => ({ ...c, valor: c.tipo === 'numero' ? Number(valoresCamposExtra[c.id!].replace(',', '.')) : valoresCamposExtra[c.id!] })),
@@ -802,7 +821,39 @@ export default function NewReportScreen() {
               </View>
             </View>
             <Text style={styles.inputLabelSmall}>{t('nuevoReporte.actividades')}</Text>
-            <TextInput value={actividades} onChangeText={setActividades} multiline placeholder={t('nuevoReporte.describeLasActividadesDelDia')} style={[styles.input, { minHeight: 80 }]} />
+            <Text style={styles.sevHint}>{t('nuevoReporte.gravedadAyuda')}</Text>
+            {actividadesItems.map((a, idx) => (
+              <View key={a.id} style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginBottom: 8 }}>
+                <TextInput
+                  value={a.texto}
+                  onChangeText={(v) => updateActividad(a.id, { texto: v })}
+                  multiline
+                  placeholder={t('nuevoReporte.describeLasActividadesDelDia')}
+                  style={[styles.input, { flex: 1, minHeight: 60, marginBottom: 0 }]}
+                />
+                <View style={{ alignItems: 'center', gap: 6, paddingTop: 4 }}>
+                  {([['verde', '#16A34A'], ['amarillo', '#EAB308'], ['rojo', '#DC2626']] as const).map(([key, color]) => (
+                    <TouchableOpacity
+                      key={key}
+                      accessibilityRole="button"
+                      accessibilityLabel={`${t('nuevoReporte.gravedadSemaforo')}: ${key}`}
+                      hitSlop={4}
+                      onPress={() => updateActividad(a.id, { gravedad: key })}
+                      style={{ width: 22, height: 22, borderRadius: 11, borderWidth: 2, borderColor: color, backgroundColor: a.gravedad === key ? color : 'transparent' }}
+                    />
+                  ))}
+                </View>
+                {actividadesItems.length > 1 && (
+                  <TouchableOpacity accessibilityRole="button" accessibilityLabel={`Quitar actividad ${idx + 1}`} hitSlop={8} onPress={() => removeActividad(a.id)} style={{ paddingTop: 4 }}>
+                    <Ionicons name="close-circle" size={20} color={colors.textMuted} />
+                  </TouchableOpacity>
+                )}
+              </View>
+            ))}
+            <TouchableOpacity accessibilityRole="button" onPress={() => setActividadesItems((prev) => [...prev, nuevaActividad()])} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 6, marginBottom: 8 }}>
+              <Ionicons name="add-circle-outline" size={18} color={colors.primary} />
+              <Text style={{ color: colors.primary, fontWeight: '600' }}>{t('nuevoReporte.anadirActividad')}</Text>
+            </TouchableOpacity>
             <Text style={styles.inputLabelSmall}>{t('nuevoReporte.observaciones')}</Text>
             <TextInput value={observaciones} onChangeText={setObservaciones} multiline placeholder={t('nuevoReporte.comentariosRetrasosLoQueOcurrio')} style={[styles.input, { minHeight: 80 }]} />
             <Text style={styles.inputLabelSmall}>{t('nuevoReporte.incidenciasOpcional')}</Text>
@@ -852,32 +903,6 @@ export default function NewReportScreen() {
                 <Ionicons name="flash" size={16} color={severidadUI.has('Mensual') ? '#fff' : '#DC2626'} />
                 <Text style={[styles.sevTxt, { color: severidadUI.has('Mensual') ? '#fff' : '#DC2626' }]}>{t('nuevoReporte.mensual')}</Text>
               </TouchableOpacity>
-            </View>
-          </View>
-        )}
-
-        {/* GRAVEDAD (SEMAFORO verde / amarillo / rojo) */}
-        {selectedLeaf && (
-          <View style={styles.card}>
-            <View style={styles.cardHeader}>
-              <View style={styles.cardIconBox}><Ionicons name="ellipse" size={16} color={colors.primary} /></View>
-              <Text style={styles.cardLabel}>{t('nuevoReporte.gravedadSemaforo')}</Text>
-            </View>
-            <Text style={styles.sevHint}>{t('nuevoReporte.gravedadAyuda')}</Text>
-            <View style={styles.sevRow}>
-              {([
-                ['verde', '#16A34A', t('nuevoReporte.gravedadVerde')],
-                ['amarillo', '#EAB308', t('nuevoReporte.gravedadAmarillo')],
-                ['rojo', '#DC2626', t('nuevoReporte.gravedadRojo')],
-              ] as const).map(([key, color, label]) => (
-                <TouchableOpacity accessibilityRole="button" key={key}
-                  onPress={() => setGravedad(key)}
-                  style={[styles.sevBtn, { borderColor: color }, gravedad === key ? { backgroundColor: color } : { backgroundColor: '#F8FAFC' }]}
-                >
-                  <View style={{ width: 12, height: 12, borderRadius: 6, backgroundColor: gravedad === key ? '#fff' : color }} />
-                  <Text style={[styles.sevTxt, { color: gravedad === key ? '#fff' : color }]}>{label}</Text>
-                </TouchableOpacity>
-              ))}
             </View>
           </View>
         )}

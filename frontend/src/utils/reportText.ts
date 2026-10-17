@@ -10,6 +10,8 @@ export interface ReportTextSource {
   actividades?: string | null;
   /** Semáforo de gravedad; se muestra como emoji junto a "Actividades". */
   gravedad?: string | null;
+  /** Actividades con semáforo propio; si vienen, cada una sale con su emoji. */
+  actividades_items?: { texto: string; gravedad?: string | null }[] | null;
   activities?: string | null;
   observaciones?: string | null;
   incidencias?: string | null;
@@ -68,7 +70,12 @@ export function buildReportShareText(report: ReportTextSource, opts: ReportTextO
   sections.push(`Constructora: ${project?.constructora || ''}\nNo de contrato: ${project?.contract_number || ''}`);
   if (leafPart) sections.push(leafPart);
 
-  if (activitiesText) sections.push(`*Actividades:*${GRAVEDAD_EMOJI[report.gravedad || ''] || GRAVEDAD_EMOJI.verde}\n${activitiesText}`);
+  const actItems = (report.actividades_items || []).filter((i) => (i.texto || '').trim());
+  if (actItems.length > 0) {
+    // Cada actividad lleva su propio semáforo al inicio de la línea.
+    const lineas = actItems.map((i) => `${GRAVEDAD_EMOJI[i.gravedad || ''] || GRAVEDAD_EMOJI.verde} ${i.texto.trim()}`);
+    sections.push(`*Actividades:*\n${lineas.join('\n')}`);
+  } else if (activitiesText) sections.push(`*Actividades:*${GRAVEDAD_EMOJI[report.gravedad || ''] || GRAVEDAD_EMOJI.verde}\n${activitiesText}`);
 
   // Datos del reporte (plantilla dinámica): va justo después de la
   // ubicación y de las actividades (si las hay), antes de observaciones/

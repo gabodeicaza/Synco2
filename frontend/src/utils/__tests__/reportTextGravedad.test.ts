@@ -7,6 +7,22 @@ describe('buildReportShareText - semáforo de gravedad', () => {
     expect(buildReportShareText(base)).toContain('*Actividades:*🟢\nen espera');
   });
 
+  it('cada actividad sale con su propio semáforo', () => {
+    const txt = buildReportShareText({
+      created_at: base.created_at,
+      actividades: 'a\nb\nc',
+      gravedad: 'rojo',
+      actividades_items: [
+        { texto: 'en espera de inicio', gravedad: 'verde' },
+        { texto: 'falta material', gravedad: 'amarillo' },
+        { texto: 'derrumbe en frente', gravedad: 'rojo' },
+        { texto: '   ', gravedad: 'rojo' },
+        { texto: 'sin dato' },
+      ],
+    });
+    expect(txt).toContain('*Actividades:*\n🟢 en espera de inicio\n🟡 falta material\n🔴 derrumbe en frente\n🟢 sin dato');
+  });
+
   it('amarillo y rojo se reflejan junto al encabezado de actividades', () => {
     expect(buildReportShareText({ ...base, gravedad: 'amarillo' })).toContain('*Actividades:*🟡\n');
     expect(buildReportShareText({ ...base, gravedad: 'rojo' })).toContain('*Actividades:*🔴\n');

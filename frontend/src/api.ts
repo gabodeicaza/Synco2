@@ -1391,6 +1391,12 @@ export interface InvitationBulkCommitResult {
   duplicados: InvitationBulkRow[];
 }
 
+/** Una actividad del reporte con su semáforo de gravedad (verde informativo / amarillo relevante / rojo grave). */
+export interface ActividadItem {
+  texto: string;
+  gravedad: 'verde' | 'amarillo' | 'rojo';
+}
+
 export interface Report {
   id: string;
   project_id: string;
@@ -1417,6 +1423,8 @@ export interface Report {
   severidad?: string[];
   /** Semáforo de gravedad: verde (informativo) / amarillo (relevante) / rojo (grave). */
   gravedad?: 'verde' | 'amarillo' | 'rojo';
+  /** Actividades con su propio semáforo; `actividades` es su texto unido por saltos de línea. */
+  actividades_items?: ActividadItem[];
   contratista?: string | null;
   personnel: string[];
   equipment: string[];
@@ -1506,6 +1514,7 @@ export interface FeedItem {
   incidencias?: string | null;
   severidad?: string[] | null;
   gravedad?: 'verde' | 'amarillo' | 'rojo' | null;
+  actividades_items?: ActividadItem[] | null;
   personnel: string[];
   equipment: string[];
   captured_by: string;
@@ -3401,6 +3410,9 @@ export const api = {
     request<Report>('PATCH', `/reports/${rid}/severity`, { severidad }),
   updateReportGravedad: (rid: string, gravedad: 'verde' | 'amarillo' | 'rojo') =>
     request<Report>('PATCH', `/reports/${rid}/gravedad`, { gravedad }),
+  // Un semáforo por actividad, en el orden en que se guardaron.
+  updateActividadesGravedad: (rid: string, gravedades: ('verde' | 'amarillo' | 'rojo')[]) =>
+    request<Report>('PATCH', `/reports/${rid}/actividades-gravedad`, { gravedades }),
   updateWorkforceEntry: (rid: string, field: 'personnel' | 'equipment', index: number, value: string | null) =>
     request<Report>('PATCH', `/reports/${rid}/workforce-entry`, { field, index, value }),
   nodeHistory: (pid: string, nid: string) =>
