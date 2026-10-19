@@ -72,6 +72,25 @@ export function formatearRangoLegible(desdeISO: string, hastaISO: string): strin
   return `Del ${d.format('D [de] MMMM [de] YYYY')} al ${h.format('D [de] MMMM [de] YYYY')}`;
 }
 
+/** Periodo de exportación (PDF/Word/PPTX) para un rango elegido a mano:
+ * `custom_YYYYMMDD_YYYYMMDD`. El backend lo interpreta en `_period_range`. */
+export function codificarPeriodoPersonalizado(desde: string, hasta: string): `custom_${string}` {
+  return `custom_${desde.replace(/-/g, '')}_${hasta.replace(/-/g, '')}`;
+}
+
+/** Inverso de `codificarPeriodoPersonalizado`; `null` si no es un periodo personalizado. */
+export function decodificarPeriodoPersonalizado(periodo: string): RangoFechas | null {
+  const m = /^custom_(\d{4})(\d{2})(\d{2})_(\d{4})(\d{2})(\d{2})$/.exec(periodo);
+  if (!m) return null;
+  return { desde: `${m[1]}-${m[2]}-${m[3]}`, hasta: `${m[4]}-${m[5]}-${m[6]}` };
+}
+
+/** "Del 3 al 17 de marzo de 2026" para un periodo personalizado; '' si no lo es. */
+export function etiquetaPeriodoPersonalizado(periodo: string): string {
+  const r = decodificarPeriodoPersonalizado(periodo);
+  return r ? formatearRangoLegible(r.desde, r.hasta) : '';
+}
+
 export interface ValidacionRango {
   valido: boolean;
   motivo?: string;

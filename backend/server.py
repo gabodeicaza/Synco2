@@ -16189,6 +16189,27 @@ def _format_measurement_for_display(report: dict) -> str:
     return "—"
 
 
+_PERIODO_PERSONALIZADO_RE = re.compile(r"^custom_(\d{8})_(\d{8})$")
+
+
+def _parse_periodo_personalizado(period: Optional[str]) -> Optional[tuple]:
+    """Rango personalizado de las exportaciones: el cliente manda
+    `period="custom_YYYYMMDD_YYYYMMDD"` (desde y hasta, ambos inclusive, días
+    naturales del proyecto). Devuelve `(desde, hasta)` como `date`, `None` si
+    `period` no es personalizado; 400 si el rango no es válido."""
+    m = _PERIODO_PERSONALIZADO_RE.match((period or "").strip().lower())
+    if not m:
+        return None
+    try:
+        desde = datetime.strptime(m.group(1), "%Y%m%d").date()
+        hasta = datetime.strptime(m.group(2), "%Y%m%d").date()
+    except ValueError:
+        raise HTTPException(400, "Rango de fechas inválido")
+    if hasta < desde:
+        raise HTTPException(400, "La fecha final no puede ser anterior a la inicial")
+    return desde, hasta
+
+
 def _period_range(period: str, project: Optional[dict] = None) -> tuple:
     """Devuelve (start_utc, end_utc, etiqueta_legible).
 
@@ -16201,6 +16222,19 @@ def _period_range(period: str, project: Optional[dict] = None) -> tuple:
     now_utc = datetime.now(timezone.utc)
     now_mx = now_utc.astimezone(zona_proyecto(project))
     p = (period or "today").lower().strip()
+    custom = _parse_periodo_personalizado(p)
+    if custom:
+        desde, hasta = custom
+        tz = zona_proyecto(project)
+        start_mx = datetime(desde.year, desde.month, desde.day, tzinfo=tz)
+        # Fin inclusive del día `hasta`, sin pasar de "ahora" (no hay reportes futuros).
+        end_mx = datetime(hasta.year, hasta.month, hasta.day, tzinfo=tz) + timedelta(days=1)
+        end_utc = min(end_mx.astimezone(timezone.utc) - timedelta(microseconds=1), now_utc)
+        if desde == hasta:
+            etiqueta = desde.strftime("%d/%m/%Y")
+        else:
+            etiqueta = f"{desde.strftime('%d/%m/%Y')} al {hasta.strftime('%d/%m/%Y')}"
+        return start_mx.astimezone(timezone.utc), end_utc, etiqueta
     if p in ("today", "hoy"):
         start_mx = now_mx.replace(hour=0, minute=0, second=0, microsecond=0)
         return start_mx.astimezone(timezone.utc), now_utc, "Hoy"
@@ -21486,6 +21520,11 @@ def _modulos_categoria_para_export(period_type: Optional[str], period: str) -> s
     if pt == "mensual":
         return "reportes_mensuales"
     p = (period or "today").lower().strip()
+    custom = _parse_periodo_personalizado(p)
+    if custom:
+        # Rango personalizado: por su duración (1 día → diario, hasta una semana → semanal).
+        dias = (custom[1] - custom[0]).days + 1
+        return "reportes_diarios" if dias <= 1 else "reportes_semanales" if dias <= 7 else "reportes_mensuales"
     if p in ("week", "semana", "semanal", "last_week", "lastweek", "semana_pasada"):
         return "reportes_semanales"
     if p in ("month", "mes", "mensual"):

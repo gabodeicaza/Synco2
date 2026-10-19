@@ -21,6 +21,8 @@ import { showToast } from '@/src/utils/toast';
 import { Button } from '@/src/components/Button';
 import { confirm } from '@/src/utils/confirm';
 import { ReportPeriod, periodToInformeType } from '@/src/components/PeriodSheet';
+import { RangoFechasPicker } from '@/src/components/RangoFechasPicker';
+import { codificarPeriodoPersonalizado, decodificarPeriodoPersonalizado, etiquetaPeriodoPersonalizado } from '@/src/utils/rangoFechas';
 import { downloadBlob } from '@/src/utils/downloadBlob';
 import { DailyGoalsPanel } from '@/src/components/DailyGoalsPanel';
 import { WeatherWidget } from '@/src/components/WeatherWidget';
@@ -247,6 +249,7 @@ export default function ProjectDetailScreen() {
   const setExportOpen = modal.ponerVisible('exportar');
   const [exportStep, setExportStep] = useState<ExportStep>('period');
   const [exportPeriod, setExportPeriod] = useState<ReportPeriod>('today');
+  const [rangoExportOpen, setRangoExportOpen] = useState(false);
   const [exportBusy, setExportBusy] = useState(false);
   const [exportSinReportes, setExportSinReportes] = useState<{ fmt: ExportFormat; otros: number } | null>(null);
   // P0 Mega-Feature: filtro por Area para exportacion
@@ -1950,7 +1953,7 @@ export default function ProjectDetailScreen() {
                   {exportStep === 'period'
                     ? t('proyectoPantalla.paso1De3Selecciona')
                     : exportStep === 'area'
-                    ? t('proyectoPantalla.paso2Periodo', { periodo: PERIOD_OPTIONS.find((p) => p.value === exportPeriod)?.label ?? '' })
+                    ? t('proyectoPantalla.paso2Periodo', { periodo: PERIOD_OPTIONS.find((p) => p.value === exportPeriod)?.label ?? etiquetaPeriodoPersonalizado(exportPeriod) })
                     : t('proyectoPantalla.paso3Area', { area: exportAreaId ? exportAreas.find((a) => a.id === exportAreaId)?.name ?? t('proyectoPantalla.areaSola') : t('proyectoPantalla.todasLasAreas') })}
                 </Text>
               </View>
@@ -2007,6 +2010,30 @@ export default function ProjectDetailScreen() {
                     </Pressable>
                   );
                 })}
+                <Pressable accessibilityRole="button"
+                  onPress={() => setRangoExportOpen(true)}
+                  style={({ pressed }) => [
+                    styles.exportItem,
+                    !!decodificarPeriodoPersonalizado(exportPeriod) && styles.exportItemActive,
+                    pressed && { opacity: 0.85 },
+                  ]}
+                >
+                  <View style={[styles.exportItemIcon, { backgroundColor: '#EEF2FF' }]}>
+                    <Ionicons name="calendar-outline" size={20} color="#1E3A8A" />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.exportItemTitle}>Rango personalizado</Text>
+                    <Text style={styles.exportItemSub}>Elige fecha de inicio y de fin</Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
+                </Pressable>
+                <RangoFechasPicker
+                  visible={rangoExportOpen}
+                  desdeInicial={null}
+                  hastaInicial={null}
+                  onCancelar={() => setRangoExportOpen(false)}
+                  onConfirmar={(desde, hasta) => { setRangoExportOpen(false); onPickPeriod(codificarPeriodoPersonalizado(desde, hasta)); }}
+                />
               </View>
             ) : exportStep === 'area' ? (
               <ScrollView contentContainerStyle={{ paddingHorizontal: spacing.md, paddingBottom: spacing.md }}>
