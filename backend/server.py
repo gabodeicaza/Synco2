@@ -25067,7 +25067,8 @@ async def export_reports_pptx(
             return text[:max(1, max_chars - 1)].rstrip() + "…"
 
         def _wf_bullets(slide, x: int, y: int, w: int, h: int, items: list, max_items: int, font_size: float = 11,
-                        resto_out: Optional[list] = None) -> None:
+                        resto_out: Optional[list] = None,
+                        empty_text: str = "Sin información registrada") -> None:
             """Textbox con viñetas (una por párrafo). Trunca por CANTIDAD de
             ítems (`max_items`) y por longitud de cada ítem. Con `resto_out`
             (lista) no imprime "+N más…": estima el alto de cada viñeta
@@ -25095,7 +25096,7 @@ async def export_reports_pptx(
             if not shown:
                 p = tf.paragraphs[0]
                 run = p.add_run()
-                run.text = "Sin información registrada"
+                run.text = empty_text
                 run.font.size = Pt(font_size)
                 run.font.italic = True
                 run.font.color.rgb = PRGBColor(*WF_MUTED_RGB)
