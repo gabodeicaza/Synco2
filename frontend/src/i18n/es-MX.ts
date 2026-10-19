@@ -855,6 +855,8 @@ export const esMX = {
       'No hay reportes con la severidad que incluye este informe en el periodo seleccionado. Hay {otros} de otra severidad, que solo cuentan en las tablas de fuerza de trabajo.',
     cambiarPeriodo: 'Cambiar periodo',
     exportarDeTodosModos: 'Exportar de todos modos',
+    rangoPersonalizado: 'Rango personalizado',
+    rangoPersonalizadoSub: 'Elige fecha de inicio y de fin',
     sinConexionConteo: 'No se pudo verificar cuántos reportes hay; se exporta de todos modos.',
   },
   fuerzaTrabajo: {

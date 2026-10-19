@@ -1121,7 +1121,7 @@ export default function SubCoordDashboard() {
                     style={[styles.advChip, !!decodificarPeriodoPersonalizado(expPeriod) && styles.advChipActive]}
                   >
                     <Text style={[styles.advChipTxt, !!decodificarPeriodoPersonalizado(expPeriod) && styles.advChipTxtActive]}>
-                      {etiquetaPeriodoPersonalizado(expPeriod) || 'Rango personalizado'}
+                      {etiquetaPeriodoPersonalizado(expPeriod) || t('exportar.rangoPersonalizado')}
                     </Text>
                   </Pressable>
                 </View>
