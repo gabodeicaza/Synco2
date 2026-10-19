@@ -89,6 +89,13 @@ def _registrar_roboto() -> None:
                 pdfmetrics.registerFont(pdfmetrics.Font(nombre, base, "WinAnsiEncoding"))
             except Exception:
                 pass
+        # Sin la familia, cualquier Paragraph con fontName="Roboto" truena con
+        # "Can't map determine family/bold/italic for roboto" (500 en el PDF).
+        try:
+            registerFontFamily("Roboto", normal="Roboto", bold="Roboto-Bold",
+                               italic="Roboto-Italic", boldItalic="Roboto-Bold")
+        except Exception:
+            pass
 
 
 _registrar_roboto()
