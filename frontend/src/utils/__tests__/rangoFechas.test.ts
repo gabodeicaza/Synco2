@@ -1,6 +1,7 @@
 import { dayjs } from '@/src/utils/tz';
 import {
   rangoEstaSemana, rangoEsteMes, rangoMesAnterior, formatearRangoLegible, validarRango, marcarPeriodoCalendario,
+  codificarPeriodoPersonalizado, decodificarPeriodoPersonalizado, etiquetaPeriodoPersonalizado,
 } from '../rangoFechas';
 
 describe('rangoEstaSemana — lunes de la semana actual → hoy (la semana va de lunes a domingo)', () => {
@@ -121,5 +122,22 @@ describe('marcarPeriodoCalendario', () => {
   it('rango inclusivo en ambos extremos: el primer y el último día SIEMPRE están en el objeto', () => {
     const marks = marcarPeriodoCalendario('2026-03-05', '2026-03-05', '#123456');
     expect(marks['2026-03-05']).toBeDefined();
+  });
+});
+
+describe('periodo personalizado de exportación', () => {
+  it('codifica y decodifica sin perder el rango', () => {
+    const p = codificarPeriodoPersonalizado('2026-03-05', '2026-03-17');
+    expect(p).toBe('custom_20260305_20260317');
+    expect(decodificarPeriodoPersonalizado(p)).toEqual({ desde: '2026-03-05', hasta: '2026-03-17' });
+  });
+
+  it('un periodo normal no es personalizado', () => {
+    expect(decodificarPeriodoPersonalizado('week')).toBeNull();
+    expect(etiquetaPeriodoPersonalizado('today')).toBe('');
+  });
+
+  it('la etiqueta es el rango legible', () => {
+    expect(etiquetaPeriodoPersonalizado('custom_20260305_20260317')).toBe(formatearRangoLegible('2026-03-05', '2026-03-17'));
   });
 });

@@ -3,7 +3,8 @@ import { Modal, View, Text, Pressable, StyleSheet, Platform } from 'react-native
 import { Ionicons } from '@expo/vector-icons';
 import { colors, radius, spacing } from '@/src/theme';
 
-export type ReportPeriod = 'today' | 'yesterday' | 'week' | 'last_week' | 'month';
+// `custom_YYYYMMDD_YYYYMMDD` = rango elegido a mano (ver rangoFechas.ts).
+export type ReportPeriod = 'today' | 'yesterday' | 'week' | 'last_week' | 'month' | `custom_${string}`;
 
 /**
  * Traduce el periodo elegido en el wizard de exportacion al `period_type`

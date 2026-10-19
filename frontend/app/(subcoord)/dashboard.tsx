@@ -33,7 +33,9 @@ import { BorradoresCard } from '@/src/components/BorradoresCard';
 import { GravedadDot, GravedadFiltro, filtrarPorGravedad, type GravedadFiltroValor } from '@/src/components/GravedadDot';
 import { ReportPreviewSheet } from '@/src/components/ReportPreviewSheet';
 import { suscribirReporteEditado } from '@/src/utils/reportEdit';
-import { periodToInformeType } from '@/src/components/PeriodSheet';
+import { ReportPeriod, periodToInformeType } from '@/src/components/PeriodSheet';
+import { RangoFechasPicker } from '@/src/components/RangoFechasPicker';
+import { codificarPeriodoPersonalizado, decodificarPeriodoPersonalizado, etiquetaPeriodoPersonalizado } from '@/src/utils/rangoFechas';
 import { HistoryCalendarModal } from '@/src/components/HistoryCalendarModal';
 import { ReportesVacio } from '@/src/components/ReportesVacio';
 import {
@@ -94,7 +96,8 @@ export default function SubCoordDashboard() {
 
   // P4 - Estado del modal de exportacion avanzada
   const [expFormat, setExpFormat] = useState<'xlsx' | 'pdf' | 'docx' | 'pptx'>('xlsx');
-  const [expPeriod, setExpPeriod] = useState<'today' | 'yesterday' | 'week' | 'last_week' | 'month'>('today');
+  const [expPeriod, setExpPeriod] = useState<ReportPeriod>('today');
+  const [rangoExportOpen, setRangoExportOpen] = useState(false);
   // P0 Mega-Feature: filtro por Area para exportacion (Supervisores)
   const [expAreas, setExpAreas] = useState<{ id: string; name: string; color?: string }[]>([]);
   const [expAreaId, setExpAreaId] = useState<string | null>(null); // null = "Todas las areas"
@@ -136,10 +139,12 @@ export default function SubCoordDashboard() {
   }, []);
 
   const loadFeed = useCallback(async (projectId: string) => {
-    const feed = await api.feed(projectId, period, 100, debouncedQuery || undefined);
+    // Con un día elegido en el calendario se pide ese día al backend: el feed
+    // del periodo (p. ej. "Hoy") no contiene reportes de otras fechas.
+    const feed = await api.feed(projectId, period, 100, debouncedQuery || undefined, selectedDate ? { date: selectedDate } : undefined);
     setReports(feed?.reports || []);
     setStats(feed?.stats || { total: 0, mine: 0, others: 0 });
-  }, [period, debouncedQuery]);
+  }, [period, debouncedQuery, selectedDate]);
 
   const loadData = useCallback(async (projectId: string) => {
     try {
@@ -176,7 +181,7 @@ export default function SubCoordDashboard() {
   useEffect(() => {
     if (!pid || loadedStructureForPid.current !== pid) return;
     loadFeed(pid).catch((e: any) => setError(e?.message || t('panelSubcoord.noSePudoCargarLa')));
-  }, [debouncedQuery, period, pid, loadFeed]);
+  }, [debouncedQuery, period, selectedDate, pid, loadFeed]);
 
   // Un reporte editado (pantalla de captura en modo edición) refresca el feed.
   useEffect(() => suscribirReporteEditado(() => {
@@ -1111,7 +1116,22 @@ export default function SubCoordDashboard() {
                       </Pressable>
                     );
                   })}
+                  <Pressable accessibilityRole="button"
+                    onPress={() => setRangoExportOpen(true)}
+                    style={[styles.advChip, !!decodificarPeriodoPersonalizado(expPeriod) && styles.advChipActive]}
+                  >
+                    <Text style={[styles.advChipTxt, !!decodificarPeriodoPersonalizado(expPeriod) && styles.advChipTxtActive]}>
+                      {etiquetaPeriodoPersonalizado(expPeriod) || 'Rango personalizado'}
+                    </Text>
+                  </Pressable>
                 </View>
+                <RangoFechasPicker
+                  visible={rangoExportOpen}
+                  desdeInicial={decodificarPeriodoPersonalizado(expPeriod)?.desde ?? null}
+                  hastaInicial={decodificarPeriodoPersonalizado(expPeriod)?.hasta ?? null}
+                  onCancelar={() => setRangoExportOpen(false)}
+                  onConfirmar={(desde, hasta) => { setRangoExportOpen(false); setExpPeriod(codificarPeriodoPersonalizado(desde, hasta)); }}
+                />
                 {expFormat === 'xlsx' ? (
                   <Text style={styles.advHint}>
                     {t('panelSubcoord.notaXlsxExportaTodosLos')}

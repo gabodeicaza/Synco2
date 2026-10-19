@@ -24,6 +24,8 @@ import { HeaderMenu } from '@/src/components/HeaderMenu';
 import { api, FeedItem, FeedResponse, Project, ProjectEvent } from '@/src/api';
 import { storage } from '@/src/utils/storage';
 import { ReportPeriod, periodToInformeType } from '@/src/components/PeriodSheet';
+import { RangoFechasPicker } from '@/src/components/RangoFechasPicker';
+import { codificarPeriodoPersonalizado } from '@/src/utils/rangoFechas';
 import { downloadBlob } from '@/src/utils/downloadBlob';
 import { SinReportesAviso } from '@/src/components/SinReportesAviso';
 import { ReportesVacio } from '@/src/components/ReportesVacio';
@@ -103,6 +105,7 @@ export default function SpecFeedScreen() {
   const [exportStep, setExportStep] = useState<ExportStep>('period');
   const [exportPeriod, setExportPeriod] = useState<ReportPeriod>('today');
   const [exportScope, setExportScope] = useState<ExportScope>('mine');
+  const [rangoExportOpen, setRangoExportOpen] = useState(false);
   const [exportBusy, setExportBusy] = useState(false);
   const [exportSinReportes, setExportSinReportes] = useState<{ fmt: ExportFormat; otros: number } | null>(null);
 
@@ -173,7 +176,7 @@ export default function SpecFeedScreen() {
     }
   }, [projectId]);
 
-  const loadFeed = useCallback(async (nextRange: RangeKey = range, silent = false, q = debouncedQuery) => {
+  const loadFeed = useCallback(async (nextRange: RangeKey = range, silent = false, q = debouncedQuery, date: string | null = selectedDate) => {
     if (!projectId) {
       setLoading(false);
       setError(t('inicioEspecialista.tuCuentaNoEsta'));
@@ -182,7 +185,9 @@ export default function SpecFeedScreen() {
     try {
       setError(null);
       if (!silent) setLoading(true);
-      const f = await api.feed(projectId, nextRange, 50, q || undefined);
+      // Con un día elegido en el calendario se pide ese día al backend: el
+      // feed del rango (p. ej. "Hoy") no contiene reportes de otras fechas.
+      const f = await api.feed(projectId, nextRange, 50, q || undefined, date ? { date } : undefined);
       setFeed({ ...f, reports: reconcileReports(f.reports || []) });
     } catch (e: any) {
       setError(e?.message || 'No se pudo cargar el feed');
@@ -190,7 +195,7 @@ export default function SpecFeedScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [projectId, range, debouncedQuery, reconcileReports]);
+  }, [projectId, range, debouncedQuery, selectedDate, reconcileReports]);
 
   const load = useCallback(async (nextRange: RangeKey = range, silent = false, q = debouncedQuery) => {
     await Promise.all([loadProject(), loadFeed(nextRange, silent, q), loadMyMeetings()]);
@@ -206,10 +211,19 @@ export default function SpecFeedScreen() {
   // Un reporte editado (pantalla de captura en modo edición) refresca el feed.
   useEffect(() => suscribirReporteEditado(() => { loadFeed(range, true, debouncedQuery); }), [loadFeed, range, debouncedQuery]);
 
+  // Elegir un chip de rango siempre descarta el día del calendario.
   const onPickRange = useCallback((r: RangeKey) => {
     setRange(r);
-    loadFeed(r, true, debouncedQuery);
+    loadFeed(r, true, debouncedQuery, null);
   }, [loadFeed, debouncedQuery]);
+
+  // Cambio de día en el calendario (elegir o quitar): refetch del feed.
+  const primeraCargaFecha = useRef(true);
+  useEffect(() => {
+    if (primeraCargaFecha.current) { primeraCargaFecha.current = false; return; }
+    if (!projectId) return;
+    loadFeed(range, true, debouncedQuery, selectedDate);
+  }, [selectedDate]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const onRefresh = useCallback(() => {
     setRefreshing(true);
@@ -497,6 +511,12 @@ export default function SpecFeedScreen() {
                   <View style={{ flex: 1 }}><Text style={styles.exportItemTitle}>{opt.label}</Text><Text style={styles.exportItemSub}>{opt.sub}</Text></View>
                 </Pressable>
               ))}
+              {exportStep === 'period' && (
+                <Pressable accessibilityRole="button" onPress={() => setRangoExportOpen(true)} style={styles.exportItem}>
+                  <View style={styles.exportItemIcon}><Ionicons name="calendar-outline" size={20} color={colors.primary} /></View>
+                  <View style={{ flex: 1 }}><Text style={styles.exportItemTitle}>Rango personalizado</Text><Text style={styles.exportItemSub}>Elige fecha de inicio y de fin</Text></View>
+                </Pressable>
+              )}
               {exportStep === 'scope' && (
                 <>
                   <Pressable accessibilityRole="button" onPress={() => onPickScope('mine')} style={styles.exportItem}><View style={styles.exportItemIcon}><Ionicons name="person-outline" size={20} color={colors.primary} /></View><View style={{ flex: 1 }}><Text style={styles.exportItemTitle}>{t('inicioEspecialista.misReportes')}</Text><Text style={styles.exportItemSub}>{t('inicioEspecialista.soloLoQueYo')}</Text></View></Pressable>
@@ -520,6 +540,14 @@ export default function SpecFeedScreen() {
           </View>
         </View>
       </Modal>
+
+      <RangoFechasPicker
+        visible={rangoExportOpen}
+        desdeInicial={null}
+        hastaInicial={null}
+        onCancelar={() => setRangoExportOpen(false)}
+        onConfirmar={(desde, hasta) => { setRangoExportOpen(false); onPickPeriod(codificarPeriodoPersonalizado(desde, hasta)); }}
+      />
     </View>
   );
 }
