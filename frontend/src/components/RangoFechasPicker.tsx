@@ -66,8 +66,10 @@ export function RangoFechasPicker({ visible, desdeInicial, hastaInicial, onCance
   // (que usa el "hoy" real del dispositivo), dejando TODO el mes visible
   // fuera de `maxDate` -> se veia gris/deshabilitado por completo.
   const hoyStr = dayjs().tz(CDMX_TZ).format('YYYY-MM-DD');
-  const validacion = validarRango(desde, hasta, dayjs().tz(CDMX_TZ));
-  const puedeConfirmar = !!desde && !!hasta && validacion.valido;
+  // Con un solo toque (sin fecha final) el rango es ese único día.
+  const hastaEfectiva = hasta ?? desde;
+  const validacion = validarRango(desde, hastaEfectiva, dayjs().tz(CDMX_TZ));
+  const puedeConfirmar = !!desde && !!hastaEfectiva && validacion.valido;
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onCancelar}>
@@ -75,7 +77,7 @@ export function RangoFechasPicker({ visible, desdeInicial, hastaInicial, onCance
         <View style={styles.card}>
           <Text style={styles.title}>Selecciona un rango</Text>
           <Text style={styles.subtitle}>
-            {desde && hasta ? formatearRangoLegible(desde, hasta) : desde ? 'Ahora toca la fecha final' : 'Toca la fecha de inicio'}
+            {desde && hasta ? formatearRangoLegible(desde, hasta) : desde ? `${formatearRangoLegible(desde, desde)} · toca otra fecha para un rango, o Aplicar para solo este día` : 'Toca la fecha de inicio'}
           </Text>
 
           <Calendar
@@ -105,7 +107,7 @@ export function RangoFechasPicker({ visible, desdeInicial, hastaInicial, onCance
             }}
           />
 
-          {desde && hasta && !validacion.valido ? (
+          {desde && !validacion.valido ? (
             <View style={styles.errorBox}>
               <Ionicons name="alert-circle" size={14} color={colors.error} />
               <Text style={styles.errorTxt}>{validacion.motivo}</Text>
@@ -117,7 +119,7 @@ export function RangoFechasPicker({ visible, desdeInicial, hastaInicial, onCance
               <Text style={styles.btnGhostTxt}>Cancelar</Text>
             </Pressable>
             <Pressable accessibilityRole="button"
-              onPress={() => { if (puedeConfirmar && desde && hasta) onConfirmar(desde, hasta); }}
+              onPress={() => { if (puedeConfirmar && desde && hastaEfectiva) onConfirmar(desde, hastaEfectiva); }}
               disabled={!puedeConfirmar}
               style={[styles.btn, styles.btnPrimary, !puedeConfirmar && { opacity: 0.5 }]}
             >
