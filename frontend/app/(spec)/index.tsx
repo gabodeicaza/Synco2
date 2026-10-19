@@ -514,7 +514,7 @@ export default function SpecFeedScreen() {
               {exportStep === 'period' && (
                 <Pressable accessibilityRole="button" onPress={() => setRangoExportOpen(true)} style={styles.exportItem}>
                   <View style={styles.exportItemIcon}><Ionicons name="calendar-outline" size={20} color={colors.primary} /></View>
-                  <View style={{ flex: 1 }}><Text style={styles.exportItemTitle}>Rango personalizado</Text><Text style={styles.exportItemSub}>Elige fecha de inicio y de fin</Text></View>
+                  <View style={{ flex: 1 }}><Text style={styles.exportItemTitle}>{t('exportar.rangoPersonalizado')}</Text><Text style={styles.exportItemSub}>{t('exportar.rangoPersonalizadoSub')}</Text></View>
                 </Pressable>
               )}
               {exportStep === 'scope' && (

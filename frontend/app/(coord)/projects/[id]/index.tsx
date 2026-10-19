@@ -2022,8 +2022,8 @@ export default function ProjectDetailScreen() {
                     <Ionicons name="calendar-outline" size={20} color="#1E3A8A" />
                   </View>
                   <View style={{ flex: 1 }}>
-                    <Text style={styles.exportItemTitle}>Rango personalizado</Text>
-                    <Text style={styles.exportItemSub}>Elige fecha de inicio y de fin</Text>
+                    <Text style={styles.exportItemTitle}>{t('exportar.rangoPersonalizado')}</Text>
+                    <Text style={styles.exportItemSub}>{t('exportar.rangoPersonalizadoSub')}</Text>
                   </View>
                   <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
                 </Pressable>
