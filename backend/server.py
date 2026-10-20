@@ -17908,11 +17908,11 @@ async def export_reports_pdf(
     # (Ya no se imprime: el PDF usa el mismo resumen "Actividades generales"
     # que el PPTX, ver `actividades_resumen_frente`.)
     actividades_resumen_tramo = []
-    actividades_resumen_frente = _actividades_resumen_por_frente(
+    actividades_resumen_frente = _actividades_resumen_por_frente_con_respaldo(
         _quitar_emoji_deep(await _actividades_generales_core(
             pid, None, {"$gte": start_dt, "$lte": end_dt}, user, incluir_ocultas=False,
         )),
-        nodes_by_id, solo_general=True,
+        nodes_by_id,
     )
     # Clima: la captura MANUAL de hoy (módulo "Estado del Tiempo", ver
     # `upsert_weather_log`) tiene prioridad sobre la consulta automática a
@@ -24961,7 +24961,7 @@ async def export_reports_pptx(
     _actividades_items_resumen = _quitar_emoji_deep(await _actividades_generales_core(
         pid, None, {"$gte": start_dt, "$lte": end_dt}, user, incluir_ocultas=False,
     ))
-    actividades_resumen_frente = _actividades_resumen_por_frente(_actividades_items_resumen, nodes_by_id, solo_general=True)
+    actividades_resumen_frente = _actividades_resumen_por_frente_con_respaldo(_actividades_items_resumen, nodes_by_id)
     # Clima: misma prioridad manual > automático que `export_reports_pdf` —
     # ver módulo "Estado del Tiempo" más arriba.
     _fecha_cdmx_hoy = datetime.now(timezone.utc).astimezone(MX_TZ).date().isoformat()
@@ -29364,6 +29364,15 @@ def _actividades_grupos_con_general(por_area: list) -> list:
         bloques.append({"titulo": g["area"], "lineas": sueltas})
         bloques.extend(con_titulo)
     return [{"area": "", "bloques": bloques}] + list(por_area)
+
+
+def _actividades_resumen_por_frente_con_respaldo(items: list, nodes_by_id: dict) -> list:
+    """Resumen de "Actividades generales" para imprimir: lo de la pestaña
+    "Generales" del hub; si no hay nada ahí (las actividades se capturaron por
+    Estación/Poste), el resumen por frente en vez de una diapositiva vacía.
+    Pura."""
+    return (_actividades_resumen_por_frente(items, nodes_by_id, solo_general=True)
+            or _actividades_resumen_por_frente(items, nodes_by_id))
 
 
 def _actividades_resumen_por_frente(items: list, nodes_by_id: dict, solo_general: bool = False) -> list:
