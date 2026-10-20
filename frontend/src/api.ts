@@ -1883,6 +1883,8 @@ export interface ActividadCurada {
   texto: string; // efectivo = texto_editado ?? texto_original
   editada: boolean;
   anadida_manual: boolean;
+  /** Resumen de ~2 líneas generado con IA (se guarda como actividad General). */
+  ia_resumen?: boolean;
   oculta: boolean;
   orden: number;
   dedup_count: number;
@@ -3689,7 +3691,9 @@ export const api = {
     const suffix = qs.toString();
     return request<ActividadCurada[]>('GET', `/projects/${pid}/actividades_generales${suffix ? `?${suffix}` : ''}`);
   },
-  // Resumen de ~2 líneas con IA por ubicación (nodo) para el periodo/área dados.
+  // Genera con IA un resumen de ~2 líneas por ubicación para el periodo/área
+  // dados y lo guarda como actividades de nivel General (reemplaza los
+  // resúmenes IA previos del mismo periodo que no se hayan editado/ocultado).
   resumenIaActividadesUbicacion: (
     pid: string,
     opts: { area_id?: string; desde?: string; hasta?: string } = {},
@@ -3699,7 +3703,7 @@ export const api = {
     if (opts.desde) qs.set('desde', opts.desde);
     if (opts.hasta) qs.set('hasta', opts.hasta);
     const suffix = qs.toString();
-    return request<{ resumenes: Record<string, string>; generated_at: string }>(
+    return request<{ creadas: number; conservadas: number; generated_at: string }>(
       'POST', `/projects/${pid}/actividades_generales/resumen_ia${suffix ? `?${suffix}` : ''}`,
     );
   },

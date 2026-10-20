@@ -109,12 +109,7 @@ export function ActividadesGeneralesScreen({ projectId, projectColor: projectCol
   const [previewOpen, setPreviewOpen] = useState(false);
   const [moveTargetId, setMoveTargetId] = useState<string | null>(null);
 
-  // Resumen con IA por ubicación. Se descarta al cambiar filtros: ya no
-  // corresponde a lo que se está viendo.
-  const [resumenes, setResumenes] = useState<Record<string, string> | null>(null);
   const [resumiendo, setResumiendo] = useState(false);
-
-  useEffect(() => { setResumenes(null); }, [areaId, desde, hasta, incluirOcultas]);
 
   useEffect(() => {
     if (!projectId) return;
@@ -197,12 +192,15 @@ export function ActividadesGeneralesScreen({ projectId, projectColor: projectCol
     if (resumiendo) return;
     setResumiendo(true);
     try {
-      const r = await api.resumenIaActividadesUbicacion(projectId, {
+      await api.resumenIaActividadesUbicacion(projectId, {
         area_id: canSelectArea ? (areaId || undefined) : undefined,
         desde: desde || undefined,
         hasta: hasta || undefined,
       });
-      setResumenes(r.resumenes || {});
+      // El resumen queda guardado como actividades Generales: recargar y
+      // llevar a esa pestaña para que se vea ahí.
+      await load(true);
+      setNivel('GENERAL');
     } catch (e: any) {
       Alert.alert('No se pudo generar el resumen', e?.message || 'Intenta de nuevo');
     } finally {
@@ -345,14 +343,14 @@ export function ActividadesGeneralesScreen({ projectId, projectColor: projectCol
             <Text style={styles.toggleOcultasTxt}>{incluirOcultas ? t('actividadesGenerales.viendoOcultasTambien') : t('actividadesGenerales.verActividadesOcultas')}</Text>
           </Pressable>
 
-          {nivel === 'UBICACION' && itemsDelNivel.length > 0 ? (
+          {nivel === 'UBICACION' && itemsDelNivel.length > 0 && !isReadOnly ? (
             <Pressable accessibilityRole="button" disabled={resumiendo} onPress={resumirConIA}
               style={[styles.iaBtn, { borderColor: tabAccent }, resumiendo && { opacity: 0.6 }]}>
               {resumiendo
                 ? <ActivityIndicator size="small" color={tabAccent} />
                 : <Ionicons name="sparkles-outline" size={14} color={tabAccent} />}
               <Text style={[styles.iaBtnTxt, { color: tabAccent }]}>
-                {resumiendo ? 'Generando resumen…' : resumenes ? 'Regenerar resumen con IA' : 'Resumir por ubicación con IA'}
+                {resumiendo ? 'Generando resumen…' : 'Resumir por ubicación con IA (a Generales)'}
               </Text>
             </Pressable>
           ) : null}
@@ -368,12 +366,6 @@ export function ActividadesGeneralesScreen({ projectId, projectColor: projectCol
             grupos.map((g) => (
               <View key={g.key} style={{ marginBottom: spacing.md }}>
                 {g.label ? <Text style={styles.groupTitle}>{g.label}</Text> : null}
-                {nivel === 'UBICACION' && resumenes?.[g.key] ? (
-                  <View style={[styles.iaBox, { borderLeftColor: tabAccent }]}>
-                    <Ionicons name="sparkles-outline" size={13} color={tabAccent} />
-                    <Text style={styles.iaBoxTxt}>{resumenes[g.key]}</Text>
-                  </View>
-                ) : null}
                 {g.items
                   .slice()
                   .sort((a, b) => a.orden - b.orden)
@@ -495,8 +487,10 @@ function ActividadRow({
 
   useEffect(() => { setDraft(item.texto); }, [item.texto]);
 
-  const origenIcon = item.anadida_manual ? 'create-outline' : 'document-text-outline';
-  const origenLabel = item.anadida_manual
+  const origenIcon = item.ia_resumen ? 'sparkles-outline' : item.anadida_manual ? 'create-outline' : 'document-text-outline';
+  const origenLabel = item.ia_resumen
+    ? 'Resumen generado con IA'
+    : item.anadida_manual
     ? 'Añadida manualmente'
     : item.reporte_fecha
       ? `Reporte del ${fmtFecha(item.reporte_fecha)}`
@@ -848,11 +842,6 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderRadius: radius.md, paddingHorizontal: 10, paddingVertical: 6, marginBottom: spacing.sm,
   },
   iaBtnTxt: { fontSize: 12, fontWeight: '700' },
-  iaBox: {
-    flexDirection: 'row', alignItems: 'flex-start', gap: 6, borderLeftWidth: 3,
-    backgroundColor: colors.surface, borderRadius: radius.sm, padding: spacing.sm, marginBottom: spacing.xs,
-  },
-  iaBoxTxt: { flex: 1, fontSize: 12, color: colors.text, lineHeight: 17 },
   emptyBox: { alignItems: 'center', gap: spacing.sm, paddingVertical: spacing.xl },
   emptyTxt: { fontSize: 13, color: colors.textMuted, textAlign: 'center', maxWidth: 260 },
   groupTitle: { fontSize: 13, fontWeight: '800', color: colors.text, marginBottom: spacing.xs },
