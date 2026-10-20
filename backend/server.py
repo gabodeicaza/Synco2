@@ -28682,7 +28682,8 @@ def _actividad_out(doc: dict, node: dict, areas_by_id: dict, user: dict, *,
         "texto_editado": texto_editado,
         "texto": texto_editado if texto_editado else texto_original,
         "editada": bool(texto_editado),
-        "anadida_manual": doc.get("reporte_origen_id") is None,
+        "anadida_manual": doc.get("reporte_origen_id") is None and not doc.get("ia_resumen"),
+        "ia_resumen": bool(doc.get("ia_resumen")),
         "oculta": bool(doc.get("oculta")),
         "orden": doc.get("orden", 0),
         "dedup_count": len(dedup_ids) or 1,
@@ -29011,6 +29012,8 @@ async def _actividades_generales_core(pid: str, area_id: Optional[str], rango: O
         if doc["id"] in seen_curated_ids:
             continue
         if doc.get("oculta") and not incluir_ocultas:
+            continue
+        if doc.get("ia_resumen") and not _ia_resumen_visible(doc, rango):
             continue
         node = nodes_by_id.get(doc.get("node_id")) or {}
         out.append(_actividad_out(doc, node, areas_by_id, user))
@@ -29350,17 +29353,22 @@ async def list_actividades_generales(
 
 
 # --- Resumen con IA por ubicación (pestaña "Por Ubicación" del hub) ----------
-# Una sola llamada a Gemini para todos los nodos del periodo: se le pasan las
-# actividades visibles (no ocultas, ya con ediciones) agrupadas por nodo y
-# responde un JSON {node_id: resumen de ~2 líneas}. No se persiste: es una
-# ayuda de lectura sobre lo que el hub ya muestra.
+# Una sola llamada a Gemini para todas las (área, ubicación) del periodo: se le
+# pasan las actividades visibles (no ocultas, ya con ediciones) agrupadas y
+# responde un JSON {clave: resumen de ~2 líneas}. Cada resumen se GUARDA como
+# una actividad de nivel GENERAL (`ia_resumen=True`), así aparece en la pestaña
+# Generales del hub y en la impresión, y es editable/ocultable como cualquier
+# otra. Se etiqueta con el periodo con que se generó (`ia_gte`/`ia_lte`) para
+# que solo se vea en periodos que lo contengan (las altas manuales normales no
+# se filtran por fecha).
 RESUMEN_IA_UBICACION_SYSTEM = (
     "Eres un asistente de supervisión de obra. Recibes, por ubicación (nodo), la lista de actividades "
     "reportadas en campo. Para CADA ubicación redacta un resumen en español de aproximadamente 2 líneas "
     "(máximo ~40 palabras), en una sola oración o dos cortas, en tercera persona y tono técnico-neutro. "
     "Usa SOLO la información dada: no inventes cifras, avances ni fechas. Agrupa actividades repetidas o "
-    "similares en una sola mención. Responde ÚNICAMENTE un objeto JSON cuyas llaves sean los ids de "
-    "ubicación recibidos y cuyos valores sean el resumen (texto plano, sin viñetas ni markdown)."
+    "similares en una sola mención. No repitas el nombre de la ubicación al inicio. Responde ÚNICAMENTE un "
+    "objeto JSON cuyas llaves sean las claves recibidas y cuyos valores sean el resumen (texto plano, sin "
+    "viñetas ni markdown)."
 )
 RESUMEN_IA_UBICACION_MAX_NODOS = 150
 RESUMEN_IA_UBICACION_MAX_ACT_POR_NODO = 40
@@ -29368,44 +29376,56 @@ RESUMEN_IA_UBICACION_MAX_CHARS_ACT = 300
 
 
 def _armar_entrada_resumen_ia_ubicacion(items: list) -> tuple:
-    """Agrupa por nodo las actividades visibles de nivel SUBTRAMO/NODO y arma
-    el texto de entrada del LLM. Devuelve `(user_text, etiquetas)` con
-    `etiquetas = {node_id: nombre}` en el orden de árbol recibido; si no hay
-    nada que resumir, `("", {})`. Pura — sin Mongo ni red, testeable directo."""
-    por_nodo: dict = {}
-    etiquetas: dict = {}
+    """Agrupa por (área, nodo) las actividades visibles de nivel SUBTRAMO/NODO
+    (excluye las propias resúmenes IA) y arma el texto de entrada del LLM.
+    Devuelve `(user_text, meta)` con `meta = {clave: {area_id, area_name,
+    node_id, nombre}}` en el orden de árbol recibido; si no hay nada que
+    resumir, `("", {})`. Pura — sin Mongo ni red, testeable directo."""
+    por_grupo: dict = {}
+    meta: dict = {}
+    claves: dict = {}
     for it in items:
-        if it.get("nivel") == NIVEL_GENERAL or it.get("oculta"):
+        if it.get("nivel") == NIVEL_GENERAL or it.get("oculta") or it.get("ia_resumen"):
             continue
         nid = it.get("node_id")
         texto = " ".join((it.get("texto") or "").split())
         if not nid or not texto:
             continue
-        if nid not in por_nodo:
-            if len(por_nodo) >= RESUMEN_IA_UBICACION_MAX_NODOS:
+        gk = (it.get("area_id"), nid)
+        if gk not in claves:
+            if len(claves) >= RESUMEN_IA_UBICACION_MAX_NODOS:
                 continue
-            por_nodo[nid] = []
-            etiquetas[nid] = it.get("node_name") or (it.get("node_path_names") or ["Sin nombre"])[-1]
-        bucket = por_nodo[nid]
+            clave = f"k{len(claves) + 1}"
+            claves[gk] = clave
+            por_grupo[clave] = []
+            meta[clave] = {
+                "area_id": it.get("area_id"),
+                "area_name": it.get("area_name") or "",
+                "node_id": nid,
+                "nombre": it.get("node_name") or (it.get("node_path_names") or ["Sin nombre"])[-1],
+            }
+        bucket = por_grupo[claves[gk]]
         texto = texto[:RESUMEN_IA_UBICACION_MAX_CHARS_ACT]
         if len(bucket) < RESUMEN_IA_UBICACION_MAX_ACT_POR_NODO and texto not in bucket:
             bucket.append(texto)
-    if not por_nodo:
+    if not por_grupo:
         return "", {}
     bloques = []
-    for nid, acts in por_nodo.items():
+    for clave, acts in por_grupo.items():
+        m = meta[clave]
+        area = f' área="{m["area_name"]}"' if m["area_name"] else ""
         lineas = "\n".join(f"- {a}" for a in acts)
-        bloques.append(f'id="{nid}" ubicación="{etiquetas[nid]}"\n{lineas}')
+        bloques.append(f'clave="{clave}" ubicación="{m["nombre"]}"{area}\n{lineas}')
     user_text = (
-        f"Ubicaciones con actividades ({len(por_nodo)}):\n\n" + "\n\n".join(bloques)
-        + "\n\nDevuelve el JSON con un resumen de ~2 líneas por cada id."
+        f"Ubicaciones con actividades ({len(por_grupo)}):\n\n" + "\n\n".join(bloques)
+        + "\n\nDevuelve el JSON con un resumen de ~2 líneas por cada clave."
     )
-    return user_text, etiquetas
+    return user_text, meta
 
 
 def _parsear_resumen_ia_ubicacion(raw: str, ids_validos) -> dict:
-    """Extrae `{node_id: resumen}` de la respuesta del LLM, tolerando cercas
-    ```json y texto alrededor. Descarta ids desconocidos y valores vacíos.
+    """Extrae `{clave: resumen}` de la respuesta del LLM, tolerando cercas
+    ```json y texto alrededor. Descarta claves desconocidas y valores vacíos.
     Pura — testeable directo."""
     s = (raw or "").strip()
     if s.startswith("```"):
@@ -29426,6 +29446,37 @@ def _parsear_resumen_ia_ubicacion(raw: str, ids_validos) -> dict:
     return out
 
 
+def _ia_rango_clave(rango: Optional[dict]) -> tuple:
+    """(gte_iso, lte_iso) del filtro `created_at` del hub, en UTC y como
+    cadenas comparables; `(None, None)` si no hay rango."""
+    def _iso(dt):
+        if not dt:
+            return None
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(timezone.utc)
+        return dt.strftime("%Y-%m-%dT%H:%M:%S")
+    rango = rango or {}
+    return _iso(rango.get("$gte")), _iso(rango.get("$lte"))
+
+
+def _ia_resumen_visible(doc: dict, rango: Optional[dict]) -> bool:
+    """¿Se muestra un resumen IA guardado al listar con `rango`? Sin rango,
+    solo los generados también sin rango ("todo el periodo"); con rango, los
+    generados para un periodo contenido en él (mismo periodo del hub, o un día
+    dentro de la semana que imprime el PDF/PPTX). Pura."""
+    doc_gte, doc_lte = doc.get("ia_gte"), doc.get("ia_lte")
+    req_gte, req_lte = _ia_rango_clave(rango)
+    if req_gte is None and req_lte is None:
+        return doc_gte is None and doc_lte is None
+    if doc_gte is None and doc_lte is None:
+        return False
+    if req_gte is not None and (doc_gte is None or doc_gte < req_gte):
+        return False
+    if req_lte is not None and (doc_lte is None or doc_lte > req_lte):
+        return False
+    return True
+
+
 @api.post("/projects/{pid}/actividades_generales/resumen_ia")
 async def resumen_ia_actividades_por_ubicacion(
     pid: str,
@@ -29434,20 +29485,23 @@ async def resumen_ia_actividades_por_ubicacion(
     hasta: Optional[str] = Query(None, description="YYYY-MM-DD, inclusive"),
     user: dict = Depends(current_user),
 ):
-    """Resumen de ~2 líneas con IA por cada ubicación (nodo) con actividades
-    en el periodo. Mismos permisos y filtros que el listado del hub; usa la
-    misma fuente curada (ediciones aplicadas, ocultas excluidas)."""
+    """Genera con IA un resumen de ~2 líneas por cada ubicación con
+    actividades en el periodo y lo GUARDA como actividad de nivel GENERAL
+    (visible en la pestaña Generales y en la impresión). Regenerar sustituye
+    los resúmenes IA previos del mismo periodo que no se hayan editado ni
+    ocultado a mano. Mismos permisos que añadir actividades."""
     await ensure_project_access(user, pid)
+    _assert_write_allowed(user)
     role = user.get("role")
-    if role not in (ROLE_COORD, ROLE_SUB, ROLE_ESPECIALISTA, ROLE_JEFE):
-        raise HTTPException(403, "Tu rol no tiene acceso a Actividades Generales")
+    if role not in (ROLE_COORD, ROLE_SUB, ROLE_ESPECIALISTA):
+        raise HTTPException(403, "Tu rol no puede generar resúmenes de actividades")
     if not GEMINI_API_KEY:
         raise HTTPException(500, "GEMINI_API_KEY no configurada en el servidor.")
     effective_area_id = area_id
     if role == ROLE_ESPECIALISTA:
         effective_area_id = user.get("area_id")
         if not effective_area_id:
-            return {"resumenes": {}, "generated_at": datetime.now(timezone.utc)}
+            return {"creadas": 0, "conservadas": 0, "generated_at": datetime.now(timezone.utc)}
     rango: dict = {}
     if desde:
         b = _feed_day_bounds(desde)
@@ -29460,9 +29514,9 @@ async def resumen_ia_actividades_por_ubicacion(
     items = _quitar_emoji_deep(
         await _actividades_generales_core(pid, effective_area_id, rango or None, user, incluir_ocultas=False)
     )
-    user_text, etiquetas = _armar_entrada_resumen_ia_ubicacion(items)
-    if not etiquetas:
-        return {"resumenes": {}, "generated_at": datetime.now(timezone.utc)}
+    user_text, meta = _armar_entrada_resumen_ia_ubicacion(items)
+    if not meta:
+        return {"creadas": 0, "conservadas": 0, "generated_at": datetime.now(timezone.utc)}
 
     try:
         import httpx
@@ -29489,11 +29543,66 @@ async def resumen_ia_actividades_por_ubicacion(
             raw = "".join(p.get("text", "") for p in parts).strip()
             if not raw:
                 raise RuntimeError("Respuesta vacía del LLM")
-        resumenes = _parsear_resumen_ia_ubicacion(raw, etiquetas.keys())
+        resumenes = _parsear_resumen_ia_ubicacion(raw, meta.keys())
     except Exception as e:
         log.exception("[resumen_ia_ubicacion] error: %s", e)
         raise HTTPException(502, f"No se pudo generar el resumen con IA: {e}")
-    return {"resumenes": resumenes, "generated_at": datetime.now(timezone.utc)}
+
+    gte, lte = _ia_rango_clave(rango)
+    # Resúmenes IA previos del MISMO periodo y alcance de áreas: se sustituyen
+    # los que siguen tal cual los generó la IA; los editados u ocultados a mano
+    # se respetan (y su ubicación no se vuelve a generar).
+    prev_q: dict = {"project_id": pid, "ia_resumen": True, "ia_gte": gte, "ia_lte": lte}
+    if effective_area_id:
+        prev_q["area_id"] = effective_area_id
+    conservadas_nodos: set = set()
+    borrar_ids: list = []
+    async for d in db.actividades_curadas.find(prev_q):
+        if d.get("texto_editado") or d.get("oculta"):
+            conservadas_nodos.add((d.get("area_id"), d.get("ia_node_id")))
+        else:
+            borrar_ids.append(d["id"])
+    if borrar_ids:
+        await db.actividades_curadas.delete_many({"project_id": pid, "id": {"$in": borrar_ids}})
+
+    now = datetime.now(timezone.utc)
+    docs: list = []
+    for clave, resumen in resumenes.items():
+        m = meta[clave]
+        if (m["area_id"], m["node_id"]) in conservadas_nodos:
+            continue
+        path = await node_path_names(m["node_id"])
+        docs.append({
+            "id": str(uuid.uuid4()),
+            "project_id": pid,
+            "area_id": m["area_id"],
+            "nivel": NIVEL_GENERAL,
+            "node_id": None,
+            "node_path_names": [],
+            "node_id_origen": m["node_id"],
+            "node_path_names_origen": path,
+            "reporte_origen_id": None,
+            "linea_idx": None,
+            "texto_original": f'{m["nombre"]}: {resumen}',
+            "texto_editado": None,
+            "oculta": False,
+            "orden": len(docs),
+            "dedup_report_ids": [],
+            "ia_resumen": True,
+            "ia_gte": gte,
+            "ia_lte": lte,
+            "ia_node_id": m["node_id"],
+            "creado_por": user["id"],
+            "creado_en": now,
+            "editado_por": None,
+            "editado_en": None,
+            "historial": [{
+                "accion": "resumen_ia", "usuario_id": user["id"], "usuario_nombre": user.get("name"), "en": now,
+            }],
+        })
+    if docs:
+        await db.actividades_curadas.insert_many(docs)
+    return {"creadas": len(docs), "conservadas": len(conservadas_nodos), "generated_at": now}
 
 
 @api.post("/projects/{pid}/actividades_generales")
