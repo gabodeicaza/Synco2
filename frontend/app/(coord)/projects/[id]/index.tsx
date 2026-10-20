@@ -435,6 +435,7 @@ export default function ProjectDetailScreen() {
     if (!pid || reports.length === 0) return;
     const newest = reports[0]?.created_at;
     if (!newest) return;
+    const reqId = feedReqRef.current;
     try {
       const f = await api.feed(pid, selectedTimeFilter, PAGE_SIZE, undefined, {
         node: selectedNodeFilter || undefined,
@@ -442,6 +443,9 @@ export default function ProjectDetailScreen() {
         date: selectedDate || undefined,
         since: newest,
       });
+      // Si mientras tanto cambió el filtro/día (o se recargó la lista), esta
+      // respuesta ya no corresponde a lo que se ve: no debe anteponerse.
+      if (reqId !== feedReqRef.current) return;
       const fresh = (f?.reports || []).filter((r) => !reports.some((existing) => existing.id === r.id));
       if (fresh.length > 0) {
         setReports((prev) => [...fresh, ...prev]);
