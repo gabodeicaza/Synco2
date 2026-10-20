@@ -47,8 +47,36 @@ def test_periodos_normales_no_cambian():
     assert server._period_range("yesterday", None)[2] == "Ayer"
 
 
-def test_categoria_de_modulos_segun_duracion():
+def test_categoria_de_modulos_un_dia_diario_mas_de_un_dia_semanal():
     f = server._modulos_categoria_para_export
     assert f(None, "custom_20200301_20200301") == "reportes_diarios"
-    assert f(None, "custom_20200301_20200307") == "reportes_semanales"
-    assert f(None, "custom_20200301_20200308") == "reportes_mensuales"
+    assert f(None, "custom_20200301_20200302") == "reportes_semanales"
+    assert f(None, "custom_20200301_20200330") == "reportes_semanales"
+
+
+def test_tipo_de_informe_un_dia_diario_varios_dias_semanal():
+    f = server._period_type_efectivo
+    assert f("custom_20200301_20200301", None) == "diario"
+    assert f("custom_20200301_20200302", None) == "semanal"
+    assert f("custom_20200301_20200302", "diario") == "semanal"  # el rango manda
+    assert f("week", "semanal") == "semanal" and f("today", None) is None
+
+
+def test_un_dia_incluye_severidad_diario_y_varios_dias_la_del_semanal():
+    sev = server._severity_set_for_period_type
+    assert sev(server._period_type_efectivo("custom_20200301_20200301", None), {"x"}) == {"diario"}
+    assert sev(server._period_type_efectivo("custom_20200301_20200303", None), {"x"}) == {"importante"}
+
+
+def test_la_consulta_de_exportacion_usa_las_fechas_elegidas_y_severidad_diario():
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock, patch
+    db = MagicMock()
+    db.projects.find_one = AsyncMock(return_value={"id": "p1"})
+    user = {"id": "u1", "role": server.ROLE_COORD}
+    with patch.object(server, "db", db), patch.object(server, "ensure_project_access", AsyncMock()):
+        _p, pt, ini, fin, _lbl, q, _qw = asyncio.run(server._export_reports_query(
+            "p1", "custom_20200301_20200301", user, period_type=None))
+    assert pt == "diario" and q["severidad"] == {"$in": ["diario"]}
+    assert ini == datetime(2020, 3, 1, 6, 0, tzinfo=timezone.utc)
+    assert fin == datetime(2020, 3, 2, 5, 59, 59, 999999, tzinfo=timezone.utc)
