@@ -218,7 +218,9 @@ export default function SpecFeedScreen() {
   // Elegir un chip de rango siempre descarta el día del calendario.
   const onPickRange = useCallback((r: RangeKey) => {
     setRange(r);
-    loadFeed(r, true, debouncedQuery, null);
+    // Se vacía la lista del rango anterior y se muestra la carga hasta que llegue la nueva.
+    setFeed((prev) => (prev ? { ...prev, reports: [] } : prev));
+    loadFeed(r, false, debouncedQuery, null);
   }, [loadFeed, debouncedQuery]);
 
   // Cambio de día en el calendario (elegir o quitar): refetch del feed.

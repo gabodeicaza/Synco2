@@ -174,7 +174,7 @@ export default function SubCoordDashboard() {
   }, [loadProjects]);
 
   const loadedStructureForPid = useRef<string | null>(null);
-  const fechaFeedRef = useRef<string | null>(null);
+  const fechaFeedRef = useRef<string>(`${period}|`); // "periodo|día" del último feed pedido
 
   useEffect(() => {
     if (!pid) return;
@@ -191,8 +191,9 @@ export default function SubCoordDashboard() {
   // del feed, no de la estructura completa del proyecto.
   useEffect(() => {
     if (!pid || loadedStructureForPid.current !== pid) return;
-    // Al cambiar de día se vacía la lista (la de "Hoy") hasta que llegue la del día elegido.
-    if (fechaFeedRef.current !== selectedDate) { fechaFeedRef.current = selectedDate; setReports([]); }
+    // Al cambiar de día o de periodo se vacía la lista anterior hasta que llegue la nueva.
+    const claveFeed = `${period}|${selectedDate ?? ''}`;
+    if (fechaFeedRef.current !== claveFeed) { fechaFeedRef.current = claveFeed; setReports([]); }
     loadFeed(pid).catch((e: any) => setError(e?.message || t('panelSubcoord.noSePudoCargarLa')));
   }, [debouncedQuery, period, selectedDate, pid, loadFeed]);
 
