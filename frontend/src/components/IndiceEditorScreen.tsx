@@ -204,6 +204,17 @@ export default function IndiceEditorScreen({ projectId: pid }: { projectId: stri
               </View>
               <View style={[styles.row, styles.rowBorder]}>
                 <View style={{ flex: 1 }}>
+                  <Text style={styles.rowTitle}>Portadillas por área</Text>
+                  <Text style={styles.rowSub}>Si las apagas, el informe sale sin la hoja con el nombre de cada área.</Text>
+                </View>
+                <Switch
+                  value={config.portadillas_area !== false}
+                  onValueChange={(v) => editar((c) => ({ ...c, portadillas_area: v }))}
+                  trackColor={{ false: colors.border, true: colors.primary }}
+                />
+              </View>
+              <View style={[styles.row, styles.rowBorder]}>
+                <View style={{ flex: 1 }}>
                   <Text style={styles.rowTitle}>Título</Text>
                   <TextInput
                     value={config.titulo}

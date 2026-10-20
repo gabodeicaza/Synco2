@@ -331,6 +331,7 @@ export interface IndiceConfig {
   order: string[];               // claves de sección en el orden deseado
   titles: Record<string, string>; // título personalizado por clave
   hidden: string[];              // claves que no aparecen en el índice
+  portadillas_area?: boolean;    // imprimir portadillas de Área (default true)
 }
 
 export interface IndiceSeccion {

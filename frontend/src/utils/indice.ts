@@ -15,6 +15,7 @@ export const INDICE_CONFIG_DEFAULT: IndiceConfig = {
   order: [],
   titles: {},
   hidden: [],
+  portadillas_area: true,
 };
 
 // Las claves guardadas (que aun existen) se reparten, en el orden guardado,

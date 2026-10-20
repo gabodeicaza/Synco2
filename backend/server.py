@@ -17165,7 +17165,7 @@ def _indice_titulo_reporte(r: dict) -> str:
 def _sanitize_indice_config(raw) -> dict:
     """Normaliza la configuración de UN período. Tolera basura (payload del
     cliente o documentos viejos): nunca lanza, siempre devuelve la forma
-    completa {enabled, titulo, order, titles, hidden}."""
+    completa {enabled, titulo, order, titles, hidden, portadillas_area}."""
     raw = raw if isinstance(raw, dict) else {}
 
     def _claves(value) -> List[str]:
@@ -17198,6 +17198,9 @@ def _sanitize_indice_config(raw) -> dict:
         "order": _claves(raw.get("order")),
         "titles": titles,
         "hidden": _claves(raw.get("hidden")),
+        # Opción del índice: imprimir o no las portadillas de Área (diario
+        # normalmente no las usa; semanal sí). Por defecto se imprimen.
+        "portadillas_area": raw.get("portadillas_area") if isinstance(raw.get("portadillas_area"), bool) else True,
     }
 
 
@@ -20952,10 +20955,11 @@ async def export_reports_pdf(
                 # === Portadilla de Área (fondo magenta de la portada) ========
                 # Índice 0-based en el PDF actual = page_num - 1
                 _indice_mark(f"area:{n['id']}:{area_name}", f"{node_path} · {area_name}")
-                area_page_indices.append(page_num - 1)
-                draw_area_cover_page(area_name)
-                c.showPage()
-                page_num += 1
+                if indice_cfg["portadillas_area"]:
+                    area_page_indices.append(page_num - 1)
+                    draw_area_cover_page(area_name)
+                    c.showPage()
+                    page_num += 1
 
                 # === Resumen de Actividades Generales (curadas) del Área ====
                 # Un bucket visual de Área puede colapsar varios area_id
@@ -21103,10 +21107,11 @@ async def export_reports_pdf(
             page_num += 1
 
             for _bucket in sorted(_orphan_by_bucket.keys()):
-                area_page_indices.append(page_num - 1)
-                draw_area_cover_page(_bucket)
-                c.showPage()
-                page_num += 1
+                if indice_cfg["portadillas_area"]:
+                    area_page_indices.append(page_num - 1)
+                    draw_area_cover_page(_bucket)
+                    c.showPage()
+                    page_num += 1
                 _emit_actividades_area(_bucket, "", _orphan_by_bucket[_bucket])
 
         # Página(s) de cierre: RECUENTO GENERAL del período completo,
@@ -21137,6 +21142,8 @@ async def export_reports_pdf(
         return buf.getvalue(), section_page_indices, area_page_indices, _gd_page_count, _indice_marks
 
     # Render bloqueante en thread aparte → libera event loop
+    indice_periodo = _indice_periodo_key(period_type, period)
+    indice_cfg = await _indice_load_config(pid, indice_periodo)
     pdf_bytes, section_page_indices, area_page_indices, gd_page_count, indice_marks = await asyncio.to_thread(_build_pdf_blocking)
 
     # ── Fusión con plantilla PDF institucional (si existe) ────────────────
@@ -21160,8 +21167,6 @@ async def export_reports_pdf(
 
     # ── Índice editable: reordena secciones según la config del período
     # (diario/semanal/mensual) e inserta el índice con páginas reales.
-    indice_periodo = _indice_periodo_key(period_type, period)
-    indice_cfg = await _indice_load_config(pid, indice_periodo)
     try:
         pdf_bytes, indice_estructura = await asyncio.to_thread(
             _pdf_apply_indice, pdf_bytes, indice_marks, indice_cfg,
@@ -27203,14 +27208,15 @@ async def export_reports_pptx(
                 # --- Portadilla de Área (clon del fondo de la portada) ----
                 # Título posicionado en la MISMA Y que "REPORTE X" en la
                 # portada principal, para preservar consistencia visual.
-                a_slide = _clone_cover_bg()
-                _area_y = SH * 0.32  # equivalente a PH*0.32 en el PDF
-                add_text(
-                    a_slide, Cm(1.5), _area_y, SW - Cm(3.0), Cm(4.0),
-                    area_name.upper(),
-                    size=44, bold=True,
-                    color=AREA_TEXT_COLOR, align=PP_ALIGN.CENTER,
-                )
+                if indice_cfg["portadillas_area"]:
+                    a_slide = _clone_cover_bg()
+                    _area_y = SH * 0.32  # equivalente a PH*0.32 en el PDF
+                    add_text(
+                        a_slide, Cm(1.5), _area_y, SW - Cm(3.0), Cm(4.0),
+                        area_name.upper(),
+                        size=44, bold=True,
+                        color=AREA_TEXT_COLOR, align=PP_ALIGN.CENTER,
+                    )
 
                 # --- Resumen de Actividades Generales (curadas) del Área ---
                 # Un bucket visual de Área puede colapsar varios area_id
@@ -27293,14 +27299,15 @@ async def export_reports_pptx(
             )
 
             for _bucket in sorted(_orphan_by_bucket.keys()):
-                a_slide = _clone_cover_bg()
-                _area_y = SH * 0.32
-                add_text(
-                    a_slide, Cm(1.5), _area_y, SW - Cm(3.0), Cm(4.0),
-                    _bucket.upper(),
-                    size=44, bold=True,
-                    color=AREA_TEXT_COLOR, align=PP_ALIGN.CENTER,
-                )
+                if indice_cfg["portadillas_area"]:
+                    a_slide = _clone_cover_bg()
+                    _area_y = SH * 0.32
+                    add_text(
+                        a_slide, Cm(1.5), _area_y, SW - Cm(3.0), Cm(4.0),
+                        _bucket.upper(),
+                        size=44, bold=True,
+                        color=AREA_TEXT_COLOR, align=PP_ALIGN.CENTER,
+                    )
                 _emit_actividades_area_slides(_bucket, "", _orphan_by_bucket[_bucket])
 
         # Slide(s) de cierre: RECUENTO GENERAL del período completo,
