@@ -17880,8 +17880,14 @@ async def export_reports_pdf(
     actividades_tabla_por_area = await _actividades_tabla_por_area(pid, start_dt, end_dt, user)
     # Resumen de actividades por Tramo (antes de la Tabla Resumen) — mismas
     # actividades que muestra el hub para el rango del informe.
-    actividades_resumen_tramo = await _actividades_resumen_por_tramo_prefetch(
-        pid, start_dt, end_dt, user, nodes_by_id,
+    # (Ya no se imprime: el PDF usa el mismo resumen "Actividades generales"
+    # que el PPTX, ver `actividades_resumen_frente`.)
+    actividades_resumen_tramo = []
+    actividades_resumen_frente = _actividades_resumen_por_frente(
+        _quitar_emoji_deep(await _actividades_generales_core(
+            pid, None, {"$gte": start_dt, "$lte": end_dt}, user, incluir_ocultas=False,
+        )),
+        nodes_by_id, solo_general=True,
     )
     # Clima: la captura MANUAL de hoy (módulo "Estado del Tiempo", ver
     # `upsert_weather_log`) tiene prioridad sobre la consulta automática a
@@ -19163,6 +19169,74 @@ async def export_reports_pdf(
                     if idx < len(measured):
                         y = _rt_new_page(grp["tramo"], True)
 
+        # --- ACTIVIDADES GENERALES (mismo contenido y formato que el PPTX) ---
+        # Solo las actividades de nivel General del hub, una hoja (o más) por
+        # Área en tres columnas con divisores. Siempre se emite al menos una
+        # hoja con su entrada de índice, aunque no haya actividades.
+        def _draw_actividades_generales_section() -> None:
+            nonlocal page_num
+            grupos_ag = actividades_resumen_frente or [{"area": "", "bloques": []}]
+            AG_COLS = 3
+            AG_PAD = 0.35 * cm
+            AG_FONT = 12
+            AG_BRAND = HexColor(_sanitize_color_hex(project_color) or "#003366")
+            AG_TITLE_COLOR = HexColor(_readable_dark_hex(project_color))
+            AG_TXT = ParagraphStyle(
+                "AGTxt", fontName="Roboto", fontSize=AG_FONT, leading=AG_FONT * 1.3,
+                textColor=HexColor("#1A1A1A"), alignment=4, leftIndent=0.6 * cm, bulletIndent=0,
+                spaceAfter=3,
+            )
+            ag_col_w = PW / AG_COLS
+            ag_txt_w = ag_col_w - 2 * AG_PAD
+            ag_top = PH - TOP_MARGIN_PDF
+            ag_head_h = 1.4 * cm
+            ag_col_top = ag_top - 26 * 1.4 - ag_head_h
+            ag_bottom = BOTTOM_MARGIN_PDF
+            ag_col_h = ag_col_top - ag_bottom
+
+            for grp in grupos_ag:
+                items_ag = [ln for b in grp["bloques"] for ln in b["lineas"]]
+                columnas: list = []
+                cur: list = []
+                usado = 0.0
+                for ln in items_ag:
+                    par = Paragraph(_xml_escape(ln), AG_TXT, bulletText="•")
+                    h = par.wrap(ag_txt_w, 10000)[1] + 3
+                    if cur and usado + h > ag_col_h:
+                        columnas.append(cur)
+                        cur, usado = [], 0.0
+                    cur.append((par, h))
+                    usado += h
+                if cur:
+                    columnas.append(cur)
+
+                for pi in range(0, max(len(columnas), 1), AG_COLS):
+                    if pi == 0:
+                        _indice_mark(
+                            f"actfrente:{grp['area']}",
+                            f"Resumen de actividades · {grp['area']}" if grp["area"] else "Actividades generales",
+                        )
+                    c.setFillColor(AG_TITLE_COLOR)
+                    c.setFont("Roboto-Bold", 26)
+                    c.drawCentredString(PW / 2, ag_top, "ACTIVIDADES GENERALES")
+                    c.setStrokeColor(AG_BRAND)
+                    c.setLineWidth(2)
+                    for ci in range(1, AG_COLS):
+                        c.line(ag_col_w * ci, ag_top - 26 * 1.4, ag_col_w * ci, ag_bottom)
+                    if grp["area"]:
+                        c.setFillColor(AG_TITLE_COLOR)
+                        c.setFont("Roboto-Bold", 20 if len(grp["area"]) <= 14 else 14)
+                        c.drawString(AG_PAD, ag_top - 26 * 1.4 - 0.9 * cm,
+                                     grp["area"].upper() + ("  (CONTINÚA)" if pi else ""))
+                    for ci, col in enumerate(columnas[pi:pi + AG_COLS]):
+                        y = ag_col_top
+                        for par, h in col:
+                            par.wrapOn(c, ag_txt_w, 10000)
+                            par.drawOn(c, ci * ag_col_w + AG_PAD, y - (h - 3))
+                            y -= h
+                    c.showPage()
+                    page_num += 1
+
         # --- PÁGINAS DE DATOS GENERALES (ex-Mapa: array de imágenes) -----
         # Cada imagen del array `general_data_images` genera UNA página
         # dedicada usando el mismo membrete institucional (página 1+ del
@@ -19225,7 +19299,7 @@ async def export_reports_pdf(
         # (spec de producto) — antes del cuerpo principal por nodo/área, e
         # incluso si el período no tiene reportes narrativos (puede haber
         # actividades GENERALES añadidas a mano sin reportes de campo).
-        _draw_actividades_por_area_section()
+        _draw_actividades_generales_section()
 
         # --- PÁGINA DATOS DE CONTRATO (OBRA / SUPERVISIÓN) ---------------
         # Va DESPUÉS de Datos Generales (no antes, como en el PPTX): en modo
