@@ -7458,6 +7458,23 @@ PENDIENTE_AMBITO_HEADING = {
 _ESTATUS_CORTO = {"Cambio de trayectoria": "Cambio tray."}
 
 
+def _nodo_es_intertramo(n: Optional[dict]) -> bool:
+    """Un frente es Intertramo por su `tipo_nodo` o, si no lo trae, porque su
+    nombre empieza con "Intertramo" (así no sale como "ESTACIÓN 11." ni con el
+    formato de estación). Pura."""
+    n = n or {}
+    return n.get("tipo_nodo") == "intertramo" or bool(
+        re.match(r"(?i)^\s*inter\s*-?\s*tramo", n.get("name") or ""))
+
+
+def _ordinales_estacion(nodes_by_id: dict) -> dict:
+    """{id del frente: N} para el "ESTACIÓN N." de los títulos: orden del árbol
+    contando SOLO estaciones (los intertramos no llevan número). Pura."""
+    frentes = sorted((n for n in nodes_by_id.values() if n.get("depth") == 1 and not _nodo_es_intertramo(n)),
+                     key=lambda n: (n.get("order", 0), n.get("name", "")))
+    return {n["id"]: i + 1 for i, n in enumerate(frentes)}
+
+
 def _estacion_titulos(ordinal: Optional[int], nombre: str) -> tuple:
     """(título chico, título grande) de la página/diapositiva resumen de una
     Estación. Formato de referencia: "ESTACIÓN 5." (chico) y "CEFORMA"
@@ -17847,13 +17864,7 @@ async def export_reports_pdf(
     # (formato de referencia del cliente) — orden del árbol del proyecto
     # completo (no solo los subtramos con datos en este período), mismo
     # criterio que `subtramo_order_index` en `_actividades_generales_core`.
-    _subtramo_ordinal = {
-        n["id"]: i + 1
-        for i, n in enumerate(
-            sorted((n for n in nodes_by_id.values() if n.get("depth") == 1),
-                   key=lambda n: (n.get("order", 0), n.get("name", "")))
-        )
-    }
+    _subtramo_ordinal = _ordinales_estacion(nodes_by_id)
     # Página(s) de cierre "RECUENTO GENERAL": consolidado del período
     # completo, agrupado por el nivel de agregación configurado (parámetros
     # de la request > preferencia guardada del proyecto > 'subtramo' por
@@ -18027,6 +18038,30 @@ async def export_reports_pdf(
         PW, PH = PAGE
         c = _canvas.Canvas(buf, pagesize=PAGE)
 
+        # Título de la sección en la banda superior del membrete (como
+        # "ACTIVIDADES GENERALES" / "REPORTE FOTOGRÁFICO" en el informe de
+        # referencia). Cada sección fija `_banda_pdf["t"]` al empezar; se
+        # imprime en TODA página de esa sección al cerrarla (showPage) y solo
+        # con plantilla, que es la que trae la banda.
+        _banda_pdf: dict = {"t": None}
+        _show_page_orig = c.showPage
+
+        def _show_page_con_banda():
+            _bt = _banda_pdf["t"]
+            if _bt and tpl_page_w and tpl_page_h:
+                try:
+                    _bsz = (18 if len(_bt) <= 34 else 14 if len(_bt) <= 46 else 12) * PW / 960.0
+                    c.saveState()
+                    c.setFillColor(HexColor("#FFFFFF"))
+                    c.setFont("Roboto", _bsz)
+                    c.drawString(PW * 0.3473, PH * (1 - 0.057) - _bsz * 0.35, _bt)
+                    c.restoreState()
+                except Exception:
+                    pass
+            _show_page_orig()
+
+        c.showPage = _show_page_con_banda
+
         BRAND = HexColor(project_color)
         MUTED = HexColor("#64748B")
         BORDER = HexColor("#E2E8F0")
@@ -18089,6 +18124,12 @@ async def export_reports_pdf(
 
             def _section_header(titulo: str) -> None:
                 nonlocal y
+                _banda_pdf["t"] = titulo.upper()
+                if tpl_page_w and tpl_page_h:
+                    # Con membrete el título va en su banda (como en el informe
+                    # de referencia), no como encabezado grande en el cuerpo.
+                    y = top_y
+                    return
                 c.setFillColor(TEXT)
                 c.setFont("Roboto-Bold", 28)
                 c.drawCentredString(PW / 2, top_y, titulo)
@@ -18760,6 +18801,8 @@ async def export_reports_pdf(
                 # grande de sección (título + período) que hacía de portada.
                 if _mod_key not in _MODULOS_SIN_PORTADA:
                     _section_header(_mod_data["titulo"])
+                else:
+                    _banda_pdf["t"] = "CROQUIS GENERAL"
                 for block in _mod_data["blocks"]:
                     _BLOCK_RENDERERS[block["type"]](block)
                 c.showPage()
@@ -18877,6 +18920,7 @@ async def export_reports_pdf(
         ]
         if _res_ini_filas:
             _indice_mark("resumen_avance", "Resumen de avance")
+            _banda_pdf["t"] = "TABLA RESUMEN GENERAL ACUMULADO"
             _ri_x = 1.5 * cm
             _ri_w = PW - 3.0 * cm
             _ri_brand_hex = _sanitize_color_hex(project_color) or "#003366"
@@ -18946,6 +18990,7 @@ async def export_reports_pdf(
         # generar varias hojas por Área si hay muchas actividades.
         def _draw_actividades_por_area_section() -> None:
             nonlocal page_num
+            _banda_pdf["t"] = "ACTIVIDADES GENERALES"
             if not actividades_tabla_por_area:
                 return
 
@@ -19067,6 +19112,7 @@ async def export_reports_pdf(
         # Resumen (o antes de todos los módulos si ese no está activo).
         def _draw_resumen_actividades_tramo() -> None:
             nonlocal page_num
+            _banda_pdf["t"] = "ACTIVIDADES GENERALES"
             if not actividades_resumen_tramo:
                 return
 
@@ -19189,6 +19235,7 @@ async def export_reports_pdf(
         # hoja con su entrada de índice, aunque no haya actividades.
         def _draw_actividades_generales_section() -> None:
             nonlocal page_num
+            _banda_pdf["t"] = "ACTIVIDADES GENERALES"
             grupos_ag = _actividades_grupos_con_general(actividades_resumen_frente)
             AG_COLS = 3
             AG_PAD = 0.35 * cm
@@ -19241,9 +19288,10 @@ async def export_reports_pdf(
                             f"actfrente:{grp['area']}",
                             f"Resumen de actividades · {grp['area']}" if grp["area"] else "Actividades generales",
                         )
-                    c.setFillColor(AG_TITLE_COLOR)
-                    c.setFont("Roboto-Bold", 26)
-                    c.drawCentredString(PW / 2, ag_top, "ACTIVIDADES GENERALES")
+                    if not (tpl_page_w and tpl_page_h):  # con membrete el título va en la banda
+                        c.setFillColor(AG_TITLE_COLOR)
+                        c.setFont("Roboto-Bold", 26)
+                        c.drawCentredString(PW / 2, ag_top, "ACTIVIDADES GENERALES")
                     c.setStrokeColor(AG_BRAND)
                     c.setLineWidth(2)
                     for ci in range(1, AG_COLS):
@@ -19298,12 +19346,14 @@ async def export_reports_pdf(
                     raw = base64.b64decode(_strip_b64_prefix(_b64))
                 except Exception:
                     raw = b""
+                _banda_pdf["t"] = _gd_title(_gd_i).upper()
                 _draw_gd_image(raw)
                 c.showPage()
                 page_num += 1
         elif _legacy_map_path:
             _gd_page_count = 1
             _indice_mark("gd", "Datos generales")
+            _banda_pdf["t"] = "DATOS GENERALES"
             try:
                 _draw_gd_image(Path(_legacy_map_path).read_bytes())
             except Exception:
@@ -19313,6 +19363,7 @@ async def export_reports_pdf(
         else:
             _gd_page_count = 1
             _indice_mark("gd", "Datos generales")
+            _banda_pdf["t"] = "DATOS GENERALES"
             c.setFillColor(MUTED)
             c.setFont("Roboto-Italic", 12)
             c.drawCentredString(PW / 2, PH / 2,
@@ -19335,6 +19386,7 @@ async def export_reports_pdf(
         _contrato_blq = _contrato_bloques(proj)
         if _contrato_blq:
             _indice_mark("contrato", "Datos de contrato")
+            _banda_pdf["t"] = "DATOS GENERALES"
             _ct_margin = 1.5 * cm
             _ct_gap = 1.2 * cm
             _ct_w = (PW - 2 * _ct_margin - _ct_gap * (len(_contrato_blq) - 1)) / len(_contrato_blq)
@@ -19408,12 +19460,16 @@ async def export_reports_pdf(
         area_page_indices: List[int] = []
 
         # Dimensiones del layout ejecutivo (2 fotos por página)
-        EXEC_PHOTO_W = 13.37 * cm
-        EXEC_PHOTO_H = 10.0 * cm
+        # Formato del reporte de referencia: estación (ícono + nombre) arriba a
+        # la izquierda, 2 fotos 4:3 y el pie centrado debajo de cada una.
+        EXEC_PHOTO_W = 11.6 * cm
+        EXEC_PHOTO_H = 8.7 * cm
         EXEC_GAP_X   = 0.6 * cm       # separación horizontal entre fotos
-        EXEC_CAPTION_H = 3.8 * cm     # alto del cuadro de observaciones (más aire)
-        EXEC_CAPTION_LEADING = 17
-        EXEC_CAPTION_SIZE = 14
+        EXEC_CAPTION_H = 3.0 * cm     # alto del cuadro de observaciones
+        EXEC_CAPTION_LEADING = 15
+        EXEC_CAPTION_SIZE = 12
+        EXEC_TITULO_TOP = 2.5 * cm    # distancia del borde superior al título de estación
+        EXEC_TITULO_H = 1.9 * cm
         CAPTION_COLOR = HexColor(report_text_color)
 
         def _wrap_lines(txt: str, max_w: float, font: str, size: float, max_lines: int):
@@ -19458,6 +19514,7 @@ async def export_reports_pdf(
             coordenada Y que usa el título "REPORTE X" en la portada principal
             (PH * 0.32 + 1.6cm) para preservar coherencia visual con la
             jerarquía institucional."""
+            _banda_pdf["t"] = None
             title = _normalize_area_name(area_name or "SIN ÁREA", user_role=user.get("role"), user_area=user.get("area")).upper()
             size = 34  # mismo tamaño que "REPORTE X" en la portada
             while c.stringWidth(title, "Roboto-Bold", size) > PW - 3.0 * cm and size > 18:
@@ -20371,6 +20428,7 @@ async def export_reports_pdf(
             if not recuento_general_rows:
                 return
             _indice_mark("recuento", "Recuento general")
+            _banda_pdf["t"] = "RECURSOS GENERALES DE LA OBRA"
 
             MARGIN_X = 2.0 * cm
             content_w = PW - 2 * MARGIN_X
@@ -20623,6 +20681,7 @@ async def export_reports_pdf(
             `_emit_recuento_general`: nunca trunca con "+N más" porque es un
             resumen institucional, no una vista rápida de UI."""
             nonlocal page_num
+            _banda_pdf["t"] = "ACTIVIDADES GENERALES"
             if not items:
                 return
 
@@ -20826,7 +20885,7 @@ async def export_reports_pdf(
             c.setFont(font, EXEC_CAPTION_SIZE)
             cy = caption_top
             for ln in wrapped:
-                c.drawString(x, cy, ln)
+                c.drawCentredString(x + EXEC_PHOTO_W / 2, cy, ln)
                 cy -= EXEC_CAPTION_LEADING
 
         # =====================================================================
@@ -20877,7 +20936,7 @@ async def export_reports_pdf(
             if not subtramo_id:
                 return
             subtramo_node = nodes_by_id.get(subtramo_id) or {}
-            es_intertramo = subtramo_node.get("tipo_nodo") == "intertramo"
+            es_intertramo = _nodo_es_intertramo(subtramo_node)
             # El turno nocturno solo parte la hoja de ESTACIÓN; el Intertramo
             # conserva una sola hoja con ambos turnos juntos.
             if es_intertramo:
@@ -20920,6 +20979,7 @@ async def export_reports_pdf(
             _noche = None if es_intertramo else resource_raw_rows_noche_by_subtramo.get(subtramo_id)
             if not totals and not has_persistent_content and not _noche:
                 return
+            _banda_pdf["t"] = "INFORMACIÓN PARTICULAR"
             if totals or has_persistent_content:
                 _indice_mark(f"sub:{subtramo_id}", f"Resumen · {subtramo_node.get('name') or 'Subtramo'}")
                 personal_rows = (totals or {}).get("personal") or []
@@ -20990,6 +21050,10 @@ async def export_reports_pdf(
 
         for n in leaf_nodes:
             n_subtramo_id = _subtramo_id_for(n["id"], nodes_by_id)
+            _titulo_est_fotos = _estacion_titulos(
+                _subtramo_ordinal.get(n_subtramo_id),
+                (nodes_by_id.get(n_subtramo_id) or {}).get("name") or "",
+            )
             if current_subtramo_id is not None and n_subtramo_id != current_subtramo_id:
                 _emit_subtramo_summary(current_subtramo_id)
             current_subtramo_id = n_subtramo_id
@@ -21107,7 +21171,7 @@ async def export_reports_pdf(
 
                 # Repartir en páginas de 2 fotos
                 PER_PAGE = 2
-                avail_top = PH - TOP_MARGIN_PDF
+                avail_top = PH - EXEC_TITULO_TOP - EXEC_TITULO_H - 0.2 * cm
                 avail_bot = BOTTOM_MARGIN_PDF
                 avail_h = avail_top - avail_bot
                 block_h = EXEC_PHOTO_H + 0.35 * cm + EXEC_CAPTION_H
@@ -21140,6 +21204,31 @@ async def export_reports_pdf(
                     buffer estaba vacío (no hay página que emitir)."""
                     if not _buffer:
                         return False
+                    _banda_pdf["t"] = "REPORTE FOTOGRÁFICO"
+                    _chico, _grande = _titulo_est_fotos
+                    if _chico or _grande:
+                        _tr = 0.5 * cm
+                        _tcx, _tcy = 2.15 * cm + _tr, PH - EXEC_TITULO_TOP - _tr
+                        c.setFillColor(BRAND)
+                        c.circle(_tcx, _tcy, _tr, stroke=0, fill=1)
+                        c.setStrokeColor(WHITE)
+                        c.setLineWidth(1.0)
+                        _top = (_tcx, _tcy + _tr * 0.40)
+                        _bl = (_tcx - _tr * 0.42, _tcy - _tr * 0.35)
+                        _br_ = (_tcx + _tr * 0.42, _tcy - _tr * 0.35)
+                        c.line(_top[0], _top[1], _bl[0], _bl[1])
+                        c.line(_top[0], _top[1], _br_[0], _br_[1])
+                        c.setFillColor(WHITE)
+                        for (_nx, _ny) in (_top, _bl, _br_):
+                            c.circle(_nx, _ny, _tr * 0.16, stroke=0, fill=1)
+                        c.setFillColor(BRAND)
+                        c.setFont("Roboto-Bold", 16)
+                        _tx = 2.15 * cm + 2 * _tr + 0.3 * cm
+                        _ty = PH - EXEC_TITULO_TOP - 0.55 * cm
+                        if _chico:
+                            c.drawString(_tx, _ty, _chico)
+                            _ty -= 19
+                        c.drawString(_tx, _ty, (_grande or "").upper())
                     for idx, (b64, cap) in enumerate(_buffer[:PER_PAGE]):
                         px = x0 + idx * (EXEC_PHOTO_W + EXEC_GAP_X)
                         draw_photo_with_caption(px, photo_bottom_y, b64, cap)
@@ -21196,6 +21285,7 @@ async def export_reports_pdf(
 
         if _orphan_by_bucket:
             _indice_mark("orphan", "Actividades generales (áreas sin reportes)")
+            _banda_pdf["t"] = "ACTIVIDADES GENERALES"
             c.setFillColor(HexColor(_readable_dark_hex(project_color)))
             c.setFont("Roboto-Bold", 20)
             c.drawCentredString(PW / 2, PH / 2 + 0.3 * cm, "ACTIVIDADES GENERALES")
@@ -21223,6 +21313,7 @@ async def export_reports_pdf(
         _draw_modulos_closing_pages()
 
         if firma_cierre:
+            _banda_pdf["t"] = None
             c.setFillColor(HexColor(_readable_dark_hex(project_color)))
             c.setFont("Roboto-Bold", 36)
             c.drawCentredString(PW / 2, PH * 0.62, firma_cierre["titulo"])
@@ -24839,13 +24930,7 @@ async def export_reports_pptx(
     actividades_noche_by_subtramo = _actividades_by_subtramo(_wf_noche, nodes_by_id)
     # Numeración "ESTACIÓN N." del título de la slide-resumen por Subtramo —
     # ver la misma nota en export_reports_pdf.
-    _subtramo_ordinal = {
-        n["id"]: i + 1
-        for i, n in enumerate(
-            sorted((n for n in nodes_by_id.values() if n.get("depth") == 1),
-                   key=lambda n: (n.get("order", 0), n.get("name", "")))
-        )
-    }
+    _subtramo_ordinal = _ordinales_estacion(nodes_by_id)
     # Slide(s) de cierre "RECUENTO GENERAL": consolidado del período
     # completo, agrupado por el nivel de agregación configurado — ver la
     # misma nota en export_reports_pdf.
@@ -25050,13 +25135,36 @@ async def export_reports_pptx(
             except Exception:
                 return prs.slides.add_slide(blank)
 
+        # Título de la sección en la banda superior del membrete (como
+        # "ACTIVIDADES GENERALES" / "REPORTE FOTOGRÁFICO" en el informe de
+        # referencia). Cada sección fija `_banda_actual[0]` al empezar; todo
+        # membrete clonado después lo lleva hasta que otra sección lo cambie.
+        _banda_actual: List[Optional[str]] = [None]
+
         def _clone_membrete():
             """Clona el membrete institucional (Slide 1) para páginas de contenido."""
-            return _clone_slide(tpl_master_slide)
+            sl = _clone_slide(tpl_master_slide)
+            if tpl_master_slide is not None and _banda_actual[0]:
+                try:
+                    _k = min(1.2, max(0.6, SW / 12192000))
+                    _bt = _banda_actual[0]
+                    _bsz = 18 if len(_bt) <= 34 else 14 if len(_bt) <= 46 else 12
+                    add_text(sl, int(SW * 0.3473), int(SH * 0.029), int(SW * 0.471), int(SH * 0.0558),
+                             _bt, size=_bsz * _k, color=(0xFF, 0xFF, 0xFF))
+                except Exception:
+                    pass
+            return sl
 
         def _clone_cover_bg():
             """Clona el fondo de la portada (Slide 0) para portadillas de Área."""
-            return _clone_slide(tpl_cover_slide) if tpl_cover_slide else _clone_membrete()
+            if tpl_cover_slide:
+                return _clone_slide(tpl_cover_slide)
+            _prev_banda = _banda_actual[0]
+            _banda_actual[0] = None
+            try:
+                return _clone_membrete()
+            finally:
+                _banda_actual[0] = _prev_banda
 
         def add_bg_rect(slide, x, y, w, h, rgb_tuple):
             """DEPRECATED · no-op: los fondos ahora provienen exclusivamente
@@ -25743,6 +25851,7 @@ async def export_reports_pptx(
             if not recuento_general_rows:
                 return
             _indice_mark("recuento", "Recuento general")
+            _banda_actual[0] = "RECURSOS GENERALES DE LA OBRA"
 
             MARGIN_X = Cm(1.5)
             content_w = SW - 2 * MARGIN_X
@@ -25918,7 +26027,7 @@ async def export_reports_pptx(
             filas = []
             n_est = 0
             for n in frentes_nodes:
-                es_inter = n.get("tipo_nodo") == "intertramo"
+                es_inter = _nodo_es_intertramo(n)
                 if es_inter:
                     etiqueta = re.sub(r"(?i)^\s*inter\s*-?\s*tramo\s*", "", n.get("name") or "").strip() or (n.get("name") or "—")
                     etiqueta = etiqueta.upper()
@@ -25953,7 +26062,7 @@ async def export_reports_pptx(
             HEADER_H = Cm(1.0)
             ROW_H = Cm(1.0)
             TOTAL_H = Cm(1.0)
-            title_h = Cm(1.6)
+            title_h = Cm(0) if tpl_master_slide is not None else Cm(1.6)  # con membrete el título va en la banda
             SUB_H = Cm(1.3)  # subtítulo con ícono sobre cada tabla
             avail_h = (SH - BOTTOM_MARGIN) - TOP_MARGIN - title_h - SUB_H - HEADER_H - TOTAL_H
             rows_per_slide = max(1, int(avail_h / ROW_H))
@@ -25967,11 +26076,13 @@ async def export_reports_pptx(
             paginas = [filas[i:i + rows_per_slide] for i in range(0, len(filas), rows_per_slide)]
             for pi, pagina in enumerate(paginas):
                 is_last = pi == len(paginas) - 1
+                _banda_actual[0] = "RECURSOS GENERALES DE LA OBRA" + ("" if pi == 0 else " (continúa)")
                 slide = _clone_membrete()
-                y0 = TOP_MARGIN
-                add_text(slide, MARGIN_X, y0, content_w, Cm(1.3),
-                         "RECURSOS GENERALES DE LA OBRA" + ("" if pi == 0 else " (continúa)"),
-                         size=28, bold=True, color=READABLE_BRAND_RGB, align=PP_ALIGN.CENTER)
+                y0 = TOP_MARGIN - (Cm(0.6) if tpl_master_slide is not None else Cm(0))
+                if tpl_master_slide is None:
+                    add_text(slide, MARGIN_X, y0, content_w, Cm(1.3),
+                             "RECURSOS GENERALES DE LA OBRA" + ("" if pi == 0 else " (continúa)"),
+                             size=28, bold=True, color=READABLE_BRAND_RGB, align=PP_ALIGN.CENTER)
                 y = y0 + title_h
                 lx, rx = MARGIN_X, MARGIN_X + left_w + gutter
                 icon_r = int(Cm(0.45))
@@ -26032,9 +26143,14 @@ async def export_reports_pptx(
             HEADING_RGB = {"good": (0x16, 0xA3, 0x4A), "bad": (0xDC, 0x26, 0x26)}
 
             def _new_slide(titulo: Optional[str]):
+                # El título del módulo va en la banda del membrete (como en el
+                # informe de referencia), no como encabezado grande en el cuerpo.
+                _banda_actual[0] = titulo.upper() if titulo else "CROQUIS GENERAL"  # sin título: Vuelo LiDAR
                 slide = _clone_membrete()
-                if not titulo:  # sin encabezado de sección (Vuelo LiDAR)
+                if not titulo:
                     return slide, top_y
+                if tpl_master_slide is not None:
+                    return slide, top_y - Cm(0.3)
                 add_text(slide, MARGIN_X, top_y, content_w, Cm(1.3), titulo,
                          size=32, bold=True, color=READABLE_BRAND_RGB, align=PP_ALIGN.CENTER)
                 add_text(slide, MARGIN_X, top_y + Cm(1.3), content_w, Cm(0.8),
@@ -26639,7 +26755,7 @@ async def export_reports_pptx(
             if not subtramo_id or subtramo_id in resumen_subtramos_emitidos:
                 return
             subtramo_node = nodes_by_id.get(subtramo_id) or {}
-            es_intertramo = subtramo_node.get("tipo_nodo") == "intertramo"
+            es_intertramo = _nodo_es_intertramo(subtramo_node)
             # El turno nocturno solo parte la slide de ESTACIÓN; el Intertramo
             # conserva una sola slide con ambos turnos juntos.
             if es_intertramo:
@@ -26678,6 +26794,7 @@ async def export_reports_pptx(
             if not _hay_dia and not _noche:
                 return
             resumen_subtramos_emitidos.add(subtramo_id)
+            _banda_actual[0] = "INFORMACIÓN PARTICULAR"
             if _hay_dia:
                 _acts_sub = _acts_base or (["Sin actividades"] if forzar else [])
                 _indice_mark(f"sub:{subtramo_id}", f"Resumen · {subtramo_node.get('name') or 'Subtramo'}")
@@ -26794,6 +26911,7 @@ async def export_reports_pptx(
             page_in_area = 0
             while idx < n_total or page_in_area == 0:
                 page_in_area += 1
+                _banda_actual[0] = "ACTIVIDADES GENERALES"
                 slide = _clone_membrete()
                 y = TOP_MARGIN
                 title = "RESUMEN DE ACTIVIDADES"
@@ -26959,6 +27077,7 @@ async def export_reports_pptx(
                 for pi in range(0, max(len(columnas), 1), RF_COLS):
                     if pi == 0:
                         _indice_mark(f"actfrente:{grp['area']}", f"Resumen de actividades · {grp['area']}" if grp["area"] else "Actividades generales")
+                    _banda_actual[0] = "ACTIVIDADES GENERALES"
                     slide = _clone_membrete()
                     if not con_membrete:
                         add_text(slide, Cm(1.5), TOP_MARGIN, SW - Cm(3.0), Cm(1.3), "ACTIVIDADES GENERALES",
@@ -27006,6 +27125,7 @@ async def export_reports_pptx(
                 return
 
             _indice_mark("contrato", "Datos de contrato")
+            _banda_actual[0] = "DATOS GENERALES"
             sl = _clone_membrete()
             k = min(1.0, SW / Cm(33.9))
             f_head = max(14.0, 18 * k)
@@ -27100,6 +27220,7 @@ async def export_reports_pptx(
                 if primera:
                     _indice_mark("resumen_avance", "Resumen de avance")
                     primera = False
+                _banda_actual[0] = "TABLA RESUMEN GENERAL ACUMULADO"
                 sl = _clone_membrete()
                 y = top
                 _wf_rect(sl, x0, y, act_w, head_h, fill_rgb=BRAND_RGB, line_rgb=GRIS, line_pt=0.5)
@@ -27143,7 +27264,8 @@ async def export_reports_pptx(
         _gd_images_p: List[str] = list(proj.get("general_data_images") or [])
         _legacy_map_pptx = _get_project_template(proj, "map") if not _gd_images_p else None
 
-        def _emit_gd_slide_from_bytes(img_bytes: bytes) -> None:
+        def _emit_gd_slide_from_bytes(img_bytes: bytes, titulo: str = "") -> None:
+            _banda_actual[0] = (titulo or "DATOS GENERALES").upper()
             _sl = _clone_membrete()
             try:
                 _map_x = Cm(1.0)
@@ -27166,9 +27288,9 @@ async def export_reports_pptx(
                 )
                 try:
                     raw = base64.b64decode(_strip_b64_prefix(_b64))
-                    _emit_gd_slide_from_bytes(raw)
+                    _emit_gd_slide_from_bytes(raw, _gd_names_p[_gd_i])
                 except Exception:
-                    _emit_gd_slide_from_bytes(b"")
+                    _emit_gd_slide_from_bytes(b"", _gd_names_p[_gd_i])
         elif _legacy_map_pptx:
             _indice_mark("gd", "Datos generales")
             try:
@@ -27177,6 +27299,7 @@ async def export_reports_pptx(
                 _emit_gd_slide_from_bytes(b"")
         else:
             _indice_mark("gd", "Datos generales")
+            _banda_actual[0] = "DATOS GENERALES"
             _empty = _clone_membrete()
             add_text(_empty, Cm(1.0), SH / 2 - Cm(0.6), SW - Cm(2.0), Cm(1.2),
                      "Sube imágenes de Datos Generales para el proyecto (presupuesto, programa, planos, mapa…).",
@@ -27193,23 +27316,44 @@ async def export_reports_pptx(
         # con la descripción/observación del reporte al que pertenece
         # (máx 4 líneas). Un reporte con 4 fotos genera 2 slides.
         # ================================================================
-        PHOTO_W = Cm(13.37)
-        PHOTO_H = Cm(10.0)
+        # Formato del reporte de referencia: título "REPORTE FOTOGRÁFICO" en la
+        # banda, la estación (ícono + nombre) arriba a la izquierda, las 2 fotos
+        # y el pie centrado debajo de cada una.
+        PHOTO_W = Cm(11.6)
+        PHOTO_H = Cm(8.7)
         GAP_X = Cm(0.6)
-        CAPTION_H = Cm(3.8)  # holgura para caption a 14pt (≈ 4 líneas)
+        CAPTION_H = Cm(3.0)  # ≈ 5 líneas a 12 pt
         CAPTION_GAP = Cm(0.25)
-        CAPTION_FONT_PT = 14
+        CAPTION_FONT_PT = 12
+        FOTO_TITULO_Y = Cm(2.5)
+        FOTO_TITULO_H = Cm(1.9)
 
-        def _pair_slide(photo_pair):
+        def _pair_slide(photo_pair, titulo=None):
             """Emite una slide con hasta 2 fotos (foto + pie de texto).
-            `photo_pair` es una lista de tuplas (b64_img|None, caption_str)."""
+            `photo_pair` es una lista de tuplas (b64_img|None, caption_str).
+            `titulo` = (ESTACIÓN N., nombre) del frente al que pertenece."""
+            _banda_actual[0] = "REPORTE FOTOGRÁFICO"
             slide = _clone_membrete()
             total_w = 2 * PHOTO_W + GAP_X
             x0 = (SW - total_w) // 2
-            avail_top = TOP_MARGIN
-            avail_h = SH - TOP_MARGIN - BOTTOM_MARGIN
+            if titulo and (titulo[0] or titulo[1]):
+                _br = int(Cm(0.5))
+                _ico_w = _wf_structure_icon(slide, int(Cm(2.15)) + _br, int(FOTO_TITULO_Y) + _br, _br)
+                _tx = int(Cm(2.15)) + _ico_w + int(Cm(0.3))
+                _tb = add_text(slide, _tx, int(FOTO_TITULO_Y), int(SW * 0.6), int(FOTO_TITULO_H),
+                               titulo[0] or (titulo[1] or "").upper(),
+                               size=16, bold=True, color=READABLE_BRAND_RGB)
+                if titulo[0] and titulo[1]:  # 2ª línea: nombre de la estación
+                    _p2 = _tb.text_frame.add_paragraph()
+                    _r2 = _p2.add_run()
+                    _r2.text = titulo[1].upper()
+                    _r2.font.size = Pt(16)
+                    _r2.font.bold = True
+                    _r2.font.color.rgb = PRGBColor(*READABLE_BRAND_RGB)
+            avail_top = FOTO_TITULO_Y + FOTO_TITULO_H + Cm(0.2)
+            avail_h = SH - BOTTOM_MARGIN - avail_top
             block_h = PHOTO_H + CAPTION_GAP + CAPTION_H
-            y_photo = avail_top + (avail_h - block_h) // 2
+            y_photo = avail_top + max(0, (avail_h - block_h) // 2)
             for idx, item in enumerate(photo_pair):
                 if item is None:
                     continue
@@ -27226,13 +27370,13 @@ async def export_reports_pptx(
                         pass
                 # Pie de foto: descripción/observación del reporte
                 caption_txt = (caption or "").strip() or "—"
-                if len(caption_txt) > 320:
-                    caption_txt = caption_txt[:317] + "…"
+                if len(caption_txt) > 280:
+                    caption_txt = caption_txt[:277] + "…"
                 add_text(
                     slide, cx, y_photo + PHOTO_H + CAPTION_GAP,
                     PHOTO_W, CAPTION_H,
                     caption_txt, size=CAPTION_FONT_PT, bold=False,
-                    color=PHOTO_CAPTION_COLOR, align=PP_ALIGN.LEFT,
+                    color=PHOTO_CAPTION_COLOR, align=PP_ALIGN.CENTER,
                 )
             return slide
 
@@ -27261,6 +27405,10 @@ async def export_reports_pptx(
             _emit_frentes_sin_actividad(n_subtramo_id)
             any_data = True
             node_path = path_cache.get(n["id"]) or n.get("name", "")
+            _titulo_est_fotos = _estacion_titulos(
+                _subtramo_ordinal.get(n_subtramo_id),
+                (nodes_by_id.get(n_subtramo_id) or {}).get("name") or "",
+            )
 
             # SIN portadilla por nodo (a pedido del usuario, igual que en el PDF
             # desde 77b5000): el nodo ya no imprime su propia diapositiva de
@@ -27350,14 +27498,14 @@ async def export_reports_pptx(
                         return _general_obs
                     if not _imgs:
                         # Reporte sin fotos → 1 slide con placeholder + obs.
-                        _pair_slide([(None, _general_obs), None])
+                        _pair_slide([(None, _general_obs), None], _titulo_est_fotos)
                         continue
                     _pair: list = []
                     for _i, _b64 in enumerate(_imgs):
                         _pair.append((_b64, _cap_at(_i)))
                     while len(_pair) < 2:
                         _pair.append(None)
-                    _pair_slide(_pair)
+                    _pair_slide(_pair, _titulo_est_fotos)
 
         _emit_subtramo_summary_slide(current_subtramo_id)
         if any_data:
@@ -27385,6 +27533,7 @@ async def export_reports_pptx(
 
         if _orphan_by_bucket:
             _indice_mark("orphan", "Actividades generales (áreas sin reportes)")
+            _banda_actual[0] = "ACTIVIDADES GENERALES"
             _divider = _clone_membrete()
             add_text(
                 _divider, Cm(1.0), SH / 2 - Cm(0.9), SW - Cm(2.0), Cm(1.2),
@@ -27456,6 +27605,7 @@ async def export_reports_pptx(
         # Hoja final: tipo de reporte, periodo y superintendente de supervisión
         # (Datos de contrato > Supervisión). Sin nombre capturado no se imprime.
         if firma_cierre:
+            _banda_actual[0] = None
             _fs = _clone_membrete()
             _fw = SW - Cm(3.0)
             add_text(_fs, Cm(1.5), SH * 0.28, _fw, Cm(2.0), firma_cierre["titulo"],
@@ -27508,6 +27658,7 @@ async def export_reports_pptx(
                          fill_rgb=WF_BORDER_RGB)
                 y += ROW_H
 
+        _banda_actual[0] = (indice_cfg["titulo"] or "ÍNDICE").upper()
         try:
             _indice_estructura_out.extend(_pptx_apply_indice(
                 prs, _indice_marks, indice_cfg,
