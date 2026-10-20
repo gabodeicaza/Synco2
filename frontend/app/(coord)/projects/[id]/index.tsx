@@ -352,6 +352,7 @@ export default function ProjectDetailScreen() {
   const [feedLoadingMore, setFeedLoadingMore] = useState(false);
   const [feedTotal, setFeedTotal] = useState(0); // total real (stats del servidor), no solo lo paginado
   const feedSkipRef = useRef(0);
+  const feedReqRef = useRef(0);
 
   // Nodos raiz (Tramos) y Areas para los chips de filtro. Se cargan aparte
   // (livianos, sin imagenes) para no depender de cuanto se haya paginado.
@@ -389,7 +390,13 @@ export default function ProjectDetailScreen() {
   const loadFeedPage = useCallback(async (reset: boolean) => {
     if (!pid) return;
     const skip = reset ? 0 : feedSkipRef.current;
-    if (reset) setFeedInitialLoading(true); else setFeedLoadingMore(true);
+    const reqId = ++feedReqRef.current;
+    if (reset) {
+      // Cambio de filtro/día: se vacía la lista anterior (p. ej. la de "Hoy") hasta que llegue la nueva.
+      setReports([]);
+      feedSkipRef.current = 0;
+      setFeedInitialLoading(true);
+    } else setFeedLoadingMore(true);
     try {
       const f = await api.feed(pid, selectedTimeFilter, PAGE_SIZE, undefined, {
         skip,
@@ -397,6 +404,8 @@ export default function ProjectDetailScreen() {
         area: selectedAreaFilter || undefined,
         date: selectedDate || undefined,
       });
+      // Una respuesta más vieja no debe pisar la del filtro/día actual.
+      if (reqId !== feedReqRef.current) return;
       const page = f?.reports || [];
       setReports((prev) => (reset ? page : [...prev, ...page]));
       feedSkipRef.current = skip + page.length;
@@ -406,7 +415,9 @@ export default function ProjectDetailScreen() {
       // Silencioso: en reset limpia a vacio; en scroll infinito conserva lo ya cargado.
       if (reset) { setReports([]); setFeedHasMore(false); }
     } finally {
-      if (reset) setFeedInitialLoading(false); else setFeedLoadingMore(false);
+      if (reqId === feedReqRef.current) {
+        if (reset) setFeedInitialLoading(false); else setFeedLoadingMore(false);
+      }
     }
   }, [pid, selectedTimeFilter, selectedNodeFilter, selectedAreaFilter, selectedDate]);
 
