@@ -19189,6 +19189,13 @@ async def export_reports_pdf(
             )
             ag_col_w = PW / AG_COLS
             ag_txt_w = ag_col_w - 2 * AG_PAD
+            # Encabezado en negritas por ubicación (resúmenes IA), como el
+            # reporte de referencia: sin viñeta y con aire arriba.
+            AG_HEAD = ParagraphStyle(
+                "AGHead", fontName="Roboto-Bold", fontSize=AG_FONT, leading=AG_FONT * 1.3,
+                textColor=HexColor("#1A1A1A"), spaceAfter=3,
+            )
+            AG_HEAD_GAP = 14.0
             ag_top = PH - TOP_MARGIN_PDF
             ag_head_h = 1.4 * cm
             ag_col_top = ag_top - 26 * 1.4 - ag_head_h
@@ -19196,18 +19203,26 @@ async def export_reports_pdf(
             ag_col_h = ag_col_top - ag_bottom
 
             for grp in grupos_ag:
-                items_ag = [ln for b in grp["bloques"] for ln in b["lineas"]]
+                pars_ag: list = []
+                for b in grp["bloques"]:
+                    if b["titulo"]:
+                        par = Paragraph(_xml_escape(b["titulo"]), AG_HEAD)
+                        pars_ag.append(("h", par, par.wrap(ag_txt_w, 10000)[1] + 3))
+                    for ln in b["lineas"]:
+                        par = Paragraph(_xml_escape(ln), AG_TXT, bulletText="•")
+                        pars_ag.append(("b", par, par.wrap(ag_txt_w, 10000)[1] + 3))
                 columnas: list = []
                 cur: list = []
                 usado = 0.0
-                for ln in items_ag:
-                    par = Paragraph(_xml_escape(ln), AG_TXT, bulletText="•")
-                    h = par.wrap(ag_txt_w, 10000)[1] + 3
-                    if cur and usado + h > ag_col_h:
+                for i, (tipo, par, h) in enumerate(pars_ag):
+                    sp = AG_HEAD_GAP if (tipo == "h" and cur) else 0.0
+                    # Un encabezado nunca queda solo al final de la columna.
+                    sig = pars_ag[i + 1][2] if tipo == "h" and i + 1 < len(pars_ag) else 0.0
+                    if cur and usado + sp + h + sig > ag_col_h:
                         columnas.append(cur)
-                        cur, usado = [], 0.0
-                    cur.append((par, h))
-                    usado += h
+                        cur, usado, sp = [], 0.0, 0.0
+                    cur.append((par, h, sp))
+                    usado += sp + h
                 if cur:
                     columnas.append(cur)
 
@@ -19231,7 +19246,8 @@ async def export_reports_pdf(
                                      grp["area"].upper() + ("  (CONTINÚA)" if pi else ""))
                     for ci, col in enumerate(columnas[pi:pi + AG_COLS]):
                         y = ag_col_top
-                        for par, h in col:
+                        for par, h, sp in col:
+                            y -= sp
                             par.wrapOn(c, ag_txt_w, 10000)
                             par.drawOn(c, ci * ag_col_w + AG_PAD, y - (h - 3))
                             y -= h
@@ -29204,9 +29220,18 @@ def _actividades_resumen_por_frente(items: list, nodes_by_id: dict, solo_general
         if not texto:
             continue
         area = it.get("area_name") or "Sin área"
-        a = por_area.setdefault(area, {"general": [], "frentes": {}, "otros": {}})
+        a = por_area.setdefault(area, {"general": [], "general_ia": [], "frentes": {}, "otros": {}})
         if it.get("nivel") == NIVEL_GENERAL:
-            a["general"].append(texto)
+            # Resumen IA por ubicación ("Nombre: resumen"): en la impresión de
+            # solo-Generales sale como el reporte de referencia — el nombre en
+            # negritas y el resumen con viñeta debajo. Si se editó y ya no trae
+            # el prefijo, sale como viñeta normal.
+            nombre = ((it.get("node_path_names_origen") or [""])[-1] or "") if it.get("ia_resumen") else ""
+            pref = f"{nombre}: "
+            if solo_general and nombre and texto.startswith(pref) and len(texto) > len(pref):
+                a["general_ia"].append({"titulo": nombre, "lineas": [texto[len(pref):].strip()]})
+            else:
+                a["general"].append(texto)
             continue
         if solo_general:
             continue
@@ -29226,8 +29251,9 @@ def _actividades_resumen_por_frente(items: list, nodes_by_id: dict, solo_general
         bloques = []
         if solo_general:
             # Solo lo de la pestaña "Generales" del hub: sin encabezados por frente.
-            if a["general"]:
-                out.append({"area": area, "bloques": [{"titulo": "", "lineas": a["general"]}]})
+            if a["general"] or a["general_ia"]:
+                bloques = ([{"titulo": "", "lineas": a["general"]}] if a["general"] else []) + a["general_ia"]
+                out.append({"area": area, "bloques": bloques})
             continue
         if a["general"]:
             bloques.append({"titulo": "General", "lineas": a["general"]})

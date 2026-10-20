@@ -101,3 +101,22 @@ def test_visibilidad_dia_dentro_de_semana_y_fuera():
 def test_parseo_tolera_envoltorio_mayusculas_y_objetos():
     assert _parsear_resumen_ia_ubicacion('{"resumenes": {"K1": "Uno.", "k2": {"resumen": "Dos."}}}', ["k1", "k2"]) == {"k1": "Uno.", "k2": "Dos."}
     assert _parsear_resumen_ia_ubicacion('{"k1": "Solo uno."}', ["k1", "k2"]) == {"k1": "Solo uno."}
+
+
+def test_impresion_solo_generales_separa_titulo_de_resumen_ia():
+    from server import _actividades_resumen_por_frente
+    def g(texto, ia=False, path=None):
+        return {"texto": texto, "nivel": NIVEL_GENERAL, "area_name": "OBRA CIVIL", "ia_resumen": ia, "node_path_names_origen": path or []}
+    items = [
+        g("Nota manual"),
+        g("Estacion 1, UNIVERSIDAD: Se relleno el cajon.", True, ["Linea", "Estacion 1, UNIVERSIDAD"]),
+        g("Resumen editado sin prefijo", True, ["Linea", "Estacion 2"]),
+        g("Estacion 3: Colado.", True, ["Estacion 3"]),
+    ]
+    out = _actividades_resumen_por_frente(items, {}, solo_general=True)
+    assert len(out) == 1 and out[0]["area"] == "OBRA CIVIL"
+    assert out[0]["bloques"] == [
+        {"titulo": "", "lineas": ["Nota manual", "Resumen editado sin prefijo"]},
+        {"titulo": "Estacion 1, UNIVERSIDAD", "lineas": ["Se relleno el cajon."]},
+        {"titulo": "Estacion 3", "lineas": ["Colado."]},
+    ]
