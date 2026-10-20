@@ -29190,9 +29190,16 @@ def _actividades_grupos_con_general(por_area: list) -> list:
     general (area "") con las generales de todas las Áreas juntas (el nombre
     del Área como encabezado; vacío si no hay ninguna), y después uno por
     Área con actividades. Cada grupo es una entrada apagable del índice."""
-    general = {"area": "", "bloques": [{"titulo": g["area"], "lineas": b["lineas"]}
-                                       for g in por_area for b in g["bloques"]]}
-    return [general] + list(por_area)
+    # Por Área: su nombre como encabezado con sus generales sueltas (bloques sin
+    # título) y, debajo, los bloques con título propio (resúmenes IA por
+    # ubicación) conservándolo.
+    bloques: list = []
+    for g in por_area:
+        sueltas = [ln for b in g["bloques"] if not b["titulo"] for ln in b["lineas"]]
+        con_titulo = [b for b in g["bloques"] if b["titulo"]]
+        bloques.append({"titulo": g["area"], "lineas": sueltas})
+        bloques.extend(con_titulo)
+    return [{"area": "", "bloques": bloques}] + list(por_area)
 
 
 def _actividades_resumen_por_frente(items: list, nodes_by_id: dict, solo_general: bool = False) -> list:
@@ -29225,9 +29232,18 @@ def _actividades_resumen_por_frente(items: list, nodes_by_id: dict, solo_general
         if not texto:
             continue
         area = it.get("area_name") or "Sin área"
-        a = por_area.setdefault(area, {"general": [], "frentes": {}, "otros": {}})
+        a = por_area.setdefault(area, {"general": [], "general_ia": [], "frentes": {}, "otros": {}})
         if it.get("nivel") == NIVEL_GENERAL:
-            a["general"].append(texto)
+            # Resumen IA por ubicación ("Nombre: resumen"): en la impresión de
+            # solo-Generales sale como el reporte de referencia — el nombre en
+            # negritas y el resumen con viñeta debajo. Si se editó y ya no trae
+            # el prefijo, sale como viñeta normal.
+            nombre = ((it.get("node_path_names_origen") or [""])[-1] or "") if it.get("ia_resumen") else ""
+            pref = f"{nombre}: "
+            if solo_general and nombre and texto.startswith(pref) and len(texto) > len(pref):
+                a["general_ia"].append({"titulo": nombre, "lineas": [texto[len(pref):].strip()]})
+            else:
+                a["general"].append(texto)
             continue
         if solo_general:
             continue
@@ -29247,8 +29263,9 @@ def _actividades_resumen_por_frente(items: list, nodes_by_id: dict, solo_general
         bloques = []
         if solo_general:
             # Solo lo de la pestaña "Generales" del hub: sin encabezados por frente.
-            if a["general"]:
-                out.append({"area": area, "bloques": [{"titulo": "", "lineas": a["general"]}]})
+            if a["general"] or a["general_ia"]:
+                bloques = ([{"titulo": "", "lineas": a["general"]}] if a["general"] else []) + a["general_ia"]
+                out.append({"area": area, "bloques": bloques})
             continue
         if a["general"]:
             bloques.append({"titulo": "General", "lineas": a["general"]})
