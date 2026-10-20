@@ -19175,7 +19175,7 @@ async def export_reports_pdf(
         # hoja con su entrada de índice, aunque no haya actividades.
         def _draw_actividades_generales_section() -> None:
             nonlocal page_num
-            grupos_ag = actividades_resumen_frente or [{"area": "", "bloques": []}]
+            grupos_ag = _actividades_grupos_con_general(actividades_resumen_frente)
             AG_COLS = 3
             AG_PAD = 0.35 * cm
             AG_FONT = 12
@@ -19186,6 +19186,10 @@ async def export_reports_pdf(
                 textColor=HexColor("#1A1A1A"), alignment=4, leftIndent=0.6 * cm, bulletIndent=0,
                 spaceAfter=3,
             )
+            AG_HEAD = ParagraphStyle(
+                "AGHead", fontName="Roboto-Bold", fontSize=AG_FONT, leading=AG_FONT * 1.3,
+                textColor=HexColor("#1A1A1A"), spaceBefore=6,
+            )
             ag_col_w = PW / AG_COLS
             ag_txt_w = ag_col_w - 2 * AG_PAD
             ag_top = PH - TOP_MARGIN_PDF
@@ -19195,13 +19199,20 @@ async def export_reports_pdf(
             ag_col_h = ag_col_top - ag_bottom
 
             for grp in grupos_ag:
-                items_ag = [ln for b in grp["bloques"] for ln in b["lineas"]]
+                items_ag = []
+                for b in grp["bloques"]:
+                    if b["titulo"]:
+                        items_ag.append((True, b["titulo"]))
+                    items_ag.extend((False, ln) for ln in b["lineas"])
                 columnas: list = []
                 cur: list = []
                 usado = 0.0
-                for ln in items_ag:
-                    par = Paragraph(_xml_escape(ln), AG_TXT, bulletText="•")
-                    h = par.wrap(ag_txt_w, 10000)[1] + 3
+                for es_h, ln in items_ag:
+                    if es_h:
+                        par = Paragraph(_xml_escape(ln), AG_HEAD)
+                    else:
+                        par = Paragraph(_xml_escape(ln), AG_TXT, bulletText="•")
+                    h = par.wrap(ag_txt_w, 10000)[1] + (3 if not es_h else 9)
                     if cur and usado + h > ag_col_h:
                         columnas.append(cur)
                         cur, usado = [], 0.0
@@ -26873,7 +26884,7 @@ async def export_reports_pptx(
             # Siempre se emite al menos una diapositiva (con su entrada en el
             # índice) aunque no haya actividades generales: así el usuario
             # puede apagarla con el ojo en vez de que desaparezca.
-            grupos_rf = actividades_resumen_frente or [{"area": "", "bloques": []}]
+            grupos_rf = _actividades_grupos_con_general(actividades_resumen_frente)
             # Layout del reporte de referencia: el membrete ya trae el título
             # "ACTIVIDADES GENERALES" en la banda; tres columnas iguales
             # separadas por líneas verticales del color de marca, el nombre
@@ -29168,6 +29179,16 @@ async def _actividades_tabla_por_area(pid: str, start_dt: datetime, end_dt: date
             ubicacion = it.get("node_name") or ((it.get("node_path_names") or ["—"])[-1])
         out.setdefault(area_name, []).append({"ubicacion": ubicacion, "texto": texto})
     return out
+
+
+def _actividades_grupos_con_general(por_area: list) -> list:
+    """Grupos a imprimir en "Actividades generales": primero SIEMPRE un grupo
+    general (area "") con las generales de todas las Áreas juntas (el nombre
+    del Área como encabezado; vacío si no hay ninguna), y después uno por
+    Área con actividades. Cada grupo es una entrada apagable del índice."""
+    general = {"area": "", "bloques": [{"titulo": g["area"], "lineas": b["lineas"]}
+                                       for g in por_area for b in g["bloques"]]}
+    return [general] + list(por_area)
 
 
 def _actividades_resumen_por_frente(items: list, nodes_by_id: dict, solo_general: bool = False) -> list:
