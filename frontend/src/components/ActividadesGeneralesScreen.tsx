@@ -192,15 +192,20 @@ export function ActividadesGeneralesScreen({ projectId, projectColor: projectCol
     if (resumiendo) return;
     setResumiendo(true);
     try {
-      await api.resumenIaActividadesUbicacion(projectId, {
+      const r = await api.resumenIaActividadesUbicacion(projectId, {
         area_id: canSelectArea ? (areaId || undefined) : undefined,
         desde: desde || undefined,
         hasta: hasta || undefined,
       });
+      if (!r.creadas && !r.conservadas) {
+        Alert.alert('Sin resúmenes', 'No se generó ningún resumen para este periodo. Revisa que haya actividades visibles en Por Ubicación.');
+        return;
+      }
       // El resumen queda guardado como actividades Generales: recargar y
       // llevar a esa pestaña para que se vea ahí.
       await load(true);
       setNivel('GENERAL');
+      Alert.alert('Resumen listo', `Se agregaron ${r.creadas} resúmenes en Generales.`);
     } catch (e: any) {
       Alert.alert('No se pudo generar el resumen', e?.message || 'Intenta de nuevo');
     } finally {
