@@ -96,3 +96,8 @@ def test_visibilidad_dia_dentro_de_semana_y_fuera():
     assert not _ia_resumen_visible(_doc(_d(12), _d(13)), semana)
     assert not _ia_resumen_visible(_doc(_d(3), _d(6)), semana)
     assert not _ia_resumen_visible(_doc(_d(5), _d(6)), {"$gte": _d(7), "$lte": _d(8)})
+
+
+def test_parseo_tolera_envoltorio_mayusculas_y_objetos():
+    assert _parsear_resumen_ia_ubicacion('{"resumenes": {"K1": "Uno.", "k2": {"resumen": "Dos."}}}', ["k1", "k2"]) == {"k1": "Uno.", "k2": "Dos."}
+    assert _parsear_resumen_ia_ubicacion('{"k1": "Solo uno."}', ["k1", "k2"]) == {"k1": "Solo uno."}
