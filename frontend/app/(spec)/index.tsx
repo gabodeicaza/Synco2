@@ -176,6 +176,7 @@ export default function SpecFeedScreen() {
     }
   }, [projectId]);
 
+  const feedReqRef = useRef(0);
   const loadFeed = useCallback(async (nextRange: RangeKey = range, silent = false, q = debouncedQuery, date: string | null = selectedDate) => {
     if (!projectId) {
       setLoading(false);
@@ -187,7 +188,10 @@ export default function SpecFeedScreen() {
       if (!silent) setLoading(true);
       // Con un día elegido en el calendario se pide ese día al backend: el
       // feed del rango (p. ej. "Hoy") no contiene reportes de otras fechas.
+      const reqId = ++feedReqRef.current;
       const f = await api.feed(projectId, nextRange, 50, q || undefined, date ? { date } : undefined);
+      // Una respuesta más vieja (p. ej. la de "Hoy") no debe pisar la del día elegido.
+      if (reqId !== feedReqRef.current) return;
       setFeed({ ...f, reports: reconcileReports(f.reports || []) });
     } catch (e: any) {
       setError(e?.message || 'No se pudo cargar el feed');
@@ -222,7 +226,9 @@ export default function SpecFeedScreen() {
   useEffect(() => {
     if (primeraCargaFecha.current) { primeraCargaFecha.current = false; return; }
     if (!projectId) return;
-    loadFeed(range, true, debouncedQuery, selectedDate);
+    // Se vacía la lista (la de "Hoy") y se muestra la carga hasta que llegue el día elegido.
+    setFeed((prev) => (prev ? { ...prev, reports: [] } : prev));
+    loadFeed(range, false, debouncedQuery, selectedDate);
   }, [selectedDate]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const onRefresh = useCallback(() => {

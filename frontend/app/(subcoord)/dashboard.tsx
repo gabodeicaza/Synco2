@@ -138,12 +138,22 @@ export default function SubCoordDashboard() {
     setMyMeetingsLoading(false);
   }, []);
 
+  const feedReqRef = useRef(0);
+  const [feedCargando, setFeedCargando] = useState(false);
   const loadFeed = useCallback(async (projectId: string) => {
     // Con un día elegido en el calendario se pide ese día al backend: el feed
     // del periodo (p. ej. "Hoy") no contiene reportes de otras fechas.
-    const feed = await api.feed(projectId, period, 100, debouncedQuery || undefined, selectedDate ? { date: selectedDate } : undefined);
-    setReports(feed?.reports || []);
-    setStats(feed?.stats || { total: 0, mine: 0, others: 0 });
+    const reqId = ++feedReqRef.current;
+    setFeedCargando(true);
+    try {
+      const feed = await api.feed(projectId, period, 100, debouncedQuery || undefined, selectedDate ? { date: selectedDate } : undefined);
+      // Una respuesta más vieja (p. ej. la de "Hoy") no debe pisar la del día elegido.
+      if (reqId !== feedReqRef.current) return;
+      setReports(feed?.reports || []);
+      setStats(feed?.stats || { total: 0, mine: 0, others: 0 });
+    } finally {
+      if (reqId === feedReqRef.current) setFeedCargando(false);
+    }
   }, [period, debouncedQuery, selectedDate]);
 
   const loadData = useCallback(async (projectId: string) => {
@@ -164,6 +174,7 @@ export default function SubCoordDashboard() {
   }, [loadProjects]);
 
   const loadedStructureForPid = useRef<string | null>(null);
+  const fechaFeedRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!pid) return;
@@ -180,6 +191,8 @@ export default function SubCoordDashboard() {
   // del feed, no de la estructura completa del proyecto.
   useEffect(() => {
     if (!pid || loadedStructureForPid.current !== pid) return;
+    // Al cambiar de día se vacía la lista (la de "Hoy") hasta que llegue la del día elegido.
+    if (fechaFeedRef.current !== selectedDate) { fechaFeedRef.current = selectedDate; setReports([]); }
     loadFeed(pid).catch((e: any) => setError(e?.message || t('panelSubcoord.noSePudoCargarLa')));
   }, [debouncedQuery, period, selectedDate, pid, loadFeed]);
 
@@ -884,7 +897,9 @@ export default function SubCoordDashboard() {
               ) : null}
             </View>
 
-            {todayReports.length === 0 ? (
+            {todayReports.length === 0 && feedCargando ? (
+              <View style={styles.centerPad}><ActivityIndicator color={colors.primary} /></View>
+            ) : todayReports.length === 0 ? (
               <ReportesVacio
                 variante="sub"
                 busqueda={debouncedQuery}
