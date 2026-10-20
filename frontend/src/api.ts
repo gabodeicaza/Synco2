@@ -3689,6 +3689,20 @@ export const api = {
     const suffix = qs.toString();
     return request<ActividadCurada[]>('GET', `/projects/${pid}/actividades_generales${suffix ? `?${suffix}` : ''}`);
   },
+  // Resumen de ~2 líneas con IA por ubicación (nodo) para el periodo/área dados.
+  resumenIaActividadesUbicacion: (
+    pid: string,
+    opts: { area_id?: string; desde?: string; hasta?: string } = {},
+  ) => {
+    const qs = new URLSearchParams();
+    if (opts.area_id) qs.set('area_id', opts.area_id);
+    if (opts.desde) qs.set('desde', opts.desde);
+    if (opts.hasta) qs.set('hasta', opts.hasta);
+    const suffix = qs.toString();
+    return request<{ resumenes: Record<string, string>; generated_at: string }>(
+      'POST', `/projects/${pid}/actividades_generales/resumen_ia${suffix ? `?${suffix}` : ''}`,
+    );
+  },
   createActividadGeneral: (pid: string, payload: {
     area_id: string; nivel: NivelActividad; node_id?: string | null; texto: string;
   }) => request<ActividadCurada>('POST', `/projects/${pid}/actividades_generales`, payload),
