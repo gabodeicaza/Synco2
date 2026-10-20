@@ -16217,6 +16217,16 @@ def _parse_periodo_personalizado(period: Optional[str]) -> Optional[tuple]:
     return desde, hasta
 
 
+def _period_type_efectivo(period: Optional[str], period_type: Optional[str]) -> Optional[str]:
+    """Tipo de informe de un rango personalizado: un solo día → informe Diario
+    (solo severidad "diario"); más de un día → formato Semanal. Para los demás
+    periodos devuelve `period_type` tal cual."""
+    custom = _parse_periodo_personalizado(period)
+    if not custom:
+        return period_type
+    return "diario" if custom[0] == custom[1] else "semanal"
+
+
 def _period_range(period: str, project: Optional[dict] = None) -> tuple:
     """Devuelve (start_utc, end_utc, etiqueta_legible).
 
@@ -17782,6 +17792,7 @@ async def export_reports_pdf(
         _HAS_PIL = False
 
     scope_mine_only = (scope or "").lower() == "mine"
+    period_type = _period_type_efectivo(period, period_type)
     if estructura_solo and (user["role"] not in (ROLE_COORD, ROLE_SUB) or area_id or scope_mine_only):
         raise HTTPException(403, "Solo Coordinador y Sub-Coordinador pueden consultar la estructura, sin filtros")
     data = await _gather_export_data(
@@ -21276,8 +21287,9 @@ async def _export_reports_query(
     if not proj:
         raise HTTPException(404, "Proyecto no existe")
 
-    pt_norm = _normalize_period_type(period_type)
-    if pt_norm and (period or "").lower().strip() not in ("last_week", "lastweek", "semana_pasada"):
+    pt_norm = _normalize_period_type(_period_type_efectivo(period, period_type))
+    if (pt_norm and (period or "").lower().strip() not in ("last_week", "lastweek", "semana_pasada")
+            and not _parse_periodo_personalizado(period)):
         start_dt, end_dt, period_label = _period_range_for_type(pt_norm, proj)
     else:
         start_dt, end_dt, period_label = _period_range(period, proj)
@@ -21347,6 +21359,7 @@ async def export_reports_count(
     (solo alimentan las tablas de Fuerza de Trabajo/Maquinaria). Con periodo vacío
     los documentos SÍ se generan, con la leyenda "sin reportes en el periodo"."""
     scope_mine_only = (scope or "").lower() == "mine"
+    period_type = _period_type_efectivo(period, period_type)
     _proj, _pt, start_dt, end_dt, period_label, q, q_workforce = await _export_reports_query(
         pid, period, user,
         area_id=area_id, scope_mine_only=scope_mine_only, period_type=period_type,
@@ -21529,9 +21542,8 @@ def _modulos_categoria_para_export(period_type: Optional[str], period: str) -> s
     p = (period or "today").lower().strip()
     custom = _parse_periodo_personalizado(p)
     if custom:
-        # Rango personalizado: por su duración (1 día → diario, hasta una semana → semanal).
-        dias = (custom[1] - custom[0]).days + 1
-        return "reportes_diarios" if dias <= 1 else "reportes_semanales" if dias <= 7 else "reportes_mensuales"
+        # Rango personalizado: un día → diario; más de un día → formato semanal.
+        return "reportes_diarios" if custom[0] == custom[1] else "reportes_semanales"
     if p in ("week", "semana", "semanal", "last_week", "lastweek", "semana_pasada"):
         return "reportes_semanales"
     if p in ("month", "mes", "mensual"):
@@ -23908,6 +23920,7 @@ async def export_reports_docx(
         raise HTTPException(500, f"python-docx no instalado: {e}")
 
     scope_mine_only = (scope or "").lower() == "mine"
+    period_type = _period_type_efectivo(period, period_type)
     data = await _gather_export_data(
         pid, period, user,
         area_id=area_id,
@@ -24689,6 +24702,7 @@ async def export_reports_pptx(
 
     # === Datos comunes del export ===========================================
     scope_mine_only = (scope or "").lower() == "mine"
+    period_type = _period_type_efectivo(period, period_type)
     data = await _gather_export_data(
         pid, period, user,
         area_id=area_id,
