@@ -29438,11 +29438,19 @@ def _parsear_resumen_ia_ubicacion(raw: str, ids_validos) -> dict:
     data = json.loads(s[i:j + 1])
     if not isinstance(data, dict):
         raise ValueError("La IA no devolvió un objeto JSON")
-    validos = set(ids_validos)
+    validos = {str(x).lower(): x for x in ids_validos}
+    # El LLM a veces envuelve la lista: {"resumenes": {...}} / {"k1": {"resumen": "..."}}.
+    if len(data) == 1 and isinstance(next(iter(data.values())), dict) and next(iter(data)).lower() not in validos:
+        data = next(iter(data.values()))
     out: dict = {}
     for k, v in data.items():
-        if k in validos and isinstance(v, str) and v.strip():
-            out[k] = " ".join(v.split())
+        clave = validos.get(str(k).strip().lower())
+        if clave is None:
+            continue
+        if isinstance(v, dict):
+            v = next((x for x in v.values() if isinstance(x, str) and x.strip()), "")
+        if isinstance(v, str) and v.strip():
+            out[clave] = " ".join(v.split())
     return out
 
 
@@ -29544,6 +29552,9 @@ async def resumen_ia_actividades_por_ubicacion(
             if not raw:
                 raise RuntimeError("Respuesta vacía del LLM")
         resumenes = _parsear_resumen_ia_ubicacion(raw, meta.keys())
+        if not resumenes:
+            log.error("[resumen_ia_ubicacion] respuesta sin resúmenes utilizables: %r", raw[:600])
+            raise RuntimeError("la IA no devolvió resúmenes utilizables")
     except Exception as e:
         log.exception("[resumen_ia_ubicacion] error: %s", e)
         raise HTTPException(502, f"No se pudo generar el resumen con IA: {e}")
