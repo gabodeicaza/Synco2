@@ -26791,8 +26791,10 @@ async def export_reports_pptx(
         # nodo/área. Pagina de verdad (nunca trunca); la altura se estima con
         # `_pptx_texto_lineas`.
         def _emit_resumen_actividades_frente_slides() -> None:
-            if not actividades_resumen_frente:
-                return
+            # Siempre se emite al menos una diapositiva (con su entrada en el
+            # índice) aunque no haya actividades generales: así el usuario
+            # puede apagarla con el ojo en vez de que desaparezca.
+            grupos_rf = actividades_resumen_frente or [{"area": "", "bloques": []}]
             # Layout del reporte de referencia: el membrete ya trae el título
             # "ACTIVIDADES GENERALES" en la banda; tres columnas iguales
             # separadas por líneas verticales del color de marca, el nombre
@@ -26829,7 +26831,7 @@ async def export_reports_pptx(
                 _wf_rect(slide, x + int(w * 0.04), y + int(h * 0.82), int(w * 0.92), int(h * 0.1),
                          fill_rgb=None, line_rgb=READABLE_BRAND_RGB, line_pt=1.75)
 
-            for grp in actividades_resumen_frente:
+            for grp in grupos_rf:
                 entradas: list = []
                 for b in grp["bloques"]:
                     if b["titulo"]:
@@ -26850,9 +26852,9 @@ async def export_reports_pptx(
                 if cur:
                     columnas.append(cur)
 
-                for pi in range(0, len(columnas), RF_COLS):
+                for pi in range(0, max(len(columnas), 1), RF_COLS):
                     if pi == 0:
-                        _indice_mark(f"actfrente:{grp['area']}", f"Resumen de actividades · {grp['area']}")
+                        _indice_mark(f"actfrente:{grp['area']}", f"Resumen de actividades · {grp['area']}" if grp["area"] else "Actividades generales")
                     slide = _clone_membrete()
                     if not con_membrete:
                         add_text(slide, Cm(1.5), TOP_MARGIN, SW - Cm(3.0), Cm(1.3), "ACTIVIDADES GENERALES",
@@ -26861,10 +26863,11 @@ async def export_reports_pptx(
                         ln = slide.shapes.add_connector(1, rf_col_w * ci, int(rf_band_h), rf_col_w * ci, int(rf_bottom))
                         ln.line.color.rgb = PRGBColor(*READABLE_BRAND_RGB)
                         ln.line.width = Pt(2.25)
-                    _icono_area(slide, RF_PAD, head_y + Cm(0.15))
-                    add_text(slide, RF_PAD + Cm(2.6), head_y, rf_col_w - RF_PAD - Cm(2.7), head_h,
-                             grp["area"].upper() + ("  (CONTINÚA)" if pi else ""),
-                             size=22 if len(grp["area"]) <= 14 else 16, bold=True, color=READABLE_BRAND_RGB)
+                    if grp["area"]:
+                        _icono_area(slide, RF_PAD, head_y + Cm(0.15))
+                        add_text(slide, RF_PAD + Cm(2.6), head_y, rf_col_w - RF_PAD - Cm(2.7), head_h,
+                                 grp["area"].upper() + ("  (CONTINÚA)" if pi else ""),
+                                 size=22 if len(grp["area"]) <= 14 else 16, bold=True, color=READABLE_BRAND_RGB)
                     for ci, col in enumerate(columnas[pi:pi + RF_COLS]):
                         tb = slide.shapes.add_textbox(ci * rf_col_w + RF_PAD, col_top, rf_txt_w, col_h)
                         tf = tb.text_frame
