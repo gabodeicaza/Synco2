@@ -93,10 +93,12 @@ export function ActividadesGeneralesScreen({ projectId, projectColor: projectCol
   const [areas, setAreas] = useState<Area[]>([]);
   const [nodes, setNodes] = useState<LocationNode[]>([]);
 
-  const [desde, setDesde] = useState<string | null>(null);
-  const [hasta, setHasta] = useState<string | null>(null);
+  // Por defecto el periodo es HOY (no "todo el periodo"); "Quitar" sigue
+  // permitiendo ver todo.
+  const [desde, setDesde] = useState<string | null>(() => rangoHoy().desde);
+  const [hasta, setHasta] = useState<string | null>(() => rangoHoy().hasta);
   const [rangoOpen, setRangoOpen] = useState(false);
-  const [filtroRapido, setFiltroRapido] = useState<FiltroRapido>(null);
+  const [filtroRapido, setFiltroRapido] = useState<FiltroRapido>('hoy');
 
   const [items, setItems] = useState<ActividadCurada[]>([]);
   const [loading, setLoading] = useState(true);

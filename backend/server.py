@@ -12890,6 +12890,21 @@ def _feed_day_bounds(date_str: str, zona=None) -> Optional[tuple]:
     return start_mx.astimezone(timezone.utc), end_mx.astimezone(timezone.utc)
 
 
+def _feed_created_filter(day_bounds: Optional[tuple], range_start: Optional[datetime],
+                         since_dt: Optional[datetime]) -> dict:
+    """Filtro `created_at` del feed: el día exacto (`day_bounds`) tiene prioridad
+    sobre el rango (`range_start`) y SIEMPRE acota; `since_dt` solo agrega
+    "estrictamente posterior a" encima de eso. Pura."""
+    f: dict = {}
+    if day_bounds is not None:
+        f = {"$gte": day_bounds[0], "$lt": day_bounds[1]}
+    elif range_start is not None:
+        f = {"$gte": range_start}
+    if since_dt is not None:
+        f["$gt"] = since_dt
+    return f
+
+
 def _inicio_semana_local(now_local: datetime, project: Optional[dict] = None) -> datetime:
     """00:00 del primer día de la semana (lunes por defecto) en la zona de `now_local`."""
     ini = inicio_semana(now_local.date(), (project or {}).get("dia_inicio_semana"))
@@ -12949,8 +12964,8 @@ async def reports_feed(
 
     `node`/`area`: filtran por el nombre exacto del nodo raíz (Tramo) o del área.
     `date`: filtra un día natural CDMX exacto ('YYYY-MM-DD'), con prioridad sobre `range`.
-    `since`: chequeo ligero de reportes nuevos — filtra `created_at` estrictamente
-    posterior al ISO datetime dado, ignora `skip`/`range`/`date` y ordena desc.
+    `since`: chequeo ligero de reportes nuevos — además del día/rango activo, filtra
+    `created_at` estrictamente posterior al ISO datetime dado, ignora `skip` y ordena desc.
     """
     proj_feed = await ensure_project_access(user, pid)
     query: dict = {"project_id": pid}
@@ -12963,16 +12978,14 @@ async def reports_feed(
         except Exception:
             since_dt = None
 
-    if since_dt is not None:
-        query["created_at"] = {"$gt": since_dt}
-    else:
-        day_bounds = _feed_day_bounds(date, zona_proyecto(proj_feed)) if date else None
-        if day_bounds is not None:
-            query["created_at"] = {"$gte": day_bounds[0], "$lt": day_bounds[1]}
-        else:
-            start = _feed_range_start(range, proj_feed)
-            if start is not None:
-                query["created_at"] = {"$gte": start}
+    # El día exacto (`date`) o el rango (`range`) SIEMPRE acotan la consulta; `since`
+    # solo agrega "estrictamente posterior a". Antes `since` los reemplazaba y, al
+    # filtrar un día pasado, el chequeo de nuevos traía reportes de otros días.
+    day_bounds = _feed_day_bounds(date, zona_proyecto(proj_feed)) if date else None
+    start = None if day_bounds is not None else _feed_range_start(range, proj_feed)
+    created_filter = _feed_created_filter(day_bounds, start, since_dt)
+    if created_filter:
+        query["created_at"] = created_filter
 
     if node:
         query["node_path_names.0"] = node
