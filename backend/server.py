@@ -11,6 +11,7 @@ import os
 import re
 import io
 import csv
+import json
 import math
 import uuid
 import shutil
@@ -29346,6 +29347,153 @@ async def list_actividades_generales(
         if b:
             rango["$lte"] = b[1]
     return await _actividades_generales_core(pid, effective_area_id, rango or None, user, incluir_ocultas=incluir_ocultas)
+
+
+# --- Resumen con IA por ubicación (pestaña "Por Ubicación" del hub) ----------
+# Una sola llamada a Gemini para todos los nodos del periodo: se le pasan las
+# actividades visibles (no ocultas, ya con ediciones) agrupadas por nodo y
+# responde un JSON {node_id: resumen de ~2 líneas}. No se persiste: es una
+# ayuda de lectura sobre lo que el hub ya muestra.
+RESUMEN_IA_UBICACION_SYSTEM = (
+    "Eres un asistente de supervisión de obra. Recibes, por ubicación (nodo), la lista de actividades "
+    "reportadas en campo. Para CADA ubicación redacta un resumen en español de aproximadamente 2 líneas "
+    "(máximo ~40 palabras), en una sola oración o dos cortas, en tercera persona y tono técnico-neutro. "
+    "Usa SOLO la información dada: no inventes cifras, avances ni fechas. Agrupa actividades repetidas o "
+    "similares en una sola mención. Responde ÚNICAMENTE un objeto JSON cuyas llaves sean los ids de "
+    "ubicación recibidos y cuyos valores sean el resumen (texto plano, sin viñetas ni markdown)."
+)
+RESUMEN_IA_UBICACION_MAX_NODOS = 150
+RESUMEN_IA_UBICACION_MAX_ACT_POR_NODO = 40
+RESUMEN_IA_UBICACION_MAX_CHARS_ACT = 300
+
+
+def _armar_entrada_resumen_ia_ubicacion(items: list) -> tuple:
+    """Agrupa por nodo las actividades visibles de nivel SUBTRAMO/NODO y arma
+    el texto de entrada del LLM. Devuelve `(user_text, etiquetas)` con
+    `etiquetas = {node_id: nombre}` en el orden de árbol recibido; si no hay
+    nada que resumir, `("", {})`. Pura — sin Mongo ni red, testeable directo."""
+    por_nodo: dict = {}
+    etiquetas: dict = {}
+    for it in items:
+        if it.get("nivel") == NIVEL_GENERAL or it.get("oculta"):
+            continue
+        nid = it.get("node_id")
+        texto = " ".join((it.get("texto") or "").split())
+        if not nid or not texto:
+            continue
+        if nid not in por_nodo:
+            if len(por_nodo) >= RESUMEN_IA_UBICACION_MAX_NODOS:
+                continue
+            por_nodo[nid] = []
+            etiquetas[nid] = it.get("node_name") or (it.get("node_path_names") or ["Sin nombre"])[-1]
+        bucket = por_nodo[nid]
+        texto = texto[:RESUMEN_IA_UBICACION_MAX_CHARS_ACT]
+        if len(bucket) < RESUMEN_IA_UBICACION_MAX_ACT_POR_NODO and texto not in bucket:
+            bucket.append(texto)
+    if not por_nodo:
+        return "", {}
+    bloques = []
+    for nid, acts in por_nodo.items():
+        lineas = "\n".join(f"- {a}" for a in acts)
+        bloques.append(f'id="{nid}" ubicación="{etiquetas[nid]}"\n{lineas}')
+    user_text = (
+        f"Ubicaciones con actividades ({len(por_nodo)}):\n\n" + "\n\n".join(bloques)
+        + "\n\nDevuelve el JSON con un resumen de ~2 líneas por cada id."
+    )
+    return user_text, etiquetas
+
+
+def _parsear_resumen_ia_ubicacion(raw: str, ids_validos) -> dict:
+    """Extrae `{node_id: resumen}` de la respuesta del LLM, tolerando cercas
+    ```json y texto alrededor. Descarta ids desconocidos y valores vacíos.
+    Pura — testeable directo."""
+    s = (raw or "").strip()
+    if s.startswith("```"):
+        s = s.strip("`")
+        if s[:4].lower() == "json":
+            s = s[4:]
+    i, j = s.find("{"), s.rfind("}")
+    if i < 0 or j <= i:
+        raise ValueError("La IA no devolvió un JSON válido")
+    data = json.loads(s[i:j + 1])
+    if not isinstance(data, dict):
+        raise ValueError("La IA no devolvió un objeto JSON")
+    validos = set(ids_validos)
+    out: dict = {}
+    for k, v in data.items():
+        if k in validos and isinstance(v, str) and v.strip():
+            out[k] = " ".join(v.split())
+    return out
+
+
+@api.post("/projects/{pid}/actividades_generales/resumen_ia")
+async def resumen_ia_actividades_por_ubicacion(
+    pid: str,
+    area_id: Optional[str] = Query(None, description="Filtro por área (opcional)"),
+    desde: Optional[str] = Query(None, description="YYYY-MM-DD, inclusive"),
+    hasta: Optional[str] = Query(None, description="YYYY-MM-DD, inclusive"),
+    user: dict = Depends(current_user),
+):
+    """Resumen de ~2 líneas con IA por cada ubicación (nodo) con actividades
+    en el periodo. Mismos permisos y filtros que el listado del hub; usa la
+    misma fuente curada (ediciones aplicadas, ocultas excluidas)."""
+    await ensure_project_access(user, pid)
+    role = user.get("role")
+    if role not in (ROLE_COORD, ROLE_SUB, ROLE_ESPECIALISTA, ROLE_JEFE):
+        raise HTTPException(403, "Tu rol no tiene acceso a Actividades Generales")
+    if not GEMINI_API_KEY:
+        raise HTTPException(500, "GEMINI_API_KEY no configurada en el servidor.")
+    effective_area_id = area_id
+    if role == ROLE_ESPECIALISTA:
+        effective_area_id = user.get("area_id")
+        if not effective_area_id:
+            return {"resumenes": {}, "generated_at": datetime.now(timezone.utc)}
+    rango: dict = {}
+    if desde:
+        b = _feed_day_bounds(desde)
+        if b:
+            rango["$gte"] = b[0]
+    if hasta:
+        b = _feed_day_bounds(hasta)
+        if b:
+            rango["$lte"] = b[1]
+    items = _quitar_emoji_deep(
+        await _actividades_generales_core(pid, effective_area_id, rango or None, user, incluir_ocultas=False)
+    )
+    user_text, etiquetas = _armar_entrada_resumen_ia_ubicacion(items)
+    if not etiquetas:
+        return {"resumenes": {}, "generated_at": datetime.now(timezone.utc)}
+
+    try:
+        import httpx
+        gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(
+                gemini_url,
+                params={"key": GEMINI_API_KEY},
+                json={
+                    "system_instruction": {"parts": [{"text": RESUMEN_IA_UBICACION_SYSTEM}]},
+                    "contents": [{"parts": [{"text": user_text}]}],
+                    "generationConfig": {"maxOutputTokens": 8000, "responseMimeType": "application/json"},
+                },
+            )
+            if resp.status_code != 200:
+                detail = resp.text[:500]
+                try:
+                    detail = (resp.json().get("error") or {}).get("message", detail)
+                except Exception:
+                    pass
+                raise RuntimeError(f"Gemini {resp.status_code}: {detail}")
+            candidates = resp.json().get("candidates") or []
+            parts = ((candidates[0].get("content") or {}).get("parts") if candidates else None) or []
+            raw = "".join(p.get("text", "") for p in parts).strip()
+            if not raw:
+                raise RuntimeError("Respuesta vacía del LLM")
+        resumenes = _parsear_resumen_ia_ubicacion(raw, etiquetas.keys())
+    except Exception as e:
+        log.exception("[resumen_ia_ubicacion] error: %s", e)
+        raise HTTPException(502, f"No se pudo generar el resumen con IA: {e}")
+    return {"resumenes": resumenes, "generated_at": datetime.now(timezone.utc)}
 
 
 @api.post("/projects/{pid}/actividades_generales")
