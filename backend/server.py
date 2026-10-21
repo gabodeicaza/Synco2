@@ -19462,10 +19462,10 @@ async def export_reports_pdf(
         # Dimensiones del layout ejecutivo (2 fotos por página)
         # Formato del reporte de referencia: estación (ícono + nombre) arriba a
         # la izquierda, 2 fotos 4:3 y el pie centrado debajo de cada una.
-        EXEC_PHOTO_W = 11.6 * cm
-        EXEC_PHOTO_H = 8.7 * cm
+        EXEC_PHOTO_W = 13.37 * cm
+        EXEC_PHOTO_H = 10.0 * cm
         EXEC_GAP_X   = 0.6 * cm       # separación horizontal entre fotos
-        EXEC_CAPTION_H = 3.0 * cm     # alto del cuadro de observaciones
+        EXEC_CAPTION_H = 2.4 * cm     # alto del cuadro de observaciones (4 líneas a 12 pt)
         EXEC_CAPTION_LEADING = 15
         EXEC_CAPTION_SIZE = 12
         EXEC_TITULO_TOP = 2.5 * cm    # distancia del borde superior al título de estación
@@ -27319,10 +27319,10 @@ async def export_reports_pptx(
         # Formato del reporte de referencia: título "REPORTE FOTOGRÁFICO" en la
         # banda, la estación (ícono + nombre) arriba a la izquierda, las 2 fotos
         # y el pie centrado debajo de cada una.
-        PHOTO_W = Cm(11.6)
-        PHOTO_H = Cm(8.7)
+        PHOTO_W = Cm(13.37)
+        PHOTO_H = Cm(10.0)
         GAP_X = Cm(0.6)
-        CAPTION_H = Cm(3.0)  # ≈ 5 líneas a 12 pt
+        CAPTION_H = Cm(2.4)  # ≈ 4 líneas a 12 pt
         CAPTION_GAP = Cm(0.25)
         CAPTION_FONT_PT = 12
         FOTO_TITULO_Y = Cm(2.5)
@@ -27370,8 +27370,8 @@ async def export_reports_pptx(
                         pass
                 # Pie de foto: descripción/observación del reporte
                 caption_txt = (caption or "").strip() or "—"
-                if len(caption_txt) > 280:
-                    caption_txt = caption_txt[:277] + "…"
+                if len(caption_txt) > 240:
+                    caption_txt = caption_txt[:237] + "…"
                 add_text(
                     slide, cx, y_photo + PHOTO_H + CAPTION_GAP,
                     PHOTO_W, CAPTION_H,
