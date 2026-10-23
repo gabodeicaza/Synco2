@@ -18,7 +18,7 @@ import { useEnvio } from '@/src/hooks/useEnvio';
 import { useFormErrors } from '@/src/hooks/useFormErrors';
 import { errorDeColor, normalizarColorHex } from '@/src/utils/color';
 import { showToast } from '@/src/utils/toast';
-import { esFechaValida } from '@/src/utils/validacionEvento';
+import { dmyAIso } from '@/src/utils/fecha';
 
 type Campo =
   | 'nombre' | 'constructora' | 'contrato' | 'fechaInicio' | 'fechaTermino' | 'colorInstitucional' | 'colorTema';
@@ -52,10 +52,11 @@ export default function NewProjectScreen() {
     if (!f.nombre.trim()) e.nombre = t('proyectoForm.errores.nombreObligatorio');
     if (!f.constructora.trim()) e.constructora = t('proyectoForm.errores.constructoraObligatoria');
     if (!f.contrato.trim()) e.contrato = t('proyectoForm.errores.contratoObligatorio');
-    const ini = f.fechaInicio.trim();
-    const fin = f.fechaTermino.trim();
-    if (ini && !esFechaValida(ini)) e.fechaInicio = t('proyectoForm.errores.fechaInvalida');
-    if (fin && !esFechaValida(fin)) e.fechaTermino = t('proyectoForm.errores.fechaInvalida');
+    // Se captura DD-MM-AAAA; se compara en ISO (AAAA-MM-DD).
+    const ini = dmyAIso(f.fechaInicio) ?? '';
+    const fin = dmyAIso(f.fechaTermino) ?? '';
+    if (f.fechaInicio.trim() && !ini) e.fechaInicio = t('proyectoForm.errores.fechaInvalida');
+    if (f.fechaTermino.trim() && !fin) e.fechaTermino = t('proyectoForm.errores.fechaInvalida');
     if (!e.fechaInicio && !e.fechaTermino && ini && fin && fin < ini) e.fechaTermino = t('proyectoForm.errores.terminoAnterior');
     e.colorInstitucional = errorDeColor(f.colorInstitucional) ?? undefined;
     e.colorTema = errorDeColor(f.colorTema) ?? undefined;
@@ -74,8 +75,8 @@ export default function NewProjectScreen() {
           cliente_principal: f.cliente.trim() || null,
           color_tema: normalizarColorHex(f.colorTema),
           color_institucional: normalizarColorHex(f.colorInstitucional),
-          start_date: f.fechaInicio.trim() || null,
-          end_date: f.fechaTermino.trim() || null,
+          start_date: dmyAIso(f.fechaInicio),
+          end_date: dmyAIso(f.fechaTermino),
           description: f.descripcion.trim() || null,
           tipo_obra: tipoObra,
         });
@@ -140,13 +141,13 @@ export default function NewProjectScreen() {
         <FormField
           label={t('proyectoForm.fechaInicio')} value={f.fechaInicio}
           onChangeText={alCambiar<string>('fechaInicio', poner('fechaInicio'))} error={errores.fechaInicio}
-          placeholder="2026-01-15" maxLength={10} editable={!guardando}
+          placeholder="15-01-2026" maxLength={10} editable={!guardando}
           keyboardType={Platform.OS === 'web' ? 'default' : 'numbers-and-punctuation'}
         />
         <FormField
           label={t('proyectoForm.fechaTermino')} value={f.fechaTermino}
           onChangeText={alCambiar<string>('fechaTermino', poner('fechaTermino'))} error={errores.fechaTermino}
-          placeholder="2027-06-30" maxLength={10} editable={!guardando}
+          placeholder="30-06-2027" maxLength={10} editable={!guardando}
           keyboardType={Platform.OS === 'web' ? 'default' : 'numbers-and-punctuation'}
         />
         <FormField

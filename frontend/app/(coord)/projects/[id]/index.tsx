@@ -37,7 +37,7 @@ import { DatosContratoModal } from '@/src/components/DatosContratoModal';
 import { moduloActivo } from '@/src/utils/modulos';
 import { getMediaLibraryPermission, requestMediaLibraryPermission } from '@/src/utils/permissions';
 import { t, a11y } from '@/src/i18n';
-import { esFechaValida } from '@/src/utils/validacionEvento';
+import { dmyAIso, isoADmy } from '@/src/utils/fecha';
 import { olvidarSeparadorDecimal } from '@/src/hooks/useSeparadorDecimal';
 import { ProgramaObraSection } from '@/src/components/ProgramaObraSection';
 import { ScreenHeader } from '@/src/components/ScreenHeader';
@@ -676,8 +676,8 @@ export default function ProjectDetailScreen() {
     setNombreDraft((project as any).name || '');
     setConstructoraDraft((project as any).constructora || '');
     setContratoDraft((project as any).contract_number || '');
-    setFechaInicioDraft((project as any).start_date || '');
-    setFechaTerminoDraft((project as any).end_date || '');
+    setFechaInicioDraft(isoADmy((project as any).start_date));
+    setFechaTerminoDraft(isoADmy((project as any).end_date));
     setDescripcionDraft((project as any).description || '');
     setClienteDraft((project as any).cliente_principal || '');
     setColorDraft((project as any).color_tema || COLOR_IDENTIDAD_DEFECTO);
@@ -698,12 +698,13 @@ export default function ProjectDetailScreen() {
       return;
     }
     // Mismas reglas que al crear el proyecto (projects/new.tsx).
-    const ini = fechaInicioDraft.trim();
-    const fin = fechaTerminoDraft.trim();
+    // Se captura DD-MM-AAAA; el backend recibe AAAA-MM-DD ('' limpia la fecha).
+    const ini = fechaInicioDraft.trim() ? dmyAIso(fechaInicioDraft) : '';
+    const fin = fechaTerminoDraft.trim() ? dmyAIso(fechaTerminoDraft) : '';
     if (!nombreDraft.trim()) return setObjetoError(t('proyectoForm.errores.nombreObligatorio'));
     if (!constructoraDraft.trim()) return setObjetoError(t('proyectoForm.errores.constructoraObligatoria'));
     if (!contratoDraft.trim()) return setObjetoError(t('proyectoForm.errores.contratoObligatorio'));
-    if ((ini && !esFechaValida(ini)) || (fin && !esFechaValida(fin))) return setObjetoError(t('proyectoForm.errores.fechaInvalida'));
+    if (ini === null || fin === null) return setObjetoError(t('proyectoForm.errores.fechaInvalida'));
     if (ini && fin && fin < ini) return setObjetoError(t('proyectoForm.errores.terminoAnterior'));
     try {
       setObjetoSaving(true);
@@ -2738,7 +2739,7 @@ export default function ProjectDetailScreen() {
                   value={fechaInicioDraft}
                   onChangeText={setFechaInicioDraft}
                   placeholderTextColor={colors.textMuted}
-                  placeholder="2026-01-15"
+                  placeholder="15-01-2026"
                   maxLength={10}
                   autoCapitalize="none"
                   style={styles.catInput}
@@ -2750,7 +2751,7 @@ export default function ProjectDetailScreen() {
                   value={fechaTerminoDraft}
                   onChangeText={setFechaTerminoDraft}
                   placeholderTextColor={colors.textMuted}
-                  placeholder="2027-06-30"
+                  placeholder="30-06-2027"
                   maxLength={10}
                   autoCapitalize="none"
                   style={styles.catInput}
