@@ -21,6 +21,8 @@ import server  # noqa: E402
 
 PID, PID2 = "p1", "p2"
 USER = {"id": "u1", "name": "Coord", "role": server.ROLE_COORD, "project_ids": []}
+# Proyecto con el módulo encendido (Configuración > Módulos); "p_off" no lo tiene y debe dar 403.
+MODULOS_ON = {"reportes_diarios": {server.CAP_MODULO: True}}
 
 
 @pytest.fixture()
