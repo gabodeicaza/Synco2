@@ -2141,6 +2141,18 @@ async def descendants_ids(root_id: str) -> List[str]:
 
 
 # === Startup: wipe legacy ===================================================
+async def _crear_indice(coleccion, *args, **kwargs) -> None:
+    """create_index tolerante para el arranque: un índice que falle (p. ej.
+    `unique` contra datos ya existentes en producción, o un índice con las
+    mismas llaves y otras opciones) se registra y NO impide que el servicio
+    levante — antes una sola falla dejaba toda la API en 503."""
+    try:
+        await coleccion.create_index(*args, **kwargs)
+    except Exception as e:
+        log.error("[startup] no se pudo crear el índice %s %r: %s",
+                  getattr(coleccion, "name", coleccion), args[:1], e)
+
+
 @app.on_event("startup")
 async def startup_event():
     # Eliminar colecciones legacy de la versión anterior
@@ -2150,68 +2162,68 @@ async def startup_event():
             await db[c].drop()
             log.info(f"[wipe] Dropped legacy collection: {c}")
     # Indexes esenciales
-    await db.users.create_index("email", unique=True)
-    await db.users.create_index("id", unique=True)
-    await db.projects.create_index("id", unique=True)
-    await db.invitations.create_index("token", unique=True)
-    await db.location_nodes.create_index([("project_id", 1), ("parent_id", 1)])
-    await db.reports.create_index([("project_id", 1), ("created_at", -1)])
+    await _crear_indice(db.users, "email", unique=True)
+    await _crear_indice(db.users, "id", unique=True)
+    await _crear_indice(db.projects, "id", unique=True)
+    await _crear_indice(db.invitations, "token", unique=True)
+    await _crear_indice(db.location_nodes, [("project_id", 1), ("parent_id", 1)])
+    await _crear_indice(db.reports, [("project_id", 1), ("created_at", -1)])
     # Soporta el MAX(ultima_lectura) agrupado por node_id que arma el árbol de
     # nodos (list_nodes) — antes escaneaba todo el historial de reportes del
     # proyecto sin índice en cada carga del hub.
-    await db.reports.create_index([("project_id", 1), ("node_id", 1), ("ultima_lectura", 1)])
-    await db.daily_goals.create_index("project_id")
+    await _crear_indice(db.reports, [("project_id", 1), ("node_id", 1), ("ultima_lectura", 1)])
+    await _crear_indice(db.daily_goals, "project_id")
     # TTL: "Metas del día" caducan solas a las 24h de creadas — antes se
     # quedaban visibles para siempre, contradiciendo su propio nombre.
-    await db.daily_goals.create_index("created_at", expireAfterSeconds=86400)
-    await db.actividades_curadas.create_index([("project_id", 1), ("area_id", 1)])
-    await db.actividades_curadas.create_index("reporte_origen_id")
-    await db.actividades_curadas.create_index("id")
+    await _crear_indice(db.daily_goals, "created_at", expireAfterSeconds=86400)
+    await _crear_indice(db.actividades_curadas, [("project_id", 1), ("area_id", 1)])
+    await _crear_indice(db.actividades_curadas, "reporte_origen_id")
+    await _crear_indice(db.actividades_curadas, "id")
     # [OFFLINE 2026-08-07] sparse=True: reportes sin client_id (clientes viejos)
     # no deben colisionar entre si en el índice único.
-    await db.reports.create_index("client_id", unique=True, sparse=True)
-    await db.asistencia.create_index([("project_id", 1), ("fecha", 1), ("user_id", 1), ("tipo", 1)])
-    await db.announcements.create_index([("project_id", 1), ("pinned", -1), ("created_at", -1)])
+    await _crear_indice(db.reports, "client_id", unique=True, sparse=True)
+    await _crear_indice(db.asistencia, [("project_id", 1), ("fecha", 1), ("user_id", 1), ("tipo", 1)])
+    await _crear_indice(db.announcements, [("project_id", 1), ("pinned", -1), ("created_at", -1)])
     # TTL: Mongo purga automaticamente noticias vencidas (expires_at en el pasado).
-    await db.announcements.create_index("expires_at", expireAfterSeconds=0)
-    await db.minutas.create_index([("project_id", 1), ("created_at", -1)])
-    await db.informes_diarios.create_index([("project_id", 1), ("user_id", 1), ("fecha", 1)], unique=True)
-    await db.informes_diarios.create_index([("project_id", 1), ("fecha", 1), ("estado", 1)])
-    await db.minutas.create_index([("project_id", 1), ("acuerdos.responsable_id", 1)])
-    await db.minutas.create_index([("project_id", 1), ("involved_ids", 1)])
-    await db.cap_certs.create_index([("project_id", 1), ("activo", 1)])
-    await db.cap_tipos.create_index([("project_id", 1), ("activo", 1)])
-    await db.cap_personas.create_index("id", unique=True)
-    await db.cap_personas.create_index("nombre_key")
-    await db.cap_miembros.create_index([("project_id", 1), ("persona_id", 1)], unique=True)
-    await db.cap_miembros.create_index([("project_id", 1), ("estatus", 1), ("frente", 1)])
-    await db.cap_certificaciones.create_index([("project_id", 1), ("persona_id", 1), ("cert_id", 1)])
-    await db.cap_equipos.create_index([("project_id", 1), ("operador_id", 1)])
-    await db.cap_historial.create_index([("project_id", 1), ("entidad_id", 1), ("fecha", -1)])
-    await db.cap_importaciones.create_index([("project_id", 1), ("archivo_id", 1), ("estado", 1)])
-    await db.cap_import_filas.create_index([("import_id", 1), ("n", 1)])
-    await db.cap_import_grupos.create_index([("import_id", 1), ("grupo", 1)])
-    await db.cap_import_cambios.create_index("import_id")
-    await db.cap_import_plantillas.create_index([("project_id", 1), ("tipo", 1), ("nombre", 1)], unique=True)
-    await db.messages.create_index([("project_id", 1), ("created_at", -1)])
-    await db.messages.create_index([("channel_id", 1), ("created_at", -1)])
-    await db.events.create_index([("project_id", 1), ("start_at", 1)])
-    await db.events.create_index([("project_id", 1), ("attendee_ids", 1)])
+    await _crear_indice(db.announcements, "expires_at", expireAfterSeconds=0)
+    await _crear_indice(db.minutas, [("project_id", 1), ("created_at", -1)])
+    await _crear_indice(db.informes_diarios, [("project_id", 1), ("user_id", 1), ("fecha", 1)], unique=True)
+    await _crear_indice(db.informes_diarios, [("project_id", 1), ("fecha", 1), ("estado", 1)])
+    await _crear_indice(db.minutas, [("project_id", 1), ("acuerdos.responsable_id", 1)])
+    await _crear_indice(db.minutas, [("project_id", 1), ("involved_ids", 1)])
+    await _crear_indice(db.cap_certs, [("project_id", 1), ("activo", 1)])
+    await _crear_indice(db.cap_tipos, [("project_id", 1), ("activo", 1)])
+    await _crear_indice(db.cap_personas, "id", unique=True)
+    await _crear_indice(db.cap_personas, "nombre_key")
+    await _crear_indice(db.cap_miembros, [("project_id", 1), ("persona_id", 1)], unique=True)
+    await _crear_indice(db.cap_miembros, [("project_id", 1), ("estatus", 1), ("frente", 1)])
+    await _crear_indice(db.cap_certificaciones, [("project_id", 1), ("persona_id", 1), ("cert_id", 1)])
+    await _crear_indice(db.cap_equipos, [("project_id", 1), ("operador_id", 1)])
+    await _crear_indice(db.cap_historial, [("project_id", 1), ("entidad_id", 1), ("fecha", -1)])
+    await _crear_indice(db.cap_importaciones, [("project_id", 1), ("archivo_id", 1), ("estado", 1)])
+    await _crear_indice(db.cap_import_filas, [("import_id", 1), ("n", 1)])
+    await _crear_indice(db.cap_import_grupos, [("import_id", 1), ("grupo", 1)])
+    await _crear_indice(db.cap_import_cambios, "import_id")
+    await _crear_indice(db.cap_import_plantillas, [("project_id", 1), ("tipo", 1), ("nombre", 1)], unique=True)
+    await _crear_indice(db.messages, [("project_id", 1), ("created_at", -1)])
+    await _crear_indice(db.messages, [("channel_id", 1), ("created_at", -1)])
+    await _crear_indice(db.events, [("project_id", 1), ("start_at", 1)])
+    await _crear_indice(db.events, [("project_id", 1), ("attendee_ids", 1)])
     # Consultada por el loop de recordatorios (_meeting_reminder_loop), que
     # escanea TODOS los proyectos por start_at — no puede aprovechar el
     # índice compuesto de arriba, que empieza por project_id.
-    await db.events.create_index([("start_at", 1), ("reminder_sent", 1)])
-    await db.channels.create_index([("project_id", 1), ("type", 1)])
-    await db.channels.create_index([("project_id", 1), ("type", 1), ("area_id", 1)])
-    await db.channels.create_index([("project_id", 1), ("type", 1), ("member_ids", 1)])
+    await _crear_indice(db.events, [("start_at", 1), ("reminder_sent", 1)])
+    await _crear_indice(db.channels, [("project_id", 1), ("type", 1)])
+    await _crear_indice(db.channels, [("project_id", 1), ("type", 1), ("area_id", 1)])
+    await _crear_indice(db.channels, [("project_id", 1), ("type", 1), ("member_ids", 1)])
     # TTL: sesiones de importación de catálogo abandonadas (usuario subió un
     # archivo y nunca terminó el wizard) se purgan solas a las 24h — evita
     # que catalogo_import_sessions crezca indefinidamente con huérfanas.
-    await db.catalogo_import_sessions.create_index("created_at", expireAfterSeconds=86400)
+    await _crear_indice(db.catalogo_import_sessions, "created_at", expireAfterSeconds=86400)
     # Mismo criterio para las sesiones de importación del Programa desglosado
     # (colección propia — el destino final de este wizard no es el mismo que
     # el del catálogo, ver sección "PROGRAMA DESGLOSADO" más abajo).
-    await db.programa_import_sessions.create_index("created_at", expireAfterSeconds=86400)
+    await _crear_indice(db.programa_import_sessions, "created_at", expireAfterSeconds=86400)
     # Índice en `id` (UUID propio, no el `_id` de Mongo) para las colecciones
     # consultadas por id en el hot path de navegación (abrir nodo/área/canal/
     # evento/minuta/reporte individual, editar catálogo) — sin esto cada
@@ -2219,73 +2231,73 @@ async def startup_event():
     # No se usa unique=True: no hay forma de verificar aquí en startup que
     # los datos existentes no tengan duplicados legacy, y una violación
     # tumbaría el arranque del server.
-    await db.location_nodes.create_index("id")
-    await db.reports.create_index("id")
-    await db.areas.create_index("id")
-    await db.channels.create_index("id")
-    await db.events.create_index("id")
-    await db.minutas.create_index("id")
-    await db.partidas.create_index("id")
-    await db.conceptos.create_index("id")
-    await db.registros_avance.create_index("id")
+    await _crear_indice(db.location_nodes, "id")
+    await _crear_indice(db.reports, "id")
+    await _crear_indice(db.areas, "id")
+    await _crear_indice(db.channels, "id")
+    await _crear_indice(db.events, "id")
+    await _crear_indice(db.minutas, "id")
+    await _crear_indice(db.partidas, "id")
+    await _crear_indice(db.conceptos, "id")
+    await _crear_indice(db.registros_avance, "id")
     # Idempotencia de la cola offline de avances. Índice parcial: solo aplica a los
     # registros con client_id de texto (los viejos guardan null). Si ya hubiera
     # duplicados legados, no se tumba el arranque: queda la revisión por consulta.
     try:
-        await db.registros_avance.create_index(
+        await _crear_indice(db.registros_avance, 
             "client_id", unique=True, partialFilterExpression={"client_id": {"$type": "string"}},
         )
     except Exception as e:
         log.warning(f"[avance] no se pudo crear el índice único de client_id: {e}")
-    await db.catalogo_import_sessions.create_index("id")
-    await db.programa_import_sessions.create_index("id")
+    await _crear_indice(db.catalogo_import_sessions, "id")
+    await _crear_indice(db.programa_import_sessions, "id")
     # Etapa EVM: mismo criterio de TTL 24h que catalogo/programa (sesiones
     # de importación abandonadas), colección propia para no interferir con
     # el importador legado mientras coexistan (ver Importador Maestro).
-    await db.evm_import_sessions.create_index("created_at", expireAfterSeconds=86400)
-    await db.evm_import_sessions.create_index("id")
-    await db.gastos_reales.create_index("id")
-    await db.gastos_reales.create_index([("project_id", 1), ("fecha", 1)])
-    await db.programa_versiones.create_index("id")
-    await db.programa_versiones.create_index([("project_id", 1), ("vigente", 1)])
-    await db.programa_distribucion.create_index("id")
-    await db.programa_distribucion.create_index([("programa_version_id", 1)])
-    await db.report_templates.create_index("code", unique=True)
-    await db.report_templates.create_index("id", unique=True)
-    await db.forestal_registros.create_index("id", unique=True)
-    await db.forestal_registros.create_index([("project_id", 1), ("created_at", -1)])
-    await db.forestal_autorizado.create_index("id", unique=True)
-    await db.forestal_autorizado.create_index([("project_id", 1), ("orden", 1)])
-    await db.fotos_lidar.create_index("id", unique=True)
-    await db.fotos_lidar.create_index([("project_id", 1), ("orden", 1)])
-    await db.pruebas_calidad.create_index("id", unique=True)
-    await db.pruebas_calidad.create_index([("project_id", 1), ("fecha", -1)])
-    await db.control_calidad.create_index("id", unique=True)
-    await db.control_calidad.create_index([("project_id", 1), ("fecha", -1)])
-    await db.estimaciones.create_index("id", unique=True)
-    await db.estimaciones.create_index([("project_id", 1), ("contrato", 1), ("numero", 1)])
-    await db.custom_modules.create_index("id", unique=True)
-    await db.custom_modules.create_index([("project_id", 1), ("orden", 1)])
-    await db.custom_module_records.create_index("id", unique=True)
-    await db.custom_module_records.create_index([("project_id", 1), ("module_id", 1), ("fecha", -1)])
-    await db.pendientes_generales.create_index("id", unique=True)
-    await db.pendientes_generales.create_index([("project_id", 1), ("contrato", 1), ("orden", 1)])
-    await db.seguridad_indicadores.create_index("id", unique=True)
-    await db.seguridad_indicadores.create_index([("project_id", 1), ("clave", 1)], unique=True)
-    await db.electromecanica.create_index("project_id", unique=True)
-    await db.levantamientos_sociales.create_index("id", unique=True)
-    await db.levantamientos_sociales.create_index([("project_id", 1), ("tipo", 1), ("ambito", 1)], unique=True)
-    await db.salvamento_arqueologico.create_index("id", unique=True)
-    await db.salvamento_arqueologico.create_index([("project_id", 1), ("ambito", 1), ("orden", 1)])
-    await db.tabla_resumen_actividades.create_index("id", unique=True)
-    await db.tabla_resumen_actividades.create_index([("project_id", 1), ("orden", 1)])
-    await db.tabla_resumen_columnas.create_index("id", unique=True)
-    await db.tabla_resumen_columnas.create_index([("project_id", 1), ("orden", 1)])
-    await db.tabla_resumen_celdas.create_index("id", unique=True)
-    await db.tabla_resumen_celdas.create_index(
+    await _crear_indice(db.evm_import_sessions, "created_at", expireAfterSeconds=86400)
+    await _crear_indice(db.evm_import_sessions, "id")
+    await _crear_indice(db.gastos_reales, "id")
+    await _crear_indice(db.gastos_reales, [("project_id", 1), ("fecha", 1)])
+    await _crear_indice(db.programa_versiones, "id")
+    await _crear_indice(db.programa_versiones, [("project_id", 1), ("vigente", 1)])
+    await _crear_indice(db.programa_distribucion, "id")
+    await _crear_indice(db.programa_distribucion, [("programa_version_id", 1)])
+    await _crear_indice(db.report_templates, "code", unique=True)
+    await _crear_indice(db.report_templates, "id", unique=True)
+    await _crear_indice(db.forestal_registros, "id", unique=True)
+    await _crear_indice(db.forestal_registros, [("project_id", 1), ("created_at", -1)])
+    await _crear_indice(db.forestal_autorizado, "id", unique=True)
+    await _crear_indice(db.forestal_autorizado, [("project_id", 1), ("orden", 1)])
+    await _crear_indice(db.fotos_lidar, "id", unique=True)
+    await _crear_indice(db.fotos_lidar, [("project_id", 1), ("orden", 1)])
+    await _crear_indice(db.pruebas_calidad, "id", unique=True)
+    await _crear_indice(db.pruebas_calidad, [("project_id", 1), ("fecha", -1)])
+    await _crear_indice(db.control_calidad, "id", unique=True)
+    await _crear_indice(db.control_calidad, [("project_id", 1), ("fecha", -1)])
+    await _crear_indice(db.estimaciones, "id", unique=True)
+    await _crear_indice(db.estimaciones, [("project_id", 1), ("contrato", 1), ("numero", 1)])
+    await _crear_indice(db.custom_modules, "id", unique=True)
+    await _crear_indice(db.custom_modules, [("project_id", 1), ("orden", 1)])
+    await _crear_indice(db.custom_module_records, "id", unique=True)
+    await _crear_indice(db.custom_module_records, [("project_id", 1), ("module_id", 1), ("fecha", -1)])
+    await _crear_indice(db.pendientes_generales, "id", unique=True)
+    await _crear_indice(db.pendientes_generales, [("project_id", 1), ("contrato", 1), ("orden", 1)])
+    await _crear_indice(db.seguridad_indicadores, "id", unique=True)
+    await _crear_indice(db.seguridad_indicadores, [("project_id", 1), ("clave", 1)], unique=True)
+    await _crear_indice(db.electromecanica, "project_id", unique=True)
+    await _crear_indice(db.levantamientos_sociales, "id", unique=True)
+    await _crear_indice(db.levantamientos_sociales, [("project_id", 1), ("tipo", 1), ("ambito", 1)], unique=True)
+    await _crear_indice(db.salvamento_arqueologico, "id", unique=True)
+    await _crear_indice(db.salvamento_arqueologico, [("project_id", 1), ("ambito", 1), ("orden", 1)])
+    await _crear_indice(db.tabla_resumen_actividades, "id", unique=True)
+    await _crear_indice(db.tabla_resumen_actividades, [("project_id", 1), ("orden", 1)])
+    await _crear_indice(db.tabla_resumen_columnas, "id", unique=True)
+    await _crear_indice(db.tabla_resumen_columnas, [("project_id", 1), ("orden", 1)])
+    await _crear_indice(db.tabla_resumen_celdas, "id", unique=True)
+    await _crear_indice(db.tabla_resumen_celdas, 
         [("project_id", 1), ("actividad_id", 1), ("columna_id", 1)], unique=True,
     )
-    await db.weather_logs.create_index("id", unique=True)
+    await _crear_indice(db.weather_logs, "id", unique=True)
     # Clima capturado cada hora: el índice único ahora incluye `hora_cdmx`.
     # Se elimina el índice viejo (solo el índice, no datos) que permitía una
     # sola captura por día; las capturas antiguas sin hora quedan con
@@ -2294,42 +2306,42 @@ async def startup_event():
         await db.weather_logs.drop_index("project_id_1_node_id_1_fecha_cdmx_1")
     except Exception:
         pass
-    await db.weather_logs.create_index(
+    await _crear_indice(db.weather_logs, 
         [("project_id", 1), ("node_id", 1), ("fecha_cdmx", 1), ("hora_cdmx", 1)], unique=True,
     )
-    await db.cimentacion_elementos.create_index("id", unique=True)
-    await db.cimentacion_elementos.create_index([("project_id", 1), ("node_id", 1)])
-    await db.perforadoras.create_index("id", unique=True)
-    await db.perforadoras.create_index([("project_id", 1)])
-    await db.seguridad_reportes.create_index("id", unique=True)
-    await db.seguridad_reportes.create_index([("project_id", 1), ("created_at", -1)])
-    await db.seguridad_fuerza_trabajo.create_index([("project_id", 1), ("mes", 1)], unique=True)
-    await db.seguridad_checklist.create_index("id", unique=True)
-    await db.seguridad_checklist.create_index([("project_id", 1), ("created_at", -1)])
-    await db.riesgos_registros.create_index("id", unique=True)
-    await db.riesgos_registros.create_index([("project_id", 1), ("created_at", -1)])
-    await db.estudios_actividades.create_index("id", unique=True)
-    await db.estudios_actividades.create_index([("project_id", 1), ("orden", 1)])
-    await db.estudios_bitacora.create_index("id", unique=True)
-    await db.estudios_bitacora.create_index([("project_id", 1), ("created_at", -1)])
-    await db.ambiental_auditoria.create_index("id", unique=True)
-    await db.ambiental_auditoria.create_index([("project_id", 1), ("created_at", -1)])
+    await _crear_indice(db.cimentacion_elementos, "id", unique=True)
+    await _crear_indice(db.cimentacion_elementos, [("project_id", 1), ("node_id", 1)])
+    await _crear_indice(db.perforadoras, "id", unique=True)
+    await _crear_indice(db.perforadoras, [("project_id", 1)])
+    await _crear_indice(db.seguridad_reportes, "id", unique=True)
+    await _crear_indice(db.seguridad_reportes, [("project_id", 1), ("created_at", -1)])
+    await _crear_indice(db.seguridad_fuerza_trabajo, [("project_id", 1), ("mes", 1)], unique=True)
+    await _crear_indice(db.seguridad_checklist, "id", unique=True)
+    await _crear_indice(db.seguridad_checklist, [("project_id", 1), ("created_at", -1)])
+    await _crear_indice(db.riesgos_registros, "id", unique=True)
+    await _crear_indice(db.riesgos_registros, [("project_id", 1), ("created_at", -1)])
+    await _crear_indice(db.estudios_actividades, "id", unique=True)
+    await _crear_indice(db.estudios_actividades, [("project_id", 1), ("orden", 1)])
+    await _crear_indice(db.estudios_bitacora, "id", unique=True)
+    await _crear_indice(db.estudios_bitacora, [("project_id", 1), ("created_at", -1)])
+    await _crear_indice(db.ambiental_auditoria, "id", unique=True)
+    await _crear_indice(db.ambiental_auditoria, [("project_id", 1), ("created_at", -1)])
     # Presentación — seguimiento de estudios por disciplina: un valor
     # ACTUAL por (proyecto, estación|None=global, disciplina), nunca una
     # lista histórica — de ahí el índice único que habilita upsert real.
-    await db.estudio_disciplina_avance.create_index("id", unique=True)
-    await db.estudio_disciplina_avance.create_index(
+    await _crear_indice(db.estudio_disciplina_avance, "id", unique=True)
+    await _crear_indice(db.estudio_disciplina_avance, 
         [("project_id", 1), ("node_id", 1), ("disciplina", 1)], unique=True,
     )
-    await db.planos_avance.create_index("id", unique=True)
-    await db.planos_avance.create_index([("project_id", 1), ("created_at", -1)])
-    await db.presentaciones.create_index("id", unique=True)
-    await db.presentaciones.create_index([("project_id", 1), ("fecha", -1)])
-    await db.password_reset_requests.create_index("id", unique=True)
-    await db.password_reset_requests.create_index([("status", 1), ("created_at", 1)])
-    await db.password_reset_requests.create_index("user_id")
-    await db.password_reset_tokens.create_index("token_hash", unique=True)
-    await db.password_reset_tokens.create_index([("user_id", 1), ("created_at", 1)])
+    await _crear_indice(db.planos_avance, "id", unique=True)
+    await _crear_indice(db.planos_avance, [("project_id", 1), ("created_at", -1)])
+    await _crear_indice(db.presentaciones, "id", unique=True)
+    await _crear_indice(db.presentaciones, [("project_id", 1), ("fecha", -1)])
+    await _crear_indice(db.password_reset_requests, "id", unique=True)
+    await _crear_indice(db.password_reset_requests, [("status", 1), ("created_at", 1)])
+    await _crear_indice(db.password_reset_requests, "user_id")
+    await _crear_indice(db.password_reset_tokens, "token_hash", unique=True)
+    await _crear_indice(db.password_reset_tokens, [("user_id", 1), ("created_at", 1)])
 
     # --- Seed de plantillas de reporte estructurado (idempotente por `code`) ---
     try:
