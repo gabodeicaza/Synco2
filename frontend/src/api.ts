@@ -1335,6 +1335,9 @@ export interface Area {
   /** Si los reportes del área llevan Personal / Equipo (por omisión sí). */
   captura_personal?: boolean;
   captura_equipo?: boolean;
+  /** Si los reportes del área llevan Actividades / Observaciones (por omisión sí). */
+  captura_actividades?: boolean;
+  captura_observaciones?: boolean;
   campos_extra?: AreaCampoExtra[];
 }
 
@@ -1454,6 +1457,8 @@ export interface Report {
   /** false cuando el Área del reporte no captura Personal / Equipo. */
   captura_personal?: boolean;
   captura_equipo?: boolean;
+  captura_actividades?: boolean;
+  captura_observaciones?: boolean;
 }
 
 export interface ReportTemplateField {
@@ -2820,7 +2825,11 @@ export const api = {
   createArea: (pid: string, body: any) => request<Area>('POST', `/projects/${pid}/areas`, body),
   updateAreaConfig: (
     aid: string,
-    body: { captura_personal?: boolean; captura_equipo?: boolean; campos_extra?: AreaCampoExtra[] },
+    body: {
+      captura_personal?: boolean; captura_equipo?: boolean;
+      captura_actividades?: boolean; captura_observaciones?: boolean;
+      campos_extra?: AreaCampoExtra[];
+    },
   ) => request<Area>('PATCH', `/areas/${aid}/config`, body),
   deleteArea: (aid: string) => request<{ ok: boolean }>('DELETE', `/areas/${aid}`),
 

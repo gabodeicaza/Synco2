@@ -824,6 +824,8 @@ class AreaIn(BaseModel):
     color: Optional[str] = "#1E40AF"
     captura_personal: bool = True
     captura_equipo: bool = True
+    captura_actividades: bool = True
+    captura_observaciones: bool = True
     campos_extra: List[AreaCampoExtraIn] = Field(default_factory=list)
 
 
@@ -831,6 +833,8 @@ class AreaConfigIn(BaseModel):
     """Edición parcial de lo que el Área captura en sus reportes."""
     captura_personal: Optional[bool] = None
     captura_equipo: Optional[bool] = None
+    captura_actividades: Optional[bool] = None
+    captura_observaciones: Optional[bool] = None
     campos_extra: Optional[List[AreaCampoExtraIn]] = None
 
 
@@ -842,6 +846,8 @@ class AreaOut(BaseModel):
     created_at: datetime
     captura_personal: bool = True
     captura_equipo: bool = True
+    captura_actividades: bool = True
+    captura_observaciones: bool = True
     campos_extra: List[dict] = Field(default_factory=list)
 
 
@@ -889,6 +895,8 @@ def _area_con_defaults(a: dict) -> dict:
     capturan Personal y Equipo y no tienen campos extra."""
     a["captura_personal"] = a.get("captura_personal", True) is not False
     a["captura_equipo"] = a.get("captura_equipo", True) is not False
+    a["captura_actividades"] = a.get("captura_actividades", True) is not False
+    a["captura_observaciones"] = a.get("captura_observaciones", True) is not False
     a["campos_extra"] = a.get("campos_extra") or []
     return a
 
@@ -1559,6 +1567,8 @@ class ReportOut(BaseModel):
     # los informes omiten esa sección en vez de mostrar "-").
     captura_personal: bool = True
     captura_equipo: bool = True
+    captura_actividades: bool = True
+    captura_observaciones: bool = True
 
 
 def _campos_extra_para_reporte(area: Optional[dict], valores: Dict[str, Any]) -> List[dict]:
@@ -11417,6 +11427,8 @@ async def create_area(pid: str, body: AreaIn, user: dict = Depends(require_role(
         "created_at": datetime.now(timezone.utc),
         "captura_personal": body.captura_personal,
         "captura_equipo": body.captura_equipo,
+        "captura_actividades": body.captura_actividades,
+        "captura_observaciones": body.captura_observaciones,
         "campos_extra": _normalizar_campos_extra(body.campos_extra),
     }
     await db.areas.insert_one(doc)
@@ -11437,6 +11449,10 @@ async def update_area_config(aid: str, body: AreaConfigIn, user: dict = Depends(
         cambios["captura_personal"] = body.captura_personal
     if body.captura_equipo is not None:
         cambios["captura_equipo"] = body.captura_equipo
+    if body.captura_actividades is not None:
+        cambios["captura_actividades"] = body.captura_actividades
+    if body.captura_observaciones is not None:
+        cambios["captura_observaciones"] = body.captura_observaciones
     if body.campos_extra is not None:
         cambios["campos_extra"] = _normalizar_campos_extra(body.campos_extra)
     if cambios:
@@ -12131,6 +12147,11 @@ async def _preparar_doc_reporte(body: ReportIn, user: dict):
             body.personnel = []
         if not area_doc["captura_equipo"]:
             body.equipment = []
+        if not area_doc["captura_actividades"]:
+            body.actividades = None
+            body.actividades_items = []
+        if not area_doc["captura_observaciones"]:
+            body.observaciones = None
     campos_extra_rep = _campos_extra_para_reporte(area_doc, body.campos_extra)
     if body.solo_fuerza_trabajo:
         if (not any((p or "").strip() for p in body.personnel)
@@ -12245,6 +12266,10 @@ async def _preparar_doc_reporte(body: ReportIn, user: dict):
         doc["captura_personal"] = False
     if area_doc and not area_doc["captura_equipo"]:
         doc["captura_equipo"] = False
+    if area_doc and not area_doc["captura_actividades"]:
+        doc["captura_actividades"] = False
+    if area_doc and not area_doc["captura_observaciones"]:
+        doc["captura_observaciones"] = False
     if body.solo_fuerza_trabajo:
         doc["solo_fuerza_trabajo"] = True
     return doc, node, path_names
