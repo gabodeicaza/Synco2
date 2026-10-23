@@ -50,6 +50,9 @@ interface EntryRow {
   autor: string;
   ubicacion: string;
   texto: string;
+  // Posible doble reporte: misma entrada, mismo dia y misma ubicacion en otro
+  // reporte (o repetida dentro del mismo).
+  dup?: boolean;
 }
 
 // Un reporte de campo = una fila de la lista (autor + ubicacion + totales).
@@ -62,6 +65,7 @@ interface ReportRow {
   maquinas: number;
   personal: EntryRow[];
   maquinaria: EntryRow[];
+  dupCount: number;
 }
 
 interface Group {
@@ -87,7 +91,38 @@ function sumQty(rows: EntryRow[]): number {
   return rows.reduce((acc, r) => acc + parseQtyDesc(r.texto).qty, 0);
 }
 
+function normTexto(s: string): string {
+  return (s || '').toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+// Marca como `dup` las entradas que aparentan haberse reportado dos veces:
+// mismo dia (CDMX), misma ubicacion (nodo), mismo tipo y mismo texto
+// (cantidad + descripcion), ya sea en reportes distintos o repetida dentro de
+// un mismo reporte. Solo advierte: puede ser legitimo (dos turnos), asi que
+// nunca borra nada por su cuenta.
+function markDuplicates(reports: FeedItem[]): Set<string> {
+  const seen = new Map<string, string[]>();
+  for (const r of reports) {
+    if (!r.created_at) continue;
+    const day = dayjs.utc(r.created_at).tz(CDMX_TZ).format('YYYY-MM-DD');
+    for (const field of ['personnel', 'equipment'] as Field[]) {
+      (((r as any)[field] || []) as string[]).forEach((texto, i) => {
+        const t = normTexto(texto);
+        if (!t) return;
+        const k = `${day}|${r.node_id}|${field}|${t}`;
+        const ids = seen.get(k) || [];
+        ids.push(`${r.id}-${field}-${i}`);
+        seen.set(k, ids);
+      });
+    }
+  }
+  const dups = new Set<string>();
+  seen.forEach((ids) => { if (ids.length > 1) ids.forEach((id) => dups.add(id)); });
+  return dups;
+}
+
 function buildGroups(reports: FeedItem[], groupBy: GroupBy): Group[] {
+  const dups = markDuplicates(reports);
   const byGroup = new Map<string, Group>();
   for (const r of reports) {
     // Último nodo de la ruta = el nodo hijo (hoja) elegido al capturar, no el Tramo raíz.
@@ -97,6 +132,7 @@ function buildGroups(reports: FeedItem[], groupBy: GroupBy): Group[] {
     const toRows = (field: Field): EntryRow[] =>
       (((r as any)[field] || []) as string[]).map((texto, i) => ({
         id: `${r.id}-${field}-${i}`, reportId: r.id, field, index: i, autor, ubicacion, texto,
+        dup: dups.has(`${r.id}-${field}-${i}`),
       }));
     const personal = toRows('personnel');
     const maquinaria = toRows('equipment');
@@ -108,6 +144,7 @@ function buildGroups(reports: FeedItem[], groupBy: GroupBy): Group[] {
     byGroup.get(key)!.rows.push({
       id: r.id, autor, ubicacion, hora: created.format('HH:mm'),
       personas: sumQty(personal), maquinas: sumQty(maquinaria), personal, maquinaria,
+      dupCount: personal.filter((e) => e.dup).length + maquinaria.filter((e) => e.dup).length,
     });
   }
   return Array.from(byGroup.values()).sort((a, b) => (a.key < b.key ? -1 : 1));
@@ -133,7 +170,7 @@ function EntryList({
       </View>
       {rows.map((r) => (
         <View key={r.id} style={styles.detailRow}>
-          <Text style={styles.detailTxt}>{'•'} {r.texto}</Text>
+          <Text style={[styles.detailTxt, r.dup && styles.detailTxtDup]}>{'•'} {r.texto}{r.dup ? '  · posible doble reporte' : ''}</Text>
           {canEdit && (
             <View style={styles.rowActions}>
               <Pressable accessibilityRole="button" accessibilityLabel={a11y('editar')} onPress={() => onEditRow(r)} style={styles.editBtn} hitSlop={8}>
@@ -185,6 +222,12 @@ function ReportItem({
         <View style={styles.colAutor}>
           <Text style={styles.autorTxt} numberOfLines={2}>{row.autor}</Text>
           <Text style={styles.horaTxt}>{row.hora}</Text>
+          {row.dupCount > 0 && (
+            <View style={styles.dupBadge}>
+              <Ionicons name="warning-outline" size={11} color="#B45309" />
+              <Text style={styles.dupBadgeTxt}>Posible doble</Text>
+            </View>
+          )}
         </View>
         <Text style={[styles.dataCell, styles.colUbic]} numberOfLines={2}>{row.ubicacion}</Text>
         <Text style={[styles.dataCell, styles.colVal, styles.resumenTxt]} numberOfLines={2}>{resumen}</Text>
@@ -214,7 +257,18 @@ function WorkforceList({
   if (groups.length === 0) {
     return <Text style={styles.emptyTxt}>Ningún reporte capturado en este periodo.</Text>;
   }
+  const dupReports = groups.reduce((n, g) => n + g.rows.filter((r) => r.dupCount > 0).length, 0);
   return (
+    <View>
+      {dupReports > 0 && (
+        <View style={styles.dupBanner}>
+          <Ionicons name="warning-outline" size={16} color="#B45309" />
+          <Text style={styles.dupBannerTxt}>
+            {dupReports} {dupReports === 1 ? 'reporte tiene' : 'reportes tienen'} entradas que parecen reportadas dos veces
+            (mismo dia, ubicacion y cantidad). Revisalas antes de exportar.
+          </Text>
+        </View>
+      )}
     <View style={styles.table}>
       <View style={styles.headerRowTable}>
         <Text style={[styles.headerCell, styles.colAutor]}>REPORTÓ</Text>
@@ -233,6 +287,7 @@ function WorkforceList({
           ))}
         </View>
       ))}
+    </View>
     </View>
   );
 }
@@ -503,6 +558,14 @@ const styles = StyleSheet.create({
   detailBlock: { gap: 2 },
   detailTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 5, marginBottom: 2 },
   detailTitle: { fontSize: 10, fontWeight: '800', color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.4 },
+  detailTxtDup: { color: '#B45309', fontWeight: '700' },
+  dupBadge: { flexDirection: 'row', alignItems: 'center', gap: 3, marginTop: 2 },
+  dupBadgeTxt: { fontSize: 9, fontWeight: '800', color: '#B45309' },
+  dupBanner: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginBottom: spacing.sm,
+    padding: spacing.sm, borderRadius: radius.sm, backgroundColor: '#FEF3C7',
+  },
+  dupBannerTxt: { flex: 1, fontSize: 11, color: '#92400E', lineHeight: 16, fontWeight: '600' },
   detailRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
   detailTxt: { flex: 1, fontSize: 12, color: colors.text, lineHeight: 17 },
   rowActions: { flexDirection: 'row', width: 52, alignItems: 'center', justifyContent: 'flex-end' },
