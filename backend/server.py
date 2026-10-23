@@ -17911,6 +17911,7 @@ async def export_reports_pdf(
     actividades_resumen_frente = _actividades_resumen_por_frente_con_respaldo(
         _quitar_emoji_deep(await _actividades_generales_core(
             pid, None, {"$gte": start_dt, "$lte": end_dt}, user, incluir_ocultas=False,
+            ia_inicio_dentro=True,
         )),
         nodes_by_id,
     )
@@ -21061,6 +21062,7 @@ async def export_reports_pdf(
                 c.showPage()
                 page_num += 1
 
+        _area_fotos = [""]  # Área del reporte en curso (se imprime junto a la estación en las fotos)
         for n in leaf_nodes:
             n_subtramo_id = _subtramo_id_for(n["id"], nodes_by_id)
             _titulo_est_fotos = _estacion_titulos(
@@ -21126,6 +21128,7 @@ async def export_reports_pdf(
                 area_reps = reports_by_area.get(aid) or []  # narrativa: puede venir vacía (sin fotos)
                 area_reps_all = reports_by_area_all[aid]
                 area_name = _area_name(aid)
+                _area_fotos[0] = area_name
                 printed_area_buckets.add(area_name)
 
                 # === Portadilla de Área (fondo magenta de la portada) ========
@@ -21238,10 +21241,26 @@ async def export_reports_pdf(
                         c.setFont("Roboto-Bold", 16)
                         _tx = 2.15 * cm + 2 * _tr + 0.3 * cm
                         _ty = PH - EXEC_TITULO_TOP - 0.55 * cm
+                        _ar = (_area_fotos[0] or "").strip()
+
+                        def _area_chica(_x_ini: float, _txt: str, _y: float) -> None:
+                            # Área entre paréntesis, en chiquito, junto a la estación.
+                            if not _ar:
+                                return
+                            _w1 = c.stringWidth(_txt, "Roboto-Bold", 16)
+                            c.setFont("Roboto", 9)
+                            c.drawString(_x_ini + _w1 + 6, _y, f"({_ar})")
+                            c.setFont("Roboto-Bold", 16)
+
                         if _chico:
                             c.drawString(_tx, _ty, _chico)
+                            _area_chica(_tx, _chico, _ty)
                             _ty -= 19
-                        c.drawString(_tx, _ty, (_grande or "").upper())
+                            c.drawString(_tx, _ty, (_grande or "").upper())
+                        else:
+                            _g_up = (_grande or "").upper()
+                            c.drawString(_tx, _ty, _g_up)
+                            _area_chica(_tx, _g_up, _ty)
                     for idx, (b64, cap) in enumerate(_buffer[:PER_PAGE]):
                         px = x0 + idx * (EXEC_PHOTO_W + EXEC_GAP_X)
                         draw_photo_with_caption(px, photo_bottom_y, b64, cap)
@@ -24973,6 +24992,7 @@ async def export_reports_pptx(
     # (`_actividades_generales_core`) para el rango exacto del informe.
     _actividades_items_resumen = _quitar_emoji_deep(await _actividades_generales_core(
         pid, None, {"$gte": start_dt, "$lte": end_dt}, user, incluir_ocultas=False,
+        ia_inicio_dentro=True,
     ))
     actividades_resumen_frente = _actividades_resumen_por_frente_con_respaldo(_actividades_items_resumen, nodes_by_id)
     # Clima: misma prioridad manual > automático que `export_reports_pdf` —
@@ -27343,7 +27363,7 @@ async def export_reports_pptx(
         FOTO_TITULO_Y = Cm(2.5)
         FOTO_TITULO_H = Cm(1.9)
 
-        def _pair_slide(photo_pair, titulo=None):
+        def _pair_slide(photo_pair, titulo=None, area=None):
             """Emite una slide con hasta 2 fotos (foto + pie de texto).
             `photo_pair` es una lista de tuplas (b64_img|None, caption_str).
             `titulo` = (ESTACIÓN N., nombre) del frente al que pertenece."""
@@ -27358,6 +27378,12 @@ async def export_reports_pptx(
                 _tb = add_text(slide, _tx, int(FOTO_TITULO_Y), int(SW * 0.6), int(FOTO_TITULO_H),
                                titulo[0] or (titulo[1] or "").upper(),
                                size=16, bold=True, color=READABLE_BRAND_RGB)
+                if (area or "").strip():  # Área entre paréntesis, en chiquito, junto a la estación
+                    _ra = _tb.text_frame.paragraphs[0].add_run()
+                    _ra.text = f"  ({area.strip()})"
+                    _ra.font.size = Pt(9)
+                    _ra.font.bold = False
+                    _ra.font.color.rgb = PRGBColor(*READABLE_BRAND_RGB)
                 if titulo[0] and titulo[1]:  # 2ª línea: nombre de la estación
                     _p2 = _tb.text_frame.add_paragraph()
                     _r2 = _p2.add_run()
@@ -27513,14 +27539,14 @@ async def export_reports_pptx(
                         return _general_obs
                     if not _imgs:
                         # Reporte sin fotos → 1 slide con placeholder + obs.
-                        _pair_slide([(None, _general_obs), None], _titulo_est_fotos)
+                        _pair_slide([(None, _general_obs), None], _titulo_est_fotos, area_name)
                         continue
                     _pair: list = []
                     for _i, _b64 in enumerate(_imgs):
                         _pair.append((_b64, _cap_at(_i)))
                     while len(_pair) < 2:
                         _pair.append(None)
-                    _pair_slide(_pair, _titulo_est_fotos)
+                    _pair_slide(_pair, _titulo_est_fotos, area_name)
 
         _emit_subtramo_summary_slide(current_subtramo_id)
         if any_data:
@@ -29097,7 +29123,8 @@ async def _areas_by_id_for(pid: str) -> dict:
 
 
 async def _actividades_generales_core(pid: str, area_id: Optional[str], rango: Optional[dict],
-                                       user: dict, *, incluir_ocultas: bool = False) -> list:
+                                       user: dict, *, incluir_ocultas: bool = False,
+                                       ia_inicio_dentro: bool = False) -> list:
     """Cuerpo compartido entre GET /actividades_generales (hub HTTP) y el
     resumen por área que se imprime dentro de cada bloque de Área del
     PDF/PPTX (`_actividades_curadas_resumen_por_area`) — misma fuente de
@@ -29203,7 +29230,7 @@ async def _actividades_generales_core(pid: str, area_id: Optional[str], rango: O
             continue
         if doc.get("oculta") and not incluir_ocultas:
             continue
-        if doc.get("ia_resumen") and not _ia_resumen_visible(doc, rango):
+        if doc.get("ia_resumen") and not _ia_resumen_visible(doc, rango, ia_inicio_dentro):
             continue
         node = nodes_by_id.get(doc.get("node_id")) or {}
         out.append(_actividad_out(doc, node, areas_by_id, user))
@@ -29706,13 +29733,23 @@ def _ia_rango_clave(rango: Optional[dict]) -> tuple:
     return _iso(rango.get("$gte")), _iso(rango.get("$lte"))
 
 
-def _ia_resumen_visible(doc: dict, rango: Optional[dict]) -> bool:
+def _ia_resumen_visible(doc: dict, rango: Optional[dict], inicio_dentro: bool = False) -> bool:
     """¿Se muestra un resumen IA guardado al listar con `rango`? Sin rango,
     solo los generados también sin rango ("todo el periodo"); con rango, los
     generados para un periodo contenido en él (mismo periodo del hub, o un día
-    dentro de la semana que imprime el PDF/PPTX). Pura."""
+    dentro de la semana que imprime el PDF/PPTX). Pura.
+
+    `inicio_dentro` (impresión): el informe termina "ahora" (diario/semanal/
+    mensual en curso) pero el resumen se generó en el hub para el día/semana
+    COMPLETO (su `ia_lte` es medianoche), así que la contención estricta lo
+    descartaba y no llegaba al PDF/PPTX. Basta con que el periodo del
+    resumen EMPIECE dentro del rango del informe."""
     doc_gte, doc_lte = doc.get("ia_gte"), doc.get("ia_lte")
     req_gte, req_lte = _ia_rango_clave(rango)
+    if inicio_dentro and (req_gte is not None or req_lte is not None):
+        if doc_gte is None:
+            return False
+        return (req_gte is None or doc_gte >= req_gte) and (req_lte is None or doc_gte <= req_lte)
     if req_gte is None and req_lte is None:
         return doc_gte is None and doc_lte is None
     if doc_gte is None and doc_lte is None:
