@@ -2175,6 +2175,8 @@ async def startup_event():
     # TTL: Mongo purga automaticamente noticias vencidas (expires_at en el pasado).
     await db.announcements.create_index("expires_at", expireAfterSeconds=0)
     await db.minutas.create_index([("project_id", 1), ("created_at", -1)])
+    await db.informes_diarios.create_index([("project_id", 1), ("user_id", 1), ("fecha", 1)], unique=True)
+    await db.informes_diarios.create_index([("project_id", 1), ("fecha", 1), ("estado", 1)])
     await db.minutas.create_index([("project_id", 1), ("acuerdos.responsable_id", 1)])
     await db.minutas.create_index([("project_id", 1), ("involved_ids", 1)])
     await db.cap_certs.create_index([("project_id", 1), ("activo", 1)])
@@ -2401,6 +2403,8 @@ async def startup_event():
     asyncio.create_task(_meeting_reminder_loop())
     # Loop en segundo plano: clima automático cada hora por Estación.
     asyncio.create_task(_clima_auto_loop())
+    # Loop en segundo plano: corte de las 19:00 -> informe diario por ingeniero (IA).
+    asyncio.create_task(_informe_diario_loop())
 
     log.info("[startup] Dirac ready")
 
@@ -14973,6 +14977,425 @@ async def _meeting_reminder_loop() -> None:
         except Exception:
             log.exception("[push] _avisar_acuerdos_por_vencer: error en la iteración")
         await asyncio.sleep(300)
+
+
+# === INFORME DIARIO POR INGENIERO (corte 19:00 + resumen con IA) =============
+# A la hora de corte (zona del PROYECTO) se arma, por cada ingeniero
+# (especialista / sub-coordinador), su informe del día con la estructura de la
+# plantilla "Informe técnico diario de supervisión": un bloque por reporte de
+# campo (ubicación, estatus, actividades, fuerza de trabajo, equipo,
+# observaciones, fotos) más un resumen redactado con IA. Se avisa por push
+# "Tu reporte diario está listo, revísalo" y el ingeniero lo CONFIRMA: esa
+# confirmación es lo que le da responsabilidad sobre lo reportado.
+#
+# Para NO saturar a Gemini: una sola llamada por ingeniero (nunca por reporte),
+# ejecutadas de una en una con un intervalo mínimo entre llamadas
+# (INFORME_IA_INTERVALO_S), reintentos con espera creciente ante 429/5xx y, si
+# aun así falla, el informe se entrega igual con los datos tal cual (sin
+# redacción IA) y queda marcado `ia=False`. La cola vive en Mongo
+# (`informes_diarios`, estado pendiente→listo), así que sobrevive reinicios y
+# dos instancias no procesan el mismo informe (reclamo atómico con lease).
+INFORME_HORA_CORTE = int(os.environ.get("INFORME_DIARIO_HORA_CORTE", "19"))
+INFORME_IA_INTERVALO_S = float(os.environ.get("INFORME_DIARIO_IA_INTERVALO_S", "6"))
+INFORME_IA_MAX_INTENTOS = 3        # intentos de IA por informe antes del respaldo sin IA
+INFORME_IA_REINTENTOS_HTTP = 3     # reintentos por llamada ante 429/5xx
+INFORME_LEASE_S = 300
+INFORME_MAX_BLOQUES_IA = 60
+INFORME_MAX_ACT_POR_BLOQUE = 15
+INFORME_MAX_CHARS = 300
+INFORME_ROLES = (ROLE_ESPECIALISTA, ROLE_SUB)
+_INFORME_ESTATUS = {
+    "verde": "En proceso de ejecución",
+    "amarillo": "Con observaciones",
+    "rojo": "Requiere atención",
+}
+INFORME_IA_SYSTEM = (
+    "Eres un asistente de supervisión de obra civil. Recibes los reportes de campo que un ingeniero "
+    "capturó en el día, numerados por clave. Redacta en español, tercera persona y tono técnico-neutro: "
+    "(1) \"resumen_general\": un párrafo de 3 a 5 oraciones con lo más relevante del día del ingeniero "
+    "(frentes atendidos, trabajos principales, incidencias); (2) \"bloques\": para CADA clave un resumen "
+    "de 1 a 2 oraciones de ese reporte. Usa SOLO la información dada: no inventes cifras, nombres, "
+    "avances ni fechas. Agrupa lo repetido. Responde ÚNICAMENTE un objeto JSON con la forma "
+    "{\"resumen_general\": \"...\", \"bloques\": {\"b1\": \"...\"}}, texto plano sin viñetas ni markdown."
+)
+
+_informe_ia_lock = asyncio.Lock()
+_informe_ia_ultima = 0.0  # time.monotonic() de la última llamada a Gemini del informe
+
+
+def _informe_limpia(txt: Any, limite: int = INFORME_MAX_CHARS) -> str:
+    return " ".join(str(txt or "").split())[:limite]
+
+
+def _informe_bloque_de_reporte(rep: dict, project: Optional[dict] = None) -> dict:
+    """Un reporte de campo → un bloque con las secciones de la plantilla. Pura."""
+    items = [_informe_limpia(i.get("texto")) for i in (rep.get("actividades_items") or []) if isinstance(i, dict)]
+    items = [t for t in items if t]
+    if not items:
+        items = [t for t in (_informe_limpia(x) for x in str(rep.get("actividades") or "").splitlines()) if t]
+    equipo = []
+    for e in rep.get("equipment") or []:
+        princ, serie = _format_workforce_desc(str(e))
+        if princ:
+            equipo.append(f"{princ} ({serie})" if serie else princ)
+    creado = rep.get("created_at")
+    hora = ""
+    if isinstance(creado, datetime):
+        if creado.tzinfo is None:
+            creado = creado.replace(tzinfo=timezone.utc)
+        hora = creado.astimezone(zona_proyecto(project)).strftime("%H:%M")
+    ruta = [str(x) for x in (rep.get("node_path_names") or []) if x]
+    obs = " ".join(x for x in (_informe_limpia(rep.get("observaciones")), _informe_limpia(rep.get("incidencias"))) if x)
+    caps = rep.get("photo_captions") or []
+    fotos = [{"idx": i, "caption": _informe_limpia(caps[i]) if i < len(caps) else ""}
+             for i in range(len(rep.get("images") or []))]
+    grav = _normalize_gravedad(rep.get("gravedad"))
+    return {
+        "report_id": rep.get("id"),
+        "hora": hora,
+        "ubicacion": " › ".join(ruta[-3:]) if ruta else "Sin ubicación",
+        "area_name": rep.get("area_name") or "",
+        "estatus": _INFORME_ESTATUS[grav],
+        "gravedad": grav,
+        "actividades": items,
+        "fuerza_trabajo": ", ".join(_informe_limpia(p, 120) for p in (rep.get("personnel") or []) if p),
+        "equipo": ", ".join(equipo),
+        "observaciones": obs,
+        "fotos": fotos,
+        "resumen_ia": "",
+    }
+
+
+def _informe_entrada_ia(bloques: list, nombre: str, fecha: str) -> str:
+    """Texto que se manda a Gemini: solo texto (nunca fotos), acotado. Pura."""
+    partes = []
+    for i, b in enumerate(bloques[:INFORME_MAX_BLOQUES_IA], start=1):
+        lineas = [f'clave="b{i}" hora={b["hora"] or "?"} ubicación="{b["ubicacion"]}"'
+                  + (f' área="{b["area_name"]}"' if b["area_name"] else "") + f' estatus="{b["estatus"]}"']
+        lineas += [f"- {a}" for a in b["actividades"][:INFORME_MAX_ACT_POR_BLOQUE]]
+        if b["fuerza_trabajo"]:
+            lineas.append(f"Fuerza de trabajo: {b['fuerza_trabajo']}")
+        if b["equipo"]:
+            lineas.append(f"Equipo: {b['equipo']}")
+        if b["observaciones"]:
+            lineas.append(f"Observaciones: {b['observaciones']}")
+        partes.append("\n".join(lineas))
+    return (f"Ingeniero: {nombre}. Fecha: {fecha}. Reportes del día ({len(partes)}):\n\n"
+            + "\n\n".join(partes) + "\n\nDevuelve el JSON solicitado.")
+
+
+def _informe_parsear_ia(raw: str, n_bloques: int) -> Tuple[str, Dict[int, str]]:
+    """`(resumen_general, {indice_bloque: resumen})` desde la respuesta del LLM,
+    tolerando cercas ```json. Lanza ValueError si no hay JSON o viene vacío. Pura."""
+    s = (raw or "").strip()
+    if s.startswith("```"):
+        s = s.strip("`")
+        if s[:4].lower() == "json":
+            s = s[4:]
+    i, j = s.find("{"), s.rfind("}")
+    if i < 0 or j <= i:
+        raise ValueError("La IA no devolvió un JSON válido")
+    data = json.loads(s[i:j + 1])
+    if not isinstance(data, dict):
+        raise ValueError("La IA no devolvió un objeto JSON")
+    general = _informe_limpia(data.get("resumen_general"), 1500)
+    por_bloque: Dict[int, str] = {}
+    blq = data.get("bloques")
+    if isinstance(blq, dict):
+        for k, v in blq.items():
+            m = re.fullmatch(r"\s*b?(\d+)\s*", str(k).lower())
+            if m and isinstance(v, str) and v.strip() and 1 <= int(m.group(1)) <= n_bloques:
+                por_bloque[int(m.group(1)) - 1] = _informe_limpia(v, 600)
+    if not general and not por_bloque:
+        raise ValueError("La IA no devolvió resúmenes utilizables")
+    return general, por_bloque
+
+
+def _informe_resumen_respaldo(bloques: list) -> str:
+    """Resumen determinista (sin IA) para cuando Gemini no responde. Pura."""
+    if not bloques:
+        return "Sin actividades registradas."
+    ubic = list(dict.fromkeys(b["ubicacion"] for b in bloques))
+    n_act = sum(len(b["actividades"]) for b in bloques)
+    txt = f"Se capturaron {len(bloques)} reporte(s) con {n_act} actividad(es) en: " + "; ".join(ubic[:6])
+    return txt + ("…" if len(ubic) > 6 else ".")
+
+
+async def _informe_gemini_json(system: str, user_text: str) -> str:
+    """UNA llamada a Gemini con límite de ritmo global (cola en proceso: solo una
+    a la vez y al menos INFORME_IA_INTERVALO_S entre inicios) y reintentos con
+    espera exponencial ante 429/5xx. Devuelve el texto; lanza RuntimeError."""
+    import time as _time
+    import random as _random
+    global _informe_ia_ultima
+    if not GEMINI_API_KEY:
+        raise RuntimeError("GEMINI_API_KEY no configurada")
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+    async with _informe_ia_lock:
+        ultimo_error = "sin respuesta"
+        for intento in range(INFORME_IA_REINTENTOS_HTTP):
+            espera = INFORME_IA_INTERVALO_S - (_time.monotonic() - _informe_ia_ultima)
+            if intento:
+                espera = max(espera, 5 * (2 ** (intento - 1)) + _random.uniform(0, 2))
+            if espera > 0:
+                await asyncio.sleep(espera)
+            _informe_ia_ultima = _time.monotonic()
+            try:
+                async with httpx.AsyncClient(timeout=60.0) as client:
+                    resp = await client.post(
+                        url, params={"key": GEMINI_API_KEY},
+                        json={
+                            "system_instruction": {"parts": [{"text": system}]},
+                            "contents": [{"parts": [{"text": user_text}]}],
+                            "generationConfig": {"maxOutputTokens": 4000, "responseMimeType": "application/json"},
+                        },
+                    )
+            except Exception as e:  # red caída / timeout: se reintenta
+                ultimo_error = f"red: {e}"
+                continue
+            if resp.status_code in (429, 500, 502, 503, 504):
+                ultimo_error = f"Gemini {resp.status_code}"
+                continue
+            if resp.status_code != 200:
+                raise RuntimeError(f"Gemini {resp.status_code}: {resp.text[:300]}")
+            cands = resp.json().get("candidates") or []
+            parts = ((cands[0].get("content") or {}).get("parts") if cands else None) or []
+            out = "".join(p.get("text", "") for p in parts).strip()
+            if not out:
+                raise RuntimeError("Respuesta vacía del LLM")
+            return out
+        raise RuntimeError(ultimo_error)
+
+
+async def _informe_crear_pendientes(project: dict, fecha: date) -> int:
+    """Crea (idempotente) el informe `pendiente` de cada ingeniero del proyecto
+    con reportes ese día, y uno `sin_actividad` para el resto. Devuelve cuántos
+    creó. Barato: no llama a la IA."""
+    pid = project["id"]
+    desde, hasta = inicio_dia_utc(fecha, project), inicio_dia_utc(fecha + timedelta(days=1), project)
+    ingenieros = await db.users.find(
+        {"project_ids": pid, "role": {"$in": list(INFORME_ROLES)}, "deleted_at": {"$exists": False}},
+        {"_id": 0, "id": 1, "name": 1, "role": 1},
+    ).to_list(length=2000)
+    con_reportes = set(await db.reports.distinct(
+        "captured_by", {"project_id": pid, "created_at": {"$gte": desde, "$lt": hasta}}))
+    creados = 0
+    ahora = datetime.now(timezone.utc)
+    for u in ingenieros:
+        estado = "pendiente" if u["id"] in con_reportes else "sin_actividad"
+        doc = {
+            "id": str(uuid.uuid4()), "project_id": pid, "user_id": u["id"], "user_name": u.get("name") or "",
+            "user_role": u.get("role"), "fecha": fecha.isoformat(), "estado": estado, "ia": False,
+            "intentos": 0, "bloques": [], "resumen_general": "", "reportes_count": 0,
+            "created_at": ahora, "generado_en": ahora if estado == "sin_actividad" else None,
+            "notificado_en": None, "visto_en": None, "confirmado_en": None, "comentario_ingeniero": "",
+        }
+        try:
+            r = await db.informes_diarios.update_one(
+                {"project_id": pid, "user_id": u["id"], "fecha": doc["fecha"]}, {"$setOnInsert": doc}, upsert=True)
+            creados += 1 if r.upserted_id else 0
+        except DuplicateKeyError:
+            pass  # carrera con otra instancia: ya existe
+    return creados
+
+
+async def _informe_procesar(doc: dict, project: dict) -> None:
+    """Arma el informe reclamado (`procesando`): bloques desde los reportes del
+    día + resumen IA (o respaldo) y lo deja `listo`. Avisa por push."""
+    fecha = date.fromisoformat(doc["fecha"])
+    desde, hasta = inicio_dia_utc(fecha, project), inicio_dia_utc(fecha + timedelta(days=1), project)
+    reps = await db.reports.find(
+        {"project_id": doc["project_id"], "captured_by": doc["user_id"], "created_at": {"$gte": desde, "$lt": hasta}},
+    ).sort("created_at", 1).to_list(length=500)
+    bloques = [_informe_bloque_de_reporte(r, project) for r in reps]
+    general, ia_ok, error = "", False, None
+    if bloques:
+        try:
+            raw = await _informe_gemini_json(INFORME_IA_SYSTEM, _informe_entrada_ia(bloques, doc.get("user_name") or "", doc["fecha"]))
+            general, por_bloque = _informe_parsear_ia(raw, min(len(bloques), INFORME_MAX_BLOQUES_IA))
+            for idx, txt in por_bloque.items():
+                bloques[idx]["resumen_ia"] = txt
+            ia_ok = True
+        except Exception as e:
+            error = str(e)[:300]
+            log.warning("[informe_diario] IA falló user=%s intento=%s: %s", doc["user_id"], doc.get("intentos", 0) + 1, error)
+    intentos = int(doc.get("intentos") or 0) + 1
+    if not ia_ok and bloques and intentos < INFORME_IA_MAX_INTENTOS:
+        # Se devuelve a la cola para un reintento posterior (otra vuelta del loop).
+        await db.informes_diarios.update_one(
+            {"id": doc["id"]}, {"$set": {"estado": "pendiente", "intentos": intentos, "ia_error": error, "lease_hasta": None}})
+        return
+    await db.informes_diarios.update_one({"id": doc["id"]}, {"$set": {
+        "estado": "listo", "ia": ia_ok, "ia_error": error, "intentos": intentos, "lease_hasta": None,
+        "bloques": bloques, "reportes_count": len(reps),
+        "resumen_general": general if ia_ok else _informe_resumen_respaldo(bloques),
+        "generado_en": datetime.now(timezone.utc),
+    }})
+    try:
+        await send_push_notification(
+            user_id=doc["user_id"], title="Tu reporte diario está listo",
+            body="Revísalo y confírmalo.",
+            data={"type": "daily_report_ready", "project_id": doc["project_id"], "informe_id": doc["id"], "fecha": doc["fecha"]},
+        )
+        await db.informes_diarios.update_one({"id": doc["id"]}, {"$set": {"notificado_en": datetime.now(timezone.utc)}})
+    except Exception:
+        log.exception("[informe_diario] push falló user=%s", doc["user_id"])
+
+
+async def _informe_drenar_cola(project: dict, fecha: date, limite: int = 200) -> int:
+    """Procesa los informes `pendiente` del proyecto/fecha de uno en uno
+    (reclamo atómico con lease: sobrevive a reinicios y a varias instancias).
+    Un informe que falla la IA vuelve a `pendiente` y se reintenta en la
+    siguiente vuelta del loop (no se reclama dos veces en la misma pasada)."""
+    hechos = 0
+    vistos: set = set()
+    while hechos < limite:
+        ahora = datetime.now(timezone.utc)
+        doc = await db.informes_diarios.find_one_and_update(
+            {"project_id": project["id"], "fecha": fecha.isoformat(), "id": {"$nin": list(vistos)}, "$or": [
+                {"estado": "pendiente"},
+                {"estado": "procesando", "lease_hasta": {"$lt": ahora}},
+            ]},
+            {"$set": {"estado": "procesando", "lease_hasta": ahora + timedelta(seconds=INFORME_LEASE_S)}},
+            return_document=ReturnDocument.AFTER,
+        )
+        if not doc:
+            break
+        vistos.add(doc["id"])
+        try:
+            await _informe_procesar(doc, project)
+        except Exception:
+            log.exception("[informe_diario] fallo procesando %s", doc.get("id"))
+            await db.informes_diarios.update_one(
+                {"id": doc["id"], "estado": "procesando"},
+                {"$set": {"estado": "pendiente", "lease_hasta": None}, "$inc": {"intentos": 1}})
+        hechos += 1
+    return hechos
+
+
+def _informe_toca_corte(project: dict, ahora_utc: Optional[datetime] = None) -> Optional[date]:
+    """La fecha cuyo corte ya pasó (hoy, en la zona del proyecto, a partir de la
+    hora de corte); `None` antes de la hora. Pura."""
+    ahora = (ahora_utc or datetime.now(timezone.utc)).astimezone(zona_proyecto(project))
+    return ahora.date() if ahora.hour >= INFORME_HORA_CORTE else None
+
+
+async def _informe_diario_loop() -> None:
+    """Loop en segundo plano (arrancado en startup_event): cada 5 min, para cada
+    proyecto activo cuyo corte ya pasó, crea los informes del día (una vez) y
+    drena la cola. Idempotente: tras un reinicio retoma lo que quedó pendiente."""
+    await asyncio.sleep(45)
+    while True:
+        try:
+            proyectos = await db.projects.find({"archived": {"$ne": True}}).to_list(length=1000)
+            for proj in proyectos:
+                fecha = _informe_toca_corte(proj)
+                if not fecha:
+                    continue
+                try:
+                    n = await _informe_crear_pendientes(proj, fecha)
+                    if n:
+                        log.info("[informe_diario] %s: %d informe(s) en cola", proj.get("name") or proj["id"], n)
+                    await _informe_drenar_cola(proj, fecha)
+                except Exception:
+                    log.exception("[informe_diario] fallo en proyecto %s", proj.get("id"))
+        except Exception:
+            log.exception("[informe_diario] _informe_diario_loop: error en la iteración")
+        await asyncio.sleep(300)
+
+
+def _informe_publico(doc: dict) -> dict:
+    return {k: v for k, v in doc.items() if k not in ("_id", "lease_hasta")}
+
+
+class InformeConfirmIn(BaseModel):
+    comentario: Optional[str] = None
+
+
+@api.get("/projects/{pid}/informe_diario/mio")
+async def informe_diario_mio(pid: str, fecha: Optional[str] = Query(None, description="YYYY-MM-DD; por defecto el último"),
+                             user: dict = Depends(current_user)):
+    """Informe del ingeniero autenticado: el de `fecha`, o el más reciente."""
+    await ensure_project_access(user, pid)
+    q: dict = {"project_id": pid, "user_id": user["id"]}
+    if fecha:
+        q["fecha"] = fecha
+    doc = await db.informes_diarios.find_one(q, sort=[("fecha", -1)])
+    return _informe_publico(doc) if doc else None
+
+
+@api.get("/projects/{pid}/informe_diario/pendientes")
+async def informe_diario_pendientes(pid: str, user: dict = Depends(current_user)):
+    """Informes listos que el ingeniero aún no confirma (para el aviso de Inicio)."""
+    await ensure_project_access(user, pid)
+    return await db.informes_diarios.find(
+        {"project_id": pid, "user_id": user["id"], "estado": "listo", "confirmado_en": None},
+        {"_id": 0, "id": 1, "fecha": 1, "reportes_count": 1, "generado_en": 1},
+    ).sort("fecha", -1).to_list(length=30)
+
+
+@api.post("/projects/{pid}/informe_diario/{iid}/confirmar")
+async def informe_diario_confirmar(pid: str, iid: str, body: InformeConfirmIn, user: dict = Depends(current_user)):
+    """El ingeniero da por revisado su informe (responsabilidad sobre lo reportado)."""
+    await ensure_project_access(user, pid)
+    _assert_write_allowed(user)
+    doc = await db.informes_diarios.find_one({"id": iid, "project_id": pid})
+    if not doc or doc["user_id"] != user["id"]:
+        raise HTTPException(404, "Informe no encontrado")
+    if doc["estado"] != "listo":
+        raise HTTPException(409, "El informe aún no está listo")
+    ahora = datetime.now(timezone.utc)
+    sets = {"visto_en": doc.get("visto_en") or ahora, "confirmado_en": doc.get("confirmado_en") or ahora}
+    if body.comentario is not None:
+        sets["comentario_ingeniero"] = _informe_limpia(body.comentario, 1500)
+    await db.informes_diarios.update_one({"id": iid}, {"$set": sets})
+    return _informe_publico(await db.informes_diarios.find_one({"id": iid}))
+
+
+@api.get("/projects/{pid}/informes_diarios")
+async def informes_diarios_cumplimiento(pid: str, fecha: Optional[str] = Query(None), user: dict = Depends(current_user)):
+    """Tablero de cumplimiento del día (quién tiene informe, quién lo confirmó).
+    Solo Coordinación / Jefe / Sub-coordinador."""
+    project = await ensure_project_access(user, pid)
+    if user["role"] not in (ROLE_COORD, ROLE_JEFE, ROLE_SUB):
+        raise HTTPException(403, "Tu rol no puede ver el cumplimiento de informes")
+    f = fecha or hoy_proyecto(project).isoformat()
+    docs = await db.informes_diarios.find(
+        {"project_id": pid, "fecha": f}, {"_id": 0, "bloques": 0, "lease_hasta": 0},
+    ).sort("user_name", 1).to_list(length=2000)
+    return {"fecha": f, "informes": docs}
+
+
+@api.post("/projects/{pid}/informe_diario/generar")
+async def informe_diario_generar_ahora(pid: str, fecha: Optional[str] = Query(None), user: dict = Depends(current_user)):
+    """Dispara el corte ya (pruebas / corte omitido). Solo Coordinador General.
+    Encola y procesa en segundo plano con el mismo límite de ritmo hacia Gemini."""
+    project = await ensure_project_access(user, pid)
+    if user["role"] != ROLE_COORD:
+        raise HTTPException(403, "Solo el Coordinador General puede generar los informes")
+    try:
+        f = date.fromisoformat(fecha) if fecha else hoy_proyecto(project)
+    except ValueError:
+        raise HTTPException(400, "fecha inválida (YYYY-MM-DD)")
+    creados = await _informe_crear_pendientes(project, f)
+    asyncio.create_task(_informe_drenar_cola(project, f))
+    return {"fecha": f.isoformat(), "en_cola": creados}
+
+
+@api.get("/projects/{pid}/informe_diario/{iid}")
+async def informe_diario_detalle(pid: str, iid: str, user: dict = Depends(current_user)):
+    """Detalle del informe. El dueño lo ve (y queda `visto_en`); coordinación/jefe/sub
+    pueden ver el de cualquiera."""
+    await ensure_project_access(user, pid)
+    doc = await db.informes_diarios.find_one({"id": iid, "project_id": pid})
+    if not doc:
+        raise HTTPException(404, "Informe no encontrado")
+    if doc["user_id"] != user["id"] and user["role"] not in (ROLE_COORD, ROLE_JEFE, ROLE_SUB):
+        raise HTTPException(403, "No puedes ver el informe de otro ingeniero")
+    if doc["user_id"] == user["id"] and not doc.get("visto_en") and doc["estado"] == "listo":
+        doc["visto_en"] = datetime.now(timezone.utc)
+        await db.informes_diarios.update_one({"id": iid}, {"$set": {"visto_en": doc["visto_en"]}})
+    return _informe_publico(doc)
 
 
 # === EXPORT (Excel "sábana plana" jerárquica) ===============================

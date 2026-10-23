@@ -21,6 +21,7 @@ import { useAuth } from '@/src/auth-context';
 import { useProyectoActivo } from '@/src/proyecto-activo-context';
 import { colors, radius, shadow, spacing } from '@/src/theme';
 import { HeaderMenu } from '@/src/components/HeaderMenu';
+import { InformeDiarioBanner } from '@/src/components/InformeDiarioBanner';
 import { api, FeedItem, FeedResponse, Project, ProjectEvent } from '@/src/api';
 import { storage } from '@/src/utils/storage';
 import { ReportPeriod, periodToInformeType } from '@/src/components/PeriodSheet';
@@ -377,6 +378,8 @@ export default function SpecFeedScreen() {
         <StatCard label={t('inicioEspecialista.mios')} value={stats.mine} icon="person" tint="#0EA5E9" />
         <StatCard label={t('inicioEspecialista.companeros')} value={stats.others} icon="people-outline" tint="#10B981" />
       </View>
+
+      <InformeDiarioBanner projectId={projectId || ""} basePath="/(spec)" />
 
       <BorradoresCard basePath="/(spec)" />
 

@@ -101,6 +101,8 @@ export default function SpecLayout() {
         <Tabs.Screen name="visualizar-avance" options={{ href: null }} />
         {/* Actividades Generales (grupo de 3 opciones del menu hamburgues), sin tab visible. */}
         <Tabs.Screen name="actividades-generales" options={{ href: null }} />
+        {/* Informe diario del ingeniero (aviso de Inicio / push de las 19:00), sin tab visible. */}
+        <Tabs.Screen name="informe-diario" options={{ href: null }} />
         {/* Dashboard EVM (Valor Ganado) _ alcanzable via router.push (menu hamburgues), sin tab visible. */}
         <Tabs.Screen name="dashboard-evm" options={{ href: null }} />
         {/* Sistema Multi-Proyecto Modular: plantillas piloto, alcanzables
