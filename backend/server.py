@@ -11386,6 +11386,614 @@ async def delete_project_file(
     return {"ok": True, "file_id": file_id}
 
 
+# === TRAZABILIDAD (árbol: categorías → grupos → documentos) =================
+# Reemplaza a los "Archivos de consulta" sueltos. Cada documento (plano,
+# memoria…) cuelga de un árbol y lleva sus características (oficios, fechas,
+# revisiones…) y sus archivos (PDF, Excel, PowerPoint, DWG…). El árbol se
+# siembra desde el Excel "TRAZABILIDAD PROYECTO EJECUTIVO" y se puede volver a
+# importar para actualizar sin perder lo capturado a mano.
+TRAZ_ESTATUS = [
+    "Observaciones A", "Observaciones B", "Validación técnica",
+    "Firmado", "Escaneado", "En revisión DIRAC",
+]
+
+# Esquema de características por documento. El frontend pinta el formulario
+# desde aquí, así que agregar una columna nueva es agregarla a esta lista.
+TRAZ_ESQUEMA = [
+    {"id": "general", "label": "Datos del documento", "campos": [
+        {"k": "disciplina", "label": "Disciplina", "tipo": "texto"},
+        {"k": "estatus", "label": "Estatus", "tipo": "estatus"},
+    ]},
+    {"id": "alfa", "label": "Escrito ALFA a DGOT", "campos": [
+        {"k": "alfa_rev", "label": "Rev.", "tipo": "texto"},
+        {"k": "alfa_oficio", "label": "Oficio", "tipo": "texto"},
+        {"k": "alfa_fecha", "label": "Fecha", "tipo": "fecha"},
+    ]},
+    {"id": "dgot", "label": "Envío DGOT a DIRAC", "campos": [
+        {"k": "dgot_rev", "label": "Rev.", "tipo": "texto"},
+        {"k": "dgot_oficio", "label": "Oficio", "tipo": "texto"},
+        {"k": "dgot_fecha", "label": "Fecha", "tipo": "fecha"},
+    ]},
+    {"id": "dirac", "label": "Envío DIRAC a DGOT", "campos": [
+        {"k": "dirac_rev", "label": "Rev.", "tipo": "texto"},
+        {"k": "dirac_oficio", "label": "Oficio", "tipo": "texto"},
+        {"k": "dirac_fecha", "label": "Fecha", "tipo": "fecha"},
+    ]},
+    {"id": "archivos", "label": "Última revisión", "campos": [
+        {"k": "pdf", "label": "PDF escaneado (rev.)", "tipo": "texto"},
+        {"k": "dwg", "label": "DWG", "tipo": "texto"},
+    ]},
+    {"id": "val", "label": "Validación técnica por DIRAC", "campos": [
+        {"k": "val_rev", "label": "Rev.", "tipo": "texto"},
+        {"k": "val_oficio", "label": "Oficio", "tipo": "texto"},
+        {"k": "val_fecha", "label": "Fecha", "tipo": "fecha"},
+    ]},
+    {"id": "rec", "label": "1ra recepción de DGOT para firma de DIRAC", "campos": [
+        {"k": "rec_rev", "label": "Rev.", "tipo": "texto"},
+        {"k": "rec_oficio", "label": "Oficio", "tipo": "texto"},
+        {"k": "rec_fecha", "label": "Fecha", "tipo": "fecha"},
+    ]},
+    {"id": "ent", "label": "1ra entrega DIRAC a DGOT firmados", "campos": [
+        {"k": "ent_rev", "label": "Rev.", "tipo": "texto"},
+        {"k": "ent_oficio", "label": "Oficio", "tipo": "texto"},
+        {"k": "ent_fecha", "label": "Fecha", "tipo": "fecha"},
+    ]},
+    {"id": "imp", "label": "Entrega DGOT a DIRAC impresa y digital", "campos": [
+        {"k": "imp_oficio", "label": "Oficio", "tipo": "texto"},
+        {"k": "imp_fecha", "label": "Fecha", "tipo": "fecha"},
+    ]},
+    {"id": "obs", "label": "Observaciones", "campos": [
+        {"k": "obs", "label": "Observaciones", "tipo": "largo"},
+    ]},
+]
+_TRAZ_TIPOS = {c["k"]: c["tipo"] for g in TRAZ_ESQUEMA for c in g["campos"]}
+
+_TRAZ_EXT_MIME = {
+    ".pdf": "application/pdf",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".xlsm": "application/vnd.ms-excel.sheet.macroenabled.12",
+    ".xls": "application/vnd.ms-excel",
+    ".csv": "text/csv",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".ppt": "application/vnd.ms-powerpoint",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".doc": "application/msword",
+    ".dwg": "application/acad",
+    ".dxf": "application/dxf",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".zip": "application/zip",
+}
+_TRAZ_MAX_ARCHIVOS_NODO = 30
+
+# Encabezado de columna (fila "CLAVE DEL PLANO") → prefijo de la característica.
+_TRAZ_GRUPOS_COLUMNA = [
+    ("ESCRITO ALFA", "alfa"), ("ENVIO DGOT", "dgot"), ("ENVIO DIRAC", "dirac"),
+    ("PDF", "pdf"), ("DWG", "dwg"), ("VALIDACI", "val"), ("1RA RECEP", "rec"),
+    ("1RA ENTREGA", "ent"), ("ENTREGA DE DGOT", "imp"),
+    ("OBSERVACIONES", "obs"), ("DISCIPLINA", "disciplina"),
+]
+_TRAZ_SECCIONES = {"ESTACIONES", "INTERTRAMOS"}
+_TRAZ_CODIGO_RE = re.compile(r"^A\d{3,}$")
+
+
+def _traz_norm(s) -> str:
+    """Mayúsculas sin acentos ni saltos de línea, para comparar encabezados."""
+    t = unicodedata.normalize("NFD", str(s or ""))
+    t = "".join(ch for ch in t if unicodedata.category(ch) != "Mn")
+    return re.sub(r"\s+", " ", t).strip().upper()
+
+
+def _traz_celda(v, tipo: str = "texto") -> str:
+    """Valor de celda → texto. Las celdas `=HYPERLINK(ruta,"R00")` (PDF/DWG)
+    traen la revisión como último argumento; las demás fórmulas (conteos de
+    los renglones de resumen) se ignoran porque aquí se recalculan."""
+    if v is None:
+        return ""
+    if isinstance(v, (datetime, date)):
+        return v.strftime("%Y-%m-%d")
+    if isinstance(v, float) and v.is_integer():
+        v = int(v)
+    s = str(v).strip()
+    if s.startswith("="):
+        if s.upper().startswith("=HYPERLINK"):
+            m = re.search(r',\s*"([^"]*)"\s*\)\s*$', s)
+            return m.group(1).strip() if m else ""
+        return ""
+    if tipo == "fecha" and s:
+        try:
+            return _fecha_flexible(s).isoformat()
+        except ValueError:
+            return s
+    return s
+
+
+def _traz_mapa_columnas(ws) -> Tuple[int, Dict[int, str]]:
+    """Ubica la fila de encabezado y devuelve (fila_datos_inicial, {columna: clave})."""
+    fila_enc = None
+    for r in range(1, min(ws.max_row, 40) + 1):
+        if "CLAVE DEL PLANO" in _traz_norm(ws.cell(r, 2).value):
+            fila_enc = r
+            break
+    if fila_enc is None:
+        raise ValueError("No se encontró la fila de encabezados (CLAVE DEL PLANO).")
+    mapa: Dict[int, str] = {}
+    grupo = ""
+    for col in range(4, ws.max_column + 1):
+        enc = _traz_norm(ws.cell(fila_enc, col).value)
+        if enc:
+            grupo = next((p for patron, p in _TRAZ_GRUPOS_COLUMNA if patron in enc), "")
+        if not grupo:
+            continue
+        sub = _traz_norm(ws.cell(fila_enc + 1, col).value)
+        sufijo = {"REV": "rev", "OFICIO": "oficio", "FECHA": "fecha"}.get(sub, "")
+        clave = f"{grupo}_{sufijo}" if sufijo else grupo
+        if clave in _TRAZ_TIPOS:
+            mapa[col] = clave
+    return fila_enc + 2, mapa
+
+
+def _traz_parsear_hoja(ws) -> List[dict]:
+    """Hoja de trazabilidad → lista plana de nodos (padres antes que hijos).
+
+    La jerarquía sale de las filas: un código A101 abre una categoría, A1011 una
+    subcategoría, una fila con solo nombre es un grupo (ESTACIONES → Estación E1)
+    y una fila con clave de plano es un documento del último encabezado abierto.
+    """
+    fila0, mapa = _traz_mapa_columnas(ws)
+    nodos: List[dict] = []
+    usadas: set = set()
+    tops: Dict[str, str] = {}
+    ctx_seccion = ctx_grupo = code_seccion = code_actual = top_actual = actual = None
+
+    def agregar(parent_key, kind, code, name, fields=None):
+        seg = code if kind != "grupo" else name
+        base = f"{parent_key or ''}/{seg}"
+        key, n = base, 2
+        while key in usadas:
+            key = f"{base}#{n}"
+            n += 1
+        usadas.add(key)
+        nodos.append({"key": key, "parent_key": parent_key, "kind": kind, "code": code,
+                      "name": name, "fields": fields or {}, "orden": len(nodos)})
+        return key
+
+    def es_zona(txt):  # Estación / Intertramo / General…
+        return bool(re.match(r"(ESTACI|INTERTRAMO|GENERAL)", _traz_norm(txt)))
+
+    for r in range(fila0, ws.max_row + 1):
+        b = str(ws.cell(r, 2).value or "").strip()
+        c = str(ws.cell(r, 3).value or "").strip()
+        if _traz_norm(ws.cell(r, 4).value) == "TOTAL" or (not b and _traz_norm(c) == "RESUMEN"):
+            break
+        if not b and not c:
+            continue
+        nivel = ws.row_dimensions[r].outlineLevel or 0
+
+        if b and _TRAZ_CODIGO_RE.match(b):  # categoría o subcategoría
+            if len(b) == 4:
+                k = agregar(None, "categoria", b, c)
+                tops[b] = k
+                top_actual, ctx_seccion, ctx_grupo, code_seccion = k, None, None, None
+            else:
+                if nivel == 0:
+                    ctx_seccion = ctx_grupo = None
+                padre = ctx_grupo or tops.get(b[:4]) or top_actual
+                k = agregar(padre, "categoria", b, c)
+            code_actual, code_seccion, actual = k, None, k
+        elif not b:  # grupo
+            if nivel <= 1:
+                if _traz_norm(c).rstrip(".") in _TRAZ_SECCIONES:
+                    k = agregar(top_actual, "grupo", "", c)
+                    ctx_seccion, ctx_grupo = k, None
+                elif es_zona(c):
+                    k = agregar(ctx_seccion or top_actual, "grupo", "", c)
+                    ctx_grupo = k
+                else:
+                    k = agregar(ctx_grupo or top_actual, "grupo", "", c)
+            else:
+                if _traz_norm(c).rstrip(".") in _TRAZ_SECCIONES:
+                    k = agregar(code_actual or top_actual, "grupo", "", c)
+                    code_seccion = k
+                elif es_zona(c) and code_seccion:
+                    k = agregar(code_seccion, "grupo", "", c)
+                else:
+                    k = agregar(code_actual or top_actual, "grupo", "", c)
+            actual = k
+        else:  # documento
+            if not actual:
+                continue
+            campos = {}
+            for col, clave in mapa.items():
+                val = _traz_celda(ws.cell(r, col).value, _TRAZ_TIPOS[clave])
+                if val:
+                    campos[clave] = val
+            agregar(actual, "documento", b, c, campos)
+    return nodos
+
+
+def _traz_elegir_hoja(wb, nombre: Optional[str]):
+    if nombre:
+        if nombre not in wb.sheetnames:
+            raise HTTPException(400, f"El libro no tiene la hoja “{nombre}”.")
+        return wb[nombre]
+    candidatas = [ws for ws in wb.worksheets if "TRAZABILIDAD" in _traz_norm(ws.title)]
+    if not candidatas:
+        raise HTTPException(400, "No hay una hoja de trazabilidad (nombre que contenga “Trazabilidad”).")
+    return max(candidatas, key=lambda ws: ws.max_row)
+
+
+def _traz_publico(d: dict) -> dict:
+    return {
+        "id": d["id"], "parent_id": d.get("parent_id"), "kind": d.get("kind", "documento"),
+        "code": d.get("code", ""), "name": d.get("name", ""), "order": d.get("order", 0),
+        "fields": d.get("fields") or {}, "extra": d.get("extra") or [],
+        "files": [
+            {"file_id": f.get("file_id"), "name": f.get("original_name") or f.get("name"),
+             "ext": f.get("ext", ""), "size": f.get("size", 0),
+             "uploaded_at": f.get("uploaded_at"), "uploaded_by_name": f.get("uploaded_by_name")}
+            for f in (d.get("files") or [])
+        ],
+    }
+
+
+def _traz_limpiar_campos(raw: Dict[str, Any]) -> Dict[str, Optional[str]]:
+    """Valida el diccionario de características: claves del esquema, fechas reales.
+    Un valor vacío se devuelve como None (= quitar la característica)."""
+    out: Dict[str, Optional[str]] = {}
+    for k, v in (raw or {}).items():
+        if k not in _TRAZ_TIPOS:
+            raise HTTPException(400, f"Característica desconocida: {k}")
+        s = str(v if v is not None else "").strip()
+        if not s:
+            out[k] = None
+            continue
+        tipo = _TRAZ_TIPOS[k]
+        if tipo == "fecha":
+            try:
+                s = _fecha_flexible(s).isoformat()
+            except ValueError:
+                raise HTTPException(400, f"Fecha inválida en “{k}”: {v}")
+        elif tipo == "estatus" and s not in TRAZ_ESTATUS:
+            raise HTTPException(400, f"Estatus inválido: {s}")
+        out[k] = s[: 2000 if tipo == "largo" else 300]
+    return out
+
+
+def _traz_limpiar_extra(raw) -> List[dict]:
+    out = []
+    for it in (raw or [])[:30]:
+        label = str((it or {}).get("label") or "").strip()[:80]
+        if label:
+            out.append({"label": label, "value": str((it or {}).get("value") or "").strip()[:500]})
+    return out
+
+
+async def _traz_descendientes(pid: str, nid: str) -> List[dict]:
+    todos = await db.trazabilidad.find({"project_id": pid}, {"_id": 0}).to_list(length=None)
+    hijos: Dict[Optional[str], List[dict]] = {}
+    for d in todos:
+        hijos.setdefault(d.get("parent_id"), []).append(d)
+    out, pila = [], list(hijos.get(nid, []))
+    while pila:
+        d = pila.pop()
+        out.append(d)
+        pila.extend(hijos.get(d["id"], []))
+    return out
+
+
+async def _traz_nodo(pid: str, nid: str) -> dict:
+    d = await db.trazabilidad.find_one({"id": nid, "project_id": pid}, {"_id": 0})
+    if not d:
+        raise HTTPException(404, "Nodo de trazabilidad no encontrado")
+    return d
+
+
+def _traz_borrar_binario(f: dict) -> None:
+    try:
+        p = Path(f.get("path") or "")
+        if p.is_file():
+            p.unlink()
+    except Exception as exc:
+        log.warning("[trazabilidad] no se pudo borrar binario: %s", exc)
+
+
+async def _traz_guardar_archivo(pid: str, nodo: dict, orig: str, raw: bytes, user: dict) -> dict:
+    """Guarda un archivo en el nodo; si ya hay uno con el mismo nombre lo reemplaza
+    (así actualizar una revisión es volver a subir el mismo archivo)."""
+    ext = (Path(orig).suffix or "").lower()
+    if ext not in _TRAZ_EXT_MIME:
+        raise HTTPException(400, f"Tipo de archivo no permitido ({ext or 'sin extensión'}). "
+                                 f"Permitidos: {', '.join(sorted(_TRAZ_EXT_MIME))}")
+    if not raw:
+        raise HTTPException(400, "Archivo vacío")
+    if len(raw) > _MAX_FILE_BYTES:
+        raise HTTPException(413, f"Archivo demasiado grande ({len(raw)//1024//1024} MB). "
+                                 f"Máx {_MAX_FILE_BYTES//1024//1024} MB.")
+    archivos = list(nodo.get("files") or [])
+    previo = next((f for f in archivos
+                   if (f.get("original_name") or "").casefold() == orig.casefold()), None)
+    if not previo and len(archivos) >= _TRAZ_MAX_ARCHIVOS_NODO:
+        raise HTTPException(400, f"Máximo {_TRAZ_MAX_ARCHIVOS_NODO} archivos por documento")
+    file_id = uuid.uuid4().hex
+    carpeta = UPLOADS_DIR / pid / "trazabilidad"
+    try:
+        carpeta.mkdir(parents=True, exist_ok=True)
+        en_disco = carpeta / f"{file_id}__{_safe_filename(orig)}"
+        en_disco.write_bytes(raw)
+    except Exception as exc:
+        log.exception("[trazabilidad] no se pudo escribir en disco: %s", exc)
+        raise HTTPException(500, f"No se pudo guardar el archivo: {exc}")
+    rec = {
+        "file_id": file_id, "original_name": orig, "ext": ext,
+        "mime_type": _TRAZ_EXT_MIME[ext], "size": len(raw), "path": str(en_disco),
+        "uploaded_by": user.get("id"), "uploaded_by_name": user.get("name"),
+        "uploaded_at": datetime.now(timezone.utc).isoformat(),
+    }
+    nuevos = [f for f in archivos if f is not previo] + [rec]
+    await db.trazabilidad.update_one(
+        {"id": nodo["id"], "project_id": pid},
+        {"$set": {"files": nuevos, "updated_at": rec["uploaded_at"]}},
+    )
+    if previo:
+        _traz_borrar_binario(previo)
+    return {**rec, "reemplazado": bool(previo)}
+
+
+class TrazNodoIn(BaseModel):
+    parent_id: Optional[str] = None
+    kind: Literal["categoria", "grupo", "documento"] = "documento"
+    code: str = ""
+    name: str = ""
+    fields: Dict[str, Any] = Field(default_factory=dict)
+
+
+class TrazNodoPatch(BaseModel):
+    code: Optional[str] = None
+    name: Optional[str] = None
+    parent_id: Optional[str] = None  # con model_fields_set se distingue "no enviado" de "a la raíz"
+    order: Optional[int] = None
+    fields: Optional[Dict[str, Any]] = None
+    extra: Optional[List[dict]] = None
+
+
+@api.get("/projects/{pid}/trazabilidad")
+async def traz_listar(pid: str, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    docs = await db.trazabilidad.find({"project_id": pid}, {"_id": 0}).to_list(length=None)
+    docs.sort(key=lambda d: (d.get("order", 0), d.get("name", "")))
+    return {"nodes": [_traz_publico(d) for d in docs],
+            "esquema": TRAZ_ESQUEMA, "estatus": TRAZ_ESTATUS}
+
+
+@api.post("/projects/{pid}/trazabilidad")
+async def traz_crear(pid: str, body: TrazNodoIn,
+                     user: dict = Depends(require_role(ROLE_COORD, ROLE_JEFE))):
+    await ensure_project_access(user, pid)
+    if body.parent_id:
+        padre = await _traz_nodo(pid, body.parent_id)
+        if padre.get("kind") == "documento":
+            raise HTTPException(400, "Un documento no puede tener nodos dentro")
+    code, name = body.code.strip()[:200], body.name.strip()[:300]
+    if not code and not name:
+        raise HTTPException(400, "Indica al menos el código o el nombre")
+    hermanos = await db.trazabilidad.find(
+        {"project_id": pid, "parent_id": body.parent_id}, {"order": 1, "_id": 0}).to_list(length=None)
+    ahora = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "id": uuid.uuid4().hex, "project_id": pid, "parent_id": body.parent_id,
+        "kind": body.kind, "code": code, "name": name,
+        "order": max([h.get("order", 0) for h in hermanos], default=0) + 1,
+        "fields": {k: v for k, v in _traz_limpiar_campos(body.fields).items() if v},
+        "extra": [], "files": [], "created_at": ahora, "updated_at": ahora,
+    }
+    await db.trazabilidad.insert_one(dict(doc))
+    return _traz_publico(doc)
+
+
+@api.patch("/projects/{pid}/trazabilidad/{nid}")
+async def traz_editar(pid: str, nid: str, body: TrazNodoPatch,
+                      user: dict = Depends(require_role(ROLE_COORD, ROLE_JEFE))):
+    await ensure_project_access(user, pid)
+    nodo = await _traz_nodo(pid, nid)
+    enviados = body.model_fields_set
+    upd: Dict[str, Any] = {}
+    if body.code is not None:
+        upd["code"] = body.code.strip()[:200]
+    if body.name is not None:
+        upd["name"] = body.name.strip()[:300]
+    if body.order is not None:
+        upd["order"] = body.order
+    if "parent_id" in enviados:
+        nuevo = body.parent_id
+        if nuevo:
+            padre = await _traz_nodo(pid, nuevo)
+            if padre.get("kind") == "documento":
+                raise HTTPException(400, "Un documento no puede tener nodos dentro")
+            if nuevo == nid or any(d["id"] == nuevo for d in await _traz_descendientes(pid, nid)):
+                raise HTTPException(400, "No se puede mover un nodo dentro de sí mismo")
+        upd["parent_id"] = nuevo
+    if body.fields is not None:
+        campos = dict(nodo.get("fields") or {})
+        for k, v in _traz_limpiar_campos(body.fields).items():
+            if v is None:
+                campos.pop(k, None)
+            else:
+                campos[k] = v
+        upd["fields"] = campos
+    if body.extra is not None:
+        upd["extra"] = _traz_limpiar_extra(body.extra)
+    if not (upd.get("code", nodo.get("code")) or upd.get("name", nodo.get("name"))):
+        raise HTTPException(400, "Indica al menos el código o el nombre")
+    if upd:
+        upd["updated_at"] = datetime.now(timezone.utc).isoformat()
+        await db.trazabilidad.update_one({"id": nid, "project_id": pid}, {"$set": upd})
+    return _traz_publico(await _traz_nodo(pid, nid))
+
+
+@api.delete("/projects/{pid}/trazabilidad/{nid}")
+async def traz_borrar(pid: str, nid: str,
+                      user: dict = Depends(require_role(ROLE_COORD, ROLE_JEFE))):
+    """Borra el nodo con todo lo que cuelga de él (y sus archivos). La app pide
+    confirmación antes de llamar aquí."""
+    await ensure_project_access(user, pid)
+    nodo = await _traz_nodo(pid, nid)
+    cola = await _traz_descendientes(pid, nid)
+    ids = [nid] + [d["id"] for d in cola]
+    await db.trazabilidad.delete_many({"project_id": pid, "id": {"$in": ids}})
+    for d in [nodo] + cola:
+        for f in d.get("files") or []:
+            _traz_borrar_binario(f)
+    return {"ok": True, "borrados": len(ids)}
+
+
+@api.post("/projects/{pid}/trazabilidad-importar")
+async def traz_importar(
+    pid: str,
+    file: UploadFile = File(...),
+    hoja: Optional[str] = Query(None, description="Hoja a importar; por omisión la de trazabilidad más completa"),
+    solo_vacios: bool = Query(False, description="True = no pisar características que ya tengan valor"),
+    user: dict = Depends(require_role(ROLE_COORD, ROLE_JEFE)),
+):
+    """Siembra o actualiza el árbol desde el Excel de trazabilidad.
+
+    Es una mezcla, nunca un reemplazo: lo que ya existe (se reconoce por su
+    ruta dentro del árbol) se actualiza con los datos del Excel que no vengan
+    vacíos, lo nuevo se agrega y NADA se borra. Lo capturado a mano en la app
+    y los archivos adjuntos se conservan.
+    """
+    await ensure_project_access(user, pid)
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(400, "Archivo vacío")
+    if (Path(file.filename or "").suffix or "").lower() not in (".xlsx", ".xlsm"):
+        raise HTTPException(400, "Sube el Excel de trazabilidad en formato .xlsx")
+
+    def _leer():
+        wb = openpyxl.load_workbook(io.BytesIO(raw))
+        ws = _traz_elegir_hoja(wb, hoja)
+        return ws.title, _traz_parsear_hoja(ws)
+
+    try:
+        titulo, parsed = await asyncio.to_thread(_leer)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log.exception("[trazabilidad] importación falló: %s", exc)
+        raise HTTPException(400, f"No se pudo leer el Excel: {exc}")
+    if not parsed:
+        raise HTTPException(400, "La hoja no trae categorías ni documentos")
+
+    existentes = {d["import_key"]: d for d in await db.trazabilidad.find(
+        {"project_id": pid, "import_key": {"$exists": True}}, {"_id": 0}).to_list(length=None)}
+    key2id = {k: d["id"] for k, d in existentes.items()}
+    ahora = datetime.now(timezone.utc).isoformat()
+    nuevos, creados, actualizados, igual = [], 0, 0, 0
+    base_orden = 0
+    if existentes:
+        base_orden = max(d.get("order", 0) for d in existentes.values()) + 1
+
+    for p in parsed:
+        ex = existentes.get(p["key"])
+        if ex:
+            upd: Dict[str, Any] = {}
+            for campo in ("code", "name"):
+                if p[campo] and p[campo] != ex.get(campo):
+                    upd[campo] = p[campo]
+            campos = dict(ex.get("fields") or {})
+            cambio = False
+            for k, v in p["fields"].items():
+                if solo_vacios and campos.get(k):
+                    continue
+                if campos.get(k) != v:
+                    campos[k], cambio = v, True
+            if cambio:
+                upd["fields"] = campos
+            if upd:
+                upd["updated_at"] = ahora
+                await db.trazabilidad.update_one({"id": ex["id"], "project_id": pid}, {"$set": upd})
+                actualizados += 1
+            else:
+                igual += 1
+            continue
+        nid = uuid.uuid4().hex
+        key2id[p["key"]] = nid
+        nuevos.append({
+            "id": nid, "project_id": pid, "parent_id": key2id.get(p["parent_key"]),
+            "kind": p["kind"], "code": p["code"], "name": p["name"],
+            "order": base_orden + p["orden"], "fields": p["fields"], "extra": [], "files": [],
+            "import_key": p["key"], "created_at": ahora, "updated_at": ahora,
+        })
+        creados += 1
+    if nuevos:
+        await db.trazabilidad.insert_many(nuevos)
+    return {"hoja": titulo, "total": len(parsed), "creados": creados,
+            "actualizados": actualizados, "sin_cambios": igual}
+
+
+@api.post("/projects/{pid}/trazabilidad/{nid}/archivos")
+async def traz_subir_archivo(pid: str, nid: str, file: UploadFile = File(...),
+                             user: dict = Depends(require_role(ROLE_COORD, ROLE_JEFE))):
+    await ensure_project_access(user, pid)
+    nodo = await _traz_nodo(pid, nid)
+    rec = await _traz_guardar_archivo(pid, nodo, file.filename or "archivo", await file.read(), user)
+    return {"ok": True, "reemplazado": rec["reemplazado"], "node": _traz_publico(await _traz_nodo(pid, nid))}
+
+
+@api.post("/projects/{pid}/trazabilidad-archivos-auto")
+async def traz_subir_auto(pid: str, file: UploadFile = File(...),
+                          user: dict = Depends(require_role(ROLE_COORD, ROLE_JEFE))):
+    """Sube un archivo y lo acomoda solo: busca el documento cuya clave coincide
+    con el nombre del archivo (CLAVE.pdf, CLAVE.dwg…). Si no hay coincidencia
+    única responde `matched: false` y no guarda nada."""
+    await ensure_project_access(user, pid)
+    orig = file.filename or "archivo"
+    raw = await file.read()
+    stem = Path(orig).stem.strip().casefold()
+    docs = await db.trazabilidad.find(
+        {"project_id": pid, "kind": "documento", "code": {"$ne": ""}}, {"_id": 0}).to_list(length=None)
+    exactos = [d for d in docs if d["code"].strip().casefold() == stem]
+    if len(exactos) != 1:
+        exactos = [d for d in docs if len(stem) >= 8 and (
+            d["code"].strip().casefold().startswith(stem) or stem.startswith(d["code"].strip().casefold()))] \
+            if not exactos else exactos
+    if len(exactos) != 1:
+        return {"matched": False, "filename": orig,
+                "motivo": "ambiguo" if exactos else "sin coincidencia"}
+    rec = await _traz_guardar_archivo(pid, exactos[0], orig, raw, user)
+    return {"matched": True, "filename": orig, "node_id": exactos[0]["id"],
+            "node_code": exactos[0]["code"], "reemplazado": rec["reemplazado"]}
+
+
+@api.get("/projects/{pid}/trazabilidad-archivos/{file_id}")
+async def traz_descargar(pid: str, file_id: str, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    nodo = await db.trazabilidad.find_one({"project_id": pid, "files.file_id": file_id}, {"_id": 0})
+    rec = next((f for f in (nodo or {}).get("files", []) if f.get("file_id") == file_id), None)
+    if not rec:
+        raise HTTPException(404, "Archivo no encontrado")
+    en_disco = Path(rec.get("path") or "")
+    if not en_disco.is_file():
+        raise HTTPException(404, "Archivo no disponible en disco")
+    return FileResponse(path=str(en_disco), media_type=rec.get("mime_type") or "application/octet-stream",
+                        filename=rec.get("original_name") or en_disco.name)
+
+
+@api.delete("/projects/{pid}/trazabilidad-archivos/{file_id}")
+async def traz_borrar_archivo(pid: str, file_id: str,
+                              user: dict = Depends(require_role(ROLE_COORD, ROLE_JEFE))):
+    await ensure_project_access(user, pid)
+    nodo = await db.trazabilidad.find_one({"project_id": pid, "files.file_id": file_id}, {"_id": 0})
+    rec = next((f for f in (nodo or {}).get("files", []) if f.get("file_id") == file_id), None)
+    if not rec:
+        raise HTTPException(404, "Archivo no encontrado")
+    await db.trazabilidad.update_one({"id": nodo["id"], "project_id": pid},
+                                     {"$pull": {"files": {"file_id": file_id}}})
+    _traz_borrar_binario(rec)
+    return {"ok": True, "node": _traz_publico(await _traz_nodo(pid, nodo["id"]))}
+
+
 # === AREAS (por proyecto) ===================================================
 @api.get("/projects/{pid}/areas")
 async def list_areas(pid: str, user: dict = Depends(current_user)):

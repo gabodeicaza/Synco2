@@ -1,46 +1,13 @@
-// Archivos de consulta — vista de solo lectura para Especialista.
-// Muestra los mismos documentos que el Coordinador General comparte desde
-// el detalle del proyecto, como base de consulta para el equipo en campo.
+// Trazabilidad (antes "Archivos de consulta") — vista de solo lectura para Especialista.
+// Es el mismo árbol de documentos que el Coordinador General arma y actualiza.
 import React from 'react';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLocalSearchParams } from 'expo-router';
-import { Ionicons } from '@expo/vector-icons';
-import { colors, spacing } from '@/src/theme';
 import { useAuth } from '@/src/auth-context';
-import { ReferenceFilesList } from '@/src/components/ReferenceFilesList';
-import { ScreenHeader } from '@/src/components/ScreenHeader';
+import { TrazabilidadScreen } from '@/src/components/TrazabilidadScreen';
 
-export default function ArchivosConsultaScreen() {
-  const insets = useSafeAreaInsets();
+export default function TrazabilidadEspecialistaScreen() {
   const { user } = useAuth();
   const { project_id } = useLocalSearchParams<{ project_id: string }>();
   const pid = (Array.isArray(project_id) ? project_id[0] : project_id) || (user?.project_ids || [])[0] || '';
-
-  return (
-    <View style={styles.flex}>
-      <ScreenHeader title="Archivos de consulta" fallbackHref="/(spec)" />
-
-      {!pid ? (
-        <View style={styles.errorBox}>
-          <Ionicons name="alert-circle" size={18} color={colors.error} />
-          <Text style={styles.errorText}>Proyecto no especificado</Text>
-        </View>
-      ) : (
-        <ScrollView contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + 40 }]}>
-          <ReferenceFilesList projectId={pid} />
-        </ScrollView>
-      )}
-    </View>
-  );
+  return <TrazabilidadScreen projectId={pid} canEdit={false} fallbackHref="/(spec)" />;
 }
-
-const styles = StyleSheet.create({
-  flex: { flex: 1, backgroundColor: colors.bg },
-  scroll: { paddingHorizontal: spacing.lg, gap: spacing.md },
-  errorBox: {
-    flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: colors.errorBg,
-    padding: 10, borderRadius: 10, marginHorizontal: spacing.lg, marginTop: spacing.md,
-  },
-  errorText: { flex: 1, color: colors.error, fontSize: 13, fontWeight: '600' },
-});
