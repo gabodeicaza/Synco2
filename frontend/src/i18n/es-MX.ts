@@ -1098,7 +1098,7 @@ export const esMX = {
     nuevaCategoriaDeEquipo: 'Nueva categoría de equipo',
     nuevaCategoriaDePersonal: 'Nueva categoría de personal',
     objetoDelContrato: 'Objeto del contrato',
-    objetoDelContratoClientePrincipal: 'Objeto del contrato · Cliente principal · Color institucional',
+    objetoDelContratoClientePrincipal: 'Nombre · Constructora · Contrato · Fechas · Objeto · Cliente · Colores',
     ok: 'OK',
     operacion: 'Operación',
     pagina1: 'Página 1',
