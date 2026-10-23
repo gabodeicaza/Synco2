@@ -31,7 +31,7 @@ def c(tmp_path, monkeypatch):
     with TestClient(server.app) as cl:
         import asyncio
         loop = asyncio.new_event_loop()
-        loop.run_until_complete(mdb.projects.insert_one({"id": PID}))
+        loop.run_until_complete(mdb.projects.insert_one({"id": PID, "modulos": {"reportes_diarios": {"capacidades_operadores": True}}}))
         loop.close()
         yield cl
     server.app.dependency_overrides.clear()

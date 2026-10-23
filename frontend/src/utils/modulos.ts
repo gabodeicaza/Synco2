@@ -191,6 +191,14 @@ export const MODULOS: ModuloDef[] = [
     area: 'Ingeniería',
   },
   {
+    key: 'capacidades_operadores',
+    label: 'Capacidades de Operadores',
+    subtitle: 'Certificaciones, constancias y aptitud de cada operador y equipo',
+    icon: 'ribbon-outline',
+    screen: 'capacidades',
+    area: 'Seguridad',
+  },
+  {
     key: 'estado_tiempo',
     label: t('modulosObra.modulos.estadoTiempo.titulo'),
     subtitle: t('modulosObra.modulos.estadoTiempo.subtitulo'),

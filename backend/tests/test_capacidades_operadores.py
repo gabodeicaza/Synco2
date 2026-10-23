@@ -32,7 +32,7 @@ def c(tmp_path, monkeypatch):
     with TestClient(server.app) as cl:
         import asyncio
         loop = asyncio.new_event_loop()
-        loop.run_until_complete(mdb.projects.insert_many([{"id": PID}, {"id": PID2}]))
+        loop.run_until_complete(mdb.projects.insert_many([{"id": PID, "modulos": MODULOS_ON}, {"id": PID2, "modulos": MODULOS_ON}, {"id": "p_off"}]))
         loop.close()
         yield cl
     server.app.dependency_overrides.clear()
@@ -52,6 +52,12 @@ def test_normalizacion_y_similitud():
     assert server._cap_key("Cesar May Rosales") == server._cap_key(" MAY  rosales, César ")
     assert server._cap_similitud(server._cap_key("Gonzales Uribe Misrrain"), server._cap_key("Gonzalez Uribe Missrain")) > 0.85
     assert server._cap_suma_meses(date(2026, 1, 31), 1) == date(2026, 2, 28)
+
+
+def test_modulo_apagado_bloquea_el_acceso(c):
+    assert c.get(u("p_off", "certificaciones")).status_code == 403
+    assert c.post(u("p_off", "certificaciones"), json={"nombre": "X"}).status_code == 403
+    assert c.get(u(PID, "certificaciones")).status_code == 200
 
 
 def test_catalogo_unico_y_baja_logica(c):
@@ -145,3 +151,24 @@ def test_solo_lectura_para_jefe(c):
     server.app.dependency_overrides[server.current_user] = lambda: {**USER, "role": server.ROLE_JEFE}
     assert c.post(u(PID, "certificaciones"), json={"nombre": "X"}).status_code == 403
     assert c.get(u(PID, "certificaciones")).status_code == 200
+
+
+def test_migracion_enciende_solo_proyectos_con_datos(c):
+    import asyncio
+    db = server.db
+
+    async def run():
+        await db.projects.insert_many([
+            {"id": "con_datos"}, {"id": "apagado", "modulos": {"reportes_diarios": {"capacidades_operadores": False}}},
+            {"id": "sin_datos"},
+        ])
+        await db.cap_certs.insert_many([{"project_id": "con_datos"}, {"project_id": "apagado"}])
+        n1 = await server._cap_migrar_modulo()
+        n2 = await server._cap_migrar_modulo()
+        return n1, n2, {p["id"]: p async for p in db.projects.find({})}
+
+    n1, n2, ps = asyncio.new_event_loop().run_until_complete(run())
+    assert (n1, n2) == (1, 0)
+    assert ps["con_datos"]["modulos"]["reportes_diarios"]["capacidades_operadores"] is True
+    assert ps["apagado"]["modulos"]["reportes_diarios"]["capacidades_operadores"] is False
+    assert "modulos" not in ps["sin_datos"]

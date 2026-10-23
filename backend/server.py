@@ -236,7 +236,7 @@ MODULOS_KEYS = {
     "fotos_lidar", "tapial", "pruebas_calidad", "control_calidad",
     "avance_obra", "estimaciones", "pendientes_generales", "aspectos_sociales",
     "indicadores_seguridad", "juntas_trabajo", "supervision_ambiental",
-    "actividades_particulares", "electromecanica",
+    "actividades_particulares", "electromecanica", "capacidades_operadores",
 }
 MODULOS_DIARIOS = MODULOS_KEYS
 MODULOS_SEMANALES = MODULOS_KEYS
@@ -2410,6 +2410,15 @@ async def startup_event():
             log.info("[migrate] expires_at backfill de noticias legacy completado")
     except Exception as e:
         log.warning(f"[migrate] error en backfill de expires_at de noticias: {e}")
+
+    # --- Migración one-shot: Capacidades de Operadores pasó a ser un módulo
+    # apagable; los proyectos que ya tienen datos lo conservan encendido.
+    try:
+        n_cap = await _cap_migrar_modulo()
+        if n_cap:
+            log.info(f"[migrate] Capacidades de Operadores encendido en {n_cap} proyectos con datos")
+    except Exception as e:
+        log.warning(f"[migrate] error encendiendo el módulo Capacidades de Operadores: {e}")
 
     # Loop en segundo plano: recordatorios push de reuniones (1h antes).
     asyncio.create_task(_meeting_reminder_loop())
@@ -15532,7 +15541,12 @@ def _informe_pdf_bytes(informes: list, proj: dict, fotos: Dict[str, list], hoja_
             fl += cuerpo[3:]
             imgs = fotos.get(b.get("report_id"), [])
             if imgs:
-                caps = [f.get("caption") or f"Foto {i + 1}" for i, f in enumerate(b.get("fotos") or [])]
+                # Pie de foto: la descripción de la foto; si no tiene, la que el
+                # ingeniero puso al reporte (observaciones) cuando son 1-2 fotos.
+                # Con más de 2 fotos en el reporte se numeran ("Foto N").
+                _fts = b.get("fotos") or []
+                _desc = (b.get("observaciones") or "").strip() if len(_fts) <= 2 else ""
+                caps = [f.get("caption") or _desc or f"Foto {i + 1}" for i, f in enumerate(_fts)]
                 celdas = []
                 for i, raw in enumerate(imgs[:INFORME_PDF_MAX_FOTOS]):
                     im = foto_flow(raw, W / 2 - 0.6 * cm, 6.5 * cm)
@@ -37996,7 +38010,34 @@ async def delete_account_page():
 # Las bajas son lógicas (activo=False / estatus="baja"): nunca se borra en duro.
 CAP_WRITE = (ROLE_COORD, ROLE_SUB)  # Jefe de Proyecto es solo lectura
 CAP_ALERTA_DIAS_DEFAULT = 30
+CAP_MODULO = "capacidades_operadores"  # clave en MODULOS_KEYS: el Coordinador lo enciende por proyecto
 CAP_FILE_EXTS = {".pdf", ".jpg", ".jpeg", ".png", ".webp", ".heic"}
+
+
+async def _cap_acceso(user: dict, pid: str) -> dict:
+    """Acceso al proyecto + módulo encendido (Configuración > Módulos)."""
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, CAP_MODULO)
+    return project
+
+
+async def _cap_migrar_modulo() -> int:
+    """Enciende `capacidades_operadores` (en Diario) en los proyectos que ya
+    tienen operadores o catálogos y nunca decidieron sobre el módulo. Idempotente:
+    si la clave ya existe en alguna categoría (incluso en False, porque el
+    Coordinador lo apagó) no se toca."""
+    pids: set = set()
+    for coleccion in (db.cap_miembros, db.cap_certs, db.cap_tipos):
+        pids.update(p for p in await coleccion.distinct("project_id") if p)
+    sin_decidir = [{f"modulos.{c}.{CAP_MODULO}": {"$exists": False}} for c in MODULOS_CATALOG]
+    n = 0
+    for pid in pids:
+        r = await db.projects.update_one(
+            {"id": pid, "$and": sin_decidir},
+            {"$set": {f"modulos.reportes_diarios.{CAP_MODULO}": True}},
+        )
+        n += r.modified_count
+    return n
 
 
 def _cap_norm(s: Any) -> str:
@@ -38139,14 +38180,14 @@ async def _cap_check_ids(pid: str, coleccion: str, ids: List[str], etiqueta: str
 # ---- Configuración y catálogos ---------------------------------------------
 @api.get("/projects/{pid}/capacidades/config")
 async def cap_get_config(pid: str, user: dict = Depends(current_user)):
-    await ensure_project_access(user, pid)
+    await _cap_acceso(user, pid)
     c = await db.cap_config.find_one({"project_id": pid}, {"_id": 0}) or {}
     return {"alerta_dias": c.get("alerta_dias", CAP_ALERTA_DIAS_DEFAULT), "campos_extra": c.get("campos_extra", [])}
 
 
 @api.put("/projects/{pid}/capacidades/config")
 async def cap_put_config(pid: str, body: CapConfigIn, user: dict = Depends(require_role(*CAP_WRITE))):
-    await ensure_project_access(user, pid)
+    await _cap_acceso(user, pid)
     claves = [str(c.get("clave") or "").strip() for c in body.campos_extra]
     if any(not k for k in claves) or len(set(claves)) != len(claves):
         raise HTTPException(400, "Cada campo extra necesita una clave única")
@@ -38168,7 +38209,7 @@ def _cap_catalogo_routes(nombre_url: str, coleccion: str, model, etiqueta: str):
 
     @api.get(f"/projects/{{pid}}/capacidades/{nombre_url}", name=f"cap_list_{coleccion}")
     async def _list(pid: str, incluir_inactivos: bool = False, user: dict = Depends(current_user)):
-        await ensure_project_access(user, pid)
+        await _cap_acceso(user, pid)
         flt: dict = {"project_id": pid}
         if not incluir_inactivos:
             flt["activo"] = {"$ne": False}
@@ -38176,7 +38217,7 @@ def _cap_catalogo_routes(nombre_url: str, coleccion: str, model, etiqueta: str):
 
     @api.post(f"/projects/{{pid}}/capacidades/{nombre_url}", name=f"cap_create_{coleccion}")
     async def _create(pid: str, body: model, user: dict = Depends(require_role(*CAP_WRITE))):  # type: ignore[valid-type]
-        await ensure_project_access(user, pid)
+        await _cap_acceso(user, pid)
         await _validar(pid, body)
         doc = {"id": uuid.uuid4().hex, "project_id": pid, "activo": True,
                "created_at": datetime.now(timezone.utc).isoformat(), **body.model_dump()}
@@ -38186,7 +38227,7 @@ def _cap_catalogo_routes(nombre_url: str, coleccion: str, model, etiqueta: str):
 
     @api.put(f"/projects/{{pid}}/capacidades/{nombre_url}/{{item_id}}", name=f"cap_update_{coleccion}")
     async def _update(pid: str, item_id: str, body: model, user: dict = Depends(require_role(*CAP_WRITE))):  # type: ignore[valid-type]
-        await ensure_project_access(user, pid)
+        await _cap_acceso(user, pid)
         if not await db[coleccion].find_one({"project_id": pid, "id": item_id}):
             raise HTTPException(404, f"{etiqueta.capitalize()} no encontrada")
         await _validar(pid, body, excluir_id=item_id)
@@ -38196,7 +38237,7 @@ def _cap_catalogo_routes(nombre_url: str, coleccion: str, model, etiqueta: str):
 
     @api.delete(f"/projects/{{pid}}/capacidades/{nombre_url}/{{item_id}}", name=f"cap_delete_{coleccion}")
     async def _delete(pid: str, item_id: str, user: dict = Depends(require_role(*CAP_WRITE))):
-        await ensure_project_access(user, pid)
+        await _cap_acceso(user, pid)
         r = await db[coleccion].update_one({"project_id": pid, "id": item_id}, {"$set": {"activo": False}})
         if not r.matched_count:
             raise HTTPException(404, f"{etiqueta.capitalize()} no encontrada")
@@ -38211,7 +38252,7 @@ _cap_catalogo_routes("tipos", "cap_tipos", CapTipoIn, "el tipo")
 @api.post("/projects/{pid}/capacidades/catalogos/copiar")
 async def cap_copiar_catalogos(pid: str, origen_project_id: str = Query(...), user: dict = Depends(require_role(*CAP_WRITE))):
     """Copia certificaciones y tipos de otro proyecto (omite los que ya existan por nombre)."""
-    await ensure_project_access(user, pid)
+    await _cap_acceso(user, pid)
     await ensure_project_access(user, origen_project_id)
     if origen_project_id == pid:
         raise HTTPException(400, "El proyecto de origen es el mismo")
@@ -38318,7 +38359,7 @@ async def cap_list_operadores(
     skip: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=500), user: dict = Depends(current_user),
 ):
     """Consulta rápida. `q` busca por nombre (sin acentos, cualquier orden), puesto o equipo; `cert_id` filtra a quienes la tienen vigente."""
-    await ensure_project_access(user, pid)
+    await _cap_acceso(user, pid)
     flt: dict = {"project_id": pid}
     if estatus:
         flt["estatus"] = estatus
@@ -38351,7 +38392,7 @@ async def cap_list_operadores(
 @api.get("/projects/{pid}/capacidades/personas/buscar")
 async def cap_buscar_personas(pid: str, q: str = Query(..., min_length=2), user: dict = Depends(current_user)):
     """Busca entre TODAS las personas ya grabadas (cualquier proyecto) para reutilizarlas; indica si ya están en este proyecto."""
-    await ensure_project_access(user, pid)
+    await _cap_acceso(user, pid)
     key = _cap_key(q)
     toks = _cap_norm(q).split()
     ya = {m["persona_id"]: m["id"] async for m in db.cap_miembros.find({"project_id": pid}, {"_id": 0, "persona_id": 1, "id": 1})}
@@ -38376,7 +38417,7 @@ def _cap_candidatos_duplicados(key: str, personas: List[dict]) -> List[dict]:
 
 @api.post("/projects/{pid}/capacidades/operadores")
 async def cap_create_operador(pid: str, body: CapOperadorIn, user: dict = Depends(require_role(*CAP_WRITE))):
-    await ensure_project_access(user, pid)
+    await _cap_acceso(user, pid)
     if body.tipo_id:
         await _cap_check_ids(pid, "cap_tipos", [body.tipo_id], "El tipo")
     if body.persona_id:
@@ -38407,7 +38448,7 @@ async def cap_create_operador(pid: str, body: CapOperadorIn, user: dict = Depend
 
 @api.get("/projects/{pid}/capacidades/operadores/{mid}")
 async def cap_get_operador(pid: str, mid: str, user: dict = Depends(current_user)):
-    await ensure_project_access(user, pid)
+    await _cap_acceso(user, pid)
     m, p = await _cap_operador_o_404(pid, mid)
     ctx = await _cap_contexto(pid)
     out = _cap_operador_out(m, p, ctx)
@@ -38418,7 +38459,7 @@ async def cap_get_operador(pid: str, mid: str, user: dict = Depends(current_user
 
 @api.put("/projects/{pid}/capacidades/operadores/{mid}")
 async def cap_update_operador(pid: str, mid: str, body: CapOperadorPatch, user: dict = Depends(require_role(*CAP_WRITE))):
-    await ensure_project_access(user, pid)
+    await _cap_acceso(user, pid)
     m, p = await _cap_operador_o_404(pid, mid)
     cambios = body.model_dump(exclude_unset=True)
     nombre = cambios.pop("nombre", None)
@@ -38439,7 +38480,7 @@ async def cap_update_operador(pid: str, mid: str, body: CapOperadorPatch, user: 
 @api.delete("/projects/{pid}/capacidades/operadores/{mid}")
 async def cap_baja_operador(pid: str, mid: str, user: dict = Depends(require_role(*CAP_WRITE))):
     """Baja lógica: el operador y sus constancias se conservan (estatus='baja')."""
-    await ensure_project_access(user, pid)
+    await _cap_acceso(user, pid)
     await _cap_operador_o_404(pid, mid)
     await db.cap_miembros.update_one({"id": mid}, {"$set": {"estatus": "baja"}})
     await db.cap_equipos.update_many({"project_id": pid, "operador_id": mid}, {"$set": {"operador_id": None}})
@@ -38450,7 +38491,7 @@ async def cap_baja_operador(pid: str, mid: str, user: dict = Depends(require_rol
 @api.post("/projects/{pid}/capacidades/operadores/{mid}/alias")
 async def cap_add_alias(pid: str, mid: str, alias: str = Query(..., min_length=2), user: dict = Depends(require_role(*CAP_WRITE))):
     """Registra otra forma de escribir el nombre (la usará el importador para conciliar)."""
-    await ensure_project_access(user, pid)
+    await _cap_acceso(user, pid)
     m, p = await _cap_operador_o_404(pid, mid)
     await db.cap_personas.update_one({"id": p["id"]}, {"$addToSet": {"aliases": alias.strip(), "aliases_key": _cap_key(alias)}})
     await _cap_log(pid, "operador", mid, "alias", user, {"alias": alias})
@@ -38460,7 +38501,7 @@ async def cap_add_alias(pid: str, mid: str, alias: str = Query(..., min_length=2
 # ---- Constancias (certificaciones de la persona + archivo adjunto) ---------------
 @api.post("/projects/{pid}/capacidades/operadores/{mid}/constancias")
 async def cap_add_constancia(pid: str, mid: str, body: CapCertPersonaIn, user: dict = Depends(require_role(*CAP_WRITE))):
-    await ensure_project_access(user, pid)
+    await _cap_acceso(user, pid)
     m, _ = await _cap_operador_o_404(pid, mid)
     cert = await db.cap_certs.find_one({"project_id": pid, "id": body.cert_id, "activo": {"$ne": False}}, {"_id": 0})
     if not cert:
@@ -38488,7 +38529,7 @@ async def _cap_constancia_o_404(pid: str, cid: str) -> dict:
 
 @api.put("/projects/{pid}/capacidades/constancias/{cid}")
 async def cap_update_constancia(pid: str, cid: str, body: CapCertPersonaIn, user: dict = Depends(require_role(*CAP_WRITE))):
-    await ensure_project_access(user, pid)
+    await _cap_acceso(user, pid)
     await _cap_constancia_o_404(pid, cid)
     cert = await db.cap_certs.find_one({"project_id": pid, "id": body.cert_id, "activo": {"$ne": False}}, {"_id": 0})
     if not cert:
@@ -38505,7 +38546,7 @@ async def cap_update_constancia(pid: str, cid: str, body: CapCertPersonaIn, user
 @api.delete("/projects/{pid}/capacidades/constancias/{cid}")
 async def cap_baja_constancia(pid: str, cid: str, user: dict = Depends(require_role(*CAP_WRITE))):
     """Baja lógica: se conserva el registro y el archivo."""
-    await ensure_project_access(user, pid)
+    await _cap_acceso(user, pid)
     await _cap_constancia_o_404(pid, cid)
     await db.cap_certificaciones.update_one({"id": cid}, {"$set": {"activo": False}})
     await _cap_log(pid, "constancia", cid, "baja", user)
@@ -38515,7 +38556,7 @@ async def cap_baja_constancia(pid: str, cid: str, user: dict = Depends(require_r
 @api.post("/projects/{pid}/capacidades/constancias/{cid}/archivo")
 async def cap_upload_constancia(pid: str, cid: str, file: UploadFile = File(...), user: dict = Depends(require_role(*CAP_WRITE))):
     """Adjunta (o reemplaza) el PDF/foto de la constancia."""
-    await ensure_project_access(user, pid)
+    await _cap_acceso(user, pid)
     c = await _cap_constancia_o_404(pid, cid)
     orig = file.filename or "constancia"
     ext = Path(orig).suffix.lower()
@@ -38546,7 +38587,7 @@ async def cap_upload_constancia(pid: str, cid: str, file: UploadFile = File(...)
 
 @api.get("/projects/{pid}/capacidades/constancias/{cid}/archivo")
 async def cap_download_constancia(pid: str, cid: str, user: dict = Depends(current_user)):
-    await ensure_project_access(user, pid)
+    await _cap_acceso(user, pid)
     c = await _cap_constancia_o_404(pid, cid)
     a = c.get("archivo") or {}
     ruta = Path(a.get("path") or "")
@@ -38567,7 +38608,7 @@ async def _cap_equipo_validar(pid: str, body: CapEquipoIn):
 @api.get("/projects/{pid}/capacidades/equipos")
 async def cap_list_equipos(pid: str, q: Optional[str] = None, estado: Optional[Literal["activo", "inactivo"]] = None,
                            user: dict = Depends(current_user)):
-    await ensure_project_access(user, pid)
+    await _cap_acceso(user, pid)
     flt: dict = {"project_id": pid, "activo": {"$ne": False}}
     if estado:
         flt["estado"] = estado
@@ -38590,7 +38631,7 @@ async def cap_list_equipos(pid: str, q: Optional[str] = None, estado: Optional[L
 
 @api.post("/projects/{pid}/capacidades/equipos")
 async def cap_create_equipo(pid: str, body: CapEquipoIn, user: dict = Depends(require_role(*CAP_WRITE))):
-    await ensure_project_access(user, pid)
+    await _cap_acceso(user, pid)
     await _cap_equipo_validar(pid, body)
     doc = {"id": uuid.uuid4().hex, "project_id": pid, "activo": True, "created_at": datetime.now(timezone.utc).isoformat(), **body.model_dump()}
     await db.cap_equipos.insert_one(dict(doc))
@@ -38600,7 +38641,7 @@ async def cap_create_equipo(pid: str, body: CapEquipoIn, user: dict = Depends(re
 
 @api.put("/projects/{pid}/capacidades/equipos/{eid}")
 async def cap_update_equipo(pid: str, eid: str, body: CapEquipoIn, user: dict = Depends(require_role(*CAP_WRITE))):
-    await ensure_project_access(user, pid)
+    await _cap_acceso(user, pid)
     if not await db.cap_equipos.find_one({"project_id": pid, "id": eid, "activo": {"$ne": False}}):
         raise HTTPException(404, "Equipo no encontrado")
     await _cap_equipo_validar(pid, body)
@@ -38611,7 +38652,7 @@ async def cap_update_equipo(pid: str, eid: str, body: CapEquipoIn, user: dict = 
 
 @api.delete("/projects/{pid}/capacidades/equipos/{eid}")
 async def cap_baja_equipo(pid: str, eid: str, user: dict = Depends(require_role(*CAP_WRITE))):
-    await ensure_project_access(user, pid)
+    await _cap_acceso(user, pid)
     r = await db.cap_equipos.update_one({"project_id": pid, "id": eid}, {"$set": {"activo": False}})
     if not r.matched_count:
         raise HTTPException(404, "Equipo no encontrado")
@@ -38623,7 +38664,7 @@ async def cap_baja_equipo(pid: str, eid: str, user: dict = Depends(require_role(
 @api.get("/projects/{pid}/capacidades/resumen")
 async def cap_resumen(pid: str, user: dict = Depends(current_user)):
     """Conteo por semáforo y por frente, brechas y constancias por vencer/vencidas."""
-    await ensure_project_access(user, pid)
+    await _cap_acceso(user, pid)
     miembros = [m async for m in db.cap_miembros.find({"project_id": pid, "estatus": "activo"}, {"_id": 0})]
     personas = {p["id"]: p async for p in db.cap_personas.find({"id": {"$in": [m["persona_id"] for m in miembros]}}, {"_id": 0})}
     ctx = await _cap_contexto(pid)
@@ -38648,7 +38689,7 @@ async def cap_resumen(pid: str, user: dict = Depends(current_user)):
 @api.get("/projects/{pid}/capacidades/historial")
 async def cap_historial(pid: str, entidad_id: Optional[str] = None, limit: int = Query(100, ge=1, le=500),
                         user: dict = Depends(require_role(ROLE_COORD, ROLE_JEFE, ROLE_SUB))):
-    await ensure_project_access(user, pid)
+    await _cap_acceso(user, pid)
     flt: dict = {"project_id": pid}
     if entidad_id:
         flt["entidad_id"] = entidad_id
@@ -38799,7 +38840,7 @@ async def _cap_import_archivo(pid: str, archivo_id: str) -> Path:
 @api.post("/projects/{pid}/capacidades/importar/analizar")
 async def cap_import_analizar(pid: str, file: UploadFile = File(...), user: dict = Depends(require_role(*CAP_WRITE))):
     """Paso 1: sube el archivo y devuelve sus hojas, la fila de encabezados detectada y un mapeo sugerido por tipo de dato."""
-    await ensure_project_access(user, pid)
+    await _cap_acceso(user, pid)
     ext = Path(file.filename or "").suffix.lower()
     if ext not in (".xlsx", ".xlsm", ".csv"):
         raise HTTPException(400, "Formato no soportado. Usa .xlsx o .csv (guarda los .xls como .xlsx)")
@@ -38901,7 +38942,7 @@ def _cap_mapa_catalogo(items: List[dict]) -> Dict[str, str]:
 @api.post("/projects/{pid}/capacidades/importar/previsualizar")
 async def cap_import_previsualizar(pid: str, body: CapImportPreviewIn, user: dict = Depends(require_role(*CAP_WRITE))):
     """Paso 2: analiza todo el archivo y concilia nombres. NO escribe en las colecciones de datos."""
-    await ensure_project_access(user, pid)
+    await _cap_acceso(user, pid)
     path = await _cap_import_archivo(pid, body.archivo_id)
     hojas = _cap_import_leer(path)
     if body.hoja not in hojas:
@@ -39061,7 +39102,7 @@ async def _cap_imp_get(pid: str, iid: str) -> dict:
 async def cap_import_grupos(pid: str, iid: str, estado: Optional[Literal["exacto", "alto", "dudoso", "nuevo"]] = None,
                             skip: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=500), user: dict = Depends(require_role(*CAP_WRITE))):
     """Nombres distintos del archivo con su coincidencia, para revisar los dudosos y los nuevos."""
-    await ensure_project_access(user, pid)
+    await _cap_acceso(user, pid)
     await _cap_imp_get(pid, iid)
     flt: dict = {"import_id": iid}
     if estado:
@@ -39079,7 +39120,7 @@ class CapImportDecisionIn(BaseModel):
 
 @api.put("/projects/{pid}/capacidades/importar/{iid}/grupos")
 async def cap_import_resolver(pid: str, iid: str, decisiones: List[CapImportDecisionIn], user: dict = Depends(require_role(*CAP_WRITE))):
-    await ensure_project_access(user, pid)
+    await _cap_acceso(user, pid)
     imp = await _cap_imp_get(pid, iid)
     if imp["estado"] != "previa":
         raise HTTPException(409, "La importación ya fue aplicada")
@@ -39112,7 +39153,7 @@ async def _cap_imp_asegurar_catalogo(pid: str, coleccion: str, nombre: str, camb
 @api.post("/projects/{pid}/capacidades/importar/{iid}/confirmar")
 async def cap_import_confirmar(pid: str, iid: str, plantilla: Optional[str] = Query(None, max_length=80), user: dict = Depends(require_role(*CAP_WRITE))):
     """Paso 4: escribe en lotes. Cada cambio queda registrado para poder deshacer la importación completa."""
-    await ensure_project_access(user, pid)
+    await _cap_acceso(user, pid)
     imp = await _cap_imp_get(pid, iid)
     if imp["estado"] != "previa":
         raise HTTPException(409, "Esta importación ya fue aplicada")
@@ -39292,7 +39333,7 @@ async def cap_import_confirmar(pid: str, iid: str, plantilla: Optional[str] = Qu
 @api.post("/projects/{pid}/capacidades/importar/{iid}/deshacer")
 async def cap_import_deshacer(pid: str, iid: str, user: dict = Depends(require_role(*CAP_WRITE))):
     """Revierte SOLO lo que esta importación creó o modificó (restaura los valores previos)."""
-    await ensure_project_access(user, pid)
+    await _cap_acceso(user, pid)
     imp = await _cap_imp_get(pid, iid)
     if imp["estado"] not in ("aplicada", "parcial"):
         raise HTTPException(409, "Solo se puede deshacer una importación aplicada")
@@ -39342,7 +39383,7 @@ async def cap_import_deshacer(pid: str, iid: str, user: dict = Depends(require_r
 
 @api.get("/projects/{pid}/capacidades/importar")
 async def cap_import_historial(pid: str, user: dict = Depends(require_role(*CAP_WRITE, ROLE_JEFE))):
-    await ensure_project_access(user, pid)
+    await _cap_acceso(user, pid)
     return [i async for i in db.cap_importaciones.find({"project_id": pid, "estado": {"$ne": "previa"}},
                                                        {"_id": 0, "errores": 0, "encabezados": 0, "mapeo": 0}).sort("created_at", -1).limit(50)]
 
@@ -39351,7 +39392,7 @@ async def cap_import_historial(pid: str, user: dict = Depends(require_role(*CAP_
 async def cap_import_plantillas(pid: str, tipo: Optional[Literal["personal", "certificaciones", "equipos"]] = None,
                                 user: dict = Depends(require_role(*CAP_WRITE))):
     """Mapeos de columnas guardados (por nombre de encabezado) para repetir la importación el próximo mes."""
-    await ensure_project_access(user, pid)
+    await _cap_acceso(user, pid)
     flt: dict = {"project_id": pid}
     if tipo:
         flt["tipo"] = tipo
