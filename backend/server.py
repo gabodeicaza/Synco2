@@ -7726,6 +7726,7 @@ def _avance_obra_resumen(
 
 
 _CHART_FONT_CANDIDATAS = (
+    str(Path(__file__).resolve().parent / "assets" / "fonts" / "Roboto-Regular.ttf"),
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     "/usr/share/fonts/dejavu/DejaVuSans.ttf",
     "/usr/share/fonts/TTF/DejaVuSans.ttf",
@@ -9264,7 +9265,7 @@ def _bake_plano_snapshot(plano: dict) -> bytes:
     radius = max(8, int(min(w, h) * 0.014))
     line_width = max(4, int(min(w, h) * 0.01))
     try:
-        font = _ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", max(12, int(radius * 1.3)))
+        font = _ImageFont.truetype(str(Path(__file__).resolve().parent / "assets" / "fonts" / "Roboto-Bold.ttf"), max(12, int(radius * 1.3)))
     except Exception:
         font = _ImageFont.load_default()
 
@@ -13293,7 +13294,7 @@ async def get_report_collage(rid: str, user: dict = Depends(current_user)):
     try:
         draw = ImageDraw.Draw(canvas)
         try:
-            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 22)
+            font = ImageFont.truetype(str(Path(__file__).resolve().parent / "assets" / "fonts" / "Roboto-Bold.ttf"), 22)
         except Exception:
             font = ImageFont.load_default()
         stamp = f"Dirac · {len(cells)} foto{'s' if len(cells) != 1 else ''}"
@@ -15565,16 +15566,16 @@ def _informe_pdf_bytes(informes: list, proj: dict, fotos: Dict[str, list], hoja_
     color = _sanitize_color_hex(proj.get("color_institucional") or proj.get("color_tema")) or "#003366"
     P = lambda name, **kw: ParagraphStyle(name, fontName=kw.pop("fontName", "Roboto"), **kw)
     s_tit = P("it", fontName="Roboto-Bold", fontSize=13, leading=16, alignment=TA_CENTER, textColor=HexColor(color))
-    s_sub = P("is", fontSize=9, leading=11, alignment=TA_CENTER, textColor=HexColor("#475569"))
+    s_sub = P("is", fontSize=12, leading=14.5, alignment=TA_CENTER, textColor=HexColor("#475569"))
     s_lbl = P("il", fontName="Roboto-Bold", fontSize=8, leading=10, textColor=HexColor("#334155"))
-    s_txt = P("ix", fontSize=9, leading=11.5)
-    s_bul = P("ib", fontSize=9, leading=11.5, leftIndent=10, firstLineIndent=-8)
+    s_txt = P("ix", fontSize=12, leading=15)
+    s_bul = P("ib", fontSize=12, leading=15, leftIndent=10, firstLineIndent=-8)
     s_blq = P("ik", fontName="Roboto-Bold", fontSize=9.5, leading=12, textColor=white)
     s_cap = P("ic", fontSize=7.5, leading=9, alignment=TA_CENTER, textColor=HexColor("#475569"))
-    s_ia = P("ii", fontName="Roboto-Italic", fontSize=9, leading=11.5, textColor=HexColor("#1E3A8A"))
+    s_ia = P("ii", fontName="Roboto-Italic", fontSize=12, leading=15, textColor=HexColor("#1E3A8A"))
     s_firma = P("if", fontSize=8, leading=10, alignment=TA_CENTER)
-    s_cel = P("ie", fontSize=8.5, leading=10.5)
-    s_celb = P("ih", fontName="Roboto-Bold", fontSize=8.5, leading=10.5, textColor=white)
+    s_cel = P("ie", fontSize=12, leading=14.5)
+    s_celb = P("ih", fontName="Roboto-Bold", fontSize=12, leading=14.5, textColor=white)
     W = A4[0] - 3.0 * cm
     GRIS = HexColor("#CBD5E1")
 
@@ -18995,7 +18996,7 @@ async def export_reports_pdf(
                 "modulosBody", fontName="Roboto", fontSize=12, leading=15, textColor=TEXT,
             )
             cell_style = ParagraphStyle(
-                "modulosCell", fontName="Roboto", fontSize=9, leading=11, textColor=TEXT,
+                "modulosCell", fontName="Roboto", fontSize=12, leading=14, textColor=TEXT,
             )
             HEADING_COLORS = {"good": HexColor("#16A34A"), "bad": HexColor("#DC2626")}
 
@@ -19596,8 +19597,8 @@ async def export_reports_pdf(
                 col_w = [content_w * f for f in fracs]
                 PAD = 4
                 head_color = WHITE if _hex_luminance(project_color) <= 0.6 else HexColor("#1A1A1A")
-                cell_st = ParagraphStyle("segAccCell", fontName="Roboto", fontSize=8.5, leading=10.5, textColor=TEXT)
-                head_st = ParagraphStyle("segAccHead", fontName="Roboto-Bold", fontSize=8.5, leading=10,
+                cell_st = ParagraphStyle("segAccCell", fontName="Roboto", fontSize=12, leading=14.5, textColor=TEXT)
+                head_st = ParagraphStyle("segAccHead", fontName="Roboto-Bold", fontSize=12, leading=14,
                                          textColor=head_color)
                 text_keys = ["fecha", "mes", "trabajador", "contratista", "registro", "ubicacion",
                              "descripcion", None, "seguimiento"]
@@ -36922,8 +36923,8 @@ async def export_catalogo_pdf(pid: str, user: dict = Depends(current_user)):
         styles = getSampleStyleSheet()
         title_style = ParagraphStyle("CatTitle", parent=styles["Heading1"], textColor=HexColor(project_color), fontSize=16)
         partida_style = ParagraphStyle("CatPartida", parent=styles["Heading2"], fontSize=12, spaceBefore=10)
-        cell_style = ParagraphStyle("CatCell", parent=styles["BodyText"], fontSize=8, leading=10)
-        money_style = ParagraphStyle("CatMoney", parent=styles["BodyText"], fontSize=8, leading=10, alignment=TA_RIGHT)
+        cell_style = ParagraphStyle("CatCell", parent=styles["BodyText"], fontName="Roboto", fontSize=12, leading=14)
+        money_style = ParagraphStyle("CatMoney", parent=styles["BodyText"], fontName="Roboto", fontSize=12, leading=14, alignment=TA_RIGHT)
 
         story = [
             Paragraph(f"{titulo_modulo.upper()} — {project_name}", title_style),
@@ -37067,10 +37068,10 @@ async def export_avance_periodo_pdf(
         )
         styles = getSampleStyleSheet()
         title_style = ParagraphStyle("AvTitle", parent=styles["Heading1"], textColor=HexColor(project_color), fontSize=15)
-        subtitle_style = ParagraphStyle("AvSubtitle", parent=styles["Heading3"], fontSize=10, textColor=HexColor("#475569"), spaceAfter=8)
-        cell_style = ParagraphStyle("AvCell", parent=styles["BodyText"], fontSize=7, leading=8)
-        money_style = ParagraphStyle("AvMoney", parent=styles["BodyText"], fontSize=7, leading=8, alignment=TA_RIGHT)
-        header_style = ParagraphStyle("AvHeader", parent=styles["BodyText"], fontSize=7, leading=8, textColor=white, alignment=TA_CENTER)
+        subtitle_style = ParagraphStyle("AvSubtitle", parent=styles["Heading3"], fontName="Roboto-Bold", fontSize=12, textColor=HexColor("#475569"), spaceAfter=8)
+        cell_style = ParagraphStyle("AvCell", parent=styles["BodyText"], fontName="Roboto", fontSize=7, leading=8)
+        money_style = ParagraphStyle("AvMoney", parent=styles["BodyText"], fontName="Roboto", fontSize=7, leading=8, alignment=TA_RIGHT)
+        header_style = ParagraphStyle("AvHeader", parent=styles["BodyText"], fontName="Roboto", fontSize=7, leading=8, textColor=white, alignment=TA_CENTER)
 
         story = [
             Paragraph(f"AVANCE POR PERIODO — {project_name}", title_style),
