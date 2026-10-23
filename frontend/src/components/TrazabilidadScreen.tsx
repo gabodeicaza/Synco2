@@ -362,6 +362,12 @@ export function TrazabilidadScreen({ projectId, canEdit, fallbackHref = '/' }: P
                   ? 'Aún no hay trazabilidad. Importa el Excel de trazabilidad para armar el árbol de categorías, o crea una categoría.'
                   : 'Aún no hay trazabilidad cargada para este proyecto.'}
               </Text>
+              {canEdit && !visibles ? (
+                <Pressable accessibilityRole="button" style={s.vacioBtn} onPress={importarExcel} disabled={!!ocupado}>
+                  <Ionicons name="reload-circle-outline" size={20} color="#fff" />
+                  <Text style={s.vacioBtnTxt}>Importar Excel de trazabilidad</Text>
+                </Pressable>
+              ) : null}
             </View>
             )
           }
@@ -439,6 +445,8 @@ const s = StyleSheet.create({
   ext: { fontSize: 10, fontWeight: '900' },
   punto: { width: 9, height: 9, borderRadius: 5 },
   vacio: { alignItems: 'center', gap: 8, padding: spacing.xl },
+  vacioBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: colors.primary, borderRadius: radius.md, paddingHorizontal: 16, paddingVertical: 12, marginTop: 4 },
+  vacioBtnTxt: { color: '#fff', fontWeight: '800', fontSize: 14 },
   vacioTxt: { fontSize: 13, color: colors.textMuted, textAlign: 'center', lineHeight: 18 },
   sueltos: { margin: spacing.md, padding: spacing.sm, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, gap: spacing.sm },
   sueltosHead: { flexDirection: 'row', alignItems: 'center', gap: 8 },

@@ -486,7 +486,7 @@ export function NuevoNodoModal({ abierto, padre, kind, onClose, onCrear }: Nuevo
   return (
     <Modal visible transparent animationType="fade" onRequestClose={onClose}>
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={[s.backdrop, { justifyContent: 'center', padding: spacing.md }]}>
-        <View style={[s.sheet, { flex: 0, borderRadius: radius.lg, padding: spacing.md, gap: spacing.sm }]}>
+        <View style={s.tarjetaNueva}>
           <Text style={s.headTitle}>{titulo}</Text>
           {padre ? <Text style={s.hint} numberOfLines={2}>Dentro de: {padre.code ? `${padre.code} · ` : ''}{padre.name}</Text> : null}
           {pideCodigo ? (
@@ -515,6 +515,9 @@ const s = StyleSheet.create({
     flex: 1, marginTop: 48, backgroundColor: colors.bg,
     borderTopLeftRadius: radius.lg, borderTopRightRadius: radius.lg, overflow: 'hidden',
   },
+  // Tarjeta centrada del formulario "Nuevo": sin `flex` para que mida lo que
+  // ocupa su contenido (con `flex: 0` en web se colapsaba a una franja).
+  tarjetaNueva: { backgroundColor: colors.bg, borderRadius: radius.lg, padding: spacing.md, gap: spacing.sm, width: '100%', maxWidth: 520, alignSelf: 'center' },
   head: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.sm, paddingVertical: spacing.sm, backgroundColor: colors.surface, borderBottomWidth: 1, borderBottomColor: colors.border },
   headBtn: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
   headTitle: { flex: 1, textAlign: 'center', fontSize: 16, fontWeight: '800', color: colors.text },
