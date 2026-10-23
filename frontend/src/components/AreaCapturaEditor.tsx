@@ -11,6 +11,8 @@ import { a11y, t } from '@/src/i18n';
 export interface AreaCapturaValor {
   capturaPersonal: boolean;
   capturaEquipo: boolean;
+  capturaActividades: boolean;
+  capturaObservaciones: boolean;
   camposExtra: AreaCampoExtra[];
 }
 
@@ -37,7 +39,7 @@ interface Props {
 }
 
 export function AreaCapturaEditor({ value, onChange, disabled }: Props) {
-  const { capturaPersonal, capturaEquipo, camposExtra } = value;
+  const { capturaPersonal, capturaEquipo, capturaActividades, capturaObservaciones, camposExtra } = value;
 
   const setCampo = (i: number, cambio: Partial<AreaCampoExtra>) =>
     onChange({ ...value, camposExtra: camposExtra.map((c, j) => (j === i ? { ...c, ...cambio } : c)) });
@@ -66,6 +68,25 @@ export function AreaCapturaEditor({ value, onChange, disabled }: Props) {
           accessibilityLabel={t('areas.capturaEquipo')}
           value={capturaEquipo}
           onValueChange={(v) => onChange({ ...value, capturaEquipo: v })}
+          disabled={disabled}
+        />
+      </View>
+
+      <View style={styles.fila}>
+        <Text style={styles.filaTxt}>{t('areas.capturaActividades')}</Text>
+        <Switch
+          accessibilityLabel={t('areas.capturaActividades')}
+          value={capturaActividades}
+          onValueChange={(v) => onChange({ ...value, capturaActividades: v })}
+          disabled={disabled}
+        />
+      </View>
+      <View style={styles.fila}>
+        <Text style={styles.filaTxt}>{t('areas.capturaObservaciones')}</Text>
+        <Switch
+          accessibilityLabel={t('areas.capturaObservaciones')}
+          value={capturaObservaciones}
+          onValueChange={(v) => onChange({ ...value, capturaObservaciones: v })}
           disabled={disabled}
         />
       </View>

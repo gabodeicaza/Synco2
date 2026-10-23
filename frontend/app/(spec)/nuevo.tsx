@@ -120,6 +120,8 @@ export default function NewReportScreen() {
   const [camposExtra, setCamposExtra] = useState<Record<string, string>>({});
   const capturaPersonal = areaConfig?.captura_personal !== false;
   const capturaEquipo = areaConfig?.captura_equipo !== false;
+  const capturaActividades = areaConfig?.captura_actividades !== false;
+  const capturaObservaciones = areaConfig?.captura_observaciones !== false;
   const camposArea = areaConfig?.campos_extra || [];
   const [images, setImages] = useState<string[]>([]);
   const [captions, setCaptions] = useState<string[]>(['', '']);
@@ -550,8 +552,8 @@ export default function NewReportScreen() {
         ultima_lectura: registrarLecturas ? (parseFloat(ultimaLectura) || 0) : 0,
         actividades,
         activities: actividades, // [P0] SEND BOTH FOR SERVER COMPAT
-        actividades_items: actividadesValidas.map((a) => ({ texto: a.texto.trim(), gravedad: a.gravedad })),
-        observaciones: observaciones.trim(),
+        actividades_items: !capturaActividades ? [] : actividadesValidas.map((a) => ({ texto: a.texto.trim(), gravedad: a.gravedad })),
+        observaciones: !capturaObservaciones ? '' : observaciones.trim(),
         incidencias: incidencias.trim(),
         avance: registrarLecturas ? (avanceCalculado || '0').toString() : '0',
         contratista: project?.constructora || '',
@@ -587,6 +589,8 @@ export default function NewReportScreen() {
           .map((c) => ({ ...c, valor: c.tipo === 'numero' ? Number(valoresCamposExtra[c.id!].replace(',', '.')) : valoresCamposExtra[c.id!] })),
         captura_personal: capturaPersonal,
         captura_equipo: capturaEquipo,
+        captura_actividades: capturaActividades,
+        captura_observaciones: capturaObservaciones,
       });
 
       // Save catalogs
@@ -834,6 +838,7 @@ export default function NewReportScreen() {
                 <Text style={styles.cardHelp}>{t('nuevoReporte.actividadesYObservacionesDelDia')}</Text>
               </View>
             </View>
+            {capturaActividades && (<>
             <Text style={styles.inputLabelSmall}>{t('nuevoReporte.actividades')}</Text>
             <Text style={styles.sevHint}>{t('nuevoReporte.gravedadAyuda')}</Text>
             {actividadesItems.map((a, idx) => (
@@ -868,8 +873,11 @@ export default function NewReportScreen() {
               <Ionicons name="add-circle-outline" size={18} color={colors.primary} />
               <Text style={{ color: colors.primary, fontWeight: '600' }}>{t('nuevoReporte.anadirActividad')}</Text>
             </TouchableOpacity>
+            </>)}
+            {capturaObservaciones && (<>
             <Text style={styles.inputLabelSmall}>{t('nuevoReporte.observaciones')}</Text>
             <TextInput value={observaciones} onChangeText={setObservaciones} multiline placeholder={t('nuevoReporte.comentariosRetrasosLoQueOcurrio')} style={[styles.input, { minHeight: 80 }]} />
+            </>)}
             <Text style={styles.inputLabelSmall}>{t('nuevoReporte.incidenciasOpcional')}</Text>
             <TextInput value={incidencias} onChangeText={setIncidencias} multiline placeholder={t('nuevoReporte.eventosRelevantesBloqueosFallasAccidentes')} style={[styles.input, { minHeight: 120, textAlignVertical: 'top' }]} />
           </View>

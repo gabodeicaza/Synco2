@@ -23,12 +23,16 @@ import { colors, radius, spacing, shadow } from '@/src/theme';
 import { confirm } from '@/src/utils/confirm';
 import { a11y, t } from '@/src/i18n';
 
-const CAPTURA_INICIAL: AreaCapturaValor = { capturaPersonal: true, capturaEquipo: true, camposExtra: [] };
+const CAPTURA_INICIAL: AreaCapturaValor = {
+  capturaPersonal: true, capturaEquipo: true, capturaActividades: true, capturaObservaciones: true, camposExtra: [],
+};
 
 function capturaDeArea(a: Area): AreaCapturaValor {
   return {
     capturaPersonal: a.captura_personal !== false,
     capturaEquipo: a.captura_equipo !== false,
+    capturaActividades: a.captura_actividades !== false,
+    capturaObservaciones: a.captura_observaciones !== false,
     camposExtra: (a.campos_extra || []).map((c) => ({ ...c })),
   };
 }
@@ -37,6 +41,8 @@ function resumenCaptura(a: Area): string {
   const partes: string[] = [];
   if (a.captura_personal !== false) partes.push(t('areas.resumenPersonal'));
   if (a.captura_equipo !== false) partes.push(t('areas.resumenEquipo'));
+  if (a.captura_actividades !== false) partes.push(t('areas.resumenActividades'));
+  if (a.captura_observaciones !== false) partes.push(t('areas.resumenObservaciones'));
   for (const c of a.campos_extra || []) partes.push(c.nombre);
   return partes.length ? partes.join(' · ') : t('areas.resumenSinPersonalEquipo');
 }
@@ -110,6 +116,8 @@ export default function AreasScreen() {
       const config = {
         captura_personal: captura.capturaPersonal,
         captura_equipo: captura.capturaEquipo,
+        captura_actividades: captura.capturaActividades,
+        captura_observaciones: captura.capturaObservaciones,
         campos_extra: camposLimpios(captura.camposExtra),
       };
       if (editando) {

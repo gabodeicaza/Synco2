@@ -114,3 +114,13 @@ def test_whatsapp_sin_configuracion_sigue_mostrando_personal_y_equipo():
     texto = _whatsapp_texto_reporte({"captured_by_name": "Ana", "personnel": ["3 Peón"]})
     assert "Personal:\n3 Peón" in texto
     assert "Equipo:\n-" in texto
+
+
+def test_areas_anteriores_capturan_actividades_y_observaciones():
+    a = _area_con_defaults({"name": "Vieja"})
+    assert a["captura_actividades"] is True and a["captura_observaciones"] is True
+
+
+def test_area_puede_apagar_actividades_y_observaciones():
+    a = _area_con_defaults({"captura_actividades": False, "captura_observaciones": False})
+    assert a["captura_actividades"] is False and a["captura_observaciones"] is False

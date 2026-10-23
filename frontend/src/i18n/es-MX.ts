@@ -1242,6 +1242,8 @@ export const esMX = {
     queCapturaAyuda: 'Los especialistas del área solo verán lo que actives aquí.',
     capturaPersonal: 'Personal',
     capturaEquipo: 'Equipo',
+    capturaActividades: 'Actividades',
+    capturaObservaciones: 'Observaciones',
     camposExtraTitulo: 'Campos adicionales',
     camposExtraAyuda: 'Datos propios del área, como Banderilleros. Tú decides el nombre y si es un número o un texto.',
     campoNombre: 'Nombre del campo',
@@ -1259,6 +1261,8 @@ export const esMX = {
     resumenSinPersonalEquipo: 'Sin Personal ni Equipo',
     resumenPersonal: 'Personal',
     resumenEquipo: 'Equipo',
+    resumenActividades: 'Actividades',
+    resumenObservaciones: 'Observaciones',
   },
   equipo: {
     titulo: 'Equipo',
