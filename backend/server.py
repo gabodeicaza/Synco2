@@ -16346,7 +16346,7 @@ async def _fetch_weather_for_export(lat: Optional[float], lon: Optional[float]) 
 
     Devuelve None si faltan coordenadas o la consulta falla (timeout, etc.)
     — el llamador debe tolerar la ausencia de datos de clima (celdas "—")."""
-    if lat is None or lon is None:
+    if _coords_wgs84(lat, lon) is None:
         return None
     try:
         async with httpx.AsyncClient(timeout=8.0) as client:
@@ -16376,8 +16376,12 @@ async def _fetch_weather_for_export(lat: Optional[float], lon: Optional[float]) 
         if isinstance(aq_resp, httpx.Response) and aq_resp.status_code == 200:
             cur = (aq_resp.json() or {}).get("current") or {}
             weather["us_aqi"] = cur.get("us_aqi")
+        if not weather:
+            log.warning("[clima] Open-Meteo sin datos para (%s, %s): forecast=%r", lat, lon,
+                        getattr(fc_resp, "status_code", fc_resp))
         return weather or None
     except Exception:
+        log.exception("[clima] error consultando Open-Meteo (%s, %s)", lat, lon)
         return None
 
 
@@ -16401,14 +16405,79 @@ def _weather_coords_for_subtramo(subtramo_id: Optional[str], nodes_by_id: dict, 
             continue
         if _subtramo_id_for(node_id, nodes_by_id) != subtramo_id:
             continue
-        if node.get("target_lat") is not None and node.get("target_lon") is not None:
-            return node["target_lat"], node["target_lon"]
+        c = _coords_nodo_wgs84(node)
+        if c:
+            return c
         for r in (reports_by_node.get(node_id) or []):
             mv = r.get("measurement_value") or {}
-            lat, lon = mv.get("lat"), mv.get("lon")
-            if isinstance(lat, (int, float)) and isinstance(lon, (int, float)) and not (lat == 0 and lon == 0):
-                return lat, lon
+            c = _coords_wgs84(mv.get("lat"), mv.get("lon"))
+            if c:
+                return c
     return None, None
+
+
+def _coords_wgs84(lat, lon) -> Optional[tuple]:
+    """(lat, lon) si son grados WGS84 plausibles; None si faltan, son 0,0 o
+    están fuera de rango. `target_lat/lon` y las coordenadas de los reportes
+    suelen venir en UTM (cientos de miles o millones) y Open-Meteo las rechaza,
+    así que se descartan en vez de intentar consultar con ellas."""
+    ok = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool)
+    if ok(lat) and ok(lon) and -90 <= lat <= 90 and -180 <= lon <= 180 and not (lat == 0 and lon == 0):
+        return float(lat), float(lon)
+    return None
+
+
+def _coords_nodo_wgs84(node: dict) -> Optional[tuple]:
+    """Coordenadas WGS84 propias de un nodo: primero el GPS real del
+    dispositivo (`gps_lat/gps_lon`), luego `target_lat/lon` si resultan ser
+    grados y no UTM."""
+    return (_coords_wgs84(node.get("gps_lat"), node.get("gps_lon"))
+            or _coords_wgs84(node.get("target_lat"), node.get("target_lon")))
+
+
+async def _clima_coords_de_reportes(pid: str, nodes: list) -> dict:
+    """node_id -> (lat, lon) WGS84 tomadas de las capturas de campo más
+    recientes del proyecto (`measurement_value` de nodos `coord_latlon`)."""
+    out: dict = {}
+    async for r in db.reports.find(
+        {"project_id": pid, "measurement_value.lat": {"$exists": True}},
+        {"node_id": 1, "measurement_value": 1},
+    ).sort("created_at", -1).limit(500):
+        mv = r.get("measurement_value") or {}
+        c = _coords_wgs84(mv.get("lat"), mv.get("lon"))
+        if c and r.get("node_id") not in out:
+            out[r["node_id"]] = c
+    return out
+
+
+def _clima_coords_estacion(est: dict, nodes: list, nodes_by_id: dict, coords_reportes: dict) -> Optional[tuple]:
+    """Coordenadas para el clima de una Estación: ella misma, sus ancestros,
+    luego las hojas que cuelgan de ella (GPS/target, luego reportes)."""
+    cur, seen = est, set()
+    while cur and cur["id"] not in seen:
+        c = _coords_nodo_wgs84(cur)
+        if c:
+            return c
+        seen.add(cur["id"])
+        cur = nodes_by_id.get(cur.get("parent_id"))
+
+    def _desciende(n: dict) -> bool:
+        cur, seen = n, set()
+        while cur and cur["id"] not in seen:
+            if cur["id"] == est["id"]:
+                return True
+            seen.add(cur["id"])
+            cur = nodes_by_id.get(cur.get("parent_id"))
+        return False
+    desc = [n for n in nodes if _desciende(n)]
+    for n in desc:
+        c = _coords_nodo_wgs84(n)
+        if c:
+            return c
+    for n in desc:
+        if n["id"] in coords_reportes:
+            return coords_reportes[n["id"]]
+    return None
 
 
 async def _clima_auto_capturar_proyecto(proj: dict) -> int:
@@ -16437,39 +16506,19 @@ async def _clima_auto_capturar_proyecto(proj: dict) -> int:
     }
     creadas = 0
     cache: dict = {}
+    sin_coords: list = []
+    coords_reportes = await _clima_coords_de_reportes(pid, nodes)
+    coords_proyecto = next(
+        (c for c in (_coords_nodo_wgs84(n) for n in nodes) if c), None,
+    ) or next(iter(coords_reportes.values()), None)
     for est in estaciones:
         if est["id"] in ya:
             continue
-        # Coordenadas: la propia estación si es hoja, o la primera hoja
-        # descendiente con target_lat/lon; si no, las capturadas en campo
-        # en algún reporte de esas hojas.
-        def _desciende(n: dict) -> bool:
-            cur, seen = n, set()
-            while cur and cur["id"] not in seen:
-                if cur["id"] == est["id"]:
-                    return True
-                seen.add(cur["id"])
-                cur = nodes_by_id.get(cur.get("parent_id"))
-            return False
-        hojas = [n for n in nodes if n.get("is_leaf") and _desciende(n)]
-        lat = lon = None
-        for h in hojas:
-            if h.get("target_lat") is not None and h.get("target_lon") is not None:
-                lat, lon = h["target_lat"], h["target_lon"]
-                break
-        if lat is None and hojas:
-            async for r in db.reports.find(
-                {"project_id": pid, "node_id": {"$in": [h["id"] for h in hojas]},
-                 "measurement_value.lat": {"$exists": True}},
-                {"measurement_value": 1},
-            ).sort("created_at", -1).limit(20):
-                mv = r.get("measurement_value") or {}
-                la, lo = mv.get("lat"), mv.get("lon")
-                if isinstance(la, (int, float)) and isinstance(lo, (int, float)) and not (la == 0 and lo == 0):
-                    lat, lon = la, lo
-                    break
-        if lat is None or lon is None:
+        coords = _clima_coords_estacion(est, nodes, nodes_by_id, coords_reportes) or coords_proyecto
+        if coords is None:
+            sin_coords.append(est.get("name") or est["id"])
             continue
+        lat, lon = coords
         key = (round(lat, 2), round(lon, 2))
         if key not in cache:
             cache[key] = await _fetch_weather_for_export(lat, lon)
@@ -16493,6 +16542,9 @@ async def _clima_auto_capturar_proyecto(proj: dict) -> int:
         except Exception:
             # Carrera con una captura manual de la misma hora (índice único): gana la manual.
             pass
+    if sin_coords:
+        log.warning("[clima] %s: estaciones sin coordenadas WGS84 válidas: %s",
+                    proj.get("name") or pid, ", ".join(sin_coords[:10]))
     return creadas
 
 
