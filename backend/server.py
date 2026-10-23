@@ -1258,6 +1258,54 @@ _ICONOS_B64 = {
 }
 _ICONO_RGB = (0x9C, 0x20, 0x48)  # guinda institucional de los pictogramas
 
+# Pictogramas institucionales en el PDF (los mismos que usa el PPTX, ver
+# `_wf_png_icon`): tipo de ícono del PDF -> (clave en _ICONOS_B64, factor de
+# ancho, alineado a la izquierda). Sin PNG disponible se dibuja la figura vectorial.
+_ICONO_PDF_KIND = {
+    "structure": ("estacion", 4.4, True),
+    "person": ("fuerza_trabajo", 2.0, False),
+    "gear": ("maquinaria", 2.0, False),
+}
+_ICONO_PDF_CACHE: dict = {}
+
+
+def _pdf_icono_png(c, nombre: str, cx: float, cy: float, r: float, ancho_f: float = 2.0,
+                   izq: bool = False) -> float:
+    """Dibuja en el canvas `c` el pictograma `nombre` centrado en (cx, cy) y
+    ajustado a un cuadro de 2r x 2r sin deformarlo (igual que el PPTX).
+    Devuelve el ancho dibujado (pt); 0 si no hay pictograma (el llamador pinta
+    la figura de respaldo)."""
+    b64 = _ICONOS_B64.get(nombre)
+    if not b64:
+        return 0.0
+    try:
+        ent = _ICONO_PDF_CACHE.get(nombre)
+        if ent is None:
+            import base64 as _b64
+            from PIL import Image as _PILImage
+            from reportlab.lib.utils import ImageReader as _IR
+            mascara = _PILImage.open(io.BytesIO(_b64.b64decode(b64))).convert("L")
+            png = _PILImage.new("RGBA", mascara.size, _ICONO_RGB + (0,))
+            png.putalpha(mascara)
+            buf_i = io.BytesIO()
+            png.save(buf_i, "PNG")
+            buf_i.seek(0)
+            ent = (_IR(buf_i), mascara.size)
+            _ICONO_PDF_CACHE[nombre] = ent
+        img, (iw, ih) = ent
+        esc = min(ancho_f * r / iw, 2 * r / ih)
+        w, h = iw * esc, ih * esc
+        c.drawImage(img, (cx - r) if izq else (cx - w / 2), cy - h / 2, w, h, mask="auto")
+        return w
+    except Exception:
+        return 0.0
+
+
+def _pdf_icono_kind(c, kind: str, cx: float, cy: float, r: float) -> float:
+    """`_pdf_icono_png` para un tipo de ícono del PDF (structure/person/gear)."""
+    ent = _ICONO_PDF_KIND.get(kind)
+    return _pdf_icono_png(c, ent[0], cx, cy, r, ent[1], ent[2]) if ent else 0.0
+
 
 def _quitar_emoji(texto):
     """Quita emoji de un texto de exportación (y el espacio que quedaba
@@ -6352,11 +6400,11 @@ def _fotos_lidar_etiqueta(base: str, fecha: Optional[str]) -> str:
 def _foto_comp_etiqueta(it: dict, slot: str, base: str) -> str:
     """Etiqueta bajo cada foto de un bloque `fotos_comparativa`: la
     personalizada del item (ej. "TAPIAL" / "VUELO DRON") o, si no hay,
-    ORIGINAL/ACTUAL con su fecha."""
+    ORIGINAL/ACTUAL (sin la fecha de toma: no se imprime)."""
     key = f"etiqueta_{slot}"
     if key in it:  # presente (aunque vacío) = el item decide; vacío → sin pie
         return it[key] or ""
-    return _fotos_lidar_etiqueta(base, it.get(f"fecha_{slot}"))
+    return base
 
 
 def _foto_comp_desc(it: dict, slot: str) -> str:
@@ -19356,6 +19404,27 @@ async def export_reports_pdf(
                 except Exception:
                     return 0.0
 
+            def _pdf_fill_image(b64_str, x, y_top, w, h) -> float:
+                """Llena EXACTAMENTE la caja (x, y_top, w, h) con la imagen
+                (sin deformarla: escala hasta cubrir y recorta al centro), de
+                modo que las dos fotos de una comparativa salgan siempre del
+                mismo tamaño. Devuelve h; 0 si no se pudo leer."""
+                try:
+                    raw = base64.b64decode(_strip_b64_prefix(b64_str))
+                    img = ImageReader(io.BytesIO(raw))
+                    iw, ih = img.getSize()
+                    sc = max(w / iw, h / ih)
+                    dw, dh = iw * sc, ih * sc
+                    c.saveState()
+                    pth = c.beginPath()
+                    pth.rect(x, y_top - h, w, h)
+                    c.clipPath(pth, stroke=0, fill=0)
+                    c.drawImage(img, x - (dw - w) / 2, y_top - h - (dh - h) / 2, dw, dh)
+                    c.restoreState()
+                    return h
+                except Exception:
+                    return 0.0
+
             def _draw_fotos_comparativa_block(block: dict) -> None:
                 nonlocal y
                 gap = 0.8 * cm
@@ -19382,7 +19451,7 @@ async def export_reports_pdf(
                         ("original", "ORIGINAL", "fecha_original"), ("actual", "ACTUAL", "fecha_actual"),
                     )):
                         x = left_x + col * (col_w + gap)
-                        h = _pdf_fit_image(it[key], x, y, col_w, img_h) if it.get(key) else 0.0
+                        h = _pdf_fill_image(it[key], x, y, col_w, img_h) if it.get(key) else 0.0
                         if not h and it.get("sin_placeholder"):
                             continue
                         if not h:
@@ -19588,7 +19657,9 @@ async def export_reports_pdf(
         # Fallback institucional: "REPORTE" si no hay period_type.
         _report_title = _period_titles.get((period_type or "").lower(), "REPORTE")
         try:
-            _date_range_txt = f"{_fmt_fecha_dd_mm_yyyy(data['start_dt'])} a {_fmt_fecha_dd_mm_yyyy(data['end_dt'])}"
+            # Mismo formato que la portada del PPTX: "22 DE OCTUBRE DE 2026" /
+            # "DEL 12 AL 16 DE OCTUBRE DE 2026" (antes: "22-10-2026 a 22-10-2026").
+            _date_range_txt = _fecha_portada_larga(data['start_dt'], data['end_dt'])
         except Exception:
             _date_range_txt = ""
         _proj_upper = (project_name or "").upper()
@@ -19629,7 +19700,10 @@ async def export_reports_pdf(
         # Rango de fechas (medio, color_tema con contorno).
         _dates_y = _cover_block_top_y - 1.6 * cm
         if _date_range_txt:
-            _draw_cover_outlined_text(_cover_x_left, _dates_y, _date_range_txt, 20)
+            _dates_size = 30
+            while c.stringWidth(_date_range_txt, "Roboto-Bold", _dates_size) > _cover_w_full and _dates_size > 14:
+                _dates_size -= 1
+            _draw_cover_outlined_text(_cover_x_left, _dates_y, _date_range_txt, _dates_size)
         # Nombre del proyecto (grande, color_tema con contorno, hasta 2 líneas si es muy largo).
         _proj_y = _dates_y - 1.8 * cm
         if _proj_upper:
@@ -20296,13 +20370,20 @@ async def export_reports_pdf(
             "parcial": "#D97706", "restringido": "#D97706", "acceso parcial al predio": "#D97706",
         }
 
+        # Filas de Fuerza de trabajo / Maquinaria que no cupieron en la hoja de
+        # la estación (en vez de "+N más…" se imprimen en hojas de continuación,
+        # ver `_emit_recursos_continuacion`) y el TOTAL de todas las filas.
+        _sub_recursos_resto: dict = {"personal": [], "maquinaria": [], "totales": None}
+
         def draw_subtramo_summary_page(subtramo_node: dict, personal_rows: list, maquinaria_rows: list,
                                         actividades: list, situacion_social: Optional[str],
                                         acceso_predio: Optional[str], weather: Optional[dict],
                                         mostrar_acceso_predio: bool = True,
                                         acceso_node_label: Optional[str] = None,
                                         turno_label: Optional[str] = None,
-                                        continuacion: bool = False) -> list:
+                                        continuacion: bool = False,
+                                        recursos_continuacion: bool = False,
+                                        totales: Optional[tuple] = None) -> list:
             """Página de resumen por Subtramo — layout de 2 columnas separadas
 
             CONTINUACIÓN: las actividades que no caben ya NO se cortan con
@@ -20340,6 +20421,8 @@ async def export_reports_pdf(
             reportlab (grid real) en vez de rects manuales, y las viñetas
             usan `Paragraph` en vez de texto suelto envuelto a mano."""
             nonlocal page_num
+            if not continuacion:  # la continuación de actividades no toca el resto de recursos
+                _sub_recursos_resto.update({"personal": [], "maquinaria": [], "totales": None})
 
             MARGIN_X = 1.5 * cm
             GUTTER = 0.9 * cm
@@ -20431,10 +20514,15 @@ async def export_reports_pdf(
                 "structure": _draw_structure_icon, "weather": _draw_weather_icon,
             }
 
-            def _draw_badge_icon(cx: float, cy: float, r: float, kind: str) -> None:
+            def _draw_badge_icon(cx: float, cy: float, r: float, kind: str) -> float:
+                """Devuelve el ancho ocupado (el pictograma de estación es ancho)."""
+                _w_png = _pdf_icono_kind(c, kind, cx, cy, r)
+                if _w_png:
+                    return _w_png
                 c.setFillColor(BRAND)
                 c.circle(cx, cy, r, stroke=0, fill=1)
                 _ICON_FNS[kind](cx, cy, r)
+                return 2 * r
 
             def _section_title(x: float, y: float, w: float, text: str) -> float:
                 c.setFillColor(BRAND)
@@ -20487,18 +20575,18 @@ async def export_reports_pdf(
             # "ESTACIÓN N." (chico) arriba, nombre de la estación (grande)
             # abajo — antes era una sola línea con solo el nombre.
             _ordinal = _subtramo_ordinal.get((subtramo_node or {}).get("id"))
-            _draw_badge_icon(left_x + BADGE_R, y - BADGE_R - 0.05 * cm, BADGE_R, "structure")
+            _ico_w = _draw_badge_icon(left_x + BADGE_R, y - BADGE_R - 0.05 * cm, BADGE_R, "structure")
             c.setFillColor(BRAND)
             _chico, _grande = _estacion_titulos(_ordinal, subtramo_name)
             if _chico:
                 c.setFont("Roboto-Bold", 10.5)
-                c.drawString(left_x + 2 * BADGE_R + 0.3 * cm, y - BADGE_R - 0.05 * cm - 10.5 * 0.32 + 0.16 * cm,
+                c.drawString(left_x + _ico_w + 0.3 * cm, y - BADGE_R - 0.05 * cm - 10.5 * 0.32 + 0.16 * cm,
                              _chico)
             c.setFont("Roboto-Bold", 15)
-            title_txt = _grande.upper()
-            while c.stringWidth(title_txt, "Roboto-Bold", 15) > col_w - (2 * BADGE_R + 0.3 * cm) and len(title_txt) > 8:
+            title_txt = _grande.upper() + ("  (CONTINÚA)" if recursos_continuacion else "")
+            while c.stringWidth(title_txt, "Roboto-Bold", 15) > col_w - (_ico_w + 0.3 * cm) and len(title_txt) > 8:
                 title_txt = title_txt[:-2] + "…"
-            c.drawString(left_x + 2 * BADGE_R + 0.3 * cm, y - BADGE_R - 0.05 * cm - 15 * 0.32 - 0.42 * cm, title_txt)
+            c.drawString(left_x + _ico_w + 0.3 * cm, y - BADGE_R - 0.05 * cm - 15 * 0.32 - 0.42 * cm, title_txt)
             y -= 1.75 * cm
             c.setStrokeColor(BRAND)
             c.setLineWidth(1.4)
@@ -20536,12 +20624,13 @@ async def export_reports_pdf(
                 y -= 0.28 * cm
 
             # --- ACTIVIDADES ---------------------------------------------------
-            y = _section_title(left_x, y, col_w, "Se supervisa las siguientes actividades")
-            act_h = max(1.0 * cm, y - bottom_y)
             _acts_all = list(actividades or [])
             _acts_resto: list = []
-            _draw_bullets(left_x, y, col_w, _acts_all, act_h, max_items=max(1, len(_acts_all)),
-                          resto_out=_acts_resto)
+            if not recursos_continuacion:
+                y = _section_title(left_x, y, col_w, "Se supervisa las siguientes actividades")
+                act_h = max(1.0 * cm, y - bottom_y)
+                _draw_bullets(left_x, y, col_w, _acts_all, act_h, max_items=max(1, len(_acts_all)),
+                              resto_out=_acts_resto)
             if continuacion:
                 return _acts_resto
 
@@ -20555,40 +20644,43 @@ async def export_reports_pdf(
             # =================================================================
             # COLUMNA DERECHA
             # =================================================================
-            y = top_y
-            _draw_badge_icon(right_x + BADGE_R, y - BADGE_R - 0.05 * cm, BADGE_R, "weather")
-            c.setFillColor(BRAND)
-            c.setFont("Roboto-Bold", 12)
-            c.drawString(right_x + 2 * BADGE_R + 0.3 * cm, y - BADGE_R - 0.05 * cm - 12 * 0.32, "ESTADO DEL TIEMPO")
-            y -= 1.1 * cm
+            if not recursos_continuacion:
+                y = top_y
+                _draw_badge_icon(right_x + BADGE_R, y - BADGE_R - 0.05 * cm, BADGE_R, "weather")
+                c.setFillColor(BRAND)
+                c.setFont("Roboto-Bold", 12)
+                c.drawString(right_x + 2 * BADGE_R + 0.3 * cm, y - BADGE_R - 0.05 * cm - 12 * 0.32, "ESTADO DEL TIEMPO")
+                y -= 1.1 * cm
 
-            w = weather or {}
-            temp = w.get("temperature_c")
-            wind = w.get("wind_kmh")
-            precip = w.get("precipitation_mm")
-            aqi = w.get("us_aqi")
-            # FIX: formato de referencia del cliente — una sola fila de 4
-            # columnas SIN bordes (antes: cuadrícula 2x2 con recuadro por
-            # celda), etiqueta "Label:" en altas y bajas en vez de
-            # VERSALITAS, y unidades/decimales exactos del formato ("5.8
-            # km/hr.", "53.8 ICA" — el valor crudo de AQI, no la categoría).
-            cells = [
-                ("Temperatura:", f"{temp:.0f}° C" if temp is not None else "—"),
-                ("Viento:", f"{wind:.1f} km/hr." if wind is not None else "—"),
-                ("Precipitación:", f"{precip:.1f} mm" if precip is not None else "—"),
-                ("Calidad del aire:", f"{aqi:.1f} ICA" if aqi is not None else "—"),
-            ]
-            cell_w, cell_h = col_w / 4.0, 1.1 * cm
-            grid_top = y
-            for i, (label, val) in enumerate(cells):
-                cx = right_x + i * cell_w
-                c.setFillColor(TEXT)
-                c.setFont("Roboto-Bold", 7.5)
-                for ln in _wrap_lines(label, cell_w - 0.15 * cm, "Roboto-Bold", 7.5, 2):
-                    c.drawString(cx, grid_top - 0.34 * cm, ln)
-                c.setFont("Roboto-Bold", 10.5)
-                c.drawString(cx, grid_top - cell_h + 0.28 * cm, val)
-            y = grid_top - cell_h - 0.3 * cm
+                w = weather or {}
+                temp = w.get("temperature_c")
+                wind = w.get("wind_kmh")
+                precip = w.get("precipitation_mm")
+                aqi = w.get("us_aqi")
+                # FIX: formato de referencia del cliente — una sola fila de 4
+                # columnas SIN bordes (antes: cuadrícula 2x2 con recuadro por
+                # celda), etiqueta "Label:" en altas y bajas en vez de
+                # VERSALITAS, y unidades/decimales exactos del formato ("5.8
+                # km/hr.", "53.8 ICA" — el valor crudo de AQI, no la categoría).
+                cells = [
+                    ("Temperatura:", f"{temp:.0f}° C" if temp is not None else "—"),
+                    ("Viento:", f"{wind:.1f} km/hr." if wind is not None else "—"),
+                    ("Precipitación:", f"{precip:.1f} mm" if precip is not None else "—"),
+                    ("Calidad del aire:", f"{aqi:.1f} ICA" if aqi is not None else "—"),
+                ]
+                cell_w, cell_h = col_w / 4.0, 1.1 * cm
+                grid_top = y
+                for i, (label, val) in enumerate(cells):
+                    cx = right_x + i * cell_w
+                    c.setFillColor(TEXT)
+                    c.setFont("Roboto-Bold", 7.5)
+                    for ln in _wrap_lines(label, cell_w - 0.15 * cm, "Roboto-Bold", 7.5, 2):
+                        c.drawString(cx, grid_top - 0.34 * cm, ln)
+                    c.setFont("Roboto-Bold", 10.5)
+                    c.drawString(cx, grid_top - cell_h + 0.28 * cm, val)
+                y = grid_top - cell_h - 0.3 * cm
+            else:
+                y = top_y
 
             # --- TABLAS GEMELAS FUERZA DE TRABAJO | MAQUINARIA Y EQUIPO -----
             # FIX 2026-08-11 · REDISEÑO SEGÚN SPEC DE PRODUCTO
@@ -20644,15 +20736,16 @@ async def export_reports_pdf(
             def _draw_section_title(x: float, y_top: float, title: str, icon_kind: str) -> float:
                 r = 0.32 * cm
                 cx, cy = x + r, y_top - r - 0.04 * cm
-                c.setFillColor(WF_BRAND)
-                c.circle(cx, cy, r, stroke=0, fill=1)
-                _ICON_FNS[icon_kind](cx, cy, r)
-                if icon_kind == "gear":
-                    # El engrane pinta su punto central con el BRAND
-                    # (oscurecido) del resto de la página — lo repintamos
-                    # con el color crudo para que el ícono sea consistente.
+                if not _pdf_icono_kind(c, icon_kind, cx, cy, r):
                     c.setFillColor(WF_BRAND)
-                    c.circle(cx, cy, r * 0.20, stroke=0, fill=1)
+                    c.circle(cx, cy, r, stroke=0, fill=1)
+                    _ICON_FNS[icon_kind](cx, cy, r)
+                    if icon_kind == "gear":
+                        # El engrane pinta su punto central con el BRAND
+                        # (oscurecido) del resto de la página — lo repintamos
+                        # con el color crudo para que el ícono sea consistente.
+                        c.setFillColor(WF_BRAND)
+                        c.circle(cx, cy, r * 0.20, stroke=0, fill=1)
                 # FIX 2026-08-13 · el título va en el BRAND OSCURECIDO (texto
                 # sobre fondo blanco), no en WF_BRAND crudo — WF_BRAND es
                 # correcto para el fondo del badge/encabezado de tabla, pero
@@ -20687,6 +20780,8 @@ async def export_reports_pdf(
             maquinaria_items = _measure_rows(maquinaria_rows, name_w, qty_w)
             personal_total = sum(it["qty"] for it in personal_items)
             maquinaria_total = sum(it["qty"] for it in maquinaria_items)
+            if totales:  # hoja de continuación: el TOTAL es el de todas las filas
+                personal_total, maquinaria_total = totales
 
             title_y_left = _draw_section_title(right_x, y, "Fuerza de Trabajo", "person")
             title_y_right = _draw_section_title(right_x + tbl_w + tbl_gutter, y, "Maquinaria y Equipo", "gear")
@@ -20714,14 +20809,16 @@ async def export_reports_pdf(
             while n_rows > 1 and _total_h(n_rows) > tbl_avail_h:
                 n_rows -= 1
 
-            personal_shown, personal_overflow = personal_items, 0
-            maquinaria_shown, maquinaria_overflow = maquinaria_items, 0
-            if n_rows < len(personal_items):
-                personal_overflow = len(personal_items) - (n_rows - 1)
-                personal_shown = personal_items[:n_rows - 1]
-            if n_rows < len(maquinaria_items):
-                maquinaria_overflow = len(maquinaria_items) - (n_rows - 1)
-                maquinaria_shown = maquinaria_items[:n_rows - 1]
+            # Lo que no cabe NO se resume con "+N más…": pasa a hojas de
+            # continuación de la misma estación (`_emit_recursos_continuacion`).
+            personal_shown, personal_overflow = personal_items[:n_rows], 0
+            maquinaria_shown, maquinaria_overflow = maquinaria_items[:n_rows], 0
+            if len(personal_items) > n_rows or len(maquinaria_items) > n_rows:
+                _sub_recursos_resto.update({
+                    "personal": list(personal_rows[n_rows:]),
+                    "maquinaria": list(maquinaria_rows[n_rows:]),
+                    "totales": (personal_total, maquinaria_total),
+                })
 
             row_heights = _shared_row_heights(n_rows)
 
@@ -20856,10 +20953,15 @@ async def export_reports_pdf(
 
             _ICON_FNS = {"person": _draw_person_icon, "gear": _draw_gear_icon, "structure": _draw_structure_icon}
 
-            def _draw_badge_icon(cx: float, cy: float, r: float, kind: str) -> None:
+            def _draw_badge_icon(cx: float, cy: float, r: float, kind: str) -> float:
+                """Devuelve el ancho ocupado (el pictograma de estación es ancho)."""
+                _w_png = _pdf_icono_kind(c, kind, cx, cy, r)
+                if _w_png:
+                    return _w_png
                 c.setFillColor(BRAND)
                 c.circle(cx, cy, r, stroke=0, fill=1)
                 _ICON_FNS[kind](cx, cy, r)
+                return 2 * r
 
             def _section_title(x: float, y: float, w: float, text: str) -> float:
                 c.setFillColor(BRAND)
@@ -20898,15 +21000,15 @@ async def export_reports_pdf(
             # numeran), Situación Social, Actividad en Postes, Actividades.
             # =================================================================
             y = top_y
-            _draw_badge_icon(left_x + BADGE_R, y - BADGE_R - 0.05 * cm, BADGE_R, "structure")
+            _ico_w = _draw_badge_icon(left_x + BADGE_R, y - BADGE_R - 0.05 * cm, BADGE_R, "structure")
             c.setFillColor(BRAND)
             c.setFont("Roboto-Bold", 10.5)
-            c.drawString(left_x + 2 * BADGE_R + 0.3 * cm, y - BADGE_R - 0.05 * cm - 10.5 * 0.32 + 0.16 * cm, "INTERTRAMO")
+            c.drawString(left_x + _ico_w + 0.3 * cm, y - BADGE_R - 0.05 * cm - 10.5 * 0.32 + 0.16 * cm, "INTERTRAMO")
             c.setFont("Roboto-Bold", 15)
             title_txt = intertramo_name.upper()
-            while c.stringWidth(title_txt, "Roboto-Bold", 15) > col_w - (2 * BADGE_R + 0.3 * cm) and len(title_txt) > 8:
+            while c.stringWidth(title_txt, "Roboto-Bold", 15) > col_w - (_ico_w + 0.3 * cm) and len(title_txt) > 8:
                 title_txt = title_txt[:-2] + "…"
-            c.drawString(left_x + 2 * BADGE_R + 0.3 * cm, y - BADGE_R - 0.05 * cm - 15 * 0.32 - 0.42 * cm, title_txt)
+            c.drawString(left_x + _ico_w + 0.3 * cm, y - BADGE_R - 0.05 * cm - 15 * 0.32 - 0.42 * cm, title_txt)
             y -= 1.75 * cm
             c.setStrokeColor(BRAND)
             c.setLineWidth(1.4)
@@ -21070,12 +21172,13 @@ async def export_reports_pdf(
             def _draw_section_title2(x: float, y_top: float, title: str, icon_kind: str) -> float:
                 r = 0.32 * cm
                 cx, cy = x + r, y_top - r - 0.04 * cm
-                c.setFillColor(WF_BRAND)
-                c.circle(cx, cy, r, stroke=0, fill=1)
-                _ICON_FNS[icon_kind](cx, cy, r)
-                if icon_kind == "gear":
+                if not _pdf_icono_kind(c, icon_kind, cx, cy, r):
                     c.setFillColor(WF_BRAND)
-                    c.circle(cx, cy, r * 0.20, stroke=0, fill=1)
+                    c.circle(cx, cy, r, stroke=0, fill=1)
+                    _ICON_FNS[icon_kind](cx, cy, r)
+                    if icon_kind == "gear":
+                        c.setFillColor(WF_BRAND)
+                        c.circle(cx, cy, r * 0.20, stroke=0, fill=1)
                 c.setFillColor(BRAND)
                 c.setFont("Roboto-Bold", 11)
                 c.drawString(x + 2 * r + 0.2 * cm, cy - 11 * 0.32, title.upper())
@@ -21687,6 +21790,29 @@ async def export_reports_pdf(
 
         lidar_por_sub = _lidar_separar_por_estacion(modulos_data, nodes_by_id)
 
+        def _emit_recursos_continuacion(subtramo_node: dict, acceso_label: Optional[str],
+                                        turno_label: Optional[str] = None) -> None:
+            """Hojas extra de la misma estación con las filas de Fuerza de
+            trabajo / Maquinaria que no cupieron (antes: "+N más…"). Se llama
+            con la hoja anterior aún abierta, tras la primera hoja y las de
+            continuación de actividades."""
+            nonlocal page_num
+            _p = list(_sub_recursos_resto["personal"])
+            _m = list(_sub_recursos_resto["maquinaria"])
+            _tot = _sub_recursos_resto["totales"]
+            while _p or _m:
+                c.showPage()
+                page_num += 1
+                draw_subtramo_summary_page(
+                    subtramo_node, _p, _m, [], None, None, None,
+                    mostrar_acceso_predio=False, acceso_node_label=acceso_label,
+                    turno_label=turno_label, recursos_continuacion=True, totales=_tot,
+                )
+                _np, _nm = list(_sub_recursos_resto["personal"]), list(_sub_recursos_resto["maquinaria"])
+                if len(_np) >= len(_p) and len(_nm) >= len(_m):
+                    break  # sin progreso: evita un ciclo infinito
+                _p, _m = _np, _nm
+
         def _emit_subtramo_summary(subtramo_id: Optional[str]) -> None:
             """Hoja de resumen de la estación y, justo después, su Vuelo LiDAR."""
             _emit_subtramo_summary_core(subtramo_id)
@@ -21781,6 +21907,8 @@ async def export_reports_pdf(
                         )
                         if len(_resto) >= _n_prev:
                             break
+                    _emit_recursos_continuacion(
+                        subtramo_node, (acceso_node.get("name") if acceso_node else None))
                 c.showPage()
                 page_num += 1
             if _noche:
@@ -21810,6 +21938,8 @@ async def export_reports_pdf(
                     )
                     if len(_resto) >= _n_prev:
                         break
+                _emit_recursos_continuacion(
+                    subtramo_node, (acceso_node.get("name") if acceso_node else None), TURNO_NOCTURNO_ETIQUETA)
                 c.showPage()
                 page_num += 1
 
@@ -21976,21 +22106,24 @@ async def export_reports_pdf(
                     if _chico or _grande:
                         _tr = 0.5 * cm
                         _tcx, _tcy = 2.15 * cm + _tr, PH - EXEC_TITULO_TOP - _tr
-                        c.setFillColor(BRAND)
-                        c.circle(_tcx, _tcy, _tr, stroke=0, fill=1)
-                        c.setStrokeColor(WHITE)
-                        c.setLineWidth(1.0)
-                        _top = (_tcx, _tcy + _tr * 0.40)
-                        _bl = (_tcx - _tr * 0.42, _tcy - _tr * 0.35)
-                        _br_ = (_tcx + _tr * 0.42, _tcy - _tr * 0.35)
-                        c.line(_top[0], _top[1], _bl[0], _bl[1])
-                        c.line(_top[0], _top[1], _br_[0], _br_[1])
-                        c.setFillColor(WHITE)
-                        for (_nx, _ny) in (_top, _bl, _br_):
-                            c.circle(_nx, _ny, _tr * 0.16, stroke=0, fill=1)
+                        _ico_w = _pdf_icono_kind(c, "structure", _tcx, _tcy, _tr)
+                        if not _ico_w:
+                            c.setFillColor(BRAND)
+                            c.circle(_tcx, _tcy, _tr, stroke=0, fill=1)
+                            c.setStrokeColor(WHITE)
+                            c.setLineWidth(1.0)
+                            _top = (_tcx, _tcy + _tr * 0.40)
+                            _bl = (_tcx - _tr * 0.42, _tcy - _tr * 0.35)
+                            _br_ = (_tcx + _tr * 0.42, _tcy - _tr * 0.35)
+                            c.line(_top[0], _top[1], _bl[0], _bl[1])
+                            c.line(_top[0], _top[1], _br_[0], _br_[1])
+                            c.setFillColor(WHITE)
+                            for (_nx, _ny) in (_top, _bl, _br_):
+                                c.circle(_nx, _ny, _tr * 0.16, stroke=0, fill=1)
+                            _ico_w = 2 * _tr
                         c.setFillColor(BRAND)
                         c.setFont("Roboto-Bold", 16)
-                        _tx = 2.15 * cm + 2 * _tr + 0.3 * cm
+                        _tx = 2.15 * cm + _ico_w + 0.3 * cm
                         _ty = PH - EXEC_TITULO_TOP - 0.55 * cm
                         _ar = (_area_fotos[0] or "").strip()
 
@@ -26172,13 +26305,20 @@ async def export_reports_pptx(
                 run.font.italic = True
                 run.font.color.rgb = PRGBColor(*WF_MUTED_RGB)
 
+        # Filas de Fuerza de trabajo / Maquinaria que no cupieron en la slide de
+        # la estación: en vez de "+N más…" van a slides de continuación (ver
+        # `_emit_recursos_continuacion_slides`), igual que en el PDF.
+        _sub_recursos_resto_pptx: dict = {"personal": [], "maquinaria": [], "totales": None}
+
         def draw_subtramo_summary_slide(subtramo_node: dict, personal_rows: list, maquinaria_rows: list,
                                          actividades: list, situacion_social: Optional[str],
                                          acceso_predio: Optional[str], weather: Optional[dict],
                                          mostrar_acceso_predio: bool = True,
                                          acceso_node_label: Optional[str] = None,
                                          turno_label: Optional[str] = None,
-                                         continuacion: bool = False) -> list:
+                                         continuacion: bool = False,
+                                         recursos_continuacion: bool = False,
+                                         totales: Optional[tuple] = None) -> list:
             """(CONTINUACIÓN: devuelve las actividades que no cupieron; el
             llamador emite otra slide de la misma estación con
             `continuacion=True` — solo título + lista de actividades.)
@@ -26191,6 +26331,8 @@ async def export_reports_pptx(
             Trabajo/Maquinaria y Equipo con TOTAL). Slide FIJA (1 sola, sin
             paginación adicional): el contenido que no cabe se trunca."""
             slide = _clone_membrete()
+            if not continuacion:  # la continuación de actividades no toca el resto de recursos
+                _sub_recursos_resto_pptx.update({"personal": [], "maquinaria": [], "totales": None})
 
             MARGIN_X = Cm(1.5)
             GUTTER = Cm(0.9)
@@ -26241,7 +26383,8 @@ async def export_reports_pptx(
                          _chico, size=12, bold=True, color=READABLE_BRAND_RGB)
             add_text(slide, left_x + _ico_w + Cm(0.3), y + int(BADGE_R * 0.35) + Cm(0.42),
                      col_w - _ico_w - Cm(0.3), Cm(0.8),
-                     _grande.upper(), size=17, bold=True, color=READABLE_BRAND_RGB)
+                     _grande.upper() + ("  (CONTINÚA)" if recursos_continuacion else ""),
+                     size=17, bold=True, color=READABLE_BRAND_RGB)
             y += Cm(1.8)
             _wf_rect(slide, left_x, y, col_w, Pt(1.6), fill_rgb=BRAND_RGB)
             y += Cm(0.35)
@@ -26274,12 +26417,13 @@ async def export_reports_pptx(
                 y += situ_h + Cm(0.2)
 
             # --- Actividades ------------------------------------------------------
-            y = _section_title(left_x, y, col_w, "Se supervisa las siguientes actividades")
-            act_h = max(Cm(1.5), bottom_y - y)
             _acts_all = list(actividades or [])
             _acts_resto: list = []
-            _wf_bullets(slide, left_x, y, col_w, act_h, _acts_all, max_items=max(1, len(_acts_all)),
-                        font_size=10.5, resto_out=_acts_resto, empty_text="Sin actividades")
+            if not recursos_continuacion:
+                y = _section_title(left_x, y, col_w, "Se supervisa las siguientes actividades")
+                act_h = max(Cm(1.5), bottom_y - y)
+                _wf_bullets(slide, left_x, y, col_w, act_h, _acts_all, max_items=max(1, len(_acts_all)),
+                            font_size=10.5, resto_out=_acts_resto, empty_text="Sin actividades")
             if continuacion:
                 return _acts_resto
 
@@ -26287,38 +26431,41 @@ async def export_reports_pptx(
             _wf_rect(slide, divider_x, top_y, Pt(1.3), bottom_y - top_y, fill_rgb=BRAND_RGB)
 
             # ---- COLUMNA DERECHA ---------------------------------------------
-            y = top_y
-            cx, cy = right_x + BADGE_R, y + BADGE_R
-            _wf_weather_icon(slide, cx, cy, BADGE_R)
-            add_text(slide, right_x + 2 * BADGE_R + Cm(0.3), y + int(BADGE_R * 0.35),
-                     col_w - 2 * BADGE_R - Cm(0.3), Cm(0.8),
-                     "ESTADO DEL TIEMPO", size=14, bold=True, color=READABLE_BRAND_RGB)
-            y += Cm(1.15)
+            if not recursos_continuacion:
+                y = top_y
+                cx, cy = right_x + BADGE_R, y + BADGE_R
+                _wf_weather_icon(slide, cx, cy, BADGE_R)
+                add_text(slide, right_x + 2 * BADGE_R + Cm(0.3), y + int(BADGE_R * 0.35),
+                         col_w - 2 * BADGE_R - Cm(0.3), Cm(0.8),
+                         "ESTADO DEL TIEMPO", size=14, bold=True, color=READABLE_BRAND_RGB)
+                y += Cm(1.15)
 
-            w = weather or {}
-            temp = w.get("temperature_c")
-            wind = w.get("wind_kmh")
-            precip = w.get("precipitation_mm")
-            aqi = w.get("us_aqi")
-            # FIX: formato de referencia del cliente — una sola fila de 4
-            # columnas SIN bordes, etiqueta "Label:" en altas y bajas, y
-            # unidades/decimales exactos — ver la misma nota en
-            # draw_subtramo_summary_page (motor PDF).
-            cells = [
-                ("Temperatura:", f"{temp:.0f}° C" if temp is not None else "—"),
-                ("Viento:", f"{wind:.1f} km/hr." if wind is not None else "—"),
-                ("Precipitación:", f"{precip:.1f} mm" if precip is not None else "—"),
-                ("Calidad del aire:", f"{aqi:.1f} ICA" if aqi is not None else "—"),
-            ]
-            cell_w, cell_h = col_w // 4, Cm(1.1)
-            grid_top = y
-            for i, (label, val) in enumerate(cells):
-                cx2 = right_x + i * cell_w
-                add_text(slide, cx2, grid_top, cell_w - Cm(0.1), Cm(0.45),
-                         label, size=8.5, bold=True, color=WF_TEXT_RGB)
-                add_text(slide, cx2, grid_top + Cm(0.42), cell_w - Cm(0.1), Cm(0.6),
-                         val, size=13, bold=True, color=WF_TEXT_RGB)
-            y = grid_top + cell_h + Cm(0.3)
+                w = weather or {}
+                temp = w.get("temperature_c")
+                wind = w.get("wind_kmh")
+                precip = w.get("precipitation_mm")
+                aqi = w.get("us_aqi")
+                # FIX: formato de referencia del cliente — una sola fila de 4
+                # columnas SIN bordes, etiqueta "Label:" en altas y bajas, y
+                # unidades/decimales exactos — ver la misma nota en
+                # draw_subtramo_summary_page (motor PDF).
+                cells = [
+                    ("Temperatura:", f"{temp:.0f}° C" if temp is not None else "—"),
+                    ("Viento:", f"{wind:.1f} km/hr." if wind is not None else "—"),
+                    ("Precipitación:", f"{precip:.1f} mm" if precip is not None else "—"),
+                    ("Calidad del aire:", f"{aqi:.1f} ICA" if aqi is not None else "—"),
+                ]
+                cell_w, cell_h = col_w // 4, Cm(1.1)
+                grid_top = y
+                for i, (label, val) in enumerate(cells):
+                    cx2 = right_x + i * cell_w
+                    add_text(slide, cx2, grid_top, cell_w - Cm(0.1), Cm(0.45),
+                             label, size=8.5, bold=True, color=WF_TEXT_RGB)
+                    add_text(slide, cx2, grid_top + Cm(0.42), cell_w - Cm(0.1), Cm(0.6),
+                             val, size=13, bold=True, color=WF_TEXT_RGB)
+                y = grid_top + cell_h + Cm(0.3)
+            else:
+                y = top_y
 
             # --- Mini-tablas FUERZA DE TRABAJO | MAQUINARIA Y EQUIPO ------------
             tbl_gutter = Cm(0.5)
@@ -26326,7 +26473,8 @@ async def export_reports_pptx(
             tbl_avail_h = bottom_y - y
 
             def _draw_mini_table(x: int, y_top: int, w: int, title: str, rows: list, icon_kind: str,
-                                  col1_header: str = "RECURSO") -> None:
+                                  col1_header: str = "RECURSO", clave: str = "personal",
+                                  total_forzado=None) -> None:
                 mini_r = int(Cm(0.4))
                 HEADER_H = Cm(0.75)
                 TOTAL_H = Cm(0.7)
@@ -26349,16 +26497,17 @@ async def export_reports_pptx(
                 add_text(slide, qty_x, yy, qty_w_cell, HEADER_H, "CANTIDAD",
                          size=9, bold=True, color=HEADER_TEXT_RGB, align=PP_ALIGN.RIGHT, tight=True)
                 yy += HEADER_H
-                total_qty = sum(r["qty"] for r in rows)
+                total_qty = total_forzado if total_forzado is not None else sum(r["qty"] for r in rows)
                 # La altura de fila se reparte en el espacio libre (entre el mínimo
                 # y el máximo) para que nada se amontone; si aun así no caben
-                # todas las filas, se corta con "+N más".
+                # todas las filas, el resto va a una slide de continuación.
                 espacio = tbl_avail_h - 2 * mini_r - Cm(0.15) - HEADER_H - TOTAL_H
                 n_prev = max(1, len(rows))
                 ROW_H = int(max(MIN_ROW_H, min(MAX_ROW_H, espacio / n_prev)))
                 max_rows = max(1, int(espacio / ROW_H))
-                shown = rows[:max_rows - 1] if len(rows) > max_rows else rows
-                overflow = len(rows) - len(shown)
+                shown = rows[:max_rows]
+                _sub_recursos_resto_pptx[clave] = list(rows[max_rows:])
+                overflow = 0
                 for idx, r in enumerate(shown):
                     if idx % 2 == 1:
                         _wf_rect(slide, x, yy, w, ROW_H, fill_rgb=WF_ZEBRA_TINT_RGB)
@@ -26387,9 +26536,16 @@ async def export_reports_pptx(
                 add_text(slide, qty_x, yy, qty_w_cell, TOTAL_H, str(total_qty), size=10, bold=True,
                          color=READABLE_BRAND_RGB, align=PP_ALIGN.RIGHT, tight=True)
 
-            _draw_mini_table(right_x, y, tbl_w, "Fuerza de Trabajo", personal_rows, "person", col1_header="PERSONAL")
+            _tp, _tm = totales if totales else (None, None)
+            _draw_mini_table(right_x, y, tbl_w, "Fuerza de Trabajo", personal_rows, "person", col1_header="PERSONAL",
+                             clave="personal", total_forzado=_tp)
             _draw_mini_table(right_x + tbl_w + tbl_gutter, y, tbl_w, "Maquinaria y Equipo", maquinaria_rows, "gear",
-                              col1_header="MAQUINARIA Y EQUIPO")
+                              col1_header="MAQUINARIA Y EQUIPO", clave="maquinaria", total_forzado=_tm)
+            if _sub_recursos_resto_pptx["personal"] or _sub_recursos_resto_pptx["maquinaria"]:
+                _sub_recursos_resto_pptx["totales"] = (
+                    _tp if _tp is not None else sum(r["qty"] for r in personal_rows),
+                    _tm if _tm is not None else sum(r["qty"] for r in maquinaria_rows),
+                )
             return _acts_resto
 
         _POSTE_ESTATUS_LABEL_PPTX = {
@@ -27337,6 +27493,25 @@ async def export_reports_pptx(
                 except Exception:
                     return int(y)
 
+            def _place_img_fill(slide, b64_str, x, y, w, h) -> int:
+                """Llena EXACTAMENTE la caja (x, y, w, h) con la imagen, sin
+                deformarla (escala hasta cubrir y recorta al centro): las dos
+                fotos de una comparativa salen siempre del mismo tamaño.
+                Devuelve el y inferior (o `y` si no se pudo leer)."""
+                try:
+                    from PIL import Image as _PI
+                    raw = base64.b64decode(_strip_b64_prefix(b64_str))
+                    iw, ih = _PI.open(io.BytesIO(raw)).size
+                    sc = max(w / iw, h / ih)
+                    pic = slide.shapes.add_picture(io.BytesIO(raw), int(x), int(y), width=int(w), height=int(h))
+                    cx_ = max(0.0, (iw * sc - w) / (iw * sc) / 2)
+                    cy_ = max(0.0, (ih * sc - h) / (ih * sc) / 2)
+                    pic.crop_left = pic.crop_right = cx_
+                    pic.crop_top = pic.crop_bottom = cy_
+                    return int(y + h)
+                except Exception:
+                    return int(y)
+
             def _draw_fotos_comparativa_block(titulo_continua: str, block: dict) -> None:
                 """Una diapositiva por registro: foto ORIGINAL a la izquierda,
                 foto ACTUAL a la derecha, cada una con su fecha de toma."""
@@ -27373,7 +27548,7 @@ async def export_reports_pptx(
                     )):
                         x = MARGIN_X + col * (col_w + gap)
                         if it.get(key):
-                            y_end = max(y_end, _place_img(state["slide"], it[key], x, y0, col_w, img_h))
+                            y_end = max(y_end, _place_img_fill(state["slide"], it[key], x, y0, col_w, img_h))
                         elif it.get("sin_placeholder"):
                             continue
                         else:
@@ -27520,6 +27695,25 @@ async def export_reports_pptx(
 
         lidar_por_sub = _lidar_separar_por_estacion(modulos_data, nodes_by_id)
 
+        def _emit_recursos_continuacion_slides(subtramo_node: dict, acceso_label: Optional[str],
+                                               turno_label: Optional[str] = None) -> None:
+            """Slides extra de la misma estación con las filas de Fuerza de
+            trabajo / Maquinaria que no cupieron (antes: "+N más…")."""
+            _p = list(_sub_recursos_resto_pptx["personal"])
+            _m = list(_sub_recursos_resto_pptx["maquinaria"])
+            _tot = _sub_recursos_resto_pptx["totales"]
+            while _p or _m:
+                draw_subtramo_summary_slide(
+                    subtramo_node, _p, _m, [], None, None, None,
+                    mostrar_acceso_predio=False, acceso_node_label=acceso_label,
+                    turno_label=turno_label, recursos_continuacion=True, totales=_tot,
+                )
+                _np = list(_sub_recursos_resto_pptx["personal"])
+                _nm = list(_sub_recursos_resto_pptx["maquinaria"])
+                if len(_np) >= len(_p) and len(_nm) >= len(_m):
+                    break  # sin progreso: evita un ciclo infinito
+                _p, _m = _np, _nm
+
         def _emit_subtramo_summary_slide(subtramo_id: Optional[str], forzar: bool = False) -> None:
             """Slide de resumen de la estación y, justo después, su Vuelo LiDAR."""
             _emit_subtramo_summary_slide_core(subtramo_id, forzar)
@@ -27610,6 +27804,8 @@ async def export_reports_pptx(
                         )
                         if len(_resto) >= _n_prev:
                             break
+                    _emit_recursos_continuacion_slides(
+                        subtramo_node, (acceso_node.get("name") if acceso_node else None))
             if _noche:
                 # Misma estación (mismo "ESTACIÓN N.", mismo nombre), segunda
                 # slide con SOLO lo capturado en el turno nocturno.
@@ -27635,6 +27831,8 @@ async def export_reports_pptx(
                     )
                     if len(_resto) >= _n_prev:
                         break
+                _emit_recursos_continuacion_slides(
+                    subtramo_node, (acceso_node.get("name") if acceso_node else None), TURNO_NOCTURNO_ETIQUETA)
 
         # Frentes (Estación/Intertramo) SIN ningún reporte en el período: se
         # imprimen igual, con "Sin actividad", en su lugar del orden del árbol
