@@ -193,5 +193,43 @@ def test_pdf_semanal_con_hoja_de_firmas_y_foto_corrupta():
     assert "HOJA DE FIRMAS SEMANAL" in r.pages[-1].extract_text()
 
 
+def test_cargo_usa_el_puesto_y_cae_al_rol():
+    assert server._informe_cargo({"user_puesto": " Supervisor de Obra Civil  y Arquitectura ", "user_role": "especialista"}) == \
+        "Supervisor de Obra Civil y Arquitectura"
+    assert server._informe_cargo({"user_puesto": None, "user_role": "especialista"}) == "Ingeniero especialista"
+    assert server._informe_cargo({"user_puesto": "", "user_role": "sub_coordinador"}) == "Sub-coordinador"
+
+
+def test_pdf_imprime_el_puesto_en_cargo():
+    import io
+    from pypdf import PdfReader
+    inf = _informe()
+    inf["user_puesto"] = "Supervisor de Obra Civil y Arquitectura"
+    txt = PdfReader(io.BytesIO(server._informe_pdf_bytes([inf], {"name": "X"}, {}))).pages[0].extract_text()
+    assert "Supervisor de Obra Civil y Arquitectura" in txt and "Ingeniero especialista" not in txt
+
+
+def test_poner_puestos_toma_el_puesto_actual_del_usuario(monkeypatch):
+    class _Cur:
+        def __init__(self, docs): self.docs = docs
+        def __aiter__(self):
+            async def g():
+                for d in self.docs:
+                    yield d
+            return g()
+
+    class _Users:
+        def find(self, q, proj): return _Cur([{"id": "u1", "puesto": "Residente de Estructuras"}])
+
+    class _Db:
+        users = _Users()
+
+    monkeypatch.setattr(server, "db", _Db())
+    docs = [{"user_id": "u1", "user_puesto": "viejo"}, {"user_id": "u2"}]
+    asyncio.run(server._informe_poner_puestos(docs))
+    assert docs[0]["user_puesto"] == "Residente de Estructuras"
+    assert docs[1]["user_puesto"] is None
+
+
 def test_pdf_sin_informes_no_truena():
     assert server._informe_pdf_bytes([], {"name": "X"}, {})[:5] == b"%PDF-"
