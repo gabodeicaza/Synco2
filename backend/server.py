@@ -15444,6 +15444,22 @@ async def informe_diario_generar_ahora(pid: str, fecha: Optional[str] = Query(No
 
 # --- PDF del informe diario (para imprimir y firmar) ---------------------------
 _INFORME_ROL_TXT = {ROLE_ESPECIALISTA: "Ingeniero especialista", ROLE_SUB: "Sub-coordinador"}
+
+
+def _informe_cargo(inf: dict) -> str:
+    """Cargo que se imprime: el PUESTO capturado del usuario; el rol solo como respaldo. Pura."""
+    return _informe_limpia(inf.get("user_puesto"), 120) or _INFORME_ROL_TXT.get(inf.get("user_role"), "")
+
+
+async def _informe_poner_puestos(docs: list) -> None:
+    """Rellena `user_puesto` en cada informe con el puesto ACTUAL del usuario (así también salen
+    los informes ya generados y un cambio de puesto se refleja al reimprimir)."""
+    ids = list({d["user_id"] for d in docs if d.get("user_id")})
+    if not ids:
+        return
+    puestos = {u["id"]: u.get("puesto") async for u in db.users.find({"id": {"$in": ids}}, {"_id": 0, "id": 1, "puesto": 1})}
+    for d in docs:
+        d["user_puesto"] = puestos.get(d.get("user_id")) or d.get("user_puesto")
 INFORME_PDF_MAX_FOTOS = 4
 _DIAS_ES = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
 
@@ -15512,7 +15528,7 @@ def _informe_pdf_bytes(informes: list, proj: dict, fotos: Dict[str, list], hoja_
                     Spacer(1, 6)]
         enc = [
             [Paragraph("SUPERVISOR RESPONSABLE:", s_lbl), Paragraph(esc(inf.get("user_name")), s_cel)],
-            [Paragraph("CARGO / ESPECIALIDAD:", s_lbl), Paragraph(esc(_INFORME_ROL_TXT.get(inf.get("user_role"), "")), s_cel)],
+            [Paragraph("CARGO / ESPECIALIDAD:", s_lbl), Paragraph(esc(_informe_cargo(inf)), s_cel)],
             [Paragraph("CONTRATO:", s_lbl), Paragraph(esc(proj.get("contract_number")), s_cel)],
             [Paragraph("EMPRESA CONTRATISTA:", s_lbl), Paragraph(esc(proj.get("constructora")), s_cel)],
         ]
@@ -15571,7 +15587,7 @@ def _informe_pdf_bytes(informes: list, proj: dict, fotos: Dict[str, list], hoja_
         firmas = Table([
             ["", ""],
             [Paragraph(f"____________________________<br/><b>{esc(inf.get('user_name'))}</b><br/>"
-                       f"{esc(_INFORME_ROL_TXT.get(inf.get('user_role'), ''))}<br/>{esc(sello)}", s_firma),
+                       f"{esc(_informe_cargo(inf))}<br/>{esc(sello)}", s_firma),
              Paragraph("____________________________<br/><b>Vo. Bo.</b><br/>Coordinación / Residencia de obra", s_firma)],
         ], colWidths=[W / 2, W / 2], rowHeights=[1.4 * cm, None])
         fl.append(KeepTogether([Paragraph("FIRMAS DE CONFORMIDAD Y SUPERVISIÓN", s_lbl), firmas]))
@@ -15644,6 +15660,7 @@ async def informe_diario_pdf(pid: str, iid: str, fotos: bool = Query(True), user
         raise HTTPException(403, "No puedes descargar el informe de otro ingeniero")
     if inf["estado"] != "listo":
         raise HTTPException(409, "El informe aún no está listo")
+    await _informe_poner_puestos([inf])
     imgs = await _informe_fotos([inf], INFORME_PDF_MAX_FOTOS if fotos else 0)
     pdf = await asyncio.to_thread(_informe_pdf_bytes, [inf], proj, imgs)
     nombre = f"informe_{_safe_filename_fragment(inf.get('user_name') or 'ingeniero')}_{inf['fecha']}.pdf"
@@ -15672,12 +15689,13 @@ async def informes_diarios_semana_pdf(
     else:
         q["user_id"] = user["id"]
     docs = await db.informes_diarios.find(q).sort([("user_name", 1), ("fecha", 1)]).to_list(length=5000)
+    await _informe_poner_puestos(docs)
     listos = [d for d in docs if d["estado"] == "listo"]
     if not listos:
         raise HTTPException(404, "No hay informes listos en esa semana")
     resumen: Dict[str, dict] = {}
     for d in docs:
-        r = resumen.setdefault(d["user_id"], {"nombre": d.get("user_name") or "", "rol": _INFORME_ROL_TXT.get(d.get("user_role"), ""),
+        r = resumen.setdefault(d["user_id"], {"nombre": d.get("user_name") or "", "rol": _informe_cargo(d),
                                               "dias": 0, "confirmados": 0, "sin": []})
         if d["estado"] == "listo":
             r["dias"] += 1
