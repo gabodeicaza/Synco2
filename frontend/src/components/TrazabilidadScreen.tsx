@@ -1,45 +1,42 @@
-// Trazabilidad: árbol de categorías → grupos → documentos (planos, memorias…)
-// con sus características y archivos (PDF, Excel, PowerPoint, DWG…). Reemplaza a
-// los antiguos "Archivos de consulta". Todos los roles lo consultan; el
-// Coordinador General / Jefe de Proyecto lo edita (`canEdit`).
+// Trazabilidad: el árbol de nodos del proyecto (el mismo de "Árbol de nodos") con
+// archivos adjuntos en cada nodo — PDF, Excel, PowerPoint, DWG… — clasificados
+// por categoría. Todos los roles lo consultan; el Coordinador General / Jefe de
+// Proyecto sube, edita las características y administra las categorías.
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  ActivityIndicator, Alert, FlatList, Pressable, StyleSheet, Text, TextInput, View,
+  ActivityIndicator, Alert, FlatList, Pressable, ScrollView, StyleSheet, Text, TextInput, View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import * as DocumentPicker from 'expo-document-picker';
-import type { Href } from 'expo-router';
-import { api, TrazData, TrazKind, TrazNodo } from '@/src/api';
+import { router, type Href } from 'expo-router';
+import { api, TrazData } from '@/src/api';
 import { colors, radius, spacing } from '@/src/theme';
 import { ScreenHeader } from '@/src/components/ScreenHeader';
-import { COLOR_ESTATUS, NodoModal, NuevoNodoModal } from '@/src/components/trazabilidad/NodoModal';
+import { CategoriasModal, NodoArchivosModal } from '@/src/components/trazabilidad/NodoModal';
 import { ReferenceFilesList } from '@/src/components/ReferenceFilesList';
 import {
-  aplanar, EXT_ICONOS, indexar, subarbol, TrazFila, visiblesPorBusqueda,
+  aplanar, conteoPorCategoria, EXT_ICONOS, indexar, TrazFila, visiblesPorFiltro,
 } from '@/src/utils/trazabilidad';
-
-const MAX_BYTES = 20 * 1024 * 1024;
-const XLSX_TIPOS = ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', '.xlsx'];
 
 interface Props {
   projectId: string;
   canEdit: boolean;
   fallbackHref?: Href;
+  /** Pantalla del árbol de nodos, para quien necesite agregar o cambiar nodos. */
+  arbolHref?: Href;
 }
 
-export function TrazabilidadScreen({ projectId, canEdit, fallbackHref = '/' }: Props) {
+export function TrazabilidadScreen({ projectId, canEdit, fallbackHref = '/', arbolHref }: Props) {
   const [data, setData] = useState<TrazData | null>(null);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [abiertos, setAbiertos] = useState<Set<string>>(new Set());
   const [consulta, setConsulta] = useState('');
-  const [ocupado, setOcupado] = useState<string | null>(null);
-  const [detalleId, setDetalleId] = useState<string | null>(null);
-  const [nuevo, setNuevo] = useState<{ padre: TrazNodo | null; kind: TrazKind } | null>(null);
-  const [foco, setFoco] = useState<string | null>(null); // categoría raíz que se está explorando
-  const [verArbol, setVerArbol] = useState(false); // árbol completo desde el hub
+  const [categoria, setCategoria] = useState<string | null>(null);
+  const [nodoId, setNodoId] = useState<string | null>(null);
+  const [verCategorias, setVerCategorias] = useState(false);
   const [verSueltos, setVerSueltos] = useState(false);
   const [sueltos, setSueltos] = useState(0);
+  const [inicializado, setInicializado] = useState(false);
 
   const cargar = useCallback(async () => {
     try {
@@ -61,36 +58,25 @@ export function TrazabilidadScreen({ projectId, canEdit, fallbackHref = '/' }: P
   }, [projectId]);
 
   const nodos = useMemo(() => data?.nodes ?? [], [data]);
-  const ind = useMemo(() => indexar(nodos), [nodos]);
-  const visibles = useMemo(() => visiblesPorBusqueda(ind, nodos, consulta), [ind, nodos, consulta]);
-  // El hub es la entrada: panel de totales y una tarjeta por categoría. Al
-  // buscar, elegir una categoría o pedir el árbol completo se pasa al árbol.
-  const enHub = !consulta.trim() && !verArbol && !foco;
-  const visiblesEnFoco = useMemo(() => {
-    if (!foco || !visibles) return visibles;
-    const rama = subarbol(ind, foco);
-    return new Set([...visibles].filter((id) => rama.has(id)));
-  }, [ind, foco, visibles]);
-  const filas = useMemo(
-    () => (enHub ? [] : aplanar(ind, abiertos, visiblesEnFoco, foco)),
-    [enHub, ind, abiertos, visiblesEnFoco, foco],
+  const archivos = useMemo(() => data?.files ?? [], [data]);
+  const categorias = useMemo(() => data?.categorias ?? [], [data]);
+  const ind = useMemo(() => indexar(nodos, archivos), [nodos, archivos]);
+  const porCategoria = useMemo(() => conteoPorCategoria(archivos), [archivos]);
+  const visibles = useMemo(
+    () => visiblesPorFiltro(ind, nodos, consulta, categoria),
+    [ind, nodos, consulta, categoria],
   );
-  const raices = ind.hijos.get(null) || [];
-  const totales = useMemo(() => {
-    const t = { docs: 0, conArchivo: 0, validados: 0, firmados: 0 };
-    for (const r of ind.hijos.get(null) || []) {
-      const c = ind.conteo.get(r.id);
-      if (!c) continue;
-      t.docs += c.docs; t.conArchivo += c.conArchivo; t.validados += c.validados; t.firmados += c.firmados;
-    }
-    return t;
-  }, [ind]);
-  function volverAlHub() {
-    setFoco(null);
-    setVerArbol(false);
-    setConsulta('');
-  }
-  const detalle = detalleId ? ind.porId.get(detalleId) || null : null;
+  const filas = useMemo(() => aplanar(ind, abiertos, visibles), [ind, abiertos, visibles]);
+  const nodosConArchivos = useMemo(() => [...ind.archivosDe.values()].filter((l) => l.length > 0).length, [ind]);
+  const totalArchivos = useMemo(() => [...ind.archivosDe.values()].reduce((a, l) => a + l.length, 0), [ind]);
+  const nodo = nodoId ? ind.porId.get(nodoId) || null : null;
+
+  // Al primer cargue deja abierto el primer nivel para que se vea el árbol.
+  useEffect(() => {
+    if (inicializado || !data) return;
+    setAbiertos(new Set((ind.hijos.get(null) || []).map((r) => r.id)));
+    setInicializado(true);
+  }, [data, ind, inicializado]);
 
   function alternar(id: string) {
     setAbiertos((prev) => {
@@ -100,128 +86,67 @@ export function TrazabilidadScreen({ projectId, canEdit, fallbackHref = '/' }: P
     });
   }
 
-  async function importarExcel() {
-    try {
-      const r = await DocumentPicker.getDocumentAsync({ type: XLSX_TIPOS, copyToCacheDirectory: true, multiple: false });
-      if (r.canceled || !r.assets?.[0]) return;
-      const a = r.assets[0];
-      if (a.size && a.size > MAX_BYTES) {
-        Alert.alert('Archivo demasiado grande', 'El Excel pesa más de 20 MB.');
-        return;
-      }
-      setOcupado(`Importando ${a.name}…`);
-      const res = await api.trazImportar(projectId, { uri: a.uri, name: a.name, mimeType: a.mimeType });
-      await cargar();
-      Alert.alert(
-        'Trazabilidad actualizada',
-        `Hoja: ${res.hoja}\nNuevos: ${res.creados}\nActualizados: ${res.actualizados}\nSin cambios: ${res.sin_cambios}\n\nNo se borró nada: lo capturado en la app y los archivos se conservan.`,
-      );
-    } catch (e: any) {
-      Alert.alert('No se pudo importar', e?.message || 'Revisa que sea el Excel de trazabilidad (.xlsx).');
-    } finally {
-      setOcupado(null);
-    }
+  const hayPadres = useMemo(() => nodos.filter((n) => (ind.hijos.get(n.id) || []).length > 0), [nodos, ind]);
+  const todoAbierto = hayPadres.length > 0 && hayPadres.every((n) => abiertos.has(n.id));
+  function alternarTodo() {
+    setAbiertos(todoAbierto ? new Set() : new Set(hayPadres.map((n) => n.id)));
   }
 
-  // Sube varios archivos de una vez: cada uno se acomoda en el documento cuya
-  // clave coincide con el nombre del archivo (CLAVE.pdf, CLAVE.dwg…).
-  async function subirMasivo() {
+  async function guardarCategorias(cats: string[]) {
     try {
-      const r = await DocumentPicker.getDocumentAsync({ type: '*/*', copyToCacheDirectory: true, multiple: true });
-      if (r.canceled || !r.assets?.length) return;
-      let acomodados = 0, reemplazados = 0;
-      const sin: string[] = [];
-      for (let i = 0; i < r.assets.length; i++) {
-        const a = r.assets[i];
-        setOcupado(`Subiendo ${i + 1}/${r.assets.length}: ${a.name}`);
-        if (a.size && a.size > MAX_BYTES) { sin.push(`${a.name} (pesa más de 20 MB)`); continue; }
-        try {
-          const res = await api.trazSubirAuto(projectId, { uri: a.uri, name: a.name, mimeType: a.mimeType });
-          if (res.matched) { acomodados++; if (res.reemplazado) reemplazados++; }
-          else sin.push(`${a.name} (${res.motivo || 'sin coincidencia'})`);
-        } catch (e: any) {
-          sin.push(`${a.name} (${e?.message || 'error'})`);
-        }
-      }
+      await api.trazGuardarCategorias(projectId, cats);
+      setVerCategorias(false);
+      if (categoria && !cats.includes(categoria)) setCategoria(null);
       await cargar();
-      const lineas = [`Acomodados: ${acomodados}${reemplazados ? ` (${reemplazados} reemplazaron una revisión anterior)` : ''}`];
-      if (sin.length) {
-        lineas.push('', `Sin acomodar: ${sin.length}`, ...sin.slice(0, 8).map((x) => `· ${x}`));
-        if (sin.length > 8) lineas.push(`· …y ${sin.length - 8} más`);
-        lineas.push('', 'El nombre del archivo debe ser la clave del plano. También puedes subirlo desde el documento.');
-      }
-      Alert.alert('Subida terminada', lineas.join('\n'));
     } catch (e: any) {
-      Alert.alert('No se pudo subir', e?.message || 'Inténtalo de nuevo.');
-    } finally {
-      setOcupado(null);
-    }
-  }
-
-  async function crearNodo(code: string, name: string) {
-    if (!nuevo) return;
-    try {
-      const n = await api.trazCrear(projectId, { parent_id: nuevo.padre?.id ?? null, kind: nuevo.kind, code, name });
-      setNuevo(null);
-      if (nuevo.padre) setAbiertos((p) => new Set(p).add(nuevo.padre!.id));
-      await cargar();
-      if (nuevo.kind === 'documento') setDetalleId(n.id);
-    } catch (e: any) {
-      Alert.alert('No se pudo crear', e?.message || 'Inténtalo de nuevo.');
+      Alert.alert('No se pudieron guardar las categorías', e?.message || 'Inténtalo de nuevo.');
     }
   }
 
   function renderFila({ item }: { item: TrazFila }) {
-    const { nodo, nivel } = item;
-    const esDoc = nodo.kind === 'documento';
-    const abierto = !!visibles || abiertos.has(nodo.id);
-    const c = ind.conteo.get(nodo.id);
-    const exts = Array.from(new Set(nodo.files.map((f) => f.ext)));
-    const estatus = nodo.fields.estatus;
+    const { nodo: n, nivel } = item;
+    const hijos = ind.hijos.get(n.id) || [];
+    const abierto = !!visibles || abiertos.has(n.id);
+    const propios = ind.archivosDe.get(n.id) || [];
+    const total = ind.total.get(n.id) || 0;
+    const exts = Array.from(new Set(propios.map((f) => f.ext)));
     return (
-      <Pressable
-        accessibilityRole="button"
-        onPress={() => (esDoc ? setDetalleId(nodo.id) : alternar(nodo.id))}
-        onLongPress={() => setDetalleId(nodo.id)}
-        style={({ pressed }) => [s.fila, { paddingLeft: 10 + nivel * 14 }, nodo.kind === 'categoria' && s.filaCategoria, pressed && { opacity: 0.85 }]}
-      >
-        {esDoc ? (
-          <Ionicons name="document-text-outline" size={18} color={nodo.files.length ? colors.primary : colors.textMuted} />
-        ) : (
-          <Ionicons name={abierto ? 'chevron-down' : 'chevron-forward'} size={18} color={colors.primary} />
-        )}
-        <View style={{ flex: 1, minWidth: 0 }}>
-          {esDoc ? (
-            <>
-              <Text style={s.docNombre} numberOfLines={2}>{nodo.name || nodo.code}</Text>
-              {!!nodo.code && !!nodo.name && <Text style={s.docClave} numberOfLines={1}>{nodo.code}</Text>}
-            </>
+      <View style={[s.fila, { paddingLeft: 6 + nivel * 16 }]}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={abierto ? `Contraer ${n.name}` : `Expandir ${n.name}`}
+          disabled={hijos.length === 0 || !!visibles}
+          onPress={() => alternar(n.id)}
+          hitSlop={6}
+          style={s.chevron}
+        >
+          {hijos.length > 0 ? (
+            <Ionicons name={abierto ? 'chevron-down' : 'chevron-forward'} size={18} color={colors.primary} />
           ) : (
-            <>
-              <Text style={[s.contNombre, nodo.kind === 'categoria' && { color: colors.primaryDark }]} numberOfLines={2}>
-                {nodo.code ? `${nodo.code} · ` : ''}{nodo.name}
-              </Text>
-              {c && c.docs > 0 ? (
-                <Text style={s.docClave}>{c.docs} documento{c.docs === 1 ? '' : 's'} · {c.conArchivo} con archivo</Text>
-              ) : null}
-            </>
+            <View style={s.hoja} />
           )}
-        </View>
-        {esDoc ? (
+        </Pressable>
+        <Pressable accessibilityRole="button" style={s.filaCuerpo} onPress={() => setNodoId(n.id)}>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={[s.nombre, hijos.length > 0 && { fontWeight: '800' }]} numberOfLines={2}>{n.name}</Text>
+            {hijos.length > 0 && total > 0 ? (
+              <Text style={s.sub}>{total} archivo{total === 1 ? '' : 's'} en esta rama</Text>
+            ) : null}
+          </View>
           <View style={s.etiquetas}>
-            {estatus ? <View style={[s.punto, { backgroundColor: COLOR_ESTATUS[estatus] || colors.primary }]} /> : null}
-            {exts.map((e) => (
+            {exts.slice(0, 4).map((e) => (
               <Text key={e} style={[s.ext, { color: (EXT_ICONOS[e] || { color: colors.textMuted }).color }]}>
                 {(EXT_ICONOS[e] || { etiqueta: e.replace('.', '').toUpperCase() }).etiqueta}
               </Text>
             ))}
+            {propios.length > 0 ? (
+              <View style={s.badge}><Text style={s.badgeTxt}>{propios.length}</Text></View>
+            ) : canEdit ? (
+              <Ionicons name="add-circle-outline" size={20} color={colors.textMuted} />
+            ) : null}
           </View>
-        ) : canEdit ? (
-          <Pressable accessibilityRole="button" accessibilityLabel={`Opciones de ${nodo.name}`} hitSlop={10} onPress={() => setDetalleId(nodo.id)}>
-            <Ionicons name="ellipsis-horizontal-circle-outline" size={22} color={colors.textMuted} />
-          </Pressable>
-        ) : null}
-      </Pressable>
+        </Pressable>
+      </View>
     );
   }
 
@@ -232,7 +157,7 @@ export function TrazabilidadScreen({ projectId, canEdit, fallbackHref = '/' }: P
         <TextInput
           value={consulta}
           onChangeText={setConsulta}
-          placeholder="Buscar clave, nombre, oficio, archivo…"
+          placeholder="Buscar nodo, archivo, oficio…"
           placeholderTextColor={colors.textMuted}
           style={s.buscadorInput}
           autoCorrect={false}
@@ -243,88 +168,62 @@ export function TrazabilidadScreen({ projectId, canEdit, fallbackHref = '/' }: P
           </Pressable>
         ) : null}
       </View>
-      {enHub ? (
-        <>
-          <View style={s.panel}>
-            {([
-              ['Documentos', totales.docs, colors.text],
-              ['Con archivo', totales.conArchivo, colors.primary],
-              ['Validados', totales.validados, '#7C3AED'],
-              ['Firmados', totales.firmados, colors.success],
-            ] as const).map(([etq, n, color]) => (
-              <View key={etq} style={s.panelCelda}>
-                <Text style={[s.panelNum, { color }]}>{n}</Text>
-                <Text style={s.panelEtq}>{etq}</Text>
-              </View>
-            ))}
+
+      <View style={s.panel}>
+        {([
+          ['Archivos', totalArchivos, colors.primary],
+          ['Nodos con archivos', nodosConArchivos, '#7C3AED'],
+          ['Categorías en uso', [...porCategoria.keys()].filter(Boolean).length, colors.success],
+        ] as const).map(([etq, num, color]) => (
+          <View key={etq} style={s.panelCelda}>
+            <Text style={[s.panelNum, { color }]}>{num}</Text>
+            <Text style={s.panelEtq}>{etq}</Text>
           </View>
-          {raices.map((r) => {
-            const c = ind.conteo.get(r.id);
-            const pct = c && c.docs ? Math.round((c.conArchivo / c.docs) * 100) : 0;
+        ))}
+      </View>
+
+      {categorias.length > 0 ? (
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.chips}>
+          <Pressable accessibilityRole="button" onPress={() => setCategoria(null)} style={[s.chip, !categoria && s.chipSel]}>
+            <Text style={[s.chipTxt, !categoria && s.chipTxtSel]}>Todas</Text>
+          </Pressable>
+          {categorias.map((c) => {
+            const num = porCategoria.get(c) || 0;
+            if (!num && categoria !== c) return null;
+            const sel = categoria === c;
             return (
-              <Pressable key={r.id} accessibilityRole="button" onPress={() => setFoco(r.id)}
-                style={({ pressed }) => [s.tarjeta, pressed && { opacity: 0.88 }]}>
-                <View style={s.tarjetaTop}>
-                  <View style={s.tarjetaIcono}><Ionicons name="folder-open-outline" size={20} color="#fff" /></View>
-                  <View style={{ flex: 1, minWidth: 0 }}>
-                    <Text style={s.tarjetaTit} numberOfLines={2}>{r.code ? `${r.code} · ` : ''}{r.name}</Text>
-                    <Text style={s.docClave}>
-                      {c?.docs || 0} documentos · {c?.conArchivo || 0} con archivo · {c?.validados || 0} validados · {c?.firmados || 0} firmados
-                    </Text>
-                  </View>
-                  <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
-                </View>
-                <View style={s.barra}><View style={[s.barraRelleno, { width: `${pct}%` }]} /></View>
+              <Pressable key={c} accessibilityRole="button" onPress={() => setCategoria(sel ? null : c)} style={[s.chip, sel && s.chipSel]}>
+                <Text style={[s.chipTxt, sel && s.chipTxtSel]} numberOfLines={1}>{c} · {num}</Text>
               </Pressable>
             );
           })}
-          {raices.length > 0 ? (
-            <Pressable accessibilityRole="button" style={s.herr} onPress={() => setVerArbol(true)}>
-              <Ionicons name="list-outline" size={18} color={colors.primary} />
-              <Text style={s.herrTxt}>Ver todo el árbol</Text>
-            </Pressable>
-          ) : null}
-        </>
-      ) : (
-        <>
-          <Pressable accessibilityRole="button" style={s.migas} onPress={volverAlHub}>
-            <Ionicons name="chevron-back" size={16} color={colors.primary} />
-            <Text style={s.migasTxt} numberOfLines={1}>
-              Panel{foco ? ` › ${ind.porId.get(foco)?.name || ''}` : verArbol ? ' › Todo el árbol' : ' › Búsqueda'}
-            </Text>
-          </Pressable>
-          <Text style={s.resumen}>
-            {foco ? `${ind.conteo.get(foco)?.docs || 0}` : totales.docs} documentos
-            {visibles ? ` · ${filas.filter((f) => f.nodo.kind === 'documento').length} coinciden` : ''}
-          </Text>
-        </>
-      )}
-      {canEdit ? (
-        <View style={s.herramientas}>
-          <Pressable accessibilityRole="button" style={s.herr} onPress={importarExcel} disabled={!!ocupado}>
-            <Ionicons name="reload-circle-outline" size={18} color={colors.primary} />
-            <Text style={s.herrTxt}>Importar / actualizar Excel</Text>
-          </Pressable>
-          <Pressable accessibilityRole="button" style={s.herr} onPress={subirMasivo} disabled={!!ocupado}>
-            <Ionicons name="cloud-upload-outline" size={18} color={colors.primary} />
-            <Text style={s.herrTxt}>Subir archivos</Text>
-          </Pressable>
-          <Pressable accessibilityRole="button" style={s.herr} onPress={() => setNuevo({ padre: null, kind: 'categoria' })} disabled={!!ocupado}>
-            <Ionicons name="add-circle-outline" size={18} color={colors.primary} />
-            <Text style={s.herrTxt}>Nueva categoría</Text>
-          </Pressable>
-        </View>
+        </ScrollView>
       ) : null}
-      {ocupado ? (
-        <View style={s.ocupado}>
-          <ActivityIndicator size="small" color={colors.primary} />
-          <Text style={s.ocupadoTxt} numberOfLines={1}>{ocupado}</Text>
-        </View>
-      ) : null}
+
+      <View style={s.herramientas}>
+        {hayPadres.length > 0 ? (
+          <Pressable accessibilityRole="button" style={s.herr} onPress={alternarTodo}>
+            <Ionicons name={todoAbierto ? 'contract-outline' : 'expand-outline'} size={18} color={colors.primary} />
+            <Text style={s.herrTxt}>{todoAbierto ? 'Contraer todo' : 'Expandir todo'}</Text>
+          </Pressable>
+        ) : null}
+        {canEdit ? (
+          <Pressable accessibilityRole="button" style={s.herr} onPress={() => setVerCategorias(true)}>
+            <Ionicons name="pricetags-outline" size={18} color={colors.primary} />
+            <Text style={s.herrTxt}>Categorías</Text>
+          </Pressable>
+        ) : null}
+        {canEdit && arbolHref ? (
+          <Pressable accessibilityRole="button" style={s.herr} onPress={() => router.push(arbolHref)}>
+            <Ionicons name="git-branch-outline" size={18} color={colors.primary} />
+            <Text style={s.herrTxt}>Editar nodos</Text>
+          </Pressable>
+        ) : null}
+      </View>
     </View>
   );
 
-  const pie = sueltos > 0 && enHub ? (
+  const pie = sueltos > 0 ? (
     <View style={s.sueltos}>
       <Pressable accessibilityRole="button" style={s.sueltosHead} onPress={() => setVerSueltos((v) => !v)}>
         <Ionicons name="folder-open-outline" size={18} color={colors.textMuted} />
@@ -337,7 +236,7 @@ export function TrazabilidadScreen({ projectId, canEdit, fallbackHref = '/' }: P
 
   return (
     <View style={s.flex}>
-      <ScreenHeader title="Trazabilidad" fallbackHref={fallbackHref} onBack={enHub ? undefined : volverAlHub} />
+      <ScreenHeader title="Trazabilidad" fallbackHref={fallbackHref} />
       {cargando ? (
         <View style={s.centro}><ActivityIndicator color={colors.primary} /></View>
       ) : error && !data ? (
@@ -354,16 +253,20 @@ export function TrazabilidadScreen({ projectId, canEdit, fallbackHref = '/' }: P
           ListHeaderComponent={encabezado}
           ListFooterComponent={pie}
           ListEmptyComponent={
-            enHub && raices.length > 0 ? null : (
             <View style={s.vacio}>
               <Ionicons name="git-network-outline" size={26} color={colors.textMuted} />
               <Text style={s.vacioTxt}>
-                {visibles ? 'Nada coincide con la búsqueda.' : canEdit
-                  ? 'Aún no hay trazabilidad. Importa el Excel de trazabilidad para armar el árbol de categorías, o crea una categoría.'
-                  : 'Aún no hay trazabilidad cargada para este proyecto.'}
+                {visibles
+                  ? 'Nada coincide con la búsqueda.'
+                  : 'Este proyecto todavía no tiene nodos. Créalos en el Árbol de nodos y aquí podrás adjuntarles archivos.'}
               </Text>
+              {!visibles && canEdit && arbolHref ? (
+                <Pressable accessibilityRole="button" style={s.vacioBtn} onPress={() => router.push(arbolHref)}>
+                  <Ionicons name="git-branch-outline" size={20} color="#fff" />
+                  <Text style={s.vacioBtnTxt}>Ir al Árbol de nodos</Text>
+                </Pressable>
+              ) : null}
             </View>
-            )
           }
           initialNumToRender={30}
           windowSize={9}
@@ -373,24 +276,20 @@ export function TrazabilidadScreen({ projectId, canEdit, fallbackHref = '/' }: P
         />
       )}
 
-      <NodoModal
-        nodo={detalle}
-        nodos={nodos}
+      <NodoArchivosModal
+        nodo={nodo}
         ind={ind}
-        esquema={data?.esquema ?? []}
-        estatusOpts={data?.estatus ?? []}
+        categorias={categorias}
         canEdit={canEdit}
         projectId={projectId}
-        onClose={() => setDetalleId(null)}
+        onClose={() => setNodoId(null)}
         onRecargar={cargar}
-        onAgregarHijo={(padre, kind) => { setDetalleId(null); setNuevo({ padre, kind }); }}
       />
-      <NuevoNodoModal
-        abierto={!!nuevo}
-        padre={nuevo?.padre ?? null}
-        kind={nuevo?.kind ?? 'categoria'}
-        onClose={() => setNuevo(null)}
-        onCrear={crearNodo}
+      <CategoriasModal
+        abierto={verCategorias}
+        categorias={categorias}
+        onClose={() => setVerCategorias(false)}
+        onGuardar={guardarCategorias}
       />
     </View>
   );
@@ -409,36 +308,34 @@ const s = StyleSheet.create({
   panel: { flexDirection: 'row', backgroundColor: colors.surface, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, paddingVertical: spacing.sm },
   panelCelda: { flex: 1, alignItems: 'center' },
   panelNum: { fontSize: 20, fontWeight: '900' },
-  panelEtq: { fontSize: 10, fontWeight: '700', color: colors.textMuted, marginTop: 1 },
-  tarjeta: { backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.md, gap: spacing.sm, borderWidth: 1, borderColor: colors.border },
-  tarjetaTop: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  tarjetaIcono: { width: 36, height: 36, borderRadius: radius.full, backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center' },
-  tarjetaTit: { fontSize: 14, fontWeight: '800', color: colors.text },
-  barra: { height: 6, borderRadius: 3, backgroundColor: colors.border, overflow: 'hidden' },
-  barraRelleno: { height: 6, backgroundColor: colors.primary },
-  migas: { flexDirection: 'row', alignItems: 'center', gap: 4, alignSelf: 'flex-start', paddingVertical: 4 },
-  migasTxt: { fontSize: 13, fontWeight: '800', color: colors.primary, flexShrink: 1 },
-  resumen: { fontSize: 12, color: colors.textMuted, fontWeight: '600' },
+  panelEtq: { fontSize: 10, fontWeight: '700', color: colors.textMuted, marginTop: 1, textAlign: 'center' },
+  chips: { gap: 6, paddingVertical: 2 },
+  chip: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: radius.full, borderWidth: 1, borderColor: colors.borderStrong, backgroundColor: colors.surface, maxWidth: 260 },
+  chipSel: { backgroundColor: colors.primary, borderColor: colors.primary },
+  chipTxt: { fontSize: 12, fontWeight: '700', color: colors.textBody },
+  chipTxtSel: { color: '#fff' },
   herramientas: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   herr: {
     flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 9,
     borderRadius: radius.md, borderWidth: 1, borderColor: colors.primary, backgroundColor: colors.surface,
   },
   herrTxt: { fontSize: 12, fontWeight: '800', color: colors.primary },
-  ocupado: { flexDirection: 'row', alignItems: 'center', gap: 8, padding: 8, borderRadius: radius.md, backgroundColor: colors.primaryLight },
-  ocupadoTxt: { flex: 1, fontSize: 12, color: colors.primaryDark, fontWeight: '600' },
   fila: {
-    flexDirection: 'row', alignItems: 'center', gap: 8, paddingRight: 12, paddingVertical: 9,
+    flexDirection: 'row', alignItems: 'center', paddingRight: 8,
     backgroundColor: colors.surface, borderBottomWidth: 1, borderBottomColor: colors.border,
   },
-  filaCategoria: { backgroundColor: '#EFF6FF' },
-  contNombre: { fontSize: 14, fontWeight: '800', color: colors.text },
-  docNombre: { fontSize: 13, fontWeight: '700', color: colors.text },
-  docClave: { fontSize: 11, color: colors.textMuted },
+  chevron: { width: 30, height: 40, alignItems: 'center', justifyContent: 'center' },
+  hoja: { width: 6, height: 6, borderRadius: 3, backgroundColor: colors.borderStrong },
+  filaCuerpo: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 10, minWidth: 0 },
+  nombre: { fontSize: 14, fontWeight: '600', color: colors.text },
+  sub: { fontSize: 11, color: colors.textMuted },
   etiquetas: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   ext: { fontSize: 10, fontWeight: '900' },
-  punto: { width: 9, height: 9, borderRadius: 5 },
+  badge: { minWidth: 22, height: 22, borderRadius: 11, paddingHorizontal: 6, backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center' },
+  badgeTxt: { color: '#fff', fontSize: 12, fontWeight: '800' },
   vacio: { alignItems: 'center', gap: 8, padding: spacing.xl },
+  vacioBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: colors.primary, borderRadius: radius.md, paddingHorizontal: 16, paddingVertical: 12, marginTop: 4 },
+  vacioBtnTxt: { color: '#fff', fontWeight: '800', fontSize: 14 },
   vacioTxt: { fontSize: 13, color: colors.textMuted, textAlign: 'center', lineHeight: 18 },
   sueltos: { margin: spacing.md, padding: spacing.sm, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, gap: spacing.sm },
   sueltosHead: { flexDirection: 'row', alignItems: 'center', gap: 8 },

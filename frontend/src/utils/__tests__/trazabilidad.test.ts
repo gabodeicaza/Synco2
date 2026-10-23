@@ -1,55 +1,68 @@
-import { aplanar, destinosDeMovimiento, indexar, visiblesPorBusqueda } from '../trazabilidad';
-import type { TrazNodo } from '@/src/api';
+import { aplanar, conteoPorCategoria, indexar, rutaLegible, visiblesPorFiltro } from '../trazabilidad';
+import type { TrazArchivo, TrazNodo } from '@/src/api';
 
-const n = (id: string, parent_id: string | null, kind: TrazNodo['kind'], name: string, extra: Partial<TrazNodo> = {}): TrazNodo => ({
-  id, parent_id, kind, code: '', name, order: 0, fields: {}, extra: [], files: [], ...extra,
+const n = (id: string, parent_id: string | null, name: string, order = 0): TrazNodo => ({ id, parent_id, name, order });
+const f = (id: string, node_id: string, name: string, extra: Partial<TrazArchivo> = {}): TrazArchivo => ({
+  id, node_id, name, categoria: '', ext: '.pdf', size: 1, rev: '', oficio: '', fecha: '', obs: '', ...extra,
 });
 
 const NODOS: TrazNodo[] = [
-  n('a', null, 'categoria', 'ESTUDIOS', { code: 'A101' }),
-  n('g', 'a', 'grupo', 'Estación E1'),
-  n('d1', 'g', 'documento', 'Altimetría', { code: 'PLN-E1-1201', files: [{ file_id: 'f', name: 'x.pdf', ext: '.pdf', size: 1 }] }),
-  n('d2', 'g', 'documento', 'Planimetría', { code: 'PLN-E1-1101', fields: { val_oficio: 'DIR-CL4-150-2026', val_fecha: '2026-04-29' } }),
-  n('b', null, 'categoria', 'PROYECTO', { code: 'A301' }),
+  n('t1', null, 'Tramo 1'),
+  n('e1', 't1', 'Estación 1', 0),
+  n('e2', 't1', 'Estación 2', 1),
+  n('t2', null, 'Tramo 2', 1),
+];
+const ARCHIVOS: TrazArchivo[] = [
+  f('a', 'e1', 'plano-arq.pdf', { categoria: 'A3012 · Arquitectónico', oficio: 'DIR-CL4-150-2026' }),
+  f('b', 'e1', 'cimentacion.dwg', { categoria: 'A3014 · Cimentación', ext: '.dwg' }),
+  f('c', 't1', 'general.xlsx', { ext: '.xlsx' }),
+  f('huerfano', 'borrado', 'x.pdf'),
 ];
 
 describe('trazabilidad', () => {
-  it('cuenta documentos y documentos con archivo por rama', () => {
-    const ind = indexar(NODOS);
-    expect(ind.conteo.get('a')).toEqual({ docs: 2, conArchivo: 1, validados: 1, firmados: 0 });
-    expect(ind.conteo.get('b')).toEqual({ docs: 0, conArchivo: 0, validados: 0, firmados: 0 });
+  it('cuenta archivos por rama e ignora los de nodos borrados', () => {
+    const ind = indexar(NODOS, ARCHIVOS);
+    expect(ind.total.get('e1')).toBe(2);
+    expect(ind.total.get('t1')).toBe(3);
+    expect(ind.total.get('t2')).toBe(0);
+    expect(ind.archivosDe.has('borrado')).toBe(false);
   });
 
-  it('aplana solo lo abierto, con su nivel', () => {
-    const ind = indexar(NODOS);
-    expect(aplanar(ind, new Set(), null).map((f) => f.nodo.id)).toEqual(['a', 'b']);
-    const filas = aplanar(ind, new Set(['a', 'g']), null);
-    expect(filas.map((f) => [f.nodo.id, f.nivel])).toEqual([['a', 0], ['g', 1], ['d1', 2], ['d2', 2], ['b', 0]]);
+  it('aplana solo lo abierto, con su nivel y orden', () => {
+    const ind = indexar(NODOS, ARCHIVOS);
+    expect(aplanar(ind, new Set(), null).map((x) => x.nodo.id)).toEqual(['t1', 't2']);
+    expect(aplanar(ind, new Set(['t1']), null).map((x) => [x.nodo.id, x.nivel])).toEqual([['t1', 0], ['e1', 1], ['e2', 1], ['t2', 0]]);
   });
 
-  it('muestra una sola rama cuando hay foco', () => {
-    const ind = indexar(NODOS);
-    expect(aplanar(ind, new Set(), null, 'g').map((f) => [f.nodo.id, f.nivel])).toEqual([['g', 0], ['d1', 1], ['d2', 1]]);
+  it('filtra por categoría mostrando los ancestros', () => {
+    const ind = indexar(NODOS, ARCHIVOS);
+    const v = visiblesPorFiltro(ind, NODOS, '', 'A3014 · Cimentación');
+    expect([...(v as Set<string>)].sort()).toEqual(['e1', 't1']);
+    expect(aplanar(ind, new Set(), v).map((x) => x.nodo.id)).toEqual(['t1', 'e1']);
+    expect(visiblesPorFiltro(ind, NODOS, '  ', null)).toBeNull();
   });
 
-  it('busca sin acentos y en las características; muestra ancestros', () => {
-    const ind = indexar(NODOS);
-    const porOficio = visiblesPorBusqueda(ind, NODOS, 'cl4-150');
-    expect([...(porOficio as Set<string>)].sort()).toEqual(['a', 'd2', 'g']);
-    const porNombre = visiblesPorBusqueda(ind, NODOS, 'estacion e1');
-    expect([...(porNombre as Set<string>)].sort()).toEqual(['a', 'd1', 'd2', 'g']);
-    expect(visiblesPorBusqueda(ind, NODOS, '  ')).toBeNull();
-    expect(aplanar(ind, new Set(), porOficio).map((f) => f.nodo.id)).toEqual(['a', 'g', 'd2']);
+  it('busca sin acentos en nombre de nodo y en datos del archivo', () => {
+    const ind = indexar(NODOS, ARCHIVOS);
+    const porNodo = visiblesPorFiltro(ind, NODOS, 'estacion 2', null);
+    expect([...(porNodo as Set<string>)].sort()).toEqual(['e2', 't1']);
+    const porOficio = visiblesPorFiltro(ind, NODOS, 'cl4-150', null);
+    expect([...(porOficio as Set<string>)].sort()).toEqual(['e1', 't1']);
+    const porTramo = visiblesPorFiltro(ind, NODOS, 'tramo 1', null);
+    expect([...(porTramo as Set<string>)].sort()).toEqual(['e1', 'e2', 't1']);
   });
 
-  it('no ofrece como destino al propio nodo, su descendencia ni documentos', () => {
-    const ind = indexar(NODOS);
-    expect(destinosDeMovimiento(ind, NODOS, 'g').map((x) => x.id)).toEqual(['a', 'b']);
-    expect(destinosDeMovimiento(ind, NODOS, 'a').map((x) => x.id)).toEqual(['b']);
+  it('ruta legible y conteo por categoría', () => {
+    const ind = indexar(NODOS, ARCHIVOS);
+    expect(rutaLegible(ind, 'e2')).toBe('Tramo 1');
+    expect(rutaLegible(ind, 't1')).toBe('');
+    const c = conteoPorCategoria(ARCHIVOS);
+    expect(c.get('')).toBe(2);
+    expect(c.get('A3012 · Arquitectónico')).toBe(1);
   });
 
   it('un padre inexistente deja el nodo en la raíz', () => {
-    const ind = indexar([n('x', 'borrado', 'documento', 'Huérfano')]);
-    expect(aplanar(ind, new Set(), null).map((f) => f.nodo.id)).toEqual(['x']);
+    const ind = indexar([n('x', 'borrado', 'Huérfano')], []);
+    expect(aplanar(ind, new Set(), null).map((x) => x.nodo.id)).toEqual(['x']);
   });
 });
