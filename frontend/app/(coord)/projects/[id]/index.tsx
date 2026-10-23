@@ -10,7 +10,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { api, ApiError, CustomModule, Project, ReferenceFile, FeedItem, LocationNode } from '@/src/api';
+import { api, ApiError, CustomModule, Project, FeedItem, LocationNode } from '@/src/api';
 import { ZONAS_HORARIAS_MX } from '@/src/utils/zonasHorarias';
 import { COLOR_IDENTIDAD_DEFECTO, COLOR_TEXTO_REPORTE_DEFECTO, colors, radius, shadow, spacing } from '@/src/theme';
 import { ColorInput } from '@/src/components/ColorInput';
@@ -48,7 +48,6 @@ import { ReportesVacio } from '@/src/components/ReportesVacio';
 import { verificarConteoExportacion } from '@/src/utils/conteoExportacion';
 import { validarNombreNivel, validarUnidadPersonalizada } from '@/src/utils/unidades';
 import { validarTurnoNocturno } from '@/src/utils/turnoNocturno';
-import { unir } from '@/src/utils/texto';
 import { useAuth } from '@/src/auth-context';
 import { ROLE_COORD } from '@/src/utils/roles';
 import { ResumenProyecto } from '@/src/components/ResumenProyecto';
@@ -58,23 +57,8 @@ import {
   claveDeConcepto, generoDe, generosParaGuardar, migrarGenero, normalizarGeneros, ponerGenero, type MapaGeneros,
 } from '@/src/utils/generoNiveles';
 
-// Limite cliente coherente con backend (20 MB). Evita subidas que el servidor rechazaria.
-const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
-
 // Tamano de pagina del feed de reportes (scroll infinito).
 const PAGE_SIZE = 20;
-
-// Tipos MIME aceptados para el picker (Excel/CSV/PDF/Word).
-const UPLOAD_ACCEPTED_TYPES = [
-  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  'application/vnd.ms-excel',
-  'text/csv',
-  'application/csv',
-  'application/pdf',
-  'application/msword',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  '.xlsx', '.xls', '.csv', '.pdf', '.doc', '.docx',
-];
 
 function formatBytes(bytes?: number | null): string {
   if (!bytes || bytes <= 0) return '';
@@ -261,11 +245,6 @@ export default function ProjectDetailScreen() {
   const [previewItem, setPreviewItem] = useState<FeedItem | null>(null);
   const cerrarModales = modal.cerrar;
   const handleFeedItemPress = useCallback((r: FeedItem) => { cerrarModales(); setPreviewItem(r); }, [cerrarModales]);
-
-  // Archivos de Consulta (Reference Files) - ahora via expo-document-picker.
-  const [refBusy, setRefBusy] = useState(false);
-  const [refUploadName, setRefUploadName] = useState<string | null>(null); // nombre archivo en curso
-  const [refOpeningId, setRefOpeningId] = useState<string | null>(null);   // file_id en descarga
 
   // P0 Mega-Feature: configuracion de Catalogos dinamicos (personal/equipo)
   const catModalOpen = modal.visible('catalogos');
@@ -510,141 +489,6 @@ export default function ProjectDetailScreen() {
       setTimeout(() => setAiCopied(false), 1800);
     } catch {
       Alert.alert(t('proyectoPantalla.noSePudoCopiar'), t('proyectoPantalla.intentaSeleccionarElTextoManualmente'));
-    }
-  }
-
-  async function persistRefs(next: ReferenceFile[]) {
-    try {
-      setRefBusy(true);
-      const res = await api.setProjectReferenceFiles(pid, next);
-      setProject((p) => (p ? { ...p, reference_files: res.reference_files } : p));
-    } catch (e: any) {
-      Alert.alert(t('proyectoPantalla.noSePudoGuardar'), e?.message || t('proyectoPantalla.intentaloNuevamente'));
-    } finally {
-      setRefBusy(false);
-    }
-  }
-
-  // === Subida real con expo-document-picker -> multipart al backend ===========
-  async function onPickAndUploadFile() {
-    if (refBusy) return;
-    try {
-      const result = await DocumentPicker.getDocumentAsync({
-        type: UPLOAD_ACCEPTED_TYPES,
-        copyToCacheDirectory: true,
-        multiple: false,
-      });
-      if (result.canceled || !result.assets?.[0]) return;
-      const asset = result.assets[0];
-
-      // Validacion cliente del tamano (20 MB).
-      if (asset.size && asset.size > MAX_UPLOAD_BYTES) {
-        Alert.alert(
-          t('proyectoPantalla.archivoDemasiadoGrande'),
-          t('proyectoPantalla.archivoPesaMax20', { tam: formatBytes(asset.size) }),
-        );
-        return;
-      }
-
-        setRefBusy(true);
-        setRefUploadName(asset.name || 'archivo');
-        if (!asset.uri) {
-          throw new Error('La URI del archivo seleccionado es nula o inválida.');
-        }
-        const res = await api.uploadProjectFile(pid, {
-          uri: asset.uri,
-          name: asset.name || 'archivo',
-          mimeType: asset.mimeType,
-        });
-
-      if (res.type === 'nodes_bulk' && res.summary) {
-        const s = res.summary;
-        const lines = [
-          `Nuevos: ${s.created}`,
-          `Actualizados: ${s.updated}`,
-          `Omitidos (filas vacias): ${s.skipped}`,
-        ];
-        if (s.leaves_configured) {
-          lines.push(`Hojas configuradas automaticamente: ${s.leaves_configured} (${s.coords_set || 0} con coordenadas)`);
-        }
-        if (s.errors?.length) {
-          lines.push('');
-          lines.push(`Errores: ${s.errors.length}`);
-          for (const e of s.errors.slice(0, 5)) {
-            lines.push(`• Fila ${e.row}: ${e.error}`);
-          }
-        }
-        Alert.alert(t('proyectoPantalla.nodosImportados'), lines.join('\n'));
-      } else {
-        Alert.alert(t('proyectoPantalla.archivoSubido'), t('proyectoPantalla.archivoAdjuntado', { nombre: res.filename }));
-      }
-
-      // Refrescar proyecto para reflejar reference_files actualizados.
-      await load();
-    } catch (e: any) {
-      Alert.alert(t('proyectoPantalla.noSePudoSubir'), e?.message || t('proyectoPantalla.errorDesconocidoAlSubirEl'));
-    } finally {
-      setRefBusy(false);
-      setRefUploadName(null);
-    }
-  }
-
-  async function onRemoveRefFile(idx: number) {
-    const current = project?.reference_files || [];
-    const target = current[idx];
-    if (!target) return;
-    const ok = await confirm(
-      t('proyectoPantalla.eliminarArchivo'),
-      t('proyectoPantalla.quitarArchivoPregunta', { nombre: target.name || t('proyectoPantalla.archivoGenerico') }),
-      { confirmText: 'Eliminar', destructive: true },
-    );
-    if (!ok) return;
-    try {
-      setRefBusy(true);
-      if (target.file_id) {
-        // Archivo subido al servidor -> borrar registro + binario.
-        const res = await api.deleteProjectFile(pid, target.file_id);
-        if (res?.ok) {
-          setProject((p) =>
-            p ? { ...p, reference_files: (p.reference_files || []).filter((f) => f.file_id !== target.file_id) } : p,
-          );
-        } else {
-          throw new Error('Respuesta inesperada del servidor.');
-        }
-      } else {
-        // Enlace externo (legacy) -> reescribir lista completa.
-        const next = current.filter((_, i) => i !== idx);
-        await persistRefs(next);
-      }
-    } catch (e: any) {
-      Alert.alert(t('proyectoPantalla.noSePudoEliminar'), e?.message || t('proyectoPantalla.intentaloNuevamente'));
-    } finally {
-      setRefBusy(false);
-    }
-  }
-
-  // Abrir/descargar archivo. Si tiene file_id (subido al backend) descarga con
-  // Bearer token via fetch y comparte/abre con downloadBlob. Si es URL externa,
-  // simplemente abre el enlace.
-  async function onOpenRefFile(f: ReferenceFile) {
-    try {
-      if (f.file_id) {
-        setRefOpeningId(f.file_id);
-        const { blob, filename, mime } = await api.downloadProjectFile(
-          pid,
-          f.file_id,
-          f.original_name || f.name || 'archivo',
-        );
-        await downloadBlob(blob, filename, mime || f.mime_type);
-      } else if (f.url) {
-        await Linking.openURL(f.url);
-      } else {
-        Alert.alert(t('proyectoPantalla.sinDestino'), t('proyectoPantalla.elArchivoNoTieneUrl'));
-      }
-    } catch (e: any) {
-      Alert.alert(t('proyectoPantalla.noSePudoAbrir'), e?.message || t('proyectoPantalla.revisaTuConexionEIntentalo'));
-    } finally {
-      setRefOpeningId(null);
     }
   }
 
@@ -1849,99 +1693,21 @@ export default function ProjectDetailScreen() {
               />
               <ProgramaObraSection projectId={pid} zona={project as any} />
 
-              {/* ===== Archivos de Consulta ===== */}
-              <Text style={styles.sectionTitle}>{t('proyectoPantalla.archivosDeConsulta')}</Text>
+              {/* ===== Trazabilidad ===== */}
+              <Text style={styles.sectionTitle}>Trazabilidad</Text>
               <View style={styles.refCard}>
                 <Text style={styles.refHelp}>
-                  {t('proyectoPantalla.subeDocumentosExcelCsvDe')}
+                  Árbol de categorías, grupos y documentos del proyecto ejecutivo, con sus oficios, fechas y archivos (PDF, Excel, PowerPoint, DWG). Se actualiza importando el Excel de trazabilidad y se edita desde la app.
                 </Text>
-
-                {(project.reference_files || []).length === 0 ? (
-                  <View style={styles.refEmpty}>
-                    <Ionicons name="folder-open-outline" size={20} color={colors.textMuted} />
-                    <Text style={styles.refEmptyTxt}>{t('proyectoPantalla.aunNoHayArchivosCompartidos')}</Text>
-                  </View>
-                ) : (
-                  <View style={{ gap: 8 }}>
-                    {(project.reference_files || []).map((f, idx) => {
-                      const key = f.file_id || `${f.url}-${idx}`;
-                      const opening = !!(f.file_id && refOpeningId === f.file_id);
-                      const subtitle = f.file_id
-                        ? unir([f.original_name, formatBytes(f.size)])
-                        : f.url;
-                      return (
-                        <View key={key} style={styles.refItem}>
-                          <Ionicons
-                            name={f.file_id ? 'document-attach-outline' : 'link-outline'}
-                            size={18}
-                            color={colors.primary}
-                          />
-                          <View style={{ flex: 1, minWidth: 0 }}>
-                            <Text style={styles.refItemName} numberOfLines={1}>{f.name}</Text>
-                            {!!subtitle && (
-                              <Text style={styles.refItemUrl} numberOfLines={1}>{subtitle}</Text>
-                            )}
-                          </View>
-                          <Pressable accessibilityRole="button"
-                            onPress={() => onOpenRefFile(f)}
-                            hitSlop={6}
-                            style={styles.refIconBtn}
-                            disabled={opening || refBusy}
-                            accessibilityLabel={t('proyectoPantalla.abrirArchivo', { nombre: f.name })}
-                          >
-                            {opening ? (
-                              <ActivityIndicator size="small" color={colors.primary} />
-                            ) : (
-                              <Ionicons
-                                name={f.file_id ? 'cloud-download-outline' : 'open-outline'}
-                                size={18}
-                                color={colors.primary}
-                              />
-                            )}
-                          </Pressable>
-                          <Pressable accessibilityRole="button"
-                            onPress={() => onRemoveRefFile(idx)}
-                            hitSlop={6}
-                            style={styles.refIconBtn}
-                            disabled={refBusy}
-                            accessibilityLabel={t('proyectoPantalla.eliminarArchivo', { nombre: f.name })}
-                          >
-                            <Ionicons name="trash-outline" size={18} color={colors.error} />
-                          </Pressable>
-                        </View>
-                      );
-                    })}
-                  </View>
-                )}
-
                 <Pressable
-                  onPress={onPickAndUploadFile}
-                  disabled={refBusy}
-                  style={({ pressed }) => [
-                    styles.refAddBtn,
-                    refBusy && { opacity: 0.85 },
-                    pressed && !refBusy && { opacity: 0.85 },
-                  ]}
+                  onPress={() => router.push({ pathname: '/(coord)/projects/[id]/trazabilidad' as any, params: { id: pid } })}
+                  style={({ pressed }) => [styles.refAddBtn, pressed && { opacity: 0.85 }]}
                   accessibilityRole="button"
-                  accessibilityLabel={t('proyectoPantalla.seleccionarArchivoParaSubir')}
+                  accessibilityLabel="Abrir trazabilidad"
                 >
-                  {refBusy ? (
-                    <>
-                      <ActivityIndicator color="#fff" size="small" />
-                      <Text style={styles.refAddBtnTxt} numberOfLines={1}>
-                        {refUploadName ? t('proyectoPantalla.subiendoNombre', { nombre: refUploadName }) : t('proyectoPantalla.subiendoArchivo')}
-                      </Text>
-                    </>
-                  ) : (
-                    <>
-                      <Ionicons name="cloud-upload-outline" size={18} color="#fff" />
-                      <Text style={styles.refAddBtnTxt}>{t('proyectoPantalla.seleccionarArchivo')}</Text>
-                    </>
-                  )}
+                  <Ionicons name="git-network-outline" size={18} color="#fff" />
+                  <Text style={styles.refAddBtnTxt}>Abrir trazabilidad</Text>
                 </Pressable>
-                <Text style={styles.refHint}>
-                  {t('proyectoPantalla.formatosExcelXlsxXlsCsv')}
-                </Text>
               </View>
 
               <Pressable accessibilityRole="button" onPress={onArchive} style={styles.archiveBtn}>

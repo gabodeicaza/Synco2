@@ -45,6 +45,7 @@ export default function ProjectLayout() {
       <Stack.Screen name="plano-avance" />
       <Stack.Screen name="presentacion" />
       <Stack.Screen name="presentacion-preview" />
+      <Stack.Screen name="trazabilidad" />
     </Stack>
   );
 }

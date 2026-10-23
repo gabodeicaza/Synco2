@@ -289,6 +289,32 @@ export interface User {
   created_at: string;
 }
 
+// ── Trazabilidad (árbol de categorías → grupos → documentos con archivos) ──
+export type TrazKind = 'categoria' | 'grupo' | 'documento';
+export interface TrazArchivo {
+  file_id: string;
+  name: string;
+  ext: string;
+  size: number;
+  uploaded_at?: string | null;
+  uploaded_by_name?: string | null;
+}
+export interface TrazNodo {
+  id: string;
+  parent_id: string | null;
+  kind: TrazKind;
+  code: string;
+  name: string;
+  order: number;
+  fields: Record<string, string>;
+  extra: { label: string; value: string }[];
+  files: TrazArchivo[];
+}
+export interface TrazCampo { k: string; label: string; tipo: 'texto' | 'fecha' | 'largo' | 'estatus' }
+export interface TrazGrupoCampos { id: string; label: string; campos: TrazCampo[] }
+export interface TrazData { nodes: TrazNodo[]; esquema: TrazGrupoCampos[]; estatus: string[] }
+export interface TrazImportResultado { hoja: string; total: number; creados: number; actualizados: number; sin_cambios: number }
+
 export interface ReferenceFile {
   name: string;
   url: string;
@@ -2428,6 +2454,33 @@ export interface PasswordResetRequest {
 }
 
 // ---- API client -----------------------------------------------------------
+/** POST multipart de un solo archivo (campo `file`) en nativo y en web. */
+async function postArchivo<T>(
+  url: string,
+  file: { uri: string; name: string; mimeType?: string | null },
+  cachePrefix: string,
+): Promise<T> {
+  if (!file || !file.uri) throw new ApiError(0, 'No se seleccionó ningún archivo.');
+  const fileName = file.name || 'archivo';
+  const mime = file.mimeType || 'application/octet-stream';
+  if (Platform.OS !== 'web') return nativeMultipartUpload<T>(url, file.uri, fileName, mime, cachePrefix);
+  const form = new FormData();
+  const blob = await (await fetch(file.uri)).blob();
+  try {
+    form.append('file', new File([blob], fileName, { type: mime }));
+  } catch {
+    form.append('file', blob, fileName);
+  }
+  const res = await fetch(url, { method: 'POST', headers: await authHeader(), body: form as any });
+  const text = await res.text();
+  const data = text ? safeJson(text) : null;
+  if (!res.ok) {
+    const msg = (data && (data as any).detail) || `HTTP ${res.status}`;
+    throw new ApiError(res.status, mensajeDeError(msg));
+  }
+  return data as T;
+}
+
 export const api = {
   login: (email: string, password: string) =>
     request<{ token: string; user: User }>('POST', '/auth/login', { email, password }),
@@ -2658,6 +2711,46 @@ export const api = {
       throw new ApiError(res.status, mensajeDeError(msg));
     }
     return data as any;
+  },
+
+  // Trazabilidad
+  trazListar: (pid: string) => request<TrazData>('GET', `/projects/${pid}/trazabilidad`),
+  trazCrear: (pid: string, body: { parent_id: string | null; kind: TrazKind; code: string; name: string }) =>
+    request<TrazNodo>('POST', `/projects/${pid}/trazabilidad`, body),
+  trazEditar: (
+    pid: string,
+    nid: string,
+    body: Partial<{
+      code: string; name: string; parent_id: string | null; order: number;
+      fields: Record<string, string>; extra: { label: string; value: string }[];
+    }>,
+  ) => request<TrazNodo>('PATCH', `/projects/${pid}/trazabilidad/${nid}`, body),
+  trazBorrar: (pid: string, nid: string) =>
+    request<{ ok: boolean; borrados: number }>('DELETE', `/projects/${pid}/trazabilidad/${nid}`),
+  trazImportar: (
+    pid: string,
+    file: { uri: string; name: string; mimeType?: string | null },
+    soloVacios = false,
+  ) => postArchivo<TrazImportResultado>(
+    `${BASE}/projects/${pid}/trazabilidad-importar?solo_vacios=${soloVacios ? 'true' : 'false'}`, file, 'traz_import'),
+  trazSubirArchivo: (pid: string, nid: string, file: { uri: string; name: string; mimeType?: string | null }) =>
+    postArchivo<{ ok: boolean; reemplazado: boolean; node: TrazNodo }>(
+      `${BASE}/projects/${pid}/trazabilidad/${nid}/archivos`, file, 'traz_file'),
+  trazSubirAuto: (pid: string, file: { uri: string; name: string; mimeType?: string | null }) =>
+    postArchivo<{ matched: boolean; filename: string; node_id?: string; node_code?: string; reemplazado?: boolean; motivo?: string }>(
+      `${BASE}/projects/${pid}/trazabilidad-archivos-auto`, file, 'traz_auto'),
+  trazBorrarArchivo: (pid: string, fileId: string) =>
+    request<{ ok: boolean; node: TrazNodo }>('DELETE', `/projects/${pid}/trazabilidad-archivos/${fileId}`),
+  trazDescargarArchivo: async (pid: string, fileId: string, fallback: string) => {
+    const res = await fetch(`${BASE}/projects/${pid}/trazabilidad-archivos/${fileId}`, {
+      method: 'GET', headers: await authHeader(),
+    });
+    if (!res.ok) throw new ApiError(res.status, `HTTP ${res.status} al descargar el archivo`);
+    const cd = res.headers.get('content-disposition') || '';
+    const m = /filename\*?=(?:UTF-8'')?"?([^";\n]+)"?/i.exec(cd);
+    let filename = fallback;
+    if (m && m[1]) { try { filename = decodeURIComponent(m[1]); } catch { filename = m[1]; } }
+    return { blob: await res.blob(), filename, mime: res.headers.get('content-type') || undefined };
   },
 
   deleteProjectFile: (pid: string, fileId: string) =>
