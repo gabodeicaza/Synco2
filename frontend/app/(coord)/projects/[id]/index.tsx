@@ -37,6 +37,7 @@ import { DatosContratoModal } from '@/src/components/DatosContratoModal';
 import { moduloActivo } from '@/src/utils/modulos';
 import { getMediaLibraryPermission, requestMediaLibraryPermission } from '@/src/utils/permissions';
 import { t, a11y } from '@/src/i18n';
+import { esFechaValida } from '@/src/utils/validacionEvento';
 import { olvidarSeparadorDecimal } from '@/src/hooks/useSeparadorDecimal';
 import { ProgramaObraSection } from '@/src/components/ProgramaObraSection';
 import { ScreenHeader } from '@/src/components/ScreenHeader';
@@ -316,6 +317,13 @@ export default function ProjectDetailScreen() {
   const [objetoSaving, setObjetoSaving] = useState(false);
   const [objetoError, setObjetoError] = useState<string | null>(null);
   const [objetoDraft, setObjetoDraft] = useState('');
+  // Datos básicos capturados al crear el proyecto.
+  const [nombreDraft, setNombreDraft] = useState('');
+  const [constructoraDraft, setConstructoraDraft] = useState('');
+  const [contratoDraft, setContratoDraft] = useState('');
+  const [fechaInicioDraft, setFechaInicioDraft] = useState('');
+  const [fechaTerminoDraft, setFechaTerminoDraft] = useState('');
+  const [descripcionDraft, setDescripcionDraft] = useState('');
   const [clienteDraft, setClienteDraft] = useState('');
   // color_tema: ACOTADO al título de portada del Informe PDF/PPTX exportado.
   const [colorDraft, setColorDraft] = useState(COLOR_IDENTIDAD_DEFECTO);
@@ -665,6 +673,12 @@ export default function ProjectDetailScreen() {
   function openObjetoModal() {
     if (!project) return;
     setObjetoDraft((project as any).objeto_contrato || '');
+    setNombreDraft((project as any).name || '');
+    setConstructoraDraft((project as any).constructora || '');
+    setContratoDraft((project as any).contract_number || '');
+    setFechaInicioDraft((project as any).start_date || '');
+    setFechaTerminoDraft((project as any).end_date || '');
+    setDescripcionDraft((project as any).description || '');
     setClienteDraft((project as any).cliente_principal || '');
     setColorDraft((project as any).color_tema || COLOR_IDENTIDAD_DEFECTO);
     setColorInstitucionalDraft((project as any).color_institucional || COLOR_IDENTIDAD_DEFECTO);
@@ -683,9 +697,24 @@ export default function ProjectDetailScreen() {
       setObjetoError(t('color.corrige'));
       return;
     }
+    // Mismas reglas que al crear el proyecto (projects/new.tsx).
+    const ini = fechaInicioDraft.trim();
+    const fin = fechaTerminoDraft.trim();
+    if (!nombreDraft.trim()) return setObjetoError(t('proyectoForm.errores.nombreObligatorio'));
+    if (!constructoraDraft.trim()) return setObjetoError(t('proyectoForm.errores.constructoraObligatoria'));
+    if (!contratoDraft.trim()) return setObjetoError(t('proyectoForm.errores.contratoObligatorio'));
+    if ((ini && !esFechaValida(ini)) || (fin && !esFechaValida(fin))) return setObjetoError(t('proyectoForm.errores.fechaInvalida'));
+    if (ini && fin && fin < ini) return setObjetoError(t('proyectoForm.errores.terminoAnterior'));
     try {
       setObjetoSaving(true);
       const upd = await api.updateProject(pid, {
+        name: nombreDraft.trim(),
+        constructora: constructoraDraft.trim(),
+        contract_number: contratoDraft.trim(),
+        // '' (no null): el backend ignora null; '' limpia el valor.
+        start_date: ini,
+        end_date: fin,
+        description: descripcionDraft.trim(),
         objeto_contrato: objetoDraft.trim() || null,
         cliente_principal: clienteDraft.trim() || null,
         color_tema: normalizarColorHex(colorDraft),
@@ -2682,6 +2711,69 @@ export default function ProjectDetailScreen() {
               keyboardShouldPersistTaps="handled"
               contentContainerStyle={{ paddingHorizontal: spacing.md, paddingBottom: spacing.lg, gap: spacing.md }}
             >
+              <View>
+                <Text style={styles.catLabel}>{t('proyectoForm.nombre')}</Text>
+                <TextInput
+                  value={nombreDraft}
+                  onChangeText={setNombreDraft}
+                  placeholderTextColor={colors.textMuted}
+                  style={styles.catInput}
+                />
+              </View>
+              <View>
+                <Text style={styles.catLabel}>{t('proyectoForm.constructora')}</Text>
+                <TextInput
+                  value={constructoraDraft}
+                  onChangeText={setConstructoraDraft}
+                  placeholderTextColor={colors.textMuted}
+                  style={styles.catInput}
+                />
+              </View>
+              <View>
+                <Text style={styles.catLabel}>{t('proyectoForm.contrato')}</Text>
+                <TextInput
+                  value={contratoDraft}
+                  onChangeText={setContratoDraft}
+                  placeholderTextColor={colors.textMuted}
+                  style={styles.catInput}
+                />
+              </View>
+              <View>
+                <Text style={styles.catLabel}>{t('proyectoForm.fechaInicio')}</Text>
+                <TextInput
+                  value={fechaInicioDraft}
+                  onChangeText={setFechaInicioDraft}
+                  placeholderTextColor={colors.textMuted}
+                  placeholder="2026-01-15"
+                  maxLength={10}
+                  autoCapitalize="none"
+                  style={styles.catInput}
+                />
+              </View>
+              <View>
+                <Text style={styles.catLabel}>{t('proyectoForm.fechaTermino')}</Text>
+                <TextInput
+                  value={fechaTerminoDraft}
+                  onChangeText={setFechaTerminoDraft}
+                  placeholderTextColor={colors.textMuted}
+                  placeholder="2027-06-30"
+                  maxLength={10}
+                  autoCapitalize="none"
+                  style={styles.catInput}
+                />
+              </View>
+              <View>
+                <Text style={styles.catLabel}>{t('proyectoForm.descripcion')}</Text>
+                <TextInput
+                  value={descripcionDraft}
+                  onChangeText={setDescripcionDraft}
+                  placeholder={t('proyectoForm.descripcionPlaceholder')}
+                  placeholderTextColor={colors.textMuted}
+                  multiline
+                  style={[styles.catInput, { minHeight: 70, textAlignVertical: 'top', paddingTop: 10 }]}
+                />
+              </View>
+
               <View>
                 <Text style={styles.catLabel}>{t('proyectoPantalla.clientePrincipal')}</Text>
                 <Text style={styles.catHelper}>
