@@ -8,7 +8,8 @@ export type TipoNotificacion =
   | 'agreement_due'
   | 'urgent_announcement'
   | 'invitation_accepted'
-  | 'new_report';
+  | 'new_report'
+  | 'daily_report_ready';
 
 export interface DestinoNotificacion {
   pathname: string;
@@ -48,6 +49,10 @@ export function rutaDeNotificacion(data: unknown, rol?: string | null): DestinoN
       // Solo los supervisores lo reciben: van a la lista de reportes del proyecto.
       if (grupo !== '(coord)' || !pid) return null;
       return { pathname: '/(coord)/projects/[id]', params: { id: pid } };
+    case 'daily_report_ready':
+      // Solo los ingenieros (Especialista / Sub-coordinador) reciben su informe diario.
+      if (grupo !== '(spec)' && grupo !== '(subcoord)') return null;
+      return { pathname: `/${grupo}/informe-diario` };
     default:
       return null;
   }

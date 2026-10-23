@@ -1630,6 +1630,12 @@ export default function ProjectDetailScreen() {
                   onPress={() => router.push({ pathname: '/(coord)/projects/[id]/asistencia' as any, params: { id: pid } })}
                 />
                 <ActionTile
+                  icon="print-outline"
+                  title="Informes diarios de ingenieros"
+                  subtitle="Todos los informes del día en PDF y compilado semanal con hoja de firmas"
+                  onPress={() => router.push({ pathname: '/(coord)/projects/[id]/informes-diarios' as any, params: { id: pid } })}
+                />
+                <ActionTile
                   icon="ribbon-outline"
                   title="Capacidades de Operadores"
                   subtitle="Certificaciones, constancias y aptitud de cada operador y equipo"

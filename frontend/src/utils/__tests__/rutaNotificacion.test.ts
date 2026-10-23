@@ -46,6 +46,12 @@ describe('rutaDeNotificacion', () => {
     expect(rutaDeNotificacion({ type: 'invitation_accepted' }, COORD)).toBeNull();
   });
 
+  it('daily_report_ready: solo ingenieros, a su pantalla de informe diario', () => {
+    expect(rutaDeNotificacion({ type: 'daily_report_ready', project_id: 'p1' }, ESP)).toEqual({ pathname: '/(spec)/informe-diario' });
+    expect(rutaDeNotificacion({ type: 'daily_report_ready', project_id: 'p1' }, SUB)).toEqual({ pathname: '/(subcoord)/informe-diario' });
+    expect(rutaDeNotificacion({ type: 'daily_report_ready', project_id: 'p1' }, COORD)).toBeNull();
+  });
+
   it('new_report: los supervisores van al proyecto; los demás no', () => {
     expect(rutaDeNotificacion({ type: 'new_report', project_id: 'p1', report_id: 'r1' }, COORD)).toEqual({
       pathname: '/(coord)/projects/[id]', params: { id: 'p1' },

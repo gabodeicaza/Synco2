@@ -23,6 +23,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '@/src/auth-context';
+import { InformeDiarioBanner } from '@/src/components/InformeDiarioBanner';
 import { api, FeedItem, LocationNode, Project, ProjectEvent } from '@/src/api';
 import { colors, radius, shadow, spacing, areaTone } from '@/src/theme';
 import { APP_BRAND, roleLabel } from '@/src/utils/roles';
@@ -811,6 +812,7 @@ export default function SubCoordDashboard() {
           </View>
         ) : (
           <>
+            <InformeDiarioBanner projectId={pid} basePath="/(subcoord)" />
             <BorradoresCard basePath="/(subcoord)" />
             <MyMeetingsPanel items={myMeetings} loading={myMeetingsLoading} />
 

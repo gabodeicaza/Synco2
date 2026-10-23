@@ -1546,6 +1546,38 @@ export interface FeedOptions {
   since?: string | null; // ISO datetime: solo reportes creados después de este momento
 }
 
+export interface InformeDiarioBloque {
+  report_id: string;
+  hora: string;
+  ubicacion: string;
+  area_name: string;
+  estatus: string;
+  gravedad: 'verde' | 'amarillo' | 'rojo';
+  actividades: string[];
+  fuerza_trabajo: string;
+  equipo: string;
+  observaciones: string;
+  fotos: { idx: number; caption: string }[];
+  resumen_ia: string;
+}
+
+export interface InformeDiario {
+  id: string;
+  project_id: string;
+  user_id: string;
+  user_name: string;
+  fecha: string; // YYYY-MM-DD
+  estado: 'pendiente' | 'procesando' | 'listo' | 'sin_actividad';
+  ia: boolean;
+  resumen_general: string;
+  reportes_count: number;
+  bloques: InformeDiarioBloque[];
+  generado_en?: string | null;
+  visto_en?: string | null;
+  confirmado_en?: string | null;
+  comentario_ingeniero?: string;
+}
+
 export interface Announcement {
   id: string;
   project_id: string;
@@ -3458,6 +3490,18 @@ export const api = {
       'POST', `/projects/${pid}/ai_summary?periodo=${periodo}`,
     ),
 
+  // Informe diario por ingeniero (corte 19:00 + resumen IA).
+  informeDiarioMio: (pid: string, fecha?: string) =>
+    request<InformeDiario | null>('GET', `/projects/${pid}/informe_diario/mio${fecha ? `?fecha=${fecha}` : ''}`),
+  informeDiarioPendientes: (pid: string) =>
+    request<{ id: string; fecha: string; reportes_count: number }[]>('GET', `/projects/${pid}/informe_diario/pendientes`),
+  informeDiarioDetalle: (pid: string, iid: string) =>
+    request<InformeDiario>('GET', `/projects/${pid}/informe_diario/${iid}`),
+  informeDiarioConfirmar: (pid: string, iid: string, comentario?: string) =>
+    request<InformeDiario>('POST', `/projects/${pid}/informe_diario/${iid}/confirmar`, { comentario: comentario ?? null }),
+  informesDiariosCumplimiento: (pid: string, fecha?: string) =>
+    request<{ fecha: string; informes: Omit<InformeDiario, 'bloques'>[] }>('GET', `/projects/${pid}/informes_diarios${fecha ? `?fecha=${fecha}` : ''}`),
+
   listAnnouncements: (pid: string) => request<Announcement[]>('GET', `/projects/${pid}/announcements`),
   createAnnouncement: (pid: string, payload: any) => request<Announcement>('POST', `/projects/${pid}/announcements`, payload),
   updateAnnouncement: (aid: string, payload: any) => request<Announcement>('PATCH', `/announcements/${aid}`, payload),
@@ -4146,6 +4190,37 @@ export const api = {
     const cd = res.headers.get('Content-Disposition') || '';
     const m = cd.match(/filename="?([^"]+)"?/);
     return { blob: await res.blob(), filename: (m && m[1]) || 'plantilla_registro_avance.xlsx' };
+  },
+
+  // Informe diario: PDF imprimible de un informe, y compilado de la semana (domingo a sábado) con hoja de firmas.
+  downloadInformeDiarioPdf: async (pid: string, iid: string): Promise<{ blob: Blob; filename: string }> => {
+    const tok = await getToken();
+    const res = await fetch(`${BASE}/projects/${pid}/informe_diario/${iid}/pdf`, {
+      method: 'GET',
+      headers: tok ? { Authorization: `Bearer ${tok}` } : {},
+    });
+    if (!res.ok) throw new ApiError(res.status, await _downloadErrorMessage(res, 'Error al descargar el PDF'));
+    const cd = res.headers.get('Content-Disposition') || '';
+    const m = cd.match(/filename="?([^"]+)"?/);
+    return { blob: await res.blob(), filename: (m && m[1]) || 'informe_diario.pdf' };
+  },
+
+  downloadInformesSemanaPdf: async (
+    pid: string, opts?: { fecha?: string; ingenieroId?: string; fotos?: boolean },
+  ): Promise<{ blob: Blob; filename: string }> => {
+    const tok = await getToken();
+    const qs = new URLSearchParams();
+    if (opts?.fecha) qs.set('fecha', opts.fecha);
+    if (opts?.ingenieroId) qs.set('ingeniero_id', opts.ingenieroId);
+    if (opts?.fotos) qs.set('fotos', 'true');
+    const res = await fetch(`${BASE}/projects/${pid}/informes_diarios/semana.pdf?${qs.toString()}`, {
+      method: 'GET',
+      headers: tok ? { Authorization: `Bearer ${tok}` } : {},
+    });
+    if (!res.ok) throw new ApiError(res.status, await _downloadErrorMessage(res, 'Error al descargar el compilado'));
+    const cd = res.headers.get('Content-Disposition') || '';
+    const m = cd.match(/filename="?([^"]+)"?/);
+    return { blob: await res.blob(), filename: (m && m[1]) || 'informes_semana.pdf' };
   },
 
   downloadCatalogoPdf: async (pid: string): Promise<{ blob: Blob; filename: string }> => {
