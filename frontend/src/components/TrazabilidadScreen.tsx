@@ -15,7 +15,7 @@ import { ScreenHeader } from '@/src/components/ScreenHeader';
 import { COLOR_ESTATUS, NodoModal, NuevoNodoModal } from '@/src/components/trazabilidad/NodoModal';
 import { ReferenceFilesList } from '@/src/components/ReferenceFilesList';
 import {
-  aplanar, EXT_ICONOS, indexar, TrazFila, visiblesPorBusqueda,
+  aplanar, EXT_ICONOS, indexar, subarbol, TrazFila, visiblesPorBusqueda,
 } from '@/src/utils/trazabilidad';
 
 const MAX_BYTES = 20 * 1024 * 1024;
@@ -36,6 +36,8 @@ export function TrazabilidadScreen({ projectId, canEdit, fallbackHref = '/' }: P
   const [ocupado, setOcupado] = useState<string | null>(null);
   const [detalleId, setDetalleId] = useState<string | null>(null);
   const [nuevo, setNuevo] = useState<{ padre: TrazNodo | null; kind: TrazKind } | null>(null);
+  const [foco, setFoco] = useState<string | null>(null); // categoría raíz que se está explorando
+  const [verArbol, setVerArbol] = useState(false); // árbol completo desde el hub
   const [verSueltos, setVerSueltos] = useState(false);
   const [sueltos, setSueltos] = useState(0);
 
@@ -61,16 +63,33 @@ export function TrazabilidadScreen({ projectId, canEdit, fallbackHref = '/' }: P
   const nodos = useMemo(() => data?.nodes ?? [], [data]);
   const ind = useMemo(() => indexar(nodos), [nodos]);
   const visibles = useMemo(() => visiblesPorBusqueda(ind, nodos, consulta), [ind, nodos, consulta]);
-  const filas = useMemo(() => aplanar(ind, abiertos, visibles), [ind, abiertos, visibles]);
+  // El hub es la entrada: panel de totales y una tarjeta por categoría. Al
+  // buscar, elegir una categoría o pedir el árbol completo se pasa al árbol.
+  const enHub = !consulta.trim() && !verArbol && !foco;
+  const visiblesEnFoco = useMemo(() => {
+    if (!foco || !visibles) return visibles;
+    const rama = subarbol(ind, foco);
+    return new Set([...visibles].filter((id) => rama.has(id)));
+  }, [ind, foco, visibles]);
+  const filas = useMemo(
+    () => (enHub ? [] : aplanar(ind, abiertos, visiblesEnFoco, foco)),
+    [enHub, ind, abiertos, visiblesEnFoco, foco],
+  );
+  const raices = ind.hijos.get(null) || [];
   const totales = useMemo(() => {
-    let docs = 0, conArchivo = 0;
+    const t = { docs: 0, conArchivo: 0, validados: 0, firmados: 0 };
     for (const r of ind.hijos.get(null) || []) {
       const c = ind.conteo.get(r.id);
-      docs += c?.docs || 0;
-      conArchivo += c?.conArchivo || 0;
+      if (!c) continue;
+      t.docs += c.docs; t.conArchivo += c.conArchivo; t.validados += c.validados; t.firmados += c.firmados;
     }
-    return { docs, conArchivo };
+    return t;
   }, [ind]);
+  function volverAlHub() {
+    setFoco(null);
+    setVerArbol(false);
+    setConsulta('');
+  }
   const detalle = detalleId ? ind.porId.get(detalleId) || null : null;
 
   function alternar(id: string) {
@@ -224,10 +243,62 @@ export function TrazabilidadScreen({ projectId, canEdit, fallbackHref = '/' }: P
           </Pressable>
         ) : null}
       </View>
-      <Text style={s.resumen}>
-        {totales.docs} documentos · {totales.conArchivo} con archivo
-        {visibles ? ` · ${filas.filter((f) => f.nodo.kind === 'documento').length} coinciden` : ''}
-      </Text>
+      {enHub ? (
+        <>
+          <View style={s.panel}>
+            {([
+              ['Documentos', totales.docs, colors.text],
+              ['Con archivo', totales.conArchivo, colors.primary],
+              ['Validados', totales.validados, '#7C3AED'],
+              ['Firmados', totales.firmados, colors.success],
+            ] as const).map(([etq, n, color]) => (
+              <View key={etq} style={s.panelCelda}>
+                <Text style={[s.panelNum, { color }]}>{n}</Text>
+                <Text style={s.panelEtq}>{etq}</Text>
+              </View>
+            ))}
+          </View>
+          {raices.map((r) => {
+            const c = ind.conteo.get(r.id);
+            const pct = c && c.docs ? Math.round((c.conArchivo / c.docs) * 100) : 0;
+            return (
+              <Pressable key={r.id} accessibilityRole="button" onPress={() => setFoco(r.id)}
+                style={({ pressed }) => [s.tarjeta, pressed && { opacity: 0.88 }]}>
+                <View style={s.tarjetaTop}>
+                  <View style={s.tarjetaIcono}><Ionicons name="folder-open-outline" size={20} color="#fff" /></View>
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text style={s.tarjetaTit} numberOfLines={2}>{r.code ? `${r.code} · ` : ''}{r.name}</Text>
+                    <Text style={s.docClave}>
+                      {c?.docs || 0} documentos · {c?.conArchivo || 0} con archivo · {c?.validados || 0} validados · {c?.firmados || 0} firmados
+                    </Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+                </View>
+                <View style={s.barra}><View style={[s.barraRelleno, { width: `${pct}%` }]} /></View>
+              </Pressable>
+            );
+          })}
+          {raices.length > 0 ? (
+            <Pressable accessibilityRole="button" style={s.herr} onPress={() => setVerArbol(true)}>
+              <Ionicons name="list-outline" size={18} color={colors.primary} />
+              <Text style={s.herrTxt}>Ver todo el árbol</Text>
+            </Pressable>
+          ) : null}
+        </>
+      ) : (
+        <>
+          <Pressable accessibilityRole="button" style={s.migas} onPress={volverAlHub}>
+            <Ionicons name="chevron-back" size={16} color={colors.primary} />
+            <Text style={s.migasTxt} numberOfLines={1}>
+              Panel{foco ? ` › ${ind.porId.get(foco)?.name || ''}` : verArbol ? ' › Todo el árbol' : ' › Búsqueda'}
+            </Text>
+          </Pressable>
+          <Text style={s.resumen}>
+            {foco ? `${ind.conteo.get(foco)?.docs || 0}` : totales.docs} documentos
+            {visibles ? ` · ${filas.filter((f) => f.nodo.kind === 'documento').length} coinciden` : ''}
+          </Text>
+        </>
+      )}
       {canEdit ? (
         <View style={s.herramientas}>
           <Pressable accessibilityRole="button" style={s.herr} onPress={importarExcel} disabled={!!ocupado}>
@@ -253,7 +324,7 @@ export function TrazabilidadScreen({ projectId, canEdit, fallbackHref = '/' }: P
     </View>
   );
 
-  const pie = sueltos > 0 ? (
+  const pie = sueltos > 0 && enHub ? (
     <View style={s.sueltos}>
       <Pressable accessibilityRole="button" style={s.sueltosHead} onPress={() => setVerSueltos((v) => !v)}>
         <Ionicons name="folder-open-outline" size={18} color={colors.textMuted} />
@@ -266,7 +337,7 @@ export function TrazabilidadScreen({ projectId, canEdit, fallbackHref = '/' }: P
 
   return (
     <View style={s.flex}>
-      <ScreenHeader title="Trazabilidad" fallbackHref={fallbackHref} />
+      <ScreenHeader title="Trazabilidad" fallbackHref={fallbackHref} onBack={enHub ? undefined : volverAlHub} />
       {cargando ? (
         <View style={s.centro}><ActivityIndicator color={colors.primary} /></View>
       ) : error && !data ? (
@@ -283,6 +354,7 @@ export function TrazabilidadScreen({ projectId, canEdit, fallbackHref = '/' }: P
           ListHeaderComponent={encabezado}
           ListFooterComponent={pie}
           ListEmptyComponent={
+            enHub && raices.length > 0 ? null : (
             <View style={s.vacio}>
               <Ionicons name="git-network-outline" size={26} color={colors.textMuted} />
               <Text style={s.vacioTxt}>
@@ -291,6 +363,7 @@ export function TrazabilidadScreen({ projectId, canEdit, fallbackHref = '/' }: P
                   : 'Aún no hay trazabilidad cargada para este proyecto.'}
               </Text>
             </View>
+            )
           }
           initialNumToRender={30}
           windowSize={9}
@@ -333,6 +406,18 @@ const s = StyleSheet.create({
     borderWidth: 1, borderColor: colors.borderStrong, borderRadius: radius.md, paddingHorizontal: 10,
   },
   buscadorInput: { flex: 1, paddingVertical: 9, fontSize: 14, color: colors.text },
+  panel: { flexDirection: 'row', backgroundColor: colors.surface, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, paddingVertical: spacing.sm },
+  panelCelda: { flex: 1, alignItems: 'center' },
+  panelNum: { fontSize: 20, fontWeight: '900' },
+  panelEtq: { fontSize: 10, fontWeight: '700', color: colors.textMuted, marginTop: 1 },
+  tarjeta: { backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.md, gap: spacing.sm, borderWidth: 1, borderColor: colors.border },
+  tarjetaTop: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  tarjetaIcono: { width: 36, height: 36, borderRadius: radius.full, backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center' },
+  tarjetaTit: { fontSize: 14, fontWeight: '800', color: colors.text },
+  barra: { height: 6, borderRadius: 3, backgroundColor: colors.border, overflow: 'hidden' },
+  barraRelleno: { height: 6, backgroundColor: colors.primary },
+  migas: { flexDirection: 'row', alignItems: 'center', gap: 4, alignSelf: 'flex-start', paddingVertical: 4 },
+  migasTxt: { fontSize: 13, fontWeight: '800', color: colors.primary, flexShrink: 1 },
   resumen: { fontSize: 12, color: colors.textMuted, fontWeight: '600' },
   herramientas: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   herr: {

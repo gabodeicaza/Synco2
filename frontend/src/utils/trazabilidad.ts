@@ -3,7 +3,7 @@
 // que se pinta como lista plana y no como componentes anidados).
 import type { TrazNodo } from '@/src/api';
 
-export interface TrazConteo { docs: number; conArchivo: number }
+export interface TrazConteo { docs: number; conArchivo: number; validados: number; firmados: number }
 export interface TrazIndice {
   porId: Map<string, TrazNodo>;
   hijos: Map<string | null, TrazNodo[]>;
@@ -31,12 +31,20 @@ export function indexar(nodos: TrazNodo[]): TrazIndice {
   const conteo = new Map<string, TrazConteo>();
   const contar = (n: TrazNodo): TrazConteo => {
     const c: TrazConteo = n.kind === 'documento'
-      ? { docs: 1, conArchivo: n.files.length > 0 ? 1 : 0 }
-      : { docs: 0, conArchivo: 0 };
+      ? {
+        docs: 1,
+        conArchivo: n.files.length > 0 ? 1 : 0,
+        validados: n.fields.val_fecha ? 1 : 0,
+        // "Firmado" = DIRAC ya entregó firmado (fecha) o se marcó el estatus a mano.
+        firmados: n.fields.ent_fecha || n.fields.estatus === 'Firmado' ? 1 : 0,
+      }
+      : { docs: 0, conArchivo: 0, validados: 0, firmados: 0 };
     for (const h of hijos.get(n.id) || []) {
       const ch = contar(h);
       c.docs += ch.docs;
       c.conArchivo += ch.conArchivo;
+      c.validados += ch.validados;
+      c.firmados += ch.firmados;
     }
     conteo.set(n.id, c);
     return c;
@@ -97,7 +105,9 @@ export function visiblesPorBusqueda(ind: TrazIndice, nodos: TrazNodo[], consulta
 }
 
 /** Filas visibles en orden de árbol. `visibles` (búsqueda) fuerza todo abierto. */
-export function aplanar(ind: TrazIndice, abiertos: Set<string>, visibles: Set<string> | null): TrazFila[] {
+export function aplanar(
+  ind: TrazIndice, abiertos: Set<string>, visibles: Set<string> | null, raiz: string | null = null,
+): TrazFila[] {
   const filas: TrazFila[] = [];
   const recorrer = (padre: string | null, nivel: number) => {
     for (const n of ind.hijos.get(padre) || []) {
@@ -106,7 +116,14 @@ export function aplanar(ind: TrazIndice, abiertos: Set<string>, visibles: Set<st
       if (n.kind !== 'documento' && (visibles || abiertos.has(n.id))) recorrer(n.id, nivel + 1);
     }
   };
-  recorrer(null, 0);
+  const foco = raiz ? ind.porId.get(raiz) : undefined;
+  if (foco) {
+    // Vista de una sola rama: la categoría arriba y su contenido abierto debajo.
+    filas.push({ nodo: foco, nivel: 0 });
+    recorrer(foco.id, 1);
+  } else {
+    recorrer(null, 0);
+  }
   return filas;
 }
 

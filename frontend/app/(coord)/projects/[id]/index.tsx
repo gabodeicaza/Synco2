@@ -1464,6 +1464,17 @@ export default function ProjectDetailScreen() {
             <ScrollView
               contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + 32 }]}
             >
+              {/* Trazabilidad: hub con todo lo que existe (categorías, documentos,
+                  estatus y archivos). Va hasta arriba de Operación. */}
+              <View style={{ marginBottom: spacing.md }}>
+                <ActionTile
+                  icon="git-network-outline"
+                  title="Trazabilidad"
+                  subtitle="Todo el proyecto ejecutivo en un solo lugar: categorías, documentos, oficios, fechas y archivos (PDF, Excel, PowerPoint, DWG)"
+                  onPress={() => router.push({ pathname: '/(coord)/projects/[id]/trazabilidad' as any, params: { id: pid } })}
+                />
+              </View>
+
               {/* Módulos piloto del sistema Multi-Proyecto Modular — solo
                   aparecen si el Coordinador los encendió para este proyecto
                   (ver pestaña Configuracion > Módulos). */}
@@ -1692,23 +1703,6 @@ export default function ProjectDetailScreen() {
                 onPress={openCatalogoConfigModal}
               />
               <ProgramaObraSection projectId={pid} zona={project as any} />
-
-              {/* ===== Trazabilidad ===== */}
-              <Text style={styles.sectionTitle}>Trazabilidad</Text>
-              <View style={styles.refCard}>
-                <Text style={styles.refHelp}>
-                  Árbol de categorías, grupos y documentos del proyecto ejecutivo, con sus oficios, fechas y archivos (PDF, Excel, PowerPoint, DWG). Se actualiza importando el Excel de trazabilidad y se edita desde la app.
-                </Text>
-                <Pressable
-                  onPress={() => router.push({ pathname: '/(coord)/projects/[id]/trazabilidad' as any, params: { id: pid } })}
-                  style={({ pressed }) => [styles.refAddBtn, pressed && { opacity: 0.85 }]}
-                  accessibilityRole="button"
-                  accessibilityLabel="Abrir trazabilidad"
-                >
-                  <Ionicons name="git-network-outline" size={18} color="#fff" />
-                  <Text style={styles.refAddBtnTxt}>Abrir trazabilidad</Text>
-                </Pressable>
-              </View>
 
               <Pressable accessibilityRole="button" onPress={onArchive} style={styles.archiveBtn}>
                 <Ionicons name="archive-outline" size={16} color={colors.error} />
