@@ -13359,6 +13359,45 @@ async def patch_report_actividades_gravedad(
     return await db.reports.find_one({"id": rid}, {"_id": 0})
 
 
+# --- Edición del contenido (actividades y observaciones) ---------------------
+class ReportContenidoPatch(BaseModel):
+    # Lista completa de actividades ({texto, gravedad}); las vacías se descartan,
+    # así que quitar una = mandar la lista sin ella y añadir = agregarla al final.
+    actividades_items: Optional[List[dict]] = None
+    observaciones: Optional[str] = None
+
+
+@api.patch("/reports/{rid}/contenido", response_model=ReportOut)
+async def patch_report_contenido(
+    rid: str,
+    body: ReportContenidoPatch,
+    user: dict = Depends(current_user),
+):
+    """Edita las actividades y/o las observaciones de un reporte ya capturado.
+    Mismos permisos que severidad/gravedad: autor, Coordinador General o
+    Sub-Coordinador (Jefe de Proyecto es de solo lectura)."""
+    r = await db.reports.find_one({"id": rid})
+    if not r:
+        raise HTTPException(404, "Reporte no existe")
+    is_author = r.get("captured_by") == user["id"]
+    is_mgmt = user.get("role") in (ROLE_COORD, ROLE_SUB)
+    if not (is_author or is_mgmt):
+        raise HTTPException(403, "No tienes permiso para editar este reporte")
+    sets: dict = {}
+    if body.actividades_items is not None:
+        items = _normalize_actividades_items(body.actividades_items)
+        sets["actividades_items"] = items
+        sets["actividades"] = "\n".join(i["texto"] for i in items) or None
+        sets["gravedad"] = _gravedad_maxima(items, r.get("gravedad") or "verde")
+    if body.observaciones is not None:
+        sets["observaciones"] = body.observaciones.strip()[:5000] or None
+    if not sets:
+        raise HTTPException(400, "Nada que actualizar")
+    sets["edited_at"] = datetime.now(timezone.utc)
+    await db.reports.update_one({"id": rid}, {"$set": sets})
+    return await db.reports.find_one({"id": rid}, {"_id": 0})
+
+
 # --- Edición de una entrada de Fuerza de Trabajo/Maquinaria -----------------
 class ReportWorkforceEntryPatch(BaseModel):
     field: Literal["personnel", "equipment"]

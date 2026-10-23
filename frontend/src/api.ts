@@ -3416,6 +3416,9 @@ export const api = {
   // Un semáforo por actividad, en el orden en que se guardaron.
   updateActividadesGravedad: (rid: string, gravedades: ('verde' | 'amarillo' | 'rojo')[]) =>
     request<Report>('PATCH', `/reports/${rid}/actividades-gravedad`, { gravedades }),
+  // Edita las actividades (lista completa con su semáforo) y/o las observaciones de un reporte.
+  updateReportContenido: (rid: string, body: { actividades_items?: { texto: string; gravedad: 'verde' | 'amarillo' | 'rojo' }[]; observaciones?: string }) =>
+    request<Report>('PATCH', `/reports/${rid}/contenido`, body),
   updateWorkforceEntry: (rid: string, field: 'personnel' | 'equipment', index: number, value: string | null) =>
     request<Report>('PATCH', `/reports/${rid}/workforce-entry`, { field, index, value }),
   nodeHistory: (pid: string, nid: string) =>

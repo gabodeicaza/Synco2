@@ -24,7 +24,7 @@ import {
 } from 'react-native';
 import { Image } from 'expo-image';
 import { router } from 'expo-router';
-import { puedeEditarReporte, rutaEditarReporte } from '@/src/utils/reportEdit';
+import { emitirReporteEditado, puedeEditarReporte, rutaEditarReporte } from '@/src/utils/reportEdit';
 import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import * as Sharing from 'expo-sharing';
@@ -333,6 +333,43 @@ export function ReportPreviewSheet({
   const hasActividades = actividades.length > 0;
   const hasObservaciones = observaciones.length > 0;
 
+  // --- Edición de actividades y observaciones (mismos permisos que la severidad) ---
+  type ActDraft = { texto: string; gravedad: 'verde' | 'amarillo' | 'rojo' };
+  const [editContenido, setEditContenido] = React.useState(false);
+  const [savingContenido, setSavingContenido] = React.useState(false);
+  const [draftActs, setDraftActs] = React.useState<ActDraft[]>([]);
+  const [draftObs, setDraftObs] = React.useState('');
+  const abrirEditContenido = () => {
+    setDraftActs(
+      actividadesItems.length > 0
+        ? actividadesItems.map((a) => ({ ...a }))
+        // Reportes anteriores sin semáforo por actividad: una por línea del texto.
+        : actividades.split('\n').map((x: string) => x.trim()).filter(Boolean)
+            .map((texto: string) => ({ texto, gravedad: currentGravedad as ActDraft['gravedad'] })),
+    );
+    setDraftObs(observaciones);
+    setEditContenido(true);
+  };
+  const guardarContenido = async () => {
+    if (!reportId || savingContenido) return;
+    setSavingContenido(true);
+    try {
+      const updated = await api.updateReportContenido(reportId, {
+        actividades_items: draftActs.filter((a) => a.texto.trim()).map((a) => ({ texto: a.texto.trim(), gravedad: a.gravedad })),
+        observaciones: draftObs.trim(),
+      });
+      setFullReport(updated);
+      onGravedadChange?.(reportId, (updated.gravedad as any) || 'verde');
+      emitirReporteEditado();
+      setEditContenido(false);
+      showToast(t('vistaPreviaReporte.contenidoActualizado'));
+    } catch (e: any) {
+      Alert.alert(t('vistaPreviaReporte.error'), e?.message || t('vistaPreviaReporte.noSeActualizoContenido'));
+    } finally {
+      setSavingContenido(false);
+    }
+  };
+
   // Cuantas fotos reales tiene el reporte (para decidir si mostrar boton).
   // Priorizamos el conteo REAL (galleryImages) cargado del reporte completo.
   const imagesCount: number =
@@ -588,6 +625,84 @@ export function ReportPreviewSheet({
             ) : null}
 
             {/* Actividades & Observaciones: vital blocks for the field crew. */}
+            {editContenido ? (
+              <View style={styles.block}>
+                <Text style={styles.blockTitle}>{t('vistaPreviaReporte.actividades')}</Text>
+                {draftActs.map((a, idx) => (
+                  <View key={idx} style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginBottom: 8 }}>
+                    <TouchableOpacity
+                      accessibilityRole="button"
+                      accessibilityLabel={`${t('nuevoReporte.gravedadSemaforo')}: ${a.gravedad}`}
+                      hitSlop={8}
+                      onPress={() => setDraftActs((prev) => prev.map((x, i) => {
+                        if (i !== idx) return x;
+                        const orden = ['verde', 'amarillo', 'rojo'] as const;
+                        return { ...x, gravedad: orden[(orden.indexOf(x.gravedad) + 1) % 3] };
+                      }))}
+                      style={{ paddingTop: 10 }}
+                    >
+                      <GravedadDot gravedad={a.gravedad} size={16} />
+                    </TouchableOpacity>
+                    <TextInput
+                      value={a.texto}
+                      onChangeText={(v) => setDraftActs((prev) => prev.map((x, i) => (i === idx ? { ...x, texto: v } : x)))}
+                      placeholder={t('vistaPreviaReporte.actividadPlaceholder')}
+                      placeholderTextColor="#94A3B8"
+                      multiline
+                      style={[styles.blockTxt, { flex: 1, borderWidth: 1, borderColor: '#CBD5E1', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 8 }]}
+                    />
+                    <TouchableOpacity
+                      accessibilityRole="button"
+                      accessibilityLabel={t('vistaPreviaReporte.quitarActividad')}
+                      hitSlop={8}
+                      onPress={() => setDraftActs((prev) => prev.filter((_, i) => i !== idx))}
+                      style={{ paddingTop: 8 }}
+                    >
+                      <Ionicons name="trash-outline" size={20} color="#DC2626" />
+                    </TouchableOpacity>
+                  </View>
+                ))}
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => setDraftActs((prev) => [...prev, { texto: '', gravedad: 'verde' }])}
+                  style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 6 }}
+                >
+                  <Ionicons name="add-circle-outline" size={18} color="#1E40AF" />
+                  <Text style={{ color: '#1E40AF', fontWeight: '600' }}>{t('vistaPreviaReporte.anadirActividad')}</Text>
+                </Pressable>
+
+                <Text style={[styles.blockTitle, { marginTop: 12 }]}>{t('vistaPreviaReporte.observaciones')}</Text>
+                <TextInput
+                  value={draftObs}
+                  onChangeText={setDraftObs}
+                  placeholder={t('vistaPreviaReporte.observacionesPlaceholder')}
+                  placeholderTextColor="#94A3B8"
+                  multiline
+                  style={[styles.blockTxt, { minHeight: 70, borderWidth: 1, borderColor: '#CBD5E1', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 8, textAlignVertical: 'top' }]}
+                />
+
+                <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() => setEditContenido(false)}
+                    disabled={savingContenido}
+                    style={{ flex: 1, alignItems: 'center', paddingVertical: 10, borderRadius: 8, borderWidth: 1, borderColor: '#CBD5E1' }}
+                  >
+                    <Text style={{ color: '#334155', fontWeight: '600' }}>{t('vistaPreviaReporte.cancelarEdicion')}</Text>
+                  </Pressable>
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={guardarContenido}
+                    disabled={savingContenido}
+                    style={{ flex: 1, alignItems: 'center', paddingVertical: 10, borderRadius: 8, backgroundColor: '#1E40AF', opacity: savingContenido ? 0.6 : 1 }}
+                  >
+                    {savingContenido
+                      ? <ActivityIndicator size="small" color="#fff" />
+                      : <Text style={{ color: '#fff', fontWeight: '700' }}>{t('vistaPreviaReporte.guardarCambios')}</Text>}
+                  </Pressable>
+                </View>
+              </View>
+            ) : (<>
             {actividadesItems.length > 0 ? (
               <View style={styles.block}>
                 <Text style={styles.blockTitle}>{t('vistaPreviaReporte.actividades')}</Text>
@@ -624,6 +739,17 @@ export function ReportPreviewSheet({
               body={hasObservaciones ? observaciones : t('vistaPreviaReporte.sinObservaciones')}
               muted={!hasObservaciones}
             />
+            {canEditSeverity && reportId ? (
+              <Pressable
+                accessibilityRole="button"
+                onPress={abrirEditContenido}
+                style={({ pressed }) => [styles.editCaptionsBtn, pressed && { opacity: 0.85 }]}
+              >
+                <Ionicons name="create-outline" size={16} color="#1E40AF" />
+                <Text style={styles.editCaptionsBtnTxt}>{t('vistaPreviaReporte.editarContenido')}</Text>
+              </Pressable>
+            ) : null}
+            </>)}
 
             {/* Texto completo (el mismo que se copia / comparte abajo) ------ */}
             <Block title={t('vistaPreviaReporte.textoReporte')} body={shareText} />
