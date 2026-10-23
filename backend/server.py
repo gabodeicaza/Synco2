@@ -15382,6 +15382,251 @@ async def informe_diario_generar_ahora(pid: str, fecha: Optional[str] = Query(No
     return {"fecha": f.isoformat(), "en_cola": creados}
 
 
+# --- PDF del informe diario (para imprimir y firmar) ---------------------------
+_INFORME_ROL_TXT = {ROLE_ESPECIALISTA: "Ingeniero especialista", ROLE_SUB: "Sub-coordinador"}
+INFORME_PDF_MAX_FOTOS = 4
+_DIAS_ES = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+
+
+def _informe_fecha_larga(f: str) -> str:
+    try:
+        d = date.fromisoformat(f)
+    except ValueError:
+        return f
+    return f"{_DIAS_ES[d.weekday()]} {d.day:02d}/{d.month:02d}/{d.year}"
+
+
+def _informe_pdf_bytes(informes: list, proj: dict, fotos: Dict[str, list], hoja_firmas: Optional[list] = None,
+                       titulo_hoja: str = "") -> bytes:
+    """PDF (A4 vertical) con un informe por sección en el formato de la plantilla:
+    encabezado, resumen, bloque por reporte de campo, fotos y firmas. Si se pasa
+    `hoja_firmas` ([{nombre, rol, dias, confirmados, sin_actividad}]) agrega al final la
+    hoja de firmas semanal. Bloqueante (reportlab/PIL): llamar con asyncio.to_thread."""
+    import base64
+    from xml.sax.saxutils import escape
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import cm
+    from reportlab.lib.colors import HexColor, white
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.lib.enums import TA_CENTER
+    from reportlab.platypus import (BaseDocTemplate, PageTemplate, Frame, Paragraph, Spacer, Table, TableStyle,
+                                    PageBreak, KeepTogether, Image as RLImage)
+    from PIL import Image as PILImage
+
+    color = _sanitize_color_hex(proj.get("color_institucional") or proj.get("color_tema")) or "#003366"
+    P = lambda name, **kw: ParagraphStyle(name, fontName=kw.pop("fontName", "Roboto"), **kw)
+    s_tit = P("it", fontName="Roboto-Bold", fontSize=13, leading=16, alignment=TA_CENTER, textColor=HexColor(color))
+    s_sub = P("is", fontSize=9, leading=11, alignment=TA_CENTER, textColor=HexColor("#475569"))
+    s_lbl = P("il", fontName="Roboto-Bold", fontSize=8, leading=10, textColor=HexColor("#334155"))
+    s_txt = P("ix", fontSize=9, leading=11.5)
+    s_bul = P("ib", fontSize=9, leading=11.5, leftIndent=10, firstLineIndent=-8)
+    s_blq = P("ik", fontName="Roboto-Bold", fontSize=9.5, leading=12, textColor=white)
+    s_cap = P("ic", fontSize=7.5, leading=9, alignment=TA_CENTER, textColor=HexColor("#475569"))
+    s_ia = P("ii", fontName="Roboto-Italic", fontSize=9, leading=11.5, textColor=HexColor("#1E3A8A"))
+    s_firma = P("if", fontSize=8, leading=10, alignment=TA_CENTER)
+    s_cel = P("ie", fontSize=8.5, leading=10.5)
+    s_celb = P("ih", fontName="Roboto-Bold", fontSize=8.5, leading=10.5, textColor=white)
+    W = A4[0] - 3.0 * cm
+    GRIS = HexColor("#CBD5E1")
+
+    def esc(x) -> str:
+        return escape(str(x or ""))
+
+    def foto_flow(b64: str, max_w: float, max_h: float):
+        try:
+            raw = base64.b64decode(_strip_b64_prefix(b64))
+            im = PILImage.open(io.BytesIO(raw)).convert("RGB")
+            im.thumbnail((900, 900))
+            buf = io.BytesIO()
+            im.save(buf, "JPEG", quality=72)
+            buf.seek(0)
+            w, h = im.size
+            sc = min(max_w / w, max_h / h)
+            return RLImage(buf, width=w * sc, height=h * sc)
+        except Exception:
+            return None
+
+    def seccion_informe(inf: dict) -> list:
+        fl: list = [Paragraph("INFORME TÉCNICO DIARIO DE SUPERVISIÓN", s_tit),
+                    Paragraph(f"PROYECTO: {esc(proj.get('name'))} | FECHA DE REPORTE: {esc(_informe_fecha_larga(inf['fecha']))}", s_sub),
+                    Spacer(1, 6)]
+        enc = [
+            [Paragraph("SUPERVISOR RESPONSABLE:", s_lbl), Paragraph(esc(inf.get("user_name")), s_cel)],
+            [Paragraph("CARGO / ESPECIALIDAD:", s_lbl), Paragraph(esc(_INFORME_ROL_TXT.get(inf.get("user_role"), "")), s_cel)],
+            [Paragraph("CONTRATO:", s_lbl), Paragraph(esc(proj.get("contract_number")), s_cel)],
+            [Paragraph("EMPRESA CONTRATISTA:", s_lbl), Paragraph(esc(proj.get("constructora")), s_cel)],
+        ]
+        t = Table(enc, colWidths=[5 * cm, W - 5 * cm])
+        t.setStyle(TableStyle([("GRID", (0, 0), (-1, -1), 0.4, GRIS), ("BACKGROUND", (0, 0), (0, -1), HexColor("#F1F5F9")),
+                               ("VALIGN", (0, 0), (-1, -1), "MIDDLE")]))
+        fl += [t, Spacer(1, 8)]
+        if inf.get("resumen_general"):
+            fl += [Paragraph("RESUMEN DEL DÍA" + (" (redactado con IA)" if inf.get("ia") else ""), s_lbl),
+                   Paragraph(esc(inf["resumen_general"]), s_ia if inf.get("ia") else s_txt), Spacer(1, 8)]
+        for b in inf.get("bloques") or []:
+            cab = Table([[Paragraph(f"REPORTE DE CAMPO: {esc(b.get('ubicacion')).upper()}"
+                                    + (f" ({esc(b['hora'])} hrs)" if b.get("hora") else ""), s_blq)]], colWidths=[W])
+            cab.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), HexColor(color)), ("TOPPADDING", (0, 0), (-1, -1), 3),
+                                     ("BOTTOMPADDING", (0, 0), (-1, -1), 3)]))
+            cuerpo: list = [Paragraph(f"<b>Estatus operativo:</b> {esc(b.get('estatus'))}", s_txt)]
+            if b.get("resumen_ia"):
+                cuerpo.append(Paragraph(esc(b["resumen_ia"]), s_ia))
+            cuerpo.append(Paragraph("Actividades desarrolladas:", s_lbl))
+            acts = b.get("actividades") or []
+            cuerpo += [Paragraph(f"• {esc(a)}", s_bul) for a in acts] or [Paragraph("Sin actividades capturadas", s_txt)]
+            for etq, key in (("Fuerza de trabajo:", "fuerza_trabajo"), ("Equipo y maquinaria:", "equipo"), ("Observaciones:", "observaciones")):
+                if b.get(key):
+                    cuerpo += [Paragraph(etq, s_lbl), Paragraph(esc(b[key]), s_txt)]
+            fl.append(KeepTogether([cab, Spacer(1, 3)] + cuerpo[:3]))
+            fl += cuerpo[3:]
+            imgs = fotos.get(b.get("report_id"), [])
+            if imgs:
+                caps = [f.get("caption") or f"Foto {i + 1}" for i, f in enumerate(b.get("fotos") or [])]
+                celdas = []
+                for i, raw in enumerate(imgs[:INFORME_PDF_MAX_FOTOS]):
+                    im = foto_flow(raw, W / 2 - 0.6 * cm, 6.5 * cm)
+                    if im is not None:
+                        celdas.append([im, Paragraph(esc(caps[i] if i < len(caps) else f"Foto {i + 1}"), s_cap)])
+                filas = []
+                for k in range(0, len(celdas), 2):
+                    par = celdas[k:k + 2]
+                    while len(par) < 2:
+                        par.append(["", ""])
+                    filas.append([par[0][0], par[1][0]])
+                    filas.append([par[0][1], par[1][1]])
+                if filas:
+                    tf = Table(filas, colWidths=[W / 2, W / 2])
+                    tf.setStyle(TableStyle([("ALIGN", (0, 0), (-1, -1), "CENTER"), ("VALIGN", (0, 0), (-1, -1), "MIDDLE")]))
+                    fl += [Spacer(1, 4), tf]
+            fl.append(Spacer(1, 10))
+        conf = inf.get("confirmado_en")
+        if isinstance(conf, datetime):
+            conf = conf.astimezone(zona_proyecto(proj)).strftime("%d/%m/%Y %H:%M")
+        sello = (f"Revisado y confirmado en SynCo el {conf}" if conf else "Pendiente de confirmar en SynCo")
+        firmas = Table([
+            ["", ""],
+            [Paragraph(f"____________________________<br/><b>{esc(inf.get('user_name'))}</b><br/>"
+                       f"{esc(_INFORME_ROL_TXT.get(inf.get('user_role'), ''))}<br/>{esc(sello)}", s_firma),
+             Paragraph("____________________________<br/><b>Vo. Bo.</b><br/>Coordinación / Residencia de obra", s_firma)],
+        ], colWidths=[W / 2, W / 2], rowHeights=[1.4 * cm, None])
+        fl.append(KeepTogether([Paragraph("FIRMAS DE CONFORMIDAD Y SUPERVISIÓN", s_lbl), firmas]))
+        if inf.get("comentario_ingeniero"):
+            fl += [Spacer(1, 4), Paragraph(f"<b>Comentario del ingeniero:</b> {esc(inf['comentario_ingeniero'])}", s_txt)]
+        return fl
+
+    story: list = []
+    for i, inf in enumerate(informes):
+        if i:
+            story.append(PageBreak())
+        story += seccion_informe(inf)
+    if hoja_firmas is not None:
+        if story:
+            story.append(PageBreak())
+        story += [Paragraph("HOJA DE FIRMAS SEMANAL", s_tit), Paragraph(esc(titulo_hoja), s_sub), Spacer(1, 10)]
+        filas = [[Paragraph(h, s_celb) for h in ("INGENIERO", "INFORMES", "CONFIRMADOS", "FIRMA")]]
+        for r in hoja_firmas:
+            extra = f"<br/><font size=7 color='#64748B'>Sin reportes: {esc(r['sin_actividad'])}</font>" if r.get("sin_actividad") else ""
+            filas.append([Paragraph(f"<b>{esc(r['nombre'])}</b><br/>{esc(r.get('rol'))}{extra}", s_cel),
+                          Paragraph(str(r["dias"]), s_cel), Paragraph(str(r["confirmados"]), s_cel), ""])
+        th = Table(filas, colWidths=[6.2 * cm, 2.2 * cm, 2.8 * cm, W - 11.2 * cm], repeatRows=1,
+                   rowHeights=[None] + [1.9 * cm] * (len(filas) - 1))
+        th.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), HexColor(color)), ("GRID", (0, 0), (-1, -1), 0.5, GRIS),
+                                ("VALIGN", (0, 0), (-1, -1), "MIDDLE")]))
+        story.append(th)
+
+    def pie(canvas, doc_):
+        canvas.saveState()
+        canvas.setFont("Roboto", 7.5)
+        canvas.setFillColor(HexColor("#64748B"))
+        canvas.drawString(1.5 * cm, 0.9 * cm, f"{proj.get('name') or ''} — Informe técnico diario de supervisión")
+        canvas.drawRightString(A4[0] - 1.5 * cm, 0.9 * cm, f"Página {doc_.page}")
+        canvas.restoreState()
+
+    buf = io.BytesIO()
+    doc = BaseDocTemplate(buf, pagesize=A4, leftMargin=1.5 * cm, rightMargin=1.5 * cm, topMargin=1.4 * cm, bottomMargin=1.6 * cm,
+                          title="Informe técnico diario", author="SynCo")
+    doc.addPageTemplates([PageTemplate(id="p", frames=[Frame(1.5 * cm, 1.6 * cm, W, A4[1] - 3.0 * cm, id="f",
+                                                              leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0)],
+                                       onPage=pie)])
+    doc.build(story or [Paragraph("Sin informes.", s_txt)])
+    return buf.getvalue()
+
+
+async def _informe_fotos(informes: list, max_por_bloque: int) -> Dict[str, list]:
+    """report_id → imágenes base64 (las primeras `max_por_bloque`) de los bloques con fotos."""
+    ids = list({b["report_id"] for i in informes for b in (i.get("bloques") or []) if b.get("fotos") and b.get("report_id")})
+    out: Dict[str, list] = {}
+    if ids and max_por_bloque > 0:
+        async for r in db.reports.find({"id": {"$in": ids}}, {"_id": 0, "id": 1, "images": 1}):
+            out[r["id"]] = (r.get("images") or [])[:max_por_bloque]
+    return out
+
+
+def _informe_pdf_response(pdf: bytes, nombre: str) -> StreamingResponse:
+    return StreamingResponse(io.BytesIO(pdf), media_type="application/pdf",
+                             headers={"Content-Disposition": f'attachment; filename="{nombre}"'})
+
+
+@api.get("/projects/{pid}/informe_diario/{iid}/pdf")
+async def informe_diario_pdf(pid: str, iid: str, fotos: bool = Query(True), user: dict = Depends(current_user)):
+    """PDF imprimible del informe (formato de la plantilla, con espacio de firma). El dueño lo
+    descarga; Coordinación / Jefe / Sub-coordinador pueden bajar el de cualquiera."""
+    proj = await ensure_project_access(user, pid)
+    inf = await db.informes_diarios.find_one({"id": iid, "project_id": pid})
+    if not inf:
+        raise HTTPException(404, "Informe no encontrado")
+    if inf["user_id"] != user["id"] and user["role"] not in (ROLE_COORD, ROLE_JEFE, ROLE_SUB):
+        raise HTTPException(403, "No puedes descargar el informe de otro ingeniero")
+    if inf["estado"] != "listo":
+        raise HTTPException(409, "El informe aún no está listo")
+    imgs = await _informe_fotos([inf], INFORME_PDF_MAX_FOTOS if fotos else 0)
+    pdf = await asyncio.to_thread(_informe_pdf_bytes, [inf], proj, imgs)
+    nombre = f"informe_{_safe_filename_fragment(inf.get('user_name') or 'ingeniero')}_{inf['fecha']}.pdf"
+    return _informe_pdf_response(pdf, nombre)
+
+
+@api.get("/projects/{pid}/informes_diarios/semana.pdf")
+async def informes_diarios_semana_pdf(
+    pid: str, fecha: Optional[str] = Query(None, description="Cualquier día de la semana (YYYY-MM-DD); por defecto hoy"),
+    ingeniero_id: Optional[str] = Query(None), fotos: bool = Query(False), user: dict = Depends(current_user),
+):
+    """Compilado de la semana (domingo a sábado) para imprimir y firmar el sábado: los informes
+    listos de cada ingeniero en orden y, al final, la hoja de firmas semanal. Coordinación / Jefe /
+    Sub-coordinador reciben el de todos (o el de `ingeniero_id`); un ingeniero, solo el suyo.
+    Las fotos van apagadas por defecto (el compilado de todo el equipo pesaría demasiado)."""
+    proj = await ensure_project_access(user, pid)
+    try:
+        ref = date.fromisoformat(fecha) if fecha else hoy_proyecto(proj)
+    except ValueError:
+        raise HTTPException(400, "fecha inválida (YYYY-MM-DD)")
+    ini, fin = _week_bounds_for(ref)
+    q: dict = {"project_id": pid, "fecha": {"$gte": ini.isoformat(), "$lte": fin.isoformat()}}
+    if user["role"] in (ROLE_COORD, ROLE_JEFE, ROLE_SUB):
+        if ingeniero_id:
+            q["user_id"] = ingeniero_id
+    else:
+        q["user_id"] = user["id"]
+    docs = await db.informes_diarios.find(q).sort([("user_name", 1), ("fecha", 1)]).to_list(length=5000)
+    listos = [d for d in docs if d["estado"] == "listo"]
+    if not listos:
+        raise HTTPException(404, "No hay informes listos en esa semana")
+    resumen: Dict[str, dict] = {}
+    for d in docs:
+        r = resumen.setdefault(d["user_id"], {"nombre": d.get("user_name") or "", "rol": _INFORME_ROL_TXT.get(d.get("user_role"), ""),
+                                              "dias": 0, "confirmados": 0, "sin": []})
+        if d["estado"] == "listo":
+            r["dias"] += 1
+            r["confirmados"] += 1 if d.get("confirmado_en") else 0
+        elif d["estado"] == "sin_actividad":
+            r["sin"].append(date.fromisoformat(d["fecha"]).strftime("%d/%m"))
+    hoja = [{"nombre": r["nombre"], "rol": r["rol"], "dias": r["dias"], "confirmados": r["confirmados"],
+             "sin_actividad": ", ".join(r["sin"])} for r in sorted(resumen.values(), key=lambda x: x["nombre"])]
+    imgs = await _informe_fotos(listos, 2 if fotos else 0)
+    titulo = f"Semana del {ini.strftime('%d/%m/%Y')} al {fin.strftime('%d/%m/%Y')}"
+    pdf = await asyncio.to_thread(_informe_pdf_bytes, listos, proj, imgs, hoja, titulo)
+    return _informe_pdf_response(pdf, f"informes_semana_{ini.isoformat()}_{_safe_filename_fragment(proj.get('name') or 'proyecto')}.pdf")
+
+
 @api.get("/projects/{pid}/informe_diario/{iid}")
 async def informe_diario_detalle(pid: str, iid: str, user: dict = Depends(current_user)):
     """Detalle del informe. El dueño lo ve (y queda `visto_en`); coordinación/jefe/sub

@@ -4189,6 +4189,37 @@ export const api = {
     return { blob: await res.blob(), filename: (m && m[1]) || 'plantilla_registro_avance.xlsx' };
   },
 
+  // Informe diario: PDF imprimible de un informe, y compilado de la semana (domingo a sábado) con hoja de firmas.
+  downloadInformeDiarioPdf: async (pid: string, iid: string): Promise<{ blob: Blob; filename: string }> => {
+    const tok = await getToken();
+    const res = await fetch(`${BASE}/projects/${pid}/informe_diario/${iid}/pdf`, {
+      method: 'GET',
+      headers: tok ? { Authorization: `Bearer ${tok}` } : {},
+    });
+    if (!res.ok) throw new ApiError(res.status, await _downloadErrorMessage(res, 'Error al descargar el PDF'));
+    const cd = res.headers.get('Content-Disposition') || '';
+    const m = cd.match(/filename="?([^"]+)"?/);
+    return { blob: await res.blob(), filename: (m && m[1]) || 'informe_diario.pdf' };
+  },
+
+  downloadInformesSemanaPdf: async (
+    pid: string, opts?: { fecha?: string; ingenieroId?: string; fotos?: boolean },
+  ): Promise<{ blob: Blob; filename: string }> => {
+    const tok = await getToken();
+    const qs = new URLSearchParams();
+    if (opts?.fecha) qs.set('fecha', opts.fecha);
+    if (opts?.ingenieroId) qs.set('ingeniero_id', opts.ingenieroId);
+    if (opts?.fotos) qs.set('fotos', 'true');
+    const res = await fetch(`${BASE}/projects/${pid}/informes_diarios/semana.pdf?${qs.toString()}`, {
+      method: 'GET',
+      headers: tok ? { Authorization: `Bearer ${tok}` } : {},
+    });
+    if (!res.ok) throw new ApiError(res.status, await _downloadErrorMessage(res, 'Error al descargar el compilado'));
+    const cd = res.headers.get('Content-Disposition') || '';
+    const m = cd.match(/filename="?([^"]+)"?/);
+    return { blob: await res.blob(), filename: (m && m[1]) || 'informes_semana.pdf' };
+  },
+
   downloadCatalogoPdf: async (pid: string): Promise<{ blob: Blob; filename: string }> => {
     const tok = await getToken();
     const res = await fetch(`${BASE}/projects/${pid}/export/catalogo.pdf`, {

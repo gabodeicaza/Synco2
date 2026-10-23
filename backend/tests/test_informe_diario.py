@@ -148,3 +148,50 @@ def test_gemini_sin_api_key(monkeypatch):
     monkeypatch.setattr(server, "GEMINI_API_KEY", "")
     with pytest.raises(RuntimeError, match="GEMINI_API_KEY"):
         asyncio.run(server._informe_gemini_json("s", "u"))
+
+
+# --- PDF imprimible ------------------------------------------------------------
+def _png_b64():
+    import base64
+    import io
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", (40, 30), (200, 30, 30)).save(buf, "PNG")
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+def _informe(nombre="Ing. Arturo Alcántara", fecha="2026-10-22", confirmado=True):
+    b = server._informe_bloque_de_reporte(_rep())
+    b["resumen_ia"] = "Se retiró escombro y se atendió el frente."
+    return {
+        "id": "i1", "user_name": nombre, "user_role": "especialista", "fecha": fecha, "ia": True,
+        "resumen_general": "Jornada productiva en Campo Xóchitl.", "bloques": [b],
+        "confirmado_en": utc(2026, 10, 23, 1, 30) if confirmado else None,
+        "comentario_ingeniero": "Sin comentarios & todo <ok>",
+    }
+
+
+def test_pdf_individual_con_foto_y_firmas():
+    proj = {"name": "Cablebús L4", "contract_number": "DGOT-LP-F-4-017-2025", "constructora": "ALFA & Leitner"}
+    pdf = server._informe_pdf_bytes([_informe()], proj, {"r1": [_png_b64()]})
+    assert pdf[:5] == b"%PDF-" and len(pdf) > 3000
+    import io
+    from pypdf import PdfReader
+    assert sum(len(p.images) for p in PdfReader(io.BytesIO(pdf)).pages) == 1  # la foto sí se dibujó
+
+
+def test_pdf_semanal_con_hoja_de_firmas_y_foto_corrupta():
+    import io
+    from pypdf import PdfReader
+    proj = {"name": "Cablebús L4"}
+    infs = [_informe("Ing. A", "2026-10-19"), _informe("Ing. A", "2026-10-20", confirmado=False), _informe("Ing. B", "2026-10-20")]
+    hoja = [{"nombre": "Ing. A", "rol": "Ingeniero especialista", "dias": 2, "confirmados": 1, "sin_actividad": "21/10"},
+            {"nombre": "Ing. B", "rol": "Sub-coordinador", "dias": 1, "confirmados": 1, "sin_actividad": ""}]
+    pdf = server._informe_pdf_bytes(infs, proj, {"r1": ["no-es-imagen"]}, hoja, "Semana del 18/10/2026 al 24/10/2026")
+    r = PdfReader(io.BytesIO(pdf))
+    assert len(r.pages) >= 4  # 3 informes + hoja de firmas
+    assert "HOJA DE FIRMAS SEMANAL" in r.pages[-1].extract_text()
+
+
+def test_pdf_sin_informes_no_truena():
+    assert server._informe_pdf_bytes([], {"name": "X"}, {})[:5] == b"%PDF-"

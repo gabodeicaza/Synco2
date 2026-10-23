@@ -98,6 +98,7 @@ export function HeaderMenu({ basePath, projectId }: HeaderMenuProps) {
               label={t('menuCabecera.borradores')}
               onPress={() => { setOpen(false); router.push(`${basePath}/borradores` as any); }}
             />
+            <MenuItem icon="print-outline" label="Informes diarios (PDF)" onPress={() => goTo('informe-diario')} />
             <MenuItem icon="chatbubbles-outline" label={t('menuCabecera.mensajes')} onPress={() => goTo('mensajes')} />
             <MenuItem icon="calendar-outline" label={t('menuCabecera.calendario')} onPress={() => goTo('calendario')} />
             <MenuItem icon="folder-open-outline" label={t('menuCabecera.archivosConsulta')} onPress={() => goTo('archivos-consulta')} />

@@ -17,6 +17,7 @@ import { api, InformeDiario, InformeDiarioBloque } from '@/src/api';
 import { colors, radius, spacing } from '@/src/theme';
 import { fmtFechaHora } from '@/src/utils/fechas';
 import { ROLE_SUB } from '@/src/utils/roles';
+import { downloadBlob } from '@/src/utils/downloadBlob';
 
 const DOT: Record<string, string> = { verde: '#16A34A', amarillo: '#F59E0B', rojo: '#DC2626' };
 
@@ -58,6 +59,7 @@ export function InformeDiarioScreen() {
   const [error, setError] = useState<string | null>(null);
   const [comentario, setComentario] = useState('');
   const [guardando, setGuardando] = useState(false);
+  const [descargando, setDescargando] = useState(false);
 
   const cargar = useCallback(async () => {
     if (!pid) { setLoading(false); return; }
@@ -91,6 +93,20 @@ export function InformeDiarioScreen() {
       Alert.alert('No se pudo confirmar', e?.message || 'Intenta de nuevo');
     } finally {
       setGuardando(false);
+    }
+  };
+
+  const descargar = async (cual: 'dia' | 'semana') => {
+    setDescargando(true);
+    try {
+      const r = cual === 'dia' && informe
+        ? await api.downloadInformeDiarioPdf(pid, informe.id)
+        : await api.downloadInformesSemanaPdf(pid, { fecha: informe?.fecha });
+      await downloadBlob(r.blob, r.filename, 'application/pdf');
+    } catch (e: any) {
+      Alert.alert('No se pudo descargar', e?.message || 'Intenta de nuevo');
+    } finally {
+      setDescargando(false);
     }
   };
 
@@ -147,6 +163,19 @@ export function InformeDiarioScreen() {
           </>
         ) : null}
 
+        {informe?.estado === 'listo' ? (
+          <View style={styles.pdfRow}>
+            <Pressable accessibilityRole="button" disabled={descargando} onPress={() => descargar('dia')} style={[styles.btnSec, descargando && { opacity: 0.6 }]}>
+              <Ionicons name="download-outline" size={16} color={colors.primary} />
+              <Text style={styles.btnSecTxt}>PDF del día</Text>
+            </Pressable>
+            <Pressable accessibilityRole="button" disabled={descargando} onPress={() => descargar('semana')} style={[styles.btnSec, descargando && { opacity: 0.6 }]}>
+              <Ionicons name="documents-outline" size={16} color={colors.primary} />
+              <Text style={styles.btnSecTxt}>{user?.role === ROLE_SUB ? 'Compilado semanal del equipo' : 'Compilado de mi semana'}</Text>
+            </Pressable>
+          </View>
+        ) : null}
+
         {cumplimiento.length ? (
           <View style={{ marginTop: spacing.lg }}>
             <Text style={styles.etiqueta}>Cumplimiento del equipo</Text>
@@ -179,6 +208,9 @@ const styles = StyleSheet.create({
   input: { borderWidth: 1, borderColor: '#CBD5E1', borderRadius: radius.md, padding: spacing.sm, minHeight: 70, backgroundColor: '#fff', textAlignVertical: 'top' },
   btn: { backgroundColor: colors.primary, borderRadius: radius.md, padding: spacing.md, alignItems: 'center', marginTop: spacing.md },
   btnTxt: { color: '#fff', fontWeight: '800', fontSize: 15 },
+  pdfRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginTop: spacing.md },
+  btnSec: { flexDirection: 'row', alignItems: 'center', gap: 6, borderWidth: 1, borderColor: colors.primary, borderRadius: radius.md, paddingVertical: spacing.sm, paddingHorizontal: spacing.md },
+  btnSecTxt: { color: colors.primary, fontWeight: '700', fontSize: 13 },
   confirmadoBox: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: spacing.md },
   confirmadoTxt: { color: '#166534', fontWeight: '700' },
 });
