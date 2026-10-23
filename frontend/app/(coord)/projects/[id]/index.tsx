@@ -1470,7 +1470,7 @@ export default function ProjectDetailScreen() {
                 <ActionTile
                   icon="git-network-outline"
                   title="Trazabilidad"
-                  subtitle="Todo el proyecto ejecutivo en un solo lugar: categorías, documentos, oficios, fechas y archivos (PDF, Excel, PowerPoint, DWG)"
+                  subtitle="Archivos (PDF, Excel, PowerPoint, DWG) adjuntos a cada nodo del proyecto, por categoría, todo en un solo lugar"
                   onPress={() => router.push({ pathname: '/(coord)/projects/[id]/trazabilidad' as any, params: { id: pid } })}
                 />
               </View>

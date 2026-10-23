@@ -1,13 +1,10 @@
-"""Trazabilidad (server.py): árbol categorías → grupos → documentos que reemplaza a
-los "Archivos de consulta". Importación desde el Excel de trazabilidad (mezcla, no
-reemplazo), edición de características, movimiento de nodos y archivos adjuntos.
+"""Trazabilidad (server.py): archivos adjuntos al árbol de nodos del proyecto
+(`location_nodes`). Cada archivo lleva categoría y características editables.
 Contra una Mongo simulada (`mongomock-motor`)."""
 import asyncio
-import io
 import os
 import sys
 import tempfile
-from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -17,7 +14,6 @@ os.environ.setdefault("JWT_SECRET", "dummy_test_secret")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import openpyxl  # noqa: E402
 import pytest  # noqa: E402
 from fastapi import HTTPException  # noqa: E402
 
@@ -26,7 +22,7 @@ import server  # noqa: E402
 pytest.importorskip("mongomock_motor")
 
 COORD = {"id": "c1", "role": server.ROLE_COORD, "name": "Coord"}
-CLAVE = "DGOT-L4CB-ALF-LEIT-AP-TR1-TOP-PLN-E1-1201-R00"
+SUB = {"id": "s1", "role": server.ROLE_SUB, "name": "Sub", "project_ids": ["p1"]}
 
 
 def _con_db(coro_fn):
@@ -48,153 +44,71 @@ def _subida(nombre, contenido):
     return SimpleNamespace(filename=nombre, read=_leer)
 
 
-def _excel(oficio="DIR-CL4-150-2026", extra_plano=False) -> bytes:
-    """Hoja mínima con la forma de 'Trazabilidad PE': encabezado en filas 14-15,
-    A101 > A1011 > ESTACIONES > Estación E1 > planos."""
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "Trazabilidad PE (2)"
-    ws["B14"], ws["C14"], ws["D14"] = "CLAVE DEL PLANO", "NOMBRE DEL PLANO", "DISCIPLINA"
-    ws["E14"], ws["H14"], ws["P14"], ws["N14"] = "ESCRITO ALFA A DGOT\nREV. A", "ENVIO DGOT A DIRAC", "VALIDACIÓN TÉCNICA POR DIRAC", "ULTIMA REV. PDF"
-    ws["AA14"] = "OBSERVACIONES"
-    for col, txt in (("E", "REV"), ("F", "OFICIO"), ("G", "FECHA"), ("P", "REV"), ("Q", "OFICIO"), ("R", "FECHA")):
-        ws[f"{col}15"] = txt
-    filas = [
-        ("A101", "ESTUDIOS Y ANÁLISIS", 0), ("A1011", "Estudios Topográficos.", 1),
-        (None, "ESTACIONES", 2), (None, "Estación E1 - Universidad", 2),
-    ]
-    r = 16
-    for b, c, nivel in filas:
-        ws.cell(r, 2, b)
-        ws.cell(r, 3, c)
-        ws.row_dimensions[r].outlineLevel = nivel
-        r += 1
-    ws.cell(r, 2, CLAVE)
-    ws.cell(r, 3, "ALTIMETRÍA")
-    ws.cell(r, 4, "ALTIMETRÍA")
-    ws.cell(r, 5, "A")
-    ws.cell(r, 6, "APYCSA-499-2026")
-    ws.cell(r, 7, datetime(2026, 8, 25))
-    ws.cell(r, 14, '=HYPERLINK(".\\01\\"& B20&".PDF","R00")')
-    ws.cell(r, 16, 0)
-    ws.cell(r, 17, oficio)
-    ws.cell(r, 18, datetime(2026, 4, 29))
-    ws.cell(r, 27, "Pendiente firma")
-    if extra_plano:
-        ws.cell(r + 1, 2, CLAVE.replace("1201", "1301"))
-        ws.cell(r + 1, 3, "CURVAS DE NIVEL")
-    ws.cell(r + 3, 4, "TOTAL")
-    ws.cell(r + 5, 3, "RESUMEN")
-    buf = io.BytesIO()
-    wb.save(buf)
-    return buf.getvalue()
-
-
-async def _importar(excel, **kw):
-    return await server.traz_importar("p1", _subida("traz.xlsx", excel), user=COORD, **{"hoja": None, "solo_vacios": False, **kw})
-
-
 async def _sembrar(db):
     await db.projects.insert_one({"id": "p1", "name": "Demo"})
+    await db.location_nodes.insert_many([
+        {"id": "t1", "project_id": "p1", "parent_id": None, "name": "Tramo 1", "depth": 0, "order": 0},
+        {"id": "e1", "project_id": "p1", "parent_id": "t1", "name": "Estación 1", "depth": 1, "order": 0,
+         "tipo_nodo": "estacion"},
+        {"id": "x", "project_id": "otro", "parent_id": None, "name": "Ajeno", "depth": 0, "order": 0},
+    ])
 
 
-def _por_codigo(nodes, code):
-    return next(n for n in nodes if n["code"] == code)
-
-
-def test_importa_el_arbol_con_jerarquia_y_caracteristicas():
+def test_lista_el_arbol_de_nodos_del_proyecto_con_categorias_base():
     async def go(db):
         await _sembrar(db)
-        res = await _importar(_excel())
-        return res, (await server.traz_listar("p1", COORD))["nodes"]
-    res, nodes = _con_db(go)
-    assert res["creados"] == 5 and res["actualizados"] == 0
-    a101, a1011 = _por_codigo(nodes, "A101"), _por_codigo(nodes, "A1011")
-    assert a101["parent_id"] is None and a1011["parent_id"] == a101["id"]
-    estaciones = next(n for n in nodes if n["name"] == "ESTACIONES")
-    e1 = next(n for n in nodes if n["name"].startswith("Estación E1"))
-    assert estaciones["parent_id"] == a1011["id"] and e1["parent_id"] == estaciones["id"]
-    doc = _por_codigo(nodes, CLAVE)
-    assert doc["kind"] == "documento" and doc["parent_id"] == e1["id"]
-    f = doc["fields"]
-    assert f["alfa_rev"] == "A" and f["alfa_fecha"] == "2026-08-25" and f["pdf"] == "R00"
-    assert f["val_oficio"] == "DIR-CL4-150-2026" and f["val_fecha"] == "2026-04-29" and f["obs"] == "Pendiente firma"
-
-
-def test_reimportar_actualiza_sin_duplicar_ni_perder_lo_capturado():
-    async def go(db):
-        await _sembrar(db)
-        await _importar(_excel())
-        nodes = (await server.traz_listar("p1", COORD))["nodes"]
-        doc = _por_codigo(nodes, CLAVE)
-        await server.traz_editar("p1", doc["id"], server.TrazNodoPatch(fields={"estatus": "Firmado"}), COORD)
-        res = await _importar(_excel(oficio="DIR-CL4-999-2026", extra_plano=True))
-        return res, (await server.traz_listar("p1", COORD))["nodes"]
-    res, nodes = _con_db(go)
-    assert res["creados"] == 1 and res["actualizados"] == 1
-    assert len([n for n in nodes if n["kind"] == "documento"]) == 2
-    f = _por_codigo(nodes, CLAVE)["fields"]
-    assert f["val_oficio"] == "DIR-CL4-999-2026" and f["estatus"] == "Firmado"
-
-
-def test_editar_caracteristicas_fechas_y_valores_vacios():
-    async def go(db):
-        await _sembrar(db)
-        await _importar(_excel())
-        doc = _por_codigo((await server.traz_listar("p1", COORD))["nodes"], CLAVE)
-        r = await server.traz_editar("p1", doc["id"], server.TrazNodoPatch(
-            fields={"dgot_fecha": "02/09/2026", "alfa_rev": "", "disciplina": "TOPO"},
-            extra=[{"label": "Responsable", "value": "Ing. Pérez"}, {"label": " ", "value": "x"}]), COORD)
-        with pytest.raises(HTTPException):
-            await server.traz_editar("p1", doc["id"], server.TrazNodoPatch(fields={"dgot_fecha": "31/02/2026"}), COORD)
-        with pytest.raises(HTTPException):
-            await server.traz_editar("p1", doc["id"], server.TrazNodoPatch(fields={"inventada": "x"}), COORD)
-        return r
+        return await server.traz_listar("p1", SUB)
     r = _con_db(go)
-    assert r["fields"]["dgot_fecha"] == "2026-09-02" and "alfa_rev" not in r["fields"]
-    assert r["fields"]["disciplina"] == "TOPO"
-    assert r["extra"] == [{"label": "Responsable", "value": "Ing. Pérez"}]
+    assert [n["id"] for n in r["nodes"]] == ["t1", "e1"]
+    assert r["files"] == [] and r["categorias"] == server.TRAZ_CATEGORIAS_BASE
+    assert "A3012 · Proyecto Arquitectónico" in r["categorias"]
 
 
-def test_crear_mover_y_borrar_nodos():
+def test_adjuntar_reemplazar_editar_descargar_y_borrar():
     async def go(db):
         await _sembrar(db)
-        cat = await server.traz_crear("p1", server.TrazNodoIn(kind="categoria", code="A401", name="Nueva"), COORD)
-        doc = await server.traz_crear("p1", server.TrazNodoIn(parent_id=cat["id"], code="PLANO-1", name="Uno"), COORD)
-        otra = await server.traz_crear("p1", server.TrazNodoIn(kind="categoria", code="A402", name="Otra"), COORD)
-        with pytest.raises(HTTPException):  # no se puede meter una categoría dentro de su hijo
-            await server.traz_editar("p1", cat["id"], server.TrazNodoPatch(parent_id=doc["id"]), COORD)
-        movido = await server.traz_editar("p1", doc["id"], server.TrazNodoPatch(parent_id=otra["id"]), COORD)
-        raiz = await server.traz_editar("p1", otra["id"], server.TrazNodoPatch(parent_id=None), COORD)
-        borrado = await server.traz_borrar("p1", otra["id"], COORD)
-        quedan = (await server.traz_listar("p1", COORD))["nodes"]
-        return movido, raiz, borrado, quedan, cat
-    movido, raiz, borrado, quedan, cat = _con_db(go)
-    assert movido["parent_id"] and raiz["parent_id"] is None
-    assert borrado["borrados"] == 2 and [n["id"] for n in quedan] == [cat["id"]]
-
-
-def test_archivos_adjuntar_reemplazar_descargar_y_acomodo_automatico():
-    async def go(db):
-        await _sembrar(db)
-        await _importar(_excel(extra_plano=True))
-        doc = _por_codigo((await server.traz_listar("p1", COORD))["nodes"], CLAVE)
-        r1 = await server.traz_subir_archivo("p1", doc["id"], _subida("rev.pdf", b"%PDF-1"), COORD)
-        r2 = await server.traz_subir_archivo("p1", doc["id"], _subida("rev.pdf", b"%PDF-2"), COORD)
-        with pytest.raises(HTTPException):
-            await server.traz_subir_archivo("p1", doc["id"], _subida("virus.exe", b"MZ"), COORD)
-        auto = await server.traz_subir_auto("p1", _subida(CLAVE + ".DWG", b"AC1032"), COORD)
-        sin = await server.traz_subir_auto("p1", _subida("otra-cosa.pdf", b"x"), COORD)
-        nodo = _por_codigo((await server.traz_listar("p1", COORD))["nodes"], CLAVE)
-        resp = await server.traz_descargar("p1", nodo["files"][0]["file_id"], COORD)
+        r1 = await server.traz_subir_archivo("p1", "e1", _subida("plano.pdf", b"%PDF-1"), "A3012 · Proyecto Arquitectónico", COORD)
+        ed = await server.traz_editar_archivo("p1", r1["file"]["id"], server.TrazArchivoPatch(
+            rev="B", oficio="DIR-CL4-150-2026", fecha="29/04/2026", obs="Con observaciones"), COORD)
+        r2 = await server.traz_subir_archivo("p1", "e1", _subida("PLANO.pdf", b"%PDF-2"), "A3012 · Proyecto Arquitectónico", COORD)
+        otra = await server.traz_subir_archivo("p1", "e1", _subida("plano.pdf", b"x"), "A3015 · Proyecto Estructural", COORD)
+        dwg = await server.traz_subir_archivo("p1", "t1", _subida("base.dwg", b"AC1032"), "", COORD)
+        lista = await server.traz_listar("p1", SUB)
+        resp = await server.traz_descargar("p1", r1["file"]["id"], SUB)
         contenido = Path(resp.path).read_bytes()
-        borrado = await server.traz_borrar_archivo("p1", nodo["files"][0]["file_id"], COORD)
-        return r1, r2, auto, sin, nodo, contenido, borrado
-    r1, r2, auto, sin, nodo, contenido, borrado = _con_db(go)
+        await server.traz_borrar_archivo("p1", r1["file"]["id"], COORD)
+        return r1, ed, r2, otra, dwg, lista, contenido, await server.traz_listar("p1", SUB)
+    r1, ed, r2, otra, dwg, lista, contenido, despues = _con_db(go)
     assert r1["reemplazado"] is False and r2["reemplazado"] is True
-    assert auto["matched"] is True and auto["node_code"] == CLAVE
-    assert sin["matched"] is False
-    assert sorted(f["ext"] for f in nodo["files"]) == [".dwg", ".pdf"]
+    assert r2["file"]["id"] == r1["file"]["id"] and r2["file"]["rev"] == "B"  # conserva características
+    assert ed["fecha"] == "2026-04-29" and ed["oficio"] == "DIR-CL4-150-2026"
+    assert otra["reemplazado"] is False  # misma nombre pero otra categoría = otro archivo
+    assert len(lista["files"]) == 3 and "path" not in lista["files"][0]
     assert contenido == b"%PDF-2"
-    assert [f["ext"] for f in borrado["node"]["files"]] == [".dwg"]
-    assert "path" not in nodo["files"][0]
+    assert len(despues["files"]) == 2
+
+
+def test_validaciones_de_archivo_nodo_y_fecha():
+    async def go(db):
+        await _sembrar(db)
+        with pytest.raises(HTTPException) as e1:
+            await server.traz_subir_archivo("p1", "e1", _subida("virus.exe", b"MZ"), "", COORD)
+        with pytest.raises(HTTPException) as e2:
+            await server.traz_subir_archivo("p1", "x", _subida("a.pdf", b"x"), "", COORD)  # nodo de otro proyecto
+        with pytest.raises(HTTPException) as e3:
+            await server.traz_subir_archivo("p1", "e1", _subida("a.pdf", b""), "", COORD)
+        ok = await server.traz_subir_archivo("p1", "e1", _subida("a.pdf", b"x"), "", COORD)
+        with pytest.raises(HTTPException) as e4:
+            await server.traz_editar_archivo("p1", ok["file"]["id"], server.TrazArchivoPatch(fecha="31/02/2026"), COORD)
+        return e1.value.status_code, e2.value.status_code, e3.value.status_code, e4.value.status_code
+    assert _con_db(go) == (400, 404, 400, 400)
+
+
+def test_categorias_editables_por_proyecto():
+    async def go(db):
+        await _sembrar(db)
+        r = await server.traz_guardar_categorias(
+            "p1", server.TrazCategoriasIn(categorias=["  Planos  ", "planos", "", "Memorias"]), COORD)
+        return r, (await server.traz_listar("p1", SUB))["categorias"]
+    r, lista = _con_db(go)
+    assert r["categorias"] == ["Planos", "Memorias"] and lista == ["Planos", "Memorias"]
