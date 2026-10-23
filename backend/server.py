@@ -18091,7 +18091,7 @@ async def export_reports_pdf(
         # Márgenes protegidos para no invadir el membrete del template PDF.
         # TOP_MARGIN_PDF reserva la banda superior donde el template imprime
         # logos y encabezado. BOTTOM_MARGIN_PDF reserva la banda inferior.
-        TOP_MARGIN_PDF = 4.0 * cm
+        TOP_MARGIN_PDF = 3.5 * cm  # = TOP_MARGIN del PPTX
         BOTTOM_MARGIN_PDF = 2.0 * cm
         total_reportes = sum(len(v) for v in reports_by_node.values())
 
@@ -19237,48 +19237,60 @@ async def export_reports_pdf(
             nonlocal page_num
             _banda_pdf["t"] = "ACTIVIDADES GENERALES"
             grupos_ag = _actividades_grupos_con_general(actividades_resumen_frente)
+            if not ACTIVIDADES_GENERALES_GRUPOS_POR_AREA:
+                grupos_ag = grupos_ag[:1]
             AG_COLS = 3
             AG_PAD = 0.35 * cm
-            AG_FONT = 12
+            AG_FONT = 14
+            AG_GAP = 3
+            AG_SPC_H = 16
             AG_BRAND = HexColor(_sanitize_color_hex(project_color) or "#003366")
             AG_TITLE_COLOR = HexColor(_readable_dark_hex(project_color))
             AG_TXT = ParagraphStyle(
-                "AGTxt", fontName="Roboto", fontSize=AG_FONT, leading=AG_FONT * 1.3,
+                "AGTxt", fontName="Roboto", fontSize=AG_FONT, leading=AG_FONT * 1.2,
                 textColor=HexColor("#1A1A1A"), alignment=4, leftIndent=0.6 * cm, bulletIndent=0,
-                spaceAfter=3,
             )
             AG_HEAD = ParagraphStyle(
-                "AGHead", fontName="Roboto-Bold", fontSize=AG_FONT, leading=AG_FONT * 1.3,
-                textColor=HexColor("#1A1A1A"), spaceBefore=6,
+                "AGHead", fontName="Roboto-Bold", fontSize=AG_FONT, leading=AG_FONT * 1.2,
+                textColor=HexColor("#1A1A1A"),
             )
             ag_col_w = PW / AG_COLS
             ag_txt_w = ag_col_w - 2 * AG_PAD
+            # Misma geometría que el PPTX: con membrete la banda mide 2.15 cm
+            # y el área útil llega casi al borde inferior; sin él se reservan
+            # los márgenes normales. (Antes se reservaban 4 cm arriba + 2 cm
+            # abajo y las columnas quedaban cortas: el texto se partía en
+            # hojas casi vacías.)
+            con_membrete_ag = bool(tpl_page_w and tpl_page_h)
             ag_top = PH - TOP_MARGIN_PDF
+            ag_band_bottom = (PH - 2.15 * cm) if con_membrete_ag else (ag_top - 1.3 * cm)
+            ag_bottom = (0.73 * cm + 0.1 * cm) if con_membrete_ag else BOTTOM_MARGIN_PDF
+            ag_head_top = ag_band_bottom - 0.25 * cm
             ag_head_h = 1.4 * cm
-            ag_col_top = ag_top - 26 * 1.4 - ag_head_h
-            ag_bottom = BOTTOM_MARGIN_PDF
-            ag_col_h = ag_col_top - ag_bottom
+            ag_col_top = ag_head_top - ag_head_h - 0.15 * cm
+            ag_col_h = ag_col_top - ag_bottom - 0.2 * cm
 
             for grp in grupos_ag:
-                items_ag = []
+                entradas_ag = []
                 for b in grp["bloques"]:
                     if b["titulo"]:
-                        items_ag.append((True, b["titulo"]))
-                    items_ag.extend((False, ln) for ln in b["lineas"])
+                        par = Paragraph(_xml_escape(b["titulo"]), AG_HEAD)
+                        entradas_ag.append((True, par, par.wrap(ag_txt_w, 10000)[1] + AG_GAP))
+                    for ln in b["lineas"]:
+                        par = Paragraph(_xml_escape(ln), AG_TXT, bulletText="•")
+                        entradas_ag.append((False, par, par.wrap(ag_txt_w, 10000)[1] + AG_GAP))
                 columnas: list = []
                 cur: list = []
                 usado = 0.0
-                for es_h, ln in items_ag:
-                    if es_h:
-                        par = Paragraph(_xml_escape(ln), AG_HEAD)
-                    else:
-                        par = Paragraph(_xml_escape(ln), AG_TXT, bulletText="•")
-                    h = par.wrap(ag_txt_w, 10000)[1] + (3 if not es_h else 9)
-                    if cur and usado + h > ag_col_h:
+                for i, (es_h, par, h) in enumerate(entradas_ag):
+                    antes = AG_SPC_H if (es_h and cur) else 0
+                    # Un encabezado nunca queda solo al final de la columna.
+                    sig = entradas_ag[i + 1][2] if es_h and i + 1 < len(entradas_ag) else 0
+                    if cur and usado + antes + h + sig > ag_col_h:
                         columnas.append(cur)
-                        cur, usado = [], 0.0
-                    cur.append((par, h))
-                    usado += h
+                        cur, usado, antes = [], 0.0, 0
+                    cur.append((par, h, antes))
+                    usado += antes + h
                 if cur:
                     columnas.append(cur)
 
@@ -19288,24 +19300,25 @@ async def export_reports_pdf(
                             f"actfrente:{grp['area']}",
                             f"Resumen de actividades · {grp['area']}" if grp["area"] else "Actividades generales",
                         )
-                    if not (tpl_page_w and tpl_page_h):  # con membrete el título va en la banda
+                    if not con_membrete_ag:  # con membrete el título va en la banda
                         c.setFillColor(AG_TITLE_COLOR)
                         c.setFont("Roboto-Bold", 26)
                         c.drawCentredString(PW / 2, ag_top, "ACTIVIDADES GENERALES")
                     c.setStrokeColor(AG_BRAND)
-                    c.setLineWidth(2)
+                    c.setLineWidth(2.25)
                     for ci in range(1, AG_COLS):
-                        c.line(ag_col_w * ci, ag_top - 26 * 1.4, ag_col_w * ci, ag_bottom)
+                        c.line(ag_col_w * ci, ag_band_bottom, ag_col_w * ci, ag_bottom)
                     if grp["area"]:
                         c.setFillColor(AG_TITLE_COLOR)
-                        c.setFont("Roboto-Bold", 20 if len(grp["area"]) <= 14 else 14)
-                        c.drawString(AG_PAD, ag_top - 26 * 1.4 - 0.9 * cm,
+                        c.setFont("Roboto-Bold", 22 if len(grp["area"]) <= 14 else 16)
+                        c.drawString(AG_PAD, ag_head_top - ag_head_h / 2 - 7,
                                      grp["area"].upper() + ("  (CONTINÚA)" if pi else ""))
                     for ci, col in enumerate(columnas[pi:pi + AG_COLS]):
                         y = ag_col_top
-                        for par, h in col:
+                        for par, h, antes in col:
+                            y -= antes
                             par.wrapOn(c, ag_txt_w, 10000)
-                            par.drawOn(c, ci * ag_col_w + AG_PAD, y - (h - 3))
+                            par.drawOn(c, ci * ag_col_w + AG_PAD, y - (h - AG_GAP))
                             y -= h
                     c.showPage()
                     page_num += 1
@@ -20682,7 +20695,7 @@ async def export_reports_pdf(
             resumen institucional, no una vista rápida de UI."""
             nonlocal page_num
             _banda_pdf["t"] = "ACTIVIDADES GENERALES"
-            if not items:
+            if not items or not RESUMEN_ACTIVIDADES_POR_AREA:
                 return
 
             MARGIN_X = 2.2 * cm
@@ -26882,7 +26895,7 @@ async def export_reports_pptx(
             con "+N más"). python-pptx no expone medición real de texto
             envuelto — la altura de fila se estima por conteo de caracteres,
             con margen generoso para minimizar el riesgo de texto cortado."""
-            if not items:
+            if not items or not RESUMEN_ACTIVIDADES_POR_AREA:
                 return
 
             MARGIN_X = Cm(1.8)
@@ -27017,6 +27030,8 @@ async def export_reports_pptx(
             # índice) aunque no haya actividades generales: así el usuario
             # puede apagarla con el ojo en vez de que desaparezca.
             grupos_rf = _actividades_grupos_con_general(actividades_resumen_frente)
+            if not ACTIVIDADES_GENERALES_GRUPOS_POR_AREA:
+                grupos_rf = grupos_rf[:1]
             # Layout del reporte de referencia: el membrete ya trae el título
             # "ACTIVIDADES GENERALES" en la banda; tres columnas iguales
             # separadas por líneas verticales del color de marca, el nombre
@@ -29349,6 +29364,17 @@ async def _actividades_tabla_por_area(pid: str, start_dt: datetime, end_dt: date
     return out
 
 
+# Interruptores temporales (el código se conserva; ponerlos en True los reactiva):
+# - Respaldo: si la pestaña "Generales" está vacía, imprimir TODAS las
+#   actividades por frente (se apagó: "Actividades generales" solo imprime las
+#   generales).
+# - Grupos por Área tras el general en "Actividades generales".
+# - Páginas "RESUMEN DE ACTIVIDADES" por Área dentro de cada bloque (PDF/PPTX).
+ACTIVIDADES_GENERALES_RESPALDO_POR_FRENTE = False
+ACTIVIDADES_GENERALES_GRUPOS_POR_AREA = False
+RESUMEN_ACTIVIDADES_POR_AREA = False
+
+
 def _actividades_grupos_con_general(por_area: list) -> list:
     """Grupos a imprimir en "Actividades generales": primero SIEMPRE un grupo
     general (area "") con las generales de todas las Áreas juntas (el nombre
@@ -29371,8 +29397,10 @@ def _actividades_resumen_por_frente_con_respaldo(items: list, nodes_by_id: dict)
     "Generales" del hub; si no hay nada ahí (las actividades se capturaron por
     Estación/Poste), el resumen por frente en vez de una diapositiva vacía.
     Pura."""
-    return (_actividades_resumen_por_frente(items, nodes_by_id, solo_general=True)
-            or _actividades_resumen_por_frente(items, nodes_by_id))
+    solo = _actividades_resumen_por_frente(items, nodes_by_id, solo_general=True)
+    if not ACTIVIDADES_GENERALES_RESPALDO_POR_FRENTE:
+        return solo
+    return solo or _actividades_resumen_por_frente(items, nodes_by_id)
 
 
 def _actividades_resumen_por_frente(items: list, nodes_by_id: dict, solo_general: bool = False) -> list:
