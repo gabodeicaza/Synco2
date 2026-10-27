@@ -15850,7 +15850,7 @@ def _informe_pdf_bytes(informes: list, proj: dict, fotos: Dict[str, list], hoja_
                                ("VALIGN", (0, 0), (-1, -1), "MIDDLE")]))
         fl += [t, Spacer(1, 8)]
         if inf.get("resumen_general"):
-            fl += [Paragraph("RESUMEN DEL DÍA" + (" (redactado con IA)" if inf.get("ia") else ""), s_lbl),
+            fl += [Paragraph("RESUMEN DEL DÍA", s_lbl),
                    Paragraph(esc(inf["resumen_general"]), s_ia if inf.get("ia") else s_txt), Spacer(1, 8)]
         for b in inf.get("bloques") or []:
             cab = Table([[Paragraph(f"REPORTE DE CAMPO: {esc(b.get('ubicacion')).upper()}"

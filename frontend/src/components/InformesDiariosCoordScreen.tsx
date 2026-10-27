@@ -102,7 +102,7 @@ export function InformesDiariosCoordScreen({ projectId }: { projectId: string })
             <View key={f.id} style={styles.fila}>
               <View style={{ flex: 1 }}>
                 <Text style={styles.nombre}>{f.user_name}</Text>
-                <Text style={styles.muted}>{f.reportes_count} reporte(s){f.estado === 'listo' && !f.ia ? ' · sin redacción IA' : ''}</Text>
+                <Text style={styles.muted}>{f.reportes_count} reporte(s)</Text>
               </View>
               <View style={[styles.chip, { backgroundColor: e.bg }]}><Text style={[styles.chipTxt, { color: e.fg }]}>{e.txt}</Text></View>
               {f.estado === 'listo' ? (

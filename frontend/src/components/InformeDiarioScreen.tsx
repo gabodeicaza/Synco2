@@ -137,10 +137,8 @@ export function InformeDiarioScreen() {
             ) : (
               <>
                 <View style={styles.resumenBox}>
-                  <Text style={styles.etiqueta}>Resumen del día{informe.ia ? ' (generado con IA)' : ''}</Text>
-                  <Text style={styles.texto}>{informe.resumen_general}</Text>
-                  {!informe.ia ? <Text style={styles.muted}>La redacción con IA no estuvo disponible; se muestran tus datos tal cual.</Text> : null}
-                </View>
+                  <Text style={styles.etiqueta}>Resumen del día</Text>
+                  <Text style={styles.texto}>{informe.resumen_general}</Text>                </View>
                 {informe.bloques.map((b, i) => <Bloque key={b.report_id || i} b={b} />)}
 
                 <Text style={styles.etiqueta}>Comentarios (opcional)</Text>

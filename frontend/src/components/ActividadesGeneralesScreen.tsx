@@ -357,7 +357,7 @@ export function ActividadesGeneralesScreen({ projectId, projectColor: projectCol
                 ? <ActivityIndicator size="small" color={tabAccent} />
                 : <Ionicons name="sparkles-outline" size={14} color={tabAccent} />}
               <Text style={[styles.iaBtnTxt, { color: tabAccent }]}>
-                {resumiendo ? 'Generando resumen…' : 'Resumir por ubicación con IA (a Generales)'}
+                {resumiendo ? 'Generando resumen…' : 'Resumir por ubicación (a Generales)'}
               </Text>
             </Pressable>
           ) : null}
@@ -496,7 +496,7 @@ function ActividadRow({
 
   const origenIcon = item.ia_resumen ? 'sparkles-outline' : item.anadida_manual ? 'create-outline' : 'document-text-outline';
   const origenLabel = item.ia_resumen
-    ? 'Resumen generado con IA'
+    ? 'Resumen por ubicación'
     : item.anadida_manual
     ? 'Añadida manualmente'
     : item.reporte_fecha
