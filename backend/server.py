@@ -2482,7 +2482,7 @@ async def startup_event():
     asyncio.create_task(_meeting_reminder_loop())
     # Loop en segundo plano: clima automático cada hora por Estación.
     asyncio.create_task(_clima_auto_loop())
-    # Loop en segundo plano: corte de las 19:00 -> informe diario por ingeniero (IA).
+    # Loop en segundo plano: corte de las 18:15 -> informe diario por ingeniero (IA).
     asyncio.create_task(_informe_diario_loop())
 
     log.info("[startup] Dirac ready")
@@ -15352,7 +15352,7 @@ async def _meeting_reminder_loop() -> None:
         await asyncio.sleep(300)
 
 
-# === INFORME DIARIO POR INGENIERO (corte 19:00 + resumen con IA) =============
+# === INFORME DIARIO POR INGENIERO (corte 18:15 + resumen con IA) =============
 # A la hora de corte (zona del PROYECTO) se arma, por cada ingeniero
 # (especialista / sub-coordinador), su informe del día con la estructura de la
 # plantilla "Informe técnico diario de supervisión": un bloque por reporte de
@@ -15368,7 +15368,10 @@ async def _meeting_reminder_loop() -> None:
 # redacción IA) y queda marcado `ia=False`. La cola vive en Mongo
 # (`informes_diarios`, estado pendiente→listo), así que sobrevive reinicios y
 # dos instancias no procesan el mismo informe (reclamo atómico con lease).
-INFORME_HORA_CORTE = int(os.environ.get("INFORME_DIARIO_HORA_CORTE", "19"))
+INFORME_HORA_CORTE = int(os.environ.get("INFORME_DIARIO_HORA_CORTE", "18"))
+INFORME_MINUTO_CORTE = int(os.environ.get("INFORME_DIARIO_MINUTO_CORTE", "15"))
+# Todo el equipo del proyecto ve y descarga los informes de todos (no solo el suyo).
+INFORME_ROLES_VEN_TODOS = (ROLE_COORD, ROLE_JEFE, ROLE_SUB, ROLE_ESPECIALISTA)
 INFORME_IA_INTERVALO_S = float(os.environ.get("INFORME_DIARIO_IA_INTERVALO_S", "6"))
 INFORME_IA_MAX_INTENTOS = 3        # intentos de IA por informe antes del respaldo sin IA
 INFORME_IA_REINTENTOS_HTTP = 3     # reintentos por llamada ante 429/5xx
@@ -15650,7 +15653,7 @@ def _informe_toca_corte(project: dict, ahora_utc: Optional[datetime] = None) -> 
     """La fecha cuyo corte ya pasó (hoy, en la zona del proyecto, a partir de la
     hora de corte); `None` antes de la hora. Pura."""
     ahora = (ahora_utc or datetime.now(timezone.utc)).astimezone(zona_proyecto(project))
-    return ahora.date() if ahora.hour >= INFORME_HORA_CORTE else None
+    return ahora.date() if (ahora.hour, ahora.minute) >= (INFORME_HORA_CORTE, INFORME_MINUTO_CORTE) else None
 
 
 async def _informe_diario_loop() -> None:
@@ -15730,7 +15733,7 @@ async def informes_diarios_cumplimiento(pid: str, fecha: Optional[str] = Query(N
     """Tablero de cumplimiento del día (quién tiene informe, quién lo confirmó).
     Solo Coordinación / Jefe / Sub-coordinador."""
     project = await ensure_project_access(user, pid)
-    if user["role"] not in (ROLE_COORD, ROLE_JEFE, ROLE_SUB):
+    if user["role"] not in INFORME_ROLES_VEN_TODOS:
         raise HTTPException(403, "Tu rol no puede ver el cumplimiento de informes")
     f = fecha or hoy_proyecto(project).isoformat()
     docs = await db.informes_diarios.find(
@@ -15969,7 +15972,7 @@ async def informe_diario_pdf(pid: str, iid: str, fotos: bool = Query(True), user
     inf = await db.informes_diarios.find_one({"id": iid, "project_id": pid})
     if not inf:
         raise HTTPException(404, "Informe no encontrado")
-    if inf["user_id"] != user["id"] and user["role"] not in (ROLE_COORD, ROLE_JEFE, ROLE_SUB):
+    if inf["user_id"] != user["id"] and user["role"] not in INFORME_ROLES_VEN_TODOS:
         raise HTTPException(403, "No puedes descargar el informe de otro ingeniero")
     if inf["estado"] != "listo":
         raise HTTPException(409, "El informe aún no está listo")
@@ -15996,7 +15999,7 @@ async def informes_diarios_semana_pdf(
         raise HTTPException(400, "fecha inválida (YYYY-MM-DD)")
     ini, fin = _week_bounds_for(ref)
     q: dict = {"project_id": pid, "fecha": {"$gte": ini.isoformat(), "$lte": fin.isoformat()}}
-    if user["role"] in (ROLE_COORD, ROLE_JEFE, ROLE_SUB):
+    if user["role"] in INFORME_ROLES_VEN_TODOS:
         if ingeniero_id:
             q["user_id"] = ingeniero_id
     else:
@@ -16031,7 +16034,7 @@ async def informe_diario_detalle(pid: str, iid: str, user: dict = Depends(curren
     doc = await db.informes_diarios.find_one({"id": iid, "project_id": pid})
     if not doc:
         raise HTTPException(404, "Informe no encontrado")
-    if doc["user_id"] != user["id"] and user["role"] not in (ROLE_COORD, ROLE_JEFE, ROLE_SUB):
+    if doc["user_id"] != user["id"] and user["role"] not in INFORME_ROLES_VEN_TODOS:
         raise HTTPException(403, "No puedes ver el informe de otro ingeniero")
     if doc["user_id"] == user["id"] and not doc.get("visto_en") and doc["estado"] == "listo":
         doc["visto_en"] = datetime.now(timezone.utc)

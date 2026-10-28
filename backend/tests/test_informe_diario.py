@@ -1,4 +1,4 @@
-"""Informe diario por ingeniero (corte 19:00 + resumen IA): helpers puros, corte por
+"""Informe diario por ingeniero (corte 18:15 + resumen IA): helpers puros, corte por
 zona horaria y el límite de ritmo / reintentos hacia Gemini. Sin red ni Mongo."""
 import asyncio
 import os
@@ -77,10 +77,10 @@ def test_respaldo_sin_ia():
 
 def test_corte_usa_la_zona_del_proyecto():
     proj = {"zona_horaria": "America/Mexico_City"}
-    # 00:30 UTC del 23 = 18:30 del 22 en CDMX (UTC-6): todavía no es el corte
-    assert server._informe_toca_corte(proj, utc(2026, 10, 23, 0, 30)) is None
-    # 01:05 UTC del 23 = 19:05 del 22 en CDMX: toca, y es el informe DEL 22
-    assert server._informe_toca_corte(proj, utc(2026, 10, 23, 1, 5)).isoformat() == "2026-10-22"
+    # 00:10 UTC del 23 = 18:10 del 22 en CDMX (UTC-6): todavía no es el corte
+    assert server._informe_toca_corte(proj, utc(2026, 10, 23, 0, 10)) is None
+    # 00:15 UTC del 23 = 18:15 del 22 en CDMX: toca, y es el informe DEL 22
+    assert server._informe_toca_corte(proj, utc(2026, 10, 23, 0, 15)).isoformat() == "2026-10-22"
 
 
 class _Resp:

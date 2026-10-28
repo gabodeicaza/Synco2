@@ -1,5 +1,5 @@
 // Informe diario del ingeniero — Especialista y Sub-coordinador.
-// Muestra el informe generado en el corte de las 19:00 con la estructura de la plantilla de
+// Muestra el informe generado en el corte de las 18:15 con la estructura de la plantilla de
 // "Informe técnico diario de supervisión" (un bloque por reporte: estatus, actividades, fuerza de
 // trabajo, equipo, observaciones, fotos) y un resumen redactado con IA. El ingeniero lo revisa y
 // lo CONFIRMA: esa confirmación queda registrada (fecha/hora) como su responsabilidad sobre lo reportado.
@@ -18,6 +18,8 @@ import { colors, radius, spacing } from '@/src/theme';
 import { fmtFechaHora } from '@/src/utils/fechas';
 import { ROLE_SUB } from '@/src/utils/roles';
 import { downloadBlob } from '@/src/utils/downloadBlob';
+import { InformesDiariosCoordScreen } from '@/src/components/InformesDiariosCoordScreen';
+import { router, useLocalSearchParams } from 'expo-router';
 
 const DOT: Record<string, string> = { verde: '#16A34A', amarillo: '#F59E0B', rojo: '#DC2626' };
 
@@ -60,6 +62,9 @@ export function InformeDiarioScreen() {
   const [comentario, setComentario] = useState('');
   const [guardando, setGuardando] = useState(false);
   const [descargando, setDescargando] = useState(false);
+  const { vista } = useLocalSearchParams<{ vista?: string }>();
+  // Desde el menú abre directo el hub del equipo; desde el aviso de Inicio, el informe propio.
+  const [verEquipo, setVerEquipo] = useState(vista === 'equipo');
 
   const cargar = useCallback(async () => {
     if (!pid) { setLoading(false); return; }
@@ -111,6 +116,7 @@ export function InformeDiarioScreen() {
   };
 
   const confirmado = !!informe?.confirmado_en;
+  if (verEquipo) return <InformesDiariosCoordScreen projectId={pid} onBack={() => (vista === 'equipo' ? (router.canGoBack() ? router.back() : router.replace('/' as any)) : setVerEquipo(false))} />;
   return (
     <KeyboardAvoidingView style={{ flex: 1, backgroundColor: colors.bg }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <StatusBar barStyle="dark-content" />
@@ -118,12 +124,24 @@ export function InformeDiarioScreen() {
         contentContainerStyle={{ padding: spacing.md, paddingTop: insets.top + spacing.md, paddingBottom: insets.bottom + 40 }}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); cargar(); }} />}
       >
-        <Text style={styles.h1}>Informe técnico diario</Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.sm }}>
+          <Pressable
+            accessibilityRole="button" accessibilityLabel="Regresar al menú" hitSlop={10}
+            onPress={() => (router.canGoBack() ? router.back() : router.replace('/' as any))}
+          >
+            <Ionicons name="arrow-back" size={24} color={colors.primary} />
+          </Pressable>
+          <Text style={[styles.h1, { flex: 1 }]}>Informe técnico diario</Text>
+        </View>
+        <Pressable accessibilityRole="button" onPress={() => setVerEquipo(true)} style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: spacing.sm }}>
+          <Ionicons name="people-outline" size={18} color={colors.primary} />
+          <Text style={{ color: colors.primary, fontWeight: '800', fontSize: 14 }}>Ver informes de todo el equipo y descargar PDF</Text>
+        </Pressable>
         {loading ? <ActivityIndicator style={{ marginTop: 40 }} color={colors.primary} /> : null}
         {error ? <Text style={styles.error}>{error}</Text> : null}
 
         {!loading && !error && !informe ? (
-          <Text style={styles.muted}>Aún no hay un informe. Se genera automáticamente cada día a las 19:00.</Text>
+          <Text style={styles.muted}>Aún no hay un informe. Se genera automáticamente cada día a las 18:15.</Text>
         ) : null}
 
         {informe ? (

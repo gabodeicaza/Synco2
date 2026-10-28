@@ -3582,7 +3582,7 @@ export const api = {
       'POST', `/projects/${pid}/ai_summary?periodo=${periodo}`,
     ),
 
-  // Informe diario por ingeniero (corte 19:00 + resumen IA).
+  // Informe diario por ingeniero (corte 18:15 + resumen IA).
   informeDiarioMio: (pid: string, fecha?: string) =>
     request<InformeDiario | null>('GET', `/projects/${pid}/informe_diario/mio${fecha ? `?fecha=${fecha}` : ''}`),
   informeDiarioPendientes: (pid: string) =>

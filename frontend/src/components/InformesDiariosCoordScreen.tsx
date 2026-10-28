@@ -1,9 +1,10 @@
-// Informes diarios de los ingenieros — Coordinador General / Jefe de Proyecto.
+// Informes diarios de los ingenieros — hub del equipo (Coordinador, Jefe, Sub-coordinadores y Especialistas).
 // Lista, por día, el informe de cada ingeniero del proyecto (estado y si ya lo confirmó), con el PDF de
 // cada uno y el compilado de la semana (domingo a sábado) con hoja de firmas para imprimir el sábado.
 import React, { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, Pressable, RefreshControl, ScrollView, StatusBar, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { api, InformeDiario } from '@/src/api';
@@ -21,7 +22,7 @@ const ESTADO: Record<string, { txt: string; fg: string; bg: string }> = {
   sin_actividad: { txt: 'Sin reportes', fg: '#475569', bg: '#E2E8F0' },
 };
 
-export function InformesDiariosCoordScreen({ projectId }: { projectId: string }) {
+export function InformesDiariosCoordScreen({ projectId, onBack }: { projectId: string; onBack?: () => void }) {
   const insets = useSafeAreaInsets();
   const [fecha, setFecha] = useState(dayjs().format('YYYY-MM-DD'));
   const [filas, setFilas] = useState<Fila[]>([]);
@@ -67,7 +68,15 @@ export function InformesDiariosCoordScreen({ projectId }: { projectId: string })
         contentContainerStyle={{ padding: spacing.md, paddingTop: insets.top + spacing.md, paddingBottom: insets.bottom + 40 }}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); cargar(); }} />}
       >
-        <Text style={styles.h1}>Informes diarios de ingenieros</Text>
+        <View style={styles.headRow}>
+          <Pressable
+            accessibilityRole="button" accessibilityLabel="Regresar al menú" hitSlop={10}
+            onPress={() => (onBack ? onBack() : router.canGoBack() ? router.back() : router.replace('/' as any))}
+          >
+            <Ionicons name="arrow-back" size={24} color={colors.primary} />
+          </Pressable>
+          <Text style={[styles.h1, { flex: 1 }]}>Informes diarios de ingenieros</Text>
+        </View>
 
         <View style={styles.fechaRow}>
           <Pressable accessibilityRole="button" accessibilityLabel="Día anterior" onPress={() => mover(-1)} hitSlop={8}>
@@ -91,7 +100,7 @@ export function InformesDiariosCoordScreen({ projectId }: { projectId: string })
         {loading ? <ActivityIndicator style={{ marginTop: 30 }} color={colors.primary} /> : null}
         {error ? <Text style={styles.error}>{error}</Text> : null}
         {!loading && !error && !filas.length ? (
-          <Text style={styles.muted}>No hay informes de este día. Se generan automáticamente a las 19:00.</Text>
+          <Text style={styles.muted}>No hay informes de este día. Se generan automáticamente a las 18:15.</Text>
         ) : null}
         {filas.length ? <Text style={styles.resumen}>{confirmados} de {filas.length} confirmados</Text> : null}
 
@@ -123,6 +132,7 @@ export function InformesDiariosCoordScreen({ projectId }: { projectId: string })
 }
 
 const styles = StyleSheet.create({
+  headRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   h1: { fontSize: 20, fontWeight: '800', color: colors.textBody },
   fechaRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginVertical: spacing.md },
   fecha: { fontSize: 15, fontWeight: '700', color: colors.textBody, textTransform: 'capitalize' },
