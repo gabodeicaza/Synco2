@@ -300,6 +300,19 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
     }
   }
 
+  async function onAgregarEstaciones() {
+    if (!detail) return;
+    try {
+      const r = await api.agregarEstacionesPresentacion(projectId, detail.id);
+      await loadDetail(detail.id);
+      Alert.alert('Estaciones', r.agregadas
+        ? `Se agregaron ${r.agregadas} lámina${r.agregadas === 1 ? '' : 's'} (portada con render e información particular) después de "Avance de obra".`
+        : 'Ya están todas las estaciones e intertramos con su portada e información.');
+    } catch (e: any) {
+      Alert.alert('No se pudieron agregar', e?.message || 'Inténtalo nuevamente.');
+    }
+  }
+
   async function onMoveSeccion(seccion: PresentacionSeccion, dir: -1 | 1) {
     if (!detail) return;
     const idx = secciones.findIndex((s) => s.id === seccion.id);
@@ -524,6 +537,12 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
             ) : null}
             <View style={styles.sectionHeaderRow}>
               <Text style={styles.sectionTitle}>{t('presentacion.secciones')}</Text>
+              {canEditEstructura ? (
+                <Pressable accessibilityRole="button" onPress={onAgregarEstaciones} style={styles.addBtn}>
+                  <Ionicons name="business-outline" size={16} color={colors.primary} />
+                  <Text style={styles.addBtnTxt}>Estaciones</Text>
+                </Pressable>
+              ) : null}
               {canEditEstructura ? (
                 <Pressable accessibilityRole="button" onPress={() => { setInsertarDespuesDe(null); setTipoPickerOpen(true); }} style={styles.addBtn}>
                   <Ionicons name="add" size={16} color={colors.primary} />

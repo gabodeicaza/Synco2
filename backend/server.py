@@ -9756,6 +9756,53 @@ def _secciones_plantilla_semanal() -> List[dict]:
     ]
 
 
+async def _secciones_estaciones(pid: str, secciones_actuales: List[dict]) -> List[dict]:
+    """Secciones por estación / intertramo, en el orden del árbol: la portada con el
+    render ("croquis_estacion", solo si el nodo ya tiene su imagen) y la lámina de
+    "informacion_particular" ligada al nodo. Omite lo que la presentación ya trae."""
+    nodos = await db.location_nodes.find(
+        {"project_id": pid}, {"_id": 0, "id": 1, "parent_id": 1, "name": 1, "order": 1, "tipo_nodo": 1}).to_list(length=5000)
+    con_render = {n["id"] async for n in db.location_nodes.find(
+        {"project_id": pid, "cover_image": {"$nin": [None, ""]}}, {"_id": 0, "id": 1})}
+    hijos: Dict[Optional[str], List[dict]] = {}
+    for n in nodos:
+        hijos.setdefault(n.get("parent_id"), []).append(n)
+    ya_croquis = {x.get("node_id") for x in secciones_actuales if x.get("tipo") == "croquis_estacion"}
+    ya_info = {b.get("node_id") for x in secciones_actuales if x.get("tipo") == "informacion_particular"
+               for b in (x.get("bloques") or [])}
+    nuevas: List[dict] = []
+
+    def _visita(parent):
+        for n in sorted(hijos.get(parent, []), key=lambda m: (m.get("order") or 0, m.get("name") or "")):
+            if n.get("tipo_nodo") in ("estacion", "intertramo") or n["id"] in con_render:
+                if n["id"] in con_render and n["id"] not in ya_croquis:
+                    nuevas.append({"id": str(uuid.uuid4()), "tipo": "croquis_estacion", "orden": 0, "titulo": None,
+                                   "node_id": n["id"], "plano_id": None, "bloques": [], "report_ids": []})
+                if n["id"] not in ya_info:
+                    nuevas.append({"id": str(uuid.uuid4()), "tipo": "informacion_particular", "orden": 0, "titulo": None,
+                                   "node_id": None, "plano_id": None, "report_ids": [],
+                                   "bloques": [{"titulo": n.get("name") or "Estación", "node_id": n["id"],
+                                                "actividades": [], "fotos": []}]})
+            _visita(n["id"])
+
+    _visita(None)
+    return nuevas
+
+
+def _insertar_secciones_estaciones(secciones: List[dict], nuevas: List[dict]) -> List[dict]:
+    """Las pone después del divisor "AVANCE DE OBRA" (o antes del cierre / al final) y
+    renumera `orden` de todas."""
+    base = sorted(secciones, key=lambda x: x.get("orden", 0))
+    pos = next((i + 1 for i, x in enumerate(base) if x.get("tipo") == "divisor"
+                and (x.get("titulo") or "").strip().upper() == "AVANCE DE OBRA"), None)
+    if pos is None:
+        pos = next((i for i, x in enumerate(base) if x.get("tipo") == "cierre"), len(base))
+    out = base[:pos] + nuevas + base[pos:]
+    for i, x in enumerate(out):
+        x["orden"] = i
+    return out
+
+
 class PresentacionPatch(BaseModel):
     fecha: Optional[str] = None
     titulo: Optional[str] = None
@@ -9776,15 +9823,36 @@ async def create_presentacion(pid: str, body: PresentacionIn, user: dict = Depen
         "fecha": body.fecha,
         "titulo": titulo,
         "periodo_financiero": body.periodo_financiero,
-        "secciones": _secciones_plantilla_semanal() if body.plantilla == "semanal" else [],
+        "secciones": [],
         "created_by": user["id"],
         "created_by_name": user["name"],
         "created_at": now,
         "updated_at": now,
     }
+    if body.plantilla == "semanal":
+        base = _secciones_plantilla_semanal()
+        doc["secciones"] = _insertar_secciones_estaciones(base, await _secciones_estaciones(pid, base))
     await db.presentaciones.insert_one(doc)
     doc.pop("_id", None)
     return doc
+
+
+@api.post("/projects/{pid}/presentaciones/{pres_id}/secciones/estaciones")
+async def agregar_secciones_estaciones(
+    pid: str, pres_id: str, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB)),
+):
+    """Agrega la portada (render) y la información particular de cada estación e
+    intertramo que la presentación todavía no tenga."""
+    pres = await db.presentaciones.find_one({"id": pres_id, "project_id": pid})
+    if not pres:
+        raise HTTPException(404, "Presentación no existe")
+    actuales = pres.get("secciones") or []
+    nuevas = await _secciones_estaciones(pid, actuales)
+    if nuevas:
+        todas = _insertar_secciones_estaciones(actuales, nuevas)
+        await db.presentaciones.update_one(
+            {"id": pres_id}, {"$set": {"secciones": todas, "updated_at": datetime.now(timezone.utc)}})
+    return {"agregadas": len(nuevas)}
 
 
 @api.get("/projects/{pid}/presentaciones")
@@ -10921,7 +10989,13 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
             _encabezado(slide, "CROQUIS GENERAL")
             node = nodes_by_id.get(node_id) or {}
             y0 = _y_bajo_banda()
-            _add_picture_cover(slide, node.get("cover_image"), 0, y0, SW, int(SH - y0))
+            if node.get("cover_image"):
+                _add_picture_cover(slide, node.get("cover_image"), 0, y0, SW, int(SH - y0))
+            else:
+                _rect(slide, 0, y0, SW, int(SH - y0), fill_rgb=(0xF1, 0xF5, 0xF9))
+                add_text(slide, int(SW * 0.1), int(y0 + (SH - y0) * 0.45), int(SW * 0.8), _Cm(1.2),
+                         "Falta el render de la estación (súbelo en Estructura → portada del nodo)",
+                         size=14, color=MUTED_RGB, align=_PP_ALIGN.CENTER)
             add_text(slide, int(SW * 0.012), int(y0 + _Cm(0.15)), int(SW * 0.6), _Cm(1.0),
                      (node.get("name") or "Estación").upper(), size=13, bold=True, color=BRAND_RGB)
 

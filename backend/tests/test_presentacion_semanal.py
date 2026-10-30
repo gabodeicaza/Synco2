@@ -103,12 +103,20 @@ async def _scenario(tmp_path: Path, con_plantilla: bool):
          "periodo_inicio": "2026-01-01", "periodo_fin": "2026-01-31", "obra_ejecutada": "1000.00",
          "amortizacion": "100.00", "pct_amortizacion_anticipo": "10", "total_deducciones": "50.00",
          "iva": "160.00", "total_neto": "1010.00", "fecha_pago": "2026-02-02"} for n in (1, 2)])
+    await server.db.location_nodes.insert_many([
+        {"id": "est1", "project_id": pid, "parent_id": None, "name": "ESTACIÓN 1. UNIVERSIDAD", "order": 0,
+         "tipo_nodo": "estacion", "cover_image": "data:image/png;base64," + PNG_B64},
+        {"id": "est2", "project_id": pid, "parent_id": None, "name": "ESTACIÓN 2. CANTERA", "order": 1,
+         "tipo_nodo": "estacion", "cover_image": None}])
     try:
         fecha = now.date().isoformat()
         created = await server.create_presentacion(
             pid, server.PresentacionIn(project_id=pid, fecha=fecha, plantilla="semanal"), user)
         tipos = [s["tipo"] for s in sorted(created["secciones"], key=lambda s: s["orden"])]
         assert tipos[0] == "portada" and tipos[-1] == "cierre" and "reportes_semana" in tipos
+        assert tipos.count("croquis_estacion") == 1 and tipos.count("informacion_particular") == 2
+        assert tipos.index("croquis_estacion") > tipos.index("divisor")
+        assert (await server.agregar_secciones_estaciones(pid, created["id"], user))["agregadas"] == 0   # idempotente
 
         semana = await server.list_reportes_semana_presentacion(pid, created["id"], user)
         ids = [r["id"] for r in semana]
@@ -135,6 +143,7 @@ async def _scenario(tmp_path: Path, con_plantilla: bool):
         await server.db.projects.delete_one({"id": pid})
         await server.db.presentaciones.delete_many({"project_id": pid})
         await server.db.reports.delete_many({"project_id": pid})
+        await server.db.location_nodes.delete_many({"project_id": pid})
         for col in ("ambiental_auditoria", "levantamientos_sociales", "seguridad_reportes",
                     "estudios_bitacora", "pendientes_generales", "estimaciones", "seguridad_indicadores", "ambiental", "estudio_disciplina_avance", "electromecanica"):
             await server.db[col].delete_many({"project_id": pid})
@@ -164,6 +173,7 @@ def _verifica(prs):
     assert "Reporte viejo" not in todo           # fuera de la semana / no elegido
     assert "(cont.)" in todo                     # 5 fotos → segunda lámina
     assert "AVANCE DE PILONAS" in todo and "Foto 4" in todo   # lámina libre
+    assert "ESTACIÓN 1. UNIVERSIDAD" in todo and "ESTACIÓN 2. CANTERA" in todo   # láminas por estación
     assert "Gracias" in todo
     assert "Componentes Electromecánicos" in todo and "26.79%" in todo   # resumen electromecánico
     assert "FALTANTES DE OBRA" in todo and "programa de montaje" in todo  # columnas de calidad
