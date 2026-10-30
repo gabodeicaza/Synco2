@@ -21369,74 +21369,6 @@ async def export_reports_pdf(
         c.showPage()
         page_num += 1
 
-        # --- TABLA RESUMEN DE AVANCE (hasta arriba, justo tras la portada) ----
-        # SOLO la tabla ACTIVIDAD / AVANCE con el % final (columna Total) de
-        # cada fila de la Tabla de Avance Acumulado — sin título ni leyenda.
-        _res_ini_filas = [
-            f for f in (((modulos_data.get("tabla_resumen") or {}).get("blocks") or [{}])[0].get("filas") or [])
-        ]
-        if _res_ini_filas:
-            _indice_mark("resumen_avance", "Resumen de avance")
-            _banda_pdf["t"] = "TABLA RESUMEN GENERAL ACUMULADO"
-            _ri_x = 1.5 * cm
-            _ri_w = PW - 3.0 * cm
-            _ri_brand_hex = _sanitize_color_hex(project_color) or "#003366"
-            _ri_head_txt = WHITE if _hex_luminance(_ri_brand_hex) <= 0.6 else HexColor("#1A1A1A")
-            _ri_grid = HexColor("#A6A6A6")
-            _ri_fracs = (0.78, 0.22)
-            _ri_pad = 8
-            _ri_head_st = ParagraphStyle("RIHead", fontName="Roboto-Bold", fontSize=12, leading=14,
-                                         textColor=_ri_head_txt, alignment=1)
-            _ri_act_st = ParagraphStyle("RIAct", fontName="Roboto", fontSize=12, leading=15, textColor=TEXT)
-            _ri_sec_st = ParagraphStyle("RISec", fontName="Roboto-Bold", fontSize=12, leading=15, textColor=TEXT)
-            _ri_val_st = ParagraphStyle("RIVal", fontName="Roboto", fontSize=12, leading=15, textColor=TEXT, alignment=1)
-            _ri_act_w = _ri_w * _ri_fracs[0] - 2 * _ri_pad
-            _ri_rows = []  # (celdas, alto, es_seccion)
-            for f in _res_ini_filas:
-                if f.get("seccion"):
-                    p = Paragraph(_xml_escape(f["actividad"]), _ri_sec_st)
-                    _ri_rows.append(([p, ""], p.wrap(_ri_w - 2 * _ri_pad, 10000)[1] + 10, True))
-                    continue
-                t = f.get("total")
-                p = Paragraph(_xml_escape(f["actividad"]), _ri_act_st)
-                v = Paragraph(f"{t:.2f}%" if t is not None else "—", _ri_val_st)
-                _ri_rows.append(([p, v], p.wrap(_ri_act_w, 10000)[1] + 10, False))
-            _ri_head_h = 28
-            _ri_i = 0
-            while _ri_i < len(_ri_rows):
-                _ri_y = PH - TOP_MARGIN_PDF
-                _ri_avail = _ri_y - BOTTOM_MARGIN_PDF
-                _ri_used = _ri_head_h
-                _ri_pg = []
-                while _ri_i < len(_ri_rows):
-                    if _ri_used + _ri_rows[_ri_i][1] > _ri_avail and _ri_pg:
-                        break
-                    _ri_pg.append(_ri_rows[_ri_i])
-                    _ri_used += _ri_rows[_ri_i][1]
-                    _ri_i += 1
-                _ri_data = [[Paragraph("ACTIVIDAD", _ri_head_st), Paragraph("AVANCE", _ri_head_st)]]
-                _ri_hs = [_ri_head_h]
-                _ri_cmds = []
-                for k, (cells, h, es_sec) in enumerate(_ri_pg, start=1):
-                    _ri_data.append(cells)
-                    _ri_hs.append(h)
-                    if es_sec:
-                        _ri_cmds += [("SPAN", (0, k), (1, k)), ("BACKGROUND", (0, k), (1, k), HexColor("#D9D9D9"))]
-                _ri_tbl = Table(_ri_data, colWidths=[_ri_w * _ri_fracs[0], _ri_w * _ri_fracs[1]], rowHeights=_ri_hs)
-                _ri_tbl.setStyle(TableStyle([
-                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                    ("LEFTPADDING", (0, 0), (-1, -1), _ri_pad),
-                    ("RIGHTPADDING", (0, 0), (-1, -1), _ri_pad),
-                    ("TOPPADDING", (0, 0), (-1, -1), 3),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-                    ("BACKGROUND", (0, 0), (-1, 0), HexColor(_ri_brand_hex)),
-                    ("GRID", (0, 0), (-1, -1), 0.5, _ri_grid),
-                ] + _ri_cmds))
-                _, _ri_th = _ri_tbl.wrapOn(c, _ri_w, _ri_avail)
-                _ri_tbl.drawOn(c, _ri_x, _ri_y - _ri_th)
-                c.showPage()
-                page_num += 1
-
         # --- SECCIÓN "ACTIVIDADES POR ÁREA" (justo después de Datos Generales) ---
         # Tabla de 2 columnas (Ubicación / Actividad) por cada Área del
         # proyecto, sourced del hub de Actividades Generales (misma fuente
@@ -21841,14 +21773,8 @@ async def export_reports_pdf(
             c.showPage()
             page_num += 1
 
-        # "Actividades por Área" va justo DEBAJO/después de Datos Generales
-        # (spec de producto) — antes del cuerpo principal por nodo/área, e
-        # incluso si el período no tiene reportes narrativos (puede haber
-        # actividades GENERALES añadidas a mano sin reportes de campo).
-        _draw_actividades_generales_section()
-
         # --- PÁGINA DATOS DE CONTRATO (OBRA / SUPERVISIÓN) ---------------
-        # Va DESPUÉS de Datos Generales (no antes, como en el PPTX): en modo
+        # Va DESPUÉS de Datos Generales (igual que en el PPTX): en modo
         # Superposición sobre plantilla PDF las páginas 1..N de Datos
         # Generales usan el fondo "Mapa" del template (ver
         # `_overlay_pdf_on_template`) y esta página debe quedar en el lienzo
@@ -21898,6 +21824,81 @@ async def export_reports_pdf(
                     _tbl.drawOn(c, _cx, _cy - _th)
             c.showPage()
             page_num += 1
+
+        # Orden del reporte: mapa (Datos generales) → contrato de obra y
+        # supervisión → resumen de avance → resumen de actividades, y luego
+        # el cuerpo por frente. Las actividades salen incluso si el período
+        # no tiene reportes narrativos (puede haber actividades GENERALES
+        # añadidas a mano sin reportes de campo).
+        # --- TABLA RESUMEN DE AVANCE (tras el contrato) ----
+        # SOLO la tabla ACTIVIDAD / AVANCE con el % final (columna Total) de
+        # cada fila de la Tabla de Avance Acumulado — sin título ni leyenda.
+        _res_ini_filas = [
+            f for f in (((modulos_data.get("tabla_resumen") or {}).get("blocks") or [{}])[0].get("filas") or [])
+        ]
+        if _res_ini_filas:
+            _indice_mark("resumen_avance", "Resumen de avance")
+            _banda_pdf["t"] = "TABLA RESUMEN GENERAL ACUMULADO"
+            _ri_x = 1.5 * cm
+            _ri_w = PW - 3.0 * cm
+            _ri_brand_hex = _sanitize_color_hex(project_color) or "#003366"
+            _ri_head_txt = WHITE if _hex_luminance(_ri_brand_hex) <= 0.6 else HexColor("#1A1A1A")
+            _ri_grid = HexColor("#A6A6A6")
+            _ri_fracs = (0.78, 0.22)
+            _ri_pad = 8
+            _ri_head_st = ParagraphStyle("RIHead", fontName="Roboto-Bold", fontSize=12, leading=14,
+                                         textColor=_ri_head_txt, alignment=1)
+            _ri_act_st = ParagraphStyle("RIAct", fontName="Roboto", fontSize=12, leading=15, textColor=TEXT)
+            _ri_sec_st = ParagraphStyle("RISec", fontName="Roboto-Bold", fontSize=12, leading=15, textColor=TEXT)
+            _ri_val_st = ParagraphStyle("RIVal", fontName="Roboto", fontSize=12, leading=15, textColor=TEXT, alignment=1)
+            _ri_act_w = _ri_w * _ri_fracs[0] - 2 * _ri_pad
+            _ri_rows = []  # (celdas, alto, es_seccion)
+            for f in _res_ini_filas:
+                if f.get("seccion"):
+                    p = Paragraph(_xml_escape(f["actividad"]), _ri_sec_st)
+                    _ri_rows.append(([p, ""], p.wrap(_ri_w - 2 * _ri_pad, 10000)[1] + 10, True))
+                    continue
+                t = f.get("total")
+                p = Paragraph(_xml_escape(f["actividad"]), _ri_act_st)
+                v = Paragraph(f"{t:.2f}%" if t is not None else "—", _ri_val_st)
+                _ri_rows.append(([p, v], p.wrap(_ri_act_w, 10000)[1] + 10, False))
+            _ri_head_h = 28
+            _ri_i = 0
+            while _ri_i < len(_ri_rows):
+                _ri_y = PH - TOP_MARGIN_PDF
+                _ri_avail = _ri_y - BOTTOM_MARGIN_PDF
+                _ri_used = _ri_head_h
+                _ri_pg = []
+                while _ri_i < len(_ri_rows):
+                    if _ri_used + _ri_rows[_ri_i][1] > _ri_avail and _ri_pg:
+                        break
+                    _ri_pg.append(_ri_rows[_ri_i])
+                    _ri_used += _ri_rows[_ri_i][1]
+                    _ri_i += 1
+                _ri_data = [[Paragraph("ACTIVIDAD", _ri_head_st), Paragraph("AVANCE", _ri_head_st)]]
+                _ri_hs = [_ri_head_h]
+                _ri_cmds = []
+                for k, (cells, h, es_sec) in enumerate(_ri_pg, start=1):
+                    _ri_data.append(cells)
+                    _ri_hs.append(h)
+                    if es_sec:
+                        _ri_cmds += [("SPAN", (0, k), (1, k)), ("BACKGROUND", (0, k), (1, k), HexColor("#D9D9D9"))]
+                _ri_tbl = Table(_ri_data, colWidths=[_ri_w * _ri_fracs[0], _ri_w * _ri_fracs[1]], rowHeights=_ri_hs)
+                _ri_tbl.setStyle(TableStyle([
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), _ri_pad),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), _ri_pad),
+                    ("TOPPADDING", (0, 0), (-1, -1), 3),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                    ("BACKGROUND", (0, 0), (-1, 0), HexColor(_ri_brand_hex)),
+                    ("GRID", (0, 0), (-1, -1), 0.5, _ri_grid),
+                ] + _ri_cmds))
+                _, _ri_th = _ri_tbl.wrapOn(c, _ri_w, _ri_avail)
+                _ri_tbl.drawOn(c, _ri_x, _ri_y - _ri_th)
+                c.showPage()
+                page_num += 1
+
+        _draw_actividades_generales_section()
 
         if total_reportes == 0:
             # FIX (2026-09): esto antes CORTABA el documento aquí mismo (return
@@ -23444,9 +23445,8 @@ async def export_reports_pdf(
                     break  # sin progreso: evita un ciclo infinito
                 _p, _m = _np, _nm
 
-        def _emit_subtramo_summary(subtramo_id: Optional[str]) -> None:
-            """Hoja de resumen de la estación y, justo después, su Vuelo LiDAR."""
-            _emit_subtramo_summary_core(subtramo_id)
+        def _emit_lidar_estacion(subtramo_id: Optional[str]) -> None:
+            """Vuelo LiDAR de la estación (cierra el bloque del frente)."""
             items = lidar_por_sub.pop(subtramo_id, None) if subtramo_id else None
             if items:
                 nombre = (nodes_by_id.get(subtramo_id) or {}).get("name") or "Estación"
@@ -23582,7 +23582,11 @@ async def export_reports_pdf(
                 (nodes_by_id.get(n_subtramo_id) or {}).get("name") or "",
             )
             if current_subtramo_id is not None and n_subtramo_id != current_subtramo_id:
-                _emit_subtramo_summary(current_subtramo_id)
+                _emit_lidar_estacion(current_subtramo_id)  # cierra el frente anterior
+            if n_subtramo_id != current_subtramo_id:
+                # El resumen abre el bloque del frente: resumen → todo lo
+                # ocurrido → Vuelo LiDAR.
+                _emit_subtramo_summary_core(n_subtramo_id)
             current_subtramo_id = n_subtramo_id
 
             # `node_reps` = reportes narrativos (severidad filtrada, política
@@ -23806,7 +23810,7 @@ async def export_reports_pdf(
         # Flush final: la detección de transición de subtramo solo dispara al
         # pasar a un Subtramo NUEVO, así que el último subtramo procesado
         # nunca dispara el emit dentro del loop — hay que cerrarlo aquí.
-        _emit_subtramo_summary(current_subtramo_id)
+        _emit_lidar_estacion(current_subtramo_id)
 
         # === ÁREAS SIN REPORTES: Actividades Generales curadas (hub) cuyo
         # bucket de Área nunca se imprimió arriba porque ningún reporte de
@@ -29345,14 +29349,22 @@ async def export_reports_pptx(
                     break  # sin progreso: evita un ciclo infinito
                 _p, _m = _np, _nm
 
-        def _emit_subtramo_summary_slide(subtramo_id: Optional[str], forzar: bool = False) -> None:
-            """Slide de resumen de la estación y, justo después, su Vuelo LiDAR."""
-            _emit_subtramo_summary_slide_core(subtramo_id, forzar)
+        def _emit_lidar_estacion_slides(subtramo_id: Optional[str]) -> None:
+            """Vuelo LiDAR de la estación (cierra el bloque del frente)."""
             items = lidar_por_sub.pop(subtramo_id, None) if subtramo_id else None
             if items:
                 nombre = (nodes_by_id.get(subtramo_id) or {}).get("name") or "Estación"
                 _indice_mark(f"lidar:{subtramo_id}", f"Vuelo LiDAR · {nombre}")
                 _emit_modulos_closing_slides({"fotos_lidar_estacion": _lidar_modulo_estacion(nombre, items)})
+
+        def _emit_subtramo_summary_slide(subtramo_id: Optional[str], forzar: bool = False,
+                                         con_lidar: bool = True) -> None:
+            """Slide de resumen de la estación, abriendo su bloque. Con
+            `con_lidar` (frente sin actividad, que no tiene más contenido)
+            le sigue de inmediato su Vuelo LiDAR."""
+            _emit_subtramo_summary_slide_core(subtramo_id, forzar)
+            if con_lidar:
+                _emit_lidar_estacion_slides(subtramo_id)
 
         def _emit_subtramo_summary_slide_core(subtramo_id: Optional[str], forzar: bool = False) -> None:
             """Emite (si hay datos) la slide de resumen del Subtramo
@@ -29867,10 +29879,6 @@ async def export_reports_pptx(
                     i += 1
                     n_pag += 1
 
-        _emit_resumen_avance_slides()
-
-        _emit_contrato_slide()
-
         # ===== SLIDES DATOS GENERALES (ex-Mapa: array de imágenes) =========
         # Cada imagen en `general_data_images` produce UNA slide dedicada
         # sobre el membrete institucional. Retro-compat: si el array está
@@ -29921,8 +29929,11 @@ async def export_reports_pptx(
                      size=14, italic=True, color=TEXT_MUTED,
                      align=PP_ALIGN.CENTER)
 
-        # El resumen de actividades va justo DESPUÉS de Datos Generales
-        # (spec de producto) — antes del cuerpo principal por nodo/área.
+        # Orden del reporte: mapa (Datos generales) → contrato de obra y
+        # supervisión → resumen de avance → resumen de actividades, y luego
+        # el cuerpo por frente.
+        _emit_contrato_slide()
+        _emit_resumen_avance_slides()
         _emit_resumen_actividades_frente_slides()
 
         # ================================================================
@@ -30009,7 +30020,8 @@ async def export_reports_pptx(
         for n in leaf_nodes:
             n_subtramo_id = _subtramo_id_for(n["id"], nodes_by_id)
             if current_subtramo_id is not None and n_subtramo_id != current_subtramo_id:
-                _emit_subtramo_summary_slide(current_subtramo_id)
+                # Cierra el frente anterior con su Vuelo LiDAR.
+                _emit_lidar_estacion_slides(current_subtramo_id)
             current_subtramo_id = n_subtramo_id
 
             # Ver comentario equivalente en export_reports_pdf: `node_reps`
@@ -30025,6 +30037,9 @@ async def export_reports_pptx(
                 continue
             _emit_frentes_sin_actividad(n_subtramo_id)
             any_data = True
+            # El resumen del frente abre su bloque (antes cerraba): resumen →
+            # todo lo ocurrido → Vuelo LiDAR. Un frente ya impreso no repite.
+            _emit_subtramo_summary_slide(n_subtramo_id, con_lidar=False)
             node_path = path_cache.get(n["id"]) or n.get("name", "")
             _titulo_est_fotos = _estacion_titulos(
                 _subtramo_ordinal.get(n_subtramo_id),
@@ -30128,7 +30143,7 @@ async def export_reports_pptx(
                         _pair.append(None)
                     _pair_slide(_pair, _titulo_est_fotos, area_name)
 
-        _emit_subtramo_summary_slide(current_subtramo_id)
+        _emit_lidar_estacion_slides(current_subtramo_id)
         if any_data:
             _emit_frentes_sin_actividad(None)
 

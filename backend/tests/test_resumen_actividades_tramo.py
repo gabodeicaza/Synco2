@@ -208,9 +208,9 @@ def test_indice_apunta_a_la_pagina_del_reporte(formato):
     area = ent["TRAMO 1 › Estación 2 › Poste S65 · Obra Civil"]
     reporte = ent[TITULO_REPORTE]
     resumen_subtramo = ent["Resumen · Estación 2"]
-    # Orden real del documento: portadilla del área → su resumen de actividades
-    # → página del reporte → resumen del subtramo (que sigue inmediatamente).
-    assert area < reporte == resumen_subtramo - 1
+    # Orden real del documento: el resumen del frente abre su bloque →
+    # portadilla del área → su resumen de actividades → página del reporte.
+    assert resumen_subtramo < area < reporte
     # Y la diapositiva/página del subtramo es de verdad la del resumen.
     assert "ESTACIÓN 2" in paginas[resumen_subtramo - 1].upper()
 
@@ -273,12 +273,51 @@ def test_pptx_indice_va_justo_despues_de_la_portada_y_lista_el_resumen_de_avance
     assert "Resumen de avance" in slides[1]
 
 
-def test_pptx_mover_una_seccion_arriba_del_resumen_de_avance_funciona():
+def test_pptx_mover_el_resumen_de_avance_arriba_funciona():
     natural = _pptx_con_orden([])
     i_nat_res = next(i for i, t in enumerate(natural) if "ACTIVIDAD" in t and "AVANCE" in t and "TABLA" not in t)
-    movido = _pptx_con_orden(["gd:0", "gd:1", "resumen_avance"])
+    movido = _pptx_con_orden(["resumen_avance", "gd:0", "gd:1"])
     i_res = next(i for i, t in enumerate(movido) if "ACTIVIDAD" in t and "AVANCE" in t and "TABLA" not in t)
-    assert i_res > i_nat_res, "con gd:0 y gd:1 antes, el resumen de avance debe quedar más abajo"
+    assert i_res < i_nat_res, "con el resumen de avance primero en el orden guardado, debe quedar más arriba"
+
+
+@pytest.mark.parametrize("formato", ["pdf", "pptx"])
+def test_orden_del_reporte_encabezado_y_bloque_por_frente(formato):
+    """Mapa → contrato → resumen de avance → por frente: resumen de la
+    estación → todo lo ocurrido → Vuelo LiDAR de esa estación."""
+    from mongomock_motor import AsyncMongoMockClient
+
+    db = AsyncMongoMockClient()["t"]
+    old_db = server.db
+    server.db = db
+    try:
+        async def go():
+            for coro in _sembrar(db, True):
+                await coro
+            await db.projects.update_one({"id": "p1"}, {"$set": {"modulos.reportes_diarios.fotos_lidar": True}})
+            await db.fotos_lidar.insert_one({
+                "id": "l1", "project_id": "p1", "titulo": "Vuelo E2", "node_id": "p1", "orden": 0,
+                "foto_original": _PNG, "foto_original_fecha": "2026-01-05", "thumb_original": _PNG,
+                "foto_actual": _PNG, "foto_actual_fecha": "2026-06-05", "thumb_actual": _PNG,
+            })
+            user = {"id": "u1", "role": server.ROLE_COORD, "name": "Coord", "email": "c@x.mx"}
+            common = dict(pid="p1", period="today", period_type="diario", area_id=None, scope=None,
+                          recuento_nivel=None, recuento_node_ids=None, recuento_sin_datos=None, user=user)
+            if formato == "pdf":
+                resp = await server.export_reports_pdf(**common, estructura_solo=False)
+            else:
+                resp = await server.export_reports_pptx(**common)
+            return b"".join([c async for c in resp.body_iterator])
+        data = asyncio.run(go())
+    finally:
+        server.db = old_db
+    paginas = _paginas_pdf(data) if formato == "pdf" else _slides_pptx(data)
+    lineas = [ln.strip() for ln in _indice_impreso(paginas).splitlines() if ln.strip()]
+    ent = {t: int(n) for t, n in zip(lineas, lineas[1:]) if n.isdigit()}
+    orden = [ent["Presupuesto 2026"], ent["Datos de contrato"], ent["Resumen de avance"],
+             ent["Resumen · Estación 2"], ent["TRAMO 1 › Estación 2 › Poste S65 · Obra Civil"],
+             ent[TITULO_REPORTE], ent["Vuelo LiDAR · Estación 2"]]
+    assert orden == sorted(set(orden)), f"orden de páginas inesperado: {orden}"
 
 
 # ── Puro: agrupación por frente ────────────────────────────────────────────

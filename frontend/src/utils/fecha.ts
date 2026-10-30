@@ -19,12 +19,21 @@ export function isoADmy(iso?: string | null): string {
   return m ? `${m[3]}-${m[2]}-${m[1]}` : String(iso || '');
 }
 
-/** '29-09-2026' → '2026-09-29'; null si no es DD-MM-AAAA o la fecha no existe (31-02-2026). */
+/**
+ * '29-09-2026' → '2026-09-29'. Tolera separadores - / . y días/meses de un dígito
+ * ('9/3/2026'), y acepta también AAAA-MM-DD (con hora opcional). null si el texto no
+ * es una fecha o no existe (31-02-2026).
+ */
 export function dmyAIso(texto: string): string | null {
-  const m = /^(\d{2})-(\d{2})-(\d{4})$/.exec((texto || '').trim());
-  if (!m) return null;
-  const [d, mes, y] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  const t = (texto || '').trim();
+  const dmy = /^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/.exec(t);
+  const ymd = /^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:[T\s].*)?$/.exec(t);
+  let d: number, mes: number, y: number;
+  if (dmy) [d, mes, y] = [Number(dmy[1]), Number(dmy[2]), Number(dmy[3])];
+  else if (ymd) [y, mes, d] = [Number(ymd[1]), Number(ymd[2]), Number(ymd[3])];
+  else return null;
   const f = new Date(Date.UTC(y, mes - 1, d));
   if (f.getUTCFullYear() !== y || f.getUTCMonth() !== mes - 1 || f.getUTCDate() !== d) return null;
-  return `${m[3]}-${m[2]}-${m[1]}`;
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${y}-${p(mes)}-${p(d)}`;
 }
