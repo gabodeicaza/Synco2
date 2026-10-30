@@ -129,21 +129,27 @@ const ReportFeedItem = React.memo(function ReportFeedItem({ report, onPress }: {
             {r.title || r.nombre || r.titulo || r.name || r.description || r.descripcion || t('proyectoPantalla.sinTitulo')}
           </Text>
         </View>
-        {(hasIncidencia || severidadList.includes('urgente') || severidadList.includes('importante')) && (
+        {(hasIncidencia || severidadList.some((v) => ['diario', 'importante', 'urgente'].includes(v))) && (
           <View style={styles.badgeRow}>
             {hasIncidencia && (
               <View style={[styles.badge, styles.badgeIncidencia]}>
                 <Text style={styles.badgeTxt}>{t('proyectoPantalla.incidencia')}</Text>
               </View>
             )}
-            {severidadList.includes('urgente') && (
-              <View style={[styles.badge, styles.badgeUrgente]}>
-                <Text style={styles.badgeTxt}>{t('proyectoPantalla.urgente')}</Text>
+            {/* Jerarquía = informe al que va el reporte: diario → Diario, importante → Semanal, urgente → Mensual. */}
+            {severidadList.includes('diario') && (
+              <View style={[styles.badge, styles.badgeDiario]}>
+                <Text style={styles.badgeTxt}>{t('proyectoPantalla.diario')}</Text>
               </View>
             )}
             {severidadList.includes('importante') && (
               <View style={[styles.badge, styles.badgeImportante]}>
-                <Text style={styles.badgeTxt}>{t('proyectoPantalla.importante')}</Text>
+                <Text style={styles.badgeTxt}>{t('proyectoPantalla.semanal')}</Text>
+              </View>
+            )}
+            {severidadList.includes('urgente') && (
+              <View style={[styles.badge, styles.badgeUrgente]}>
+                <Text style={styles.badgeTxt}>{t('proyectoPantalla.mensual')}</Text>
               </View>
             )}
           </View>
@@ -3444,6 +3450,7 @@ const styles = StyleSheet.create({
   badgeIncidencia: { backgroundColor: '#DC2626' },
   badgeUrgente: { backgroundColor: '#DC2626' },
   badgeImportante: { backgroundColor: '#D97706' },
+  badgeDiario: { backgroundColor: '#10B981' },
   feedMetaTxt: { flex: 1, fontSize: 12, fontWeight: '600', color: '#6B7280' },
   feedDate: { fontSize: 11, fontWeight: '600', color: '#6B7280' },
   feedRowMid: { flexDirection: 'row', alignItems: 'center', gap: 6 },
