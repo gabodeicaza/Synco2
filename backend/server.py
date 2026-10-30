@@ -9637,17 +9637,21 @@ def _secciones_plantilla_semanal() -> List[dict]:
     """Esqueleto del informe semanal (ver PDF de referencia "Informe de
     Actividades"). Cada entrada se completa luego con el contenido EN VIVO
     al exportar; `reportes_semana` arranca vacía hasta que el usuario elija."""
+    # Mismo orden y mismos títulos de sección que el informe de referencia
+    # (INFORME DE AVANCES CBL4): Trazo, Financiero, Estudios y análisis, Avance
+    # de obra, Seguridad, Ambiental, Social, estudios/proyecto por disciplina,
+    # Electromecánica, Aseguramiento y control de calidad, Gracias.
     tipos = [
         ("portada", None), ("mapa_general", None),
         ("divisor", "FINANCIERO"), ("financiero", None), ("pendientes", None),
-        ("divisor", "ESTUDIOS Y ANÁLISIS"), ("seguimiento_estudios", None), ("proyecto", None),
-        ("divisor", "AVANCE DE OBRA"),
-        ("reportes_semana", None),
-        ("divisor", "SISTEMA ELECTROMECÁNICO"), ("electromecanico", None),
-        ("divisor", "CALIDAD"), ("calidad", None),
-        ("divisor", "AMBIENTAL"), ("ambiental", None),
-        ("divisor", "SOCIAL / IMPACTO URBANO"), ("social", None),
+        ("divisor", "ESTUDIOS Y ANÁLISIS"), ("seguimiento_estudios", None),
+        ("divisor", "AVANCE DE OBRA"), ("reportes_semana", None),
         ("divisor", "SEGURIDAD"), ("seguridad", None),
+        ("divisor", "AMBIENTAL"), ("ambiental", None),
+        ("divisor", "SOCIAL"), ("social", None),
+        ("divisor", "ESTUDIOS Y PROYECTO EJECUTIVO"), ("proyecto", None),
+        ("divisor", "ELECTROMECÁNICA"), ("electromecanico", None),
+        ("divisor", "ASEGURAMIENTO Y CONTROL DE CALIDAD"), ("calidad", None),
         ("cierre", None),
     ]
     return [
@@ -10141,6 +10145,23 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                         shp.element.getparent().remove(shp.element)
                     except Exception:
                         pass
+                # Fondo a nivel de slide (`<p:bg>` con imagen, p.ej. el arte de la
+                # portada/divisores): sin copiarlo las slides clonadas salían en blanco.
+                try:
+                    src_bg = source_slide._element.cSld.find(_qn("p:bg"))
+                    if src_bg is not None:
+                        new_bg = _deepcopy(src_bg)
+                        for blip in new_bg.iter(_qn("a:blip")):
+                            old_rid = blip.get(_EMBED)
+                            if old_rid:
+                                blip.set(_EMBED, new_slide.part.relate_to(
+                                    source_slide.part.related_part(old_rid), _IMG_REL))
+                        prev_bg = new_slide._element.cSld.find(_qn("p:bg"))
+                        if prev_bg is not None:
+                            new_slide._element.cSld.remove(prev_bg)
+                        new_slide._element.cSld.insert(0, new_bg)
+                except Exception:
+                    pass
                 for shp in source_slide.shapes:
                     try:
                         new_el = _deepcopy(shp.element)
@@ -10281,27 +10302,70 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                           bg=WHITE_RGB if ri % 2 else (0xF8, 0xF1, 0xF4))
             return tbl
 
+        def _cover_text_shapes(slide):
+            """Cuadros de texto de la portada de la plantilla, de arriba a abajo."""
+            sh = [x for x in slide.shapes if x.has_text_frame and x.text_frame.text.strip()]
+            return sorted(sh, key=lambda x: (x.top or 0, x.left or 0))
+
+        def _set_shape_text(shape, texto):
+            """Reemplaza el texto conservando fuente, tamaño y color de la plantilla."""
+            tf = shape.text_frame
+            par = tf.paragraphs[0]
+            runs = par.runs
+            if runs:
+                runs[0].text = texto
+                for r_ in runs[1:]:
+                    r_._r.getparent().remove(r_._r)
+            else:
+                par.add_run().text = texto
+            for extra in list(tf.paragraphs)[1:]:
+                extra._p.getparent().remove(extra._p)
+
+        def _strip_shapes(slide):
+            for shp in list(slide.shapes):
+                try:
+                    shp.element.getparent().remove(shp.element)
+                except Exception:
+                    pass
+
         def slide_portada():
             slide = _clone_cover_bg()
-            add_text(slide, _Cm(1.8), int(SH * 0.30), int(SW * 0.62), _Cm(3.2),
-                     pres.get("titulo") or "INFORME DE ACTIVIDADES", size=40, bold=True, color=COVER_FG)
-            add_text(slide, _Cm(1.8), int(SH * 0.30) + _Cm(3.3), int(SW * 0.62), _Cm(1.2),
-                     _fecha_larga(pres.get("fecha") or ""), size=22, bold=True, color=COVER_FG)
             objeto = (proj.get("objeto_contrato") or proj.get("name") or "").strip().upper()
+            textos = [pres.get("titulo") or "INFORME DE ACTIVIDADES", _fecha_larga(pres.get("fecha") or ""), objeto]
+            ts = _cover_text_shapes(slide) if tpl_cover_slide else []
+            if len(ts) >= 3:
+                # La portada de la plantilla ya trae sus cuadros (título, fecha, objeto):
+                # se rellenan en su lugar, con su tipografía, para verse igual.
+                for shp, txt in zip(ts[:3], textos):
+                    _set_shape_text(shp, txt)
+                return
+            for shp in ts:
+                shp.element.getparent().remove(shp.element)
+            add_text(slide, _Cm(1.8), int(SH * 0.30), int(SW * 0.62), _Cm(3.2),
+                     textos[0], size=40, bold=True, color=COVER_FG)
+            add_text(slide, _Cm(1.8), int(SH * 0.30) + _Cm(3.3), int(SW * 0.62), _Cm(1.2),
+                     textos[1], size=22, bold=True, color=COVER_FG)
             if objeto:
                 add_text(slide, _Cm(1.8), int(SH * 0.30) + _Cm(5.2), int(SW * 0.62), _Cm(2.2),
                          objeto, size=11, bold=True, color=COVER_FG)
 
         def slide_divisor(titulo):
             slide = _clone_cover_bg()
+            if tpl_cover_slide:
+                # Solo el arte de fondo: sin logos ni textos de la portada.
+                _strip_shapes(slide)
             add_text(slide, _Cm(1.5), int(SH / 2 - _Cm(1.2)), int(SW - _Cm(3.0)), _Cm(2.4), (titulo or "").upper(),
                      size=40, bold=True, color=COVER_FG, align=_PP_ALIGN.CENTER)
 
         def slide_cierre():
             slide = _clone_cover_bg()
+            objeto = (proj.get("objeto_contrato") or proj.get("name") or "").strip().upper()
+            if tpl_cover_slide:
+                # Conserva logos; quita los textos de la portada.
+                for shp in _cover_text_shapes(slide):
+                    shp.element.getparent().remove(shp.element)
             add_text(slide, _Cm(1.5), int(SH * 0.55), int(SW - _Cm(3.0)), _Cm(2.4), "Gracias",
                      size=40, bold=True, color=COVER_FG, align=_PP_ALIGN.CENTER)
-            objeto = (proj.get("objeto_contrato") or proj.get("name") or "").strip().upper()
             if objeto:
                 add_text(slide, _Cm(2.5), int(SH * 0.55) + _Cm(2.6), int(SW - _Cm(5.0)), _Cm(2.0), objeto,
                          size=11, bold=True, color=COVER_FG, align=_PP_ALIGN.CENTER)

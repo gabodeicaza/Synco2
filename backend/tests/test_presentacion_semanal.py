@@ -129,7 +129,7 @@ def _verifica(prs):
     assert "(cont.)" in todo                     # 5 fotos → segunda lámina
     assert "Gracias" in todo
     assert "Riego de areas verdes" in todo       # Ambiental automático
-    assert "AMBIENTAL" in todo and "SEGURIDAD" in todo and "SOCIAL / IMPACTO URBANO" in todo
+    assert "AMBIENTAL" in todo and "SEGURIDAD" in todo and "SOCIAL" in todo
     assert "AVANCE EN DICTÁMENES" in todo        # Social automático
     assert "Levantamiento de poligonal" in todo  # Estudios y proyecto ejecutivo
     assert "Programa pendiente de aval" in todo  # Pendientes generales
