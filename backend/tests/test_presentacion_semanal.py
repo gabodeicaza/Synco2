@@ -44,7 +44,7 @@ async def _scenario(tmp_path: Path, con_plantilla: bool):
     proj = {"id": pid, "name": "Proyecto X", "objeto_contrato": "OBJETO DEL CONTRATO",
             "color_institucional": "#8A1538",
             "modulos": {"reportes_semanales": {"impacto_ambiental": True, "aspectos_sociales": True,
-                                                "seguridad_higiene": True, "estudios_proyecto": True,
+                                                "seguridad_higiene": True, "estudios_proyecto": True, "supervision_ambiental": True,
                                                 "pendientes_generales": True}},
             "datos_contrato": {"obra": {"empresa": "ALFA", "contrato": "C-1", "monto": "$1.00"}}}
     if con_plantilla:
@@ -70,6 +70,16 @@ async def _scenario(tmp_path: Path, con_plantilla: bool):
     await server.db.seguridad_reportes.insert_one({
         "id": str(uuid.uuid4()), "project_id": pid, "fecha": now.date().isoformat(), "created_at": now,
         "trabajador": "Juan Perez", "contratista": "ALFA", "descripcion": "Caida leve", "severidad": "leve", "images": []})
+    await server.db.ambiental.insert_many([
+        {"id": str(uuid.uuid4()), "project_id": pid, "seccion": "informe", "nombre": "4to Informe Trimestral",
+         "avance": 10, "fecha_cierre": "2026-12-02", "orden": 0},
+        {"id": str(uuid.uuid4()), "project_id": pid, "seccion": "resarcimiento", "lugar": "Parque Cantera",
+         "cantidad": 20, "foto": PNG_B64, "pie": "Plantaciones en Parque Cantera", "orden": 0},
+        {"id": str(uuid.uuid4()), "project_id": pid, "seccion": "resarcimiento", "lugar": "Anillo Circunvalacion",
+         "cantidad": 26, "foto": PNG_B64, "pie": "Plantaciones en Anillo", "orden": 1}])
+    await server.db.seguridad_indicadores.insert_one({
+        "id": str(uuid.uuid4()), "project_id": pid, "tipo": "campo", "fecha": now.date().isoformat(),
+        "porcentaje": 69.13, "clave": "campo|x"})
     await server.db.estudios_bitacora.insert_one({
         "id": str(uuid.uuid4()), "project_id": pid, "disciplina": "topografia",
         "texto": "Levantamiento de poligonal", "created_at": now})
@@ -105,7 +115,7 @@ async def _scenario(tmp_path: Path, con_plantilla: bool):
         await server.db.presentaciones.delete_many({"project_id": pid})
         await server.db.reports.delete_many({"project_id": pid})
         for col in ("ambiental_auditoria", "levantamientos_sociales", "seguridad_reportes",
-                    "estudios_bitacora", "pendientes_generales", "estimaciones"):
+                    "estudios_bitacora", "pendientes_generales", "estimaciones", "seguridad_indicadores", "ambiental"):
             await server.db[col].delete_many({"project_id": pid})
 
 
@@ -141,6 +151,7 @@ def _verifica(prs):
     assert "Juan Perez" in todo                  # Seguridad automática
     assert "TOTAL" in todo and "2,000.00" in todo   # fila TOTAL de estimaciones
     assert "Estado Contractual y Financiero" in todo
+    assert "Cruz de seguridad" in todo and "69.13%" in todo   # láminas de Seguridad
     assert "DATOS DE CONTRATO (OBRA)" in todo    # financiero con datos de contrato
     # portada, mapa, 3 divisores, contrato, estudios, 2 láminas de reporte, cierre
     assert len(prs.slides) >= 10

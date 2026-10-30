@@ -21,6 +21,7 @@ import secrets
 import hashlib
 import smtplib
 import asyncio
+import calendar
 import unicodedata
 from pathlib import Path
 from datetime import datetime, timezone, timedelta, date
@@ -9652,6 +9653,75 @@ async def _presentacion_modulos_auto(pid: str, proj: dict, fecha_iso: str, tipos
     }
 
 
+_SEG_CRUZ_COLOR = {
+    "sin_accidentes": (0x1F, 0x5C, 0x4D), "dano_propiedad": (0x1E, 0x8A, 0xA8), "incidente": (0xE8, 0xD9, 0xA8),
+    "accidente_leve": (0x7B, 0x2D, 0x8E), "incapacitante": (0xFF, 0x00, 0x00), "grave": (0xB0, 0x00, 0x20),
+}
+_SEG_CRUZ_ORDEN = {"sin_accidentes": 0, "dano_propiedad": 1, "incidente": 2, "accidente_leve": 3, "incapacitante": 4, "grave": 5}
+
+
+async def _presentacion_seguridad_extra(pid: str, fecha_iso: str) -> Optional[dict]:
+    """Datos de las láminas "Indicadores" y "Cruz de seguridad" de la sección Seguridad:
+    cumplimiento en campo/documental, barras semanales, estado de cada día del mes,
+    accidentes del mes, pendientes administrativos, desviaciones y fotos de la semana."""
+    try:
+        corte = date.fromisoformat(fecha_iso)
+    except ValueError:
+        return None
+    regs = await db.seguridad_indicadores.find({"project_id": pid}).to_list(length=5000)
+    reps = await db.seguridad_reportes.find({"project_id": pid}).to_list(length=20000)
+    campo = _seg_campo_resumen(regs, corte)
+    mensual = _seg_doc_mensual(regs, corte)
+    semanal = _seg_doc_semanal(regs, corte)
+    mes_pref = fecha_iso[:7]
+    desde_sem = (corte - timedelta(days=6)).isoformat()
+    eventos: Dict[int, str] = {}
+    accidentes: List[list] = []
+    desviaciones: List[str] = []
+    fotos: List[dict] = []
+    for r in sorted(reps, key=lambda x: x.get("fecha") or ""):
+        f = (r.get("fecha") or "")[:10]
+        t = _seguridad_tipo_efectivo(r)
+        desc = (r.get("descripcion") or "").strip()
+        if f.startswith(mes_pref):
+            dia = int(f[8:10])
+            if _SEG_CRUZ_ORDEN.get(t, 0) >= _SEG_CRUZ_ORDEN.get(eventos.get(dia, "sin_accidentes"), 0):
+                eventos[dia] = t
+            if t != "sin_accidentes":
+                ubic = (r.get("ubicacion") or r.get("node_name") or "").strip()
+                accidentes.append([f"{f[8:10]}/{f[5:7]}/{f[:4]}" + (f"\n{ubic}" if ubic else ""), desc])
+        if desde_sem <= f <= fecha_iso:
+            if t != "sin_accidentes" and desc:
+                desviaciones.append(desc[:140])
+            for im in (r.get("images") or [])[:1]:
+                fotos.append({"photo": im, "caption": desc[:45]})
+    pend_docs = await db.pendientes_generales.find(
+        {"project_id": pid, "contrato": "seguridad", "resuelto": {"$ne": True}}).sort("orden", 1).to_list(length=50)
+    if not (campo or mensual or semanal or eventos):
+        return None
+    barras = None
+    if semanal:
+        colores = ["#9CA3AF", "#9D2148"]
+        series = [(sm["label"], colores[i % 2], [c["valores"][i] for c in semanal["categorias"]])
+                  for i, sm in enumerate(semanal["semanas"])]
+        png = await asyncio.to_thread(_grafica_barras_png, "", [c["label"] for c in semanal["categorias"]], series)
+        barras = await asyncio.to_thread(_png_bytes_to_jpeg_dataurl, png)
+    return {
+        "campo": campo["actual"] if campo else None,
+        "documental": mensual["actual"]["porcentaje"] if mensual else None,
+        "dias_sin_accidentes": _seg_dias_sin_accidentes(reps, corte, campo["dias_manual"] if campo else None),
+        "barras": barras,
+        "pendientes": [(d.get("titulo") or "") + (": " + d["descripcion"] if d.get("descripcion") else "") for d in pend_docs][:6],
+        "desviaciones": desviaciones[:5],
+        "eventos": eventos,
+        "mes_label": f"{_SEGURIDAD_MESES[corte.month - 1].lower()}",
+        "hoy": corte.day,
+        "dias_mes": calendar.monthrange(corte.year, corte.month)[1],
+        "accidentes": accidentes[-3:],
+        "fotos": fotos[:4],
+    }
+
+
 def _secciones_plantilla_semanal() -> List[dict]:
     """Esqueleto del informe semanal (ver PDF de referencia "Informe de
     Actividades"). Cada entrada se completa luego con el contenido EN VIVO
@@ -10198,6 +10268,12 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
     _tipos_auto = sorted(_tipos_presentes & set(_PRES_AUTO_MODULOS))
     modulos_auto: dict = await _presentacion_modulos_auto(pid, proj, pres["fecha"], _tipos_auto) if _tipos_auto else {}
 
+    seg_extra: Optional[dict] = None
+    if "seguridad" in _tipos_auto:
+        try:
+            seg_extra = await _presentacion_seguridad_extra(pid, pres["fecha"])
+        except Exception:
+            log.exception("Presentación %s: no se pudieron armar las láminas de seguridad", pres_id)
     contrato_bloques: list = []
     estimaciones_bloques: list = []
     pendientes_rows: list = []
@@ -10312,7 +10388,8 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
         def _clone_cover_bg():
             return _clone_slide(tpl_cover_slide) if tpl_cover_slide else _clone_membrete()
 
-        def add_text(slide, x, y, w, h, text, *, size=14, bold=False, color=(0x0F, 0x17, 0x2A), align=_PP_ALIGN.LEFT):
+        def add_text(slide, x, y, w, h, text, *, size=14, bold=False, color=(0x0F, 0x17, 0x2A), align=_PP_ALIGN.LEFT,
+                     italic=False):
             tb = slide.shapes.add_textbox(x, y, w, h)
             tf = tb.text_frame
             tf.word_wrap = True
@@ -10322,6 +10399,7 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
             run.text = str(text)
             run.font.size = _Pt(size)
             run.font.name = "Roboto"
+            run.font.italic = italic
             run.font.bold = bold
             run.font.color.rgb = _PRGBColor(*color)
             return tb
@@ -11011,18 +11089,37 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
             if texto:
                 add_text(slide, MARGIN_X, TOP_MARGIN, content_w, _Cm(0.9), texto, size=14, bold=True, color=color or BRAND_RGB)
 
+        def _banda(modulo, heading):
+            """Título de la franja superior según la lámina (como en la referencia:
+            MEDIO AMBIENTE, LEVANTAMIENTOS NOTARIALES, INDICADORES SEGURIDAD E HIGIENE...)."""
+            h = (heading or "").upper()
+            if modulo == "SUPERVISIÓN AMBIENTAL":
+                return "SUPERVISIÓN AMBIENTAL" if h.startswith("SEGUIMIENTO AL CUMPLIMIENTO") else "MEDIO AMBIENTE"
+            if modulo == "ASPECTOS SOCIALES":
+                if "SALVAMENTO" in h or "ARQUEOL" in h:
+                    return "SALVAMENTO ARQUEOLÓGICO"
+                if "LEVANT" in h or "DICT" in h:
+                    return "LEVANTAMIENTOS NOTARIALES"
+            if modulo == "CUMPLIMIENTO SEGURIDAD E HIGIENE" and (
+                    h.startswith("CUMPLIMIENTO") or h.startswith("PORCENTAJE DE CUMPLIMIENTO")):
+                return "INDICADORES SEGURIDAD E HIGIENE"
+            return modulo
+
         def _slides_bloques(modulo_titulo, bloques):
             last = None
+            _ult_h = [""]
             for b in bloques:
                 t = b.get("type")
                 heading = b.get("heading")
+                if heading:
+                    _ult_h[0] = heading
                 body_y = int(TOP_MARGIN + (_Cm(1.1) if heading else 0))
                 body_h = int(SH - BOTTOM_MARGIN - body_y)
                 if t == "summary":
                     txt = b.get("text") or ""
                     if last is None:
                         last = _clone_membrete()
-                        _encabezado(last, modulo_titulo)
+                        _encabezado(last, _banda(modulo_titulo, _ult_h[0]))
                     add_text(last, MARGIN_X, int(SH - BOTTOM_MARGIN - _Cm(1.0)), content_w, _Cm(0.9), txt,
                              size=12, bold=True, color=BRAND_RGB)
                 elif t == "table":
@@ -11030,7 +11127,7 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                     fr = b.get("col_widths") or [1.0] * len(headers)
                     for k in range(0, max(len(rows), 1), 12):
                         last = _clone_membrete()
-                        _encabezado(last, modulo_titulo)
+                        _encabezado(last, _banda(modulo_titulo, _ult_h[0]))
                         _auto_titulo(last, heading)
                         chunk = rows[k:k + 12]
                         if not chunk:
@@ -11040,7 +11137,7 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                             _tabla(last, MARGIN_X, body_y, content_w, headers, chunk, fr, size=9, row_h=_Cm(0.9), head_h=_Cm(1.0))
                 elif t == "imagen":
                     last = _clone_membrete()
-                    _encabezado(last, modulo_titulo)
+                    _encabezado(last, _banda(modulo_titulo, _ult_h[0]))
                     _auto_titulo(last, heading)
                     cap = b.get("caption") or ""
                     _add_picture_fit(last, b.get("imagen"), MARGIN_X, body_y, content_w, int(body_h - (_Cm(1.0) if cap else 0)))
@@ -11052,7 +11149,7 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                     hcol = {"good": GREEN_RGB, "bad": RED_RGB}.get(b.get("heading_color"), BRAND_RGB)
                     for k in range(0, max(len(items), 1), 7):
                         last = _clone_membrete()
-                        _encabezado(last, modulo_titulo)
+                        _encabezado(last, _banda(modulo_titulo, _ult_h[0]))
                         _auto_titulo(last, heading, hcol)
                         chunk = items[k:k + 7]
                         if not chunk:
@@ -11079,28 +11176,37 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                 elif t == "fotos_comparativa":
                     for it in b.get("items") or []:
                         last = _clone_membrete()
-                        _encabezado(last, modulo_titulo)
-                        _auto_titulo(last, it.get("titulo"))
-                        gap = _Cm(0.4)
+                        _encabezado(last, _banda(modulo_titulo, _ult_h[0]))
+                        # Barra vino con el título y fotos lado a lado con su texto debajo,
+                        # separadas por una línea vertical (como "Registro fotográfico").
+                        bar_y = int(_Cm(2.5))
+                        titulo_it = (it.get("desc_encabezado") or it.get("titulo") or "").upper()
+                        if titulo_it:
+                            _rect(last, MARGIN_X, bar_y, content_w, _Cm(0.7), fill_rgb=BRAND_RAW_RGB)
+                            add_text(last, MARGIN_X, bar_y, content_w, _Cm(0.7), titulo_it, size=11, bold=True,
+                                     color=WHITE_RGB, align=_PP_ALIGN.CENTER)
+                        by = int(bar_y + _Cm(1.0))
+                        gap = _Cm(0.8)
                         hay_b = bool(it.get("actual"))
                         pw = int((content_w - gap) / 2) if hay_b else content_w
-                        ph = int(body_h - _Cm(1.6))
-                        _add_picture_fit(last, it.get("original"), MARGIN_X, body_y, pw, ph)
-                        add_text(last, MARGIN_X, int(body_y + ph + _Cm(0.1)), pw, _Cm(1.3),
+                        ph = int(SH - by - BOTTOM_MARGIN - _Cm(2.2))
+                        _add_picture_fit(last, it.get("original"), MARGIN_X, by, pw, ph)
+                        add_text(last, MARGIN_X, int(by + ph + _Cm(0.15)), pw, _Cm(2.0),
                                  " · ".join(x for x in [it.get("desc_original"), it.get("etiqueta_original")] if x),
-                                 size=10, color=TEXT_RGB, align=_PP_ALIGN.CENTER)
+                                 size=10, color=TEXT_RGB, italic=True)
                         if hay_b:
                             bx = int(MARGIN_X + pw + gap)
-                            _add_picture_fit(last, it.get("actual"), bx, body_y, pw, ph)
-                            add_text(last, bx, int(body_y + ph + _Cm(0.1)), pw, _Cm(1.3),
+                            _rect(last, int(MARGIN_X + pw + gap / 2 - _Pt(1)), by, _Pt(2), int(ph + _Cm(2.0)), fill_rgb=BRAND_RAW_RGB)
+                            _add_picture_fit(last, it.get("actual"), bx, by, pw, ph)
+                            add_text(last, bx, int(by + ph + _Cm(0.15)), pw, _Cm(2.0),
                                      " · ".join(x for x in [it.get("desc_actual"), it.get("etiqueta_actual")] if x),
-                                     size=10, color=TEXT_RGB, align=_PP_ALIGN.CENTER)
+                                     size=10, color=TEXT_RGB, italic=True)
                 elif t == "estudios_avances":
                     for g in b.get("grupos") or []:
                         items = g.get("items") or []
                         for k in range(0, max(len(items), 1), 9):
                             last = _clone_membrete()
-                            _encabezado(last, modulo_titulo)
+                            _encabezado(last, _banda(modulo_titulo, _ult_h[0]))
                             _auto_titulo(last, (g.get("disciplina") or "").upper() + (" (cont.)" if k else ""))
                             tb = last.shapes.add_textbox(MARGIN_X, int(TOP_MARGIN + _Cm(1.1)), content_w,
                                                          int(SH - BOTTOM_MARGIN - TOP_MARGIN - _Cm(1.1)))
@@ -11120,14 +11226,14 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                             for r in (b.get("rows") or [])]
                     for k in range(0, max(len(rows), 1), 8):
                         last = _clone_membrete()
-                        _encabezado(last, modulo_titulo)
+                        _encabezado(last, _banda(modulo_titulo, _ult_h[0]))
                         _auto_titulo(last, heading or "REGISTRO DE ACCIDENTES")
                         _tabla(last, MARGIN_X, body_y if heading else int(TOP_MARGIN + _Cm(1.1)), content_w,
                                ["FECHA", "TRABAJADOR", "CONTRATISTA", "REGISTRO", "UBICACIÓN", "DESCRIPCIÓN", "SEGUIMIENTO"],
                                rows[k:k + 8], [0.09, 0.13, 0.12, 0.11, 0.14, 0.24, 0.17], size=8, row_h=_Cm(1.6), head_h=_Cm(1.0))
                 elif t == "seguridad_indicadores":
                     last = _clone_membrete()
-                    _encabezado(last, modulo_titulo)
+                    _encabezado(last, _banda(modulo_titulo, _ult_h[0]))
                     _auto_titulo(last, b.get("subtitulo") or "ACCIONES CORRECTIVAS PENDIENTES")
                     items = b.get("items") or []
                     tb = last.shapes.add_textbox(MARGIN_X, int(TOP_MARGIN + _Cm(1.1)), content_w, int(SH - BOTTOM_MARGIN - TOP_MARGIN - _Cm(1.1)))
@@ -11142,8 +11248,139 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                         r1.font.name = "Roboto"
                         r1.font.color.rgb = _PRGBColor(*TEXT_RGB)
 
+        def _marco(slide, x, y, w, h):
+            box = slide.shapes.add_shape(_MSO_SHAPE.ROUNDED_RECTANGLE, x, y, w, h)
+            box.shadow.inherit = False
+            box.fill.background()
+            box.line.color.rgb = _PRGBColor(0xC8, 0xC8, 0xC8)
+            box.line.width = _Pt(1.25)
+            try:
+                box.adjustments[0] = 0.04
+            except Exception:
+                pass
+
+        def _vinetas(slide, x, y, w, h, items, size=10):
+            tb = slide.shapes.add_textbox(x, y, w, h)
+            tf = tb.text_frame
+            tf.word_wrap = True
+            for li, txt in enumerate(items):
+                par = tf.paragraphs[0] if li == 0 else tf.add_paragraph()
+                par.space_after = _Pt(3)
+                r1 = par.add_run()
+                r1.text = "• " + str(txt)
+                r1.font.size = _Pt(size)
+                r1.font.name = "Roboto"
+                r1.font.color.rgb = _PRGBColor(*TEXT_RGB)
+
+        def slide_seguridad_extra():
+            """Dos láminas de la referencia: INDICADORES (barras de cumplimiento, pendientes,
+            desviaciones y tres cifras) y la CRUZ DE SEGURIDAD del mes con sus accidentes."""
+            x = seg_extra
+            # --- Indicadores ---
+            sl = _clone_membrete()
+            _encabezado(sl, "INDICADORES SEGURIDAD E HIGIENE")
+            top = int(SH * 0.14)
+            izq_w = int(content_w * 0.66)
+            alto_graf = int(SH * 0.58)
+            _marco(sl, MARGIN_X, top, izq_w, alto_graf)
+            add_text(sl, MARGIN_X, int(top + _Cm(0.2)), izq_w, _Cm(1.0), "Cumplimiento en campo semanal", size=16,
+                     color=BRAND_RGB, align=_PP_ALIGN.CENTER)
+            if x.get("barras"):
+                _add_picture_fit(sl, x["barras"], int(MARGIN_X + _Cm(0.3)), int(top + _Cm(1.3)), int(izq_w - _Cm(0.6)),
+                                 int(alto_graf - _Cm(1.6)))
+            else:
+                add_text(sl, MARGIN_X, int(top + alto_graf / 2), izq_w, _Cm(1), "Sin captura semanal de cumplimiento.",
+                         size=12, color=MUTED_RGB, align=_PP_ALIGN.CENTER)
+            dx = int(MARGIN_X + izq_w + _Cm(0.6))
+            dw = int(content_w - izq_w - _Cm(0.6))
+            add_text(sl, dx, top, dw, _Cm(0.9), "Pendientes administrativos", size=14, bold=True, color=BRAND_RGB)
+            _vinetas(sl, dx, int(top + _Cm(1.0)), dw, int(alto_graf * 0.42), x.get("pendientes") or ["Sin pendientes."], size=9)
+            y2 = int(top + alto_graf * 0.5)
+            add_text(sl, dx, y2, dw, _Cm(0.9), "Desviaciones detectadas", size=14, bold=True, color=BRAND_RGB)
+            _vinetas(sl, dx, int(y2 + _Cm(1.0)), dw, int(alto_graf * 0.45), x.get("desviaciones") or ["Sin desviaciones en la semana."], size=9)
+            ky = int(top + alto_graf + _Cm(0.5))
+            kh = int(SH - ky - _Cm(1.2))
+            kw = int((content_w - _Cm(0.8) * 2) / 3)
+            dias = x.get("dias_sin_accidentes")
+            kpis = [
+                ("Días sin accidentes", f"{dias}" if dias is not None else "—", (0x1F, 0x5C, 0x4D)),
+                ("Cumplimiento en campo", f"{x['campo']:g}%" if x.get("campo") is not None else "—", (0x2F, 0x75, 0xB5)),
+                ("Documental (SSySO)", f"{x['documental']:g}%" if x.get("documental") is not None else "—", BRAND_RAW_RGB),
+            ]
+            for i, (lbl, val, col) in enumerate(kpis):
+                kx = int(MARGIN_X + i * (kw + _Cm(0.8)))
+                bx = sl.shapes.add_shape(_MSO_SHAPE.ROUNDED_RECTANGLE, kx, ky, kw, kh)
+                bx.shadow.inherit = False
+                bx.fill.background()
+                bx.line.color.rgb = _PRGBColor(*col)
+                bx.line.width = _Pt(2)
+                try:
+                    bx.adjustments[0] = 0.06
+                except Exception:
+                    pass
+                add_text(sl, kx, int(ky + _Cm(0.15)), kw, _Cm(0.9), lbl, size=13, color=col, align=_PP_ALIGN.CENTER)
+                add_text(sl, kx, int(ky + _Cm(1.0)), kw, int(kh - _Cm(1.1)), val, size=28, bold=True, color=col, align=_PP_ALIGN.CENTER)
+
+            # --- Cruz de seguridad ---
+            sl = _clone_membrete()
+            _encabezado(sl, "CUMPLIMIENTO SEGURIDAD E HIGIENE")
+            top = int(SH * 0.14)
+            izq_w = int(content_w * 0.5)
+            _marco(sl, MARGIN_X, top, izq_w, int(SH - top - _Cm(1.2)))
+            add_text(sl, MARGIN_X, int(top + _Cm(0.1)), izq_w, _Cm(0.9), f"Cruz de seguridad {x['mes_label']}", size=14,
+                     color=BRAND_RGB, align=_PP_ALIGN.CENTER)
+            cel = int(_Cm(1.5))
+            filas_dias = [(range(1, 4), 3), (range(4, 7), 3), (range(7, 16), 0), (range(16, 25), 0), (range(25, 28), 3), (range(28, 32), 3)]
+            ox = int(MARGIN_X + (izq_w - cel * 9) / 2)
+            oy = int(top + _Cm(1.2))
+            for ri, (dias_fila, col0) in enumerate(filas_dias):
+                for ci, dia in enumerate(dias_fila):
+                    if dia > x["dias_mes"]:
+                        continue
+                    if dia > x["hoy"]:
+                        rgb = (0xA6, 0xA6, 0xA6)
+                    else:
+                        rgb = _SEG_CRUZ_COLOR.get(x["eventos"].get(dia, "sin_accidentes"), _SEG_CRUZ_COLOR["sin_accidentes"])
+                    cx_, cy_ = int(ox + (col0 + ci) * cel), int(oy + ri * cel)
+                    _rect(sl, cx_, cy_, cel, cel, fill_rgb=rgb)
+                    luz = rgb[0] * 0.3 + rgb[1] * 0.6 + rgb[2] * 0.1 > 190
+                    add_text(sl, cx_, cy_, cel, cel, str(dia), size=9, bold=True,
+                             color=TEXT_RGB if luz else WHITE_RGB, align=_PP_ALIGN.CENTER)
+            ly = int(oy + 4 * cel)
+            add_text(sl, int(MARGIN_X + _Cm(0.4)), int(ly - _Cm(0.1)), _Cm(4), _Cm(0.6), "Tipo de evento", size=10, bold=True, color=BRAND_RGB)
+            for li, (lbl, key) in enumerate((("Sin accidentes", "sin_accidentes"), ("Daño a la propiedad", "dano_propiedad"),
+                                              ("Incidente", "incidente"), ("Primer auxilio", "accidente_leve"),
+                                              ("Incapacitante", "incapacitante"))):
+                yy = int(ly + _Cm(0.55) + li * _Cm(0.55))
+                pt = sl.shapes.add_shape(_MSO_SHAPE.OVAL, int(MARGIN_X + _Cm(0.5)), int(yy + _Cm(0.08)), _Cm(0.35), _Cm(0.35))
+                pt.shadow.inherit = False
+                pt.fill.solid()
+                pt.fill.fore_color.rgb = _PRGBColor(*_SEG_CRUZ_COLOR[key])
+                pt.line.fill.background()
+                add_text(sl, int(MARGIN_X + _Cm(1.0)), yy, _Cm(4.2), _Cm(0.55), lbl, size=9, color=TEXT_RGB)
+            if x.get("accidentes"):
+                ty = int(oy + 6 * cel + _Cm(0.5))
+                _tabla(sl, int(MARGIN_X + _Cm(0.3)), ty, int(izq_w - _Cm(0.6)), ["FECHA / UBICACIÓN", "DESCRIPCIÓN"],
+                       [[a_[0], a_[1][:230]] for a_ in x["accidentes"]], [0.22, 0.78], size=8,
+                       row_h=_Cm(1.15), head_h=_Cm(0.6))
+            rx = int(MARGIN_X + izq_w + _Cm(0.6))
+            rw = int(content_w - izq_w - _Cm(0.6))
+            add_text(sl, rx, top, rw, _Cm(1.0), "Acciones preventivas implementadas", size=16, color=BRAND_RGB)
+            if x.get("fotos"):
+                _foto_grid(sl, x["fotos"], rx, int(top + _Cm(1.3)), rw, int(SH - top - _Cm(2.5) - _Cm(1.2)),
+                           cols=1 if len(x["fotos"]) == 1 else 2)
+
+        def _dup_seguridad(b):
+            return ((b.get("type") == "imagen" and (b.get("heading") or "") in (
+                        "CUMPLIMIENTO EN CAMPO", "CUMPLIMIENTO DOCUMENTAL", "PORCENTAJE DE CUMPLIMIENTO POR ÁREA"))
+                    or (b.get("type") == "summary" and (b.get("text") or "").startswith("DÍAS SIN ACCIDENTES")))
+
         def slide_auto(tipo):
+            if tipo == "seguridad" and seg_extra:
+                slide_seguridad_extra()
             for modulo_titulo, bloques in (modulos_auto.get(tipo) or []):
+                if tipo == "seguridad" and seg_extra:
+                    bloques = [b_ for b_ in bloques if not _dup_seguridad(b_)]
                 _slides_bloques(modulo_titulo, bloques)
 
         _auto_tipos = set(_PRES_AUTO_MODULOS)
@@ -11153,7 +11390,7 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
             if tipo == "divisor":
                 # No imprime un divisor cuya sección automática siguiente no trae nada.
                 sig = secciones[s_idx + 1].get("tipo") if s_idx + 1 < len(secciones) else None
-                if sig in _auto_tipos and not modulos_auto.get(sig):
+                if sig in _auto_tipos and not modulos_auto.get(sig) and not (sig == "seguridad" and seg_extra):
                     continue
             if tipo == "portada":
                 slide_portada()
