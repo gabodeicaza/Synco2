@@ -2482,7 +2482,7 @@ async def startup_event():
     asyncio.create_task(_meeting_reminder_loop())
     # Loop en segundo plano: clima automático cada hora por Estación.
     asyncio.create_task(_clima_auto_loop())
-    # Loop en segundo plano: corte de las 18:15 -> informe diario por ingeniero (IA).
+    # Loop en segundo plano: corte de las 18:30 -> informe diario por ingeniero (IA).
     asyncio.create_task(_informe_diario_loop())
 
     log.info("[startup] Dirac ready")
@@ -15352,7 +15352,7 @@ async def _meeting_reminder_loop() -> None:
         await asyncio.sleep(300)
 
 
-# === INFORME DIARIO POR INGENIERO (corte 18:15 + resumen con IA) =============
+# === INFORME DIARIO POR INGENIERO (corte 18:30 + resumen con IA) =============
 # A la hora de corte (zona del PROYECTO) se arma, por cada ingeniero
 # (especialista / sub-coordinador), su informe del día con la estructura de la
 # plantilla "Informe técnico diario de supervisión": un bloque por reporte de
@@ -15369,7 +15369,7 @@ async def _meeting_reminder_loop() -> None:
 # (`informes_diarios`, estado pendiente→listo), así que sobrevive reinicios y
 # dos instancias no procesan el mismo informe (reclamo atómico con lease).
 INFORME_HORA_CORTE = int(os.environ.get("INFORME_DIARIO_HORA_CORTE", "18"))
-INFORME_MINUTO_CORTE = int(os.environ.get("INFORME_DIARIO_MINUTO_CORTE", "15"))
+INFORME_MINUTO_CORTE = int(os.environ.get("INFORME_DIARIO_MINUTO_CORTE", "30"))
 # Todo el equipo del proyecto ve y descarga los informes de todos (no solo el suyo).
 INFORME_ROLES_VEN_TODOS = (ROLE_COORD, ROLE_JEFE, ROLE_SUB, ROLE_ESPECIALISTA)
 INFORME_IA_INTERVALO_S = float(os.environ.get("INFORME_DIARIO_IA_INTERVALO_S", "6"))
@@ -15739,7 +15739,25 @@ async def informes_diarios_cumplimiento(pid: str, fecha: Optional[str] = Query(N
     docs = await db.informes_diarios.find(
         {"project_id": pid, "fecha": f}, {"_id": 0, "bloques": 0, "lease_hasta": 0},
     ).sort("user_name", 1).to_list(length=2000)
-    return {"fecha": f, "informes": docs}
+    await _informe_poner_puestos(docs)
+    return {"fecha": f, "informes": docs, "clave": _informe_limpia(project.get("informe_diario_clave"), 120),
+            "clave_sugerida": _informe_clave_sugerida(project, date.fromisoformat(f))}
+
+
+class InformeClaveIn(BaseModel):
+    clave: str = ""
+
+
+@api.put("/projects/{pid}/informe_diario/clave")
+async def informe_diario_clave(pid: str, body: InformeClaveIn, user: dict = Depends(current_user)):
+    """Fija la clave de la portada de los informes diarios. Solo el Coordinador General; vacía = usar la sugerida."""
+    await ensure_project_access(user, pid)
+    _assert_write_allowed(user)
+    if user["role"] != ROLE_COORD:
+        raise HTTPException(403, "Solo el Coordinador General puede cambiar la clave")
+    clave = _informe_limpia(body.clave, 120)
+    await db.projects.update_one({"id": pid}, {"$set": {"informe_diario_clave": clave or None}})
+    return {"clave": clave}
 
 
 @api.post("/projects/{pid}/informe_diario/generar")
@@ -15768,14 +15786,24 @@ def _informe_cargo(inf: dict) -> str:
 
 
 async def _informe_poner_puestos(docs: list) -> None:
-    """Rellena `user_puesto` en cada informe con el puesto ACTUAL del usuario (así también salen
-    los informes ya generados y un cambio de puesto se refleja al reimprimir)."""
+    """Rellena `user_puesto`, `area_id` y `area_name` en cada informe con los datos ACTUALES del
+    usuario (así también salen los informes ya generados y un cambio de puesto o de área se
+    refleja al reimprimir)."""
     ids = list({d["user_id"] for d in docs if d.get("user_id")})
     if not ids:
         return
-    puestos = {u["id"]: u.get("puesto") async for u in db.users.find({"id": {"$in": ids}}, {"_id": 0, "id": 1, "puesto": 1})}
+    usuarios = {u["id"]: u async for u in db.users.find(
+        {"id": {"$in": ids}}, {"_id": 0, "id": 1, "puesto": 1, "area_id": 1})}
+    area_ids = list({u["area_id"] for u in usuarios.values() if u.get("area_id")})
+    areas = {a["id"]: a.get("name") or "" async for a in db.areas.find(
+        {"id": {"$in": area_ids}}, {"_id": 0, "id": 1, "name": 1})} if area_ids else {}
     for d in docs:
-        d["user_puesto"] = puestos.get(d.get("user_id")) or d.get("user_puesto")
+        u = usuarios.get(d.get("user_id")) or {}
+        d["user_puesto"] = u.get("puesto") or d.get("user_puesto")
+        d["area_id"] = u.get("area_id")
+        d["area_name"] = areas.get(u.get("area_id")) or ""
+
+
 INFORME_PDF_MAX_FOTOS = 4
 _DIAS_ES = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
 
@@ -15788,19 +15816,61 @@ def _informe_fecha_larga(f: str) -> str:
     return f"{_DIAS_ES[d.weekday()]} {d.day:02d}/{d.month:02d}/{d.year}"
 
 
+def _informe_clave_sugerida(proj: dict, fin: date) -> str:
+    """Clave por omisión, con el formato de las minutas: "{PREFIJO} {AAMMDD}-A". Pura."""
+    return f"{(proj.get('minuta_code_prefix') or '').strip().upper()} {fin.strftime('%y%m%d')}-A".strip()
+
+
+def _informe_clave(proj: dict, fin: date) -> str:
+    """Clave que se imprime en la portada: la que fijó el Coordinador General; si no hay, la sugerida. Pura."""
+    return _informe_limpia(proj.get("informe_diario_clave"), 120) or _informe_clave_sugerida(proj, fin)
+
+
+def _informe_portada_datos(proj: dict, informes: list, ini: date, fin: date, area_nombre: str = "",
+                           persona: str = "", hoy: Optional[date] = None) -> dict:
+    """Textos de la portada del informe (formato Dirac: contrato, objeto, área, periodo y tabla de
+    identificación). `area_nombre` / `persona` vacíos = sin filtro. Pura."""
+    meses = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre",
+             "octubre", "noviembre", "diciembre"]
+    larga = lambda d: f"{d.day:02d} de {meses[d.month - 1]} de {d.year}"
+    if ini == fin:
+        periodo = f"{larga(ini)}"
+    elif (ini.month, ini.year) == (fin.month, fin.year):
+        periodo = f"Del {ini.day:02d} al {larga(fin)}"
+    else:
+        periodo = f"Del {larga(ini)} al {larga(fin)}"
+    areas = list(dict.fromkeys(i.get("area_name") for i in informes if i.get("area_name")))
+    if persona:
+        grupo, nombre = (area_nombre or (areas[0] if len(areas) == 1 else "")), f"Informe diario de {persona}"
+    elif area_nombre:
+        grupo, nombre = area_nombre, f"Informes diarios del área {area_nombre}"
+    else:
+        grupo, nombre = "Todas las áreas", "Informes diarios de supervisión"
+    return {
+        "contrato": _informe_limpia(proj.get("contract_number"), 120),
+        "objeto": _informe_limpia(proj.get("objeto_contrato") or proj.get("description"), 500),
+        "cliente": _informe_limpia(proj.get("cliente_principal"), 120),
+        "titulo_area": (grupo or "").upper(), "persona": persona,
+        "periodo": periodo, "fecha_emision": larga(hoy or fin), "proyecto": _informe_limpia(proj.get("name"), 200),
+        "nombre_informe": nombre, "constructora": _informe_limpia(proj.get("constructora"), 120),
+        "clave": _informe_clave(proj, fin),
+    }
+
+
 def _informe_pdf_bytes(informes: list, proj: dict, fotos: Dict[str, list], hoja_firmas: Optional[list] = None,
-                       titulo_hoja: str = "") -> bytes:
+                       titulo_hoja: str = "", portada: Optional[dict] = None) -> bytes:
     """PDF (A4 vertical) con un informe por sección en el formato de la plantilla:
     encabezado, resumen, bloque por reporte de campo, fotos y firmas. Si se pasa
     `hoja_firmas` ([{nombre, rol, dias, confirmados, sin_actividad}]) agrega al final la
-    hoja de firmas semanal. Bloqueante (reportlab/PIL): llamar con asyncio.to_thread."""
+    hoja de firmas semanal. Si se pasa `portada` (ver `_informe_portada_datos`) abre con la
+    portada institucional. Bloqueante (reportlab/PIL): llamar con asyncio.to_thread."""
     import base64
     from xml.sax.saxutils import escape
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.units import cm
     from reportlab.lib.colors import HexColor, white
     from reportlab.lib.styles import ParagraphStyle
-    from reportlab.lib.enums import TA_CENTER
+    from reportlab.lib.enums import TA_CENTER, TA_RIGHT
     from reportlab.platypus import (BaseDocTemplate, PageTemplate, Frame, Paragraph, Spacer, Table, TableStyle,
                                     PageBreak, KeepTogether, Image as RLImage)
     from PIL import Image as PILImage
@@ -15837,6 +15907,52 @@ def _informe_pdf_bytes(informes: list, proj: dict, fotos: Dict[str, list], hoja_
             return RLImage(buf, width=w * sc, height=h * sc)
         except Exception:
             return None
+
+    def portada_flow(d: dict) -> list:
+        """Portada institucional (misma estructura que la portada Dirac): cabecera con cliente,
+        título y logo; caja central con contrato, objeto, área y periodo; tabla de identificación."""
+        c_tit = P("pt", fontName="Roboto-Bold", fontSize=15, leading=19, alignment=TA_CENTER)
+        c_obj = P("po", fontName="Roboto-Bold", fontSize=12.5, leading=16, alignment=TA_CENTER)
+        c_are = P("pa", fontName="Roboto-Bold", fontSize=17, leading=21, alignment=TA_CENTER, textColor=HexColor(color))
+        c_per = P("pe", fontSize=12, leading=15, alignment=TA_RIGHT)
+        c_pie = P("pf", fontSize=7, leading=9, textColor=HexColor("#475569"))
+        c_cel = P("pc", fontSize=10.5, leading=13)
+        logo = None
+        if d.get("logo"):
+            try:
+                im = PILImage.open(io.BytesIO(d["logo"]))
+                lw, lh = im.size
+                sc = min(5.0 * cm / lw, 2.2 * cm / lh)
+                logo = RLImage(io.BytesIO(d["logo"]), width=lw * sc, height=lh * sc, hAlign="RIGHT")
+            except Exception:
+                logo = None
+        cab = Table([[Paragraph(esc(d.get("cliente")), P("pcl", fontName="Roboto-Bold", fontSize=10, leading=12)),
+                      Paragraph("Informe", P("pit", fontSize=22, leading=26, alignment=TA_CENTER)),
+                      logo or Paragraph(esc(d.get("constructora")), P("pcn", fontName="Roboto-Bold", fontSize=12, leading=14, alignment=TA_RIGHT))]],
+                    colWidths=[W * 0.32, W * 0.34, W * 0.34], rowHeights=[2.6 * cm])
+        cab.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE")]))
+        centro = [Paragraph(f"CONTRATO No. {esc(d.get('contrato'))}", c_tit)]
+        objeto = [Paragraph(esc(d.get("objeto")).upper(), c_obj)] if d.get("objeto") else [""]
+        area = [Paragraph(esc(d.get("titulo_area")), c_are)]
+        if d.get("persona"):
+            area.append(Paragraph(esc(d["persona"]).upper(), c_obj))
+        area.append(Spacer(1, 6))
+        area.append(Paragraph("INFORME TÉCNICO DIARIO DE SUPERVISIÓN", c_obj))
+        per = [Paragraph(f"<b>Periodo de informe:</b> {esc(d.get('periodo'))}", c_per)]
+        caja = Table([[centro], [objeto], [area], [per]], colWidths=[W], rowHeights=[3.2 * cm, 4.8 * cm, 6.0 * cm, 2.6 * cm])
+        caja.setStyle(TableStyle([("BOX", (0, 0), (-1, -1), 0.8, HexColor("#0F172A")), ("VALIGN", (0, 0), (-1, 2), "MIDDLE"),
+                                  ("VALIGN", (0, 3), (-1, 3), "BOTTOM"), ("LEFTPADDING", (0, 0), (-1, -1), 14),
+                                  ("RIGHTPADDING", (0, 0), (-1, -1), 14), ("BOTTOMPADDING", (0, 3), (-1, 3), 12)]))
+        ident = Table([
+            [Paragraph(f"Clave: <i>{esc(d.get('clave'))}</i>", c_cel), Paragraph(f"Fecha: {esc(d.get('fecha_emision'))}", c_cel)],
+            [Paragraph(f"Proyecto: <i>{esc(d.get('proyecto'))}</i>", c_cel), ""],
+            [Paragraph(f"Nombre del informe: <b><i>{esc(d.get('nombre_informe'))}</i></b>", c_cel), ""],
+        ], colWidths=[W * 0.58, W * 0.42])
+        ident.setStyle(TableStyle([("BOX", (0, 0), (-1, -1), 0.8, HexColor("#0F172A")), ("INNERGRID", (0, 0), (-1, -1), 0.8, HexColor("#0F172A")),
+                                   ("SPAN", (0, 1), (1, 1)), ("SPAN", (0, 2), (1, 2)), ("VALIGN", (0, 0), (-1, -1), "MIDDLE")]))
+        pie_txt = (f"Este documento es propiedad de {esc(d.get('constructora') or 'la empresa supervisora')}. "
+                   "No deberá ser reproducido sin previa autorización por escrito.")
+        return [cab, Spacer(1, 0.5 * cm), caja, Spacer(1, 0.5 * cm), ident, Spacer(1, 4), Paragraph(pie_txt, c_pie), PageBreak()]
 
     def seccion_informe(inf: dict) -> list:
         fl: list = [Paragraph("INFORME TÉCNICO DIARIO DE SUPERVISIÓN", s_tit),
@@ -15911,7 +16027,7 @@ def _informe_pdf_bytes(informes: list, proj: dict, fotos: Dict[str, list], hoja_
             fl += [Spacer(1, 4), Paragraph(f"<b>Comentario del ingeniero:</b> {esc(inf['comentario_ingeniero'])}", s_txt)]
         return fl
 
-    story: list = []
+    story: list = portada_flow(portada) if portada else []
     for i, inf in enumerate(informes):
         if i:
             story.append(PageBreak())
@@ -15932,6 +16048,8 @@ def _informe_pdf_bytes(informes: list, proj: dict, fotos: Dict[str, list], hoja_
         story.append(th)
 
     def pie(canvas, doc_):
+        if portada and doc_.page == 1:
+            return
         canvas.saveState()
         canvas.setFont("Roboto", 7.5)
         canvas.setFillColor(HexColor("#64748B"))
@@ -15965,7 +16083,8 @@ def _informe_pdf_response(pdf: bytes, nombre: str) -> StreamingResponse:
 
 
 @api.get("/projects/{pid}/informe_diario/{iid}/pdf")
-async def informe_diario_pdf(pid: str, iid: str, fotos: bool = Query(True), user: dict = Depends(current_user)):
+async def informe_diario_pdf(pid: str, iid: str, fotos: bool = Query(True), portada: bool = Query(True),
+                             user: dict = Depends(current_user)):
     """PDF imprimible del informe (formato de la plantilla, con espacio de firma). El dueño lo
     descarga; Coordinación / Jefe / Sub-coordinador pueden bajar el de cualquiera."""
     proj = await ensure_project_access(user, pid)
@@ -15978,19 +16097,84 @@ async def informe_diario_pdf(pid: str, iid: str, fotos: bool = Query(True), user
         raise HTTPException(409, "El informe aún no está listo")
     await _informe_poner_puestos([inf])
     imgs = await _informe_fotos([inf], INFORME_PDF_MAX_FOTOS if fotos else 0)
-    pdf = await asyncio.to_thread(_informe_pdf_bytes, [inf], proj, imgs)
+    f = date.fromisoformat(inf["fecha"])
+    port = await _informe_portada(proj, [inf], f, f, persona=inf.get("user_name") or "") if portada else None
+    pdf = await asyncio.to_thread(_informe_pdf_bytes, [inf], proj, imgs, None, "", port)
     nombre = f"informe_{_safe_filename_fragment(inf.get('user_name') or 'ingeniero')}_{inf['fecha']}.pdf"
     return _informe_pdf_response(pdf, nombre)
+
+
+async def _informe_portada(proj: dict, informes: list, ini: date, fin: date, area_nombre: str = "",
+                           persona: str = "") -> dict:
+    """Datos de la portada + logo (del proyecto o el institucional por defecto)."""
+    d = _informe_portada_datos(proj, informes, ini, fin, area_nombre, persona, hoy_proyecto(proj))
+    p = await db.projects.find_one({"id": proj["id"]}, {"_id": 0, "constructora_logo": 1})
+    d["logo"] = _resolve_export_logo_bytes((p or {}).get("constructora_logo"))
+    return d
+
+
+async def _informe_compilado_pdf(proj: dict, user: dict, ini: date, fin: date, area_id: Optional[str],
+                                 ingeniero_id: Optional[str], fotos: bool, portada: bool,
+                                 titulo_hoja: str, prefijo: str) -> StreamingResponse:
+    """PDF compilado de los informes listos de [ini, fin], filtrable por área y/o ingeniero, con
+    portada y, si el periodo abarca más de un día, hoja de firmas. Quien no ve a todos recibe
+    solo los suyos."""
+    pid = proj["id"]
+    q: dict = {"project_id": pid, "fecha": {"$gte": ini.isoformat(), "$lte": fin.isoformat()}}
+    area_nombre = ""
+    if user["role"] in INFORME_ROLES_VEN_TODOS:
+        if ingeniero_id:
+            q["user_id"] = ingeniero_id
+        if area_id:
+            area = await db.areas.find_one({"id": area_id, "project_id": pid}, {"_id": 0, "name": 1})
+            if not area:
+                raise HTTPException(404, "Área no encontrada")
+            area_nombre = area.get("name") or ""
+            ids = [u["id"] async for u in db.users.find({"project_ids": pid, "area_id": area_id}, {"_id": 0, "id": 1})]
+            if ingeniero_id:
+                ids = [i for i in ids if i == ingeniero_id]
+            q["user_id"] = {"$in": ids}
+    else:
+        q["user_id"] = user["id"]
+    docs = await db.informes_diarios.find(q).to_list(length=5000)
+    await _informe_poner_puestos(docs)
+    docs.sort(key=lambda d: ((d.get("area_name") or "~").lower(), (d.get("user_name") or "").lower(), d["fecha"]))
+    listos = [d for d in docs if d["estado"] == "listo"]
+    if not listos:
+        raise HTTPException(404, "No hay informes listos con esos filtros")
+    persona = ""
+    if ingeniero_id or user["role"] not in INFORME_ROLES_VEN_TODOS:
+        persona = listos[0].get("user_name") or ""
+    hoja = None
+    if ini != fin:
+        resumen: Dict[str, dict] = {}
+        for d in docs:
+            r = resumen.setdefault(d["user_id"], {"nombre": d.get("user_name") or "", "rol": _informe_cargo(d),
+                                                  "dias": 0, "confirmados": 0, "sin": []})
+            if d["estado"] == "listo":
+                r["dias"] += 1
+                r["confirmados"] += 1 if d.get("confirmado_en") else 0
+            elif d["estado"] == "sin_actividad":
+                r["sin"].append(date.fromisoformat(d["fecha"]).strftime("%d/%m"))
+        hoja = [{"nombre": r["nombre"], "rol": r["rol"], "dias": r["dias"], "confirmados": r["confirmados"],
+                 "sin_actividad": ", ".join(r["sin"])} for r in sorted(resumen.values(), key=lambda x: x["nombre"])]
+    imgs = await _informe_fotos(listos, INFORME_PDF_MAX_FOTOS if ini == fin else 2) if fotos else {}
+    port = await _informe_portada(proj, listos, ini, fin, area_nombre, persona) if portada else None
+    pdf = await asyncio.to_thread(_informe_pdf_bytes, listos, proj, imgs, hoja, titulo_hoja, port)
+    sufijo = _safe_filename_fragment(area_nombre or persona or proj.get("name") or "proyecto")
+    rango = ini.isoformat() if ini == fin else f"{ini.isoformat()}_{fin.isoformat()}"
+    return _informe_pdf_response(pdf, f"{prefijo}_{rango}_{sufijo}.pdf")
 
 
 @api.get("/projects/{pid}/informes_diarios/semana.pdf")
 async def informes_diarios_semana_pdf(
     pid: str, fecha: Optional[str] = Query(None, description="Cualquier día de la semana (YYYY-MM-DD); por defecto hoy"),
-    ingeniero_id: Optional[str] = Query(None), fotos: bool = Query(False), user: dict = Depends(current_user),
+    ingeniero_id: Optional[str] = Query(None), area_id: Optional[str] = Query(None),
+    fotos: bool = Query(False), portada: bool = Query(True), user: dict = Depends(current_user),
 ):
     """Compilado de la semana (domingo a sábado) para imprimir y firmar el sábado: los informes
     listos de cada ingeniero en orden y, al final, la hoja de firmas semanal. Coordinación / Jefe /
-    Sub-coordinador reciben el de todos (o el de `ingeniero_id`); un ingeniero, solo el suyo.
+    Sub-coordinador / Especialista reciben el de todos (o el de `ingeniero_id` / `area_id`).
     Las fotos van apagadas por defecto (el compilado de todo el equipo pesaría demasiado)."""
     proj = await ensure_project_access(user, pid)
     try:
@@ -15998,32 +16182,34 @@ async def informes_diarios_semana_pdf(
     except ValueError:
         raise HTTPException(400, "fecha inválida (YYYY-MM-DD)")
     ini, fin = _week_bounds_for(ref)
-    q: dict = {"project_id": pid, "fecha": {"$gte": ini.isoformat(), "$lte": fin.isoformat()}}
-    if user["role"] in INFORME_ROLES_VEN_TODOS:
-        if ingeniero_id:
-            q["user_id"] = ingeniero_id
-    else:
-        q["user_id"] = user["id"]
-    docs = await db.informes_diarios.find(q).sort([("user_name", 1), ("fecha", 1)]).to_list(length=5000)
-    await _informe_poner_puestos(docs)
-    listos = [d for d in docs if d["estado"] == "listo"]
-    if not listos:
-        raise HTTPException(404, "No hay informes listos en esa semana")
-    resumen: Dict[str, dict] = {}
-    for d in docs:
-        r = resumen.setdefault(d["user_id"], {"nombre": d.get("user_name") or "", "rol": _informe_cargo(d),
-                                              "dias": 0, "confirmados": 0, "sin": []})
-        if d["estado"] == "listo":
-            r["dias"] += 1
-            r["confirmados"] += 1 if d.get("confirmado_en") else 0
-        elif d["estado"] == "sin_actividad":
-            r["sin"].append(date.fromisoformat(d["fecha"]).strftime("%d/%m"))
-    hoja = [{"nombre": r["nombre"], "rol": r["rol"], "dias": r["dias"], "confirmados": r["confirmados"],
-             "sin_actividad": ", ".join(r["sin"])} for r in sorted(resumen.values(), key=lambda x: x["nombre"])]
-    imgs = await _informe_fotos(listos, 2 if fotos else 0)
-    titulo = f"Semana del {ini.strftime('%d/%m/%Y')} al {fin.strftime('%d/%m/%Y')}"
-    pdf = await asyncio.to_thread(_informe_pdf_bytes, listos, proj, imgs, hoja, titulo)
-    return _informe_pdf_response(pdf, f"informes_semana_{ini.isoformat()}_{_safe_filename_fragment(proj.get('name') or 'proyecto')}.pdf")
+    return await _informe_compilado_pdf(proj, user, ini, fin, area_id, ingeniero_id, fotos, portada,
+                                        f"Semana del {ini.strftime('%d/%m/%Y')} al {fin.strftime('%d/%m/%Y')}",
+                                        "informes_semana")
+
+
+@api.get("/projects/{pid}/informes_diarios/compilado.pdf")
+async def informes_diarios_compilado_pdf(
+    pid: str, desde: Optional[str] = Query(None, description="YYYY-MM-DD; por defecto hoy"),
+    hasta: Optional[str] = Query(None, description="YYYY-MM-DD; por defecto = desde (un solo día)"),
+    area_id: Optional[str] = Query(None), ingeniero_id: Optional[str] = Query(None),
+    fotos: Optional[bool] = Query(None, description="Por defecto sí en un solo día y no en un rango"),
+    portada: bool = Query(True), user: dict = Depends(current_user),
+):
+    """Impresión de informes diarios por día (o rango), por área y/o por persona, con portada.
+    Un día + un área = los informes de ese día de todo el equipo del área."""
+    proj = await ensure_project_access(user, pid)
+    try:
+        ini = date.fromisoformat(desde) if desde else hoy_proyecto(proj)
+        fin = date.fromisoformat(hasta) if hasta else ini
+    except ValueError:
+        raise HTTPException(400, "fecha inválida (YYYY-MM-DD)")
+    if fin < ini:
+        raise HTTPException(400, "`hasta` no puede ser anterior a `desde`")
+    if (fin - ini).days > 92:
+        raise HTTPException(400, "El rango máximo es de 92 días")
+    usar_fotos = (ini == fin) if fotos is None else fotos
+    titulo = _informe_fecha_larga(ini.isoformat()) if ini == fin else f"Del {ini.strftime('%d/%m/%Y')} al {fin.strftime('%d/%m/%Y')}"
+    return await _informe_compilado_pdf(proj, user, ini, fin, area_id, ingeniero_id, usar_fotos, portada, titulo, "informes")
 
 
 @api.get("/projects/{pid}/informe_diario/{iid}")
@@ -17240,13 +17426,14 @@ _SEVERIDAD_ORDER = {"urgente": 0, "importante": 1, "informativo": 2}
 
 def _severidad_label(sev: Optional[str]) -> str:
     s = (sev or "informativo").lower()
-    return {"urgente": "Urgente", "importante": "Importante", "informativo": "Informativo"}.get(s, "Informativo")
+    # La jerarquía es el informe al que va el reporte (importante → Semanal, urgente → Mensual).
+    return {"diario": "Diario", "importante": "Semanal", "urgente": "Mensual", "informativo": "Informativo"}.get(s, "Informativo")
 
 
 def _severidad_hex(sev: Optional[str]) -> str:
     s = (sev or "informativo").lower()
     # Semáforo institucional: rojo / ámbar / azul.
-    return {"urgente": "#DC2626", "importante": "#D97706", "informativo": "#1D4ED8"}.get(s, "#1D4ED8")
+    return {"urgente": "#DC2626", "importante": "#D97706", "diario": "#10B981", "informativo": "#1D4ED8"}.get(s, "#1D4ED8")
 
 
 def _export_severity_filter(role: str) -> set:
@@ -18917,7 +19104,7 @@ async def export_reports_pdf(
     """Motor PDF paramétrico.
 
     Filtros aplicados automáticamente (no negociables):
-      - Severidad: SOLO Importante + Urgente (excluye Informativo).
+      - Severidad: según el informe (Diario / Semanal / Mensual); excluye Informativo.
       - Área: si `area_id` se especifica, filtra por esa área.
       - Especialistas con toggle `scope=mine` ven solo sus reportes.
     Render bloqueante (reportlab) en thread aparte."""

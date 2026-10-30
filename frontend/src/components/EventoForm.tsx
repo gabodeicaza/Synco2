@@ -4,7 +4,9 @@
 // - El botón se bloquea mientras guarda y un doble Enter no manda dos eventos (K-08).
 // - Fecha y horas se capturan en la zona del proyecto; en móvil hay selector nativo.
 // - Al crear con éxito el formulario se limpia y se cierra (P-01/G-04).
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { BuscadorPersonas } from '@/src/components/BuscadorPersonas';
+import { filtrarPersonas } from '@/src/utils/buscarPersonas';
 import {
   ActivityIndicator, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, View,
 } from 'react-native';
@@ -94,6 +96,9 @@ export function EventoForm({
   const [areaId, setAreaId] = useState<string | null>(null);
   const [asistentes, setAsistentes] = useState<string[]>([]);
   const [asistentesAbierto, setAsistentesAbierto] = useState(false);
+  const [busquedaAsistente, setBusquedaAsistente] = useState('');
+  const miembrosFiltrados = useMemo(() => filtrarPersonas(members, busquedaAsistente), [members, busquedaAsistente]);
+  useEffect(() => { if (!asistentesAbierto) setBusquedaAsistente(''); }, [asistentesAbierto]);
   const [picker, setPicker] = useState<CampoPicker>(null);
 
   const editando = !!evento;
@@ -413,10 +418,13 @@ export function EventoForm({
                   <Text style={styles.pickerListo}>{t('evento.listo')}</Text>
                 </Pressable>
               </View>
-              <ScrollView style={{ maxHeight: 420 }}>
+              <BuscadorPersonas value={busquedaAsistente} onChangeText={setBusquedaAsistente} autoFocus />
+              <ScrollView style={{ maxHeight: 420 }} keyboardShouldPersistTaps="handled">
                 {members.length === 0 ? (
                   <Text style={styles.pickerVacio}>{t('evento.sinMiembros')}</Text>
-                ) : members.map((m) => {
+                ) : miembrosFiltrados.length === 0 ? (
+                  <Text style={styles.pickerVacio}>Sin resultados para "{busquedaAsistente}".</Text>
+                ) : miembrosFiltrados.map((m) => {
                   const activo = asistentes.includes(m.id);
                   return (
                     <Pressable

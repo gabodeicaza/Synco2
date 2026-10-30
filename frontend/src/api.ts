@@ -1597,6 +1597,10 @@ export interface InformeDiario {
   project_id: string;
   user_id: string;
   user_name: string;
+  /** Puesto y área ACTUALES del ingeniero (los rellena el servidor al listar). */
+  user_puesto?: string | null;
+  area_id?: string | null;
+  area_name?: string;
   fecha: string; // YYYY-MM-DD
   estado: 'pendiente' | 'procesando' | 'listo' | 'sin_actividad';
   ia: boolean;
@@ -3582,7 +3586,7 @@ export const api = {
       'POST', `/projects/${pid}/ai_summary?periodo=${periodo}`,
     ),
 
-  // Informe diario por ingeniero (corte 18:15 + resumen IA).
+  // Informe diario por ingeniero (corte 18:30 + resumen IA).
   informeDiarioMio: (pid: string, fecha?: string) =>
     request<InformeDiario | null>('GET', `/projects/${pid}/informe_diario/mio${fecha ? `?fecha=${fecha}` : ''}`),
   informeDiarioPendientes: (pid: string) =>
@@ -3592,7 +3596,9 @@ export const api = {
   informeDiarioConfirmar: (pid: string, iid: string, comentario?: string) =>
     request<InformeDiario>('POST', `/projects/${pid}/informe_diario/${iid}/confirmar`, { comentario: comentario ?? null }),
   informesDiariosCumplimiento: (pid: string, fecha?: string) =>
-    request<{ fecha: string; informes: Omit<InformeDiario, 'bloques'>[] }>('GET', `/projects/${pid}/informes_diarios${fecha ? `?fecha=${fecha}` : ''}`),
+    request<{ fecha: string; informes: Omit<InformeDiario, 'bloques'>[]; clave: string; clave_sugerida: string }>('GET', `/projects/${pid}/informes_diarios${fecha ? `?fecha=${fecha}` : ''}`),
+  informeDiarioGuardarClave: (pid: string, clave: string) =>
+    request<{ clave: string }>('PUT', `/projects/${pid}/informe_diario/clave`, { clave }),
 
   listAnnouncements: (pid: string) => request<Announcement[]>('GET', `/projects/${pid}/announcements`),
   createAnnouncement: (pid: string, payload: any) => request<Announcement>('POST', `/projects/${pid}/announcements`, payload),
@@ -4297,13 +4303,34 @@ export const api = {
     return { blob: await res.blob(), filename: (m && m[1]) || 'informe_diario.pdf' };
   },
 
+  /** Impresión por día/rango, por área y/o por persona (con portada). Sin `hasta` = un solo día. */
+  downloadInformesCompiladoPdf: async (
+    pid: string, opts: { desde: string; hasta?: string; areaId?: string; ingenieroId?: string; fotos?: boolean },
+  ): Promise<{ blob: Blob; filename: string }> => {
+    const tok = await getToken();
+    const qs = new URLSearchParams({ desde: opts.desde });
+    if (opts.hasta) qs.set('hasta', opts.hasta);
+    if (opts.areaId) qs.set('area_id', opts.areaId);
+    if (opts.ingenieroId) qs.set('ingeniero_id', opts.ingenieroId);
+    if (opts.fotos !== undefined) qs.set('fotos', String(opts.fotos));
+    const res = await fetch(`${BASE}/projects/${pid}/informes_diarios/compilado.pdf?${qs.toString()}`, {
+      method: 'GET',
+      headers: tok ? { Authorization: `Bearer ${tok}` } : {},
+    });
+    if (!res.ok) throw new ApiError(res.status, await _downloadErrorMessage(res, 'Error al descargar los informes'));
+    const cd = res.headers.get('Content-Disposition') || '';
+    const m = cd.match(/filename="?([^"]+)"?/);
+    return { blob: await res.blob(), filename: (m && m[1]) || 'informes_diarios.pdf' };
+  },
+
   downloadInformesSemanaPdf: async (
-    pid: string, opts?: { fecha?: string; ingenieroId?: string; fotos?: boolean },
+    pid: string, opts?: { fecha?: string; ingenieroId?: string; areaId?: string; fotos?: boolean },
   ): Promise<{ blob: Blob; filename: string }> => {
     const tok = await getToken();
     const qs = new URLSearchParams();
     if (opts?.fecha) qs.set('fecha', opts.fecha);
     if (opts?.ingenieroId) qs.set('ingeniero_id', opts.ingenieroId);
+    if (opts?.areaId) qs.set('area_id', opts.areaId);
     if (opts?.fotos) qs.set('fotos', 'true');
     const res = await fetch(`${BASE}/projects/${pid}/informes_diarios/semana.pdf?${qs.toString()}`, {
       method: 'GET',

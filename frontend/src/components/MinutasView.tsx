@@ -16,6 +16,8 @@
  *   _ Marcar acuerdo como concluido: SOLO autor (server-side lo refuerza).
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState, memo } from 'react';
+import { BuscadorPersonas } from '@/src/components/BuscadorPersonas';
+import { filtrarPersonas } from '@/src/utils/buscarPersonas';
 import {
   View,
   Text,
@@ -1022,6 +1024,9 @@ export function CreateMinutaModal({
   const [involvedIds, setInvolvedIds] = useState<string[]>([]);
   const involvedPickerOpen = hoja.esta('involucrados');
   const setInvolvedPickerOpen = hoja.ponerVisible('involucrados');
+  // Buscador de personas de los selectores de responsable e involucrados (se limpia al abrir/cerrar).
+  const [busquedaPersona, setBusquedaPersona] = useState('');
+  const miembrosFiltrados = useMemo(() => filtrarPersonas(members, busquedaPersona), [members, busquedaPersona]);
   // Pendiente del Hub de Pendientes al que se escriben los acuerdos (opcional).
   const [pendientes, setPendientes] = useState<PendienteGeneral[]>([]);
   const [pendienteId, setPendienteId] = useState<string>('');
@@ -1037,6 +1042,7 @@ export function CreateMinutaModal({
   const [pdfAsset, setPdfAsset] = useState<{ uri: string; name: string; mimeType?: string | null } | null>(null);
   const [respIndice, setRespIndice] = useState<number | null>(null);
   const respPickerFor = hoja.esta('responsable') ? respIndice : null;
+  useEffect(() => { setBusquedaPersona(''); }, [respPickerFor, involvedPickerOpen]);
   const setRespPickerFor = (i: number | null) => {
     setRespIndice(i);
     if (i === null) hoja.cerrar('responsable');
@@ -1504,7 +1510,8 @@ export function CreateMinutaModal({
                   <Text style={styles.pickerCerrarTxt}>{t('hojaSeleccion.cerrar')}</Text>
                 </Pressable>
               </View>
-                <ScrollView style={{ maxHeight: 380 }}>
+                <BuscadorPersonas value={busquedaPersona} onChangeText={setBusquedaPersona} autoFocus />
+                <ScrollView style={{ maxHeight: 380 }} keyboardShouldPersistTaps="handled">
                   {/* "Contratista" siempre disponible: no es una cuenta de usuario,
                       representa a la empresa contratista del proyecto. */}
                   <Pressable accessibilityRole="button"
@@ -1525,8 +1532,10 @@ export function CreateMinutaModal({
                     <Text style={{ padding: 16, color: colors.textMuted }}>
                       {t('minutasVista.noHayMiembrosEnEl')}
                     </Text>
+                  ) : miembrosFiltrados.length === 0 ? (
+                    <Text style={{ padding: 16, color: colors.textMuted }}>Sin resultados para "{busquedaPersona}".</Text>
                   ) : (
-                    members.map((m) => (
+                    miembrosFiltrados.map((m) => (
                       <Pressable accessibilityRole="button"
                         key={m.id}
                         onPress={() => {
@@ -1581,13 +1590,16 @@ export function CreateMinutaModal({
                     <Text style={styles.pickerCerrarTxt}>{t('hojaSeleccion.listo')}</Text>
                   </Pressable>
                 </View>
-                <ScrollView style={{ maxHeight: 420 }}>
+                <BuscadorPersonas value={busquedaPersona} onChangeText={setBusquedaPersona} autoFocus />
+                <ScrollView style={{ maxHeight: 420 }} keyboardShouldPersistTaps="handled">
                   {members.length === 0 ? (
                     <Text style={{ padding: 16, color: colors.textMuted }}>
                       {t('minutasVista.noHayMiembrosEnEl')}
                     </Text>
+                  ) : miembrosFiltrados.length === 0 ? (
+                    <Text style={{ padding: 16, color: colors.textMuted }}>Sin resultados para "{busquedaPersona}".</Text>
                   ) : (
-                    members.map((m) => {
+                    miembrosFiltrados.map((m) => {
                       const on = involvedIds.includes(m.id);
                       return (
                         <Pressable accessibilityRole="button"

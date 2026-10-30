@@ -1,5 +1,5 @@
 // Informe diario del ingeniero — Especialista y Sub-coordinador.
-// Muestra el informe generado en el corte de las 18:15 con la estructura de la plantilla de
+// Muestra el informe generado en el corte de las 18:30 con la estructura de la plantilla de
 // "Informe técnico diario de supervisión" (un bloque por reporte: estatus, actividades, fuerza de
 // trabajo, equipo, observaciones, fotos) y un resumen redactado con IA. El ingeniero lo revisa y
 // lo CONFIRMA: esa confirmación queda registrada (fecha/hora) como su responsabilidad sobre lo reportado.
@@ -141,7 +141,7 @@ export function InformeDiarioScreen() {
         {error ? <Text style={styles.error}>{error}</Text> : null}
 
         {!loading && !error && !informe ? (
-          <Text style={styles.muted}>Aún no hay un informe. Se genera automáticamente cada día a las 18:15.</Text>
+          <Text style={styles.muted}>Aún no hay un informe. Se genera automáticamente cada día a las 18:30.</Text>
         ) : null}
 
         {informe ? (

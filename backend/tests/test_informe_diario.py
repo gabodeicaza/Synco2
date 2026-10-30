@@ -1,4 +1,4 @@
-"""Informe diario por ingeniero (corte 18:15 + resumen IA): helpers puros, corte por
+"""Informe diario por ingeniero (corte 18:30 + resumen IA): helpers puros, corte por
 zona horaria y el límite de ritmo / reintentos hacia Gemini. Sin red ni Mongo."""
 import asyncio
 import os
@@ -77,10 +77,10 @@ def test_respaldo_sin_ia():
 
 def test_corte_usa_la_zona_del_proyecto():
     proj = {"zona_horaria": "America/Mexico_City"}
-    # 00:10 UTC del 23 = 18:10 del 22 en CDMX (UTC-6): todavía no es el corte
-    assert server._informe_toca_corte(proj, utc(2026, 10, 23, 0, 10)) is None
-    # 00:15 UTC del 23 = 18:15 del 22 en CDMX: toca, y es el informe DEL 22
-    assert server._informe_toca_corte(proj, utc(2026, 10, 23, 0, 15)).isoformat() == "2026-10-22"
+    # 00:25 UTC del 23 = 18:25 del 22 en CDMX (UTC-6): todavía no es el corte
+    assert server._informe_toca_corte(proj, utc(2026, 10, 23, 0, 25)) is None
+    # 00:30 UTC del 23 = 18:30 del 22 en CDMX: toca, y es el informe DEL 22
+    assert server._informe_toca_corte(proj, utc(2026, 10, 23, 0, 30)).isoformat() == "2026-10-22"
 
 
 class _Resp:
@@ -233,3 +233,27 @@ def test_poner_puestos_toma_el_puesto_actual_del_usuario(monkeypatch):
 
 def test_pdf_sin_informes_no_truena():
     assert server._informe_pdf_bytes([], {"name": "X"}, {})[:5] == b"%PDF-"
+
+
+def test_portada_datos_por_area_persona_y_periodo():
+    from datetime import date
+    proj = {"name": "Línea 4", "contract_number": "C-1", "objeto_contrato": "Objeto", "constructora": "Dirac"}
+    inf = {"area_name": "Topografía"}
+    d = server._informe_portada_datos(proj, [inf], date(2026, 10, 30), date(2026, 10, 30), "Topografía", "", date(2026, 10, 30))
+    assert d["periodo"] == "30 de octubre de 2026"
+    assert d["titulo_area"] == "TOPOGRAFÍA" and d["nombre_informe"] == "Informes diarios del área Topografía"
+    d = server._informe_portada_datos(proj, [inf], date(2026, 10, 25), date(2026, 10, 31), "", "Ana Pérez")
+    assert d["periodo"] == "Del 25 al 31 de octubre de 2026"
+    assert d["persona"] == "Ana Pérez" and d["titulo_area"] == "TOPOGRAFÍA"
+    d = server._informe_portada_datos(proj, [], date(2026, 10, 30), date(2026, 11, 2))
+    assert d["periodo"] == "Del 30 de octubre de 2026 al 02 de noviembre de 2026" and d["titulo_area"] == "TODAS LAS ÁREAS"
+
+
+def test_portada_clave_como_la_de_minutas():
+    from datetime import date
+    d = server._informe_portada_datos({"minuta_code_prefix": " cl4 obra "}, [], date(2026, 10, 30), date(2026, 10, 30))
+    assert d["clave"] == "CL4 OBRA 261030-A"
+    assert server._informe_portada_datos({}, [], date(2026, 10, 30), date(2026, 10, 30))["clave"] == "261030-A"
+    # la que fija el Coordinador General manda
+    d = server._informe_portada_datos({"informe_diario_clave": " L4CB-ISM-011 "}, [], date(2026, 10, 30), date(2026, 10, 30))
+    assert d["clave"] == "L4CB-ISM-011"

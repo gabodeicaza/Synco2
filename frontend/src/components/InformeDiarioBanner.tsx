@@ -1,4 +1,4 @@
-// Aviso de Inicio: "Tu reporte diario está listo, revísalo". Aparece cuando el corte de las 18:15 ya
+// Aviso de Inicio: "Tu reporte diario está listo, revísalo". Aparece cuando el corte de las 18:30 ya
 // generó el informe del ingeniero y éste aún no lo confirma; al tocarlo abre la pantalla de revisión.
 import React, { useCallback, useEffect, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
