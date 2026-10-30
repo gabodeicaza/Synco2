@@ -6,7 +6,7 @@
 // fotos) lo puede hacer cualquier rol de escritura (Especialista incluido).
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, TextInput, Alert, Modal,
+  View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, TextInput, Alert, Modal, Image,
   KeyboardAvoidingView, Platform,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -14,7 +14,7 @@ import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { pickPhotoDataUrl } from '@/src/utils/photoPicker';
 import {
-  api, InformacionParticularBloque, InformacionParticularFoto, LocationNode, PlanoAvance,
+  api, FotoSemanaItem, InformacionParticularBloque, InformacionParticularFoto, LocationNode, PlanoAvance,
   Presentacion, PresentacionSeccion, PresentacionSeccionTipo, Project, ReporteSemanaItem, PeriodoFinanciero,
 } from '@/src/api';
 import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
@@ -128,6 +128,12 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
 
   const [bloquesSeccion, setBloquesSeccion] = useState<PresentacionSeccion | null>(null);
   const [bloquesDraft, setBloquesDraft] = useState<InformacionParticularBloque[]>([]);
+  // Selector de fotos de la semana (para el bloque `fotosBloque`).
+  const [fotosBloque, setFotosBloque] = useState<number | null>(null);
+  const [fotosSemana, setFotosSemana] = useState<FotoSemanaItem[]>([]);
+  const [fotosCargando, setFotosCargando] = useState(false);
+  const [fotosSoloNodo, setFotosSoloNodo] = useState(true);
+  const [fotosSel, setFotosSel] = useState<string[]>([]);
   const [savingBloques, setSavingBloques] = useState(false);
 
   const headerColor = project?.color_institucional || project?.color_tema || colors.primary;
@@ -354,6 +360,43 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
 
   function removeBloque(idx: number) {
     setBloquesDraft((cur) => cur.filter((_, i) => i !== idx));
+  }
+
+  const claveFoto = (f: { report_id?: string | null; index?: number | null }) => `${f.report_id}:${f.index}`;
+
+  async function cargarFotosSemana(idx: number, soloNodo: boolean) {
+    if (!detail) return;
+    try {
+      setFotosCargando(true);
+      const nodeId = soloNodo ? bloquesDraft[idx]?.node_id : null;
+      setFotosSemana(await api.listFotosSemanaPresentacion(projectId, detail.id, nodeId));
+    } catch (e: any) {
+      Alert.alert(t('presentacion.noSePudoAgregarLa'), e?.message || 'Inténtalo nuevamente.');
+    } finally {
+      setFotosCargando(false);
+    }
+  }
+
+  function abrirFotosSemana(idx: number) {
+    const soloNodo = !!bloquesDraft[idx]?.node_id;
+    setFotosSoloNodo(soloNodo);
+    setFotosSel([]);
+    setFotosBloque(idx);
+    cargarFotosSemana(idx, soloNodo);
+  }
+
+  function agregarFotosSeleccionadas() {
+    if (fotosBloque === null) return;
+    const elegidas = fotosSemana.filter((f) => fotosSel.includes(claveFoto(f)));
+    setBloquesDraft((cur) => cur.map((b, i) => {
+      if (i !== fotosBloque) return b;
+      const ya = new Set(b.fotos.map(claveFoto));
+      const nuevas: InformacionParticularFoto[] = elegidas.filter((f) => !ya.has(claveFoto(f))).map((f) => ({
+        report_id: f.report_id, index: f.index, thumb: f.thumb, caption: f.caption || '', destacado: false, destacado_label: null,
+      }));
+      return { ...b, fotos: [...b.fotos, ...nuevas] };
+    }));
+    setFotosBloque(null);
   }
 
   async function addFotoToBloque(idx: number) {
@@ -623,6 +666,55 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
           </View>
         </Modal>
 
+        {/* Modal: elegir fotos entre las subidas en la semana */}
+        <Modal visible={fotosBloque !== null} animationType="slide" onRequestClose={() => setFotosBloque(null)}>
+          <View style={{ flex: 1, backgroundColor: colors.bg, paddingTop: insets.top }}>
+            <View style={[styles.headerWrap, { backgroundColor: headerColor }]}>
+              <View style={styles.headerTopRow}>
+                <Pressable accessibilityRole="button" accessibilityLabel={a11y('cerrar')} onPress={() => setFotosBloque(null)} hitSlop={10} style={styles.iconBtn}>
+                  <Ionicons name="close" size={22} color={headerTextColor} />
+                </Pressable>
+                <Text style={[styles.titleBar, { color: headerTextColor }]}>{t('presentacion.fotosDeLaSemana')}</Text>
+                <View style={{ width: 32 }} />
+              </View>
+            </View>
+            {fotosBloque !== null && bloquesDraft[fotosBloque]?.node_id ? (
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => { const v = !fotosSoloNodo; setFotosSoloNodo(v); cargarFotosSemana(fotosBloque, v); }}
+                style={[styles.chip, fotosSoloNodo && styles.chipActive, { alignSelf: 'flex-start', margin: spacing.md }]}
+              >
+                <Text style={[styles.chipTxt, fotosSoloNodo && styles.chipTxtActive]}>{t('presentacion.soloEstaEstacion')}</Text>
+              </Pressable>
+            ) : null}
+            <ScrollView contentContainerStyle={{ padding: spacing.md, paddingBottom: insets.bottom + 90 }}>
+              {fotosCargando ? <ActivityIndicator color={colors.primary} /> : null}
+              {!fotosCargando && !fotosSemana.length ? <Text style={styles.fieldLabel}>{t('presentacion.sinFotosSemana')}</Text> : null}
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                {fotosSemana.map((f) => {
+                  const k = claveFoto(f);
+                  const on = fotosSel.includes(k);
+                  return (
+                    <Pressable
+                      key={k} accessibilityRole="button"
+                      onPress={() => setFotosSel((cur) => (on ? cur.filter((x) => x !== k) : [...cur, k]))}
+                      style={[styles.fotoSemanaCard, on && { borderColor: colors.primary, borderWidth: 3 }]}
+                    >
+                      {f.thumb ? <Image source={{ uri: f.thumb }} style={styles.fotoSemanaImg} /> : <View style={styles.fotoSemanaImg} />}
+                      {on ? <Ionicons name="checkmark-circle" size={22} color={colors.primary} style={styles.fotoSemanaCheck} /> : null}
+                      <Text numberOfLines={1} style={styles.fotoSemanaTxt}>{f.caption || f.titulo}</Text>
+                      <Text numberOfLines={1} style={styles.fotoSemanaSub}>{f.ubicacion}</Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </ScrollView>
+            <View style={{ position: 'absolute', left: 0, right: 0, bottom: 0, padding: spacing.md, paddingBottom: insets.bottom + spacing.md, backgroundColor: colors.bg }}>
+              <Button label={t('presentacion.agregarSeleccionadas', { n: fotosSel.length })} onPress={agregarFotosSeleccionadas} disabled={!fotosSel.length} />
+            </View>
+          </View>
+        </Modal>
+
         {/* Modal: editor de bloques de "informacion_particular" */}
         <Modal visible={!!bloquesSeccion} animationType="slide" onRequestClose={() => setBloquesSeccion(null)}>
           <View style={{ flex: 1, backgroundColor: colors.bg, paddingTop: insets.top }}>
@@ -680,6 +772,10 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
                   />
                   <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: spacing.sm }}>
                     <Text style={styles.fieldLabel}>{t('presentacion.fotos', { n: b.fotos.length })}</Text>
+                    <Pressable accessibilityRole="button" onPress={() => abrirFotosSemana(bIdx)} style={styles.addBtn}>
+                      <Ionicons name="images-outline" size={16} color={colors.primary} />
+                      <Text style={styles.addBtnTxt}>{t('presentacion.elegirDeLaSemana')}</Text>
+                    </Pressable>
                     <Pressable accessibilityRole="button" onPress={() => addFotoToBloque(bIdx)} style={styles.addBtn}>
                       <Ionicons name="add" size={16} color={colors.primary} />
                       <Text style={styles.addBtnTxt}>{t('presentacion.agregarFoto')}</Text>
@@ -688,6 +784,9 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
                   {b.fotos.map((f, fIdx) => (
                     <View key={fIdx} style={styles.fotoEditRow}>
                       <Text style={styles.fotoEditIdx}>{fIdx + 1}.</Text>
+                      {f.photo || f.thumb ? (
+                        <Image source={{ uri: (f.photo || f.thumb) as string }} style={styles.fotoMini} />
+                      ) : null}
                       <TextInput
                         value={f.caption} onChangeText={(v) => updateFoto(bIdx, fIdx, { caption: v })}
                         placeholder={t('presentacion.pieDeFoto')} placeholderTextColor={colors.textMuted}
@@ -831,6 +930,12 @@ const styles = StyleSheet.create({
   chipActive: { backgroundColor: colors.primary, borderColor: colors.primary },
   chipTxt: { fontSize: 11, fontWeight: '700', color: colors.text },
   chipTxtActive: { color: '#fff' },
+  fotoMini: { width: 40, height: 40, borderRadius: 4 },
+  fotoSemanaCard: { width: 108, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, overflow: 'hidden' },
+  fotoSemanaImg: { width: '100%', height: 84, backgroundColor: colors.border },
+  fotoSemanaCheck: { position: 'absolute', top: 4, right: 4 },
+  fotoSemanaTxt: { fontSize: 10, fontWeight: '700', color: colors.text, paddingHorizontal: 4, paddingTop: 3 },
+  fotoSemanaSub: { fontSize: 9, color: colors.textMuted, paddingHorizontal: 4, paddingBottom: 3 },
   fotoEditRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: spacing.xs },
   fotoEditIdx: { fontSize: 11, color: colors.textMuted, width: 16 },
 });

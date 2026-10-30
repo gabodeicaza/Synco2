@@ -9389,7 +9389,13 @@ async def plano_avance_snapshot(pid: str, plano_id: str, user: dict = Depends(cu
 # seguimiento_estudios, mapa_general y portada no guardan nada propio en
 # absoluto — se calculan enteramente en vivo desde otras colecciones.
 class InformacionParticularFotoIn(BaseModel):
-    photo: str  # base64 data URL
+    # Foto subida a mano (base64 data URL) O referencia a una foto de un reporte
+    # de la semana (`report_id` + `index` dentro de sus imágenes): la referencia
+    # se resuelve al exportar, sin duplicar la imagen en la presentación.
+    photo: Optional[str] = None
+    report_id: Optional[str] = None
+    index: Optional[int] = None
+    thumb: Optional[str] = None  # miniatura de la foto elegida (solo para mostrarla en la app)
     caption: str = ""
     destacado: bool = False
     destacado_label: Optional[str] = None  # texto libre del callout (ej. "Problemática social")
@@ -9814,6 +9820,72 @@ async def list_reportes_semana_presentacion(pid: str, pres_id: str, user: dict =
     return out
 
 
+def _thumb_dataurl(b64_str: str, lado: int = 320) -> Optional[str]:
+    """Miniatura JPEG (data URL) para el selector de fotos."""
+    try:
+        import base64 as _b64
+        from PIL import Image as _PILImage
+        im = _PILImage.open(io.BytesIO(_b64.b64decode(_strip_b64_prefix(b64_str)))).convert("RGB")
+        im.thumbnail((lado, lado))
+        out = io.BytesIO()
+        im.save(out, format="JPEG", quality=70)
+        return "data:image/jpeg;base64," + _b64.b64encode(out.getvalue()).decode()
+    except Exception:
+        return None
+
+
+@api.get("/projects/{pid}/presentaciones/{pres_id}/fotos-semana")
+async def list_fotos_semana_presentacion(
+    pid: str, pres_id: str, node_id: Optional[str] = None, limit: int = 120, user: dict = Depends(current_user),
+):
+    """TODAS las fotos subidas en la ventana semanal de la presentación (`fecha - 6 días`
+    .. `fecha`), con miniatura, para elegir cuáles van en cada lámina. `node_id` filtra
+    a los reportes de esa estación o de cualquiera de sus hijos."""
+    await ensure_project_access(user, pid)
+    pres = await db.presentaciones.find_one({"id": pres_id, "project_id": pid}, {"fecha": 1})
+    if not pres:
+        raise HTTPException(404, "Presentación no existe")
+    try:
+        end_d = date.fromisoformat(pres["fecha"])
+    except ValueError:
+        raise HTTPException(400, "La presentación tiene una fecha inválida")
+    desde = datetime.combine(end_d - timedelta(days=6), datetime.min.time(), tzinfo=timezone.utc)
+    hasta = datetime.combine(end_d + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc)
+    q: dict = {"project_id": pid, "created_at": {"$gte": desde, "$lt": hasta}, "images.0": {"$exists": True}}
+    if node_id:
+        q["$or"] = [{"node_id": node_id}, {"node_path_ids": node_id}]
+    reps = await db.reports.find(q, {
+        "_id": 0, "id": 1, "title": 1, "created_at": 1, "node_path_names": 1, "images": 1, "photo_captions": 1,
+        "actividades": 1,
+    }).sort("created_at", -1).to_list(length=500)
+    pend = []
+    for r in reps:
+        path = r.get("node_path_names") or []
+        caps = r.get("photo_captions") or []
+        for i, im in enumerate(r.get("images") or []):
+            pend.append((r, i, im, caps[i] if i < len(caps) else ""))
+            if len(pend) >= max(1, min(limit, 300)):
+                break
+        if len(pend) >= max(1, min(limit, 300)):
+            break
+
+    def _armar():
+        out = []
+        for r, i, im, cap in pend:
+            path = r.get("node_path_names") or []
+            out.append({
+                "report_id": r["id"], "index": i,
+                "titulo": (r.get("title") or "").strip() or (r.get("actividades") or "").strip()[:60] or "Reporte",
+                "ubicacion": " › ".join(path[-2:]) if path else "",
+                "fecha": r["created_at"].isoformat() if r.get("created_at") else None,
+                "caption": cap or "",
+                "thumb": _thumb_dataurl(im),
+            })
+        return out
+
+    return await asyncio.to_thread(_armar)
+
+
 @api.get("/projects/{pid}/presentaciones/{pres_id}/modulo-auto/{tipo}")
 async def preview_presentacion_modulo_auto(pid: str, pres_id: str, tipo: str, user: dict = Depends(current_user)):
     """Esquema (sin imágenes) de lo que traerá una sección automática, para
@@ -9941,6 +10013,9 @@ async def update_informacion_particular(
             node = await db.location_nodes.find_one({"id": b.node_id, "project_id": pid})
             if not node:
                 raise HTTPException(404, f"node_id '{b.node_id}' no existe en este proyecto")
+        for f in b.fotos:
+            if not f.photo and not (f.report_id and f.index is not None):
+                raise HTTPException(400, "Cada foto requiere imagen o una referencia a un reporte")
     seccion = dict(secciones[idx])
     seccion["bloques"] = [b.model_dump() for b in body.bloques]
     now = datetime.now(timezone.utc)
@@ -10041,6 +10116,30 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
         raise HTTPException(404, "Presentación no existe")
 
     secciones = sorted(pres.get("secciones") or [], key=lambda s: s.get("orden", 0))
+
+    # Fotos elegidas de los reportes de la semana: se traen aquí y se vuelven fotos normales.
+    _ref_ids = {f["report_id"] for s_ in secciones if s_.get("tipo") == "informacion_particular"
+                for b_ in (s_.get("bloques") or []) for f in (b_.get("fotos") or [])
+                if not f.get("photo") and f.get("report_id")}
+    if _ref_ids:
+        _rep_fotos = {r_["id"]: r_ async for r_ in db.reports.find(
+            {"id": {"$in": list(_ref_ids)}, "project_id": pid}, {"_id": 0, "id": 1, "images": 1, "photo_captions": 1})}
+        for s_ in secciones:
+            if s_.get("tipo") != "informacion_particular":
+                continue
+            for b_ in (s_.get("bloques") or []):
+                fotos_ok = []
+                for f in (b_.get("fotos") or []):
+                    if not f.get("photo") and f.get("report_id"):
+                        r_ = _rep_fotos.get(f["report_id"]) or {}
+                        imgs = r_.get("images") or []
+                        i_ = f.get("index")
+                        if i_ is None or not (0 <= i_ < len(imgs)):
+                            continue  # el reporte o la foto ya no existe
+                        caps_ = r_.get("photo_captions") or []
+                        f = {**f, "photo": imgs[i_], "caption": f.get("caption") or (caps_[i_] if i_ < len(caps_) else "")}
+                    fotos_ok.append(f)
+                b_["fotos"] = fotos_ok
 
     # --- Resolver datos EN VIVO de cada sección (I/O a Mongo, antes del hilo bloqueante) ---
     node_ids = {s["node_id"] for s in secciones if s.get("node_id")}

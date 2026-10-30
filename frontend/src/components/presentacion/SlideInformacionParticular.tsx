@@ -49,7 +49,7 @@ function Bloque({ bloque, node }: { bloque: InformacionParticularBloque; node: L
         <View style={styles.fotoGrid}>
           {bloque.fotos.map((f, i) => (
             <View key={i} style={styles.fotoCell}>
-              <Image source={{ uri: f.photo }} style={styles.fotoImg} resizeMode="cover" />
+              <Image source={{ uri: (f.photo || f.thumb || '') as string }} style={styles.fotoImg} resizeMode="cover" />
               {f.destacado ? (
                 <View style={styles.destacadoBadge}>
                   <Text style={styles.destacadoTxt} numberOfLines={1}>{f.destacado_label || 'Destacado'}</Text>

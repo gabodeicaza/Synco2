@@ -1093,7 +1093,13 @@ export interface EstudioDisciplinaAvance {
 }
 
 export interface InformacionParticularFoto {
-  photo: string;
+  /** Foto subida a mano (data URL). Vacía cuando se eligió una foto de un reporte de la semana. */
+  photo?: string | null;
+  /** Foto elegida de un reporte de la semana: id del reporte e índice de la imagen. */
+  report_id?: string | null;
+  index?: number | null;
+  /** Miniatura de la foto elegida (solo para mostrarla). */
+  thumb?: string | null;
   caption: string;
   destacado: boolean;
   destacado_label?: string | null;
@@ -1122,6 +1128,17 @@ export interface PresentacionSeccion {
   bloques?: InformacionParticularBloque[];
   /** 'reportes_semana': ids de los reportes que el usuario eligió destacar. */
   report_ids?: string[];
+}
+
+/** Foto subida en la semana de la presentación (con miniatura) para elegirla en una lámina. */
+export interface FotoSemanaItem {
+  report_id: string;
+  index: number;
+  titulo: string;
+  ubicacion: string;
+  fecha?: string | null;
+  caption: string;
+  thumb?: string | null;
 }
 
 /** Reporte de la semana (ligero, sin imágenes) para el selector de la sección 'reportes_semana'. */
@@ -3422,6 +3439,8 @@ export const api = {
     request<{ ok: boolean }>('DELETE', `/projects/${pid}/presentaciones/${presId}/secciones/${secId}`),
   updateInformacionParticular: (pid: string, presId: string, secId: string, bloques: InformacionParticularBloque[]) =>
     request<PresentacionSeccion>('PATCH', `/projects/${pid}/presentaciones/${presId}/secciones/${secId}/informacion-particular`, { bloques }),
+  listFotosSemanaPresentacion: (pid: string, presId: string, nodeId?: string | null) =>
+    request<FotoSemanaItem[]>('GET', `/projects/${pid}/presentaciones/${presId}/fotos-semana${nodeId ? `?node_id=${encodeURIComponent(nodeId)}` : ''}`),
   listReportesSemanaPresentacion: (pid: string, presId: string) =>
     request<ReporteSemanaItem[]>('GET', `/projects/${pid}/presentaciones/${presId}/reportes-semana`),
   previewPresentacionModuloAuto: (pid: string, presId: string, tipo: PresentacionSeccionTipoAuto) =>

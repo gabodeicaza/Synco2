@@ -2054,6 +2054,12 @@ export const esMX = {
     ejContinuaElHabilitadoDe: 'Ej. Continua el habilitado de acero de refuerzo Colado de zapatas',
     fotos: 'Fotos ({n})',
     agregarFoto: 'Agregar foto',
+    elegirDeLaSemana: 'Elegir de la semana',
+    fotosDeLaSemana: 'Fotos de la semana',
+    soloEstaEstacion: 'Solo esta estación',
+    sinFotosSemana: 'No hay fotos subidas en esta semana.',
+    agregarSeleccionadas: 'Agregar ({{n}})',
+
     pieDeFoto: 'Pie de foto',
     etiquetaDelDestacadoEjProblematica: 'Etiqueta del destacado (ej. "Problemática social")',
     agregarBloque: '+ Agregar bloque',
