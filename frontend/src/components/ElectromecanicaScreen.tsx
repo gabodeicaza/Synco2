@@ -11,7 +11,7 @@
 // AspectosSocialesScreen.tsx.
 import React, { useCallback, useEffect, useState } from 'react';
 import {
-  View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, TextInput, Alert, KeyboardAvoidingView, Platform,
+  View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, TextInput, Alert, KeyboardAvoidingView, Platform, Image,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
@@ -19,6 +19,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { api, ElectromecEstatus, Project } from '@/src/api';
 import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
 import { Button } from '@/src/components/Button';
+import { pickPhotoDataUrl } from '@/src/utils/photoPicker';
 import { useAuth } from '@/src/auth-context';
 import { ROLE_JEFE } from '@/src/utils/roles';
 
@@ -42,7 +43,7 @@ const ESTATUS: { key: ElectromecEstatus; label: string; color: string }[] = [
 ];
 
 type DocDraft = { id: string | null; titulo: string; estatus: ElectromecEstatus | null; nota: string };
-type ObsDraft = { id: string | null; titulo: string; texto: string };
+type ObsDraft = { id: string | null; titulo: string; texto: string; fotos: string[] };
 
 const numTxt = (v: number | null | undefined) => (v === null || v === undefined ? '' : String(v));
 
@@ -91,7 +92,7 @@ export default function ElectromecanicaScreen({ projectId }: { projectId: string
       setPilSum(numTxt(d.pilonas_suministradas));
       setPatio(d.patio_nota || '');
       setDocs((d.documentos || []).map((x) => ({ id: x.id || null, titulo: x.titulo, estatus: x.estatus || null, nota: x.nota || '' })));
-      setObs((d.observaciones || []).map((x) => ({ id: x.id || null, titulo: x.titulo || '', texto: x.texto })));
+      setObs((d.observaciones || []).map((x) => ({ id: x.id || null, titulo: x.titulo || '', texto: x.texto, fotos: x.fotos || [] })));
     } catch (e: any) {
       Alert.alert('Error', e?.message || 'No se pudo cargar Electromecánica.');
     } finally {
@@ -141,7 +142,7 @@ export default function ElectromecanicaScreen({ projectId }: { projectId: string
           id: d.id, titulo: d.titulo.trim(), estatus: d.estatus, nota: d.nota.trim() || null,
         })),
         observaciones: obs.filter((o) => o.texto.trim()).map((o) => ({
-          id: o.id, titulo: o.titulo.trim() || null, texto: o.texto.trim(),
+          id: o.id, titulo: o.titulo.trim() || null, texto: o.texto.trim(), fotos: o.fotos,
         })),
       });
       setCalculado(out.avance_general_calculado ?? null);
@@ -263,7 +264,7 @@ export default function ElectromecanicaScreen({ projectId }: { projectId: string
         <View style={styles.sectionHeaderRow}>
           <Text style={styles.sectionTitle}>Observaciones</Text>
           {puedeEscribir ? (
-            <Pressable accessibilityRole="button" onPress={() => setObs((c) => [...c, { id: null, titulo: '', texto: '' }])} style={styles.addBtn}>
+            <Pressable accessibilityRole="button" onPress={() => setObs((c) => [...c, { id: null, titulo: '', texto: '', fotos: [] }])} style={styles.addBtn}>
               <Ionicons name="add" size={16} color={colors.primary} /><Text style={styles.addBtnTxt}>Agregar</Text>
             </Pressable>
           ) : null}
@@ -280,6 +281,24 @@ export default function ElectromecanicaScreen({ projectId }: { projectId: string
               editable={puedeEscribir} multiline placeholder="Observación" placeholderTextColor={colors.textMuted}
               style={[styles.input, { marginTop: spacing.xs, minHeight: 60 }]}
             />
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: spacing.xs }}>
+              {o.fotos.map((f, k) => (
+                <Pressable key={k} accessibilityRole="button" disabled={!puedeEscribir}
+                  onPress={() => setObs((c) => c.map((x, j) => (j === i ? { ...x, fotos: x.fotos.filter((_, m) => m !== k) } : x)))}>
+                  <Image source={{ uri: f }} style={{ width: 64, height: 64, borderRadius: 6 }} />
+                </Pressable>
+              ))}
+              {puedeEscribir && o.fotos.length < 4 ? (
+                <Pressable accessibilityRole="button" style={styles.addBtn} onPress={async () => {
+                  try {
+                    const ph = await pickPhotoDataUrl('library', { maxDim: 1600, quality: 0.8 });
+                    if (ph) setObs((c) => c.map((x, j) => (j === i ? { ...x, fotos: [...x.fotos, ph] } : x)));
+                  } catch (e: any) { Alert.alert('Foto', e?.message || 'No se pudo agregar la foto.'); }
+                }}>
+                  <Ionicons name="image-outline" size={16} color={colors.primary} /><Text style={styles.addBtnTxt}>Foto ({o.fotos.length}/4)</Text>
+                </Pressable>
+              ) : null}
+            </View>
             {puedeEscribir ? (
               <Pressable accessibilityRole="button" onPress={() => setObs((c) => c.filter((_, j) => j !== i))} style={styles.removeBtn}>
                 <Ionicons name="trash-outline" size={16} color={colors.error} /><Text style={styles.removeTxt}>Quitar</Text>

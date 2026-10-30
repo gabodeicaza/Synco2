@@ -828,7 +828,7 @@ export interface Estimacion {
 // === Electromecánica (Sistema Electromecánico del informe) ================
 export type ElectromecEstatus = 'recibido' | 'en_revision' | 'pendiente' | 'emitido';
 export interface ElectromecDocumento { id?: string | null; titulo: string; estatus?: ElectromecEstatus | null; nota?: string | null }
-export interface ElectromecObservacion { id?: string | null; titulo?: string | null; texto: string }
+export interface ElectromecObservacion { id?: string | null; titulo?: string | null; texto: string; fotos?: string[] }
 export interface ElectromecIn {
   /** {componente: {etapa: % 0-100 | null}} — componentes: estaciones, pilonas, cable, garage, cabinas. */
   avance: Record<string, Record<string, number | null>>;
@@ -896,7 +896,7 @@ export type EstimacionInput = Partial<Omit<Estimacion, 'id' | 'project_id' | 'up
 };
 // Ámbito de un pendiente general: obra, supervisión o aspectos sociales (el
 // campo se llama `contrato` en la API por compatibilidad).
-export type PendienteAmbito = ContratoFin | 'sociales' | 'seguridad';
+export type PendienteAmbito = ContratoFin | 'sociales' | 'seguridad' | 'calidad';
 export interface PendienteGeneral {
   id: string;
   project_id: string;

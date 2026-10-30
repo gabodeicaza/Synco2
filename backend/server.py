@@ -7569,12 +7569,13 @@ CONTRATO_FIN_LABEL = {"obra": "OBRA", "supervision": "SUPERVISIÓN"}
 # Los pendientes generales también existen para Aspectos Sociales (liberaciones
 # de postes y predios). El campo sigue llamándose `contrato` por compatibilidad,
 # pero aquí es un ÁMBITO: obra, supervisión o aspectos sociales.
-PENDIENTES_AMBITOS = ("obra", "supervision", "sociales", "seguridad")
+PENDIENTES_AMBITOS = ("obra", "supervision", "sociales", "seguridad", "calidad")
 PENDIENTE_AMBITO_HEADING = {
     "obra": "PENDIENTES O REQUERIMIENTOS GENERALES (OBRA)",
     "supervision": "PENDIENTES O REQUERIMIENTOS GENERALES (SUPERVISIÓN)",
     "sociales": "PENDIENTES GENERALES (ASPECTOS SOCIALES)",
     "seguridad": "PENDIENTES ADMINISTRATIVOS (SEGURIDAD E HIGIENE)",
+    "calidad": "FALTANTES DE ASEGURAMIENTO DE CONTROL DE CALIDAD",
 }
 
 
@@ -8215,7 +8216,7 @@ async def delete_estimacion(pid: str, eid: str, user: dict = Depends(require_rol
 
 
 class PendienteIn(BaseModel):
-    contrato: Literal["obra", "supervision", "sociales", "seguridad"] = "obra"
+    contrato: Literal["obra", "supervision", "sociales", "seguridad", "calidad"] = "obra"
     titulo: str
     descripcion: Optional[str] = None
     orden: int = 0
@@ -9441,6 +9442,7 @@ class ElectromecObservacion(BaseModel):
     id: Optional[str] = None
     titulo: Optional[str] = None
     texto: str
+    fotos: List[str] = Field(default_factory=list)  # data URLs (máx 4): "actividades semanales" del informe
 
 
 class ElectromecIn(BaseModel):
@@ -9488,7 +9490,8 @@ def _electromec_normalizar(body: ElectromecIn) -> dict:
     for o in body.observaciones:
         texto = (o.texto or "").strip()[:3000]
         if texto:
-            obs.append({"id": o.id or str(uuid.uuid4()), "titulo": (o.titulo or "").strip()[:200] or None, "texto": texto})
+            obs.append({"id": o.id or str(uuid.uuid4()), "titulo": (o.titulo or "").strip()[:200] or None, "texto": texto,
+                        "fotos": [f for f in (o.fotos or []) if f][:4]})
     return {
         "avance": avance,
         "avance_general": _electromec_pct(body.avance_general, "Avance general"),
@@ -9557,7 +9560,8 @@ async def _electromec_bloques(doc: dict) -> List[dict]:
     obs = doc.get("observaciones") or []
     if obs:
         bloques.append({"type": "list", "heading": "OBSERVACIONES", "empty_text": "Sin observaciones.",
-                        "items": [{"title": o.get("titulo"), "body": o["texto"], "extra": None, "meta": None} for o in obs]})
+                        "items": [{"title": o.get("titulo"), "body": o["texto"], "extra": None, "meta": None,
+                                   "fotos": o.get("fotos") or []} for o in obs]})
     return bloques
 
 
@@ -10273,6 +10277,18 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
     _tipos_auto = sorted(_tipos_presentes & set(_PRES_AUTO_MODULOS))
     modulos_auto: dict = await _presentacion_modulos_auto(pid, proj, pres["fecha"], _tipos_auto) if _tipos_auto else {}
 
+    electromec_doc: Optional[dict] = None
+    electromec_imgs: dict = {}
+    if "electromecanico" in _tipos_auto:
+        electromec_doc = await db.electromecanica.find_one({"project_id": pid})
+        electromec_imgs = {}
+        for b_ in (await _electromec_bloques(electromec_doc)) if electromec_doc else []:
+            if b_.get("type") == "imagen":
+                electromec_imgs[b_.get("heading")] = b_.get("imagen")
+    calidad_pend: list = []
+    if "calidad" in _tipos_auto:
+        calidad_pend = await db.pendientes_generales.find(
+            {"project_id": pid, "contrato": "calidad", "resuelto": {"$ne": True}}).sort("orden", 1).to_list(length=20)
     seg_extra: Optional[dict] = None
     if "seguridad" in _tipos_auto:
         try:
@@ -11144,6 +11160,11 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                     return "SALVAMENTO ARQUEOLÓGICO"
                 if "LEVANT" in h or "DICT" in h:
                     return "LEVANTAMIENTOS NOTARIALES"
+            if modulo in ("PRUEBAS DE CALIDAD", "CONTROL DE CALIDAD"):
+                return "ASEGURAMIENTO DE CONTROL DE CALIDAD"
+            if modulo == "SISTEMA ELECTROMECÁNICO":
+                return ("ACTIVIDADES SEMANALES DE OBRA ELECTROMECÁNICA" if h.startswith("OBSERVACIONES")
+                        else "CUMPLIMIENTO PROYECTO DEL SISTEMA ELECTROMECÁNICO")
             if modulo == "ESTUDIOS Y PROYECTO EJECUTIVO":
                 return "TOPOGRAFÍA" if "TOPOGRAF" in h else "ACTIVIDADES GENERALES"
             if modulo == "CUMPLIMIENTO SEGURIDAD E HIGIENE" and (
@@ -11190,6 +11211,22 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                     if cap:
                         add_text(last, MARGIN_X, int(SH - BOTTOM_MARGIN - _Cm(0.9)), content_w, _Cm(0.8), cap,
                                  size=10, color=MUTED_RGB, align=_PP_ALIGN.CENTER)
+                elif t == "list" and any(it_.get("fotos") for it_ in (b.get("items") or [])):
+                    # Actividad con texto y fotos (electromecánica): título centrado en vino,
+                    # viñetas y las fotos debajo, como "Actividades semanales de obra".
+                    for it in b.get("items") or []:
+                        last = _clone_membrete()
+                        _encabezado(last, _banda(modulo_titulo, _ult_h[0]))
+                        if it.get("title"):
+                            add_text(last, MARGIN_X, int(_Cm(2.4)), content_w, _Cm(1.0), str(it["title"]).upper(), size=14,
+                                     bold=True, color=BRAND_RGB, align=_PP_ALIGN.CENTER)
+                        lineas_ = [ln.strip() for ln in (it.get("body") or "").splitlines() if ln.strip()]
+                        _vinetas(last, MARGIN_X, int(_Cm(3.7)), content_w, int(SH * 0.2), lineas_ or [""], size=11)
+                        fts = [{"photo": f_, "caption": ""} for f_ in (it.get("fotos") or [])[:4]]
+                        if fts:
+                            fy = int(SH * 0.40)
+                            _foto_grid(last, fts, int(MARGIN_X + content_w * 0.04), fy, int(content_w * 0.92),
+                                       int(SH - fy - _Cm(1.3)), cols=min(len(fts), 2) if len(fts) <= 2 else 2)
                 elif t == "list":
                     items = b.get("items") or []
                     hcol = {"good": GREEN_RGB, "bad": RED_RGB}.get(b.get("heading_color"), BRAND_RGB)
@@ -11420,6 +11457,70 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                 _foto_grid(sl, x["fotos"], rx, int(top + _Cm(1.3)), rw, int(SH - top - _Cm(2.5) - _Cm(1.2)),
                            cols=1 if len(x["fotos"]) == 1 else 2)
 
+        _EM_BARRAS = "CUMPLIMIENTO DEL SISTEMA ELECTROMECÁNICO"
+        _EM_DONA = "AVANCE GENERAL DEL SISTEMA ELECTROMECÁNICO"
+
+        def _em_comps():
+            av = (electromec_doc or {}).get("avance") or {}
+            return [c for c in ELECTROMEC_COMPONENTES if any(v is not None for v in (av.get(c) or {}).values())]
+
+        def slide_electromec_resumen():
+            """Lámina resumen de la referencia: barras por componente, tabla de avance por
+            rubro (fabricación / suministro / montaje) y dona del avance general."""
+            av = electromec_doc.get("avance") or {}
+            comps = _em_comps()
+            imgs = electromec_imgs
+            sl = _clone_membrete()
+            _encabezado(sl, "CUMPLIMIENTO PROYECTO DEL SISTEMA ELECTROMECÁNICO")
+            add_text(sl, MARGIN_X, int(_Cm(2.2)), content_w, _Cm(0.9), "Componentes Electromecánicos", size=15, bold=True,
+                     color=BRAND_RGB, align=_PP_ALIGN.CENTER)
+            _add_picture_fit(sl, imgs.get(_EM_BARRAS), MARGIN_X, int(_Cm(3.2)), content_w, int(SH * 0.4))
+            ty = int(SH * 0.63)
+            tw = int(content_w * 0.6)
+            _rect(sl, MARGIN_X, ty, tw, _Cm(0.7), fill_rgb=BRAND_RAW_RGB)
+            add_text(sl, MARGIN_X, ty, tw, _Cm(0.7), "AVANCE DEL SISTEMA ELECTROMECÁNICO", size=10, bold=True,
+                     color=WHITE_RGB, align=_PP_ALIGN.CENTER)
+            filas = []
+            for ek, elbl in ELECTROMEC_ETAPAS.items():
+                vals = [(av.get(c) or {}).get(ek) for c in comps]
+                nums = [v_ for v_ in vals if v_ is not None]
+                filas.append([elbl] + [f"{v_:g}%" if v_ is not None else "-" for v_ in vals]
+                             + [f"{sum(nums) / len(nums):.2f}%" if nums else "-"])
+            gen = _electromec_general(electromec_doc)
+            filas.append(["AVANCE GENERAL"] + [""] * len(comps) + [f"{gen:g}%" if gen is not None else "-"])
+            _tabla(sl, MARGIN_X, int(ty + _Cm(0.7)), tw, ["Rubro"] + [ELECTROMEC_COMPONENTES[c] for c in comps] + ["Promedio"],
+                   filas, [1.5] + [1.0] * len(comps) + [1.0], size=8, row_h=_Cm(0.7), head_h=_Cm(1.0), total_row=True)
+            _add_picture_fit(sl, imgs.get(_EM_DONA), int(MARGIN_X + tw + _Cm(0.5)), int(SH * 0.58),
+                             int(content_w - tw - _Cm(0.5)), int(SH * 0.36))
+
+        def slide_calidad_pendientes():
+            """Faltantes de aseguramiento de calidad en columnas separadas por una línea
+            vertical vino (tres por lámina), como en la referencia."""
+            for k in range(0, len(calidad_pend), 3):
+                grupo = calidad_pend[k:k + 3]
+                sl = _clone_membrete()
+                _encabezado(sl, "ASEGURAMIENTO DE CONTROL DE CALIDAD")
+                cw = int(content_w / 3)
+                for i, pnd in enumerate(grupo):
+                    x_ = int(MARGIN_X + i * cw)
+                    if i:
+                        _rect(sl, int(x_ - _Cm(0.15)), int(_Cm(2.5)), _Pt(2), int(SH - _Cm(2.5) - _Cm(1.5)), fill_rgb=BRAND_RAW_RGB)
+                    add_text(sl, int(x_ + _Cm(0.3)), int(_Cm(2.6)), int(cw - _Cm(0.6)), _Cm(2.0), (pnd.get("titulo") or "").upper(),
+                             size=13, bold=True, color=BRAND_RGB, align=_PP_ALIGN.CENTER)
+                    lineas_ = [ln.strip() for ln in (pnd.get("descripcion") or "").splitlines() if ln.strip()]
+                    tam = 11 if sum(len(x2) for x2 in lineas_) < 700 else 9
+                    tb = sl.shapes.add_textbox(int(x_ + _Cm(0.3)), int(_Cm(5.0)), int(cw - _Cm(0.6)), int(SH - _Cm(5.0) - _Cm(1.5)))
+                    tf = tb.text_frame
+                    tf.word_wrap = True
+                    for li, ln in enumerate(lineas_ or [""]):
+                        par = tf.paragraphs[0] if li == 0 else tf.add_paragraph()
+                        par.space_after = _Pt(5)
+                        r1 = par.add_run()
+                        r1.text = ln
+                        r1.font.size = _Pt(tam)
+                        r1.font.name = "Roboto"
+                        r1.font.color.rgb = _PRGBColor(*TEXT_RGB)
+
         def _dup_seguridad(b):
             return ((b.get("type") == "imagen" and (b.get("heading") or "") in (
                         "CUMPLIMIENTO EN CAMPO", "CUMPLIMIENTO DOCUMENTAL", "PORCENTAJE DE CUMPLIMIENTO POR ÁREA"))
@@ -11428,9 +11529,16 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
         def slide_auto(tipo):
             if tipo == "seguridad" and seg_extra:
                 slide_seguridad_extra()
+            em_resumen = tipo == "electromecanico" and electromec_doc is not None and bool(_em_comps())
+            if em_resumen:
+                slide_electromec_resumen()
+            if tipo == "calidad" and calidad_pend:
+                slide_calidad_pendientes()
             for modulo_titulo, bloques in (modulos_auto.get(tipo) or []):
                 if tipo == "seguridad" and seg_extra:
                     bloques = [b_ for b_ in bloques if not _dup_seguridad(b_)]
+                if em_resumen:
+                    bloques = [b_ for b_ in bloques if not (b_.get("type") == "imagen" and b_.get("heading") in (_EM_BARRAS, _EM_DONA))]
                 _slides_bloques(modulo_titulo, bloques)
 
         _auto_tipos = set(_PRES_AUTO_MODULOS)
@@ -11440,7 +11548,8 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
             if tipo == "divisor":
                 # No imprime un divisor cuya sección automática siguiente no trae nada.
                 sig = secciones[s_idx + 1].get("tipo") if s_idx + 1 < len(secciones) else None
-                if sig in _auto_tipos and not modulos_auto.get(sig) and not (sig == "seguridad" and seg_extra):
+                if (sig in _auto_tipos and not modulos_auto.get(sig) and not (sig == "seguridad" and seg_extra)
+                        and not (sig == "calidad" and calidad_pend)):
                     continue
             if tipo == "portada":
                 slide_portada()

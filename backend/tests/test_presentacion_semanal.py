@@ -80,6 +80,15 @@ async def _scenario(tmp_path: Path, con_plantilla: bool):
     await server.db.seguridad_indicadores.insert_one({
         "id": str(uuid.uuid4()), "project_id": pid, "tipo": "campo", "fecha": now.date().isoformat(),
         "porcentaje": 69.13, "clave": "campo|x"})
+    await server.db.electromecanica.insert_one({
+        "id": str(uuid.uuid4()), "project_id": pid,
+        "avance": {"estaciones": {"fabricacion": 26.79, "suministro": 1.26, "montaje": 0},
+                   "pilonas": {"fabricacion": 7.05, "suministro": 1.41, "montaje": 0.24}},
+        "avance_general": None, "pilonas_total": None, "pilonas_suministradas": None, "patio_nota": None,
+        "documentos": [], "observaciones": [{"id": "o1", "titulo": "Suministro de componentes", "texto": "Llegada de contenedores", "fotos": []}]})
+    await server.db.pendientes_generales.insert_one({
+        "id": str(uuid.uuid4()), "project_id": pid, "contrato": "calidad", "titulo": "Faltantes de Obra",
+        "descripcion": "Falta entrega del programa de montaje\nProcedimiento de relleno", "orden": 0, "resuelto": False})
     await server.db.estudio_disciplina_avance.insert_many([
         {"id": str(uuid.uuid4()), "project_id": pid, "node_id": None, "disciplina": "topografia", "porcentaje": 98, "estatus": "en_proceso"},
         {"id": str(uuid.uuid4()), "project_id": pid, "node_id": "n", "disciplina": "urbano", "porcentaje": 100, "estatus": "terminado"}])
@@ -118,7 +127,7 @@ async def _scenario(tmp_path: Path, con_plantilla: bool):
         await server.db.presentaciones.delete_many({"project_id": pid})
         await server.db.reports.delete_many({"project_id": pid})
         for col in ("ambiental_auditoria", "levantamientos_sociales", "seguridad_reportes",
-                    "estudios_bitacora", "pendientes_generales", "estimaciones", "seguridad_indicadores", "ambiental", "estudio_disciplina_avance"):
+                    "estudios_bitacora", "pendientes_generales", "estimaciones", "seguridad_indicadores", "ambiental", "estudio_disciplina_avance", "electromecanica"):
             await server.db[col].delete_many({"project_id": pid})
 
 
@@ -146,6 +155,8 @@ def _verifica(prs):
     assert "Reporte viejo" not in todo           # fuera de la semana / no elegido
     assert "(cont.)" in todo                     # 5 fotos → segunda lámina
     assert "Gracias" in todo
+    assert "Componentes Electromecánicos" in todo and "26.79%" in todo   # resumen electromecánico
+    assert "FALTANTES DE OBRA" in todo and "programa de montaje" in todo  # columnas de calidad
     assert "Riego de areas verdes" in todo       # Ambiental automático
     assert "AMBIENTAL" in todo and "SEGURIDAD" in todo and "SOCIAL" in todo
     assert "AVANCE EN DICTÁMENES" in todo        # Social automático

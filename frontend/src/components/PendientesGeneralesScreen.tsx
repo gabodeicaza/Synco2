@@ -22,8 +22,9 @@ import { ROLE_COORD, ROLE_SUB, ROLE_JEFE } from '@/src/utils/roles';
 
 const CONTRATO_LABEL: Record<PendienteAmbito, string> = {
   obra: 'Obra', supervision: 'Supervisión', sociales: 'Aspectos sociales', seguridad: 'Seguridad e higiene (administrativos)',
+  calidad: 'Aseguramiento de calidad (faltantes)',
 };
-const AMBITOS: PendienteAmbito[] = ['obra', 'supervision', 'sociales', 'seguridad'];
+const AMBITOS: PendienteAmbito[] = ['obra', 'supervision', 'sociales', 'seguridad', 'calidad'];
 
 type Draft = { id: string | null; contrato: PendienteAmbito; titulo: string; descripcion: string };
 
