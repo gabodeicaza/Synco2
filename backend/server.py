@@ -9401,6 +9401,7 @@ class InformacionParticularFotoIn(BaseModel):
     caption: str = ""
     destacado: bool = False
     destacado_label: Optional[str] = None  # texto libre del callout (ej. "Problemática social")
+    ajustar: bool = False  # gráficas: mostrar completa, sin recortar para llenar la celda
 
 
 class InformacionParticularBloqueIn(BaseModel):
@@ -9595,6 +9596,7 @@ class PresentacionSeccionIn(BaseModel):
         "seguimiento_estudios", "croquis_estacion", "informacion_particular",
         "avance_grafico", "reportes_semana", "cierre",
         "ambiental", "social", "seguridad", "proyecto", "calidad", "pendientes", "electromecanico",
+        "lamina_imagenes",
     ]
     orden: int = 0
     titulo: Optional[str] = None  # "divisor" (ej. "FINANCIERO"); libre, no atado a Área
@@ -10004,7 +10006,7 @@ async def create_presentacion_seccion(
         "titulo": (body.titulo or "").strip() or None,
         "node_id": body.node_id,
         "plano_id": body.plano_id,
-        "bloques": [b.model_dump() for b in body.bloques] if body.tipo == "informacion_particular" else [],
+        "bloques": [b.model_dump() for b in body.bloques] if body.tipo in ("informacion_particular", "lamina_imagenes") else [],
         "report_ids": list(dict.fromkeys(body.report_ids)) if body.tipo == "reportes_semana" else [],
     }
     await db.presentaciones.update_one(
@@ -10080,8 +10082,8 @@ async def update_informacion_particular(
     idx = next((i for i, s in enumerate(secciones) if s["id"] == sec_id), None)
     if idx is None:
         raise HTTPException(404, "Sección no existe")
-    if secciones[idx]["tipo"] != "informacion_particular":
-        raise HTTPException(400, "Esta sección no es de tipo informacion_particular")
+    if secciones[idx]["tipo"] not in ("informacion_particular", "lamina_imagenes"):
+        raise HTTPException(400, "Esta sección no admite bloques con fotos")
     for b in body.bloques:
         if b.node_id:
             node = await db.location_nodes.find_one({"id": b.node_id, "project_id": pid})
@@ -10192,14 +10194,14 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
     secciones = sorted(pres.get("secciones") or [], key=lambda s: s.get("orden", 0))
 
     # Fotos elegidas de los reportes de la semana: se traen aquí y se vuelven fotos normales.
-    _ref_ids = {f["report_id"] for s_ in secciones if s_.get("tipo") == "informacion_particular"
+    _ref_ids = {f["report_id"] for s_ in secciones if s_.get("tipo") in ("informacion_particular", "lamina_imagenes")
                 for b_ in (s_.get("bloques") or []) for f in (b_.get("fotos") or [])
                 if not f.get("photo") and f.get("report_id")}
     if _ref_ids:
         _rep_fotos = {r_["id"]: r_ async for r_ in db.reports.find(
             {"id": {"$in": list(_ref_ids)}, "project_id": pid}, {"_id": 0, "id": 1, "images": 1, "photo_captions": 1})}
         for s_ in secciones:
-            if s_.get("tipo") != "informacion_particular":
+            if s_.get("tipo") not in ("informacion_particular", "lamina_imagenes"):
                 continue
             for b_ in (s_.get("bloques") or []):
                 fotos_ok = []
@@ -10924,7 +10926,10 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                      (node.get("name") or "Estación").upper(), size=13, bold=True, color=BRAND_RGB)
 
         def _foto_cell(slide, f, cx, cy, cell_w, cell_h):
-            add_picture_b64(slide, f.get("photo"), cx, cy, cell_w, cell_h)
+            if f.get("ajustar"):
+                _add_picture_fit(slide, f.get("photo"), cx, cy, cell_w, cell_h)
+            else:
+                add_picture_b64(slide, f.get("photo"), cx, cy, cell_w, cell_h)
             if f.get("destacado"):
                 _rect(slide, cx, cy, cell_w, _Cm(0.5), fill_rgb=(0xFE, 0xF3, 0xC7))
                 add_text(slide, cx + _Cm(0.05), cy, cell_w - _Cm(0.1), _Cm(0.45),
@@ -10959,6 +10964,41 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
             hero_h = int(h * 0.5)
             _foto_cell(slide, fotos[0], x, y, w, hero_h)
             _foto_grid(slide, rest, x, int(y + hero_h + gap), w, int(h - hero_h - gap), cols=3)
+
+        def slide_lamina_imagenes(seccion):
+            """Lámina libre para subir fotos y gráficas: banda con el título de la sección,
+            título del bloque, viñetas opcionales y cuadrícula automática de imágenes
+            (1, 2, 3, 2×2, 3×2 o 4×2 según cuántas haya; más de 8 pasan a otra lámina)."""
+            banda = (seccion.get("titulo") or "INFORMACIÓN").upper()
+            bloques = seccion.get("bloques") or []
+            if not bloques:
+                slide = _clone_membrete()
+                _encabezado(slide, banda)
+                add_text(slide, MARGIN_X, TOP_MARGIN, content_w, _Cm(1), "Sección sin imágenes todavía.",
+                         size=13, color=MUTED_RGB, align=_PP_ALIGN.CENTER)
+                return
+            cols_por_n = {1: 1, 2: 2, 3: 3, 4: 2, 5: 3, 6: 3, 7: 4, 8: 4}
+            for bloque in bloques:
+                fotos = bloque.get("fotos") or []
+                lineas = [a_.strip() for a_ in (bloque.get("actividades") or []) if a_.strip()]
+                trozos = [fotos[i:i + 8] for i in range(0, len(fotos), 8)] or [[]]
+                for k, trozo in enumerate(trozos):
+                    slide = _clone_membrete()
+                    _encabezado(slide, banda)
+                    y0 = _y_bajo_banda()
+                    titulo = (bloque.get("titulo") or "").strip()
+                    if titulo and titulo != "Sin título":
+                        add_text(slide, MARGIN_X, int(y0 + _Cm(0.2)), content_w, _Cm(1.1),
+                                 titulo.upper() + (" (cont.)" if k else ""), size=15, bold=True, color=BRAND_RGB,
+                                 align=_PP_ALIGN.CENTER)
+                        y0 = int(y0 + _Cm(1.5))
+                    if lineas and not k:
+                        alto_txt = int(_Cm(0.62) * min(len(lineas), 5) + _Cm(0.4))
+                        _vinetas(slide, MARGIN_X, int(y0 + _Cm(0.1)), content_w, alto_txt, lineas[:5], size=11)
+                        y0 = int(y0 + alto_txt + _Cm(0.3))
+                    if trozo:
+                        _foto_grid(slide, trozo, MARGIN_X, int(y0 + _Cm(0.2)), content_w,
+                                   int(SH - y0 - _Cm(1.3)), cols=cols_por_n[len(trozo)])
 
         def slide_informacion_particular(seccion):
             """Estación / intertramo como en la referencia: título, acceso al predio y
@@ -11565,6 +11605,8 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                 slide_croquis_estacion(s.get("node_id"))
             elif tipo == "informacion_particular":
                 slide_informacion_particular(s)
+            elif tipo == "lamina_imagenes":
+                slide_lamina_imagenes(s)
             elif tipo == "avance_grafico":
                 slide_avance_grafico(s.get("plano_id"))
             elif tipo == "reportes_semana":

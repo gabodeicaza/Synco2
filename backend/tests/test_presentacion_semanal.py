@@ -119,6 +119,15 @@ async def _scenario(tmp_path: Path, con_plantilla: bool):
         await server.update_presentacion_seccion(
             pid, created["id"], sec["id"], server.PresentacionSeccionPatch(report_ids=[rid_in]), user)
 
+        lam = await server.create_presentacion_seccion(
+            pid, created["id"], server.PresentacionSeccionIn(tipo="lamina_imagenes", titulo="Grafica propia", orden=99), user)
+        fotos = [server.InformacionParticularFotoIn(photo="data:image/png;base64," + PNG_B64, caption=f"Foto {i}", ajustar=(i == 0))
+                 for i in range(5)]
+        await server.update_informacion_particular(
+            pid, created["id"], lam["id"],
+            server.InformacionParticularBloquesPatch(bloques=[server.InformacionParticularBloqueIn(
+                titulo="Avance de pilonas", actividades=["Linea uno"], fotos=fotos)]), user)
+
         resp = await server.export_presentacion_pptx(pid, created["id"], user)
         data = b"".join([chunk async for chunk in resp.body_iterator])
         return Presentation(io.BytesIO(data)), tipos
@@ -154,6 +163,7 @@ def _verifica(prs):
     assert "Colado de zapatas" in todo           # reporte elegido
     assert "Reporte viejo" not in todo           # fuera de la semana / no elegido
     assert "(cont.)" in todo                     # 5 fotos → segunda lámina
+    assert "AVANCE DE PILONAS" in todo and "Foto 4" in todo   # lámina libre
     assert "Gracias" in todo
     assert "Componentes Electromecánicos" in todo and "26.79%" in todo   # resumen electromecánico
     assert "FALTANTES DE OBRA" in todo and "programa de montaje" in todo  # columnas de calidad

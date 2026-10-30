@@ -48,6 +48,7 @@ const TIPO_ICON: Record<PresentacionSeccionTipo, keyof typeof Ionicons.glyphMap>
   calidad: 'ribbon-outline',
   pendientes: 'alert-circle-outline',
   electromecanico: 'hardware-chip-outline',
+  lamina_imagenes: 'cloud-upload-outline',
 };
 
 const TIPO_LABEL: Record<PresentacionSeccionTipo, string> = {
@@ -68,12 +69,13 @@ const TIPO_LABEL: Record<PresentacionSeccionTipo, string> = {
   calidad: 'Calidad (automático)',
   pendientes: 'Pendientes generales (automático)',
   electromecanico: 'Sistema electromecánico (automático)',
+  lamina_imagenes: 'Imágenes y gráficas (subir las mías)',
 };
 
 const TIPO_ORDEN_PICKER: PresentacionSeccionTipo[] = [
   'portada', 'mapa_general', 'divisor', 'financiero',
   'seguimiento_estudios', 'croquis_estacion', 'informacion_particular', 'avance_grafico',
-  'reportes_semana', 'proyecto', 'electromecanico', 'calidad', 'pendientes', 'ambiental', 'social', 'seguridad', 'cierre',
+  'reportes_semana', 'proyecto', 'electromecanico', 'calidad', 'pendientes', 'ambiental', 'social', 'seguridad', 'lamina_imagenes', 'cierre',
 ];
 
 /** "4 – 10 sep" a partir de la fecha del informe (fecha − 6 días .. fecha). */
@@ -234,6 +236,11 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
     setTipoPickerOpen(false);
     if (tipo === 'divisor') {
       setConfigTipo('divisor');
+      setConfigTitulo('');
+      return;
+    }
+    if (tipo === 'lamina_imagenes') {
+      setConfigTipo('lamina_imagenes');
       setConfigTitulo('');
       return;
     }
@@ -453,6 +460,10 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
 
   function seccionSubtitle(s: PresentacionSeccion): string {
     if (s.tipo === 'divisor') return s.titulo || 'Sin título';
+    if (s.tipo === 'lamina_imagenes') {
+      const n = (s.bloques || []).reduce((a, b) => a + b.fotos.length, 0);
+      return `${s.titulo || 'Sin título'} · ${n} imagen${n === 1 ? '' : 'es'}`;
+    }
     if (s.tipo === 'croquis_estacion') return nodes.find((n) => n.id === s.node_id)?.name || s.node_id || 'Estación no cargada';
     if (s.tipo === 'avance_grafico') return planos.find((p) => p.id === s.plano_id)?.nombre || s.plano_id || 'Plano no cargado';
     if (['ambiental', 'social', 'seguridad', 'proyecto', 'calidad', 'pendientes', 'electromecanico'].includes(s.tipo)) {
@@ -527,7 +538,7 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
                         <Ionicons name="checkbox-outline" size={18} color={colors.primary} />
                       </Pressable>
                     ) : null}
-                    {s.tipo === 'informacion_particular' ? (
+                    {s.tipo === 'informacion_particular' || s.tipo === 'lamina_imagenes' ? (
                       <Pressable accessibilityRole="button" accessibilityLabel={a11y('editar')} onPress={() => openBloquesEditor(s)} hitSlop={8} style={{ paddingHorizontal: 4 }}>
                         <Ionicons name="create-outline" size={18} color={colors.primary} />
                       </Pressable>
@@ -613,6 +624,24 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
         </Modal>
 
         {/* Modal: config de "divisor" (título) */}
+        <Modal visible={configTipo === 'lamina_imagenes'} transparent animationType="slide" onRequestClose={() => setConfigTipo(null)}>
+          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
+            <View style={styles.modalCard}>
+              <Text style={styles.modalTitle}>Imágenes y gráficas</Text>
+              <Text style={styles.fieldLabel}>Título de la franja superior</Text>
+              <TextInput
+                value={configTitulo} onChangeText={setConfigTitulo}
+                placeholder="Ej. ACTIVIDADES SEMANALES DE OBRA ELECTROMECÁNICA"
+                placeholderTextColor={colors.textMuted} style={styles.input} autoFocus
+              />
+              <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
+                <Button label={t('presentacion.cancelar')} variant="secondary" onPress={() => setConfigTipo(null)} style={{ flex: 1 }} />
+                <Button label={t('presentacion.agregar')} loading={savingSeccion} onPress={() => createSeccion({ tipo: 'lamina_imagenes', titulo: configTitulo || 'INFORMACIÓN' })} style={{ flex: 1 }} />
+              </View>
+            </View>
+          </KeyboardAvoidingView>
+        </Modal>
+
         <Modal visible={configTipo === 'divisor'} transparent animationType="slide" onRequestClose={() => setConfigTipo(null)}>
           <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
             <View style={styles.modalCard}>
@@ -740,14 +769,14 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
                       <Ionicons name="trash-outline" size={18} color={colors.error} />
                     </Pressable>
                   </View>
-                  <Text style={styles.fieldLabel}>{t('presentacion.ligarAEstacionOpcionalJala')}</Text>
-                  <Pressable accessibilityRole="button"
+                  {bloquesSeccion?.tipo === 'lamina_imagenes' ? null : <Text style={styles.fieldLabel}>{t('presentacion.ligarAEstacionOpcionalJala')}</Text>}
+                  {bloquesSeccion?.tipo === 'lamina_imagenes' ? null : <Pressable accessibilityRole="button"
                     onPress={async () => { if (!nodes.length) { try { setNodes(await api.listNodes(projectId)); } catch { /* noop */ } } }}
                     style={styles.linkNodeBtn}
                   >
                     <Text style={styles.linkNodeTxt}>{b.node_id ? (nodes.find((n) => n.id === b.node_id)?.name || b.node_id) : t('presentacion.sinLigar')}</Text>
-                  </Pressable>
-                  {nodes.length ? (
+                  </Pressable>}
+                  {nodes.length && bloquesSeccion?.tipo !== 'lamina_imagenes' ? (
                     <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: spacing.sm }}>
                       <View style={{ flexDirection: 'row', gap: 6 }}>
                         <Pressable accessibilityRole="button" onPress={() => updateBloque(bIdx, { node_id: null })} style={[styles.chip, !b.node_id && styles.chipActive]}>
@@ -792,6 +821,9 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
                         placeholder={t('presentacion.pieDeFoto')} placeholderTextColor={colors.textMuted}
                         style={[styles.input, { flex: 1 }]}
                       />
+                      <Pressable accessibilityRole="button" accessibilityLabel="Gráfica: mostrar completa sin recortar" hitSlop={8} onPress={() => updateFoto(bIdx, fIdx, { ajustar: !f.ajustar })} style={{ paddingHorizontal: 6 }}>
+                        <Ionicons name={f.ajustar ? 'scan' : 'scan-outline'} size={18} color={f.ajustar ? colors.primary : colors.textMuted} />
+                      </Pressable>
                       <Pressable accessibilityRole="button" accessibilityLabel={a11y(f.destacado ? 'quitarDestacado' : 'destacar')} hitSlop={8} onPress={() => updateFoto(bIdx, fIdx, { destacado: !f.destacado })} style={{ paddingHorizontal: 6 }}>
                         <Ionicons name={f.destacado ? 'star' : 'star-outline'} size={18} color={f.destacado ? '#D97706' : colors.textMuted} />
                       </Pressable>

@@ -1093,6 +1093,8 @@ export interface EstudioDisciplinaAvance {
 }
 
 export interface InformacionParticularFoto {
+  /** Gráficas: mostrar la imagen completa, sin recortar. */
+  ajustar?: boolean;
   /** Foto subida a mano (data URL). Vacía cuando se eligió una foto de un reporte de la semana. */
   photo?: string | null;
   /** Foto elegida de un reporte de la semana: id del reporte e índice de la imagen. */
@@ -1116,7 +1118,7 @@ export type PresentacionSeccionTipo =
   | 'portada' | 'mapa_general' | 'divisor' | 'financiero'
   | 'seguimiento_estudios' | 'croquis_estacion' | 'informacion_particular' | 'avance_grafico'
   | 'reportes_semana' | 'cierre' | 'ambiental' | 'social' | 'seguridad'
-  | 'proyecto' | 'calidad' | 'pendientes' | 'electromecanico';
+  | 'proyecto' | 'calidad' | 'pendientes' | 'electromecanico' | 'lamina_imagenes';
 
 export interface PresentacionSeccion {
   id: string;
