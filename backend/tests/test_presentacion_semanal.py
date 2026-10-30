@@ -76,6 +76,11 @@ async def _scenario(tmp_path: Path, con_plantilla: bool):
     await server.db.pendientes_generales.insert_one({
         "id": str(uuid.uuid4()), "project_id": pid, "contrato": "obra", "titulo": "Control de Avance",
         "descripcion": "Programa pendiente de aval", "resuelto": False, "orden": 0, "created_at": now})
+    await server.db.estimaciones.insert_many([
+        {"id": str(uuid.uuid4()), "project_id": pid, "contrato": "obra", "numero": n, "estatus": "PAGADA",
+         "periodo_inicio": "2026-01-01", "periodo_fin": "2026-01-31", "obra_ejecutada": "1000.00",
+         "amortizacion": "100.00", "pct_amortizacion_anticipo": "10", "total_deducciones": "50.00",
+         "iva": "160.00", "total_neto": "1010.00", "fecha_pago": "2026-02-02"} for n in (1, 2)])
     try:
         fecha = now.date().isoformat()
         created = await server.create_presentacion(
@@ -100,7 +105,7 @@ async def _scenario(tmp_path: Path, con_plantilla: bool):
         await server.db.presentaciones.delete_many({"project_id": pid})
         await server.db.reports.delete_many({"project_id": pid})
         for col in ("ambiental_auditoria", "levantamientos_sociales", "seguridad_reportes",
-                    "estudios_bitacora", "pendientes_generales"):
+                    "estudios_bitacora", "pendientes_generales", "estimaciones"):
             await server.db[col].delete_many({"project_id": pid})
 
 
@@ -134,6 +139,8 @@ def _verifica(prs):
     assert "Levantamiento de poligonal" in todo  # Estudios y proyecto ejecutivo
     assert "Programa pendiente de aval" in todo  # Pendientes generales
     assert "Juan Perez" in todo                  # Seguridad automática
+    assert "TOTAL" in todo and "2,000.00" in todo   # fila TOTAL de estimaciones
+    assert "Estado Contractual y Financiero" in todo
     assert "DATOS DE CONTRATO (OBRA)" in todo    # financiero con datos de contrato
     # portada, mapa, 3 divisores, contrato, estudios, 2 láminas de reporte, cierre
     assert len(prs.slides) >= 10

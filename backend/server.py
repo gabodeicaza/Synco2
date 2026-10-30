@@ -8133,8 +8133,19 @@ def _estimaciones_bloques(registros: List[dict]) -> List[dict]:
                 money("total_neto"),
                 _fmt_iso_dmy(r["fecha_pago"]) if r.get("fecha_pago") else "-",
             ])
+        def _suma(k):
+            return sum((to_decimal(r.get(k)) for r in regs if r.get(k) is not None), start=Decimal("0"))
+
+        ultimo = regs[-1]
+        total_row = ["", "TOTAL", "", _money_fmt(_suma("obra_ejecutada")), _money_fmt(acumulado),
+                     _money_fmt(_suma("amortizacion")),
+                     _pct_fmt(ultimo["pct_amortizacion_anticipo"]) if ultimo.get("pct_amortizacion_anticipo") is not None else "-",
+                     _money_fmt(_suma("total_deducciones")), _money_fmt(_suma("iva")),
+                     _money_fmt(_suma("total_neto")), ""]
         bloques.append({
             "type": "table",
+            "contrato": contrato,
+            "total_row": total_row,
             "heading": f"CONCENTRADO ESTIMACIONES ({CONTRATO_FIN_LABEL[contrato]})",
             "headers": ["N°", "PERIODO", "ESTATUS GENERAL", "OBRA EJECUTADA", "SUMA ACUMULADA", "AMORTIZACIÓN",
                         "% ACUM. AMORT. ANTICIPO", "TOTAL DEDUCCIONES", "IVA 16%", "TOTAL NETO", "FECHA DE PAGO"],
@@ -9613,6 +9624,8 @@ _PRES_AUTO_MODULOS = {
     "calidad": ("pruebas_calidad", "control_calidad"),
     "pendientes": ("pendientes_generales",),
     "electromecanico": ("electromecanica",),
+    # No es una sección: alimenta las gráficas de avance dentro de FINANCIERO.
+    "financiero_extra": ("avance_obra",),
 }
 
 
@@ -9643,7 +9656,7 @@ def _secciones_plantilla_semanal() -> List[dict]:
     # Electromecánica, Aseguramiento y control de calidad, Gracias.
     tipos = [
         ("portada", None), ("mapa_general", None),
-        ("divisor", "FINANCIERO"), ("financiero", None), ("pendientes", None),
+        ("divisor", "FINANCIERO"), ("financiero", None),
         ("divisor", "ESTUDIOS Y ANÁLISIS"), ("seguimiento_estudios", None),
         ("divisor", "AVANCE DE OBRA"), ("reportes_semana", None),
         ("divisor", "SEGURIDAD"), ("seguridad", None),
@@ -10080,12 +10093,17 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
         async for r_ in db.reports.find({"id": {"$in": _rids}, "project_id": pid}):
             reports_by_id[r_["id"]] = r_
 
-    _tipos_auto = sorted({s_.get("tipo") for s_ in secciones} & set(_PRES_AUTO_MODULOS))
+    _tipos_presentes = {s_.get("tipo") for s_ in secciones}
+    if "financiero" in _tipos_presentes:
+        _tipos_presentes.add("financiero_extra")
+    _tipos_auto = sorted(_tipos_presentes & set(_PRES_AUTO_MODULOS))
     modulos_auto: dict = await _presentacion_modulos_auto(pid, proj, pres["fecha"], _tipos_auto) if _tipos_auto else {}
 
     contrato_bloques: list = []
     estimaciones_bloques: list = []
+    pendientes_rows: list = []
     if any(s_.get("tipo") == "financiero" for s_ in secciones):
+        pendientes_rows = await db.pendientes_generales.find({"project_id": pid, "resuelto": {"$ne": True}}).to_list(length=500)
         contrato_bloques = _contrato_bloques(proj)
         estimaciones_bloques = _estimaciones_bloques(await db.estimaciones.find({"project_id": pid}).to_list(length=500))
 
@@ -10262,10 +10280,11 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
             Solo con plantilla: sin ella no hay franja donde colocarlo."""
             if tpl_master_slide is None or not texto:
                 return
-            add_text(slide, int(SW * 0.355), _Cm(0.35), int(SW * 0.5), _Cm(1.0), texto,
-                     size=12, bold=True, color=WHITE_RGB)
+            add_text(slide, int(SW * 0.351), _Cm(0.3), int(SW * 0.5), _Cm(1.2), texto,
+                     size=16 if len(texto) <= 40 else 13, bold=False, color=WHITE_RGB)
 
-        def _tabla(slide, x, y, w, headers, rows, fracs, *, size=8, row_h=_Cm(0.7), head_h=_Cm(1.2)):
+        def _tabla(slide, x, y, w, headers, rows, fracs, *, size=8, row_h=_Cm(0.7), head_h=_Cm(1.2),
+                   dark_cols=(), total_row=False):
             """Tabla nativa (python-pptx): encabezado en color de marca,
             filas blancas con borde. `fracs` = ancho relativo por columna."""
             n_rows = len(rows) + 1
@@ -10294,12 +10313,17 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                 run.font.bold = bold
                 run.font.color.rgb = _PRGBColor(*fg)
 
+            oscuro = tuple(int(c * 0.72) for c in BRAND_RAW_RGB)
             for ci, h in enumerate(headers):
-                _cell(tbl.cell(0, ci), h, bold=True, fg=WHITE_RGB, bg=BRAND_RAW_RGB)
+                _cell(tbl.cell(0, ci), h, bold=True, fg=WHITE_RGB, bg=oscuro if ci in dark_cols else BRAND_RAW_RGB)
             for ri, row in enumerate(rows, start=1):
+                es_total = total_row and ri == len(rows)
                 for ci, v in enumerate(row):
-                    _cell(tbl.cell(ri, ci), v, bold=False, fg=TEXT_RGB,
-                          bg=WHITE_RGB if ri % 2 else (0xF8, 0xF1, 0xF4))
+                    if es_total:
+                        _cell(tbl.cell(ri, ci), v, bold=True, fg=WHITE_RGB, bg=BRAND_RAW_RGB)
+                    else:
+                        _cell(tbl.cell(ri, ci), v, bold=False, fg=TEXT_RGB,
+                              bg=WHITE_RGB if ri % 2 else (0xF8, 0xF1, 0xF4))
             return tbl
 
         def _cover_text_shapes(slide):
@@ -10415,22 +10439,141 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                         if unida:
                             tbl.cell(ri, 1).merge(tbl.cell(ri, 2))
 
-        def _slides_estimaciones():
+        def _slides_estimaciones(contrato):
+            """Concentrado de estimaciones del contrato (obra / supervisión): nombre
+            del contratista arriba y tabla con fila TOTAL, como en la referencia."""
+            empresa = ((proj.get("datos_contrato") or {}).get(contrato) or {}).get("empresa") or ""
             for blq in estimaciones_bloques:
-                headers, rows, fr = blq["headers"], blq["rows"], blq["col_widths"]
-                per_slide = 14
-                for k in range(0, max(len(rows), 1), per_slide):
+                if blq.get("contrato") != contrato:
+                    continue
+                headers, rows, fr = blq["headers"], list(blq["rows"]), blq["col_widths"]
+                per_slide = 11
+                paginas = [rows[k:k + per_slide] for k in range(0, max(len(rows), 1), per_slide)]
+                for pi, chunk in enumerate(paginas):
                     slide = _clone_membrete()
                     _encabezado(slide, blq["heading"])
-                    chunk = rows[k:k + per_slide]
-                    _tabla(slide, MARGIN_X, TOP_MARGIN, content_w, headers, chunk, fr,
-                           size=8, row_h=_Cm(0.95), head_h=_Cm(1.6))
+                    y = TOP_MARGIN
+                    if empresa:
+                        add_text(slide, MARGIN_X, int(_Cm(2.7)), content_w, _Cm(1.0), str(empresa).upper(),
+                                 size=14, bold=True, color=BRAND_RGB, align=_PP_ALIGN.CENTER)
+                        y = int(_Cm(4.0))
+                    ultima = pi == len(paginas) - 1
+                    if ultima and blq.get("total_row"):
+                        chunk = chunk + [blq["total_row"]]
+                    _tabla(slide, MARGIN_X, y, content_w, headers, chunk, fr, size=9, row_h=_Cm(1.15),
+                           head_h=_Cm(1.8), dark_cols=(3, 10), total_row=bool(ultima and blq.get("total_row")))
+
+        def _slides_graficas_avance(contrato):
+            """Gráfica de avance y físico-financiera del contrato (las del módulo
+            Avance de obra): una lámina por gráfica con su pie."""
+            etiqueta = CONTRATO_FIN_LABEL[contrato]
+            for _titulo, bloques in (modulos_auto.get("financiero_extra") or []):
+                for blq in bloques:
+                    h = blq.get("heading") or ""
+                    if blq.get("type") != "imagen" or f"({etiqueta})" not in h:
+                        continue
+                    if not (h.startswith("GRÁFICA DE AVANCE") or h.startswith("FÍSICO")):
+                        continue
+                    sl = _clone_membrete()
+                    _encabezado(sl, h)
+                    cap = blq.get("caption") or ""
+                    _add_picture_fit(sl, blq.get("imagen"), MARGIN_X, int(_Cm(2.6)), content_w,
+                                     int(SH - _Cm(2.6) - BOTTOM_MARGIN - (_Cm(1.0) if cap else 0)))
+                    if cap:
+                        add_text(sl, MARGIN_X, int(SH - BOTTOM_MARGIN - _Cm(0.9)), content_w, _Cm(0.8), cap,
+                                 size=11, color=TEXT_RGB, align=_PP_ALIGN.CENTER)
+
+        def _caja_redonda(slide, x, y, w, h, color):
+            box = slide.shapes.add_shape(_MSO_SHAPE.ROUNDED_RECTANGLE, x, y, w, h)
+            box.shadow.inherit = False
+            box.fill.background()
+            box.line.color.rgb = _PRGBColor(*color)
+            box.line.width = _Pt(1.5)
+            try:
+                box.adjustments[0] = 0.08
+            except Exception:
+                pass
+            return box
+
+        def _slide_estado_contractual():
+            """Resumen "Estado Contractual y Financiero": tres cifras clave del
+            periodo (motor EVM) y los pendientes vigentes en dos cuadros."""
+            obra = [r for r in pendientes_rows if r.get("contrato", "obra") == "obra"]
+            resto = [r for r in pendientes_rows if r.get("contrato") == "supervision"]
+            if not analisis and not obra and not resto:
+                return
+            slide = _clone_membrete()
+            _encabezado(slide, "PENDIENTES O REQUERIMIENTOS GENERALES (OBRA)")
+            add_text(slide, MARGIN_X, int(_Cm(2.3)), content_w, _Cm(1.4), "Estado Contractual y Financiero",
+                     size=24, bold=True, color=BRAND_RGB)
+            if periodo_financiero_txt:
+                add_text(slide, MARGIN_X, int(_Cm(3.7)), content_w, _Cm(0.8), periodo_financiero_txt.replace("Periodo:", "Periodo "),
+                         size=11, color=MUTED_RGB)
+            if analisis:
+                bac = analisis.get("bac")
+                vc = analisis.get("variacion_cronograma")
+                desv = None
+                try:
+                    if vc is not None and bac:
+                        desv = float(vc) / float(bac) * 100.0
+                except Exception:
+                    desv = None
+                spi = analisis.get("spi")
+                tarjetas = [
+                    (f"{desv:+.2f}%".replace("+", "") if desv is not None else "—", "Desviación física del periodo vs programa",
+                     RED_RGB if (desv or 0) < 0 else GREEN_RGB, BRAND_RAW_RGB),
+                    (f"{'-' if (vc or 0) < 0 else ''}${dec_to_str(abs(vc))}" if vc is not None else "—",
+                     "Obra programada no ejecutada" if (vc or 0) < 0 else "Obra ejecutada sobre programa",
+                     RED_RGB if (vc or 0) < 0 else GREEN_RGB, BRAND_RAW_RGB),
+                    (dec_to_str(spi) if spi is not None else "—", "SPI (índice de desempeño del cronograma)",
+                     TEXT_RGB, (0xF5, 0xC2, 0x11)),
+                ]
+                gap = _Cm(0.9)
+                cw = int((content_w - gap * 2) / 3)
+                for i, (val, lbl, fg, borde) in enumerate(tarjetas):
+                    x = int(MARGIN_X + i * (cw + gap))
+                    _caja_redonda(slide, x, int(_Cm(4.7)), cw, _Cm(2.7), borde).adjustments[0] = 0.04
+                    add_text(slide, x, int(_Cm(4.85)), cw, _Cm(1.3), val, size=26, bold=True, color=fg, align=_PP_ALIGN.CENTER)
+                    add_text(slide, int(x + _Cm(0.3)), int(_Cm(6.2)), int(cw - _Cm(0.6)), _Cm(1.1), lbl, size=10,
+                             color=TEXT_RGB, align=_PP_ALIGN.CENTER)
+            top = int(_Cm(7.9))
+            alto = int(SH - top - _Cm(1.6))
+            gap = _Cm(0.9)
+            cw = int((content_w - gap) / 2)
+            for i, (tit, items) in enumerate((("Riesgos de Pago", obra), ("Diagnóstico de Desfases (Causas Raíz)", resto))):
+                x = int(MARGIN_X + i * (cw + gap))
+                _caja_redonda(slide, x, top, cw, alto, BRAND_RAW_RGB)
+                add_text(slide, int(x + _Cm(0.5)), int(top + _Cm(0.2)), int(cw - _Cm(1.0)), _Cm(1.0), tit,
+                         size=15, bold=True, color=BRAND_RGB)
+                tb = slide.shapes.add_textbox(int(x + _Cm(0.5)), int(top + _Cm(1.3)), int(cw - _Cm(1.0)), int(alto - _Cm(1.6)))
+                tf = tb.text_frame
+                tf.word_wrap = True
+                for li, r in enumerate(items[:6]):
+                    par = tf.paragraphs[0] if li == 0 else tf.add_paragraph()
+                    par.space_after = _Pt(4)
+                    r1 = par.add_run()
+                    r1.text = "• " + (r.get("titulo") or "")
+                    r1.font.size = _Pt(10)
+                    r1.font.bold = True
+                    r1.font.italic = True
+                    r1.font.name = "Roboto"
+                    r1.font.color.rgb = _PRGBColor(*TEXT_RGB)
+                    if r.get("descripcion"):
+                        r2 = par.add_run()
+                        r2.text = "  " + r["descripcion"]
+                        r2.font.size = _Pt(10)
+                        r2.font.name = "Roboto"
+                        r2.font.color.rgb = _PRGBColor(*TEXT_RGB)
 
         def slide_financiero():
             if contrato_bloques:
                 _slide_contrato()
-            if estimaciones_bloques:
-                _slides_estimaciones()
+            for contrato in CONTRATOS_FIN:
+                if estimaciones_bloques:
+                    _slides_estimaciones(contrato)
+                _slides_graficas_avance(contrato)
+                if contrato == "obra":
+                    _slide_estado_contractual()
             if contrato_bloques or estimaciones_bloques:
                 return
             # Sin datos de contrato ni estimaciones: cae al resumen EVM de la semana.
