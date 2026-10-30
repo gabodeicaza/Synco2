@@ -10248,8 +10248,13 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
             analisis = None
 
     disciplina_rows: list = []
+    disciplina_nombres: dict = {}
     if any(s.get("tipo") == "seguimiento_estudios" for s in secciones):
         disciplina_rows = await db.estudio_disciplina_avance.find({"project_id": pid}).to_list(length=1000)
+        _ids_est = {r_["node_id"] for r_ in disciplina_rows if r_.get("node_id")}
+        if _ids_est:
+            async for n_ in db.location_nodes.find({"id": {"$in": list(_ids_est)}, "project_id": pid}, {"id": 1, "name": 1}):
+                disciplina_nombres[n_["id"]] = n_.get("name") or ""
 
     general_images: List[str] = []
     if any(s.get("tipo") == "mapa_general" for s in secciones):
@@ -10800,36 +10805,75 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                          "Sin gasto real capturado en el periodo: el CPI y la variación de costo no se calculan.",
                          size=10, color=MUTED_RGB, align=_PP_ALIGN.CENTER)
 
-        def slide_seguimiento_estudios():
+        def _slide_seguimiento(filas_por_disc, titulo=None):
+            """Línea de tiempo de la referencia: porcentaje, estado, tarjeta de la disciplina
+            y círculo numerado sobre una línea punteada; los colores se alternan
+            vino / beige / rosa."""
+            from pptx.enum.dml import MSO_LINE as _MSO_LINE
             slide = _clone_membrete()
             _encabezado(slide, "SEGUIMIENTO A ESTUDIOS Y ANÁLISIS")
-            por_disciplina = {r["disciplina"]: r for r in disciplina_rows if r.get("node_id") is None}
+            if titulo:
+                add_text(slide, int(SW * 0.02), int(SH * 0.125), int(SW * 0.8), _Cm(1.0), titulo, size=16, bold=True, color=BRAND_RGB)
+            ciclo = [(BRAND_RAW_RGB, WHITE_RGB), ((0xE8, 0xDD, 0xB5), BRAND_RGB), ((0xD9, 0x9A, 0x94), WHITE_RGB)]
             keys = list(ESTUDIO_DISCIPLINA_AVANCE_KEYS)
             n = max(len(keys), 1)
-            gap = _Cm(0.25)
-            col_w = int((content_w - gap * (n - 1)) / n)
-            base_y = int(SH * 0.30)
-            line_y = int(SH * 0.80)
-            _rect(slide, MARGIN_X, line_y + _Cm(0.4), content_w, _Pt(1.5), fill_rgb=_tint(BRAND_RAW_RGB, 0.4))
+            gap = int(SW * 0.0075)
+            margen = int(SW * 0.02)
+            col_w = int((SW - 2 * margen - gap * (n - 1)) / n)
+            card_y, card_h = int(SH * 0.45), int(SH * 0.21)
+            line_y = int(SH * 0.745)
+            d = int(SH * 0.068)
+
+            def _linea(x1, y1, x2, y2, color, grosor=1.25, punteada=True):
+                ln = slide.shapes.add_connector(1, x1, y1, x2, y2)
+                ln.line.color.rgb = _PRGBColor(*color)
+                ln.line.width = _Pt(grosor)
+                if punteada:
+                    ln.line.dash_style = _MSO_LINE.DASH
+
+            _linea(0, line_y + int(d / 2), SW, line_y + int(d / 2), (0x4B, 0x55, 0x6B), 1.25)
             for i, k in enumerate(keys):
-                pct = (por_disciplina.get(k) or {}).get("porcentaje", 0) or 0
-                done = pct >= 100
-                x = int(MARGIN_X + i * (col_w + gap))
-                add_text(slide, x, base_y - _Cm(2.6), col_w, _Cm(1.0), f"{pct:g}%", size=13, bold=True,
-                         color=GREEN_RGB if done else TEXT_RGB, align=_PP_ALIGN.CENTER)
-                add_text(slide, x, base_y - _Cm(1.5), col_w, _Cm(1.0), "TERMINADO" if done else "EN PROCESO",
-                         size=7, bold=True, color=GREEN_RGB if done else MUTED_RGB, align=_PP_ALIGN.CENTER)
-                _rect(slide, x, base_y, col_w, _Cm(3.6), fill_rgb=_tint(BRAND_RAW_RGB, 0.55) if done else BRAND_RAW_RGB)
-                add_text(slide, x, base_y + _Cm(1.0), col_w, _Cm(2.4), ESTUDIO_DISCIPLINA_AVANCE_LABEL[k],
-                         size=8, bold=True, color=WHITE_RGB, align=_PP_ALIGN.CENTER)
-                d = _Cm(0.9)
-                dot = slide.shapes.add_shape(_MSO_SHAPE.OVAL, int(x + col_w / 2 - d / 2), line_y, d, d)
-                dot.shadow.inherit = False
-                dot.fill.solid()
-                dot.fill.fore_color.rgb = _PRGBColor(*WHITE_RGB)
-                dot.line.color.rgb = _PRGBColor(*BRAND_RAW_RGB)
-                add_text(slide, int(x + col_w / 2 - d / 2), line_y + _Cm(0.1), d, d, f"{i + 1:02d}",
-                         size=7, bold=True, color=BRAND_RGB, align=_PP_ALIGN.CENTER)
+                fila = filas_por_disc.get(k) or {}
+                pct = fila.get("porcentaje", 0) or 0
+                done = pct >= 100 or fila.get("estatus") == "terminado"
+                fondo, letra = ciclo[i % 3]
+                acento = BRAND_RAW_RGB if i % 3 == 0 else ((0xC9, 0xB9, 0x70) if i % 3 == 1 else (0xD9, 0x9A, 0x94))
+                x = int(margen + i * (col_w + gap))
+                cx = int(x + col_w / 2)
+                add_text(slide, x, int(SH * 0.255), col_w, _Cm(0.8), f"{pct:.2f}%", size=11, bold=True, color=BRAND_RGB,
+                         align=_PP_ALIGN.CENTER)
+                _linea(cx, int(SH * 0.32), cx, int(SH * 0.37), BRAND_RAW_RGB, 1.5)
+                add_text(slide, x, int(SH * 0.385), col_w, _Cm(1.0), "TERMINADO" if done else "EN PROCESO", size=7, bold=True,
+                         color=BRAND_RGB, align=_PP_ALIGN.CENTER)
+                card = slide.shapes.add_shape(_MSO_SHAPE.ROUNDED_RECTANGLE, x, card_y, col_w, card_h)
+                card.shadow.inherit = False
+                card.fill.solid()
+                card.fill.fore_color.rgb = _PRGBColor(*fondo)
+                card.line.fill.background()
+                try:
+                    card.adjustments[0] = 0.08
+                except Exception:
+                    pass
+                add_text(slide, x, int(card_y + card_h * 0.55), col_w, int(card_h * 0.42), ESTUDIO_DISCIPLINA_AVANCE_LABEL[k].upper(),
+                         size=8, bold=True, color=letra, align=_PP_ALIGN.CENTER)
+                c = slide.shapes.add_shape(_MSO_SHAPE.OVAL, int(cx - d / 2), line_y, d, d)
+                c.shadow.inherit = False
+                c.fill.solid()
+                c.fill.fore_color.rgb = _PRGBColor(*WHITE_RGB)
+                c.line.color.rgb = _PRGBColor(*acento)
+                c.line.width = _Pt(3)
+                add_text(slide, int(cx - d / 2), int(line_y + d * 0.22), d, int(d * 0.6), f"{i + 1:02d}", size=9, bold=True,
+                         color=acento if i % 3 != 1 else (0xA8, 0x95, 0x4A), align=_PP_ALIGN.CENTER)
+
+        def slide_seguimiento_estudios():
+            glob_ = {r["disciplina"]: r for r in disciplina_rows if r.get("node_id") is None}
+            _slide_seguimiento(glob_)
+            por_est: dict = {}
+            for r in disciplina_rows:
+                if r.get("node_id"):
+                    por_est.setdefault(r["node_id"], {})[r["disciplina"]] = r
+            for nid_, filas_ in sorted(por_est.items(), key=lambda kv: disciplina_nombres.get(kv[0], "")):
+                _slide_seguimiento(filas_, disciplina_nombres.get(nid_) or "Estación")
 
         def _add_picture_cover(slide, b64_str, x, y, w, h):
             """Imagen que LLENA el rectángulo (recorta lo que sobra, sin deformar)."""
@@ -11100,6 +11144,8 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                     return "SALVAMENTO ARQUEOLÓGICO"
                 if "LEVANT" in h or "DICT" in h:
                     return "LEVANTAMIENTOS NOTARIALES"
+            if modulo == "ESTUDIOS Y PROYECTO EJECUTIVO":
+                return "TOPOGRAFÍA" if "TOPOGRAF" in h else "ACTIVIDADES GENERALES"
             if modulo == "CUMPLIMIENTO SEGURIDAD E HIGIENE" and (
                     h.startswith("CUMPLIMIENTO") or h.startswith("PORCENTAJE DE CUMPLIMIENTO")):
                 return "INDICADORES SEGURIDAD E HIGIENE"
@@ -11204,12 +11250,16 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                 elif t == "estudios_avances":
                     for g in b.get("grupos") or []:
                         items = g.get("items") or []
+                        _ult_h[0] = g.get("disciplina") or ""
                         for k in range(0, max(len(items), 1), 9):
                             last = _clone_membrete()
                             _encabezado(last, _banda(modulo_titulo, _ult_h[0]))
-                            _auto_titulo(last, (g.get("disciplina") or "").upper() + (" (cont.)" if k else ""))
-                            tb = last.shapes.add_textbox(MARGIN_X, int(TOP_MARGIN + _Cm(1.1)), content_w,
-                                                         int(SH - BOTTOM_MARGIN - TOP_MARGIN - _Cm(1.1)))
+                            add_text(last, MARGIN_X, int(SH * 0.13), content_w, _Cm(1.2), "ESTUDIOS Y PROYECTO EJECUTIVO", size=20,
+                                     bold=True, color=BRAND_RGB)
+                            add_text(last, MARGIN_X, int(_Cm(3.8)), content_w, _Cm(0.9),
+                                     (g.get("disciplina") or "").upper() + (" (cont.)" if k else ""), size=14, bold=True, color=BRAND_RGB)
+                            tb = last.shapes.add_textbox(MARGIN_X, int(_Cm(5.0)), content_w,
+                                                         int(SH - BOTTOM_MARGIN - _Cm(5.0)))
                             tf = tb.text_frame
                             tf.word_wrap = True
                             for li, txt in enumerate(items[k:k + 9]):

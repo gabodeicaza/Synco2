@@ -80,6 +80,9 @@ async def _scenario(tmp_path: Path, con_plantilla: bool):
     await server.db.seguridad_indicadores.insert_one({
         "id": str(uuid.uuid4()), "project_id": pid, "tipo": "campo", "fecha": now.date().isoformat(),
         "porcentaje": 69.13, "clave": "campo|x"})
+    await server.db.estudio_disciplina_avance.insert_many([
+        {"id": str(uuid.uuid4()), "project_id": pid, "node_id": None, "disciplina": "topografia", "porcentaje": 98, "estatus": "en_proceso"},
+        {"id": str(uuid.uuid4()), "project_id": pid, "node_id": "n", "disciplina": "urbano", "porcentaje": 100, "estatus": "terminado"}])
     await server.db.estudios_bitacora.insert_one({
         "id": str(uuid.uuid4()), "project_id": pid, "disciplina": "topografia",
         "texto": "Levantamiento de poligonal", "created_at": now})
@@ -115,7 +118,7 @@ async def _scenario(tmp_path: Path, con_plantilla: bool):
         await server.db.presentaciones.delete_many({"project_id": pid})
         await server.db.reports.delete_many({"project_id": pid})
         for col in ("ambiental_auditoria", "levantamientos_sociales", "seguridad_reportes",
-                    "estudios_bitacora", "pendientes_generales", "estimaciones", "seguridad_indicadores", "ambiental"):
+                    "estudios_bitacora", "pendientes_generales", "estimaciones", "seguridad_indicadores", "ambiental", "estudio_disciplina_avance"):
             await server.db[col].delete_many({"project_id": pid})
 
 
@@ -151,6 +154,7 @@ def _verifica(prs):
     assert "Juan Perez" in todo                  # Seguridad automática
     assert "TOTAL" in todo and "2,000.00" in todo   # fila TOTAL de estimaciones
     assert "Estado Contractual y Financiero" in todo
+    assert "98.00%" in todo and "100.00%" in todo   # seguimiento de estudios
     assert "Cruz de seguridad" in todo and "69.13%" in todo   # láminas de Seguridad
     assert "DATOS DE CONTRATO (OBRA)" in todo    # financiero con datos de contrato
     # portada, mapa, 3 divisores, contrato, estudios, 2 láminas de reporte, cierre
