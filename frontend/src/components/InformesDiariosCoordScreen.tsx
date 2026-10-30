@@ -12,6 +12,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { api, Area, InformeDiario } from '@/src/api';
 import { useAuth } from '@/src/auth-context';
 import { BuscadorPersonas } from '@/src/components/BuscadorPersonas';
+import { InformeEditor } from '@/src/components/InformeEditor';
 import { colors, radius, spacing } from '@/src/theme';
 import { filtrarPersonas } from '@/src/utils/buscarPersonas';
 import { dayjs } from '@/src/utils/tz';
@@ -46,6 +47,7 @@ export function InformesDiariosCoordScreen({ projectId, onBack }: { projectId: s
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [descargando, setDescargando] = useState<string | null>(null);
+  const [editando, setEditando] = useState<Fila | null>(null);
 
   const cargar = useCallback(async () => {
     if (!projectId) return;
@@ -111,6 +113,13 @@ export function InformesDiariosCoordScreen({ projectId, onBack }: { projectId: s
     ) as (Fila & { name: string })[];
   }, [filas, areaSel, busqueda]);
 
+  // Quién puede corregir el texto: Coordinador General, Sub-coordinador, el Coordinador de área de esa persona
+  // y la propia persona mientras no confirma (el servidor vuelve a validarlo).
+  const puedeEditar = (f: Fila) =>
+    f.estado === 'listo' && !!user && (
+      user.role === 'coordinador_general' || user.role === 'sub_coordinador'
+      || (f.user_id === user.id && !f.confirmado_en)
+      || (!!user.es_coord_area && !!user.area_id && f.area_id === user.area_id));
   const confirmados = visibles.filter((f) => f.confirmado_en).length;
   const sinConfirmar = visibles.filter((f) => f.estado === 'listo' && !f.confirmado_en).length;
   const sinReportes = visibles.filter((f) => f.estado === 'sin_actividad').length;
@@ -253,6 +262,11 @@ export function InformesDiariosCoordScreen({ projectId, onBack }: { projectId: s
                 <Text style={styles.muted}>{f.reportes_count} reporte(s)</Text>
               </View>
               <View style={[styles.chip, { backgroundColor: e.bg }]}><Text style={[styles.chipTxt, { color: e.fg }]}>{e.txt}</Text></View>
+              {puedeEditar(f) ? (
+                <Pressable accessibilityRole="button" accessibilityLabel={`Editar informe de ${f.user_name}`} onPress={() => setEditando(f)} hitSlop={8}>
+                  <Ionicons name="create-outline" size={22} color={colors.primary} />
+                </Pressable>
+              ) : null}
               {f.estado === 'listo' ? (
                 <Pressable
                   accessibilityRole="button" accessibilityLabel={`Imprimir informe de ${f.user_name}`} disabled={!!descargando}
@@ -266,6 +280,10 @@ export function InformesDiariosCoordScreen({ projectId, onBack }: { projectId: s
           );
         })}
       </ScrollView>
+      <InformeEditor
+        projectId={projectId} informeId={editando?.id ?? null} propio={editando?.user_id === user?.id}
+        onClose={() => setEditando(null)} onSaved={() => { cargar(); }}
+      />
     </View>
   );
 }

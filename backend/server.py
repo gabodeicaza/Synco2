@@ -15941,19 +15941,20 @@ def _informe_portada_datos(proj: dict, informes: list, ini: date, fin: date, are
 
 def _informe_pdf_bytes(informes: list, proj: dict, fotos: Dict[str, list], hoja_firmas: Optional[list] = None,
                        titulo_hoja: str = "", portada: Optional[dict] = None, firma_diaria: bool = True,
-                       firma_sup: Optional[dict] = None) -> bytes:
+                       firma_sup: Optional[dict] = None, firmas_ingenieros: bool = False) -> bytes:
     """PDF (A4 vertical) con un informe por sección en el formato de la plantilla:
     encabezado, resumen, bloque por reporte de campo, fotos y firmas. Si se pasa
     `hoja_firmas` ([{nombre, rol, dias, confirmados, sin_actividad}]) agrega al final la
     hoja de firmas semanal. Si se pasa `portada` (ver `_informe_portada_datos`) abre con la
     portada institucional. `firma_diaria` pone al final de cada informe la firma única del Coordinador
     de área; en el compilado semanal/de rango va en False y la única firma es la del Superintendente
-    (`firma_sup` = {nombre, cargo}) en la hoja final. Bloqueante (reportlab/PIL): llamar con asyncio.to_thread."""
+    (`firma_sup` = {nombre, cargo}) en la hoja final. `firmas_ingenieros` agrega, hasta abajo, una línea de
+    firma por cada ingeniero que aportó informe (impresión del día de varias personas). Bloqueante (reportlab/PIL): llamar con asyncio.to_thread."""
     import base64
     from xml.sax.saxutils import escape
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.units import cm
-    from reportlab.lib.colors import HexColor, white
+    from reportlab.lib.colors import HexColor, white, black
     from reportlab.lib.styles import ParagraphStyle
     from reportlab.lib.enums import TA_CENTER, TA_RIGHT
     from reportlab.platypus import (BaseDocTemplate, PageTemplate, Frame, Paragraph, Spacer, Table, TableStyle,
@@ -15962,14 +15963,15 @@ def _informe_pdf_bytes(informes: list, proj: dict, fotos: Dict[str, list], hoja_
 
     color = _sanitize_color_hex(proj.get("color_institucional") or proj.get("color_tema")) or "#003366"
     P = lambda name, **kw: ParagraphStyle(name, fontName=kw.pop("fontName", "Roboto"), **kw)
-    s_tit = P("it", fontName="Roboto-Bold", fontSize=13, leading=16, alignment=TA_CENTER, textColor=HexColor(color))
-    s_sub = P("is", fontSize=12, leading=14.5, alignment=TA_CENTER, textColor=HexColor("#475569"))
-    s_lbl = P("il", fontName="Roboto-Bold", fontSize=8, leading=10, textColor=HexColor("#334155"))
+    s_tit = P("it", fontName="Roboto-Bold", fontSize=13, leading=16, alignment=TA_CENTER, textColor=black)
+    s_sub = P("is", fontSize=12, leading=14.5, alignment=TA_CENTER, textColor=black)
+    s_lbl = P("il", fontName="Roboto-Bold", fontSize=8, leading=10, textColor=black)
     s_txt = P("ix", fontSize=12, leading=15)
     s_bul = P("ib", fontSize=12, leading=15, leftIndent=10, firstLineIndent=-8)
     s_blq = P("ik", fontName="Roboto-Bold", fontSize=9.5, leading=12, textColor=white)
-    s_cap = P("ic", fontSize=7.5, leading=9, alignment=TA_CENTER, textColor=HexColor("#475569"))
-    s_ia = P("ii", fontName="Roboto-Italic", fontSize=12, leading=15, textColor=HexColor("#1E3A8A"))
+    s_cap = P("ic", fontSize=7.5, leading=9, alignment=TA_CENTER, textColor=black)
+    # Todo el texto del informe va en negro, también el redactado con IA (sin cursiva ni azul).
+    s_ia = P("ii", fontSize=12, leading=15, textColor=black)
     s_firma = P("if", fontSize=8, leading=10, alignment=TA_CENTER)
     s_cel = P("ie", fontSize=12, leading=14.5)
     s_celb = P("ih", fontName="Roboto-Bold", fontSize=12, leading=14.5, textColor=white)
@@ -16001,7 +16003,7 @@ def _informe_pdf_bytes(informes: list, proj: dict, fotos: Dict[str, list], hoja_
         c_obj = P("po", fontName="Roboto-Bold", fontSize=14, leading=18, alignment=TA_CENTER)
         c_are = P("pa", fontName="Roboto-Bold", fontSize=20, leading=25, alignment=TA_CENTER)
         c_per = P("pe", fontSize=13, leading=16, alignment=TA_RIGHT)
-        c_pie = P("pf", fontSize=7, leading=9, textColor=HexColor("#475569"))
+        c_pie = P("pf", fontSize=7, leading=9, textColor=black)
         c_cel = P("pc", fontSize=10.5, leading=13)
         logo = None
         if d.get("logo"):
@@ -16135,13 +16137,25 @@ def _informe_pdf_bytes(informes: list, proj: dict, fotos: Dict[str, list], hoja_
         if i:
             story.append(PageBreak())
         story += seccion_informe(inf)
+    if firmas_ingenieros:
+        vistos: Dict[str, dict] = {}
+        for inf in informes:
+            vistos.setdefault(inf.get("user_id") or inf.get("user_name"), inf)
+        celdas = [Paragraph(f"____________________________<br/><b>{esc(i.get('user_name'))}</b><br/>{esc(_informe_cargo(i))}", s_firma)
+                  for i in vistos.values()]
+        if len(celdas) % 2:
+            celdas.append("")
+        filas_f = [[celdas[k], celdas[k + 1]] for k in range(0, len(celdas), 2)]
+        tf = Table(filas_f, colWidths=[W / 2, W / 2], rowHeights=[2.4 * cm] * len(filas_f))
+        tf.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "BOTTOM")]))
+        story += [Spacer(1, 14), Paragraph("FIRMAS DE LOS INGENIEROS QUE PARTICIPARON", s_lbl), Spacer(1, 4), tf]
     if hoja_firmas is not None:
         if story:
             story.append(PageBreak())
         story += [Paragraph("RESUMEN Y FIRMA DEL PERIODO", s_tit), Paragraph(esc(titulo_hoja), s_sub), Spacer(1, 10)]
         filas = [[Paragraph(h, s_celb) for h in ("INGENIERO", "INFORMES", "CONFIRMADOS")]]
         for r in hoja_firmas:
-            extra = f"<br/><font size=7 color='#64748B'>Sin reportes: {esc(r['sin_actividad'])}</font>" if r.get("sin_actividad") else ""
+            extra = f"<br/><font size=7>Sin reportes: {esc(r['sin_actividad'])}</font>" if r.get("sin_actividad") else ""
             filas.append([Paragraph(f"<b>{esc(r['nombre'])}</b><br/>{esc(r.get('rol'))}{extra}", s_cel),
                           Paragraph(str(r["dias"]), s_cel), Paragraph(str(r["confirmados"]), s_cel)])
         th = Table(filas, colWidths=[W - 7.4 * cm, 3.0 * cm, 4.4 * cm], repeatRows=1)
@@ -16158,7 +16172,7 @@ def _informe_pdf_bytes(informes: list, proj: dict, fotos: Dict[str, list], hoja_
             return  # la portada lleva su propia leyenda; solo el número de página (ver NumeradoCanvas)
         canvas.saveState()
         canvas.setFont("Roboto", 7.5)
-        canvas.setFillColor(HexColor("#64748B"))
+        canvas.setFillColor(black)
         canvas.drawString(1.5 * cm, 0.9 * cm, f"{proj.get('name') or ''} — Informe técnico diario de supervisión")
         canvas.restoreState()
 
@@ -16179,7 +16193,7 @@ def _informe_pdf_bytes(informes: list, proj: dict, fotos: Dict[str, list], hoja_
             for estado in self._paginas:
                 self.__dict__.update(estado)
                 self.setFont("Roboto", 7.5)
-                self.setFillColor(HexColor("#64748B"))
+                self.setFillColor(black)
                 self.drawRightString(A4[0] - 1.5 * cm, 0.9 * cm, f"Página {self._pageNumber}|{total}")
                 super().showPage()
             super().save()
@@ -16296,8 +16310,10 @@ async def _informe_compilado_pdf(proj: dict, user: dict, ini: date, fin: date, a
     port = await _informe_portada(proj, listos, ini, fin, area_nombre, persona) if portada else None
     sup = _sanitize_datos_contrato(proj.get("datos_contrato")).get("supervision") or {}
     firma_sup = {"nombre": (sup.get("superintendente") or "").strip(), "cargo": _CIERRE_CARGO.capitalize()}
+    # Impresión del día de varias personas: al final firma cada ingeniero que aportó.
+    firmas_ing = ini == fin and not ingeniero_id and user["role"] in INFORME_ROLES_VEN_TODOS
     pdf = await asyncio.to_thread(_informe_pdf_bytes, listos, proj, imgs, hoja, titulo_hoja, port,
-                                  ini == fin, firma_sup)
+                                  ini == fin, firma_sup, firmas_ing)
     sufijo = _safe_filename_fragment(area_nombre or persona or proj.get("name") or "proyecto")
     rango = ini.isoformat() if ini == fin else f"{ini.isoformat()}_{fin.isoformat()}"
     return _informe_pdf_response(pdf, f"{prefijo}_{rango}_{sufijo}.pdf")
@@ -16347,6 +16363,79 @@ async def informes_diarios_compilado_pdf(
     usar_fotos = (ini == fin) if fotos is None else fotos
     titulo = _informe_fecha_larga(ini.isoformat()) if ini == fin else f"Del {ini.strftime('%d/%m/%Y')} al {fin.strftime('%d/%m/%Y')}"
     return await _informe_compilado_pdf(proj, user, ini, fin, area_id, ingeniero_id, usar_fotos, portada, titulo, "informes")
+
+
+class InformeBloqueEdit(BaseModel):
+    report_id: str
+    resumen_ia: Optional[str] = None
+    actividades: Optional[List[str]] = None
+    fuerza_trabajo: Optional[str] = None
+    equipo: Optional[str] = None
+    observaciones: Optional[str] = None
+
+
+class InformeEditIn(BaseModel):
+    resumen_general: Optional[str] = None
+    bloques: Optional[List[InformeBloqueEdit]] = None
+
+
+async def _puede_editar_informe(user: dict, inf: dict) -> bool:
+    """Quién corrige el contenido de un informe diario: Coordinador General y Sub-coordinador; el
+    Coordinador de área del ingeniero; y el propio ingeniero mientras no lo haya confirmado."""
+    if user["role"] in (ROLE_COORD, ROLE_SUB):
+        return True
+    if inf["user_id"] == user["id"]:
+        return not inf.get("confirmado_en")
+    if user.get("es_coord_area") and user.get("area_id"):
+        autor = await db.users.find_one({"id": inf["user_id"]}, {"_id": 0, "area_id": 1})
+        return bool(autor) and autor.get("area_id") == user["area_id"]
+    return False
+
+
+@api.patch("/projects/{pid}/informe_diario/{iid}")
+async def informe_diario_editar(pid: str, iid: str, body: InformeEditIn, user: dict = Depends(current_user)):
+    """Corrige el texto del informe (resumen del día y, por reporte de campo: resumen, actividades,
+    fuerza de trabajo, equipo y observaciones). Si lo edita alguien distinto al ingeniero, su
+    confirmación se retira para que vuelva a revisarlo y confirmarlo."""
+    await ensure_project_access(user, pid)
+    _assert_write_allowed(user)
+    inf = await db.informes_diarios.find_one({"id": iid, "project_id": pid})
+    if not inf:
+        raise HTTPException(404, "Informe no encontrado")
+    if inf["estado"] != "listo":
+        raise HTTPException(409, "El informe aún no está listo")
+    if not await _puede_editar_informe(user, inf):
+        raise HTTPException(403, "No puedes editar este informe")
+    sets: dict = {}
+    if body.resumen_general is not None:
+        sets["resumen_general"] = _informe_limpia(body.resumen_general, 1500)
+    if body.bloques is not None:
+        por_id = {b.report_id: b for b in body.bloques}
+        bloques = []
+        for b in inf.get("bloques") or []:
+            e = por_id.get(b.get("report_id"))
+            if e:
+                b = dict(b)
+                if e.resumen_ia is not None:
+                    b["resumen_ia"] = _informe_limpia(e.resumen_ia, 600)
+                if e.actividades is not None:
+                    b["actividades"] = [t for t in (_informe_limpia(a) for a in e.actividades[:60]) if t]
+                if e.fuerza_trabajo is not None:
+                    b["fuerza_trabajo"] = _informe_limpia(e.fuerza_trabajo, 600)
+                if e.equipo is not None:
+                    b["equipo"] = _informe_limpia(e.equipo, 600)
+                if e.observaciones is not None:
+                    b["observaciones"] = _informe_limpia(e.observaciones, 1000)
+            bloques.append(b)
+        sets["bloques"] = bloques
+    if not sets:
+        raise HTTPException(400, "Nada que actualizar")
+    sets["editado_en"] = datetime.now(timezone.utc)
+    sets["editado_por"] = user.get("name") or ""
+    if inf["user_id"] != user["id"]:
+        sets["confirmado_en"] = None
+    await db.informes_diarios.update_one({"id": iid}, {"$set": sets})
+    return _informe_publico(await db.informes_diarios.find_one({"id": iid}))
 
 
 @api.get("/projects/{pid}/informe_diario/{iid}")

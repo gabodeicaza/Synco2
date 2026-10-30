@@ -3600,6 +3600,11 @@ export const api = {
     request<{ id: string; fecha: string; reportes_count: number }[]>('GET', `/projects/${pid}/informe_diario/pendientes`),
   informeDiarioDetalle: (pid: string, iid: string) =>
     request<InformeDiario>('GET', `/projects/${pid}/informe_diario/${iid}`),
+  /** Corrige el texto del informe (resumen y, por reporte de campo, actividades, fuerza de trabajo, etc.). */
+  informeDiarioEditar: (pid: string, iid: string, body: {
+    resumen_general?: string;
+    bloques?: { report_id: string; resumen_ia?: string; actividades?: string[]; fuerza_trabajo?: string; equipo?: string; observaciones?: string }[];
+  }) => request<InformeDiario>('PATCH', `/projects/${pid}/informe_diario/${iid}`, body),
   informeDiarioConfirmar: (pid: string, iid: string, comentario?: string) =>
     request<InformeDiario>('POST', `/projects/${pid}/informe_diario/${iid}/confirmar`, { comentario: comentario ?? null }),
   informesDiariosCumplimiento: (pid: string, fecha?: string) =>

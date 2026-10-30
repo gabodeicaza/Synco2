@@ -19,6 +19,7 @@ import { fmtFechaHora } from '@/src/utils/fechas';
 import { ROLE_SUB } from '@/src/utils/roles';
 import { downloadBlob } from '@/src/utils/downloadBlob';
 import { InformesDiariosCoordScreen } from '@/src/components/InformesDiariosCoordScreen';
+import { InformeEditor } from '@/src/components/InformeEditor';
 import { router, useLocalSearchParams } from 'expo-router';
 
 const DOT: Record<string, string> = { verde: '#16A34A', amarillo: '#F59E0B', rojo: '#DC2626' };
@@ -62,6 +63,7 @@ export function InformeDiarioScreen() {
   const [comentario, setComentario] = useState('');
   const [guardando, setGuardando] = useState(false);
   const [descargando, setDescargando] = useState(false);
+  const [editando, setEditando] = useState(false);
   const { vista } = useLocalSearchParams<{ vista?: string }>();
   // Desde el menú abre directo el hub del equipo; desde el aviso de Inicio, el informe propio.
   const [verEquipo, setVerEquipo] = useState(vista === 'equipo');
@@ -156,7 +158,14 @@ export function InformeDiarioScreen() {
               <>
                 <View style={styles.resumenBox}>
                   <Text style={styles.etiqueta}>Resumen del día</Text>
-                  <Text style={styles.texto}>{informe.resumen_general}</Text>                </View>
+                  <Text style={styles.texto}>{informe.resumen_general}</Text>
+                </View>
+                {!confirmado ? (
+                  <Pressable accessibilityRole="button" onPress={() => setEditando(true)} style={[styles.btnSec, { alignSelf: 'flex-start', marginTop: spacing.sm }]}>
+                    <Ionicons name="create-outline" size={16} color={colors.primary} />
+                    <Text style={styles.btnSecTxt}>Editar informe</Text>
+                  </Pressable>
+                ) : null}
                 {informe.bloques.map((b, i) => <Bloque key={b.report_id || i} b={b} />)}
 
                 <Text style={styles.etiqueta}>Comentarios (opcional)</Text>
@@ -204,6 +213,7 @@ export function InformeDiarioScreen() {
           </View>
         ) : null}
       </ScrollView>
+      <InformeEditor projectId={pid} informeId={editando && informe ? informe.id : null} propio onClose={() => setEditando(false)} onSaved={(inf) => setInforme(inf)} />
     </KeyboardAvoidingView>
   );
 }
@@ -211,16 +221,16 @@ export function InformeDiarioScreen() {
 const styles = StyleSheet.create({
   h1: { fontSize: 20, fontWeight: '800', color: colors.textBody, marginBottom: spacing.xs },
   muted: { color: colors.textMuted, fontSize: 12, marginVertical: 2 },
-  texto: { color: colors.textBody, fontSize: 14, marginVertical: 2 },
+  texto: { color: colors.text, fontSize: 14, marginVertical: 2 },
   etiqueta: { color: colors.textBody, fontSize: 12, fontWeight: '800', marginTop: spacing.sm, textTransform: 'uppercase' },
   error: { color: colors.error, fontWeight: '600', marginTop: spacing.md },
-  resumenBox: { backgroundColor: '#EFF6FF', borderRadius: radius.md, padding: spacing.md, marginTop: spacing.md },
+  resumenBox: { backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: '#E2E8F0', borderRadius: radius.md, padding: spacing.md, marginTop: spacing.md },
   bloque: { backgroundColor: '#fff', borderRadius: radius.md, padding: spacing.md, marginTop: spacing.md, borderWidth: 1, borderColor: '#E2E8F0' },
   bloqueTitulo: { fontSize: 14, fontWeight: '800', color: colors.textBody },
   estatusRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 4 },
   dot: { width: 10, height: 10, borderRadius: 5 },
   estatus: { fontSize: 13, fontWeight: '600', color: colors.textBody },
-  resumenIa: { fontSize: 13, fontStyle: 'italic', color: colors.textBody, marginTop: spacing.xs },
+  resumenIa: { fontSize: 13, color: colors.text, marginTop: spacing.xs },
   input: { borderWidth: 1, borderColor: '#CBD5E1', borderRadius: radius.md, padding: spacing.sm, minHeight: 70, backgroundColor: '#fff', textAlignVertical: 'top' },
   btn: { backgroundColor: colors.primary, borderRadius: radius.md, padding: spacing.md, alignItems: 'center', marginTop: spacing.md },
   btnTxt: { color: '#fff', fontWeight: '800', fontSize: 15 },
