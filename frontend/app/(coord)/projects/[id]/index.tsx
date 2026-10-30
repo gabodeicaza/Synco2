@@ -310,6 +310,9 @@ export default function ProjectDetailScreen() {
   const [fechaTerminoDraft, setFechaTerminoDraft] = useState('');
   const [descripcionDraft, setDescripcionDraft] = useState('');
   const [clienteDraft, setClienteDraft] = useState('');
+  // Portada de los informes diarios: logo del cliente (base64 sin prefijo; '' = quitar) y pie de formato.
+  const [clienteLogoDraft, setClienteLogoDraft] = useState('');
+  const [formatoPieDraft, setFormatoPieDraft] = useState('');
   // color_tema: ACOTADO al título de portada del Informe PDF/PPTX exportado.
   const [colorDraft, setColorDraft] = useState(COLOR_IDENTIDAD_DEFECTO);
   // color_institucional: color de marca real -- banners, tablas, botones y
@@ -530,6 +533,8 @@ export default function ProjectDetailScreen() {
     setFechaTerminoDraft(isoADmy((project as any).end_date));
     setDescripcionDraft((project as any).description || '');
     setClienteDraft((project as any).cliente_principal || '');
+    setClienteLogoDraft((project as any).cliente_logo || '');
+    setFormatoPieDraft((project as any).informe_formato_pie || '');
     setColorDraft((project as any).color_tema || COLOR_IDENTIDAD_DEFECTO);
     setColorInstitucionalDraft((project as any).color_institucional || COLOR_IDENTIDAD_DEFECTO);
     setReportTextColorDraft((project as any).report_text_color || COLOR_TEXTO_REPORTE_DEFECTO);
@@ -537,6 +542,24 @@ export default function ProjectDetailScreen() {
     // Se guardan como "id1, id2"; en el editor se muestra uno por línea.
     setWhatsappGroupDraft(((project as any).whatsapp_group_id || '').split(/[,;\s]+/).filter(Boolean).join('\n'));
     setObjetoModalOpen(true);
+  }
+
+  async function elegirLogoCliente() {
+    try {
+      const res = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        quality: 0.8,
+        base64: true,
+        exif: false,
+      });
+      if (res.canceled) return;
+      const b64 = res.assets?.[0]?.base64;
+      if (!b64) return setObjetoError('No se pudo leer la imagen. Intenta con otra.');
+      setObjetoError(null);
+      setClienteLogoDraft(b64);
+    } catch (e: any) {
+      setObjetoError(e?.message || 'No se pudo abrir la galería');
+    }
   }
 
   async function saveObjeto() {
@@ -568,6 +591,9 @@ export default function ProjectDetailScreen() {
         description: descripcionDraft.trim(),
         objeto_contrato: objetoDraft.trim() || null,
         cliente_principal: clienteDraft.trim() || null,
+        // '' (no null): el backend ignora null; '' quita el logo / el texto.
+        cliente_logo: clienteLogoDraft,
+        informe_formato_pie: formatoPieDraft.trim(),
         color_tema: normalizarColorHex(colorDraft),
         color_institucional: normalizarColorHex(colorInstitucionalDraft),
         report_text_color: normalizarColorHex(reportTextColorDraft),
@@ -2546,6 +2572,46 @@ export default function ProjectDetailScreen() {
                   placeholder={t('proyectoPantalla.ejGobiernoDeLaCiudad')}
                   placeholderTextColor={colors.textMuted}
                   style={styles.catInput}
+                />
+              </View>
+
+              <View>
+                <Text style={styles.catLabel}>Logo del cliente (portada de informes)</Text>
+                <Text style={styles.catHelper}>
+                  Aparece en la esquina izquierda de la portada de los informes diarios. Si no lo cargas, se imprime el nombre del cliente.
+                </Text>
+                {clienteLogoDraft ? (
+                  <Image
+                    source={{ uri: clienteLogoDraft.startsWith('data:') ? clienteLogoDraft : `data:image/png;base64,${clienteLogoDraft}` }}
+                    style={{ height: 64, width: '100%', marginBottom: 8 }}
+                    contentFit="contain"
+                  />
+                ) : null}
+                <View style={{ flexDirection: 'row', gap: spacing.sm }}>
+                  <Pressable accessibilityRole="button" onPress={elegirLogoCliente} disabled={objetoSaving} style={[styles.catInput, { flex: 1, alignItems: 'center' }]}>
+                    <Text style={{ color: colors.primary, fontWeight: '700' }}>{clienteLogoDraft ? 'Cambiar logo' : 'Cargar logo'}</Text>
+                  </Pressable>
+                  {clienteLogoDraft ? (
+                    <Pressable accessibilityRole="button" onPress={() => setClienteLogoDraft('')} disabled={objetoSaving} style={[styles.catInput, { alignItems: 'center' }]}>
+                      <Text style={{ color: colors.error, fontWeight: '700' }}>Quitar</Text>
+                    </Pressable>
+                  ) : null}
+                </View>
+              </View>
+
+              <View>
+                <Text style={styles.catLabel}>Pie de formato de los informes</Text>
+                <Text style={styles.catHelper}>
+                  Texto bajo la tabla de la portada, antes de la leyenda de propiedad. Déjalo vacío para no imprimirlo.
+                </Text>
+                <TextInput
+                  value={formatoPieDraft}
+                  onChangeText={setFormatoPieDraft}
+                  placeholder="Ej. Formatos ID: SC-FO-DA-201. Revisión: No. 05. Fecha: Octubre 2025."
+                  placeholderTextColor={colors.textMuted}
+                  maxLength={300}
+                  multiline
+                  style={[styles.catInput, { minHeight: 60, textAlignVertical: 'top', paddingTop: 10 }]}
                 />
               </View>
 

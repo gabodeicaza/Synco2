@@ -1203,6 +1203,10 @@ export interface Project {
   // Diapositiva "DATOS DE CONTRATO" del informe PPTX (obra y supervisión).
   datos_contrato?: DatosContrato | null;
   cliente_principal?: string | null;
+  /** Logo del cliente para la portada de los informes diarios (base64 PNG; solo viene en el detalle). */
+  cliente_logo?: string | null;
+  /** Texto del pie de la portada (p. ej. "Formatos ID: …"). */
+  informe_formato_pie?: string | null;
   // color_tema: ACOTADO a pintar SOLO el título de portada del Informe
   // PDF/PPTX exportado. Para color de marca en pantallas/tablas/acentos,
   // usa color_institucional (con fallback a color_tema si no está

@@ -646,6 +646,10 @@ class ProjectPatch(BaseModel):
     categorias_personal: Optional[List[str]] = None
     categorias_equipo: Optional[List[str]] = None
     constructora_logo: Optional[str] = None
+    # Portada de los informes diarios: logo del cliente / dependencia (base64) y texto del pie
+    # de página ("Formatos ID: …"). '' limpia el valor.
+    cliente_logo: Optional[str] = None
+    informe_formato_pie: Optional[str] = None
     minuta_code_prefix: Optional[str] = None
     whatsapp_group_id: Optional[str] = None
     tipo_contrato: Optional[Literal["PRECIO_ALZADO", "PRECIOS_UNITARIOS"]] = None
@@ -2148,7 +2152,7 @@ async def ensure_project_access(user: dict, project_id: str) -> dict:
     """
     p = await db.projects.find_one(
         {"id": project_id, "archived": {"$ne": True}},
-        {"general_data_images": 0, "constructora_logo": 0},
+        {"general_data_images": 0, "constructora_logo": 0, "cliente_logo": 0},
     )
     if not p:
         raise HTTPException(404, "Proyecto no existe")
@@ -3572,7 +3576,7 @@ async def list_projects(user: dict = Depends(current_user)):
     # La lista solo pinta nombre/constructora/contrato — excluir binarios
     # pesados (logo y galería de datos generales, hasta 30 imágenes de 5MB
     # c/u por proyecto) que solo hacen falta en el detalle de un proyecto.
-    projection = {"constructora_logo": 0, "general_data_images": 0}
+    projection = {"constructora_logo": 0, "cliente_logo": 0, "general_data_images": 0}
     if user["role"] in (ROLE_COORD, ROLE_JEFE):
         # Coordinador General y Jefe de Proyecto: acceso global a todos los proyectos.
         cursor = db.projects.find({"archived": {"$ne": True}}, projection).sort("created_at", -1)
@@ -3664,6 +3668,9 @@ async def get_project(pid: str, user: dict = Depends(current_user)):
         {"$project": {"_id": 0, "n": {"$size": {"$ifNull": ["$general_data_images", []]}}}},
     ]).to_list(length=1)
     p["general_data_images_count"] = count_doc[0]["n"] if count_doc else 0
+    logo_doc = await db.projects.find_one({"id": pid}, {"_id": 0, "cliente_logo": 1})
+    p["cliente_logo"] = (logo_doc or {}).get("cliente_logo")
+    p.setdefault("informe_formato_pie", None)
     p.setdefault("minuta_code_prefix", None)
     p.setdefault("whatsapp_group_id", None)
     p.setdefault("tipo_contrato", "PRECIOS_UNITARIOS")
@@ -3687,6 +3694,31 @@ async def get_project(pid: str, user: dict = Depends(current_user)):
     p["modulos"] = _sanitize_modulos(p.get("modulos"))
     p["modulos_areas"] = _sanitize_modulos_areas(p.get("modulos_areas"))
     return p
+
+
+def _sanear_logo_cliente(raw: str) -> Optional[str]:
+    """Valida el logo del cliente (imagen en base64), lo reduce a 800 px de ancho como máximo y lo
+    guarda como PNG en base64 crudo. '' limpia el logo; algo que no sea imagen → 400."""
+    import base64 as _b64
+    from PIL import Image as _PIL
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    try:
+        data = _b64.b64decode(_strip_b64_prefix(raw), validate=False)
+        if len(data) > 6 * 1024 * 1024:
+            raise ValueError("demasiado grande")
+        im = _PIL.open(io.BytesIO(data))
+        im.load()
+        im = im.convert("RGBA")
+        im.thumbnail((800, 800))
+        buf = io.BytesIO()
+        im.save(buf, "PNG", optimize=True)
+        return _b64.b64encode(buf.getvalue()).decode("ascii")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(400, "El logo del cliente no es una imagen válida (usa PNG o JPG de hasta 6 MB)")
 
 
 @api.put("/projects/{pid}")
@@ -3740,6 +3772,10 @@ async def update_project(pid: str, body: ProjectPatch, user: dict = Depends(requ
     if body.constructora_logo is not None:
         # Aceptamos cadena vacía para "limpiar" el logo
         upd["constructora_logo"] = body.constructora_logo or None
+    if body.cliente_logo is not None:
+        upd["cliente_logo"] = _sanear_logo_cliente(body.cliente_logo)
+    if body.informe_formato_pie is not None:
+        upd["informe_formato_pie"] = " ".join(body.informe_formato_pie.split())[:300] or None
     if body.minuta_code_prefix is not None:
         upd["minuta_code_prefix"] = body.minuta_code_prefix.strip() or None
     if body.whatsapp_group_id is not None:
@@ -15854,6 +15890,7 @@ def _informe_portada_datos(proj: dict, informes: list, ini: date, fin: date, are
         "periodo": periodo, "fecha_emision": larga(hoy or fin), "proyecto": _informe_limpia(proj.get("name"), 200),
         "nombre_informe": nombre, "constructora": _informe_limpia(proj.get("constructora"), 120),
         "clave": _informe_clave(proj, fin),
+        "formato_pie": _informe_limpia(proj.get("informe_formato_pie"), 300),
     }
 
 
@@ -15911,10 +15948,11 @@ def _informe_pdf_bytes(informes: list, proj: dict, fotos: Dict[str, list], hoja_
     def portada_flow(d: dict) -> list:
         """Portada institucional (misma estructura que la portada Dirac): cabecera con cliente,
         título y logo; caja central con contrato, objeto, área y periodo; tabla de identificación."""
-        c_tit = P("pt", fontName="Roboto-Bold", fontSize=15, leading=19, alignment=TA_CENTER)
-        c_obj = P("po", fontName="Roboto-Bold", fontSize=12.5, leading=16, alignment=TA_CENTER)
-        c_are = P("pa", fontName="Roboto-Bold", fontSize=17, leading=21, alignment=TA_CENTER, textColor=HexColor(color))
-        c_per = P("pe", fontSize=12, leading=15, alignment=TA_RIGHT)
+        # Tipografía como la portada Dirac: todo en negro, negritas grandes y centradas.
+        c_tit = P("pt", fontName="Roboto-Bold", fontSize=16, leading=20, alignment=TA_CENTER)
+        c_obj = P("po", fontName="Roboto-Bold", fontSize=14, leading=18, alignment=TA_CENTER)
+        c_are = P("pa", fontName="Roboto-Bold", fontSize=20, leading=25, alignment=TA_CENTER)
+        c_per = P("pe", fontSize=13, leading=16, alignment=TA_RIGHT)
         c_pie = P("pf", fontSize=7, leading=9, textColor=HexColor("#475569"))
         c_cel = P("pc", fontSize=10.5, leading=13)
         logo = None
@@ -15926,23 +15964,34 @@ def _informe_pdf_bytes(informes: list, proj: dict, fotos: Dict[str, list], hoja_
                 logo = RLImage(io.BytesIO(d["logo"]), width=lw * sc, height=lh * sc, hAlign="RIGHT")
             except Exception:
                 logo = None
-        cab = Table([[Paragraph(esc(d.get("cliente")), P("pcl", fontName="Roboto-Bold", fontSize=10, leading=12)),
+        logo_cli = None
+        if d.get("logo_cliente"):
+            try:
+                im = PILImage.open(io.BytesIO(d["logo_cliente"]))
+                lw, lh = im.size
+                sc = min(6.2 * cm / lw, 2.2 * cm / lh)
+                logo_cli = RLImage(io.BytesIO(d["logo_cliente"]), width=lw * sc, height=lh * sc, hAlign="LEFT")
+            except Exception:
+                logo_cli = None
+        cab = Table([[logo_cli or Paragraph(esc(d.get("cliente")), P("pcl", fontName="Roboto-Bold", fontSize=10, leading=12)),
                       Paragraph("Informe", P("pit", fontSize=22, leading=26, alignment=TA_CENTER)),
                       logo or Paragraph(esc(d.get("constructora")), P("pcn", fontName="Roboto-Bold", fontSize=12, leading=14, alignment=TA_RIGHT))]],
                     colWidths=[W * 0.32, W * 0.34, W * 0.34], rowHeights=[2.6 * cm])
         cab.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE")]))
         centro = [Paragraph(f"CONTRATO No. {esc(d.get('contrato'))}", c_tit)]
-        objeto = [Paragraph(esc(d.get("objeto")).upper(), c_obj)] if d.get("objeto") else [""]
+        objeto = [Paragraph(esc(d.get("objeto")).upper(), c_obj)] if d.get("objeto") else [Spacer(1, 1)]
         area = [Paragraph(esc(d.get("titulo_area")), c_are)]
+        nombre = [Paragraph("INFORME TÉCNICO DIARIO DE SUPERVISIÓN", c_obj)]
         if d.get("persona"):
-            area.append(Paragraph(esc(d["persona"]).upper(), c_obj))
-        area.append(Spacer(1, 6))
-        area.append(Paragraph("INFORME TÉCNICO DIARIO DE SUPERVISIÓN", c_obj))
+            nombre.insert(0, Spacer(1, 2))
+            nombre.append(Spacer(1, 8))
+            nombre.append(Paragraph(esc(d["persona"]).upper(), c_obj))
         per = [Paragraph(f"<b>Periodo de informe:</b> {esc(d.get('periodo'))}", c_per)]
-        caja = Table([[centro], [objeto], [area], [per]], colWidths=[W], rowHeights=[3.2 * cm, 4.8 * cm, 6.0 * cm, 2.6 * cm])
-        caja.setStyle(TableStyle([("BOX", (0, 0), (-1, -1), 0.8, HexColor("#0F172A")), ("VALIGN", (0, 0), (-1, 2), "MIDDLE"),
-                                  ("VALIGN", (0, 3), (-1, 3), "BOTTOM"), ("LEFTPADDING", (0, 0), (-1, -1), 14),
-                                  ("RIGHTPADDING", (0, 0), (-1, -1), 14), ("BOTTOMPADDING", (0, 3), (-1, 3), 12)]))
+        caja = Table([[centro], [objeto], [area], [nombre], [per]],
+                     colWidths=[W], rowHeights=[3.0 * cm, 3.8 * cm, 2.6 * cm, 4.4 * cm, 2.8 * cm])
+        caja.setStyle(TableStyle([("BOX", (0, 0), (-1, -1), 0.8, HexColor("#0F172A")), ("VALIGN", (0, 0), (-1, 3), "MIDDLE"),
+                                  ("VALIGN", (0, 4), (-1, 4), "BOTTOM"), ("LEFTPADDING", (0, 0), (-1, -1), 14),
+                                  ("RIGHTPADDING", (0, 0), (-1, -1), 14), ("BOTTOMPADDING", (0, 4), (-1, 4), 12)]))
         ident = Table([
             [Paragraph(f"Clave: <i>{esc(d.get('clave'))}</i>", c_cel), Paragraph(f"Fecha: {esc(d.get('fecha_emision'))}", c_cel)],
             [Paragraph(f"Proyecto: <i>{esc(d.get('proyecto'))}</i>", c_cel), ""],
@@ -15950,7 +15999,8 @@ def _informe_pdf_bytes(informes: list, proj: dict, fotos: Dict[str, list], hoja_
         ], colWidths=[W * 0.58, W * 0.42])
         ident.setStyle(TableStyle([("BOX", (0, 0), (-1, -1), 0.8, HexColor("#0F172A")), ("INNERGRID", (0, 0), (-1, -1), 0.8, HexColor("#0F172A")),
                                    ("SPAN", (0, 1), (1, 1)), ("SPAN", (0, 2), (1, 2)), ("VALIGN", (0, 0), (-1, -1), "MIDDLE")]))
-        pie_txt = (f"Este documento es propiedad de {esc(d.get('constructora') or 'la empresa supervisora')}. "
+        pie_txt = ((f"{esc(d['formato_pie'])}<br/>" if d.get("formato_pie") else "")
+                   + f"Este documento es propiedad de {esc(d.get('constructora') or 'la empresa supervisora')}. "
                    "No deberá ser reproducido sin previa autorización por escrito.")
         return [cab, Spacer(1, 0.5 * cm), caja, Spacer(1, 0.5 * cm), ident, Spacer(1, 4), Paragraph(pie_txt, c_pie), PageBreak()]
 
@@ -16049,13 +16099,34 @@ def _informe_pdf_bytes(informes: list, proj: dict, fotos: Dict[str, list], hoja_
 
     def pie(canvas, doc_):
         if portada and doc_.page == 1:
-            return
+            return  # la portada lleva su propia leyenda; solo el número de página (ver NumeradoCanvas)
         canvas.saveState()
         canvas.setFont("Roboto", 7.5)
         canvas.setFillColor(HexColor("#64748B"))
         canvas.drawString(1.5 * cm, 0.9 * cm, f"{proj.get('name') or ''} — Informe técnico diario de supervisión")
-        canvas.drawRightString(A4[0] - 1.5 * cm, 0.9 * cm, f"Página {doc_.page}")
         canvas.restoreState()
+
+    from reportlab.pdfgen import canvas as _rl_canvas
+
+    class NumeradoCanvas(_rl_canvas.Canvas):
+        """Dibuja "Página i|N" en todas las hojas (N solo se conoce al final: se difiere el guardado)."""
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+            self._paginas: list = []
+
+        def showPage(self):
+            self._paginas.append(dict(self.__dict__))
+            self._startPage()
+
+        def save(self):
+            total = len(self._paginas)
+            for estado in self._paginas:
+                self.__dict__.update(estado)
+                self.setFont("Roboto", 7.5)
+                self.setFillColor(HexColor("#64748B"))
+                self.drawRightString(A4[0] - 1.5 * cm, 0.9 * cm, f"Página {self._pageNumber}|{total}")
+                super().showPage()
+            super().save()
 
     buf = io.BytesIO()
     doc = BaseDocTemplate(buf, pagesize=A4, leftMargin=1.5 * cm, rightMargin=1.5 * cm, topMargin=1.4 * cm, bottomMargin=1.6 * cm,
@@ -16063,7 +16134,7 @@ def _informe_pdf_bytes(informes: list, proj: dict, fotos: Dict[str, list], hoja_
     doc.addPageTemplates([PageTemplate(id="p", frames=[Frame(1.5 * cm, 1.6 * cm, W, A4[1] - 3.0 * cm, id="f",
                                                               leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0)],
                                        onPage=pie)])
-    doc.build(story or [Paragraph("Sin informes.", s_txt)])
+    doc.build(story or [Paragraph("Sin informes.", s_txt)], canvasmaker=NumeradoCanvas)
     return buf.getvalue()
 
 
@@ -16108,8 +16179,15 @@ async def _informe_portada(proj: dict, informes: list, ini: date, fin: date, are
                            persona: str = "") -> dict:
     """Datos de la portada + logo (del proyecto o el institucional por defecto)."""
     d = _informe_portada_datos(proj, informes, ini, fin, area_nombre, persona, hoy_proyecto(proj))
-    p = await db.projects.find_one({"id": proj["id"]}, {"_id": 0, "constructora_logo": 1})
+    p = await db.projects.find_one({"id": proj["id"]}, {"_id": 0, "constructora_logo": 1, "cliente_logo": 1})
     d["logo"] = _resolve_export_logo_bytes((p or {}).get("constructora_logo"))
+    d["logo_cliente"] = None
+    if (p or {}).get("cliente_logo"):
+        try:
+            import base64 as _b64
+            d["logo_cliente"] = _b64.b64decode(_strip_b64_prefix(p["cliente_logo"]))
+        except Exception:
+            d["logo_cliente"] = None
     return d
 
 
