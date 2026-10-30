@@ -55,6 +55,21 @@ export function renombrarSeccion(config: IndiceConfig, key: string, titulo: stri
   return { ...config, titles };
 }
 
+// Copia la estructura general (titulo, orden, titulos personalizados, secciones
+// ocultas y si lleva indice) de un periodo a otro. Las claves que el destino no
+// tenga se ignoran al imprimir (igual que en `aplicarOrden`); `portadillas_area`
+// se conserva porque depende de cada informe (el diario no las usa, el semanal si).
+export function copiarFormato(origen: IndiceConfig, destino: IndiceConfig): IndiceConfig {
+  return {
+    ...destino,
+    enabled: origen.enabled,
+    titulo: origen.titulo,
+    order: [...origen.order],
+    titles: { ...origen.titles },
+    hidden: [...origen.hidden],
+  };
+}
+
 export function alternarOculta(config: IndiceConfig, key: string): IndiceConfig {
   const hidden = config.hidden.includes(key)
     ? config.hidden.filter((k) => k !== key)

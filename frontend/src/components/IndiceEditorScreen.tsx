@@ -15,8 +15,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { api, IndiceConfig, IndiceFormato, IndiceImagen, IndicePeriodo, IndicePreview, IndiceSeccion, Project } from '@/src/api';
 import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
 import {
-  INDICE_CONFIG_DEFAULT, INDICE_PERIODOS, alternarOculta, moverSeccion, renombrarSeccion,
-  seccionesOrdenadas,
+  INDICE_CONFIG_DEFAULT, INDICE_PERIODOS, alternarOculta, copiarFormato, moverSeccion,
+  renombrarSeccion, seccionesOrdenadas,
 } from '@/src/utils/indice';
 
 type Borrador = { config: IndiceConfig; estructura: IndiceSeccion[]; sucio: boolean };
@@ -134,6 +134,48 @@ export default function IndiceEditorScreen({ projectId: pid }: { projectId: stri
     if (actual) refrescarEstructura(periodo, false);
   }
 
+  // Copia la estructura general del periodo abierto a otros periodos. Queda como
+  // cambio sin guardar en cada destino (pestana con •): se revisa y se guarda ahi.
+  const [destinos, setDestinos] = useState<IndicePeriodo[]>([]);
+  const [copiando, setCopiando] = useState(false);
+  const [copiado, setCopiado] = useState<IndicePeriodo[]>([]);
+
+  useEffect(() => {
+    setDestinos((d) => d.filter((p) => p !== periodo));
+    setCopiado([]);
+  }, [periodo]);
+
+  function alternarDestino(p: IndicePeriodo) {
+    setCopiado([]);
+    setDestinos((d) => (d.includes(p) ? d.filter((x) => x !== p) : [...d, p]));
+  }
+
+  async function copiarA() {
+    if (!actual || destinos.length === 0) return;
+    const origen = actual.config;
+    const hechos: IndicePeriodo[] = [];
+    try {
+      setCopiando(true);
+      for (const p of destinos) {
+        let base = borradores[p];
+        if (!base) {
+          const r = await api.getIndiceConfig(pid, p);
+          base = { config: r.config, estructura: r.estructura, sucio: false };
+        }
+        const nuevo = { ...base, config: copiarFormato(origen, base.config), sucio: true };
+        setBorradores((b) => ({ ...b, [p]: nuevo }));
+        hechos.push(p);
+      }
+      setCopiado(hechos);
+      setDestinos([]);
+    } catch (e: any) {
+      if (hechos.length) setCopiado(hechos);
+      Alert.alert('No se pudo copiar', e?.message || 'Inténtalo nuevamente.');
+    } finally {
+      setCopiando(false);
+    }
+  }
+
   const secciones = useMemo(
     () => (actual ? seccionesOrdenadas(actual.estructura, actual.config) : []),
     [actual],
@@ -225,6 +267,53 @@ export default function IndiceEditorScreen({ projectId: pid }: { projectId: stri
                     style={styles.input}
                   />
                 </View>
+              </View>
+            </View>
+
+            <View style={styles.card}>
+              <View style={styles.copiaBox}>
+                <Text style={styles.rowTitle}>
+                  Copiar este formato a otro informe
+                </Text>
+                <Text style={styles.rowSub}>
+                  Copia el título, el orden, los nombres y las secciones ocultas del informe{' '}
+                  {periodo} a los que elijas. Queda sin guardar en cada uno para que lo revises.
+                  Las secciones que el destino no tenga se ignoran y las portadillas por área no cambian.
+                </Text>
+                <View style={styles.copiaChips}>
+                  {INDICE_PERIODOS.filter((p) => p.value !== periodo).map((p) => {
+                    const on = destinos.includes(p.value);
+                    return (
+                      <Pressable
+                        key={p.value}
+                        accessibilityRole="button"
+                        accessibilityState={{ selected: on }}
+                        onPress={() => alternarDestino(p.value)}
+                        style={[styles.formatoBtn, on && styles.formatoBtnOn]}
+                      >
+                        <Text style={[styles.formatoTxt, on && { color: '#fff' }]}>{p.label}</Text>
+                      </Pressable>
+                    );
+                  })}
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={copiarA}
+                    disabled={copiando || destinos.length === 0}
+                    style={[styles.copiarBtn, (copiando || destinos.length === 0) && { opacity: 0.5 }]}
+                  >
+                    {copiando ? (
+                      <ActivityIndicator size="small" color="#fff" />
+                    ) : (
+                      <Text style={styles.copiarTxt}>Copiar</Text>
+                    )}
+                  </Pressable>
+                </View>
+                {copiado.length > 0 ? (
+                  <Text style={styles.copiaOk}>
+                    Copiado a {copiado.map((p) => INDICE_PERIODOS.find((x) => x.value === p)?.label).join(' y ')}.
+                    Abre cada pestaña con • y toca "Guardar índice".
+                  </Text>
+                ) : null}
               </View>
             </View>
 
@@ -418,6 +507,14 @@ function VistaPreviaIndice({ preview, cargando, periodo, color, imagen, imagenCa
 }
 
 const styles = StyleSheet.create({
+  copiaBox: { padding: spacing.md },
+  copiaChips: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginTop: spacing.sm },
+  copiarBtn: {
+    minHeight: 36, paddingHorizontal: 18, borderRadius: radius.md, backgroundColor: colors.primary,
+    alignItems: 'center', justifyContent: 'center', marginLeft: 'auto',
+  },
+  copiarTxt: { color: '#fff', fontSize: 13, fontWeight: '800' },
+  copiaOk: { fontSize: 12, color: colors.primary, fontWeight: '600', marginTop: spacing.sm, lineHeight: 16 },
   previewWrap: { marginBottom: spacing.md },
   formatoRow: { flexDirection: 'row', gap: 8, marginBottom: spacing.sm },
   formatoBtn: {
