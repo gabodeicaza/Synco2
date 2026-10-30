@@ -122,6 +122,7 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
   const [savingReportes, setSavingReportes] = useState(false);
 
   const [tipoPickerOpen, setTipoPickerOpen] = useState(false);
+  const [insertarDespuesDe, setInsertarDespuesDe] = useState<string | null>(null);
   const [configTipo, setConfigTipo] = useState<PresentacionSeccionTipo | null>(null);
   const [configTitulo, setConfigTitulo] = useState('');
   const [nodes, setNodes] = useState<LocationNode[]>([]);
@@ -232,6 +233,18 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
     return secciones.length ? Math.max(...secciones.map((s) => s.orden)) + 1 : 0;
   }
 
+  /** Orden de la sección nueva: al final, o justo después de `insertarDespuesDe`
+   *  (las siguientes se recorren un lugar para hacerle espacio). */
+  async function ordenParaNueva(): Promise<number> {
+    const idx = insertarDespuesDe ? secciones.findIndex((x) => x.id === insertarDespuesDe) : -1;
+    setInsertarDespuesDe(null);
+    if (idx < 0 || idx === secciones.length - 1 || !detail) return nextOrden();
+    const nuevo = secciones[idx].orden + 1;
+    await Promise.all(secciones.slice(idx + 1).filter((x) => x.orden >= nuevo).map((x) =>
+      api.updatePresentacionSeccion(projectId, detail.id, x.id, { orden: x.orden + 1 })));
+    return nuevo;
+  }
+
   async function onPickTipo(tipo: PresentacionSeccionTipo) {
     setTipoPickerOpen(false);
     if (tipo === 'divisor') {
@@ -261,7 +274,7 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
     if (tipo === 'reportes_semana') {
       if (!detail) return;
       try {
-        const created = await api.addPresentacionSeccion(projectId, detail.id, { tipo, orden: nextOrden() });
+        const created = await api.addPresentacionSeccion(projectId, detail.id, { tipo, orden: await ordenParaNueva() });
         await loadDetail(detail.id);
         await openReportesSelector(created);
       } catch (e: any) {
@@ -277,7 +290,7 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
     if (!detail) return;
     try {
       setSavingSeccion(true);
-      await api.addPresentacionSeccion(projectId, detail.id, { ...body, orden: nextOrden() });
+      await api.addPresentacionSeccion(projectId, detail.id, { ...body, orden: await ordenParaNueva() });
       setConfigTipo(null);
       await loadDetail(detail.id);
     } catch (e: any) {
@@ -512,7 +525,7 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
             <View style={styles.sectionHeaderRow}>
               <Text style={styles.sectionTitle}>{t('presentacion.secciones')}</Text>
               {canEditEstructura ? (
-                <Pressable accessibilityRole="button" onPress={() => setTipoPickerOpen(true)} style={styles.addBtn}>
+                <Pressable accessibilityRole="button" onPress={() => { setInsertarDespuesDe(null); setTipoPickerOpen(true); }} style={styles.addBtn}>
                   <Ionicons name="add" size={16} color={colors.primary} />
                   <Text style={styles.addBtnTxt}>{t('presentacion.agregar')}</Text>
                 </Pressable>
@@ -545,6 +558,9 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
                     ) : null}
                     {canEditEstructura ? (
                       <>
+                        <Pressable accessibilityRole="button" accessibilityLabel="Insertar una sección después de esta" onPress={() => { setInsertarDespuesDe(s.id); setTipoPickerOpen(true); }} hitSlop={8} style={{ paddingHorizontal: 2 }}>
+                          <Ionicons name="add-circle-outline" size={18} color={colors.primary} />
+                        </Pressable>
                         <Pressable accessibilityRole="button" accessibilityLabel={a11y('moverArriba')} onPress={() => onMoveSeccion(s, -1)} hitSlop={8} disabled={idx === 0} style={{ paddingHorizontal: 2, opacity: idx === 0 ? 0.3 : 1 }}>
                           <Ionicons name="chevron-up" size={18} color={colors.textMuted} />
                         </Pressable>
