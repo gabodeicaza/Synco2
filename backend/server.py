@@ -921,6 +921,9 @@ class InvitationIn(BaseModel):
     area_id: Optional[str] = None
     puesto: Optional[str] = None
     scope_node_ids: List[str] = Field(default_factory=list)
+    # Subperfil "Coordinador de área": firma los informes diarios de su área y puede editar lo que
+    # capturan las personas de su área. Requiere área. Puede haber más de uno por área (lo ideal es uno).
+    es_coord_area: bool = False
 
 
 class InvitationOut(BaseModel):
@@ -934,6 +937,7 @@ class InvitationOut(BaseModel):
     area_id: Optional[str] = None
     puesto: Optional[str] = None
     no_control: Optional[str] = None
+    es_coord_area: bool = False
     scope_node_id: Optional[str] = None
     scope_node_ids: List[str] = Field(default_factory=list)
     status: str  # "pending" | "accepted" | "revoked"
@@ -1971,6 +1975,7 @@ def user_to_out(u: dict) -> dict:
         "area_id": u.get("area_id"),
         "puesto": u.get("puesto"),
         "no_control": u.get("no_control"),
+        "es_coord_area": bool(u.get("es_coord_area")),
         "scope_node_id": u.get("scope_node_id"),
         "scope_node_ids": u.get("scope_node_ids") or [],
         "project_ids": u.get("project_ids") or [],
@@ -11760,6 +11765,7 @@ async def list_invites(pid: str, user: dict = Depends(require_role(ROLE_COORD)))
 async def _validate_and_build_invitation_doc(
     pid: str, project: dict, *, email: str, name: str, role: str,
     area_id: Optional[str], puesto: Optional[str], no_control: Optional[str],
+    es_coord_area: bool = False,
 ) -> dict:
     """Valida las reglas de negocio de una invitación y arma el doc listo para
     insertar. Compartido por el alta individual (wizard) y la carga masiva por
@@ -11792,6 +11798,8 @@ async def _validate_and_build_invitation_doc(
             raise HTTPException(404, "area_id inválido")
     elif role != "jefe_proyecto":
         raise HTTPException(400, f"Rol inválido: {role}")
+    if es_coord_area and (role not in ("especialista", "sub_coordinador") or not area_id):
+        raise HTTPException(400, "El Coordinador de área debe ser Especialista o Sub-coordinador y tener un área asignada")
     # ====================================================================
     # REGLA GLOBAL: 1 USUARIO = 1 PROYECTO
     # --------------------------------------------------------------------
@@ -11820,6 +11828,7 @@ async def _validate_and_build_invitation_doc(
         "area_id": area_id,
         "puesto": (puesto or "").strip() or None,
         "no_control": (no_control or "").strip() or None,
+        "es_coord_area": bool(es_coord_area),
         "scope_node_id": None,
         "scope_node_ids": [],
         "status": "pending",
@@ -11837,6 +11846,7 @@ async def create_invite(pid: str, body: InvitationIn, user: dict = Depends(requi
         pid, project,
         email=body.email, name=body.name, role=body.role,
         area_id=body.area_id, puesto=body.puesto, no_control=body.no_control,
+        es_coord_area=body.es_coord_area,
     )
     doc["creado_por"] = user["id"]
     await db.invitations.insert_one(doc)
@@ -11914,6 +11924,7 @@ async def accept_invite(body: AcceptInviteIn):
         "area_id": inv.get("area_id"),
         "puesto": inv.get("puesto"),
         "no_control": inv.get("no_control"),
+        "es_coord_area": bool(inv.get("es_coord_area")),
         "scope_node_id": inv.get("scope_node_id"),
         "scope_node_ids": inv.get("scope_node_ids") or [],
         "project_ids": [inv["project_id"]],
@@ -12325,6 +12336,18 @@ def reporte_editable_por(r: dict, user: dict, ahora: Optional[datetime] = None) 
     return limite is not None and (ahora or datetime.now(timezone.utc)) <= limite
 
 
+async def _es_coord_de_area_del_reporte(user: dict, r: dict) -> bool:
+    """¿`user` es Coordinador de área y el reporte lo capturó alguien de SU área (o es del área)?"""
+    if not user.get("es_coord_area") or not user.get("area_id"):
+        return False
+    if r.get("project_id") not in (user.get("project_ids") or []):
+        return False
+    if r.get("area_id"):
+        return r["area_id"] == user["area_id"]
+    autor = await db.users.find_one({"id": r.get("captured_by")}, {"_id": 0, "area_id": 1})
+    return bool(autor) and autor.get("area_id") == user["area_id"]
+
+
 @api.put("/reports/{rid}")
 async def update_report(rid: str, body: ReportIn, user: dict = Depends(current_user)):
     """Edita el reporte completo (mismo formulario que la captura). Solo su autor
@@ -12332,9 +12355,11 @@ async def update_report(rid: str, body: ReportIn, user: dict = Depends(current_u
     r = await db.reports.find_one({"id": rid})
     if not r:
         raise HTTPException(404, "Reporte no existe")
-    if r.get("captured_by") != user["id"]:
-        raise HTTPException(403, "Solo el autor puede editar el reporte")
-    if not reporte_editable_por(r, user):
+    coord_area = r.get("captured_by") != user["id"] and await _es_coord_de_area_del_reporte(user, r)
+    if r.get("captured_by") != user["id"] and not coord_area:
+        raise HTTPException(403, "Solo el autor o el Coordinador de su área puede editar el reporte")
+    # El Coordinador de área corrige lo de su gente sin la ventana de horas del autor.
+    if not coord_area and not reporte_editable_por(r, user):
         raise HTTPException(403, f"Ya pasaron las {REPORTE_EDITABLE_HORAS} horas para editar este reporte")
     if body.project_id != r.get("project_id"):
         raise HTTPException(400, "No se puede cambiar el proyecto de un reporte")
@@ -13627,7 +13652,8 @@ async def patch_report_captions(
         raise HTTPException(404, "Reporte no existe")
     # Autorización: autor original o roles supervisores (Coord General, Jefe
     # de Proyecto, Sub-Coordinador — mismo criterio que severity/workforce-entry).
-    if user.get("role") not in (ROLE_COORD, ROLE_JEFE, ROLE_SUB) and r.get("captured_by") != user["id"]:
+    if (user.get("role") not in (ROLE_COORD, ROLE_JEFE, ROLE_SUB) and r.get("captured_by") != user["id"]
+            and not await _es_coord_de_area_del_reporte(user, r)):
         raise HTTPException(403, "Solo el autor o un Coordinador puede editar descripciones")
     # Sanitizamos: máximo 160 chars por caption y sólo se guardan hasta el
     # número real de imágenes que tiene el reporte (tope duro = 2 en export).
@@ -13666,7 +13692,7 @@ async def patch_report_severity(
     # Jefe de Proyecto es explícitamente de solo lectura (ver ROLE_JEFE) y NO
     # debe poder editar la jerarquía del reporte, en ningún momento.
     is_author = r.get("captured_by") == user["id"]
-    is_mgmt = user.get("role") in (ROLE_COORD, ROLE_SUB)
+    is_mgmt = user.get("role") in (ROLE_COORD, ROLE_SUB) or await _es_coord_de_area_del_reporte(user, r)
 
     if not (is_author or is_mgmt):
         raise HTTPException(403, "No tienes permiso para cambiar la severidad de este reporte")
@@ -13695,7 +13721,7 @@ async def patch_report_gravedad(
     if not r:
         raise HTTPException(404, "Reporte no existe")
     is_author = r.get("captured_by") == user["id"]
-    is_mgmt = user.get("role") in (ROLE_COORD, ROLE_SUB)
+    is_mgmt = user.get("role") in (ROLE_COORD, ROLE_SUB) or await _es_coord_de_area_del_reporte(user, r)
     if not (is_author or is_mgmt):
         raise HTTPException(403, "No tienes permiso para cambiar la gravedad de este reporte")
     await db.reports.update_one({"id": rid}, {"$set": {"gravedad": body.gravedad}})
@@ -13718,7 +13744,7 @@ async def patch_report_actividades_gravedad(
     if not r:
         raise HTTPException(404, "Reporte no existe")
     is_author = r.get("captured_by") == user["id"]
-    is_mgmt = user.get("role") in (ROLE_COORD, ROLE_SUB)
+    is_mgmt = user.get("role") in (ROLE_COORD, ROLE_SUB) or await _es_coord_de_area_del_reporte(user, r)
     if not (is_author or is_mgmt):
         raise HTTPException(403, "No tienes permiso para cambiar la gravedad de este reporte")
     items = _normalize_actividades_items(r.get("actividades_items"))
@@ -13754,7 +13780,7 @@ async def patch_report_contenido(
     if not r:
         raise HTTPException(404, "Reporte no existe")
     is_author = r.get("captured_by") == user["id"]
-    is_mgmt = user.get("role") in (ROLE_COORD, ROLE_SUB)
+    is_mgmt = user.get("role") in (ROLE_COORD, ROLE_SUB) or await _es_coord_de_area_del_reporte(user, r)
     if not (is_author or is_mgmt):
         raise HTTPException(403, "No tienes permiso para editar este reporte")
     sets: dict = {}
@@ -13788,11 +13814,11 @@ async def patch_report_workforce_entry(
     """Edita (o elimina, si `value` viene vacío) una entrada individual de
     `personnel`/`equipment` de un reporte — usado desde la tabla de Fuerza
     de Trabajo. Edición reservada a Coordinador General y Sub-Coordinador."""
-    if user.get("role") not in (ROLE_COORD, ROLE_SUB):
-        raise HTTPException(403, "Solo Coordinador General o Sub-Coordinador pueden editar la Fuerza de Trabajo")
     r = await db.reports.find_one({"id": rid})
     if not r:
         raise HTTPException(404, "Reporte no existe")
+    if user.get("role") not in (ROLE_COORD, ROLE_SUB) and not await _es_coord_de_area_del_reporte(user, r):
+        raise HTTPException(403, "Solo Coordinador General, Sub-Coordinador o el Coordinador de área pueden editar la Fuerza de Trabajo")
     entries = list(r.get(body.field) or [])
     if body.index < 0 or body.index >= len(entries):
         raise HTTPException(400, "Índice fuera de rango")
@@ -13879,6 +13905,8 @@ class TeamMemberPatch(BaseModel):
     # Sub-coordinador (antes solo se podía asignar al invitar). Cadena vacía
     # = quitar el área (permitido solo para sub-coordinador, ver abajo).
     area_id: Optional[str] = None
+    # Subperfil Coordinador de área (ver InvitationIn.es_coord_area).
+    es_coord_area: Optional[bool] = None
 
 
 @api.patch("/projects/{pid}/team/{uid}")
@@ -13927,6 +13955,12 @@ async def update_team_member(
         # aunque el Coordinador haya reasignado el área desde el perfil.
         update["area"] = area_name_val
 
+    if body.es_coord_area is not None:
+        update["es_coord_area"] = bool(body.es_coord_area)
+    # El subperfil exige área: se valida con el área resultante (la nueva si se cambió, si no la actual).
+    if (update.get("es_coord_area", member.get("es_coord_area"))
+            and not update.get("area_id", member.get("area_id"))):
+        raise HTTPException(400, "El Coordinador de área necesita un área asignada")
     if update:
         await db.users.update_one({"id": uid}, {"$set": update})
         member.update(update)
@@ -15833,11 +15867,22 @@ async def _informe_poner_puestos(docs: list) -> None:
     area_ids = list({u["area_id"] for u in usuarios.values() if u.get("area_id")})
     areas = {a["id"]: a.get("name") or "" async for a in db.areas.find(
         {"id": {"$in": area_ids}}, {"_id": 0, "id": 1, "name": 1})} if area_ids else {}
+    # Coordinador(es) de área: quien firma el informe diario de las personas de esa área.
+    coords: Dict[str, list] = {}
+    if area_ids:
+        pids = list({d["project_id"] for d in docs if d.get("project_id")})
+        async for c in db.users.find(
+            {"project_ids": {"$in": pids}, "es_coord_area": True, "area_id": {"$in": area_ids},
+             "deleted_at": {"$exists": False}}, {"_id": 0, "name": 1, "area_id": 1, "puesto": 1}).sort("name", 1):
+            coords.setdefault(c["area_id"], []).append(c)
     for d in docs:
         u = usuarios.get(d.get("user_id")) or {}
         d["user_puesto"] = u.get("puesto") or d.get("user_puesto")
         d["area_id"] = u.get("area_id")
         d["area_name"] = areas.get(u.get("area_id")) or ""
+        cs = coords.get(u.get("area_id")) or []
+        d["coord_area_nombre"] = " / ".join(c.get("name") or "" for c in cs)
+        d["coord_area_puesto"] = (cs[0].get("puesto") or "") if len(cs) == 1 else ""
 
 
 INFORME_PDF_MAX_FOTOS = 4
@@ -15895,12 +15940,15 @@ def _informe_portada_datos(proj: dict, informes: list, ini: date, fin: date, are
 
 
 def _informe_pdf_bytes(informes: list, proj: dict, fotos: Dict[str, list], hoja_firmas: Optional[list] = None,
-                       titulo_hoja: str = "", portada: Optional[dict] = None) -> bytes:
+                       titulo_hoja: str = "", portada: Optional[dict] = None, firma_diaria: bool = True,
+                       firma_sup: Optional[dict] = None) -> bytes:
     """PDF (A4 vertical) con un informe por sección en el formato de la plantilla:
     encabezado, resumen, bloque por reporte de campo, fotos y firmas. Si se pasa
     `hoja_firmas` ([{nombre, rol, dias, confirmados, sin_actividad}]) agrega al final la
     hoja de firmas semanal. Si se pasa `portada` (ver `_informe_portada_datos`) abre con la
-    portada institucional. Bloqueante (reportlab/PIL): llamar con asyncio.to_thread."""
+    portada institucional. `firma_diaria` pone al final de cada informe la firma única del Coordinador
+    de área; en el compilado semanal/de rango va en False y la única firma es la del Superintendente
+    (`firma_sup` = {nombre, cargo}) en la hoja final. Bloqueante (reportlab/PIL): llamar con asyncio.to_thread."""
     import base64
     from xml.sax.saxutils import escape
     from reportlab.lib.pagesizes import A4
@@ -16066,13 +16114,18 @@ def _informe_pdf_bytes(informes: list, proj: dict, fotos: Dict[str, list], hoja_
         if isinstance(conf, datetime):
             conf = conf.astimezone(zona_proyecto(proj)).strftime("%d/%m/%Y %H:%M")
         sello = (f"Revisado y confirmado en SynCo el {conf}" if conf else "Pendiente de confirmar en SynCo")
-        firmas = Table([
-            ["", ""],
-            [Paragraph(f"____________________________<br/><b>{esc(inf.get('user_name'))}</b><br/>"
-                       f"{esc(_informe_cargo(inf))}<br/>{esc(sello)}", s_firma),
-             Paragraph("____________________________<br/><b>Vo. Bo.</b><br/>Coordinación / Residencia de obra", s_firma)],
-        ], colWidths=[W / 2, W / 2], rowHeights=[1.4 * cm, None])
-        fl.append(KeepTogether([Paragraph("FIRMAS DE CONFORMIDAD Y SUPERVISIÓN", s_lbl), firmas]))
+        if firma_diaria:
+            # Una sola firma, al final: la del Coordinador de área (el ingeniero solo deja su sello de confirmación).
+            area_txt = f" · {inf.get('area_name')}" if inf.get("area_name") else ""
+            cargo_coord = f"{esc(inf.get('coord_area_puesto') or 'Coordinador de área')}{esc(area_txt)}"
+            firma = Table([
+                [""],
+                [Paragraph(f"____________________________<br/><b>{esc(inf.get('coord_area_nombre') or ' ')}</b><br/>"
+                           f"{cargo_coord}", s_firma)],
+            ], colWidths=[W], rowHeights=[1.4 * cm, None])
+            fl.append(KeepTogether([
+                Paragraph(f"Elaboró: {esc(inf.get('user_name'))} — {esc(sello)}", s_cap),
+                Spacer(1, 4), Paragraph("FIRMA DE CONFORMIDAD", s_lbl), firma]))
         if inf.get("comentario_ingeniero"):
             fl += [Spacer(1, 4), Paragraph(f"<b>Comentario del ingeniero:</b> {esc(inf['comentario_ingeniero'])}", s_txt)]
         return fl
@@ -16085,17 +16138,20 @@ def _informe_pdf_bytes(informes: list, proj: dict, fotos: Dict[str, list], hoja_
     if hoja_firmas is not None:
         if story:
             story.append(PageBreak())
-        story += [Paragraph("HOJA DE FIRMAS SEMANAL", s_tit), Paragraph(esc(titulo_hoja), s_sub), Spacer(1, 10)]
-        filas = [[Paragraph(h, s_celb) for h in ("INGENIERO", "INFORMES", "CONFIRMADOS", "FIRMA")]]
+        story += [Paragraph("RESUMEN Y FIRMA DEL PERIODO", s_tit), Paragraph(esc(titulo_hoja), s_sub), Spacer(1, 10)]
+        filas = [[Paragraph(h, s_celb) for h in ("INGENIERO", "INFORMES", "CONFIRMADOS")]]
         for r in hoja_firmas:
             extra = f"<br/><font size=7 color='#64748B'>Sin reportes: {esc(r['sin_actividad'])}</font>" if r.get("sin_actividad") else ""
             filas.append([Paragraph(f"<b>{esc(r['nombre'])}</b><br/>{esc(r.get('rol'))}{extra}", s_cel),
-                          Paragraph(str(r["dias"]), s_cel), Paragraph(str(r["confirmados"]), s_cel), ""])
-        th = Table(filas, colWidths=[6.2 * cm, 2.2 * cm, 2.8 * cm, W - 11.2 * cm], repeatRows=1,
-                   rowHeights=[None] + [1.9 * cm] * (len(filas) - 1))
+                          Paragraph(str(r["dias"]), s_cel), Paragraph(str(r["confirmados"]), s_cel)])
+        th = Table(filas, colWidths=[W - 7.4 * cm, 3.0 * cm, 4.4 * cm], repeatRows=1)
         th.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), HexColor(color)), ("GRID", (0, 0), (-1, -1), 0.5, GRIS),
                                 ("VALIGN", (0, 0), (-1, -1), "MIDDLE")]))
-        story.append(th)
+        sup = firma_sup or {}
+        firma = Table([[""], [Paragraph(f"____________________________<br/><b>{esc(sup.get('nombre') or ' ')}</b><br/>"
+                                        f"{esc(sup.get('cargo') or 'Superintendente de supervisión')}", s_firma)]],
+                      colWidths=[W], rowHeights=[2.2 * cm, None])
+        story += [th, Spacer(1, 16), KeepTogether([Paragraph("FIRMA DE CONFORMIDAD", s_lbl), firma])]
 
     def pie(canvas, doc_):
         if portada and doc_.page == 1:
@@ -16238,7 +16294,10 @@ async def _informe_compilado_pdf(proj: dict, user: dict, ini: date, fin: date, a
                  "sin_actividad": ", ".join(r["sin"])} for r in sorted(resumen.values(), key=lambda x: x["nombre"])]
     imgs = await _informe_fotos(listos, INFORME_PDF_MAX_FOTOS if ini == fin else 2) if fotos else {}
     port = await _informe_portada(proj, listos, ini, fin, area_nombre, persona) if portada else None
-    pdf = await asyncio.to_thread(_informe_pdf_bytes, listos, proj, imgs, hoja, titulo_hoja, port)
+    sup = _sanitize_datos_contrato(proj.get("datos_contrato")).get("supervision") or {}
+    firma_sup = {"nombre": (sup.get("superintendente") or "").strip(), "cargo": _CIERRE_CARGO.capitalize()}
+    pdf = await asyncio.to_thread(_informe_pdf_bytes, listos, proj, imgs, hoja, titulo_hoja, port,
+                                  ini == fin, firma_sup)
     sufijo = _safe_filename_fragment(area_nombre or persona or proj.get("name") or "proyecto")
     rango = ini.isoformat() if ini == fin else f"{ini.isoformat()}_{fin.isoformat()}"
     return _informe_pdf_response(pdf, f"{prefijo}_{rango}_{sufijo}.pdf")

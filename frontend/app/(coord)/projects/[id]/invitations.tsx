@@ -48,6 +48,7 @@ export default function InvitationsScreen() {
   const [puesto, setPuesto] = useState('');
   const [noControl, setNoControl] = useState('');
   const [areaId, setAreaId] = useState<string | null>(null);
+  const [esCoordArea, setEsCoordArea] = useState(false);
   const wizardForm = useFormErrors<'name' | 'email' | 'area'>();
   const envioInvitacion = useEnvio();
   const [errorAccion, setErrorAccion] = useState<string | null>(null);
@@ -110,12 +111,18 @@ export default function InvitationsScreen() {
     setStep(0); setRole('especialista');
     setName(''); setEmail(''); setPuesto(''); setNoControl('');
     setAreaId(null);
+    setEsCoordArea(false);
     wizardForm.limpiarTodo(); setWizardOpen(true);
     try {
       const a = await api.listAreas(pid);
       setAreas(a || []);
     } catch {}
   }
+
+  const coordsDeArea = (aid: string | null, exceptoId?: string) =>
+    !aid ? '' : invitations
+      .filter((i) => i.es_coord_area && i.area_id === aid && i.status !== 'revoked' && i.status !== 'removed' && i.id !== exceptoId)
+      .map((i) => i.name).join(', ');
 
   function next() {
     wizardForm.limpiarTodo();
@@ -146,6 +153,7 @@ export default function InvitationsScreen() {
         puesto: (role === ROLE_ESP || role === ROLE_SUB) ? (puesto.trim() || null) : null,
         no_control: noControl.trim() || null,
         area_id: areaId,
+        es_coord_area: esCoordArea && !!areaId && role !== ROLE_JEFE,
       };
       let inv: any;
       try {
@@ -207,6 +215,7 @@ export default function InvitationsScreen() {
   const [editPuesto, setEditPuesto] = useState('');
   const [editNoControl, setEditNoControl] = useState('');
   const [editAreaId, setEditAreaId] = useState<string | null>(null);
+  const [editCoordArea, setEditCoordArea] = useState(false);
   const editForm = useFormErrors<'name' | 'email' | 'area'>();
   const envioEdicion = useEnvio();
   const [resettingPassword, setResettingPassword] = useState(false);
@@ -219,6 +228,7 @@ export default function InvitationsScreen() {
     setEditPuesto(inv.puesto || '');
     setEditNoControl(inv.no_control || '');
     setEditAreaId(inv.area_id || null);
+    setEditCoordArea(!!inv.es_coord_area);
     editForm.limpiarTodo();
   }
 
@@ -240,6 +250,7 @@ export default function InvitationsScreen() {
           puesto: (objetivo.role === ROLE_ESP || objetivo.role === ROLE_SUB) ? (editPuesto.trim() || undefined) : undefined,
           no_control: editNoControl.trim() || undefined,
           area_id: editAreaId || '',
+          es_coord_area: editCoordArea && !!editAreaId,
         });
       } catch (e: any) {
         if (e instanceof ApiError && e.status === 409) editForm.poner('email', t('invitaciones.correoDuplicado'));
@@ -392,11 +403,12 @@ export default function InvitationsScreen() {
                   step === 2 ? (
                     <StepArea
                       role={role} areas={areas} areaId={areaId}
+                      esCoordArea={esCoordArea} onCoordArea={setEsCoordArea} otrosCoords={coordsDeArea(areaId)}
                       onArea={wizardForm.alCambiar<string | null>('area', setAreaId)}
                       error={wizardForm.errores.area}
                     />
                   ) :
-                  <StepReview role={role} name={name} email={email} areas={areas} areaId={areaId} />}
+                  <StepReview role={role} name={name} email={email} areas={areas} areaId={areaId} esCoordArea={esCoordArea && !!areaId} />}
 
                   <InlineError message={wizardForm.errorGeneral} style={{ marginTop: 10 }} />
                 </ScrollView>
@@ -492,6 +504,10 @@ export default function InvitationsScreen() {
                     ))}
                   </View>
                   <InlineError message={editForm.errores.area} style={{ marginTop: 6 }} />
+                  <CoordAreaToggle
+                    activo={editCoordArea && !!editAreaId} habilitado={!!editAreaId} onChange={setEditCoordArea}
+                    otros={coordsDeArea(editAreaId, editTarget?.id)}
+                  />
                 </>
               )}
 
@@ -586,7 +602,29 @@ function StepIdentity({ name, setName, email, setEmail, role, puesto, setPuesto,
   );
 }
 
-function StepArea({ role, areas, areaId, onArea, error }: any) {
+function CoordAreaToggle({ activo, habilitado, onChange, otros }: { activo: boolean; habilitado: boolean; onChange: (v: boolean) => void; otros: string }) {
+  return (
+    <View style={{ marginTop: 12, gap: 4, opacity: habilitado ? 1 : 0.5 }}>
+      <Pressable
+        accessibilityRole="checkbox" accessibilityState={{ checked: activo, disabled: !habilitado }} disabled={!habilitado}
+        onPress={() => onChange(!activo)} style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}
+      >
+        <Ionicons name={activo ? 'checkbox' : 'square-outline'} size={22} color={colors.primary} />
+        <Text style={{ fontWeight: '800', color: colors.text }}>Coordinador de área</Text>
+      </Pressable>
+      <Text style={{ color: colors.textMuted, fontSize: 12 }}>
+        Firma al final el informe diario de las personas de su área y puede editar lo que ellas capturan. {habilitado ? '' : 'Primero asigna un área.'}
+      </Text>
+      {activo && !!otros ? (
+        <Text style={{ color: '#92400E', fontSize: 12, fontWeight: '700' }}>
+          Esta área ya tiene Coordinador de área: {otros}. Lo ideal es que haya solo uno.
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
+function StepArea({ role, areas, areaId, onArea, error, esCoordArea, onCoordArea, otrosCoords }: any) {
   return (
     <View style={{ gap: 15 }}>
       <Text style={styles.stepTitle}>{t('invitacionesLista.areaDisciplina')}</Text>
@@ -600,11 +638,14 @@ function StepArea({ role, areas, areaId, onArea, error }: any) {
         ))}
       </View>
       <InlineError message={error} />
+      {role !== ROLE_JEFE && (
+        <CoordAreaToggle activo={!!esCoordArea && !!areaId} habilitado={!!areaId} onChange={onCoordArea} otros={otrosCoords} />
+      )}
     </View>
   );
 }
 
-function StepReview({ name, email, role, areas, areaId }: any) {
+function StepReview({ name, email, role, areas, areaId, esCoordArea }: any) {
   const areaName = areas.find((a: any) => a.id === areaId)?.name || t('invitacionesLista.obraCivil');
 
   return (
@@ -615,6 +656,7 @@ function StepReview({ name, email, role, areas, areaId }: any) {
         <ReviewRow label={t('invitacionesLista.correo')} value={email} />
         <ReviewRow label={t('invitacionesLista.rol')} value={roleLabel(role)} />
         {role !== ROLE_JEFE && <ReviewRow label={t('invitacionesLista.area')} value={areaName} />}
+        {!!esCoordArea && <ReviewRow label="Subperfil" value="Coordinador de área" />}
       </View>
     </View>
   );
@@ -638,6 +680,7 @@ function InviteCard({ inv, onCopyToken, onCopyLink, onShare, onRevoke, onEdit, o
         <Text style={{ fontWeight: '800' }}>{inv.name}</Text>
         <Text style={{ color: colors.textMuted, fontSize: 12 }}>{inv.email} • {roleLabel(inv.role)}</Text>
         {isPending && <Text style={styles.tokenInline}>{t('invitacionesLista.token3')} {inv.token}</Text>}
+        {!!inv.es_coord_area && <Text style={[styles.tokenInline, { color: colors.primary, fontWeight: '800' }]}>COORDINADOR DE ÁREA</Text>}
         {isAccepted && !!inv.puesto && <Text style={styles.tokenInline}>{t('invitacionesLista.puesto')} {inv.puesto}</Text>}
         {!!inv.no_control && <Text style={styles.tokenInline}>{t('invitacionesLista.noControl')} {inv.no_control}</Text>}
       </View>

@@ -240,7 +240,7 @@ export function ReportPreviewSheet({
   }
 
   // Edición de jerarquía habilitada en cualquier momento SOLO para: el autor
-  // original del reporte, el Coordinador General y los Sub-coordinadores.
+  // original del reporte, el Coordinador General, los Sub-coordinadores y el Coordinador de su área.
   // Jefe de Proyecto es de solo lectura y el resto de especialistas no puede
   // editar reportes ajenos (coincide con la autorización del backend en
   // `patch_report_severity`).
@@ -248,7 +248,9 @@ export function ReportPreviewSheet({
     !!user &&
     (source.captured_by === user.id ||
       user.role === 'coordinador_general' ||
-      user.role === 'sub_coordinador');
+      user.role === 'sub_coordinador' ||
+      // Coordinador de área: puede corregir lo que capturan las personas de SU área.
+      (!!user.es_coord_area && !!user.area_id && (source as any).area_id === user.area_id));
 
   // Edición completa: el autor, hasta 8 h después de capturar. Abre la pantalla de
   // captura con el reporte ya cargado.

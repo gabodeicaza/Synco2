@@ -282,6 +282,8 @@ export interface User {
   area?: string | null;
   area_id?: string | null;
   puesto?: string | null;
+  /** Subperfil Coordinador de área (firma el informe diario de su área y edita lo de su gente). */
+  es_coord_area?: boolean;
   scope_node_id?: string | null;
   scope_node_ids: string[];
   project_ids: string[];
@@ -1387,6 +1389,7 @@ export interface Invitation {
   area_id?: string | null;
   puesto?: string | null;
   no_control?: string | null;
+  es_coord_area?: boolean;
   scope_node_id?: string | null;
   scope_node_ids: string[];
   status: 'pending' | 'accepted' | 'revoked' | 'removed';
@@ -3435,7 +3438,7 @@ export const api = {
   listInvitations: (pid: string) => request<Invitation[]>('GET', `/projects/${pid}/invitations`),
   createInvitation: (pid: string, body: any) => request<Invitation>('POST', `/projects/${pid}/invitations`, body),
   revokeInvitation: (iid: string) => request<{ ok: boolean }>('DELETE', `/invitations/${iid}`),
-  updateTeamMember: (pid: string, uid: string, body: { name?: string; email?: string; puesto?: string; no_control?: string; area_id?: string }) =>
+  updateTeamMember: (pid: string, uid: string, body: { name?: string; email?: string; puesto?: string; no_control?: string; area_id?: string; es_coord_area?: boolean }) =>
     request<User>('PATCH', `/projects/${pid}/team/${uid}`, body),
   removeTeamMember: (pid: string, uid: string) =>
     request<{ ok: boolean }>('DELETE', `/projects/${pid}/team/${uid}`),
