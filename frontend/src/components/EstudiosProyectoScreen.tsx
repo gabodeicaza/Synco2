@@ -18,11 +18,16 @@ import { JerarquiaInformePicker, JERARQUIA_DEFAULT } from '@/src/components/Jera
 import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
 import { Button } from '@/src/components/Button';
 import { ScreenHeader } from '@/src/components/ScreenHeader';
+import EstudiosMatricesModal from '@/src/components/EstudiosMatricesModal';
+import { useAuth } from '@/src/auth-context';
+import { ROLE_JEFE } from '@/src/utils/roles';
 
 const DISCIPLINAS: EstudioDisciplina[] = ['mecanica_suelos', 'topografia', 'hidrologico', 'instalaciones'];
 
 export default function EstudiosProyectoScreen({ projectId }: { projectId: string }) {
   const insets = useSafeAreaInsets();
+  const { user } = useAuth();
+  const [matricesOpen, setMatricesOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [project, setProject] = useState<Project | null>(null);
   const [actividades, setActividades] = useState<EstudioActividad[]>([]);
@@ -149,6 +154,16 @@ export default function EstudiosProyectoScreen({ projectId }: { projectId: strin
       <ScreenHeader title={t('estudiosProyecto.estudiosYProyectoEjecutivo')} backgroundColor={headerColor} />
 
       <ScrollView contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + spacing.xl }]}>
+        <Pressable accessibilityRole="button" onPress={() => setMatricesOpen(true)} style={[styles.card, { flexDirection: 'row', alignItems: 'center', gap: 10, padding: spacing.md }]}>
+          <Ionicons name="grid-outline" size={20} color={colors.primary} />
+          <View style={{ flex: 1 }}>
+            <Text style={[styles.actNombre, { width: 'auto' }]}>Matrices de seguimiento</Text>
+            <Text style={styles.emptyTxt}>Entregables × estaciones con semáforo (documentos, TDR, estructural…) para la Presentación</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+        </Pressable>
+        <EstudiosMatricesModal projectId={projectId} visible={matricesOpen} onClose={() => setMatricesOpen(false)} puedeEscribir={user?.role !== ROLE_JEFE} />
+
         {/* === Panel superior: avance por actividad === */}
         <View style={styles.sectionHeaderRow}>
           <Text style={styles.sectionTitle}>{t('estudiosProyecto.avanceDeActividades')}</Text>

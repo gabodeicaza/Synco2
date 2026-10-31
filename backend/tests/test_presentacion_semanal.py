@@ -92,6 +92,19 @@ async def _scenario(tmp_path: Path, con_plantilla: bool):
     await server.db.pendientes_generales.insert_one({
         "id": str(uuid.uuid4()), "project_id": pid, "contrato": "calidad", "titulo": "Faltantes de Obra",
         "descripcion": "Falta entrega del programa de montaje\nProcedimiento de relleno", "orden": 0, "resuelto": False})
+    await server.set_estudios_matrices(pid, server.EstudioMatricesIn(matrices=[
+        server.EstudioMatrizIn(
+            titulo="Estatus de documentos en estaciones", forma="puntos", columnas=["Universidad", "Cantera"],
+            filas=["# Mecanica de suelos", "EMS", "Plano de sondeos"],
+            celdas={"1,0": "validado", "1,1": "observaciones", "2,0": "na"},
+            notas=[server.EstudioMatrizNotaIn(titulo="Pendientes", texto="3 estudios de Xochitl")]),
+        server.EstudioMatrizIn(
+            titulo="Entregables TDR arquitectonico", columnas=[f"E{i}" for i in range(1, 9)],
+            filas=["# Fase 1"] + [f"Entregable {i}" for i in range(1, 31)],
+            celdas={f"{r},{c}": ("validado" if (r + c) % 3 == 0 else "revision" if (r + c) % 3 == 1 else "pendiente")
+                    for r in range(1, 31) for c in range(8)},
+            descripcion="Estado de revision de los entregables del proyecto ejecutivo.",
+            notas=[server.EstudioMatrizNotaIn(titulo="Aspectos que retrasan", texto="Falta aprobacion del EMS")])]), user)
     await server.db.estudio_disciplina_avance.insert_many([
         {"id": str(uuid.uuid4()), "project_id": pid, "node_id": None, "disciplina": "topografia", "porcentaje": 98, "estatus": "en_proceso"},
         {"id": str(uuid.uuid4()), "project_id": pid, "node_id": "n", "disciplina": "urbano", "porcentaje": 100, "estatus": "terminado"}])
@@ -152,7 +165,7 @@ async def _scenario(tmp_path: Path, con_plantilla: bool):
         await server.db.reports.delete_many({"project_id": pid})
         await server.db.location_nodes.delete_many({"project_id": pid})
         for col in ("ambiental_auditoria", "levantamientos_sociales", "seguridad_reportes",
-                    "estudios_bitacora", "pendientes_generales", "estimaciones", "seguridad_indicadores", "ambiental", "estudio_disciplina_avance", "electromecanica"):
+                    "estudios_bitacora", "pendientes_generales", "estimaciones", "seguridad_indicadores", "ambiental", "estudio_disciplina_avance", "electromecanica", "estudios_matrices"):
             await server.db[col].delete_many({"project_id": pid})
 
 
@@ -184,6 +197,8 @@ def _verifica(prs):
     assert "AUTORIZADOS" in todo and "DERRIBOS" in todo and "P003 (Perisur)" in todo   # matriz de arbolado
     assert "Porcentaje de avance" in todo and "Dictámenes estructurales en Estaciones: 50.00%" in todo   # lista social
     assert "REGISTRO FOTOGRÁFICO DE ACTIVIDADES GENERALES" in todo and "Reunion virtual con C5" in todo
+    assert "ESTATUS DE DOCUMENTOS EN ESTACIONES" in todo and "Base de cálculo: 2 entregables × 2 columnas = 3 registros" in todo
+    assert "Validado técnicamente: 1 (33.3%)" in todo and "PENDIENTES" in todo
     assert "Gracias" in todo
     assert "Componentes Electromecánicos" in todo and "26.79%" in todo   # resumen electromecánico
     assert "FALTANTES DE OBRA" in todo and "programa de montaje" in todo  # columnas de calidad

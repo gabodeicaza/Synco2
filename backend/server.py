@@ -5936,6 +5936,84 @@ async def upsert_estudio_disciplina_avance(pid: str, body: EstudioDisciplinaAvan
     return doc
 
 
+# --- Matrices de seguimiento de estudios (entregables × estaciones, con semáforo) ---
+# Reemplazan a las tablas armadas a mano en la referencia: "Estatus de documentos en
+# estaciones", entregables TDR arquitectónicos, planos/memorias estructurales...
+ESTUDIO_MATRIZ_ESTADOS = ("validado", "observaciones", "revision", "pendiente", "na")
+
+
+class EstudioMatrizNotaIn(BaseModel):
+    titulo: Optional[str] = None
+    texto: str = ""
+
+
+class EstudioMatrizIn(BaseModel):
+    id: Optional[str] = None
+    titulo: str
+    forma: Literal["celdas", "puntos"] = "celdas"  # celdas llenas de color o un punto de color por celda
+    columnas: List[str] = Field(default_factory=list)  # estaciones / intertramos
+    filas: List[str] = Field(default_factory=list)  # entregables; "# Texto" = fila de grupo (encabezado)
+    celdas: Dict[str, str] = Field(default_factory=dict)  # "fila,columna" -> estado; sin valor = pendiente
+    leyenda: Optional[List[str]] = None  # 4 textos: validado, observaciones, revisión, pendiente
+    descripcion: Optional[str] = None
+    notas: List[EstudioMatrizNotaIn] = Field(default_factory=list)
+
+
+class EstudioMatricesIn(BaseModel):
+    matrices: List[EstudioMatrizIn] = Field(default_factory=list)
+
+
+@api.get("/projects/{pid}/estudios-matrices")
+async def list_estudios_matrices(pid: str, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    items = await db.estudios_matrices.find({"project_id": pid}).sort("orden", 1).to_list(length=50)
+    for it in items:
+        it.pop("_id", None)
+    return items
+
+
+@api.put("/projects/{pid}/estudios-matrices")
+async def set_estudios_matrices(pid: str, body: EstudioMatricesIn, user: dict = Depends(current_user)):
+    """Reemplaza todas las matrices del proyecto (es un estado vigente, no un log)."""
+    _assert_write_allowed(user)
+    await ensure_project_access(user, pid)
+    if len(body.matrices) > 30:
+        raise HTTPException(400, "Máximo 30 matrices")
+    docs = []
+    now = datetime.now(timezone.utc)
+    for orden, m in enumerate(body.matrices):
+        titulo = " ".join((m.titulo or "").split())[:120]
+        if not titulo:
+            raise HTTPException(400, "Cada matriz requiere título")
+        cols = [" ".join(c.split())[:40] for c in m.columnas if c.strip()]
+        filas = [" ".join(f.split())[:120] for f in m.filas if f.strip()]
+        if not (1 <= len(cols) <= 24) or not (1 <= len(filas) <= 80):
+            raise HTTPException(400, f"'{titulo}': usa de 1 a 24 columnas y de 1 a 80 filas")
+        celdas = {}
+        for k, v in m.celdas.items():
+            try:
+                r_, c_ = (int(x) for x in k.split(","))
+            except ValueError:
+                raise HTTPException(400, f"Celda inválida: {k}")
+            if v not in ESTUDIO_MATRIZ_ESTADOS or not (0 <= r_ < len(filas) and 0 <= c_ < len(cols)):
+                raise HTTPException(400, f"Celda inválida: {k}")
+            if v != "pendiente":
+                celdas[f"{r_},{c_}"] = v
+        leyenda = [(x or "").strip()[:60] for x in m.leyenda] if m.leyenda and len(m.leyenda) == 4 else None
+        docs.append({
+            "id": m.id or str(uuid.uuid4()), "project_id": pid, "orden": orden, "titulo": titulo, "forma": m.forma,
+            "columnas": cols, "filas": filas, "celdas": celdas, "leyenda": leyenda,
+            "descripcion": (m.descripcion or "").strip()[:1500] or None,
+            "notas": [{"titulo": (n.titulo or "").strip()[:120] or None, "texto": n.texto.strip()[:2000]}
+                      for n in m.notas if n.texto.strip() or (n.titulo or "").strip()][:6],
+            "updated_at": now, "updated_by": user["id"],
+        })
+    await db.estudios_matrices.delete_many({"project_id": pid})
+    if docs:
+        await db.estudios_matrices.insert_many([dict(d) for d in docs])
+    return docs
+
+
 # --- Impacto Ambiental: auditoría comparativa cumplimientos/incumplimientos. ---
 class AmbientalAuditoriaIn(BaseModel):
     tipo: Literal["cumplimiento", "incumplimiento"]
@@ -10347,12 +10425,15 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
 
     electromec_doc: Optional[dict] = None
     electromec_imgs: dict = {}
+    estudios_matrices: list = []
     if "electromecanico" in _tipos_auto:
         electromec_doc = await db.electromecanica.find_one({"project_id": pid})
         electromec_imgs = {}
         for b_ in (await _electromec_bloques(electromec_doc)) if electromec_doc else []:
             if b_.get("type") == "imagen":
                 electromec_imgs[b_.get("heading")] = b_.get("imagen")
+    if "proyecto" in _tipos_auto:
+        estudios_matrices = await db.estudios_matrices.find({"project_id": pid}).sort("orden", 1).to_list(length=30)
     calidad_pend: list = []
     if "calidad" in _tipos_auto:
         calidad_pend = await db.pendientes_generales.find(
@@ -11717,6 +11798,139 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                         r1.font.name = "Roboto"
                         r1.font.color.rgb = _PRGBColor(*TEXT_RGB)
 
+        def slide_estudios_matrices():
+            """Matriz entregables × estaciones con semáforo (celdas de color o puntos), más
+            leyenda con conteo/porcentaje, descripción y recuadros de notas, como las láminas
+            de estudios de la referencia."""
+            for m in estudios_matrices:
+                cols = m.get("columnas") or []
+                filas = m.get("filas") or []
+                celdas = m.get("celdas") or {}
+                puntos = m.get("forma") == "puntos"
+                col_est = {"validado": (0x00, 0xB0, 0x50), "observaciones": (0xFF, 0xC0, 0x00),
+                           "revision": (0xF4, 0xB1, 0x83) if puntos else (0x00, 0x70, 0xC0),
+                           "pendiente": (0xFF, 0x00, 0x00), "na": (0xD9, 0xD9, 0xD9)}
+                nombres = m.get("leyenda") or ["Validado técnicamente", "Revisado con observaciones", "En revisión",
+                                               "Pendiente de entrega"]
+                orden_est = ("validado", "observaciones", "revision", "pendiente")
+                denso = len(filas) > 16
+                slide = _clone_membrete()
+                _encabezado(slide, "ACTIVIDADES GENERALES")
+                y0 = _y_bajo_banda()
+                add_text(slide, int(SW * 0.012), int(y0 + _Cm(0.15)), int(SW * 0.6), _Cm(1.0), (m.get("titulo") or "").upper(),
+                         size=15, bold=True, color=BRAND_RGB)
+                top = int(y0 + _Cm(1.3))
+                tw = int(SW * (0.63 if denso else 0.976))
+                tx = int(SW * 0.012)
+                avail = int(SH - top - (_Cm(0.4) if denso else SH * 0.30))
+                head_h = _Cm(0.8)
+                row_h = min(int(_Cm(0.95)), int((avail - head_h) / max(len(filas), 1)))
+                tamano = 9 if row_h >= _Cm(0.8) else (7 if row_h >= _Cm(0.55) else 5)
+                gs = slide.shapes.add_table(len(filas) + 1, len(cols) + 1, tx, top, tw, int(head_h + row_h * len(filas)))
+                tbl = gs.table
+                primera = 2.4 if len(cols) <= 10 else 3.2
+                tot = primera + len(cols)
+                tbl.columns[0].width = int(tw * primera / tot)
+                for ci in range(len(cols)):
+                    tbl.columns[ci + 1].width = int(tw * 1.0 / tot)
+                tbl.rows[0].height = int(head_h)
+                for ri in range(1, len(filas) + 1):
+                    tbl.rows[ri].height = int(row_h)
+
+                def _c(cell, texto, fondo, fg=TEXT_RGB, bold=False, align=_PP_ALIGN.CENTER, size=tamano):
+                    cell.fill.solid()
+                    cell.fill.fore_color.rgb = _PRGBColor(*fondo)
+                    cell.margin_left = cell.margin_right = _Cm(0.08)
+                    cell.margin_top = cell.margin_bottom = _Cm(0.02)
+                    tf = cell.text_frame
+                    tf.word_wrap = True
+                    par = tf.paragraphs[0]
+                    par.alignment = align
+                    r_ = par.add_run()
+                    r_.text = texto
+                    r_.font.size = _Pt(size)
+                    r_.font.name = "Roboto"
+                    r_.font.bold = bold
+                    r_.font.color.rgb = _PRGBColor(*fg)
+
+                _c(tbl.cell(0, 0), "Entregable", (0xDC, 0xE6, 0xF1), bold=True)
+                for ci, nombre in enumerate(cols):
+                    _c(tbl.cell(0, ci + 1), nombre, (0xDC, 0xE6, 0xF1), bold=True)
+                conteo = {k: 0 for k in orden_est}
+                reales = 0
+                for ri, fila in enumerate(filas):
+                    if fila.startswith("#"):
+                        tbl.cell(ri + 1, 0).merge(tbl.cell(ri + 1, len(cols)))
+                        _c(tbl.cell(ri + 1, 0), fila.lstrip("# ").upper(), (0xD9, 0xD9, 0xD9), bold=True, align=_PP_ALIGN.LEFT)
+                        continue
+                    reales += 1
+                    _c(tbl.cell(ri + 1, 0), fila, WHITE_RGB, align=_PP_ALIGN.LEFT)
+                    for ci in range(len(cols)):
+                        est = celdas.get(f"{ri},{ci}", "pendiente")
+                        if est in conteo:
+                            conteo[est] += 1
+                        if puntos:
+                            if est == "na":
+                                _c(tbl.cell(ri + 1, ci + 1), "n/a", WHITE_RGB, bold=True, size=max(tamano - 1, 5))
+                            else:
+                                _c(tbl.cell(ri + 1, ci + 1), "●", WHITE_RGB, fg=col_est[est], size=tamano + 6)
+                        else:
+                            _c(tbl.cell(ri + 1, ci + 1), "n/a" if est == "na" else " ", col_est[est], size=max(tamano - 1, 5))
+                base = sum(conteo.values())
+                # --- leyenda (con conteo y %) ---
+                if denso:
+                    px, py, pw = int(tx + tw + SW * 0.02), top, int(SW * 0.35)
+                else:
+                    px, py, pw = tx, int(top + head_h + row_h * len(filas) + _Cm(0.5)), int(SW * 0.40)
+                if m.get("descripcion") and denso:
+                    add_text(slide, px, py, pw, _Cm(5.2), m["descripcion"], size=8, color=TEXT_RGB)
+                    py = int(py + _Cm(5.4))
+                for i, k in enumerate(orden_est):
+                    yy = int(py + i * _Cm(0.62))
+                    _rect(slide, px, yy + _Cm(0.08), _Cm(0.4), _Cm(0.4), fill_rgb=col_est[k])
+                    pct = (conteo[k] / base * 100) if base else 0
+                    add_text(slide, int(px + _Cm(0.6)), yy, int(pw - _Cm(0.6)), _Cm(0.55),
+                             f"{nombres[i]}: {conteo[k]} ({pct:.1f}%)", size=9, color=TEXT_RGB)
+                add_text(slide, px, int(py + 4 * _Cm(0.62) + _Cm(0.1)), pw, _Cm(0.55),
+                         f"Base de cálculo: {reales} entregables × {len(cols)} columnas = {base} registros", size=7,
+                         color=MUTED_RGB)
+                # --- notas ---
+                notas = m.get("notas") or []
+                if notas:
+                    if denso:
+                        nx, ny, nw = px, int(py + _Cm(4.2)), pw
+                        nh = int(SH - ny - _Cm(0.8))
+                    else:
+                        nx, ny = int(tx + SW * 0.43), py
+                        nw, nh = int(SW * 0.55), int(SH - py - _Cm(0.8))
+                    alto = min(int(nh / len(notas)), int(_Cm(3.8)))
+                    for i, n in enumerate(notas):
+                        bx = slide.shapes.add_shape(_MSO_SHAPE.RECTANGLE, nx, int(ny + i * alto), nw, int(alto - _Cm(0.15)))
+                        bx.shadow.inherit = False
+                        bx.fill.background()
+                        bx.line.color.rgb = _PRGBColor(*BRAND_RAW_RGB)
+                        bx.line.width = _Pt(1)
+                        tf = bx.text_frame
+                        tf.word_wrap = True
+                        from pptx.enum.text import MSO_ANCHOR as _MSO_ANCHOR
+                        tf.vertical_anchor = _MSO_ANCHOR.TOP
+                        par = tf.paragraphs[0]
+                        par.alignment = _PP_ALIGN.LEFT
+                        r1 = par.add_run()
+                        r1.text = (n.get("titulo") or "").upper()
+                        r1.font.size = _Pt(9)
+                        r1.font.bold = True
+                        r1.font.name = "Roboto"
+                        r1.font.color.rgb = _PRGBColor(*BRAND_RAW_RGB)
+                        for ln in [x.strip() for x in (n.get("texto") or "").splitlines() if x.strip()]:
+                            pp = tf.add_paragraph()
+                            pp.alignment = _PP_ALIGN.LEFT
+                            r2 = pp.add_run()
+                            r2.text = ln if ln.startswith(("•", "-")) else "• " + ln
+                            r2.font.size = _Pt(8)
+                            r2.font.name = "Roboto"
+                            r2.font.color.rgb = _PRGBColor(*TEXT_RGB)
+
         def _dup_seguridad(b):
             return ((b.get("type") == "imagen" and (b.get("heading") or "") in (
                         "CUMPLIMIENTO EN CAMPO", "CUMPLIMIENTO DOCUMENTAL", "PORCENTAJE DE CUMPLIMIENTO POR ÁREA"))
@@ -11730,6 +11944,8 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                 slide_electromec_resumen()
             if tipo == "calidad" and calidad_pend:
                 slide_calidad_pendientes()
+            if tipo == "proyecto" and estudios_matrices:
+                slide_estudios_matrices()
             for modulo_titulo, bloques in (modulos_auto.get(tipo) or []):
                 if tipo == "seguridad" and seg_extra:
                     bloques = [b_ for b_ in bloques if not _dup_seguridad(b_)]
@@ -11745,7 +11961,7 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                 # No imprime un divisor cuya sección automática siguiente no trae nada.
                 sig = secciones[s_idx + 1].get("tipo") if s_idx + 1 < len(secciones) else None
                 if (sig in _auto_tipos and not modulos_auto.get(sig) and not (sig == "seguridad" and seg_extra)
-                        and not (sig == "calidad" and calidad_pend)):
+                        and not (sig == "calidad" and calidad_pend) and not (sig == "proyecto" and estudios_matrices)):
                     continue
             if tipo == "portada":
                 slide_portada()

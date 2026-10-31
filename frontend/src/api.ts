@@ -839,6 +839,21 @@ export interface ElectromecIn {
   documentos: ElectromecDocumento[];
   observaciones: ElectromecObservacion[];
 }
+export type EstudioMatrizEstado = 'validado' | 'observaciones' | 'revision' | 'pendiente' | 'na';
+export interface EstudioMatriz {
+  id?: string;
+  titulo: string;
+  forma: 'celdas' | 'puntos';
+  columnas: string[];
+  /** Una fila que empieza con "# " es un encabezado de grupo. */
+  filas: string[];
+  /** "fila,columna" -> estado; sin valor = pendiente. */
+  celdas: Record<string, EstudioMatrizEstado>;
+  leyenda?: string[] | null;
+  descripcion?: string | null;
+  notas: { titulo?: string | null; texto: string }[];
+}
+
 export interface Electromecanica extends ElectromecIn {
   avance_general_calculado?: number | null;
   updated_at?: string;
@@ -3404,6 +3419,9 @@ export const api = {
   }>) => request<RiesgoRegistro>('PATCH', `/projects/${pid}/riesgos-registros/${rid}`, body),
 
   // === Módulo piloto: Estudios y Proyecto Ejecutivo ===
+  listEstudiosMatrices: (pid: string) => request<EstudioMatriz[]>('GET', `/projects/${pid}/estudios-matrices`),
+  setEstudiosMatrices: (pid: string, matrices: EstudioMatriz[]) =>
+    request<EstudioMatriz[]>('PUT', `/projects/${pid}/estudios-matrices`, { matrices }),
   listEstudiosActividades: (pid: string) => request<EstudioActividad[]>('GET', `/projects/${pid}/estudios-actividades`),
   createEstudioActividad: (pid: string, body: { nombre: string; porcentaje_avance?: number; orden?: number }) =>
     request<EstudioActividad>('POST', `/projects/${pid}/estudios-actividades`, body),
