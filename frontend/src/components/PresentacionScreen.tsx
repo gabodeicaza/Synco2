@@ -680,14 +680,22 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
         {/* Modal: elegir tipo de sección */}
         <Modal visible={tipoPickerOpen} transparent animationType="slide" onRequestClose={() => setTipoPickerOpen(false)}>
           <Pressable style={styles.modalBackdrop} onPress={() => setTipoPickerOpen(false)}>
-            <Pressable accessibilityRole="button" style={styles.modalCard} onPress={() => {}}>
-              <Text style={styles.modalTitle}>{t('presentacion.agregarSeccion')}</Text>
-              {TIPO_ORDEN_PICKER.map((t) => (
-                <Pressable accessibilityRole="button" key={t} onPress={() => onPickTipo(t)} style={styles.tipoOption}>
-                  <Ionicons name={TIPO_ICON[t]} size={18} color={colors.primary} />
-                  <Text style={styles.tipoOptionTxt}>{TIPO_LABEL[t]}</Text>
+            <Pressable accessibilityRole="button" style={[styles.modalCard, { maxHeight: '85%' }]} onPress={() => {}}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: spacing.sm }}>
+                <Text style={[styles.modalTitle, { marginBottom: 0 }]}>{t('presentacion.agregarSeccion')}</Text>
+                <Pressable accessibilityRole="button" accessibilityLabel="Cerrar" hitSlop={12} onPress={() => setTipoPickerOpen(false)}>
+                  <Ionicons name="close" size={24} color={colors.text} />
                 </Pressable>
-              ))}
+              </View>
+              <ScrollView style={{ flexShrink: 1 }}>
+                {TIPO_ORDEN_PICKER.map((t) => (
+                  <Pressable accessibilityRole="button" key={t} onPress={() => onPickTipo(t)} style={styles.tipoOption}>
+                    <Ionicons name={TIPO_ICON[t]} size={18} color={colors.primary} />
+                    <Text style={styles.tipoOptionTxt}>{TIPO_LABEL[t]}</Text>
+                  </Pressable>
+                ))}
+              </ScrollView>
+              <Button label="Cancelar" variant="secondary" onPress={() => setTipoPickerOpen(false)} style={{ marginTop: spacing.sm }} />
             </Pressable>
           </Pressable>
         </Modal>
