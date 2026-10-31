@@ -10765,6 +10765,115 @@ def _pptx_aplicar_fuente(prs, font_name: str = "Roboto") -> None:
         _recorre(_slide.shapes)
 
 
+def _portada_plantilla_png(tpl_path: str, ancho: int = 1600) -> Optional[dict]:
+    """Portada de la plantilla PPTX del proyecto lista para dibujarla en la app: el arte de
+    fondo y los logos compuestos en una sola imagen (sin textos) y, aparte, los cuadros de
+    texto con su posición (% del ancho/alto) y tipografía. Así la vista previa es la misma
+    portada que sale en el PowerPoint y el PDF."""
+    from pptx import Presentation
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
+    from PIL import Image as _I
+    prs = Presentation(tpl_path)
+    if not len(prs.slides):
+        return None
+    sl = prs.slides[0]
+    SW, SH = prs.slide_width, prs.slide_height
+    alto = int(ancho * SH / SW)
+    k = ancho / SW
+    lienzo = _I.new("RGB", (ancho, alto), "white")
+    blip = sl._element.find(".//{http://schemas.openxmlformats.org/presentationml/2006/main}bg//"
+                            "{http://schemas.openxmlformats.org/drawingml/2006/main}blip")
+    if blip is not None:
+        rid = blip.get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed")
+        try:
+            fondo = _I.open(io.BytesIO(sl.part.related_part(rid).blob)).convert("RGB")
+            lienzo.paste(fondo.resize((ancho, alto)), (0, 0))
+        except Exception:
+            pass
+
+    def _pegar(shape, ox=0, oy=0, esc=1.0):
+        if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+            g = shape._element.grpSpPr.xfrm
+            ch_w, ch_h = g.chExt.cx or 1, g.chExt.cy or 1
+            ex, ey = shape.width / ch_w, shape.height / ch_h
+            for hijo in shape.shapes:
+                x = shape.left + (hijo.left - g.chOff.x) * ex
+                y = shape.top + (hijo.top - g.chOff.y) * ey
+                _pegar_abs(hijo, x, y, hijo.width * ex, hijo.height * ey)
+        elif shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
+            _pegar_abs(shape, shape.left, shape.top, shape.width, shape.height)
+
+    def _pegar_abs(shape, x, y, w, h):
+        if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+            return
+        if shape.shape_type != MSO_SHAPE_TYPE.PICTURE:
+            return
+        try:
+            im = _I.open(io.BytesIO(shape.image.blob)).convert("RGBA")
+        except Exception:
+            return
+        cl, cr, ct, cb = shape.crop_left, shape.crop_right, shape.crop_top, shape.crop_bottom
+        if cl or cr or ct or cb:
+            iw, ih = im.size
+            im = im.crop((int(iw * cl), int(ih * ct), int(iw * (1 - cr)), int(ih * (1 - cb))))
+        im = im.resize((max(int(w * k), 1), max(int(h * k), 1)))
+        lienzo.paste(im, (int(x * k), int(y * k)), im)
+
+    for shape in sl.shapes:
+        _pegar(shape)
+    buf = io.BytesIO()
+    lienzo.save(buf, format="JPEG", quality=88)
+    cuadros = []
+    for shape in sorted([x for x in sl.shapes if x.has_text_frame and x.text_frame.text.strip()],
+                        key=lambda x: (x.top or 0, x.left or 0)):
+        run = next((r for par in shape.text_frame.paragraphs for r in par.runs), None)
+        pt, negrita, color = None, True, "#FFFFFF"
+        if run is not None:
+            pt = run.font.size.pt if run.font.size else None
+            negrita = bool(run.font.bold) if run.font.bold is not None else True
+            try:
+                if run.font.color and run.font.color.type is not None and run.font.color.rgb is not None:
+                    color = f"#{run.font.color.rgb}"
+            except Exception:
+                pass
+        cuadros.append({"x": shape.left / SW, "y": shape.top / SH, "w": shape.width / SW, "h": shape.height / SH,
+                        "pt_rel": (pt or 18) * 12700 / SW, "negrita": negrita, "color": color})
+    import base64 as _b64
+    return {"image": "data:image/jpeg;base64," + _b64.b64encode(buf.getvalue()).decode(),
+            "aspecto": SW / SH, "cuadros": cuadros}
+
+
+@api.get("/projects/{pid}/presentaciones/{pres_id}/portada")
+async def portada_presentacion(pid: str, pres_id: str, user: dict = Depends(current_user)):
+    """Datos para dibujar la portada de la vista previa igual que la del PPTX/PDF.
+    Sin plantilla subida devuelve `image: null` y la app usa su portada simple."""
+    await ensure_project_access(user, pid)
+    proj = await db.projects.find_one({"id": pid})
+    pres = await db.presentaciones.find_one({"id": pres_id, "project_id": pid})
+    if not proj or not pres:
+        raise HTTPException(404, "Presentación no existe")
+    tpl = _get_project_template(proj, "pptx")
+    if not tpl:
+        return {"image": None}
+    try:
+        datos = await asyncio.to_thread(_portada_plantilla_png, tpl)
+    except Exception:
+        return {"image": None}
+    if not datos:
+        return {"image": None}
+    try:
+        d = date.fromisoformat(pres.get("fecha") or "")
+        fecha = f"{d.day} {_SEGURIDAD_MESES[d.month - 1].upper()} DE {d.year}"
+    except Exception:
+        fecha = pres.get("fecha") or ""
+    objeto = (proj.get("objeto_contrato") or proj.get("name") or "").strip().upper()
+    textos = [pres.get("titulo") or "INFORME DE ACTIVIDADES", fecha, objeto]
+    for c, t in zip(datos["cuadros"], textos):
+        c["texto"] = t
+    datos["cuadros"] = [c for c in datos["cuadros"] if c.get("texto")]
+    return datos
+
+
 @api.get("/projects/{pid}/presentaciones/{pres_id}/export.pptx")
 async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(current_user)):
     """Exporta una Presentación como PPTX real, reusando el mismo patrón de
