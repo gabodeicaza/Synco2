@@ -123,6 +123,8 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
 
   const [tipoPickerOpen, setTipoPickerOpen] = useState(false);
   const [insertarDespuesDe, setInsertarDespuesDe] = useState<string | null>(null);
+  const [revision, setRevision] = useState<{ nivel: 'error' | 'aviso'; seccion: string; mensaje: string }[] | null>(null);
+  const [revisando, setRevisando] = useState(false);
   const [configTipo, setConfigTipo] = useState<PresentacionSeccionTipo | null>(null);
   const [configTitulo, setConfigTitulo] = useState('');
   const [nodes, setNodes] = useState<LocationNode[]>([]);
@@ -297,6 +299,19 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
       Alert.alert(t('presentacion.noSePudoAgregar'), e?.message || 'Inténtalo nuevamente.');
     } finally {
       setSavingSeccion(false);
+    }
+  }
+
+  async function onRevisar() {
+    if (!detail) return;
+    try {
+      setRevisando(true);
+      const r = await api.revisionPresentacion(projectId, detail.id);
+      setRevision(r.items);
+    } catch (e: any) {
+      Alert.alert('No se pudo revisar', e?.message || 'Inténtalo nuevamente.');
+    } finally {
+      setRevisando(false);
     }
   }
 
@@ -535,6 +550,15 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
                 />
               </View>
             ) : null}
+            <Pressable accessibilityRole="button" onPress={onRevisar} disabled={revisando}
+              style={[styles.card, { flexDirection: 'row', alignItems: 'center', gap: 10, padding: spacing.md, marginBottom: spacing.md }]}>
+              <Ionicons name="checkmark-done-circle-outline" size={20} color={colors.primary} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.seccionTitulo}>Revisar antes de exportar</Text>
+                <Text style={styles.seccionSub}>Renders sin subir, láminas sin fotos o texto, secciones sin datos</Text>
+              </View>
+              {revisando ? <ActivityIndicator color={colors.primary} /> : <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />}
+            </Pressable>
             <View style={styles.sectionHeaderRow}>
               <Text style={styles.sectionTitle}>{t('presentacion.secciones')}</Text>
               {canEditEstructura ? (
@@ -597,6 +621,34 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
             </View>
           </ScrollView>
         )}
+
+        {/* Modal: resultado de la revisión */}
+        <Modal visible={revision !== null} transparent animationType="slide" onRequestClose={() => setRevision(null)}>
+          <Pressable style={styles.modalBackdrop} onPress={() => setRevision(null)}>
+            <Pressable accessibilityRole="button" style={[styles.modalCard, { maxHeight: '80%' }]} onPress={() => {}}>
+              <Text style={styles.modalTitle}>Revisión de la presentación</Text>
+              {revision && revision.length === 0 ? (
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: spacing.md }}>
+                  <Ionicons name="checkmark-circle" size={22} color="#16A34A" />
+                  <Text style={styles.seccionTitulo}>Todo listo: no encontré pendientes.</Text>
+                </View>
+              ) : (
+                <ScrollView>
+                  {(revision || []).map((it, i) => (
+                    <View key={i} style={[styles.tipoOption, { alignItems: 'flex-start' }]}>
+                      <Ionicons name={it.nivel === 'error' ? 'alert-circle' : 'warning-outline'} size={20} color={it.nivel === 'error' ? colors.error : '#D97706'} />
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.seccionSub}>{it.seccion}</Text>
+                        <Text style={styles.tipoOptionTxt}>{it.mensaje}</Text>
+                      </View>
+                    </View>
+                  ))}
+                </ScrollView>
+              )}
+              <Button label="Cerrar" variant="secondary" onPress={() => setRevision(null)} style={{ marginTop: spacing.md }} />
+            </Pressable>
+          </Pressable>
+        </Modal>
 
         {/* Modal: elegir tipo de sección */}
         <Modal visible={tipoPickerOpen} transparent animationType="slide" onRequestClose={() => setTipoPickerOpen(false)}>

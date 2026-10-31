@@ -10261,6 +10261,73 @@ async def list_fotos_semana_presentacion(
     return await asyncio.to_thread(_armar)
 
 
+@api.get("/projects/{pid}/presentaciones/{pres_id}/revision")
+async def revisar_presentacion(pid: str, pres_id: str, user: dict = Depends(current_user)):
+    """Qué le falta a la presentación antes de exportar: renders sin subir, láminas sin
+    fotos o texto, secciones automáticas sin datos (no saldrán) y estaciones sin láminas.
+    `nivel`: "error" = saldrá con un hueco visible; "aviso" = conviene completarlo."""
+    await ensure_project_access(user, pid)
+    pres = await db.presentaciones.find_one({"id": pres_id, "project_id": pid})
+    if not pres:
+        raise HTTPException(404, "Presentación no existe")
+    secciones = sorted(pres.get("secciones") or [], key=lambda x: x.get("orden", 0))
+    items: List[dict] = []
+
+    def _add(nivel, seccion, mensaje):
+        items.append({"nivel": nivel, "seccion": seccion, "mensaje": mensaje})
+
+    async def _hay(coleccion, extra=None) -> bool:
+        q = {"project_id": pid, **(extra or {})}
+        return await db[coleccion].find_one(q, {"_id": 1}) is not None
+
+    datos_auto = {
+        "ambiental": ("Ambiental", ("ambiental",)),
+        "social": ("Social", ("levantamientos_sociales", "salvamento_arqueologico")),
+        "seguridad": ("Seguridad", ("seguridad_indicadores", "seguridad_reportes")),
+        "proyecto": ("Estudios y proyecto ejecutivo", ("estudios_bitacora", "estudios_actividades", "estudios_matrices")),
+        "calidad": ("Aseguramiento de calidad", ("control_calidad", "pruebas_calidad", "postes_calidad")),
+        "electromecanico": ("Electromecánica", ("electromecanica",)),
+        "financiero": ("Financiero", ("estimaciones",)),
+    }
+    for sec in secciones:
+        tipo = sec.get("tipo")
+        if tipo == "croquis_estacion":
+            nodo = await db.location_nodes.find_one({"id": sec.get("node_id"), "project_id": pid}, {"name": 1})
+            nombre = (nodo or {}).get("name") or "Estación"
+            if not await db.location_nodes.find_one({"id": sec.get("node_id"), "cover_image": {"$nin": [None, ""]}}, {"_id": 1}):
+                _add("error", "Croquis general", f"{nombre}: falta el render (súbelo en Estructura → portada del nodo).")
+        elif tipo == "informacion_particular":
+            for b in sec.get("bloques") or []:
+                nombre = b.get("titulo") or "Información particular"
+                if not (b.get("fotos") or b.get("auto_fotos")):
+                    _add("aviso", "Información particular", f"{nombre}: sin fotos.")
+                if not [a for a in (b.get("actividades") or []) if a.strip()]:
+                    _add("aviso", "Información particular", f"{nombre}: sin actividades.")
+            if not sec.get("bloques"):
+                _add("aviso", "Información particular", "Sección sin bloques.")
+        elif tipo == "lamina_imagenes":
+            if not sec.get("bloques"):
+                _add("aviso", sec.get("titulo") or "Imágenes y gráficas", "Sección sin imágenes todavía.")
+            for b in sec.get("bloques") or []:
+                if not (b.get("fotos") or b.get("auto_fotos")):
+                    _add("aviso", sec.get("titulo") or "Imágenes y gráficas", f"{b.get('titulo') or 'Bloque'}: sin imágenes.")
+        elif tipo == "reportes_semana" and not sec.get("report_ids"):
+            _add("aviso", "Reportes de la semana", "No has elegido reportes para destacar.")
+        elif tipo == "avance_grafico":
+            if not await db.planos_avance.find_one({"id": sec.get("plano_id"), "project_id": pid}, {"_id": 1}):
+                _add("error", "Avance gráfico", "El plano elegido ya no existe.")
+        elif tipo in datos_auto:
+            nombre, colecciones = datos_auto[tipo]
+            if not any([await _hay(c) for c in colecciones]):
+                _add("aviso", nombre, "No tiene datos capturados: esta sección no saldrá en la presentación.")
+    async for n_ in db.location_nodes.find({"project_id": pid, "tipo_nodo": "estacion", "cover_image": {"$in": [None, ""]}},
+                                           {"_id": 0, "name": 1}):
+        _add("aviso", "Croquis general", f"{n_.get('name')}: no tiene render, así que no tendrá portada.")
+    if await _secciones_estaciones(pid, secciones):
+        _add("aviso", "Estaciones", "Hay estaciones o intertramos sin sus láminas: usa el botón «Estaciones».")
+    return {"items": items, "ok": not items}
+
+
 @api.get("/projects/{pid}/presentaciones/{pres_id}/modulo-auto/{tipo}")
 async def preview_presentacion_modulo_auto(pid: str, pres_id: str, tipo: str, user: dict = Depends(current_user)):
     """Esquema (sin imágenes) de lo que traerá una sección automática, para

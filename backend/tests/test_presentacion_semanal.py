@@ -168,6 +168,12 @@ async def _scenario(tmp_path: Path, con_plantilla: bool):
                     fotos=[server.InformacionParticularFotoIn(photo="data:image/png;base64," + PNG_B64, caption="Reunion virtual con C5")])]),
             user)
 
+        rev = await server.revisar_presentacion(pid, created["id"], user)
+        msgs = " | ".join(i["mensaje"] for i in rev["items"])
+        assert "no tiene render" in msgs
+        assert "sin actividades" in msgs                      # información particular sin texto
+        assert not rev["ok"]
+
         resp = await server.export_presentacion_pptx(pid, created["id"], user)
         data = b"".join([chunk async for chunk in resp.body_iterator])
         return Presentation(io.BytesIO(data)), tipos
