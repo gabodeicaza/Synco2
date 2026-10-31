@@ -1367,6 +1367,30 @@ def _quitar_emoji_reportes(reportes: list) -> None:
                 r[campo] = _quitar_emoji_deep(r[campo])
 
 
+def _pptx_bordes_tablas(prs, ancho_emu: int = 9525) -> None:
+    """Borde negro fino en todas las celdas de todas las tablas, como la referencia."""
+    from lxml import etree
+    ns = "http://schemas.openxmlformats.org/drawingml/2006/main"
+    for slide in prs.slides:
+        for shape in slide.shapes:
+            if not getattr(shape, "has_table", False) or not shape.has_table:
+                continue
+            for tc in shape._element.iter(f"{{{ns}}}tc"):
+                tcPr = tc.find(f"{{{ns}}}tcPr")
+                if tcPr is None:
+                    tcPr = etree.SubElement(tc, f"{{{ns}}}tcPr")
+                for tag in ("lnL", "lnR", "lnT", "lnB"):
+                    for viejo in tcPr.findall(f"{{{ns}}}{tag}"):
+                        tcPr.remove(viejo)
+                # los bordes van antes del relleno dentro de tcPr
+                for pos, tag in enumerate(("lnL", "lnR", "lnT", "lnB")):
+                    ln = etree.Element(f"{{{ns}}}{tag}", w=str(ancho_emu), cap="flat", cmpd="sng", algn="ctr")
+                    fill = etree.SubElement(ln, f"{{{ns}}}solidFill")
+                    etree.SubElement(fill, f"{{{ns}}}srgbClr", val="000000")
+                    etree.SubElement(ln, f"{{{ns}}}prstDash", val="solid")
+                    tcPr.insert(pos, ln)
+
+
 def _quitar_emoji_pptx(prs) -> None:
     """Red de seguridad: quita emoji de TODOS los textos del PPTX ya armado
     (formas, grupos y tablas), sin alterar nada más."""
@@ -12694,6 +12718,7 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
         buf = io.BytesIO()
         _quitar_emoji_pptx(prs)
         _pptx_aplicar_fuente(prs, "Roboto")
+        _pptx_bordes_tablas(prs)
         prs.save(buf)
         return buf.getvalue()
 
