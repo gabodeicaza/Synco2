@@ -1136,6 +1136,8 @@ export interface InformacionParticularFoto {
 export interface InformacionParticularBloque {
   /** Lámina libre: 'registro' = fotos con su pie debajo y barra de registro fotográfico. */
   estilo?: 'tarjetas' | 'registro';
+  /** Al exportar, completa hasta 8 fotos con las subidas esa semana (de la estación ligada). */
+  auto_fotos?: boolean;
   banda?: string | null;
   titulo: string;
   node_id?: string | null;

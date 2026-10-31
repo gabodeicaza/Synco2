@@ -162,7 +162,7 @@ async def _scenario(tmp_path: Path, con_plantilla: bool):
         await server.update_informacion_particular(
             pid, created["id"], lam["id"],
             server.InformacionParticularBloquesPatch(bloques=[
-                server.InformacionParticularBloqueIn(titulo="Avance de pilonas", actividades=["Linea uno"], fotos=fotos),
+                server.InformacionParticularBloqueIn(titulo="Avance de pilonas", actividades=["Linea uno"], fotos=fotos, auto_fotos=True),
                 server.InformacionParticularBloqueIn(
                     titulo="Actividades generales - supervision social", estilo="registro",
                     fotos=[server.InformacionParticularFotoIn(photo="data:image/png;base64," + PNG_B64, caption="Reunion virtual con C5")])]),
@@ -213,6 +213,7 @@ def _verifica(prs):
     assert "Validado técnicamente: 1 (33.3%)" in todo and "PENDIENTES" in todo
     assert "EXISTENCIA DE POSTES EN ALMACÉN" in todo and "51.43%" in todo and "27/07/2026" in todo and "S-69" in todo
     assert "FABRICACIÓN Y SUMINISTRO DE PILONAS" in todo and "Plan de montaje de torres" in todo
+    assert "% avance" in todo and "50%" in todo      # tabla resumen de la matriz
     assert "Gracias" in todo
     assert "Componentes Electromecánicos" in todo and "26.79%" in todo   # resumen electromecánico
     assert "FALTANTES DE OBRA" in todo and "programa de montaje" in todo  # columnas de calidad

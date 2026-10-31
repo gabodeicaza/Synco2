@@ -9578,6 +9578,7 @@ class InformacionParticularFotoIn(BaseModel):
 
 class InformacionParticularBloqueIn(BaseModel):
     titulo: str
+    auto_fotos: bool = False  # al exportar, completa hasta 8 fotos con las subidas esa semana (de la estación del bloque)
     estilo: Literal["tarjetas", "registro"] = "tarjetas"  # lámina libre: "registro" = fotos con pie debajo y barra
     banda: Optional[str] = None  # "registro": texto de la barra (def. REGISTRO FOTOGRÁFICO DE ACTIVIDADES GENERALES)
     node_id: Optional[str] = None  # si se liga, jala acceso_predio/situacion_social del nodo en vivo
@@ -10490,6 +10491,33 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
         raise HTTPException(404, "Presentación no existe")
 
     secciones = sorted(pres.get("secciones") or [], key=lambda s: s.get("orden", 0))
+
+    # Bloques con "completar con fotos de la semana": se agregan referencias hasta llegar a 8.
+    _con_auto = [b_ for s_ in secciones if s_.get("tipo") in ("informacion_particular", "lamina_imagenes")
+                 for b_ in (s_.get("bloques") or []) if b_.get("auto_fotos")]
+    if _con_auto:
+        try:
+            _fin = date.fromisoformat(pres["fecha"])
+        except ValueError:
+            _fin = None
+        if _fin:
+            _d0 = datetime.combine(_fin - timedelta(days=6), datetime.min.time(), tzinfo=timezone.utc)
+            _d1 = datetime.combine(_fin + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc)
+            for b_ in _con_auto:
+                q_: dict = {"project_id": pid, "created_at": {"$gte": _d0, "$lt": _d1}, "images.0": {"$exists": True}}
+                if b_.get("node_id"):
+                    q_["$or"] = [{"node_id": b_["node_id"]}, {"node_path_ids": b_["node_id"]}]
+                usadas = {(f.get("report_id"), f.get("index")) for f in (b_.get("fotos") or []) if f.get("report_id")}
+                nuevas_ = []
+                async for r_ in db.reports.aggregate([
+                    {"$match": q_}, {"$sort": {"created_at": -1}}, {"$limit": 60},
+                    {"$project": {"_id": 0, "id": 1, "photo_captions": 1, "n": {"$size": {"$ifNull": ["$images", []]}}}}]):
+                    for i_ in range(r_["n"]):
+                        if (r_["id"], i_) not in usadas and len(b_.get("fotos") or []) + len(nuevas_) < 8:
+                            caps_ = r_.get("photo_captions") or []
+                            nuevas_.append({"report_id": r_["id"], "index": i_, "caption": caps_[i_] if i_ < len(caps_) else "",
+                                            "destacado": False})
+                b_["fotos"] = list(b_.get("fotos") or []) + nuevas_
 
     # Fotos elegidas de los reportes de la semana: se traen aquí y se vuelven fotos normales.
     _ref_ids = {f["report_id"] for s_ in secciones if s_.get("tipo") in ("informacion_particular", "lamina_imagenes")
@@ -12179,11 +12207,34 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                         else:
                             _c(tbl.cell(ri + 1, ci + 1), "n/a" if est == "na" else " ", col_est[est], size=max(tamano - 1, 5))
                 base = sum(conteo.values())
+                # --- tabla resumen: % de avance (validado ÷ aplicable) por entregable ---
+                resumen = []
+                for ri, fila in enumerate(filas):
+                    if fila.startswith("#"):
+                        continue
+                    est_fila = [celdas.get(f"{ri},{ci}", "pendiente") for ci in range(len(cols))]
+                    aplic = [e_ for e_ in est_fila if e_ != "na"]
+                    resumen.append([fila, str(len(aplic)), f"{(sum(1 for e_ in aplic if e_ == 'validado') / len(aplic) * 100):.0f}%"
+                                    if aplic else "-"])
+                con_resumen = (not denso) and 0 < len(resumen) <= 8
                 # --- leyenda (con conteo y %) ---
                 if denso:
                     px, py, pw = int(tx + tw + SW * 0.02), top, int(SW * 0.35)
                 else:
-                    px, py, pw = tx, int(top + head_h + row_h * len(filas) + _Cm(0.5)), int(SW * 0.40)
+                    px, py, pw = tx, int(top + head_h + row_h * len(filas) + _Cm(0.5)), int(SW * (0.25 if con_resumen else 0.40))
+                if con_resumen:
+                    gr = slide.shapes.add_table(len(resumen) + 1, 3, int(tx + SW * 0.27), py, int(SW * 0.30),
+                                                int(_Cm(0.7) * (len(resumen) + 1)))
+                    tr = gr.table
+                    for ci_, fr_ in enumerate((2.0, 1.0, 1.0)):
+                        tr.columns[ci_].width = int(SW * 0.30 * fr_ / 4.0)
+                    for ri_ in range(len(resumen) + 1):
+                        tr.rows[ri_].height = int(_Cm(0.7))
+                    for ci_, h_ in enumerate(("Entregable", "Cant. total", "% avance")):
+                        _c(tr.cell(0, ci_), h_, BRAND_RAW_RGB, fg=WHITE_RGB, bold=True, size=8)
+                    for ri_, fila_ in enumerate(resumen, start=1):
+                        for ci_, v_ in enumerate(fila_):
+                            _c(tr.cell(ri_, ci_), v_, WHITE_RGB, size=8, align=_PP_ALIGN.LEFT if ci_ == 0 else _PP_ALIGN.CENTER)
                 if m.get("descripcion") and denso:
                     add_text(slide, px, py, pw, _Cm(5.2), m["descripcion"], size=8, color=TEXT_RGB)
                     py = int(py + _Cm(5.4))
@@ -12203,8 +12254,8 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                         nx, ny, nw = px, int(py + _Cm(4.2)), pw
                         nh = int(SH - ny - _Cm(0.8))
                     else:
-                        nx, ny = int(tx + SW * 0.43), py
-                        nw, nh = int(SW * 0.55), int(SH - py - _Cm(0.8))
+                        nx, ny = int(tx + SW * (0.59 if con_resumen else 0.43)), py
+                        nw, nh = int(SW * (0.39 if con_resumen else 0.55)), int(SH - py - _Cm(0.8))
                     alto = min(int(nh / len(notas)), int(_Cm(3.8)))
                     for i, n in enumerate(notas):
                         bx = slide.shapes.add_shape(_MSO_SHAPE.RECTANGLE, nx, int(ny + i * alto), nw, int(alto - _Cm(0.15)))

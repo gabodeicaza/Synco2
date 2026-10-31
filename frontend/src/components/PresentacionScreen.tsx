@@ -841,6 +841,12 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
                       ) : null}
                     </View>
                   ) : null}
+                  <Pressable accessibilityRole="button" onPress={() => updateBloque(bIdx, { auto_fotos: !b.auto_fotos })}
+                    style={[styles.chip, b.auto_fotos && styles.chipActive, { alignSelf: 'flex-start', marginBottom: spacing.sm }]}>
+                    <Text style={[styles.chipTxt, b.auto_fotos && styles.chipTxtActive]}>
+                      Completar con fotos de la semana (hasta 8){b.node_id ? ' de esta estación' : ''}
+                    </Text>
+                  </Pressable>
                   <Text style={styles.fieldLabel}>{t('presentacion.actividadesUnaPorLinea')}</Text>
                   <TextInput
                     value={b.actividades.join('\n')}
