@@ -9,7 +9,7 @@ import { View, Text, StyleSheet, ActivityIndicator, Pressable, FlatList, Alert, 
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import {
-  api, AnalisisPeriodo, EstudioDisciplinaAvance, LocationNode, ModuloAutoOutline, PlanoAvance, Presentacion, PresentacionSeccionTipoAuto, Project, Report,
+  api, AnalisisPeriodo, EstudioDisciplinaAvance, LocationNode, ModuloAutoOutline, PlanoAvance, PortadaPresentacion, Presentacion, PresentacionSeccionTipoAuto, Project, Report,
 } from '@/src/api';
 import { colors, radius, spacing, contrastText } from '@/src/theme';
 import { ScreenHeader } from '@/src/components/ScreenHeader';
@@ -40,6 +40,7 @@ export default function PresentacionPreview({ projectId, presentacionId }: { pro
   const [loading, setLoading] = useState(true);
   const [project, setProject] = useState<Project | null>(null);
   const [presentacion, setPresentacion] = useState<Presentacion | null>(null);
+  const [portada, setPortada] = useState<PortadaPresentacion | null>(null);
   const [nodesById, setNodesById] = useState<Record<string, LocationNode>>({});
   const [planosById, setPlanosById] = useState<Record<string, PlanoAvance>>({});
   const [disciplinaRows, setDisciplinaRows] = useState<EstudioDisciplinaAvance[]>([]);
@@ -64,6 +65,7 @@ export default function PresentacionPreview({ projectId, presentacionId }: { pro
       ]);
       setProject(proj);
       setPresentacion(pres);
+      api.getPortadaPresentacion(projectId, presentacionId).then(setPortada).catch(() => setPortada(null));
       const byId: Record<string, LocationNode> = {};
       nodes.forEach((n) => { byId[n.id] = n; });
       setNodesById(byId);
@@ -188,7 +190,7 @@ export default function PresentacionPreview({ projectId, presentacionId }: { pro
             <View style={{ width: pageW, height: pageH, padding: spacing.sm }}>
               <View style={styles.slideFrame}>
                 {item.tipo === 'portada' ? (
-                  <SlidePortada titulo={presentacion.titulo} fecha={presentacion.fecha} colorTema={headerColor} />
+                  <SlidePortada titulo={presentacion.titulo} fecha={presentacion.fecha} colorTema={headerColor} portada={portada} objeto={project?.objeto_contrato || project?.name || ''} />
                 ) : item.tipo === 'mapa_general' ? (
                   <SlideMapaGeneral images={generalImages} />
                 ) : item.tipo === 'divisor' ? (

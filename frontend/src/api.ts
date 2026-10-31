@@ -851,6 +851,13 @@ export interface PostesCalidad {
   instalados: { bucle: string; poste: string; fecha?: string | null }[];
 }
 
+/** Portada de la plantilla PPTX (fondo + logos) y sus cuadros de texto, en proporciones del slide. */
+export interface PortadaPresentacion {
+  image: string | null;
+  aspecto?: number;
+  cuadros?: { x: number; y: number; w: number; h: number; pt_rel: number; negrita: boolean; color: string; texto: string }[];
+}
+
 export interface LevantamientoEstacion { nombre: string; dictamen: number; visita: number; fe_notarial: number; entrega: number }
 
 export type EstudioMatrizEstado = 'validado' | 'observaciones' | 'revision' | 'pendiente' | 'na';
@@ -3479,6 +3486,8 @@ export const api = {
     request<{ bloques: number; laminas: number; desde: string }>('POST', `/projects/${pid}/presentaciones/${presId}/secciones/copiar-anterior?con_fotos=${conFotos}`),
   revisionPresentacion: (pid: string, presId: string) =>
     request<{ items: { nivel: 'error' | 'aviso'; seccion: string; mensaje: string }[]; ok: boolean }>('GET', `/projects/${pid}/presentaciones/${presId}/revision`),
+  getPortadaPresentacion: (pid: string, presId: string) =>
+    request<PortadaPresentacion>('GET', `/projects/${pid}/presentaciones/${presId}/portada`),
   agregarEstacionesPresentacion: (pid: string, presId: string) =>
     request<{ agregadas: number }>('POST', `/projects/${pid}/presentaciones/${presId}/secciones/estaciones`),
   updatePresentacionSeccion: (pid: string, presId: string, secId: string, body: Partial<{
