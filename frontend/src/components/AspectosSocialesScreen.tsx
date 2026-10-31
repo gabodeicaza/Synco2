@@ -50,7 +50,8 @@ function hoyISO(): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
-type Tab = 'levantamientos' | 'salvamento';
+type Tab = 'levantamientos' | 'estaciones' | 'salvamento';
+type EstDraft = { nombre: string; dictamen: string; visita: string; fe: string; entrega: string };
 type LevDraft = { tipo: LevantamientoTipo; ambito: SocialAmbito; total: string; realizados: string };
 type SalvDraft = { id: string | null; ambito: SocialAmbito; etiqueta: string; inicio: string; liberacion: string; obs: string };
 
@@ -68,6 +69,7 @@ export default function AspectosSocialesScreen({ projectId }: { projectId: strin
   const [levDraft, setLevDraft] = useState<LevDraft | null>(null);
   const [salvDraft, setSalvDraft] = useState<SalvDraft | null>(null);
   const [saving, setSaving] = useState(false);
+  const [estFilas, setEstFilas] = useState<EstDraft[]>([]);
 
   const headerColor = project?.color_institucional || project?.color_tema || colors.primary;
   const headerTextColor = contrastText(headerColor);
@@ -75,9 +77,11 @@ export default function AspectosSocialesScreen({ projectId }: { projectId: strin
   const load = useCallback(async () => {
     if (!projectId) return;
     try {
-      const [proj, l, s] = await Promise.all([
+      const [proj, l, s, e] = await Promise.all([
         api.getProject(projectId), api.listLevantamientosSociales(projectId), api.listSalvamentoArqueologico(projectId),
+        api.getLevantamientosEstaciones(projectId),
       ]);
+      setEstFilas(e.filas.map((f) => ({ nombre: f.nombre, dictamen: String(f.dictamen), visita: String(f.visita), fe: String(f.fe_notarial), entrega: String(f.entrega) })));
       setProject(proj);
       setLevs(l);
       setSalv(s);
@@ -89,6 +93,26 @@ export default function AspectosSocialesScreen({ projectId }: { projectId: strin
   }, [projectId]);
 
   useEffect(() => { load(); }, [load]);
+
+  async function guardarEstaciones() {
+    const num = (v: string) => (v.trim() === '' ? 0 : Number(v));
+    const filas = estFilas.filter((f) => f.nombre.trim()).map((f) => ({
+      nombre: f.nombre.trim(), dictamen: num(f.dictamen), visita: num(f.visita), fe_notarial: num(f.fe), entrega: num(f.entrega),
+    }));
+    if (filas.some((f) => [f.dictamen, f.visita, f.fe_notarial, f.entrega].some((n) => !Number.isInteger(n) || n < 0))) {
+      Alert.alert('Valor inválido', 'Usa números enteros mayores o iguales a cero.');
+      return;
+    }
+    try {
+      setSaving(true);
+      await api.setLevantamientosEstaciones(projectId, filas);
+      Alert.alert('Guardado', 'Levantamientos por estación actualizados.');
+    } catch (e: any) {
+      Alert.alert('No se pudo guardar', e?.message || 'Inténtalo nuevamente.');
+    } finally {
+      setSaving(false);
+    }
+  }
 
   const levPorClave = useMemo(() => {
     const m = new Map<string, LevantamientoSocial>();
@@ -189,7 +213,7 @@ export default function AspectosSocialesScreen({ projectId }: { projectId: strin
       </View>
 
       <View style={styles.tabsRow}>
-        {([['levantamientos', 'Levantamientos'], ['salvamento', 'Salvamento arqueológico']] as [Tab, string][]).map(([k, label]) => (
+        {([['levantamientos', 'Levantamientos'], ['estaciones', 'Por estación'], ['salvamento', 'Salvamento arqueológico']] as [Tab, string][]).map(([k, label]) => (
           <Pressable accessibilityRole="button" key={k} onPress={() => setTab(k)} style={[styles.tab, tab === k && styles.tabActive]}>
             <Text style={[styles.tabTxt, tab === k && { color: '#fff' }]}>{label}</Text>
           </Pressable>
@@ -222,6 +246,41 @@ export default function AspectosSocialesScreen({ projectId }: { projectId: strin
               })}
             </View>
           ))
+        ) : tab === 'estaciones' ? (
+          <View>
+            <Text style={styles.fieldLabel}>
+              Dictámenes, visitas con fedatario, fe notarial y entregas por estación. Alimentan la gráfica «Relación por estaciones»
+              (el % de arriba es visitas ÷ dictámenes).
+            </Text>
+            {estFilas.map((f, i) => (
+              <View key={i} style={[styles.card, { padding: spacing.sm }]}>
+                <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center' }}>
+                  <TextInput value={f.nombre} editable={puedeEscribir} placeholder="Estación (ej. Universidad)" placeholderTextColor={colors.textMuted}
+                    onChangeText={(v) => setEstFilas((c) => c.map((x, j) => (j === i ? { ...x, nombre: v } : x)))} style={[styles.input, { flex: 1 }]} />
+                  {puedeEscribir ? (
+                    <Pressable accessibilityRole="button" accessibilityLabel="Quitar" onPress={() => setEstFilas((c) => c.filter((_, j) => j !== i))}>
+                      <Ionicons name="trash-outline" size={18} color={colors.error} />
+                    </Pressable>
+                  ) : null}
+                </View>
+                <View style={{ flexDirection: 'row', gap: 6, marginTop: 6 }}>
+                  {([['dictamen', 'Dictamen'], ['visita', 'Visita'], ['fe', 'Fe notarial'], ['entrega', 'Entrega']] as ['dictamen' | 'visita' | 'fe' | 'entrega', string][]).map(([k, label]) => (
+                    <View key={k} style={{ flex: 1 }}>
+                      <Text style={{ fontSize: 10, color: colors.textMuted }}>{label}</Text>
+                      <TextInput value={f[k]} editable={puedeEscribir} keyboardType="numeric"
+                        onChangeText={(v) => setEstFilas((c) => c.map((x, j) => (j === i ? { ...x, [k]: v } : x)))} style={styles.input} />
+                    </View>
+                  ))}
+                </View>
+              </View>
+            ))}
+            {puedeEscribir ? (
+              <View style={{ marginTop: spacing.sm, gap: spacing.sm }}>
+                <Button label="Agregar estación" variant="secondary" onPress={() => setEstFilas((c) => [...c, { nombre: '', dictamen: '', visita: '', fe: '', entrega: '' }])} />
+                <Button label="Guardar" loading={saving} onPress={guardarEstaciones} />
+              </View>
+            ) : null}
+          </View>
         ) : (
           AMBITOS.map((a) => {
             const rows = salv.filter((r) => r.ambito === a.key);

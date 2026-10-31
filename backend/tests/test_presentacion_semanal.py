@@ -108,6 +108,9 @@ async def _scenario(tmp_path: Path, con_plantilla: bool):
                     for r in range(1, 31) for c in range(8)},
             descripcion="Estado de revision de los entregables del proyecto ejecutivo.",
             notas=[server.EstudioMatrizNotaIn(titulo="Aspectos que retrasan", texto="Falta aprobacion del EMS")])]), user)
+    await server.set_levantamientos_estaciones(pid, server.LevantamientosEstacionesIn(filas=[
+        server.LevantamientoEstacionIn(nombre="Universidad", dictamen=11, visita=10, fe_notarial=11, entrega=0),
+        server.LevantamientoEstacionIn(nombre="Pedregal", dictamen=9, visita=8, fe_notarial=11, entrega=1)]), user)
     await server.set_postes_calidad(pid, server.PostesCalidadIn(
         fabricacion=[server.PostesFabricacionIn(bucle="A", num_postes=18, corte=100, armado=100, soldadura=100, galvanizado=100),
                      server.PostesFabricacionIn(bucle="B", num_postes=18, corte=100, armado=50, soldadura=0, galvanizado=0)],
@@ -199,7 +202,7 @@ async def _scenario(tmp_path: Path, con_plantilla: bool):
         await server.db.reports.delete_many({"project_id": pid})
         await server.db.location_nodes.delete_many({"project_id": pid})
         for col in ("ambiental_auditoria", "levantamientos_sociales", "seguridad_reportes",
-                    "estudios_bitacora", "pendientes_generales", "estimaciones", "seguridad_indicadores", "ambiental", "estudio_disciplina_avance", "electromecanica", "estudios_matrices", "postes_calidad"):
+                    "estudios_bitacora", "pendientes_generales", "estimaciones", "seguridad_indicadores", "ambiental", "estudio_disciplina_avance", "electromecanica", "estudios_matrices", "postes_calidad", "levantamientos_estaciones"):
             await server.db[col].delete_many({"project_id": pid})
 
 

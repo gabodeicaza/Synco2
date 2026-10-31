@@ -8719,6 +8719,103 @@ def _salvamento_validar_rango(inicio: str, liberacion: Optional[str]) -> None:
         raise HTTPException(400, "La liberación no puede ser anterior al inicio")
 
 
+# Levantamientos por estación: alimentan la gráfica de barras + tabla "Relación por estaciones".
+class LevantamientoEstacionIn(BaseModel):
+    nombre: str
+    dictamen: int = 0
+    visita: int = 0
+    fe_notarial: int = 0
+    entrega: int = 0
+
+
+class LevantamientosEstacionesIn(BaseModel):
+    filas: List[LevantamientoEstacionIn] = Field(default_factory=list)
+
+
+_LEV_EST_SERIES = (("Dictamen", "dictamen", "#0F4C75"), ("Visita", "visita", "#1F78B4"),
+                   ("Fe notarial", "fe_notarial", "#7A8CA3"), ("Entrega", "entrega", "#B8C2CC"))
+
+
+@api.get("/projects/{pid}/levantamientos-estaciones")
+async def get_levantamientos_estaciones(pid: str, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    doc = await db.levantamientos_estaciones.find_one({"project_id": pid})
+    return {"filas": (doc or {}).get("filas") or []}
+
+
+@api.put("/projects/{pid}/levantamientos-estaciones")
+async def set_levantamientos_estaciones(pid: str, body: LevantamientosEstacionesIn, user: dict = Depends(current_user)):
+    _assert_write_allowed(user)
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "aspectos_sociales")
+    filas = []
+    for f in body.filas[:16]:
+        if not f.nombre.strip():
+            continue
+        if min(f.dictamen, f.visita, f.fe_notarial, f.entrega) < 0:
+            raise HTTPException(400, "Los valores no pueden ser negativos")
+        filas.append({"nombre": f.nombre.strip()[:40], "dictamen": f.dictamen, "visita": f.visita,
+                      "fe_notarial": f.fe_notarial, "entrega": f.entrega})
+    await db.levantamientos_estaciones.update_one(
+        {"project_id": pid},
+        {"$set": {"filas": filas, "updated_at": datetime.now(timezone.utc), "updated_by": user["id"]},
+         "$setOnInsert": {"id": str(uuid.uuid4())}},
+        upsert=True)
+    return {"filas": filas}
+
+
+def _grafica_levantamientos_png(filas: List[dict]) -> bytes:
+    """Barras agrupadas por estación (dictamen, visita, fe notarial, entrega) con el % de
+    visitas sobre dictámenes arriba de cada grupo y la tabla de valores debajo, como la
+    gráfica "Relación por estaciones" de la referencia."""
+    from PIL import Image as _I
+    n = max(len(filas), 1)
+    W, H = 1800, 800
+    img = _I.new("RGB", (W, H), "white")
+    d, (f_s, f_m, f_b) = _chart_canvas(img, 20, 24, 26)
+    left, right, p_top, p_bot = 240, W - 30, 50, 440
+    vmax = max([1] + [f[k] for f in filas for _l, k, _c in _LEV_EST_SERIES])
+    paso = 5 if vmax <= 25 else (10 if vmax <= 50 else 20)
+    tope = math.ceil(vmax / paso) * paso
+    for v in range(0, tope + 1, paso):
+        y = p_bot - v / tope * (p_bot - p_top)
+        d.line([(left, y), (right, y)], fill="#D9D9D9", width=2)
+        d.text((left - 12, y), str(v), fill="#595959", font=f_s, anchor="rm")
+    colw = (right - left) / n
+    bw = min(colw * 0.17, 56)
+    for i, f in enumerate(filas):
+        cx = left + colw * (i + 0.5)
+        alto_max = 0.0
+        for j, (_l, k, color) in enumerate(_LEV_EST_SERIES):
+            h = f[k] / tope * (p_bot - p_top)
+            alto_max = max(alto_max, h)
+            x0 = cx + (j - 1.5) * bw * 1.06 - bw / 2
+            if h > 0:
+                d.rectangle([x0, p_bot - h, x0 + bw, p_bot], fill=color)
+        pct = (f["visita"] / f["dictamen"] * 100) if f["dictamen"] else 0.0
+        d.text((cx, p_bot - alto_max - 10), f"{pct:.2f}%", fill="#262626", font=f_m, anchor="ms")
+    # tabla de valores bajo la gráfica
+    fila_h = 44
+    y = p_bot + 4
+    d.line([(left, y), (right, y)], fill="#BFBFBF", width=2)
+    for i, f in enumerate(filas):
+        nombre = f["nombre"] if len(f["nombre"]) <= 14 else f["nombre"][:13] + "…"
+        d.text((left + colw * (i + 0.5), y + fila_h / 2), nombre, fill="#404040", font=f_s, anchor="mm")
+    for j, (lbl, k, color) in enumerate(_LEV_EST_SERIES):
+        yy = y + fila_h * (j + 1)
+        d.line([(left - 220, yy), (right, yy)], fill="#BFBFBF", width=1)
+        d.rectangle([left - 215, yy + fila_h / 2 - 8, left - 199, yy + fila_h / 2 + 8], fill=color)
+        d.text((left - 185, yy + fila_h / 2), lbl, fill="#404040", font=f_s, anchor="lm")
+        for i, f in enumerate(filas):
+            d.text((left + colw * (i + 0.5), yy + fila_h / 2), str(f[k]), fill="#404040", font=f_s, anchor="mm")
+    yy = y + fila_h * 5
+    d.line([(left - 220, yy), (right, yy)], fill="#BFBFBF", width=1)
+    d.text(((left + right) / 2, yy + 30), "Relación por estaciones", fill="#595959", font=f_m, anchor="mm")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
 @api.get("/projects/{pid}/levantamientos-sociales")
 async def list_levantamientos_sociales(pid: str, user: dict = Depends(current_user)):
     await ensure_project_access(user, pid)
@@ -11791,6 +11888,10 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                         r1.font.size = _Pt(11)
                         r1.font.name = "Roboto"
                         r1.font.color.rgb = _PRGBColor(*TEXT_RGB)
+                    if b.get("imagen"):
+                        gy = int(_y_bajo_banda() + _Cm(2.2) + _Cm(0.62) * len(b.get("lineas") or []) + _Cm(0.3))
+                        _add_picture_fit(last, b["imagen"], int(MARGIN_X + content_w * 0.08), gy, int(content_w * 0.84),
+                                         int(SH - gy - _Cm(0.8)))
                 elif t == "table":
                     headers, rows = b.get("headers") or [], b.get("rows") or []
                     fr = b.get("col_widths") or [1.0] * len(headers)
@@ -27364,7 +27465,20 @@ async def _gather_modulos_export_data(
         lev_as = await db.levantamientos_sociales.find({"project_id": pid}).to_list(length=50)
         salv_as = await db.salvamento_arqueologico.find({"project_id": pid}).to_list(length=2000)
         blocks_as = _levantamientos_bloques(lev_as)
-        for heading, caption, png in _levantamientos_graficas(lev_as) + _salvamento_graficas(salv_as, corte_as):
+        est_as = ((await db.levantamientos_estaciones.find_one({"project_id": pid})) or {}).get("filas") or []
+        graficas_lev = _levantamientos_graficas(lev_as)
+        if est_as:
+            # La gráfica por estación va en la misma lámina que la lista de avance (como la referencia)
+            # y sustituye a las donas por tipo, que repetirían lo mismo.
+            png_est = await asyncio.to_thread(_grafica_levantamientos_png, est_as)
+            jpg_est = await asyncio.to_thread(_png_bytes_to_jpeg_dataurl, png_est)
+            if blocks_as:
+                blocks_as[0]["imagen"] = jpg_est
+            else:
+                blocks_as.append({"type": "avance_lista", "heading": "LEVANTAMIENTOS NOTARIALES - AVANCES",
+                                  "titulo": "Relación por estaciones", "lineas": [], "imagen": jpg_est})
+            graficas_lev = []
+        for heading, caption, png in graficas_lev + _salvamento_graficas(salv_as, corte_as):
             jpg = await asyncio.to_thread(_png_bytes_to_jpeg_dataurl, png)
             blocks_as.append({"type": "imagen", "heading": heading, "imagen": jpg, "caption": caption})
         if blocks_as:

@@ -850,6 +850,8 @@ export interface PostesCalidad {
   instalados: { bucle: string; poste: string; fecha?: string | null }[];
 }
 
+export interface LevantamientoEstacion { nombre: string; dictamen: number; visita: number; fe_notarial: number; entrega: number }
+
 export type EstudioMatrizEstado = 'validado' | 'observaciones' | 'revision' | 'pendiente' | 'na';
 export interface EstudioMatriz {
   id?: string;
@@ -3483,6 +3485,9 @@ export const api = {
     request<{ ok: boolean }>('DELETE', `/projects/${pid}/presentaciones/${presId}/secciones/${secId}`),
   updateInformacionParticular: (pid: string, presId: string, secId: string, bloques: InformacionParticularBloque[]) =>
     request<PresentacionSeccion>('PATCH', `/projects/${pid}/presentaciones/${presId}/secciones/${secId}/informacion-particular`, { bloques }),
+  getLevantamientosEstaciones: (pid: string) => request<{ filas: LevantamientoEstacion[] }>('GET', `/projects/${pid}/levantamientos-estaciones`),
+  setLevantamientosEstaciones: (pid: string, filas: LevantamientoEstacion[]) =>
+    request<{ filas: LevantamientoEstacion[] }>('PUT', `/projects/${pid}/levantamientos-estaciones`, { filas }),
   listFotosSemanaPresentacion: (pid: string, presId: string, nodeId?: string | null) =>
     request<FotoSemanaItem[]>('GET', `/projects/${pid}/presentaciones/${presId}/fotos-semana${nodeId ? `?node_id=${encodeURIComponent(nodeId)}` : ''}`),
   listReportesSemanaPresentacion: (pid: string, presId: string) =>
