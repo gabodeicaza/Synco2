@@ -5978,6 +5978,7 @@ class EstudioMatrizIn(BaseModel):
     columnas: List[str] = Field(default_factory=list)  # estaciones / intertramos
     filas: List[str] = Field(default_factory=list)  # entregables; "# Texto" = fila de grupo (encabezado)
     celdas: Dict[str, str] = Field(default_factory=dict)  # "fila,columna" -> estado; sin valor = pendiente
+    textos: Dict[str, str] = Field(default_factory=dict)  # "fila,columna" -> texto corto dentro de la celda
     leyenda: Optional[List[str]] = None  # 4 textos: validado, observaciones, revisión, pendiente
     descripcion: Optional[str] = None
     notas: List[EstudioMatrizNotaIn] = Field(default_factory=list)
@@ -6121,10 +6122,20 @@ async def set_estudios_matrices(pid: str, body: EstudioMatricesIn, user: dict = 
                 raise HTTPException(400, f"Celda inválida: {k}")
             if v != "pendiente":
                 celdas[f"{r_},{c_}"] = v
+        textos = {}
+        for k, v in m.textos.items():
+            try:
+                r_, c_ = (int(x) for x in k.split(","))
+            except ValueError:
+                raise HTTPException(400, f"Celda inválida: {k}")
+            if not (0 <= r_ < len(filas) and 0 <= c_ < len(cols)):
+                raise HTTPException(400, f"Celda inválida: {k}")
+            if (v or "").strip():
+                textos[f"{r_},{c_}"] = " ".join(v.split())[:120]
         leyenda = [(x or "").strip()[:60] for x in m.leyenda] if m.leyenda and len(m.leyenda) == 4 else None
         docs.append({
             "id": m.id or str(uuid.uuid4()), "project_id": pid, "orden": orden, "titulo": titulo, "forma": m.forma,
-            "columnas": cols, "filas": filas, "celdas": celdas, "leyenda": leyenda,
+            "columnas": cols, "filas": filas, "celdas": celdas, "textos": textos, "leyenda": leyenda,
             "descripcion": (m.descripcion or "").strip()[:1500] or None,
             "notas": [{"titulo": (n.titulo or "").strip()[:120] or None, "texto": n.texto.strip()[:2000]}
                       for n in m.notas if n.texto.strip() or (n.titulo or "").strip()][:6],
@@ -12496,6 +12507,7 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                 hr = 2 if any(grupos) else 1
                 filas = m.get("filas") or []
                 celdas = m.get("celdas") or {}
+                textos_c = m.get("textos") or {}
                 puntos = m.get("forma") == "puntos"
                 col_est = {"validado": (0x00, 0xB0, 0x50), "observaciones": (0xFF, 0xC0, 0x00),
                            "revision": (0xF4, 0xB1, 0x83) if puntos else (0x00, 0x70, 0xC0),
@@ -12528,7 +12540,7 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                 for ri in range(hr, len(filas) + hr):
                     tbl.rows[ri].height = int(row_h)
 
-                def _c(cell, texto, fondo, fg=TEXT_RGB, bold=False, align=_PP_ALIGN.CENTER, size=tamano):
+                def _c(cell, texto, fondo, fg=TEXT_RGB, bold=False, align=_PP_ALIGN.CENTER, size=tamano, extra=None):
                     cell.fill.solid()
                     cell.fill.fore_color.rgb = _PRGBColor(*fondo)
                     cell.margin_left = cell.margin_right = _Cm(0.08)
@@ -12543,6 +12555,12 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                     r_.font.name = "Roboto"
                     r_.font.bold = bold
                     r_.font.color.rgb = _PRGBColor(*fg)
+                    if extra:
+                        r2_ = par.add_run()
+                        r2_.text = " " + extra
+                        r2_.font.size = _Pt(max(tamano - 1, 5))
+                        r2_.font.name = "Roboto"
+                        r2_.font.color.rgb = _PRGBColor(*TEXT_RGB)
 
                 enc = (0xDC, 0xE6, 0xF1)
                 _c(tbl.cell(0, 0), "Entregable", enc, bold=True)
@@ -12573,15 +12591,18 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                     _c(tbl.cell(ri + hr, 0), fila, WHITE_RGB, align=_PP_ALIGN.LEFT)
                     for ci in range(len(cols)):
                         est = celdas.get(f"{ri},{ci}", "pendiente")
+                        txt_c = textos_c.get(f"{ri},{ci}")
                         if est in conteo:
                             conteo[est] += 1
                         if puntos:
                             if est == "na":
-                                _c(tbl.cell(ri + hr, ci + 1), "n/a", WHITE_RGB, bold=True, size=max(tamano - 1, 5))
+                                _c(tbl.cell(ri + hr, ci + 1), txt_c or "n/a", WHITE_RGB, bold=not txt_c, size=max(tamano - 1, 5))
                             else:
-                                _c(tbl.cell(ri + hr, ci + 1), "●", WHITE_RGB, fg=col_est[est], size=tamano + 6)
+                                _c(tbl.cell(ri + hr, ci + 1), "●", WHITE_RGB, fg=col_est[est], size=tamano + 6, extra=txt_c)
                         else:
-                            _c(tbl.cell(ri + hr, ci + 1), "n/a" if est == "na" else " ", col_est[est], size=max(tamano - 1, 5))
+                            _c(tbl.cell(ri + hr, ci + 1), txt_c or ("n/a" if est == "na" else " "), col_est[est],
+                               fg=WHITE_RGB if txt_c and est in ("validado", "revision", "pendiente") else TEXT_RGB,
+                               size=max(tamano - 1, 5))
                 base = sum(conteo.values())
                 # --- tabla resumen: % de avance (validado ÷ aplicable) por entregable ---
                 resumen = []

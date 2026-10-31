@@ -102,7 +102,7 @@ async def _scenario(tmp_path: Path, con_plantilla: bool):
         "descripcion": "Falta entrega del programa de montaje\nProcedimiento de relleno", "orden": 0, "resuelto": False})
     await server.set_estudios_matrices(pid, server.EstudioMatricesIn(matrices=[
         server.EstudioMatrizIn(
-            titulo="Estatus de documentos en estaciones", forma="puntos", columnas=["Tramo 1 | Universidad", "Tramo 1 | Cantera"],
+            titulo="Estatus de documentos en estaciones", forma="puntos", columnas=["Tramo 1 | Universidad", "Tramo 1 | Cantera"], textos={"1,1": "Rev. 2 del 12 oct"},
             filas=["# Mecanica de suelos", "EMS", "Plano de sondeos"],
             celdas={"1,0": "validado", "1,1": "observaciones", "2,0": "na"},
             notas=[server.EstudioMatrizNotaIn(titulo="Pendientes", texto="3 estudios de Xochitl")]),
@@ -246,6 +246,7 @@ def _verifica(prs):
     assert "% avance" in todo and "50%" in todo      # tabla resumen de la matriz
     assert "Colado heredado de la semana pasada" in todo
     assert "MONITOREO DE ARBOLADO TRASPLANTADO 14 Y 26 DE OCT. 2026" in todo and "106" in todo and "Av. Delfin" in todo
+    assert "Rev. 2 del 12 oct" in todo
     assert "Gracias" in todo
     assert "Componentes Electromecánicos" in todo and "26.79%" in todo   # resumen electromecánico
     assert "FALTANTES DE OBRA" in todo and "programa de montaje" in todo  # columnas de calidad

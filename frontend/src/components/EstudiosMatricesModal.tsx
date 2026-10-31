@@ -34,6 +34,7 @@ export default function EstudiosMatricesModal({ projectId, visible, onClose, pue
   const [saving, setSaving] = useState(false);
   const [matrices, setMatrices] = useState<EstudioMatriz[]>([]);
   const [sel, setSel] = useState(0);
+  const [celdaTxt, setCeldaTxt] = useState<{ r: number; c: number } | null>(null);
   // Los textos de columnas / filas se editan como bloque (una por línea).
   const [colTxt, setColTxt] = useState('');
   const [filaTxt, setFilaTxt] = useState('');
@@ -191,7 +192,11 @@ export default function EstudiosMatricesModal({ projectId, visible, onClose, pue
                             const est = (m.celdas[`${ri},${ci}`] || 'pendiente') as EstudioMatrizEstado;
                             return (
                               <Pressable accessibilityRole="button" key={ci} onPress={() => ciclar(ri, ci)}
-                                style={[styles.celda, { backgroundColor: COLOR[est] }]} />
+                                onLongPress={puedeEscribir ? () => setCeldaTxt({ r: ri, c: ci }) : undefined}
+                                style={[styles.celda, { backgroundColor: COLOR[est], alignItems: 'center', justifyContent: 'center' },
+                                  celdaTxt && celdaTxt.r === ri && celdaTxt.c === ci && { borderWidth: 2, borderColor: colors.primary }]}>
+                                {m.textos?.[`${ri},${ci}`] ? <Text style={{ fontSize: 11, fontWeight: '800', color: '#000' }}>T</Text> : null}
+                              </Pressable>
                             );
                           })}
                         </View>
@@ -199,6 +204,20 @@ export default function EstudiosMatricesModal({ projectId, visible, onClose, pue
                     ))}
                   </View>
                 </ScrollView>
+
+                <Text style={styles.hint}>Mantén presionada una celda para escribir un texto dentro de ella (marcada con «T»).</Text>
+                {celdaTxt ? (
+                  <View style={{ marginTop: spacing.xs }}>
+                    <Text style={styles.label}>
+                      Texto de la celda · {(m.filas[celdaTxt.r] || '').replace(/^#\s*/, '')} / {m.columnas[celdaTxt.c]}
+                    </Text>
+                    <TextInput
+                      value={m.textos?.[`${celdaTxt.r},${celdaTxt.c}`] || ''} editable={puedeEscribir} placeholder="Ej. 12/oct, Rev. 2"
+                      placeholderTextColor={colors.textMuted} style={styles.input}
+                      onChangeText={(v) => cambiar({ textos: { ...(m.textos || {}), [`${celdaTxt.r},${celdaTxt.c}`]: v } })}
+                    />
+                  </View>
+                ) : null}
 
                 <Text style={styles.label}>Descripción (solo en matrices largas, a un lado de la tabla)</Text>
                 <TextInput value={m.descripcion || ''} onChangeText={(v) => cambiar({ descripcion: v })} editable={puedeEscribir}

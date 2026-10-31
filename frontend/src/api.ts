@@ -863,6 +863,8 @@ export interface EstudioMatriz {
   filas: string[];
   /** "fila,columna" -> estado; sin valor = pendiente. */
   celdas: Record<string, EstudioMatrizEstado>;
+  /** "fila,columna" -> texto corto dentro de la celda. */
+  textos?: Record<string, string>;
   leyenda?: string[] | null;
   descripcion?: string | null;
   notas: { titulo?: string | null; texto: string }[];
