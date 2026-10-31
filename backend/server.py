@@ -6107,7 +6107,7 @@ async def set_estudios_matrices(pid: str, body: EstudioMatricesIn, user: dict = 
         titulo = " ".join((m.titulo or "").split())[:120]
         if not titulo:
             raise HTTPException(400, "Cada matriz requiere título")
-        cols = [" ".join(c.split())[:40] for c in m.columnas if c.strip()]
+        cols = [" ".join(c.split())[:60] for c in m.columnas if c.strip()]
         filas = [" ".join(f.split())[:120] for f in m.filas if f.strip()]
         if not (1 <= len(cols) <= 24) or not (1 <= len(filas) <= 80):
             raise HTTPException(400, f"'{titulo}': usa de 1 a 24 columnas y de 1 a 80 filas")
@@ -12488,7 +12488,12 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
             leyenda con conteo/porcentaje, descripción y recuadros de notas, como las láminas
             de estudios de la referencia."""
             for m in estudios_matrices:
-                cols = m.get("columnas") or []
+                cols_raw = m.get("columnas") or []
+                # "Grupo | Estación" => encabezado de dos niveles (el grupo abarca sus columnas contiguas)
+                partes = [[x.strip() for x in c.split("|", 1)] if "|" in c else ["", c] for c in cols_raw]
+                cols = [pt[1] for pt in partes]
+                grupos = [pt[0] for pt in partes]
+                hr = 2 if any(grupos) else 1
                 filas = m.get("filas") or []
                 celdas = m.get("celdas") or {}
                 puntos = m.get("forma") == "puntos"
@@ -12509,17 +12514,18 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                 tx = int(SW * 0.012)
                 avail = int(SH - top - (_Cm(0.4) if denso else SH * 0.30))
                 head_h = _Cm(0.8)
-                row_h = min(int(_Cm(0.95)), int((avail - head_h) / max(len(filas), 1)))
+                row_h = min(int(_Cm(0.95)), int((avail - head_h * hr) / max(len(filas), 1)))
                 tamano = 9 if row_h >= _Cm(0.8) else (7 if row_h >= _Cm(0.55) else 5)
-                gs = slide.shapes.add_table(len(filas) + 1, len(cols) + 1, tx, top, tw, int(head_h + row_h * len(filas)))
+                gs = slide.shapes.add_table(len(filas) + hr, len(cols) + 1, tx, top, tw, int(head_h * hr + row_h * len(filas)))
                 tbl = gs.table
                 primera = 2.4 if len(cols) <= 10 else 3.2
                 tot = primera + len(cols)
                 tbl.columns[0].width = int(tw * primera / tot)
                 for ci in range(len(cols)):
                     tbl.columns[ci + 1].width = int(tw * 1.0 / tot)
-                tbl.rows[0].height = int(head_h)
-                for ri in range(1, len(filas) + 1):
+                for hi in range(hr):
+                    tbl.rows[hi].height = int(head_h)
+                for ri in range(hr, len(filas) + hr):
                     tbl.rows[ri].height = int(row_h)
 
                 def _c(cell, texto, fondo, fg=TEXT_RGB, bold=False, align=_PP_ALIGN.CENTER, size=tamano):
@@ -12538,29 +12544,44 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                     r_.font.bold = bold
                     r_.font.color.rgb = _PRGBColor(*fg)
 
-                _c(tbl.cell(0, 0), "Entregable", (0xDC, 0xE6, 0xF1), bold=True)
+                enc = (0xDC, 0xE6, 0xF1)
+                _c(tbl.cell(0, 0), "Entregable", enc, bold=True)
                 for ci, nombre in enumerate(cols):
-                    _c(tbl.cell(0, ci + 1), nombre, (0xDC, 0xE6, 0xF1), bold=True)
+                    _c(tbl.cell(hr - 1, ci + 1), nombre, enc, bold=True)
+                if hr == 2:
+                    tbl.cell(0, 0).merge(tbl.cell(1, 0))
+                    ci = 0
+                    while ci < len(cols):
+                        cj = ci
+                        while cj + 1 < len(cols) and grupos[cj + 1] == grupos[ci] and grupos[ci]:
+                            cj += 1
+                        if grupos[ci]:
+                            if cj > ci:
+                                tbl.cell(0, ci + 1).merge(tbl.cell(0, cj + 1))
+                            _c(tbl.cell(0, ci + 1), grupos[ci], (0xBF, 0xCF, 0xE6), bold=True)
+                        else:  # columna sin grupo: ocupa los dos niveles
+                            tbl.cell(0, ci + 1).merge(tbl.cell(1, ci + 1))
+                        ci = cj + 1
                 conteo = {k: 0 for k in orden_est}
                 reales = 0
                 for ri, fila in enumerate(filas):
                     if fila.startswith("#"):
-                        tbl.cell(ri + 1, 0).merge(tbl.cell(ri + 1, len(cols)))
-                        _c(tbl.cell(ri + 1, 0), fila.lstrip("# ").upper(), (0xD9, 0xD9, 0xD9), bold=True, align=_PP_ALIGN.LEFT)
+                        tbl.cell(ri + hr, 0).merge(tbl.cell(ri + hr, len(cols)))
+                        _c(tbl.cell(ri + hr, 0), fila.lstrip("# ").upper(), (0xD9, 0xD9, 0xD9), bold=True, align=_PP_ALIGN.LEFT)
                         continue
                     reales += 1
-                    _c(tbl.cell(ri + 1, 0), fila, WHITE_RGB, align=_PP_ALIGN.LEFT)
+                    _c(tbl.cell(ri + hr, 0), fila, WHITE_RGB, align=_PP_ALIGN.LEFT)
                     for ci in range(len(cols)):
                         est = celdas.get(f"{ri},{ci}", "pendiente")
                         if est in conteo:
                             conteo[est] += 1
                         if puntos:
                             if est == "na":
-                                _c(tbl.cell(ri + 1, ci + 1), "n/a", WHITE_RGB, bold=True, size=max(tamano - 1, 5))
+                                _c(tbl.cell(ri + hr, ci + 1), "n/a", WHITE_RGB, bold=True, size=max(tamano - 1, 5))
                             else:
-                                _c(tbl.cell(ri + 1, ci + 1), "●", WHITE_RGB, fg=col_est[est], size=tamano + 6)
+                                _c(tbl.cell(ri + hr, ci + 1), "●", WHITE_RGB, fg=col_est[est], size=tamano + 6)
                         else:
-                            _c(tbl.cell(ri + 1, ci + 1), "n/a" if est == "na" else " ", col_est[est], size=max(tamano - 1, 5))
+                            _c(tbl.cell(ri + hr, ci + 1), "n/a" if est == "na" else " ", col_est[est], size=max(tamano - 1, 5))
                 base = sum(conteo.values())
                 # --- tabla resumen: % de avance (validado ÷ aplicable) por entregable ---
                 resumen = []
@@ -12576,7 +12597,7 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                 if denso:
                     px, py, pw = int(tx + tw + SW * 0.02), top, int(SW * 0.35)
                 else:
-                    px, py, pw = tx, int(top + head_h + row_h * len(filas) + _Cm(0.5)), int(SW * (0.25 if con_resumen else 0.40))
+                    px, py, pw = tx, int(top + head_h * hr + row_h * len(filas) + _Cm(0.5)), int(SW * (0.25 if con_resumen else 0.40))
                 if con_resumen:
                     gr = slide.shapes.add_table(len(resumen) + 1, 3, int(tx + SW * 0.27), py, int(SW * 0.30),
                                                 int(_Cm(0.7) * (len(resumen) + 1)))

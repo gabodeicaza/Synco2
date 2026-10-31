@@ -102,7 +102,7 @@ async def _scenario(tmp_path: Path, con_plantilla: bool):
         "descripcion": "Falta entrega del programa de montaje\nProcedimiento de relleno", "orden": 0, "resuelto": False})
     await server.set_estudios_matrices(pid, server.EstudioMatricesIn(matrices=[
         server.EstudioMatrizIn(
-            titulo="Estatus de documentos en estaciones", forma="puntos", columnas=["Universidad", "Cantera"],
+            titulo="Estatus de documentos en estaciones", forma="puntos", columnas=["Tramo 1 | Universidad", "Tramo 1 | Cantera"],
             filas=["# Mecanica de suelos", "EMS", "Plano de sondeos"],
             celdas={"1,0": "validado", "1,1": "observaciones", "2,0": "na"},
             notas=[server.EstudioMatrizNotaIn(titulo="Pendientes", texto="3 estudios de Xochitl")]),

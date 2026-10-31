@@ -161,7 +161,7 @@ export default function EstudiosMatricesModal({ projectId, visible, onClose, pue
                   ))}
                 </View>
 
-                <Text style={styles.label}>Columnas (estaciones / intertramos), una por línea</Text>
+                <Text style={styles.label}>Columnas (estaciones / intertramos), una por línea. «Grupo | Estación» = encabezado de dos niveles</Text>
                 <TextInput value={colTxt} onChangeText={setColTxt} editable={puedeEscribir} multiline style={[styles.input, { minHeight: 70 }]} />
                 <Text style={styles.label}>Filas (entregables), una por línea. "# Texto" = encabezado de grupo</Text>
                 <TextInput value={filaTxt} onChangeText={setFilaTxt} editable={puedeEscribir} multiline style={[styles.input, { minHeight: 90 }]} />
