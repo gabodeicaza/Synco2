@@ -7187,22 +7187,20 @@ async def _ambiental_bloques(items: List[dict], config: dict) -> List[dict]:
             "imagen": await _donas("Avance de informes", filas, detalles),
             "caption": (config.get("referencia") or "") if i == 0 else "",
         })
-    if por["autorizacion"]:
+    if por["autorizacion"] and not por["arbolado"]:
         bloques.append({
             "type": "table", "heading": "INTERVENCIÓN DE ARBOLADO – AUTORIZACIONES",
             "headers": ["TIPO", "FOLIO / OFICIO"],
             "rows": [[r.get("tipo") or "-", r["folio"]] for r in por["autorizacion"]],
             "col_widths": [0.35, 0.65], "empty_text": "Sin autorizaciones.",
         })
-    for g in por["arbolado"]:
-        filas = [(rot, g.get(f"{k}_ej") or 0, g.get(f"{k}_aut") or 0)
-                 for rot, k in (("PODAS", "poda"), ("TRASPLANTES", "trasplante"), ("DERRIBOS", "derribo"))]
-        detalles = [f"{ej} / {aut}" for _, ej, aut in filas]
-        bloques.append({
-            "type": "imagen", "heading": f"INTERVENCIÓN DE ARBOLADO · {g['nombre'].upper()}",
-            "imagen": await _donas(g["nombre"], filas, detalles),
-            "caption": "Ejecutado / autorizado",
-        })
+    if por["arbolado"]:
+        # Matriz de la referencia: tratamiento × autorización (autorizados / intervenidos).
+        grupos = [{"nombre": g["nombre"], **{k: (g.get(f"{k}_aut") or 0, g.get(f"{k}_ej") or 0)
+                                              for k in ("derribo", "poda", "trasplante")}} for g in por["arbolado"]]
+        folios = "; ".join(((r.get("tipo") + " ") if r.get("tipo") else "") + r["folio"] for r in por["autorizacion"])
+        bloques.append({"type": "arbolado_matriz", "heading": "AVANCE INTERVENCIÓN DE ARBOLADO:",
+                        "grupos": grupos, "nota": ("Autorizaciones: " + folios) if folios else ""})
     resarc = por["resarcimiento"]
     if resarc:
         restituidos = sum(r.get("cantidad") or 0 for r in resarc)
@@ -8380,14 +8378,12 @@ def _levantamientos_bloques(registros: List[dict]) -> List[dict]:
             if not r or not r.get("total_requerido"):
                 continue
             pct = r["realizados"] / r["total_requerido"] * 100
-            filas.append([f"{tipo_lbl} ({ambito_lbl})", str(r["total_requerido"]), str(r["realizados"]), f"{pct:.1f}%"])
+            filas.append(f"{tipo_lbl} en {'Estaciones' if ambito == 'estacion' else 'Postes'}: {pct:.2f}%"
+                         f" ({r['realizados']} de {r['total_requerido']})")
     if not filas:
         return []
-    return [{
-        "type": "table", "heading": "AVANCE EN DICTÁMENES ESTRUCTURALES Y FE NOTARIAL",
-        "headers": ["LEVANTAMIENTO", "TOTAL REQUERIDO", "REALIZADOS", "% DE CUMPLIMIENTO"],
-        "rows": filas, "col_widths": [0.46, 0.18, 0.18, 0.18], "empty_text": "Sin levantamientos.",
-    }]
+    return [{"type": "avance_lista", "heading": "LEVANTAMIENTOS NOTARIALES - AVANCES",
+             "titulo": "Porcentaje de avance", "lineas": filas}]
 
 
 def _levantamientos_graficas(registros: List[dict]) -> List[tuple]:
@@ -9406,6 +9402,8 @@ class InformacionParticularFotoIn(BaseModel):
 
 class InformacionParticularBloqueIn(BaseModel):
     titulo: str
+    estilo: Literal["tarjetas", "registro"] = "tarjetas"  # lámina libre: "registro" = fotos con pie debajo y barra
+    banda: Optional[str] = None  # "registro": texto de la barra (def. REGISTRO FOTOGRÁFICO DE ACTIVIDADES GENERALES)
     node_id: Optional[str] = None  # si se liga, jala acceso_predio/situacion_social del nodo en vivo
     actividades: List[str] = Field(default_factory=list)  # texto libre, independiente de EVM/actividades
     fotos: List[InformacionParticularFotoIn] = Field(default_factory=list)
@@ -11055,6 +11053,40 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
             for bloque in bloques:
                 fotos = bloque.get("fotos") or []
                 lineas = [a_.strip() for a_ in (bloque.get("actividades") or []) if a_.strip()]
+                if bloque.get("estilo") == "registro":
+                    # Como "Actividades generales" de la referencia: subtítulo en vino, barra
+                    # con el registro fotográfico y cada foto con su pie en cursiva debajo.
+                    for k in range(0, max(len(fotos), 1), 4):
+                        trozo = fotos[k:k + 4]
+                        slide = _clone_membrete()
+                        _encabezado(slide, banda)
+                        y0 = _y_bajo_banda()
+                        add_text(slide, int(SW * 0.04), int(y0 + _Cm(0.2)), int(SW * 0.9), _Cm(0.9),
+                                 (bloque.get("titulo") or "").upper(), size=12, bold=True, color=BRAND_RGB)
+                        by = int(y0 + _Cm(1.5))
+                        _rect(slide, int(SW * 0.037), by, int(SW * 0.926), _Cm(0.5), fill_rgb=BRAND_RAW_RGB)
+                        add_text(slide, int(SW * 0.037), by, int(SW * 0.926), _Cm(0.5),
+                                 (bloque.get("banda") or "REGISTRO FOTOGRÁFICO DE ACTIVIDADES GENERALES").upper(),
+                                 size=9, bold=True, color=WHITE_RGB, align=_PP_ALIGN.CENTER)
+                        n = len(trozo)
+                        cols = n if n <= 2 else 2
+                        filas_n = math.ceil(max(n, 1) / cols)
+                        area_y = int(by + _Cm(0.9))
+                        area_h = int(SH - area_y - _Cm(1.4))
+                        cell_h = int(area_h / filas_n)
+                        cell_w = int(SW * 0.92 / cols)
+                        for i, f in enumerate(trozo):
+                            cx = int(SW * 0.04 + (i % cols) * cell_w)
+                            cy = int(area_y + (i // cols) * cell_h)
+                            _add_picture_fit(slide, f.get("photo"), int(cx + _Cm(0.3)), cy, int(cell_w - _Cm(0.6)),
+                                             int(cell_h - _Cm(1.6)))
+                            if f.get("caption"):
+                                add_text(slide, int(cx + _Cm(0.3)), int(cy + cell_h - _Cm(1.5)), int(cell_w - _Cm(0.6)), _Cm(1.4),
+                                         f["caption"], size=9, italic=True, color=TEXT_RGB, align=_PP_ALIGN.CENTER)
+                        if cols == 2:
+                            _rect(slide, int(SW * 0.5 - _Pt(1)), int(by + _Cm(0.7)), _Pt(2), int(SH - by - _Cm(1.6)),
+                                  fill_rgb=BRAND_RAW_RGB)
+                    continue
                 trozos = [fotos[i:i + 8] for i in range(0, len(fotos), 8)] or [[]]
                 for k, trozo in enumerate(trozos):
                     slide = _clone_membrete()
@@ -11259,9 +11291,11 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
             except Exception:
                 pass
 
+        _TIT_SIZE = [14]
+
         def _auto_titulo(slide, texto, color=None):
             if texto:
-                add_text(slide, MARGIN_X, TOP_MARGIN, content_w, _Cm(0.9), texto, size=14, bold=True, color=color or BRAND_RGB)
+                add_text(slide, MARGIN_X, TOP_MARGIN, content_w, _Cm(0.9), texto, size=_TIT_SIZE[0], bold=True, color=color or BRAND_RGB)
 
         def _banda(modulo, heading):
             """Título de la franja superior según la lámina (como en la referencia:
@@ -11289,6 +11323,7 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
         def _slides_bloques(modulo_titulo, bloques):
             last = None
             _ult_h = [""]
+            _TIT_SIZE[0] = 18 if modulo_titulo in ("SUPERVISIÓN AMBIENTAL", "ASPECTOS SOCIALES") else 14
             for b in bloques:
                 t = b.get("type")
                 heading = b.get("heading")
@@ -11303,6 +11338,53 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                         _encabezado(last, _banda(modulo_titulo, _ult_h[0]))
                     add_text(last, MARGIN_X, int(SH - BOTTOM_MARGIN - _Cm(1.0)), content_w, _Cm(0.9), txt,
                              size=12, bold=True, color=BRAND_RGB)
+                elif t == "arbolado_matriz":
+                    grupos = b.get("grupos") or []
+                    claves = (("derribo", "DERRIBOS"), ("poda", "PODAS"), ("trasplante", "TRASPLANTES"))
+                    for k in range(0, max(len(grupos), 1), 4):
+                        trozo = grupos[k:k + 4]
+                        last = _clone_membrete()
+                        _encabezado(last, _banda(modulo_titulo, _ult_h[0]))
+                        _auto_titulo(last, heading)
+                        headers = ["TRATAMIENTO\nAUTORIZADO"]
+                        for g in trozo:
+                            headers += [f"{g['nombre']}\nAUTORIZADOS", f"{g['nombre']}\nINTERVENIDOS"]
+                        headers += ["TOTAL\nAUTORIZADOS", "TOTAL\nINTERVENIDOS"]
+                        filas = []
+                        for key, lbl in claves:
+                            fila = [lbl]
+                            for g in trozo:
+                                fila += [str(g[key][0]), str(g[key][1])]
+                            fila += [str(sum(x[key][0] for x in grupos)), str(sum(x[key][1] for x in grupos))]
+                            filas.append(fila)
+                        tot = ["TOTAL"]
+                        for g in trozo:
+                            tot += [str(sum(g[key][0] for key, _l in claves)), str(sum(g[key][1] for key, _l in claves))]
+                        tot += [str(sum(x[key][0] for x in grupos for key, _l in claves)),
+                                str(sum(x[key][1] for x in grupos for key, _l in claves))]
+                        filas.append(tot)
+                        _tabla(last, MARGIN_X, int(body_y + _Cm(0.3)), content_w, headers, filas,
+                               [1.6] + [1.0] * (len(headers) - 1), size=10, row_h=_Cm(1.0), head_h=_Cm(1.6), total_row=True)
+                        if b.get("nota"):
+                            add_text(last, MARGIN_X, int(body_y + _Cm(0.3) + _Cm(1.6) + _Cm(1.0) * len(filas) + _Cm(0.4)),
+                                     content_w, _Cm(1.5), b["nota"], size=9, color=MUTED_RGB)
+                elif t == "avance_lista":
+                    last = _clone_membrete()
+                    _encabezado(last, _banda(modulo_titulo, _ult_h[0]))
+                    add_text(last, MARGIN_X, int(_y_bajo_banda() + _Cm(0.2)), content_w, _Cm(0.8), heading, size=12, bold=True,
+                             color=BRAND_RGB)
+                    add_text(last, MARGIN_X, int(_y_bajo_banda() + _Cm(1.3)), content_w, _Cm(0.7), b.get("titulo") or "", size=11,
+                             color=TEXT_RGB)
+                    tb = last.shapes.add_textbox(MARGIN_X, int(_y_bajo_banda() + _Cm(2.0)), content_w, int(_Cm(0.75) * 8))
+                    tf = tb.text_frame
+                    tf.word_wrap = True
+                    for li, ln in enumerate(b.get("lineas") or []):
+                        par = tf.paragraphs[0] if li == 0 else tf.add_paragraph()
+                        r1 = par.add_run()
+                        r1.text = f"{li + 1}.  {ln}"
+                        r1.font.size = _Pt(11)
+                        r1.font.name = "Roboto"
+                        r1.font.color.rgb = _PRGBColor(*TEXT_RGB)
                 elif t == "table":
                     headers, rows = b.get("headers") or [], b.get("rows") or []
                     fr = b.get("col_widths") or [1.0] * len(headers)

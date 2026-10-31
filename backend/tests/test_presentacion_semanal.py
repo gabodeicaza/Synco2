@@ -71,6 +71,9 @@ async def _scenario(tmp_path: Path, con_plantilla: bool):
         "id": str(uuid.uuid4()), "project_id": pid, "fecha": now.date().isoformat(), "created_at": now,
         "trabajador": "Juan Perez", "contratista": "ALFA", "descripcion": "Caida leve", "severidad": "leve", "images": []})
     await server.db.ambiental.insert_many([
+        {"id": str(uuid.uuid4()), "project_id": pid, "seccion": "autorizacion", "tipo": "SEDEMA", "folio": "DGEIRA/003972/2026", "orden": 0},
+        {"id": str(uuid.uuid4()), "project_id": pid, "seccion": "arbolado", "nombre": "P003 (Perisur)", "orden": 0,
+         "derribo_aut": 3, "derribo_ej": 2, "poda_aut": 1, "poda_ej": 1, "trasplante_aut": 6, "trasplante_ej": 5},
         {"id": str(uuid.uuid4()), "project_id": pid, "seccion": "informe", "nombre": "4to Informe Trimestral",
          "avance": 10, "fecha_cierre": "2026-12-02", "orden": 0},
         {"id": str(uuid.uuid4()), "project_id": pid, "seccion": "resarcimiento", "lugar": "Parque Cantera",
@@ -133,8 +136,12 @@ async def _scenario(tmp_path: Path, con_plantilla: bool):
                  for i in range(5)]
         await server.update_informacion_particular(
             pid, created["id"], lam["id"],
-            server.InformacionParticularBloquesPatch(bloques=[server.InformacionParticularBloqueIn(
-                titulo="Avance de pilonas", actividades=["Linea uno"], fotos=fotos)]), user)
+            server.InformacionParticularBloquesPatch(bloques=[
+                server.InformacionParticularBloqueIn(titulo="Avance de pilonas", actividades=["Linea uno"], fotos=fotos),
+                server.InformacionParticularBloqueIn(
+                    titulo="Actividades generales - supervision social", estilo="registro",
+                    fotos=[server.InformacionParticularFotoIn(photo="data:image/png;base64," + PNG_B64, caption="Reunion virtual con C5")])]),
+            user)
 
         resp = await server.export_presentacion_pptx(pid, created["id"], user)
         data = b"".join([chunk async for chunk in resp.body_iterator])
@@ -174,12 +181,15 @@ def _verifica(prs):
     assert "(cont.)" in todo                     # 5 fotos → segunda lámina
     assert "AVANCE DE PILONAS" in todo and "Foto 4" in todo   # lámina libre
     assert "ESTACIÓN 1. UNIVERSIDAD" in todo and "ESTACIÓN 2. CANTERA" in todo   # láminas por estación
+    assert "AUTORIZADOS" in todo and "DERRIBOS" in todo and "P003 (Perisur)" in todo   # matriz de arbolado
+    assert "Porcentaje de avance" in todo and "Dictámenes estructurales en Estaciones: 50.00%" in todo   # lista social
+    assert "REGISTRO FOTOGRÁFICO DE ACTIVIDADES GENERALES" in todo and "Reunion virtual con C5" in todo
     assert "Gracias" in todo
     assert "Componentes Electromecánicos" in todo and "26.79%" in todo   # resumen electromecánico
     assert "FALTANTES DE OBRA" in todo and "programa de montaje" in todo  # columnas de calidad
     assert "Riego de areas verdes" in todo       # Ambiental automático
     assert "AMBIENTAL" in todo and "SEGURIDAD" in todo and "SOCIAL" in todo
-    assert "AVANCE EN DICTÁMENES" in todo        # Social automático
+    assert "LEVANTAMIENTOS NOTARIALES - AVANCES" in todo        # Social automático
     assert "Levantamiento de poligonal" in todo  # Estudios y proyecto ejecutivo
     assert "Programa pendiente de aval" in todo  # Pendientes generales
     assert "Juan Perez" in todo                  # Seguridad automática

@@ -825,6 +825,22 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
                       </View>
                     </ScrollView>
                   ) : null}
+                  {bloquesSeccion?.tipo === 'lamina_imagenes' ? (
+                    <View style={{ marginBottom: spacing.sm }}>
+                      <Pressable accessibilityRole="button"
+                        onPress={() => updateBloque(bIdx, { estilo: b.estilo === 'registro' ? 'tarjetas' : 'registro' })}
+                        style={[styles.chip, b.estilo === 'registro' && styles.chipActive, { alignSelf: 'flex-start' }]}>
+                        <Text style={[styles.chipTxt, b.estilo === 'registro' && styles.chipTxtActive]}>Registro fotográfico (pie debajo de cada foto)</Text>
+                      </Pressable>
+                      {b.estilo === 'registro' ? (
+                        <TextInput
+                          value={b.banda || ''} onChangeText={(v) => updateBloque(bIdx, { banda: v })}
+                          placeholder="Texto de la barra (def. REGISTRO FOTOGRÁFICO DE ACTIVIDADES GENERALES)"
+                          placeholderTextColor={colors.textMuted} style={[styles.input, { marginTop: spacing.xs }]}
+                        />
+                      ) : null}
+                    </View>
+                  ) : null}
                   <Text style={styles.fieldLabel}>{t('presentacion.actividadesUnaPorLinea')}</Text>
                   <TextInput
                     value={b.actividades.join('\n')}

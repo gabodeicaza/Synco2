@@ -1108,6 +1108,9 @@ export interface InformacionParticularFoto {
 }
 
 export interface InformacionParticularBloque {
+  /** Lámina libre: 'registro' = fotos con su pie debajo y barra de registro fotográfico. */
+  estilo?: 'tarjetas' | 'registro';
+  banda?: string | null;
   titulo: string;
   node_id?: string | null;
   actividades: string[];
