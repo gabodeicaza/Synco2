@@ -24,6 +24,7 @@ import { Button } from '@/src/components/Button';
 import { confirm } from '@/src/utils/confirm';
 import { fechaTecleadaOk, FECHA_AYUDA } from '@/src/utils/fecha';
 import { useAuth } from '@/src/auth-context';
+import PostesCalidadModal from '@/src/components/PostesCalidadModal';
 import { ROLE_COORD, ROLE_SUB, ROLE_JEFE } from '@/src/utils/roles';
 
 function hoyISO(): string {
@@ -57,6 +58,7 @@ export default function ControlCalidadScreen({ projectId }: { projectId: string 
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const puedeEscribir = user?.role !== ROLE_JEFE;
+  const [postesOpen, setPostesOpen] = useState(false);
   const puedeBorrarTodo = user?.role === ROLE_COORD || user?.role === ROLE_SUB;
 
   const [loading, setLoading] = useState(true);
@@ -223,6 +225,16 @@ export default function ControlCalidadScreen({ projectId }: { projectId: string 
       </View>
 
       <ScrollView contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + spacing.xl }]}>
+        <Pressable accessibilityRole="button" onPress={() => setPostesOpen(true)}
+          style={{ flexDirection: 'row', alignItems: 'center', gap: 10, padding: spacing.md, marginBottom: spacing.md, backgroundColor: colors.surface, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border }}>
+          <Ionicons name="list-outline" size={20} color={colors.primary} />
+          <View style={{ flex: 1 }}>
+            <Text style={{ fontSize: 13, fontWeight: '700', color: colors.text }}>Postes: fabricación, almacén e instalados</Text>
+            <Text style={{ fontSize: 12, color: colors.textMuted }}>Las tres tablas de la lámina de Aseguramiento de calidad</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+        </Pressable>
+        <PostesCalidadModal projectId={projectId} visible={postesOpen} onClose={() => setPostesOpen(false)} puedeEscribir={puedeEscribir} />
         <View style={styles.sectionHeaderRow}>
           <Text style={styles.sectionTitle}>Registro fotográfico</Text>
           {puedeEscribir ? (

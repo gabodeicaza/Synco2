@@ -105,6 +105,15 @@ async def _scenario(tmp_path: Path, con_plantilla: bool):
                     for r in range(1, 31) for c in range(8)},
             descripcion="Estado de revision de los entregables del proyecto ejecutivo.",
             notas=[server.EstudioMatrizNotaIn(titulo="Aspectos que retrasan", texto="Falta aprobacion del EMS")])]), user)
+    await server.set_postes_calidad(pid, server.PostesCalidadIn(
+        fabricacion=[server.PostesFabricacionIn(bucle="A", num_postes=18, corte=100, armado=100, soldadura=100, galvanizado=100),
+                     server.PostesFabricacionIn(bucle="B", num_postes=18, corte=100, armado=50, soldadura=0, galvanizado=0)],
+        almacen=[server.PostesAlmacenIn(almacen="Cantera", bucles=[server.PostesAlmacenBucleIn(bucle="A", cantidad=18),
+                                                                   server.PostesAlmacenBucleIn(bucle="B", cantidad=18)],
+                                        danados=31, total=70)],
+        instalados=[server.PostesInstaladoIn(bucle="A", poste="S-2", fecha="2026-07-27"),
+                    server.PostesInstaladoIn(bucle="A", poste="S-4", fecha="2026-09-22"),
+                    server.PostesInstaladoIn(bucle="B", poste="S-69", fecha="2026-09-11")]), user)
     await server.db.estudio_disciplina_avance.insert_many([
         {"id": str(uuid.uuid4()), "project_id": pid, "node_id": None, "disciplina": "topografia", "porcentaje": 98, "estatus": "en_proceso"},
         {"id": str(uuid.uuid4()), "project_id": pid, "node_id": "n", "disciplina": "urbano", "porcentaje": 100, "estatus": "terminado"}])
@@ -165,7 +174,7 @@ async def _scenario(tmp_path: Path, con_plantilla: bool):
         await server.db.reports.delete_many({"project_id": pid})
         await server.db.location_nodes.delete_many({"project_id": pid})
         for col in ("ambiental_auditoria", "levantamientos_sociales", "seguridad_reportes",
-                    "estudios_bitacora", "pendientes_generales", "estimaciones", "seguridad_indicadores", "ambiental", "estudio_disciplina_avance", "electromecanica", "estudios_matrices"):
+                    "estudios_bitacora", "pendientes_generales", "estimaciones", "seguridad_indicadores", "ambiental", "estudio_disciplina_avance", "electromecanica", "estudios_matrices", "postes_calidad"):
             await server.db[col].delete_many({"project_id": pid})
 
 
@@ -199,6 +208,7 @@ def _verifica(prs):
     assert "REGISTRO FOTOGRÁFICO DE ACTIVIDADES GENERALES" in todo and "Reunion virtual con C5" in todo
     assert "ESTATUS DE DOCUMENTOS EN ESTACIONES" in todo and "Base de cálculo: 2 entregables × 2 columnas = 3 registros" in todo
     assert "Validado técnicamente: 1 (33.3%)" in todo and "PENDIENTES" in todo
+    assert "EXISTENCIA DE POSTES EN ALMACÉN" in todo and "51.43%" in todo and "27/07/2026" in todo and "S-69" in todo
     assert "Gracias" in todo
     assert "Componentes Electromecánicos" in todo and "26.79%" in todo   # resumen electromecánico
     assert "FALTANTES DE OBRA" in todo and "programa de montaje" in todo  # columnas de calidad

@@ -5963,6 +5963,104 @@ class EstudioMatricesIn(BaseModel):
     matrices: List[EstudioMatrizIn] = Field(default_factory=list)
 
 
+# --- Postes de calidad: fabricación, existencia en almacén y postes instalados ---
+# Estado vigente (un documento por proyecto) que alimenta las tres tablas de la lámina
+# "Aseguramiento de control de calidad" de la Presentación.
+_POSTES_PROCESOS = (("corte", "Corte"), ("armado", "Armado"), ("soldadura", "Soldadura"), ("galvanizado", "Galvanizado"))
+
+
+class PostesFabricacionIn(BaseModel):
+    bucle: str
+    num_postes: Optional[int] = None
+    corte: Optional[float] = None
+    armado: Optional[float] = None
+    soldadura: Optional[float] = None
+    galvanizado: Optional[float] = None
+
+
+class PostesAlmacenBucleIn(BaseModel):
+    bucle: str
+    cantidad: int = 0
+
+
+class PostesAlmacenIn(BaseModel):
+    almacen: str
+    bucles: List[PostesAlmacenBucleIn] = Field(default_factory=list)
+    danados: int = 0
+    total: Optional[int] = None  # total de postes que se esperan en ese almacén (base del %)
+
+
+class PostesInstaladoIn(BaseModel):
+    bucle: str
+    poste: str
+    fecha: Optional[str] = None  # YYYY-MM-DD
+
+
+class PostesCalidadIn(BaseModel):
+    titulo_fabricacion: Optional[str] = None
+    fabricacion: List[PostesFabricacionIn] = Field(default_factory=list)
+    almacen: List[PostesAlmacenIn] = Field(default_factory=list)
+    instalados: List[PostesInstaladoIn] = Field(default_factory=list)
+
+
+def _postes_calidad_out(doc: Optional[dict]) -> dict:
+    base = {"titulo_fabricacion": None, "fabricacion": [], "almacen": [], "instalados": []}
+    if doc:
+        base.update({k: doc[k] for k in base if k in doc})
+    return base
+
+
+@api.get("/projects/{pid}/postes-calidad")
+async def get_postes_calidad(pid: str, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    return _postes_calidad_out(await db.postes_calidad.find_one({"project_id": pid}))
+
+
+@api.put("/projects/{pid}/postes-calidad")
+async def set_postes_calidad(pid: str, body: PostesCalidadIn, user: dict = Depends(current_user)):
+    _assert_write_allowed(user)
+    await ensure_project_access(user, pid)
+
+    def _pct(v, campo):
+        if v is None:
+            return None
+        if not (0 <= v <= 100):
+            raise HTTPException(400, f"{campo}: el porcentaje debe estar entre 0 y 100")
+        return round(float(v), 2)
+
+    fab = []
+    for f in body.fabricacion[:20]:
+        if f.bucle.strip():
+            if f.num_postes is not None and f.num_postes < 0:
+                raise HTTPException(400, "El número de postes no puede ser negativo")
+            fab.append({"bucle": f.bucle.strip()[:20], "num_postes": f.num_postes,
+                        **{k: _pct(getattr(f, k), f"{f.bucle} · {lbl}") for k, lbl in _POSTES_PROCESOS}})
+    alm = []
+    for a in body.almacen[:20]:
+        if a.almacen.strip():
+            if a.danados < 0 or (a.total is not None and a.total < 0) or any(b.cantidad < 0 for b in a.bucles):
+                raise HTTPException(400, "Las cantidades no pueden ser negativas")
+            alm.append({"almacen": a.almacen.strip()[:60], "danados": a.danados, "total": a.total,
+                        "bucles": [{"bucle": b.bucle.strip()[:20], "cantidad": b.cantidad} for b in a.bucles[:10] if b.bucle.strip()]})
+    inst = []
+    for i in body.instalados[:300]:
+        if i.bucle.strip() and i.poste.strip():
+            if i.fecha:
+                try:
+                    date.fromisoformat(i.fecha[:10])
+                except ValueError:
+                    raise HTTPException(400, f"Fecha inválida para el poste {i.poste}: usa AAAA-MM-DD")
+            inst.append({"bucle": i.bucle.strip()[:20], "poste": i.poste.strip()[:30], "fecha": (i.fecha or "")[:10] or None})
+    data = {"titulo_fabricacion": (body.titulo_fabricacion or "").strip()[:150] or None,
+            "fabricacion": fab, "almacen": alm, "instalados": inst}
+    now = datetime.now(timezone.utc)
+    await db.postes_calidad.update_one(
+        {"project_id": pid},
+        {"$set": {**data, "updated_at": now, "updated_by": user["id"]}, "$setOnInsert": {"id": str(uuid.uuid4())}},
+        upsert=True)
+    return data
+
+
 @api.get("/projects/{pid}/estudios-matrices")
 async def list_estudios_matrices(pid: str, user: dict = Depends(current_user)):
     await ensure_project_access(user, pid)
@@ -10426,6 +10524,7 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
     electromec_doc: Optional[dict] = None
     electromec_imgs: dict = {}
     estudios_matrices: list = []
+    postes_doc: Optional[dict] = None
     if "electromecanico" in _tipos_auto:
         electromec_doc = await db.electromecanica.find_one({"project_id": pid})
         electromec_imgs = {}
@@ -10436,6 +10535,8 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
         estudios_matrices = await db.estudios_matrices.find({"project_id": pid}).sort("orden", 1).to_list(length=30)
     calidad_pend: list = []
     if "calidad" in _tipos_auto:
+        _pd = _postes_calidad_out(await db.postes_calidad.find_one({"project_id": pid}))
+        postes_doc = _pd if (_pd["fabricacion"] or _pd["almacen"] or _pd["instalados"]) else None
         calidad_pend = await db.pendientes_generales.find(
             {"project_id": pid, "contrato": "calidad", "resuelto": {"$ne": True}}).sort("orden", 1).to_list(length=20)
     seg_extra: Optional[dict] = None
@@ -11770,6 +11871,120 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
             _add_picture_fit(sl, imgs.get(_EM_DONA), int(MARGIN_X + tw + _Cm(0.5)), int(SH * 0.58),
                              int(content_w - tw - _Cm(0.5)), int(SH * 0.36))
 
+        def slide_calidad_postes():
+            """Tres tablas como la referencia: avance de fabricación por bucle y proceso,
+            existencia de postes en almacén y postes instalados (con fecha), en columnas
+            separadas por una línea vertical vino. Los instalados que no caben siguen en
+            otra lámina."""
+            fab = postes_doc.get("fabricacion") or []
+            alm = postes_doc.get("almacen") or []
+            inst = postes_doc.get("instalados") or []
+
+            def _fecha(iso):
+                return f"{iso[8:10]}/{iso[5:7]}/{iso[:4]}" if iso else "-"
+
+            def _celda(cell, texto, fondo=WHITE_RGB, fg=TEXT_RGB, bold=False, size=8):
+                cell.fill.solid()
+                cell.fill.fore_color.rgb = _PRGBColor(*fondo)
+                cell.margin_left = cell.margin_right = _Cm(0.08)
+                cell.margin_top = cell.margin_bottom = _Cm(0.03)
+                cell.vertical_anchor = _MSO_ANCHOR_.MIDDLE
+                tf = cell.text_frame
+                tf.word_wrap = True
+                par = tf.paragraphs[0]
+                par.alignment = _PP_ALIGN.CENTER
+                r_ = par.add_run()
+                r_.text = str(texto)
+                r_.font.size = _Pt(size)
+                r_.font.name = "Roboto"
+                r_.font.bold = bold
+                r_.font.color.rgb = _PRGBColor(*fg)
+
+            def _tabla_m(slide, x, y, w, headers, filas, fracs, row_h=_Cm(0.62)):
+                """filas: lista de listas; un valor None se fusiona hacia arriba (celda combinada)."""
+                gs = slide.shapes.add_table(len(filas) + 1, len(headers), x, y, w, int(_Cm(1.0) + row_h * len(filas)))
+                tb = gs.table
+                tot = float(sum(fracs))
+                for ci, fr_ in enumerate(fracs):
+                    tb.columns[ci].width = int(w * fr_ / tot)
+                tb.rows[0].height = int(_Cm(1.0))
+                for ri in range(1, len(filas) + 1):
+                    tb.rows[ri].height = int(row_h)
+                for ci, h_ in enumerate(headers):
+                    _celda(tb.cell(0, ci), h_, BRAND_RAW_RGB, WHITE_RGB, True, 8)
+                for ri, fila in enumerate(filas, start=1):
+                    for ci, v_ in enumerate(fila):
+                        if v_ is None:
+                            continue
+                        resaltar = isinstance(v_, tuple)
+                        _celda(tb.cell(ri, ci), v_[0] if resaltar else v_, BRAND_RAW_RGB if resaltar else WHITE_RGB,
+                               WHITE_RGB if resaltar else TEXT_RGB, resaltar, 8)
+                for ri, fila in enumerate(filas, start=1):      # combina hacia abajo las celdas None
+                    for ci in range(len(headers)):
+                        if fila[ci] is not None:
+                            fin = ri
+                            while fin < len(filas) and filas[fin][ci] is None:
+                                fin += 1
+                            if fin > ri:
+                                tb.cell(ri, ci).merge(tb.cell(fin, ci))
+                return tb
+
+            pags = max(1, math.ceil(len(inst) / 16))
+            cw = int(content_w / 3)
+            for pg in range(pags):
+                sl = _clone_membrete()
+                _encabezado(sl, "ASEGURAMIENTO DE CONTROL DE CALIDAD")
+                titulos = [(postes_doc.get("titulo_fabricacion") or "AVANCE DE FABRICACIÓN DE POSTES"),
+                           "EXISTENCIA DE POSTES EN ALMACÉN", "POSTES INSTALADOS"]
+                for i in range(3):
+                    x_ = int(MARGIN_X + i * cw)
+                    if i:
+                        _rect(sl, int(x_ - _Cm(0.15)), int(_Cm(2.5)), _Pt(2), int(SH - _Cm(2.5) - _Cm(1.5)), fill_rgb=BRAND_RAW_RGB)
+                    add_text(sl, int(x_ + _Cm(0.3)), int(_Cm(2.6)), int(cw - _Cm(0.6)), _Cm(2.0),
+                             titulos[i].upper() + (" (cont.)" if pg and i == 2 else ""), size=13, bold=True, color=BRAND_RGB,
+                             align=_PP_ALIGN.CENTER)
+                ty = int(_Cm(5.4))
+                tw_ = int(cw - _Cm(0.6))
+                if pg == 0 and fab:
+                    filas = []
+                    todos = []
+                    for f in fab:
+                        for k, (clave, lbl) in enumerate(_POSTES_PROCESOS):
+                            v = f.get(clave)
+                            if v is not None:
+                                todos.append(v)
+                            filas.append([f["bucle"] if k == 0 else None, lbl,
+                                          (str(f["num_postes"]) if f.get("num_postes") is not None else "-") if k == 0 else None,
+                                          f"{v:g}" if v is not None else "-"])
+                    filas.append([("TOTAL",), ("",), (str(sum(f.get("num_postes") or 0 for f in fab)),),
+                                  (f"{sum(todos) / len(todos):.0f}" if todos else "-",)])
+                    tb_ = _tabla_m(sl, int(MARGIN_X + _Cm(0.3)), ty, tw_, ["Bucle", "Proceso", "Número Postes", "Avance %"], filas,
+                                   [0.8, 1.6, 1.0, 0.9])
+                    tb_.cell(len(filas), 0).merge(tb_.cell(len(filas), 1))
+                if pg == 0 and alm:
+                    filas = []
+                    for a in alm:
+                        suma = sum(b["cantidad"] for b in a["bucles"])
+                        pct = f"{suma / a['total'] * 100:.2f}%" if a.get("total") else "-"
+                        bl = a["bucles"] or [{"bucle": "-", "cantidad": 0}]
+                        for k, b in enumerate(bl):
+                            filas.append([a["almacen"] if k == 0 else None, b["bucle"], str(b["cantidad"]),
+                                          (str(a["danados"]),) if k == 0 else None,
+                                          str(a["total"]) if k == 0 and a.get("total") is not None else ("-" if k == 0 else None),
+                                          pct if k == 0 else None])
+                    _tabla_m(sl, int(MARGIN_X + cw + _Cm(0.3)), ty, tw_,
+                             ["Almacén", "Bucle", "Cant.", "Dañados", "Total", "% Postes Almacén"], filas,
+                             [1.3, 0.8, 0.8, 0.9, 0.8, 1.2])
+                trozo = inst[pg * 16:(pg + 1) * 16]
+                if trozo:
+                    filas = []
+                    prev = None
+                    for r_ in trozo:
+                        filas.append([r_["bucle"] if r_["bucle"] != prev else None, r_["poste"], _fecha(r_.get("fecha"))])
+                        prev = r_["bucle"]
+                    _tabla_m(sl, int(MARGIN_X + 2 * cw + _Cm(0.3)), ty, tw_, ["Bucle", "Poste", "Fecha de Instalación"], filas,
+                             [0.8, 1.0, 1.4], row_h=_Cm(0.58))
+
         def slide_calidad_pendientes():
             """Faltantes de aseguramiento de calidad en columnas separadas por una línea
             vertical vino (tres por lámina), como en la referencia."""
@@ -11931,6 +12146,8 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                             r2.font.name = "Roboto"
                             r2.font.color.rgb = _PRGBColor(*TEXT_RGB)
 
+        from pptx.enum.text import MSO_ANCHOR as _MSO_ANCHOR_
+
         def _dup_seguridad(b):
             return ((b.get("type") == "imagen" and (b.get("heading") or "") in (
                         "CUMPLIMIENTO EN CAMPO", "CUMPLIMIENTO DOCUMENTAL", "PORCENTAJE DE CUMPLIMIENTO POR ÁREA"))
@@ -11944,6 +12161,8 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                 slide_electromec_resumen()
             if tipo == "calidad" and calidad_pend:
                 slide_calidad_pendientes()
+            if tipo == "calidad" and postes_doc:
+                slide_calidad_postes()
             if tipo == "proyecto" and estudios_matrices:
                 slide_estudios_matrices()
             for modulo_titulo, bloques in (modulos_auto.get(tipo) or []):
@@ -11961,7 +12180,8 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                 # No imprime un divisor cuya sección automática siguiente no trae nada.
                 sig = secciones[s_idx + 1].get("tipo") if s_idx + 1 < len(secciones) else None
                 if (sig in _auto_tipos and not modulos_auto.get(sig) and not (sig == "seguridad" and seg_extra)
-                        and not (sig == "calidad" and calidad_pend) and not (sig == "proyecto" and estudios_matrices)):
+                        and not (sig == "calidad" and (calidad_pend or postes_doc))
+                        and not (sig == "proyecto" and estudios_matrices)):
                     continue
             if tipo == "portada":
                 slide_portada()

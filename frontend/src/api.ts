@@ -839,6 +839,13 @@ export interface ElectromecIn {
   documentos: ElectromecDocumento[];
   observaciones: ElectromecObservacion[];
 }
+export interface PostesCalidad {
+  titulo_fabricacion?: string | null;
+  fabricacion: { bucle: string; num_postes?: number | null; corte?: number | null; armado?: number | null; soldadura?: number | null; galvanizado?: number | null }[];
+  almacen: { almacen: string; danados: number; total?: number | null; bucles: { bucle: string; cantidad: number }[] }[];
+  instalados: { bucle: string; poste: string; fecha?: string | null }[];
+}
+
 export type EstudioMatrizEstado = 'validado' | 'observaciones' | 'revision' | 'pendiente' | 'na';
 export interface EstudioMatriz {
   id?: string;
@@ -3418,6 +3425,8 @@ export const api = {
     porcentaje_avance: number; notas: string | null; numerar: boolean; jerarquia: JerarquiaInforme;
   }>) => request<RiesgoRegistro>('PATCH', `/projects/${pid}/riesgos-registros/${rid}`, body),
 
+  getPostesCalidad: (pid: string) => request<PostesCalidad>('GET', `/projects/${pid}/postes-calidad`),
+  setPostesCalidad: (pid: string, body: PostesCalidad) => request<PostesCalidad>('PUT', `/projects/${pid}/postes-calidad`, body),
   // === Módulo piloto: Estudios y Proyecto Ejecutivo ===
   listEstudiosMatrices: (pid: string) => request<EstudioMatriz[]>('GET', `/projects/${pid}/estudios-matrices`),
   setEstudiosMatrices: (pid: string, matrices: EstudioMatriz[]) =>
