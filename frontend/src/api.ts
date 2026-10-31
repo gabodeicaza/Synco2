@@ -830,6 +830,10 @@ export type ElectromecEstatus = 'recibido' | 'en_revision' | 'pendiente' | 'emit
 export interface ElectromecDocumento { id?: string | null; titulo: string; estatus?: ElectromecEstatus | null; nota?: string | null }
 export interface ElectromecObservacion { id?: string | null; titulo?: string | null; texto: string; fotos?: string[] }
 export interface ElectromecIn {
+  /** Producción de pilonas por bucle (0-100): una gráfica de pilona por bucle en la Presentación. */
+  pilonas_bucles?: { bucle: string; avance: number }[];
+  pilonas_actividades?: string[];
+  pilonas_foto?: string | null;
   /** {componente: {etapa: % 0-100 | null}} — componentes: estaciones, pilonas, cable, garage, cabinas. */
   avance: Record<string, Record<string, number | null>>;
   avance_general?: number | null;

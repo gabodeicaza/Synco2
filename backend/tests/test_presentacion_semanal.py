@@ -88,6 +88,9 @@ async def _scenario(tmp_path: Path, con_plantilla: bool):
         "avance": {"estaciones": {"fabricacion": 26.79, "suministro": 1.26, "montaje": 0},
                    "pilonas": {"fabricacion": 7.05, "suministro": 1.41, "montaje": 0.24}},
         "avance_general": None, "pilonas_total": None, "pilonas_suministradas": None, "patio_nota": None,
+        "pilonas_bucles": [{"bucle": "A", "avance": 100}, {"bucle": "D", "avance": 42.5}],
+        "pilonas_actividades": ["Planos de elementos de anclaje", "Plan de montaje de torres", "Proyecto de puesta a tierras"],
+        "pilonas_foto": "data:image/png;base64," + PNG_B64,
         "documentos": [], "observaciones": [{"id": "o1", "titulo": "Suministro de componentes", "texto": "Llegada de contenedores", "fotos": []}]})
     await server.db.pendientes_generales.insert_one({
         "id": str(uuid.uuid4()), "project_id": pid, "contrato": "calidad", "titulo": "Faltantes de Obra",
@@ -209,6 +212,7 @@ def _verifica(prs):
     assert "ESTATUS DE DOCUMENTOS EN ESTACIONES" in todo and "Base de cálculo: 2 entregables × 2 columnas = 3 registros" in todo
     assert "Validado técnicamente: 1 (33.3%)" in todo and "PENDIENTES" in todo
     assert "EXISTENCIA DE POSTES EN ALMACÉN" in todo and "51.43%" in todo and "27/07/2026" in todo and "S-69" in todo
+    assert "FABRICACIÓN Y SUMINISTRO DE PILONAS" in todo and "Plan de montaje de torres" in todo
     assert "Gracias" in todo
     assert "Componentes Electromecánicos" in todo and "26.79%" in todo   # resumen electromecánico
     assert "FALTANTES DE OBRA" in todo and "programa de montaje" in todo  # columnas de calidad

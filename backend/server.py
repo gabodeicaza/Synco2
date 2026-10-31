@@ -9620,7 +9620,15 @@ class ElectromecObservacion(BaseModel):
     fotos: List[str] = Field(default_factory=list)  # data URLs (máx 4): "actividades semanales" del informe
 
 
+class ElectromecPilonaBucle(BaseModel):
+    bucle: str
+    avance: float  # 0-100: producción de las pilonas de ese bucle
+
+
 class ElectromecIn(BaseModel):
+    pilonas_bucles: List[ElectromecPilonaBucle] = Field(default_factory=list)  # una gráfica de pilona por bucle
+    pilonas_actividades: List[str] = Field(default_factory=list)  # viñetas de "Fabricación y suministro de pilonas"
+    pilonas_foto: Optional[str] = None  # foto aérea del patio (data URL)
     # {componente: {etapa: porcentaje 0-100 | null}}
     avance: Dict[str, Dict[str, Optional[float]]] = Field(default_factory=dict)
     avance_general: Optional[float] = None  # manual; vacío = promedio de lo capturado
@@ -9667,7 +9675,14 @@ def _electromec_normalizar(body: ElectromecIn) -> dict:
         if texto:
             obs.append({"id": o.id or str(uuid.uuid4()), "titulo": (o.titulo or "").strip()[:200] or None, "texto": texto,
                         "fotos": [f for f in (o.fotos or []) if f][:4]})
+    bucles = []
+    for b in body.pilonas_bucles[:6]:
+        if b.bucle.strip():
+            bucles.append({"bucle": b.bucle.strip()[:20], "avance": _electromec_pct(b.avance, f"Bucle {b.bucle}")})
     return {
+        "pilonas_bucles": bucles,
+        "pilonas_actividades": [a.strip()[:300] for a in body.pilonas_actividades if a.strip()][:8],
+        "pilonas_foto": body.pilonas_foto or None,
         "avance": avance,
         "avance_general": _electromec_pct(body.avance_general, "Avance general"),
         "pilonas_total": total, "pilonas_suministradas": sumin,
@@ -9686,12 +9701,53 @@ def _electromec_general(doc: dict) -> Optional[float]:
 
 def _electromec_out(doc: Optional[dict]) -> dict:
     base = {"avance": {}, "avance_general": None, "pilonas_total": None, "pilonas_suministradas": None,
-            "patio_nota": None, "documentos": [], "observaciones": []}
+            "patio_nota": None, "documentos": [], "observaciones": [],
+            "pilonas_bucles": [], "pilonas_actividades": [], "pilonas_foto": None}
     if doc:
         base.update({k: doc[k] for k in base if k in doc})
         base["updated_at"] = doc.get("updated_at")
     base["avance_general_calculado"] = _electromec_general(base)
     return base
+
+
+def _grafica_pilona_png(titulo: str, pct: float) -> bytes:
+    """Silueta de pilona que se llena (vino) de abajo hacia arriba según `pct`, con el eje
+    0-100 % a la izquierda y el porcentaje al lado: "Avance de producción de pilonas"."""
+    from PIL import Image as _I, ImageDraw as _D
+    W, H = 620, 960
+    img = _I.new("RGB", (W, H), "white")
+    d, (f_txt, f_tit, f_big) = _chart_canvas(img, 22, 28, 40)
+    d.text((W / 2 + 30, 40), titulo, fill="#9D2148", font=f_tit, anchor="mm")
+    y0, esc = 880, 7.4                    # y de 0 % y píxeles por 1 % (la punta de la pilona = 100 %)
+    for v in range(0, 101, 10):
+        y = y0 - v * esc
+        d.line([(100, y), (W - 20, y)], fill="#E5E7EB", width=2)
+        d.text((88, y), f"{v}%", fill="#9D2148", font=f_txt, anchor="rm")
+    cx = 370
+    mask = _I.new("L", (W, H), 0)
+    m = _D.Draw(mask)
+    m.rectangle([cx - 48, y0 - 16, cx + 48, y0], fill=255)                                   # placa base
+    m.polygon([(cx - 30, y0 - 16), (cx + 30, y0 - 16), (cx + 19, y0 - 500), (cx - 19, y0 - 500)], fill=255)  # fuste
+    for yy in (y0 - 170, y0 - 330):
+        m.rectangle([cx - 34, yy, cx + 34, yy + 10], fill=255)                               # anillos
+    m.polygon([(cx - 19, y0 - 500), (cx + 19, y0 - 500), (cx + 14, y0 - 600), (cx - 14, y0 - 600)], fill=255)
+    m.polygon([(cx - 165, y0 - 610), (cx + 165, y0 - 610), (cx + 120, y0 - 640), (cx - 120, y0 - 640)], fill=255)  # brazo
+    m.polygon([(cx - 120, y0 - 640), (cx + 120, y0 - 640), (cx + 12, y0 - 740), (cx - 12, y0 - 740)], fill=255)    # remate
+    for dx in (-150, 150):                                                                    # barandales
+        m.rectangle([cx + dx - 4, y0 - 660, cx + dx + 4, y0 - 610], fill=255)
+    m.line([(cx - 160, y0 - 660), (cx - 100, y0 - 660)], fill=255, width=7)
+    m.line([(cx + 100, y0 - 660), (cx + 160, y0 - 660)], fill=255, width=7)
+    corte = int(y0 - max(0.0, min(100.0, pct)) * esc)
+    img.paste(_I.new("RGB", (W, H), "#D1D5DB"), (0, 0), mask)
+    lleno = _I.new("L", (W, H), 0)
+    _D.Draw(lleno).rectangle([0, corte, W, H], fill=255)
+    from PIL import ImageChops as _C
+    img.paste(_I.new("RGB", (W, H), "#9D2148"), (0, 0), _C.multiply(mask, lleno))
+    d = _D.Draw(img)
+    d.text((140, y0 - 0.38 * 100 * esc), f"{pct:.2f}%", fill="#374151", font=f_big, anchor="lm")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
 
 
 async def _electromec_bloques(doc: dict) -> List[dict]:
@@ -10531,6 +10587,9 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
         for b_ in (await _electromec_bloques(electromec_doc)) if electromec_doc else []:
             if b_.get("type") == "imagen":
                 electromec_imgs[b_.get("heading")] = b_.get("imagen")
+        for i_, pb in enumerate((electromec_doc or {}).get("pilonas_bucles") or []):
+            png_ = await asyncio.to_thread(_grafica_pilona_png, f"Avance de Producción Pilonas Bucle “{pb['bucle']}”", pb["avance"])
+            electromec_imgs[f"pilona:{i_}"] = await asyncio.to_thread(_png_bytes_to_jpeg_dataurl, png_)
     if "proyecto" in _tipos_auto:
         estudios_matrices = await db.estudios_matrices.find({"project_id": pid}).sort("orden", 1).to_list(length=30)
     calidad_pend: list = []
@@ -11842,6 +11901,34 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
             av = (electromec_doc or {}).get("avance") or {}
             return [c for c in ELECTROMEC_COMPONENTES if any(v is not None for v in (av.get(c) or {}).values())]
 
+        def slide_electromec_pilonas():
+            """Producción de pilonas por bucle (silueta que se llena), viñetas de actividades
+            generales en dos columnas y la foto aérea del patio, como la referencia."""
+            bucles = electromec_doc.get("pilonas_bucles") or []
+            acts = electromec_doc.get("pilonas_actividades") or []
+            foto = electromec_doc.get("pilonas_foto")
+            for k in range(0, len(bucles), 3):
+                sl = _clone_membrete()
+                _encabezado(sl, "CUMPLIMIENTO PROYECTO DEL SISTEMA ELECTROMECÁNICO")
+                add_text(sl, MARGIN_X, int(_Cm(2.2)), content_w, _Cm(0.9), "ACTIVIDADES GENERALES – FABRICACIÓN Y SUMINISTRO DE PILONAS",
+                         size=13, bold=True, color=BRAND_RGB, align=_PP_ALIGN.CENTER)
+                if acts and not k:
+                    mitad = math.ceil(len(acts) / 2)
+                    for ci, col_ in enumerate((acts[:mitad], acts[mitad:])):
+                        if col_:
+                            _vinetas(sl, int(MARGIN_X + ci * content_w * 0.5), int(_Cm(3.3)), int(content_w * 0.48),
+                                     int(_Cm(2.4)), col_, size=10)
+                zona_w = int(content_w * (0.66 if foto else 1.0))
+                trozo = bucles[k:k + 3]
+                cw_ = int(zona_w / len(trozo))
+                ch_y = int(_Cm(5.6))
+                for i_, _b in enumerate(trozo):
+                    _add_picture_fit(sl, electromec_imgs.get(f"pilona:{k + i_}"), int(MARGIN_X + i_ * cw_), ch_y, cw_,
+                                     int(SH - ch_y - _Cm(0.6)))
+                if foto:
+                    _add_picture_cover(sl, foto, int(MARGIN_X + zona_w + _Cm(0.4)), ch_y, int(content_w - zona_w - _Cm(0.4)),
+                                       int(SH - ch_y - _Cm(0.6)))
+
         def slide_electromec_resumen():
             """Lámina resumen de la referencia: barras por componente, tabla de avance por
             rubro (fabricación / suministro / montaje) y dona del avance general."""
@@ -12157,6 +12244,8 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
             if tipo == "seguridad" and seg_extra:
                 slide_seguridad_extra()
             em_resumen = tipo == "electromecanico" and electromec_doc is not None and bool(_em_comps())
+            if tipo == "electromecanico" and electromec_doc and electromec_doc.get("pilonas_bucles"):
+                slide_electromec_pilonas()
             if em_resumen:
                 slide_electromec_resumen()
             if tipo == "calidad" and calidad_pend:

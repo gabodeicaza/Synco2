@@ -69,6 +69,9 @@ export default function ElectromecanicaScreen({ projectId }: { projectId: string
   const [pilTotal, setPilTotal] = useState('');
   const [pilSum, setPilSum] = useState('');
   const [patio, setPatio] = useState('');
+  const [pilBucles, setPilBucles] = useState<{ bucle: string; avance: string }[]>([]);
+  const [pilActs, setPilActs] = useState('');
+  const [pilFoto, setPilFoto] = useState<string | null>(null);
   const [docs, setDocs] = useState<DocDraft[]>([]);
   const [obs, setObs] = useState<ObsDraft[]>([]);
 
@@ -91,6 +94,9 @@ export default function ElectromecanicaScreen({ projectId }: { projectId: string
       setPilTotal(numTxt(d.pilonas_total));
       setPilSum(numTxt(d.pilonas_suministradas));
       setPatio(d.patio_nota || '');
+      setPilBucles((d.pilonas_bucles || []).map((b) => ({ bucle: b.bucle, avance: numTxt(b.avance) })));
+      setPilActs((d.pilonas_actividades || []).join('\n'));
+      setPilFoto(d.pilonas_foto || null);
       setDocs((d.documentos || []).map((x) => ({ id: x.id || null, titulo: x.titulo, estatus: x.estatus || null, nota: x.nota || '' })));
       setObs((d.observaciones || []).map((x) => ({ id: x.id || null, titulo: x.titulo || '', texto: x.texto, fotos: x.fotos || [] })));
     } catch (e: any) {
@@ -130,9 +136,22 @@ export default function ElectromecanicaScreen({ projectId }: { projectId: string
       Alert.alert('Valor inválido', 'Las pilonas suministradas no pueden superar el total.');
       return;
     }
+    const bucles: { bucle: string; avance: number }[] = [];
+    for (const b of pilBucles) {
+      if (!b.bucle.trim()) continue;
+      const n = parseNum(b.avance);
+      if (n === null || Number.isNaN(n) || n < 0 || n > 100) {
+        Alert.alert('Valor inválido', `Bucle ${b.bucle}: el avance de producción debe estar entre 0 y 100.`);
+        return;
+      }
+      bucles.push({ bucle: b.bucle.trim(), avance: n });
+    }
     try {
       setSaving(true);
       const out = await api.setElectromecanica(projectId, {
+        pilonas_bucles: bucles,
+        pilonas_actividades: pilActs.split('\n').map((x) => x.trim()).filter(Boolean),
+        pilonas_foto: pilFoto,
         avance: av,
         avance_general: gen,
         pilonas_total: total,
@@ -260,6 +279,51 @@ export default function ElectromecanicaScreen({ projectId }: { projectId: string
             ) : null}
           </View>
         ))}
+
+        <View style={styles.sectionHeaderRow}>
+          <Text style={styles.sectionTitle}>Producción de pilonas (por bucle)</Text>
+          {puedeEscribir ? (
+            <Pressable accessibilityRole="button" onPress={() => setPilBucles((c) => [...c, { bucle: '', avance: '' }])} style={styles.addBtn}>
+              <Ionicons name="add" size={16} color={colors.primary} /><Text style={styles.addBtnTxt}>Bucle</Text>
+            </Pressable>
+          ) : null}
+        </View>
+        <View style={[styles.card, { padding: spacing.md }]}>
+          {pilBucles.length === 0 ? <Text style={styles.emptyTxt}>Agrega un bucle para generar su gráfica de pilona en la Presentación.</Text> : null}
+          {pilBucles.map((b, i) => (
+            <View key={i} style={styles.gridRow}>
+              <TextInput value={b.bucle} editable={puedeEscribir} placeholder="Bucle (A, D…)" placeholderTextColor={colors.textMuted}
+                onChangeText={(v) => setPilBucles((c) => c.map((x, j) => (j === i ? { ...x, bucle: v } : x)))} style={[styles.input, { flex: 1 }]} />
+              <TextInput value={b.avance} editable={puedeEscribir} placeholder="% producción" placeholderTextColor={colors.textMuted} keyboardType="numeric"
+                onChangeText={(v) => setPilBucles((c) => c.map((x, j) => (j === i ? { ...x, avance: v } : x)))} style={[styles.input, { flex: 1 }]} />
+              {puedeEscribir ? (
+                <Pressable accessibilityRole="button" accessibilityLabel="Quitar" onPress={() => setPilBucles((c) => c.filter((_, j) => j !== i))}>
+                  <Ionicons name="trash-outline" size={18} color={colors.error} />
+                </Pressable>
+              ) : null}
+            </View>
+          ))}
+          <Text style={styles.fieldLabel}>Actividades generales (una por línea)</Text>
+          <TextInput value={pilActs} onChangeText={setPilActs} editable={puedeEscribir} multiline
+            placeholder="Planos de elementos de anclaje…" placeholderTextColor={colors.textMuted} style={[styles.input, { minHeight: 70 }]} />
+          <Text style={styles.fieldLabel}>Foto del patio (aérea)</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+            {pilFoto ? <Image source={{ uri: pilFoto }} style={{ width: 72, height: 72, borderRadius: 6 }} /> : null}
+            {puedeEscribir ? (
+              <Pressable accessibilityRole="button" style={styles.addBtn} onPress={async () => {
+                try {
+                  const ph = await pickPhotoDataUrl('library', { maxDim: 1600, quality: 0.8 });
+                  if (ph) setPilFoto(ph);
+                } catch (e: any) { Alert.alert('Foto', e?.message || 'No se pudo agregar la foto.'); }
+              }}>
+                <Ionicons name="image-outline" size={16} color={colors.primary} /><Text style={styles.addBtnTxt}>{pilFoto ? 'Cambiar' : 'Agregar foto'}</Text>
+              </Pressable>
+            ) : null}
+            {puedeEscribir && pilFoto ? (
+              <Pressable accessibilityRole="button" onPress={() => setPilFoto(null)}><Text style={styles.removeTxt}>Quitar</Text></Pressable>
+            ) : null}
+          </View>
+        </View>
 
         <View style={styles.sectionHeaderRow}>
           <Text style={styles.sectionTitle}>Observaciones</Text>
