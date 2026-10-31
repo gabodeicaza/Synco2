@@ -168,6 +168,22 @@ async def _scenario(tmp_path: Path, con_plantilla: bool):
                     fotos=[server.InformacionParticularFotoIn(photo="data:image/png;base64," + PNG_B64, caption="Reunion virtual con C5")])]),
             user)
 
+        from datetime import timedelta as _td
+        previa = await server.create_presentacion(
+            pid, server.PresentacionIn(project_id=pid, fecha=(now.date() - _td(days=7)).isoformat(), plantilla="semanal"), user)
+        sec_prev = next(x for x in previa["secciones"] if x["tipo"] == "informacion_particular")
+        bl = dict(sec_prev["bloques"][0])
+        bl["actividades"] = ["Colado heredado de la semana pasada"]
+        await server.update_informacion_particular(
+            pid, previa["id"], sec_prev["id"],
+            server.InformacionParticularBloquesPatch(bloques=[server.InformacionParticularBloqueIn(**bl)]), user)
+        await server.create_presentacion_seccion(
+            pid, previa["id"], server.PresentacionSeccionIn(tipo="lamina_imagenes", titulo="Franja heredada", orden=50), user)
+        r1 = await server.copiar_semana_anterior(pid, created["id"], False, user)
+        assert r1["bloques"] == 1 and r1["laminas"] == 1
+        r2 = await server.copiar_semana_anterior(pid, created["id"], False, user)
+        assert r2["bloques"] == 0 and r2["laminas"] == 0          # idempotente
+
         rev = await server.revisar_presentacion(pid, created["id"], user)
         msgs = " | ".join(i["mensaje"] for i in rev["items"])
         assert "no tiene render" in msgs
@@ -220,6 +236,7 @@ def _verifica(prs):
     assert "EXISTENCIA DE POSTES EN ALMACÉN" in todo and "51.43%" in todo and "27/07/2026" in todo and "S-69" in todo
     assert "FABRICACIÓN Y SUMINISTRO DE PILONAS" in todo and "Plan de montaje de torres" in todo
     assert "% avance" in todo and "50%" in todo      # tabla resumen de la matriz
+    assert "Colado heredado de la semana pasada" in todo
     assert "Gracias" in todo
     assert "Componentes Electromecánicos" in todo and "26.79%" in todo   # resumen electromecánico
     assert "FALTANTES DE OBRA" in todo and "programa de montaje" in todo  # columnas de calidad

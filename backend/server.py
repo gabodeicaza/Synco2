@@ -10068,6 +10068,76 @@ async def create_presentacion(pid: str, body: PresentacionIn, user: dict = Depen
     return doc
 
 
+@api.post("/projects/{pid}/presentaciones/{pres_id}/secciones/copiar-anterior")
+async def copiar_semana_anterior(
+    pid: str, pres_id: str, con_fotos: bool = False, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB)),
+):
+    """Trae de la presentación inmediata anterior lo que cambia poco de una semana a otra:
+    · las actividades de cada estación (solo donde la actual aún no tiene texto) y,
+      si `con_fotos`, sus fotos subidas a mano;
+    · las láminas libres ("Imágenes y gráficas") que la actual todavía no tenga, junto a la
+      sección que tenían antes. Las fotos elegidas de reportes de otra semana nunca se copian.
+    Es idempotente: no duplica láminas ya copiadas ni pisa texto ya escrito."""
+    pres = await db.presentaciones.find_one({"id": pres_id, "project_id": pid})
+    if not pres:
+        raise HTTPException(404, "Presentación no existe")
+    previas = await db.presentaciones.find(
+        {"project_id": pid, "id": {"$ne": pres_id}, "fecha": {"$lt": pres["fecha"]}}).sort("fecha", -1).to_list(length=1)
+    if not previas:
+        raise HTTPException(404, "No hay una presentación anterior de la cual copiar")
+    prev_secs = sorted(previas[0].get("secciones") or [], key=lambda x: x.get("orden", 0))
+    secs = sorted(pres.get("secciones") or [], key=lambda x: x.get("orden", 0))
+
+    def _manuales(fotos):
+        return [dict(f) for f in (fotos or []) if f.get("photo")]
+
+    previos = {b["node_id"]: b for x in prev_secs if x.get("tipo") == "informacion_particular"
+               for b in (x.get("bloques") or []) if b.get("node_id")}
+    n_bloques = 0
+    for x in secs:
+        if x.get("tipo") != "informacion_particular":
+            continue
+        for b in x.get("bloques") or []:
+            pb = previos.get(b.get("node_id"))
+            if not pb:
+                continue
+            cambio = False
+            if not [a for a in (b.get("actividades") or []) if a.strip()] and pb.get("actividades"):
+                b["actividades"] = list(pb["actividades"])
+                cambio = True
+            if con_fotos and not b.get("fotos") and _manuales(pb.get("fotos")):
+                b["fotos"] = _manuales(pb["fotos"])
+                cambio = True
+            n_bloques += cambio
+
+    def _clave(x):
+        return (x.get("tipo"), x.get("titulo") or x.get("node_id") or ((x.get("bloques") or [{}])[0].get("node_id")))
+
+    copiadas = {x.get("copiado_de") for x in secs if x.get("copiado_de")}
+    n_laminas = 0
+    for i, ps in enumerate(prev_secs):
+        if ps.get("tipo") != "lamina_imagenes" or ps["id"] in copiadas:
+            continue
+        copia = {**ps, "id": str(uuid.uuid4()), "copiado_de": ps["id"],
+                 "bloques": [{**b, "fotos": _manuales(b.get("fotos")) if con_fotos else []} for b in (ps.get("bloques") or [])]}
+        pos = len(secs)
+        if i > 0:
+            ant = _clave(prev_secs[i - 1])
+            hallada = next((j for j, y in enumerate(secs) if _clave(y) == ant), None)
+            if hallada is not None:
+                pos = hallada + 1
+        if pos == len(secs):
+            pos = next((j for j, y in enumerate(secs) if y.get("tipo") == "cierre"), len(secs))
+        secs.insert(pos, copia)
+        n_laminas += 1
+    for i, x in enumerate(secs):
+        x["orden"] = i
+    if n_bloques or n_laminas:
+        await db.presentaciones.update_one(
+            {"id": pres_id}, {"$set": {"secciones": secs, "updated_at": datetime.now(timezone.utc)}})
+    return {"bloques": n_bloques, "laminas": n_laminas, "desde": previas[0]["fecha"]}
+
+
 @api.post("/projects/{pid}/presentaciones/{pres_id}/secciones/estaciones")
 async def agregar_secciones_estaciones(
     pid: str, pres_id: str, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB)),

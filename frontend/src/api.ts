@@ -3470,6 +3470,8 @@ export const api = {
     tipo: PresentacionSeccionTipo; orden?: number; titulo?: string; node_id?: string; plano_id?: string;
     bloques?: InformacionParticularBloque[]; report_ids?: string[];
   }) => request<PresentacionSeccion>('POST', `/projects/${pid}/presentaciones/${presId}/secciones`, body),
+  copiarSemanaAnteriorPresentacion: (pid: string, presId: string, conFotos: boolean) =>
+    request<{ bloques: number; laminas: number; desde: string }>('POST', `/projects/${pid}/presentaciones/${presId}/secciones/copiar-anterior?con_fotos=${conFotos}`),
   revisionPresentacion: (pid: string, presId: string) =>
     request<{ items: { nivel: 'error' | 'aviso'; seccion: string; mensaje: string }[]; ok: boolean }>('GET', `/projects/${pid}/presentaciones/${presId}/revision`),
   agregarEstacionesPresentacion: (pid: string, presId: string) =>

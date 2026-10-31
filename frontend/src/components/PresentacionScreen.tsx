@@ -302,6 +302,19 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
     }
   }
 
+  async function onCopiarAnterior(conFotos: boolean) {
+    if (!detail) return;
+    try {
+      const r = await api.copiarSemanaAnteriorPresentacion(projectId, detail.id, conFotos);
+      await loadDetail(detail.id);
+      Alert.alert('Copiado', r.bloques || r.laminas
+        ? `Desde la presentación del ${r.desde}: textos de ${r.bloques} estación(es) y ${r.laminas} lámina(s) libre(s). Revísalos y actualiza lo que cambió.`
+        : `No había nada nuevo que copiar desde la presentación del ${r.desde}.`);
+    } catch (e: any) {
+      Alert.alert('No se pudo copiar', e?.message || 'Inténtalo nuevamente.');
+    }
+  }
+
   async function onRevisar() {
     if (!detail) return;
     try {
@@ -548,6 +561,20 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
                   onChange={onCambiarPeriodo}
                   disabled={!canEditEstructura || guardandoPeriodo}
                 />
+              </View>
+            ) : null}
+            {canEditEstructura ? (
+              <View style={[styles.card, { padding: spacing.md, marginBottom: spacing.md }]}>
+                <Text style={styles.seccionTitulo}>Copiar de la semana anterior</Text>
+                <Text style={styles.seccionSub}>Trae las actividades de cada estación y tus láminas libres para editarlas</Text>
+                <View style={{ flexDirection: 'row', gap: 8, marginTop: spacing.sm }}>
+                  <Pressable accessibilityRole="button" onPress={() => onCopiarAnterior(false)} style={styles.chip}>
+                    <Text style={styles.chipTxt}>Solo textos</Text>
+                  </Pressable>
+                  <Pressable accessibilityRole="button" onPress={() => onCopiarAnterior(true)} style={styles.chip}>
+                    <Text style={styles.chipTxt}>Textos y fotos subidas</Text>
+                  </Pressable>
+                </View>
               </View>
             ) : null}
             <Pressable accessibilityRole="button" onPress={onRevisar} disabled={revisando}
