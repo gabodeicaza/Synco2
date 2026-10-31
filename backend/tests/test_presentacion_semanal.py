@@ -70,7 +70,12 @@ async def _scenario(tmp_path: Path, con_plantilla: bool):
     await server.db.seguridad_reportes.insert_one({
         "id": str(uuid.uuid4()), "project_id": pid, "fecha": now.date().isoformat(), "created_at": now,
         "trabajador": "Juan Perez", "contratista": "ALFA", "descripcion": "Caida leve", "severidad": "leve", "images": []})
+    await server.db.ambiental_config.insert_one({"project_id": pid, "monitoreo_periodo": "14 y 26 de OCT. 2026"})
     await server.db.ambiental.insert_many([
+        {"id": str(uuid.uuid4()), "project_id": pid, "seccion": "monitoreo", "lugar": "Av. Antonio Delfin Madrigal", "orden": 0,
+         "cantidad": 97, "buena": 86, "declinante_incipiente": 5, "declinante_severo": 4, "muertos": 2, "foto": PNG_B64, "pie": "Av. Delfin"},
+        {"id": str(uuid.uuid4()), "project_id": pid, "seccion": "monitoreo", "lugar": "Av. Del Iman", "orden": 1,
+         "cantidad": 9, "buena": 5, "declinante_incipiente": 1, "declinante_severo": 2, "muertos": 1, "foto": PNG_B64, "pie": "Av. Iman"},
         {"id": str(uuid.uuid4()), "project_id": pid, "seccion": "autorizacion", "tipo": "SEDEMA", "folio": "DGEIRA/003972/2026", "orden": 0},
         {"id": str(uuid.uuid4()), "project_id": pid, "seccion": "arbolado", "nombre": "P003 (Perisur)", "orden": 0,
          "derribo_aut": 3, "derribo_ej": 2, "poda_aut": 1, "poda_ej": 1, "trasplante_aut": 6, "trasplante_ej": 5},
@@ -202,7 +207,7 @@ async def _scenario(tmp_path: Path, con_plantilla: bool):
         await server.db.reports.delete_many({"project_id": pid})
         await server.db.location_nodes.delete_many({"project_id": pid})
         for col in ("ambiental_auditoria", "levantamientos_sociales", "seguridad_reportes",
-                    "estudios_bitacora", "pendientes_generales", "estimaciones", "seguridad_indicadores", "ambiental", "estudio_disciplina_avance", "electromecanica", "estudios_matrices", "postes_calidad", "levantamientos_estaciones"):
+                    "estudios_bitacora", "pendientes_generales", "estimaciones", "seguridad_indicadores", "ambiental", "ambiental_config", "estudio_disciplina_avance", "electromecanica", "estudios_matrices", "postes_calidad", "levantamientos_estaciones"):
             await server.db[col].delete_many({"project_id": pid})
 
 
@@ -240,6 +245,7 @@ def _verifica(prs):
     assert "FABRICACIÓN Y SUMINISTRO DE PILONAS" in todo and "Plan de montaje de torres" in todo
     assert "% avance" in todo and "50%" in todo      # tabla resumen de la matriz
     assert "Colado heredado de la semana pasada" in todo
+    assert "MONITOREO DE ARBOLADO TRASPLANTADO 14 Y 26 DE OCT. 2026" in todo and "106" in todo and "Av. Delfin" in todo
     assert "Gracias" in todo
     assert "Componentes Electromecánicos" in todo and "26.79%" in todo   # resumen electromecánico
     assert "FALTANTES DE OBRA" in todo and "programa de montaje" in todo  # columnas de calidad

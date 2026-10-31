@@ -89,6 +89,20 @@ const SECCIONES: SeccionDef[] = [
     resumen: (i) => ({ titulo: i.lugar || '-', detalle: `${ent(i.cantidad)} ejemplares${i.pie ? ` · ${i.pie}` : ''}` }),
   },
   {
+    key: 'monitoreo', titulo: 'Monitoreo de arbolado trasplantado', nuevo: 'Nueva ubicación', foto: true,
+    ayuda: 'Condición del arbolado trasplantado por ubicación (tabla y fotos del monitoreo). Las fechas del monitoreo se capturan en Datos generales.',
+    campos: [
+      { key: 'lugar', label: 'Ubicación', placeholder: 'Av. Antonio Delfín Madrigal, Coyoacán' },
+      { key: 'cantidad', label: 'Cantidad de arbolado (vacío = suma de las condiciones)', tipo: 'entero' },
+      { key: 'buena', label: 'Buena', tipo: 'entero' },
+      { key: 'declinante_incipiente', label: 'Declinante incipiente', tipo: 'entero' },
+      { key: 'declinante_severo', label: 'Declinante severo', tipo: 'entero' },
+      { key: 'muertos', label: 'Muertos', tipo: 'entero' },
+      { key: 'pie', label: 'Pie de foto', placeholder: 'Av. Estanislao Ramírez Ruiz, Tláhuac.' },
+    ],
+    resumen: (i) => ({ titulo: i.lugar || '-', detalle: `${ent(i.cantidad)} árboles · buena ${ent(i.buena)} · declinante ${ent(i.declinante_incipiente)}/${ent(i.declinante_severo)} · muertos ${ent(i.muertos)}` }),
+  },
+  {
     key: 'avance_estudio', titulo: 'Tabla resumen general', nuevo: 'Nueva actividad',
     ayuda: 'Estudios y trámites ambientales con su avance semanal (%).',
     campos: [
@@ -114,7 +128,7 @@ export default function SupervisionAmbientalScreen({ projectId }: { projectId: s
   const [project, setProject] = useState<Project | null>(null);
   const [items, setItems] = useState<AmbientalItem[]>([]);
   const [config, setConfig] = useState<AmbientalConfig>({ referencia: null, total_a_restituir: null });
-  const [cfgDraft, setCfgDraft] = useState<{ referencia: string; total: string } | null>(null);
+  const [cfgDraft, setCfgDraft] = useState<{ referencia: string; total: string; periodo: string } | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -236,7 +250,7 @@ export default function SupervisionAmbientalScreen({ projectId }: { projectId: s
     }
     try {
       setSaving(true);
-      setConfig(await api.setAmbientalConfig(projectId, { referencia: cfgDraft.referencia, total_a_restituir: total }));
+      setConfig(await api.setAmbientalConfig(projectId, { referencia: cfgDraft.referencia, total_a_restituir: total, monitoreo_periodo: cfgDraft.periodo }));
       setCfgDraft(null);
     } catch (e: any) {
       Alert.alert('No se pudo guardar', e?.message || 'Intentalo nuevamente.');
@@ -264,7 +278,7 @@ export default function SupervisionAmbientalScreen({ projectId }: { projectId: s
       <ScrollView contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + spacing.xl }]}>
         <Pressable accessibilityRole="button"
           style={[styles.card, { padding: spacing.md }]}
-          onPress={puedeEscribir ? () => setCfgDraft({ referencia: config.referencia || '', total: config.total_a_restituir === null ? '' : String(config.total_a_restituir) }) : undefined}
+          onPress={puedeEscribir ? () => setCfgDraft({ referencia: config.referencia || '', total: config.total_a_restituir === null ? '' : String(config.total_a_restituir), periodo: config.monitoreo_periodo || '' }) : undefined}
         >
           <Text style={styles.cardTitle}>Datos generales</Text>
           <Text style={styles.meta}>Resolución / referencia: {config.referencia || 'sin capturar'}</Text>
@@ -364,6 +378,12 @@ export default function SupervisionAmbientalScreen({ projectId }: { projectId: s
               value={cfgDraft?.total || ''} keyboardType="number-pad"
               onChangeText={(t) => setCfgDraft((d) => (d ? { ...d, total: t } : d))}
               placeholder="46" placeholderTextColor={colors.textMuted} style={styles.input}
+            />
+            <Text style={styles.fieldLabel}>Fechas del monitoreo de arbolado (título de la tabla)</Text>
+            <TextInput
+              value={cfgDraft?.periodo || ''}
+              onChangeText={(t) => setCfgDraft((d) => (d ? { ...d, periodo: t } : d))}
+              placeholder="14 y 26 de OCT. 2026" placeholderTextColor={colors.textMuted} style={styles.input}
             />
             <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
               <Button label="Cancelar" variant="secondary" onPress={() => setCfgDraft(null)} style={{ flex: 1 }} />

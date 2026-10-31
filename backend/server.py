@@ -7160,6 +7160,8 @@ _AMBIENTAL_SECCIONES = {
                  "enteros": ("poda_aut", "trasplante_aut", "derribo_aut", "poda_ej", "trasplante_ej", "derribo_ej")},
     "resarcimiento": {"req": "lugar", "textos": ("lugar", "pie"), "enteros": ("cantidad",), "foto": True},
     "avance_estudio": {"req": "actividad", "textos": ("actividad",), "numeros": ("avance",)},
+    "monitoreo": {"req": "lugar", "textos": ("lugar", "pie"), "foto": True,
+                  "enteros": ("cantidad", "buena", "declinante_incipiente", "declinante_severo", "muertos")},
 }
 _AMBIENTAL_ROTULO = {
     "nombre": "El nombre", "folio": "El folio", "lugar": "El lugar", "actividad": "La actividad",
@@ -7183,12 +7185,16 @@ class _AmbientalCampos(BaseModel):
     poda_ej: Optional[int] = None
     trasplante_ej: Optional[int] = None
     derribo_ej: Optional[int] = None
+    buena: Optional[int] = None  # monitoreo de arbolado trasplantado: condición general
+    declinante_incipiente: Optional[int] = None
+    declinante_severo: Optional[int] = None
+    muertos: Optional[int] = None
     orden: Optional[int] = None
-    image: Optional[str] = None  # resarcimiento: foto (base64 / data URL)
+    image: Optional[str] = None  # resarcimiento / monitoreo: foto (base64 / data URL)
 
 
 class AmbientalIn(_AmbientalCampos):
-    seccion: Literal["informe", "autorizacion", "arbolado", "resarcimiento", "avance_estudio"]
+    seccion: Literal["informe", "autorizacion", "arbolado", "resarcimiento", "avance_estudio", "monitoreo"]
 
 
 class AmbientalPatch(_AmbientalCampos):
@@ -7198,6 +7204,7 @@ class AmbientalPatch(_AmbientalCampos):
 class AmbientalConfigIn(BaseModel):
     referencia: Optional[str] = None  # resolución / acuerdo de las medidas de impacto ambiental
     total_a_restituir: Optional[int] = None
+    monitoreo_periodo: Optional[str] = None  # ej. "14 y 26 de OCT. 2026": va en el título de la tabla de monitoreo
 
 
 def _ambiental_normalizar(seccion: str, fields: dict) -> dict:
@@ -7244,7 +7251,8 @@ async def list_ambiental(pid: str, user: dict = Depends(current_user)):
     cursor = db.ambiental.find({"project_id": pid}, {"foto": 0}).sort([("seccion", 1), ("orden", 1), ("created_at", 1)])
     cfg = await db.ambiental_config.find_one({"project_id": pid}) or {}
     return {"items": [_ambiental_public(d) for d in await cursor.to_list(length=2000)],
-            "config": {"referencia": cfg.get("referencia"), "total_a_restituir": cfg.get("total_a_restituir")}}
+            "config": {"referencia": cfg.get("referencia"), "total_a_restituir": cfg.get("total_a_restituir"),
+                       "monitoreo_periodo": cfg.get("monitoreo_periodo")}}
 
 
 @api.put("/projects/{pid}/ambiental-config")
@@ -7261,10 +7269,13 @@ async def set_ambiental_config(pid: str, body: AmbientalConfigIn, user: dict = D
         if t is not None and t < 0:
             raise HTTPException(400, "El total a restituir no puede ser negativo")
         upd["total_a_restituir"] = t
+    if "monitoreo_periodo" in fields:
+        upd["monitoreo_periodo"] = (fields["monitoreo_periodo"] or "").strip()[:80] or None
     if upd:
         await db.ambiental_config.update_one({"project_id": pid}, {"$set": upd}, upsert=True)
     cfg = await db.ambiental_config.find_one({"project_id": pid}) or {}
-    return {"referencia": cfg.get("referencia"), "total_a_restituir": cfg.get("total_a_restituir")}
+    return {"referencia": cfg.get("referencia"), "total_a_restituir": cfg.get("total_a_restituir"),
+            "monitoreo_periodo": cfg.get("monitoreo_periodo")}
 
 
 @api.post("/projects/{pid}/ambiental")
@@ -7377,6 +7388,17 @@ async def _ambiental_bloques(items: List[dict], config: dict) -> List[dict]:
         folios = "; ".join(((r.get("tipo") + " ") if r.get("tipo") else "") + r["folio"] for r in por["autorizacion"])
         bloques.append({"type": "arbolado_matriz", "heading": "AVANCE INTERVENCIÓN DE ARBOLADO:",
                         "grupos": grupos, "nota": ("Autorizaciones: " + folios) if folios else ""})
+    if por["monitoreo"]:
+        filas_m = []
+        for r in por["monitoreo"]:
+            est = [r.get(k) or 0 for k in ("buena", "declinante_incipiente", "declinante_severo", "muertos")]
+            filas_m.append({"lugar": r["lugar"], "cantidad": r.get("cantidad") if r.get("cantidad") is not None else sum(est),
+                            "estados": est})
+        bloques.append({
+            "type": "monitoreo_arbolado", "heading": "MONITOREO DE ARBOLADO TRASPLANTADO:",
+            "periodo": config.get("monitoreo_periodo") or "", "filas": filas_m,
+            "fotos": [{"photo": r["foto"], "caption": r.get("pie") or r["lugar"]} for r in por["monitoreo"] if r.get("foto")][:6],
+        })
     resarc = por["resarcimiento"]
     if resarc:
         restituidos = sum(r.get("cantidad") or 0 for r in resarc)
@@ -11871,6 +11893,77 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
                         if b.get("nota"):
                             add_text(last, MARGIN_X, int(body_y + _Cm(0.3) + _Cm(1.6) + _Cm(1.0) * len(filas) + _Cm(0.4)),
                                      content_w, _Cm(1.5), b["nota"], size=9, color=MUTED_RGB)
+                elif t == "monitoreo_arbolado":
+                    last = _clone_membrete()
+                    _encabezado(last, _banda(modulo_titulo, _ult_h[0]))
+                    _auto_titulo(last, heading)
+                    filas_m = (b.get("filas") or [])[:14]
+                    colores_h = [(0x00, 0x70, 0x30), (0x00, 0xB0, 0xF0), (0xED, 0x7D, 0x31), (0xFF, 0x00, 0x00)]
+                    tx_, ty_ = MARGIN_X, int(body_y + _Cm(0.4))
+                    tw_ = int(content_w * 0.5)
+                    _rect(last, tx_, ty_, tw_, _Cm(0.55), fill_rgb=(0xC6, 0xE0, 0xB4))
+                    add_text(last, tx_, ty_, tw_, _Cm(0.55),
+                             ("MONITOREO DE ARBOLADO TRASPLANTADO " + (b.get("periodo") or "")).strip().upper(),
+                             size=8, bold=True, color=TEXT_RGB, align=_PP_ALIGN.CENTER)
+                    nfil = len(filas_m) + 2
+                    gs_ = last.shapes.add_table(nfil, 7, tx_, int(ty_ + _Cm(0.55)), tw_, int(_Cm(1.2) + _Cm(0.5) * (nfil - 1)))
+                    tb_ = gs_.table
+                    for ci_, fr_ in enumerate((0.4, 2.6, 1.0, 1.0, 1.1, 1.1, 1.0)):
+                        tb_.columns[ci_].width = int(tw_ * fr_ / 8.2)
+                    tb_.rows[0].height = int(_Cm(1.2))
+                    for ri_ in range(1, nfil):
+                        tb_.rows[ri_].height = int(_Cm(0.5))
+
+                    def _cm_(cell, texto, fondo=WHITE_RGB, fg=TEXT_RGB, bold=False, izq=False):
+                        cell.fill.solid()
+                        cell.fill.fore_color.rgb = _PRGBColor(*fondo)
+                        cell.margin_left = cell.margin_right = _Cm(0.06)
+                        cell.margin_top = cell.margin_bottom = _Cm(0.02)
+                        tf_ = cell.text_frame
+                        tf_.word_wrap = True
+                        par_ = tf_.paragraphs[0]
+                        par_.alignment = _PP_ALIGN.LEFT if izq else _PP_ALIGN.CENTER
+                        r_ = par_.add_run()
+                        r_.text = str(texto) if str(texto) != "" else " "
+                        r_.font.size = _Pt(7)
+                        r_.font.name = "Roboto"
+                        r_.font.bold = bold
+                        r_.font.color.rgb = _PRGBColor(*fg)
+
+                    for ci_, h_ in enumerate(("", "UBICACIÓN", "CANTIDAD DE ARBOLADO", "BUENA", "DECLINANTE INCIPIENTE",
+                                              "DECLINANTE SEVERO", "MUERTOS")):
+                        fondo_h = colores_h[ci_ - 3] if ci_ >= 3 else (0xD9, 0xE2, 0xF3)
+                        _cm_(tb_.cell(0, ci_), h_, fondo_h, WHITE_RGB if ci_ >= 3 else TEXT_RGB, True)
+                    for ri_, f_ in enumerate(filas_m, start=1):
+                        vals = [str(ri_), f_["lugar"], str(f_["cantidad"])] + [str(x) for x in f_["estados"]]
+                        for ci_, v_ in enumerate(vals):
+                            _cm_(tb_.cell(ri_, ci_), v_, izq=ci_ == 1)
+                    tot_ = ["", "TOTAL", str(sum(f_["cantidad"] for f_ in filas_m))] + [
+                        str(sum(f_["estados"][k_] for f_ in filas_m)) for k_ in range(4)]
+                    for ci_, v_ in enumerate(tot_):
+                        fondo_t = (0xC6, 0xE0, 0xB4) if ci_ == 2 else ((0xFB, 0xE5, 0xD6) if ci_ == 6 else WHITE_RGB)
+                        _cm_(tb_.cell(nfil - 1, ci_), v_, fondo_t, bold=True)
+                    fotos_m = b.get("fotos") or []
+                    arriba, abajo = fotos_m[:2], fotos_m[2:6]
+                    area_x = int(MARGIN_X + tw_ + _Cm(0.4))
+                    area_w = int(content_w - tw_ - _Cm(0.4))
+                    y_fotos = int(ty_)
+                    h_arr = int(SH * 0.31)
+                    for i_, f_ in enumerate(arriba):
+                        cw_ = int((area_w - _Cm(0.3)) / 2)
+                        cx_ = int(area_x + i_ * (cw_ + _Cm(0.3)))
+                        _add_picture_cover(last, f_["photo"], cx_, y_fotos, cw_, h_arr)
+                        add_text(last, cx_, int(y_fotos + h_arr + _Cm(0.05)), cw_, _Cm(0.8), f_.get("caption") or "", size=8,
+                                 italic=True, color=TEXT_RGB, align=_PP_ALIGN.CENTER)
+                    if abajo:
+                        yb = int(SH * 0.60)
+                        hb = int(SH - yb - _Cm(2.2))
+                        cwb = int((content_w - _Cm(0.3) * (len(abajo) - 1)) / len(abajo))
+                        for i_, f_ in enumerate(abajo):
+                            cxb = int(MARGIN_X + i_ * (cwb + _Cm(0.3)))
+                            _add_picture_cover(last, f_["photo"], cxb, yb, cwb, hb)
+                            add_text(last, cxb, int(yb + hb + _Cm(0.05)), cwb, _Cm(0.8), f_.get("caption") or "", size=8,
+                                     italic=True, color=TEXT_RGB, align=_PP_ALIGN.CENTER)
                 elif t == "avance_lista":
                     last = _clone_membrete()
                     _encabezado(last, _banda(modulo_titulo, _ult_h[0]))

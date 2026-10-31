@@ -769,7 +769,7 @@ export interface ControlCalidadInput {
   fecha?: string;
 }
 // === Supervisión ambiental (todo editable) ================================
-export type AmbientalSeccion = 'informe' | 'autorizacion' | 'arbolado' | 'resarcimiento' | 'avance_estudio';
+export type AmbientalSeccion = 'informe' | 'autorizacion' | 'arbolado' | 'resarcimiento' | 'avance_estudio' | 'monitoreo';
 export interface AmbientalItem {
   id: string;
   seccion: AmbientalSeccion;
@@ -783,12 +783,13 @@ export interface AmbientalItem {
   avance?: number | null; // informe / avance_estudio (0-100)
   fecha_cierre?: string | null;
   cantidad?: number | null;
+  buena?: number | null; declinante_incipiente?: number | null; declinante_severo?: number | null; muertos?: number | null; // monitoreo
   poda_aut?: number | null; trasplante_aut?: number | null; derribo_aut?: number | null;
   poda_ej?: number | null; trasplante_ej?: number | null; derribo_ej?: number | null;
   thumb?: string | null; // miniatura base64 SIN prefijo data:
   created_by: string;
 }
-export interface AmbientalConfig { referencia: string | null; total_a_restituir: number | null }
+export interface AmbientalConfig { referencia: string | null; total_a_restituir: number | null; monitoreo_periodo?: string | null }
 export interface AmbientalData { items: AmbientalItem[]; config: AmbientalConfig }
 // === Actividades particulares (catálogo de categorías editable) ===========
 export interface ActPartCategoria { id: string; nombre: string; subcategorias: string[]; orden: number }
@@ -3315,7 +3316,7 @@ export const api = {
   updateAmbiental: (pid: string, rid: string, body: Record<string, any>) =>
     request<AmbientalItem>('PATCH', `/projects/${pid}/ambiental/${rid}`, body),
   deleteAmbiental: (pid: string, rid: string) => request<{ ok: boolean }>('DELETE', `/projects/${pid}/ambiental/${rid}`),
-  setAmbientalConfig: (pid: string, body: { referencia?: string | null; total_a_restituir?: number | null }) =>
+  setAmbientalConfig: (pid: string, body: { referencia?: string | null; total_a_restituir?: number | null; monitoreo_periodo?: string | null }) =>
     request<AmbientalConfig>('PUT', `/projects/${pid}/ambiental-config`, body),
   listControlCalidad: (pid: string) => request<ControlCalidad[]>('GET', `/projects/${pid}/control-calidad`),
   getControlCalidad: (pid: string, rid: string) =>
