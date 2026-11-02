@@ -1163,6 +1163,14 @@ export type PresentacionSeccionTipo =
   | 'reportes_semana' | 'cierre' | 'ambiental' | 'social' | 'seguridad'
   | 'proyecto' | 'calidad' | 'pendientes' | 'electromecanico' | 'lamina_imagenes';
 
+export interface PresentacionPlantillaSeccion { tipo: PresentacionSeccionTipo; titulo?: string | null }
+export interface PresentacionPlantillaInput {
+  nombre: string; descripcion?: string | null; incluir_estaciones: boolean; secciones: PresentacionPlantillaSeccion[];
+}
+export interface PresentacionPlantilla extends PresentacionPlantillaInput {
+  id: string; integrada: boolean; updated_at?: string | null;
+}
+
 export interface PresentacionSeccion {
   id: string;
   tipo: PresentacionSeccionTipo;
@@ -3471,8 +3479,15 @@ export const api = {
 
   // === Presentación (Informe de Actividades semanal) ===
   listPresentaciones: (pid: string) => request<Presentacion[]>('GET', `/projects/${pid}/presentaciones`),
-  createPresentacion: (pid: string, body: { fecha: string; titulo?: string; plantilla?: 'semanal'; periodo_financiero?: PeriodoFinanciero }) =>
+  createPresentacion: (pid: string, body: { fecha: string; titulo?: string; plantilla?: string; periodo_financiero?: PeriodoFinanciero }) =>
     request<Presentacion>('POST', `/projects/${pid}/presentaciones`, { project_id: pid, ...body }),
+  // Plantillas de presentación ("semanal" va integrada; las demás las edita el Coordinador)
+  listPresentacionPlantillas: () => request<PresentacionPlantilla[]>('GET', '/presentacion-plantillas'),
+  createPresentacionPlantilla: (body: PresentacionPlantillaInput) =>
+    request<PresentacionPlantilla>('POST', '/presentacion-plantillas', body),
+  updatePresentacionPlantilla: (id: string, body: Partial<PresentacionPlantillaInput>) =>
+    request<PresentacionPlantilla>('PUT', `/presentacion-plantillas/${id}`, body),
+  deletePresentacionPlantilla: (id: string) => request<{ ok: boolean }>('DELETE', `/presentacion-plantillas/${id}`),
   getPresentacion: (pid: string, presId: string) => request<Presentacion>('GET', `/projects/${pid}/presentaciones/${presId}`),
   updatePresentacion: (pid: string, presId: string, body: Partial<{ fecha: string; titulo: string; periodo_financiero: PeriodoFinanciero }>) =>
     request<Presentacion>('PATCH', `/projects/${pid}/presentaciones/${presId}`, body),

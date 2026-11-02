@@ -15,7 +15,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { pickPhotoDataUrl } from '@/src/utils/photoPicker';
 import {
   api, FotoSemanaItem, InformacionParticularBloque, InformacionParticularFoto, LocationNode, PlanoAvance,
-  Presentacion, PresentacionSeccion, PresentacionSeccionTipo, Project, ReporteSemanaItem, PeriodoFinanciero,
+  Presentacion, PresentacionPlantilla, PresentacionSeccion, PresentacionSeccionTipo, Project, ReporteSemanaItem, PeriodoFinanciero,
 } from '@/src/api';
 import { colors, radius, shadow, spacing, contrastText } from '@/src/theme';
 import { Button } from '@/src/components/Button';
@@ -29,54 +29,9 @@ import { hoyProyecto } from '@/src/utils/fechas';
 import { PeriodoFinancieroSelector } from '@/src/components/PeriodoFinancieroSelector';
 import { PERIODO_FINANCIERO_DEFECTO, periodoDePresentacion } from '@/src/utils/finanzas';
 import { showToast } from '@/src/utils/toast';
+import { TIPO_ICON, TIPO_LABEL, TIPO_ORDEN_PICKER } from '@/src/components/presentacion/tiposSeccion';
+import { PresentacionPlantillasModal } from '@/src/components/presentacion/PresentacionPlantillasModal';
 
-const TIPO_ICON: Record<PresentacionSeccionTipo, keyof typeof Ionicons.glyphMap> = {
-  portada: 'bookmark-outline',
-  mapa_general: 'map-outline',
-  divisor: 'flag-outline',
-  financiero: 'cash-outline',
-  seguimiento_estudios: 'analytics-outline',
-  croquis_estacion: 'business-outline',
-  informacion_particular: 'images-outline',
-  avance_grafico: 'construct-outline',
-  reportes_semana: 'newspaper-outline',
-  cierre: 'checkmark-done-outline',
-  ambiental: 'leaf-outline',
-  social: 'people-outline',
-  seguridad: 'shield-checkmark-outline',
-  proyecto: 'document-text-outline',
-  calidad: 'ribbon-outline',
-  pendientes: 'alert-circle-outline',
-  electromecanico: 'hardware-chip-outline',
-  lamina_imagenes: 'cloud-upload-outline',
-};
-
-const TIPO_LABEL: Record<PresentacionSeccionTipo, string> = {
-  portada: 'Portada',
-  mapa_general: 'Mapa General',
-  divisor: 'Divisor de sección',
-  financiero: 'Financiero',
-  seguimiento_estudios: 'Seguimiento a Estudios y Análisis',
-  croquis_estacion: 'Croquis General (Estación)',
-  informacion_particular: 'Información Particular',
-  avance_grafico: 'Avance Gráfico (Plano)',
-  reportes_semana: 'Reportes de la semana',
-  cierre: 'Cierre (Gracias)',
-  ambiental: 'Ambiental (automático)',
-  social: 'Social / Impacto urbano (automático)',
-  seguridad: 'Seguridad (automático)',
-  proyecto: 'Estudios y proyecto ejecutivo (automático)',
-  calidad: 'Calidad (automático)',
-  pendientes: 'Pendientes generales (automático)',
-  electromecanico: 'Sistema electromecánico (automático)',
-  lamina_imagenes: 'Imágenes y gráficas (subir las mías)',
-};
-
-const TIPO_ORDEN_PICKER: PresentacionSeccionTipo[] = [
-  'portada', 'mapa_general', 'divisor', 'financiero',
-  'seguimiento_estudios', 'croquis_estacion', 'informacion_particular', 'avance_grafico',
-  'reportes_semana', 'proyecto', 'electromecanico', 'calidad', 'pendientes', 'ambiental', 'social', 'seguridad', 'lamina_imagenes', 'cierre',
-];
 
 /** "4 – 10 sep" a partir de la fecha del informe (fecha − 6 días .. fecha). */
 function weekRangeLabel(fechaIso: string): string {
@@ -112,7 +67,21 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
   const [periodoDraft, setPeriodoDraft] = useState<PeriodoFinanciero>(PERIODO_FINANCIERO_DEFECTO);
   const [guardandoPeriodo, setGuardandoPeriodo] = useState(false);
   const [creating, setCreating] = useState(false);
-  const [plantillaSemanal, setPlantillaSemanal] = useState(true);
+  const [plantillas, setPlantillas] = useState<PresentacionPlantilla[]>([]);
+  const [plantillaSel, setPlantillaSel] = useState<string>('semanal'); // '' = presentación vacía
+  const [plantillasOpen, setPlantillasOpen] = useState(false);
+
+  const cargarPlantillas = useCallback(async () => {
+    try {
+      const items = await api.listPresentacionPlantillas();
+      setPlantillas(items);
+      setPlantillaSel((sel) => (sel === '' || items.some((p) => p.id === sel) ? sel : 'semanal'));
+    } catch {
+      // sin lista, el selector solo ofrece "vacía"; la creación sigue funcionando
+    }
+  }, []);
+
+  useEffect(() => { if (newOpen) cargarPlantillas(); }, [newOpen, cargarPlantillas]);
 
   // Selector de reportes de la semana (sección 'reportes_semana')
   const [reportesSeccion, setReportesSeccion] = useState<PresentacionSeccion | null>(null);
@@ -192,7 +161,7 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
       setCreating(true);
       const created = await api.createPresentacion(projectId, {
         fecha: fechaDraft.trim(), titulo: tituloDraft.trim() || undefined,
-        plantilla: plantillaSemanal ? 'semanal' : undefined,
+        plantilla: plantillaSel || undefined,
         periodo_financiero: periodoDraft,
       });
       setNewOpen(false);
@@ -1008,10 +977,16 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
         <View style={styles.sectionHeaderRow}>
           <Text style={styles.sectionTitle}>{t('presentacion.informesSemanales')}</Text>
           {canEditEstructura ? (
-            <Pressable accessibilityRole="button" onPress={() => setNewOpen(true)} style={styles.addBtn}>
-              <Ionicons name="add" size={16} color={colors.primary} />
-              <Text style={styles.addBtnTxt}>{t('presentacion.nueva')}</Text>
-            </Pressable>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.md }}>
+              <Pressable accessibilityRole="button" onPress={() => setPlantillasOpen(true)} style={styles.addBtn}>
+                <Ionicons name="albums-outline" size={16} color={colors.primary} />
+                <Text style={styles.addBtnTxt}>Plantillas</Text>
+              </Pressable>
+              <Pressable accessibilityRole="button" onPress={() => setNewOpen(true)} style={styles.addBtn}>
+                <Ionicons name="add" size={16} color={colors.primary} />
+                <Text style={styles.addBtnTxt}>{t('presentacion.nueva')}</Text>
+              </Pressable>
+            </View>
           ) : null}
         </View>
 
@@ -1043,6 +1018,8 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
         </View>
       </ScrollView>
 
+      <PresentacionPlantillasModal visible={plantillasOpen} onClose={() => setPlantillasOpen(false)} onChanged={cargarPlantillas} />
+
       <Modal visible={newOpen} transparent animationType="slide" onRequestClose={() => setNewOpen(false)}>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
@@ -1051,13 +1028,19 @@ export default function PresentacionScreen({ projectId }: { projectId: string })
             <TextInput value={fechaDraft} onChangeText={setFechaDraft} style={styles.input} placeholder="2026-09-10" placeholderTextColor={colors.textMuted} />
             <Text style={styles.fieldLabel}>{t('presentacion.titulo')}</Text>
             <TextInput value={tituloDraft} onChangeText={setTituloDraft} style={styles.input} />
-            <Pressable accessibilityRole="button" onPress={() => setPlantillaSemanal((v) => !v)} style={[styles.tipoOption, { borderTopWidth: 0, marginTop: spacing.sm }]}>
-              <Ionicons name={plantillaSemanal ? 'checkbox' : 'square-outline'} size={22} color={plantillaSemanal ? colors.primary : colors.textMuted} />
-              <View style={{ flex: 1 }}>
-                <Text style={styles.tipoOptionTxt}>Precargar estructura del informe semanal</Text>
-                <Text style={styles.seccionSub}>Portada, mapa, Financiero, Estudios, Avance de obra, reportes de la semana, Pendientes, Estudios, Calidad, Ambiental, Social, Seguridad y cierre.</Text>
-              </View>
-            </Pressable>
+            <Text style={styles.fieldLabel}>Plantilla</Text>
+            <ScrollView style={{ maxHeight: 190 }} nestedScrollEnabled>
+              {[...plantillas.map((p) => ({ id: p.id, nombre: p.nombre, sub: `${p.secciones.length} secciones` })),
+                { id: '', nombre: 'Presentación vacía', sub: 'Agregas las secciones tú mismo.' }].map((op) => (
+                <Pressable key={op.id || 'vacia'} accessibilityRole="radio" onPress={() => setPlantillaSel(op.id)} style={[styles.tipoOption, { borderTopWidth: 0 }]}>
+                  <Ionicons name={plantillaSel === op.id ? 'radio-button-on' : 'radio-button-off'} size={22} color={plantillaSel === op.id ? colors.primary : colors.textMuted} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.tipoOptionTxt}>{op.nombre}</Text>
+                    <Text style={styles.seccionSub}>{op.sub}</Text>
+                  </View>
+                </Pressable>
+              ))}
+            </ScrollView>
             <PeriodoFinancieroSelector value={periodoDraft} onChange={setPeriodoDraft} />
             <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
               <Button label={t('presentacion.cancelar')} variant="secondary" onPress={() => setNewOpen(false)} style={{ flex: 1 }} />
