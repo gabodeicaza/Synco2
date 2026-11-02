@@ -238,6 +238,9 @@ MODULOS_KEYS = {
     "avance_obra", "estimaciones", "pendientes_generales", "aspectos_sociales",
     "indicadores_seguridad", "juntas_trabajo", "supervision_ambiental",
     "actividades_particulares", "electromecanica", "capacidades_operadores",
+    # Formato Innova: ficha (sale de los datos del proyecto) y resumen del periodo
+    # (avance, semáforo y mensajes clave que se capturan por informe).
+    "ficha_proyecto", "resumen_periodo",
 }
 MODULOS_DIARIOS = MODULOS_KEYS
 MODULOS_SEMANALES = MODULOS_KEYS
@@ -307,7 +310,11 @@ _DATOS_CONTRATO_CAMPOS = (
     "objeto", "empresa", "contrato", "ubicacion", "inicio", "fin",
     "monto", "iva", "monto_con_iva", "anticipo_label", "anticipo",
     "superintendente",  # solo se usa en SUPERVISIÓN: firma de la hoja final del informe
+    # Datos que solo usa la "Ficha del proyecto" (`_ficha_proyecto_filas`); la hoja
+    # "DATOS DE CONTRATO" no los imprime ni los cuenta como datos de un bloque.
+    "servicio", "plazo_dias", "residente",
 )
+_DATOS_CONTRATO_SOLO_FICHA = ("superintendente", "servicio", "plazo_dias", "residente")
 
 
 def _sanitize_datos_contrato(value) -> dict:
@@ -354,7 +361,7 @@ def _contrato_bloques(proj: dict) -> list:
         obra["fin"] = _fmt_iso_dmy(proj["end_date"])
     bloques = []
     for etq, d in (("OBRA", obra), ("SUPERVISIÓN", sup)):
-        if not any(v for k, v in d.items() if k != "superintendente"):
+        if not any(v for k, v in d.items() if k not in _DATOS_CONTRATO_SOLO_FICHA):
             continue
         lineas = []
         if d.get("objeto"):
@@ -1858,6 +1865,7 @@ TIPOS_OBRA: dict = {
         "modulos": {
             "seguridad_higiene": _EN_DSM, "gestion_riesgos": _EN_SM, "estado_tiempo": _EN_DSM,
             "tabla_resumen": _EN_SM, "estudios_proyecto": _EN_M,
+            "ficha_proyecto": _EN_DSM, "resumen_periodo": _EN_DSM,
         },
         "plantillas": [
             "obra_civil", "calidad_colados", "calidad_acero", "calidad_revision_acero",
@@ -27449,6 +27457,175 @@ async def preview_custom_module(pid: str, body: dict, user: dict = Depends(requi
 #       Lista de viñetas/tarjetas (reportes, notas de bitácora, auditoría).
 #       `heading_color` permite un encabezado verde ("good") o rojo ("bad")
 #       — ej. Cumplimientos vs. Incumplimientos en Impacto Ambiental.
+# === FICHA DEL PROYECTO Y RESUMEN DEL PERIODO (formato Innova) ================
+# Dos secciones genéricas de los informes diario / semanal / mensual (bloques
+# `table` y `list`, que ya pintan los tres motores):
+#  · ficha_proyecto: calculada de los datos del proyecto (`datos_contrato` + base).
+#  · resumen_periodo: avance físico / financiero, desviación, semáforo y mensajes
+#    clave. Se captura por informe (`resumenes_periodo`); `fuente` queda lista para
+#    cuando el avance llegue de otro sistema ("externa") sin cambiar el informe.
+SEMAFORO_ETIQUETA = {"verde": "EN TIEMPO", "ambar": "ATENCIÓN", "rojo": "CRÍTICO"}
+# Si no se captura el estatus, sale de la desviación (real − programado, en puntos):
+# hasta −5 verde, hasta −15 ámbar, más atrás rojo. El estatus capturado siempre manda.
+SEMAFORO_AMBAR_PTS = -5.0
+SEMAFORO_ROJO_PTS = -15.0
+RESUMEN_MAX_MENSAJES = 5
+_CATEGORIA_A_JERARQUIA_RESUMEN = {"reportes_diarios": "diario", "reportes_semanales": "semanal", "reportes_mensuales": "mensual"}
+
+
+def _dc_valor(dc: dict, campo: str, bloques: Tuple[str, ...] = ("supervision", "obra")) -> str:
+    for b in bloques:
+        v = (dc.get(b) or {}).get(campo)
+        if v:
+            return v
+    return ""
+
+
+def _ficha_proyecto_filas(proj: dict) -> List[List[str]]:
+    """Filas [concepto, dato] de la ficha del proyecto; solo las que tienen dato."""
+    dc = _sanitize_datos_contrato((proj or {}).get("datos_contrato"))
+    inicio = _dc_valor(dc, "inicio", ("obra",)) or (_fmt_iso_dmy(proj["start_date"]) if proj.get("start_date") else "")
+    fin = _dc_valor(dc, "fin", ("obra",)) or (_fmt_iso_dmy(proj["end_date"]) if proj.get("end_date") else "")
+    dias = _dc_valor(dc, "plazo_dias", ("obra", "supervision"))
+    plazo = " · ".join(p for p in (f"{dias} días" if dias else "", f"{inicio} – {fin}" if inicio and fin else "") if p)
+    filas = [
+        ("CLIENTE", (proj.get("cliente_principal") or "").strip()),
+        ("SERVICIO", _dc_valor(dc, "servicio")),
+        ("UBICACIÓN", _dc_valor(dc, "ubicacion", ("obra", "supervision"))),
+        ("CONTRATO", _dc_valor(dc, "contrato", ("obra",)) or (proj.get("contract_number") or "").strip()),
+        ("CONTRATISTA DE OBRA", _dc_valor(dc, "empresa", ("obra",)) or (proj.get("constructora") or "").strip()),
+        ("PLAZO", plazo),
+        ("RESIDENTE DE SUPERVISIÓN", _dc_valor(dc, "residente")),
+        ("MONTO DE OBRA SUPERVISADA", _dc_valor(dc, "monto", ("obra",))),
+    ]
+    return [[k, v] for k, v in filas if v]
+
+
+def _fmt_pct(v: Optional[float]) -> str:
+    return "" if v is None else f"{v:.1f}".rstrip("0").rstrip(".") + "%"
+
+
+def _resumen_desviacion(doc: dict) -> Optional[float]:
+    f, p = doc.get("avance_fisico"), doc.get("programado")
+    return None if f is None or p is None else round(f - p, 2)
+
+
+def _resumen_estatus(doc: dict) -> Optional[str]:
+    """Estatus capturado o, si falta, el que sale de la desviación (None si no hay de dónde)."""
+    if doc.get("estatus") in SEMAFORO_ETIQUETA:
+        return doc["estatus"]
+    d = _resumen_desviacion(doc)
+    if d is None:
+        return None
+    return "verde" if d >= SEMAFORO_AMBAR_PTS else "ambar" if d >= SEMAFORO_ROJO_PTS else "rojo"
+
+
+def _resumen_periodo_bloques(doc: dict) -> List[dict]:
+    bloques: List[dict] = []
+    estatus = _resumen_estatus(doc)
+    if estatus:
+        bloques.append({"type": "summary", "text": f"ESTATUS GENERAL: {SEMAFORO_ETIQUETA[estatus]}"})
+    dev = _resumen_desviacion(doc)
+    filas = [r for r in (
+        ["Avance físico", _fmt_pct(doc.get("avance_fisico"))],
+        ["Avance físico programado", _fmt_pct(doc.get("programado"))],
+        ["Desviación", f"{dev:+.1f} pts vs. programa".replace(".0 pts", " pts") if dev is not None else ""],
+        ["Avance financiero", _fmt_pct(doc.get("avance_financiero"))],
+        ["Monto estimado", doc.get("estimado") or ""],
+    ) if r[1]]
+    if filas:
+        bloques.append({"type": "table", "heading": None, "headers": ["INDICADOR", "VALOR"], "rows": filas,
+                        "col_widths": [0.65, 0.35], "empty_text": ""})
+    mensajes = [m for m in (doc.get("mensajes") or []) if m and m.strip()]
+    if mensajes:
+        bloques.append({"type": "list", "heading": "MENSAJES CLAVE DEL PERIODO", "empty_text": "",
+                        "items": [{"title": f"{i:02d}", "body": m, "extra": None, "meta": None}
+                                  for i, m in enumerate(mensajes, 1)]})
+    return bloques
+
+
+async def _resumen_del_periodo(pid: str, categoria: str, start_dt: datetime, end_dt: datetime) -> Optional[dict]:
+    """El resumen más reciente de la jerarquía del informe cuyo corte cae en su ventana."""
+    d_ini = start_dt.astimezone(MX_TZ).date().isoformat()
+    d_fin = end_dt.astimezone(MX_TZ).date().isoformat()
+    docs = await db.resumenes_periodo.find({
+        "project_id": pid, "jerarquia": _CATEGORIA_A_JERARQUIA_RESUMEN.get(categoria, "diario"),
+        "fecha_corte": {"$gte": d_ini, "$lte": d_fin},
+    }).sort("fecha_corte", -1).to_list(length=1)
+    return docs[0] if docs else None
+
+
+class ResumenPeriodoIn(BaseModel):
+    jerarquia: Literal["diario", "semanal", "mensual"]
+    fecha_corte: str  # ISO YYYY-MM-DD: día del informe, o último día de la semana / mes
+    avance_fisico: Optional[float] = Field(default=None, ge=0, le=100)
+    programado: Optional[float] = Field(default=None, ge=0, le=100)
+    avance_financiero: Optional[float] = Field(default=None, ge=0, le=100)
+    estimado: Optional[str] = Field(default=None, max_length=60)  # monto ya formateado, como en datos_contrato
+    estatus: Optional[Literal["verde", "ambar", "rojo"]] = None  # None = se calcula de la desviación
+    mensajes: List[str] = Field(default_factory=list, max_length=RESUMEN_MAX_MENSAJES)
+    fuente: Literal["manual", "externa"] = "manual"
+
+
+def _resumen_publico(doc: dict) -> dict:
+    out = {k: v for k, v in doc.items() if k != "_id"}
+    out["desviacion"] = _resumen_desviacion(doc)
+    out["estatus_efectivo"] = _resumen_estatus(doc)
+    return out
+
+
+@api.get("/projects/{pid}/resumenes-periodo")
+async def list_resumenes_periodo(
+    pid: str, jerarquia: Optional[str] = None, limit: int = Query(50, ge=1, le=200), user: dict = Depends(current_user),
+):
+    await ensure_project_access(user, pid)
+    q: Dict[str, Any] = {"project_id": pid}
+    if jerarquia:
+        q["jerarquia"] = jerarquia
+    docs = await db.resumenes_periodo.find(q).sort("fecha_corte", -1).to_list(length=limit)
+    return [_resumen_publico(d) for d in docs]
+
+
+@api.put("/projects/{pid}/resumenes-periodo")
+async def upsert_resumen_periodo(
+    pid: str, body: ResumenPeriodoIn, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB, ROLE_JEFE)),
+):
+    """Crea o reemplaza el resumen de (jerarquía, fecha de corte): un solo resumen por informe."""
+    project = await ensure_project_access(user, pid)
+    _ensure_modulo_activo(project, "resumen_periodo")
+    try:
+        date.fromisoformat(body.fecha_corte)
+    except ValueError:
+        raise HTTPException(400, "fecha_corte debe ser YYYY-MM-DD")
+    datos = {
+        "avance_fisico": body.avance_fisico, "programado": body.programado,
+        "avance_financiero": body.avance_financiero, "estimado": (body.estimado or "").strip() or None,
+        "estatus": body.estatus,
+        "mensajes": [m.strip()[:300] for m in body.mensajes if m and m.strip()],
+        "fuente": body.fuente,
+    }
+    now = datetime.now(timezone.utc)
+    clave = {"project_id": pid, "jerarquia": body.jerarquia, "fecha_corte": body.fecha_corte}
+    previo = await db.resumenes_periodo.find_one(clave)
+    if previo:
+        await db.resumenes_periodo.update_one({"id": previo["id"]}, {"$set": {**datos, "updated_at": now, "updated_by_name": user["name"]}})
+        doc = await db.resumenes_periodo.find_one({"id": previo["id"]})
+    else:
+        doc = {"id": str(uuid.uuid4()), **clave, **datos, "created_by": user["id"], "created_by_name": user["name"],
+               "created_at": now, "updated_at": now}
+        await db.resumenes_periodo.insert_one(doc)
+    return _resumen_publico(doc)
+
+
+@api.delete("/projects/{pid}/resumenes-periodo/{rid}")
+async def delete_resumen_periodo(pid: str, rid: str, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB, ROLE_JEFE))):
+    await ensure_project_access(user, pid)
+    res = await db.resumenes_periodo.delete_one({"id": rid, "project_id": pid})
+    if not res.deleted_count:
+        raise HTTPException(404, "Resumen no existe")
+    return {"ok": True}
+
+
 async def _gather_modulos_export_data(
     pid: str, proj: dict, start_dt: datetime, end_dt: datetime, categoria: str,
 ) -> dict:
@@ -27478,6 +27655,8 @@ async def _gather_modulos_export_data(
     modulos = _sanitize_modulos(proj.get("modulos"))
     activos = modulos.get(categoria, {})
     out: dict = {
+        # Primeras: la ficha y el resumen abren el informe (el orden de las claves es el de impresión).
+        "ficha_proyecto": None, "resumen_periodo": None,
         "forestal": None, "seguridad": None, "riesgos": None, "estudios": None, "ambiental": None,
         "tabla_resumen": None, "fotos_lidar": None, "tapial": None,
         "pruebas_calidad": None, "control_calidad": None,
@@ -27496,6 +27675,19 @@ async def _gather_modulos_export_data(
         {"created_at": {"$gte": start_dt, "$lte": end_dt}},
         {"updated_at": {"$gte": start_dt, "$lte": end_dt}},
     ]}
+
+    if activos.get("ficha_proyecto"):
+        filas_ficha = _ficha_proyecto_filas(proj)
+        if filas_ficha:
+            out["ficha_proyecto"] = {"titulo": "FICHA DEL PROYECTO", "blocks": [{
+                "type": "table", "heading": None, "headers": ["CONCEPTO", "DATO"], "rows": filas_ficha,
+                "col_widths": [0.35, 0.65], "empty_text": ""}]}
+
+    if activos.get("resumen_periodo"):
+        resumen = await _resumen_del_periodo(pid, categoria, start_dt, end_dt)
+        bloques_resumen = _resumen_periodo_bloques(resumen) if resumen else []
+        if bloques_resumen:
+            out["resumen_periodo"] = {"titulo": "RESUMEN EJECUTIVO", "blocks": bloques_resumen}
 
     if activos.get("forestal_arbolado"):
         registros_periodo = await db.forestal_registros.find({"project_id": pid, **date_q}).to_list(length=5000)
