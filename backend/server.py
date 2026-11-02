@@ -9975,14 +9975,17 @@ async def set_electromecanica(pid: str, body: ElectromecIn, user: dict = Depends
     return _electromec_out(await db.electromecanica.find_one({"project_id": pid}))
 
 
+PresTipoSeccion = Literal[
+    "portada", "mapa_general", "divisor", "financiero",
+    "seguimiento_estudios", "croquis_estacion", "informacion_particular",
+    "avance_grafico", "reportes_semana", "cierre",
+    "ambiental", "social", "seguridad", "proyecto", "calidad", "pendientes", "electromecanico",
+    "lamina_imagenes",
+]
+
+
 class PresentacionSeccionIn(BaseModel):
-    tipo: Literal[
-        "portada", "mapa_general", "divisor", "financiero",
-        "seguimiento_estudios", "croquis_estacion", "informacion_particular",
-        "avance_grafico", "reportes_semana", "cierre",
-        "ambiental", "social", "seguridad", "proyecto", "calidad", "pendientes", "electromecanico",
-        "lamina_imagenes",
-    ]
+    tipo: PresTipoSeccion
     orden: int = 0
     titulo: Optional[str] = None  # "divisor" (ej. "FINANCIERO"); libre, no atado a Área
     node_id: Optional[str] = None  # "croquis_estacion"
@@ -10003,10 +10006,11 @@ class PresentacionIn(BaseModel):
     project_id: str
     fecha: str  # ISO date, mostrada en la Portada
     titulo: str = "INFORME DE ACTIVIDADES"
-    # "semanal": precarga la estructura del informe semanal de referencia
-    # (portada, mapa, FINANCIERO, ESTUDIOS Y ANÁLISIS, AVANCE DE OBRA,
-    # reportes de la semana, cierre). Sin valor: presentación vacía.
-    plantilla: Optional[Literal["semanal"]] = None
+    # Plantilla: precarga las secciones (ver "PLANTILLAS DE PRESENTACIÓN").
+    # "semanal" = estructura del informe semanal de referencia (portada, mapa,
+    # FINANCIERO, ESTUDIOS Y ANÁLISIS, AVANCE DE OBRA, reportes de la semana,
+    # cierre). Sin valor: presentación vacía.
+    plantilla: Optional[str] = None  # id de una plantilla de presentación
     # Periodo de la sección Financiero: el mismo catálogo que el tablero EVM (A-05).
     periodo_financiero: Literal["mes_actual", "ultimos_3_meses", "proyecto_completo"] = "mes_actual"
 
@@ -10113,32 +10117,163 @@ async def _presentacion_seguridad_extra(pid: str, fecha_iso: str) -> Optional[di
     }
 
 
-def _secciones_plantilla_semanal() -> List[dict]:
-    """Esqueleto del informe semanal (ver PDF de referencia "Informe de
-    Actividades"). Cada entrada se completa luego con el contenido EN VIVO
-    al exportar; `reportes_semana` arranca vacía hasta que el usuario elija."""
-    # Mismo orden y mismos títulos de sección que el informe de referencia
-    # (INFORME DE AVANCES CBL4): Trazo, Financiero, Estudios y análisis, Avance
-    # de obra, Seguridad, Ambiental, Social, estudios/proyecto por disciplina,
-    # Electromecánica, Aseguramiento y control de calidad, Gracias.
-    tipos = [
-        ("portada", None), ("mapa_general", None),
-        ("divisor", "FINANCIERO"), ("financiero", None),
-        ("divisor", "ESTUDIOS Y ANÁLISIS"), ("seguimiento_estudios", None),
-        ("divisor", "AVANCE DE OBRA"), ("reportes_semana", None),
-        ("divisor", "SEGURIDAD"), ("seguridad", None),
-        ("divisor", "AMBIENTAL"), ("ambiental", None),
-        ("divisor", "SOCIAL"), ("social", None),
-        ("divisor", "ESTUDIOS Y PROYECTO EJECUTIVO"), ("proyecto", None),
-        ("divisor", "ELECTROMECÁNICA"), ("electromecanico", None),
-        ("divisor", "ASEGURAMIENTO Y CONTROL DE CALIDAD"), ("calidad", None),
-        ("cierre", None),
-    ]
+# Esqueleto del informe semanal (ver PDF de referencia "Informe de Actividades").
+# Mismo orden y mismos títulos de sección que el informe de referencia (INFORME
+# DE AVANCES CBL4): Trazo, Financiero, Estudios y análisis, Avance de obra,
+# Seguridad, Ambiental, Social, estudios/proyecto por disciplina, Electromecánica,
+# Aseguramiento y control de calidad, Gracias.
+_SEMANAL_ESQUELETO = [
+    ("portada", None), ("mapa_general", None),
+    ("divisor", "FINANCIERO"), ("financiero", None),
+    ("divisor", "ESTUDIOS Y ANÁLISIS"), ("seguimiento_estudios", None),
+    ("divisor", "AVANCE DE OBRA"), ("reportes_semana", None),
+    ("divisor", "SEGURIDAD"), ("seguridad", None),
+    ("divisor", "AMBIENTAL"), ("ambiental", None),
+    ("divisor", "SOCIAL"), ("social", None),
+    ("divisor", "ESTUDIOS Y PROYECTO EJECUTIVO"), ("proyecto", None),
+    ("divisor", "ELECTROMECÁNICA"), ("electromecanico", None),
+    ("divisor", "ASEGURAMIENTO Y CONTROL DE CALIDAD"), ("calidad", None),
+    ("cierre", None),
+]
+
+
+# === PLANTILLAS DE PRESENTACIÓN ===============================================
+# Una plantilla es solo la lista ordenada de secciones con que arranca una
+# presentación (el contenido sale EN VIVO al exportar). La "semanal" va integrada
+# (no se edita ni se borra, pero se puede duplicar); las demás las crea y edita el
+# Coordinador y viven en `presentacion_plantillas`.
+PRES_PLANTILLA_SEMANAL_ID = "semanal"
+_PRES_PLANTILLA_SEMANAL = {
+    "id": PRES_PLANTILLA_SEMANAL_ID,
+    "nombre": "Informe semanal",
+    "descripcion": "Estructura del informe semanal de referencia: financiero, estudios, avance de obra, "
+                   "seguridad, ambiental, social, proyecto, electromecánica y calidad.",
+    "incluir_estaciones": True,
+    "integrada": True,
+    "secciones": [{"tipo": t, "titulo": titulo} for t, titulo in _SEMANAL_ESQUELETO],
+}
+# Un croquis siempre va ligado a una estación concreta: no tiene sentido en una plantilla.
+_PRES_TIPOS_FUERA_DE_PLANTILLA = ("croquis_estacion",)
+
+
+class PresPlantillaSeccionIn(BaseModel):
+    tipo: PresTipoSeccion
+    titulo: Optional[str] = Field(default=None, max_length=120)
+
+    @field_validator("tipo")
+    @classmethod
+    def _tipo_valido(cls, v):
+        if v in _PRES_TIPOS_FUERA_DE_PLANTILLA:
+            raise ValueError(f"La sección '{v}' no puede ir en una plantilla (depende de una estación)")
+        return v
+
+
+class PresPlantillaIn(BaseModel):
+    nombre: str = Field(min_length=1, max_length=80)
+    descripcion: Optional[str] = Field(default=None, max_length=300)
+    incluir_estaciones: bool = False
+    secciones: List[PresPlantillaSeccionIn] = Field(default_factory=list, max_length=200)
+
+
+class PresPlantillaPatch(BaseModel):
+    nombre: Optional[str] = Field(default=None, min_length=1, max_length=80)
+    descripcion: Optional[str] = Field(default=None, max_length=300)
+    incluir_estaciones: Optional[bool] = None
+    secciones: Optional[List[PresPlantillaSeccionIn]] = Field(default=None, max_length=200)
+
+
+def _secciones_desde_plantilla(items: List[dict]) -> List[dict]:
+    """Secciones de una presentación nueva a partir de la lista de una plantilla."""
     return [
-        {"id": str(uuid.uuid4()), "tipo": t, "orden": i, "titulo": titulo, "node_id": None,
-         "plano_id": None, "bloques": [], "report_ids": []}
-        for i, (t, titulo) in enumerate(tipos)
+        {"id": str(uuid.uuid4()), "tipo": it["tipo"], "orden": i, "titulo": (it.get("titulo") or None),
+         "node_id": None, "plano_id": None, "bloques": [], "report_ids": []}
+        for i, it in enumerate(items)
     ]
+
+
+def _secciones_plantilla_semanal() -> List[dict]:
+    """Esqueleto del informe semanal. Cada entrada se completa luego con el contenido
+    EN VIVO al exportar; `reportes_semana` arranca vacía hasta que el usuario elija."""
+    return _secciones_desde_plantilla(_PRES_PLANTILLA_SEMANAL["secciones"])
+
+
+def _pres_plantilla_publica(doc: dict) -> dict:
+    return {
+        "id": doc["id"], "nombre": doc["nombre"], "descripcion": doc.get("descripcion"),
+        "incluir_estaciones": bool(doc.get("incluir_estaciones")), "integrada": bool(doc.get("integrada")),
+        "secciones": [{"tipo": x["tipo"], "titulo": x.get("titulo")} for x in doc.get("secciones") or []],
+        "updated_at": doc.get("updated_at"),
+    }
+
+
+async def _resolver_plantilla_presentacion(plantilla_id: str) -> dict:
+    if plantilla_id == PRES_PLANTILLA_SEMANAL_ID:
+        return _PRES_PLANTILLA_SEMANAL
+    doc = await db.presentacion_plantillas.find_one({"id": plantilla_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(400, f"Plantilla de presentación desconocida: {plantilla_id}")
+    return doc
+
+
+def _limpia_secciones_plantilla(secciones: List[PresPlantillaSeccionIn]) -> List[dict]:
+    return [{"tipo": x.tipo, "titulo": (x.titulo or "").strip() or None} for x in secciones]
+
+
+@api.get("/presentacion-plantillas")
+async def list_presentacion_plantillas(user: dict = Depends(current_user)):
+    """La integrada ("semanal") primero y luego las del Coordinador, por nombre."""
+    propias = await db.presentacion_plantillas.find({}, {"_id": 0}).sort("nombre", 1).to_list(length=None)
+    return [_pres_plantilla_publica(_PRES_PLANTILLA_SEMANAL)] + [_pres_plantilla_publica(d) for d in propias]
+
+
+@api.post("/presentacion-plantillas")
+async def create_presentacion_plantilla(body: PresPlantillaIn, user: dict = Depends(require_role(ROLE_COORD))):
+    nombre = body.nombre.strip()
+    if not nombre:
+        raise HTTPException(400, "nombre requerido")
+    now = datetime.now(timezone.utc)
+    doc = {
+        "id": str(uuid.uuid4()), "nombre": nombre, "descripcion": (body.descripcion or "").strip() or None,
+        "incluir_estaciones": body.incluir_estaciones, "secciones": _limpia_secciones_plantilla(body.secciones),
+        "created_by": user["id"], "created_by_name": user["name"], "created_at": now, "updated_at": now,
+    }
+    await db.presentacion_plantillas.insert_one(doc)
+    return _pres_plantilla_publica(doc)
+
+
+@api.put("/presentacion-plantillas/{plantilla_id}")
+async def update_presentacion_plantilla(
+    plantilla_id: str, body: PresPlantillaPatch, user: dict = Depends(require_role(ROLE_COORD)),
+):
+    if plantilla_id == PRES_PLANTILLA_SEMANAL_ID:
+        raise HTTPException(400, "La plantilla integrada no se edita; duplícala para personalizarla")
+    cambios: Dict[str, Any] = {}
+    if body.nombre is not None:
+        if not body.nombre.strip():
+            raise HTTPException(400, "nombre requerido")
+        cambios["nombre"] = body.nombre.strip()
+    if body.descripcion is not None:
+        cambios["descripcion"] = body.descripcion.strip() or None
+    if body.incluir_estaciones is not None:
+        cambios["incluir_estaciones"] = body.incluir_estaciones
+    if body.secciones is not None:
+        cambios["secciones"] = _limpia_secciones_plantilla(body.secciones)
+    cambios["updated_at"] = datetime.now(timezone.utc)
+    if not await db.presentacion_plantillas.find_one({"id": plantilla_id}, {"_id": 1}):
+        raise HTTPException(404, "Plantilla no existe")
+    await db.presentacion_plantillas.update_one({"id": plantilla_id}, {"$set": cambios})
+    return _pres_plantilla_publica(await db.presentacion_plantillas.find_one({"id": plantilla_id}, {"_id": 0}))
+
+
+@api.delete("/presentacion-plantillas/{plantilla_id}")
+async def delete_presentacion_plantilla(plantilla_id: str, user: dict = Depends(require_role(ROLE_COORD))):
+    """Las presentaciones ya creadas con ella no cambian (llevan sus propias secciones)."""
+    if plantilla_id == PRES_PLANTILLA_SEMANAL_ID:
+        raise HTTPException(400, "La plantilla integrada no se puede borrar")
+    res = await db.presentacion_plantillas.delete_one({"id": plantilla_id})
+    if not res.deleted_count:
+        raise HTTPException(404, "Plantilla no existe")
+    return {"ok": True}
 
 
 async def _secciones_estaciones(pid: str, secciones_actuales: List[dict]) -> List[dict]:
@@ -10214,9 +10349,13 @@ async def create_presentacion(pid: str, body: PresentacionIn, user: dict = Depen
         "created_at": now,
         "updated_at": now,
     }
-    if body.plantilla == "semanal":
-        base = _secciones_plantilla_semanal()
-        doc["secciones"] = _insertar_secciones_estaciones(base, await _secciones_estaciones(pid, base))
+    if body.plantilla:
+        tpl = await _resolver_plantilla_presentacion(body.plantilla)
+        base = _secciones_desde_plantilla(tpl.get("secciones") or [])
+        doc["secciones"] = (
+            _insertar_secciones_estaciones(base, await _secciones_estaciones(pid, base))
+            if tpl.get("incluir_estaciones") else base)
+        doc["plantilla_id"] = tpl["id"]
     await db.presentaciones.insert_one(doc)
     doc.pop("_id", None)
     return doc
