@@ -82,6 +82,21 @@ describe('definición y plantillas', () => {
       expect(new Set(ids).size).toBe(ids.length);
     }
   });
+  it('las plantillas Innova (hitos, riesgos, acuerdos) imprimen acumulado en los tres informes', () => {
+    for (const clave of ['hitos', 'riesgos_desviaciones', 'acuerdos_cliente']) {
+      const d = PLANTILLAS.find((p) => p.clave === clave)!.crear();
+      for (const cat of ['reportes_diarios', 'reportes_semanales', 'reportes_mensuales'] as const) {
+        expect(d.salida![cat]).toEqual({ modo: 'tabla', periodo: 'acumulado' });
+      }
+      expect((d.campos || []).filter((x) => x.estatus)).toHaveLength(1);
+    }
+    const hitos = PLANTILLAS.find((p) => p.clave === 'hitos')!.crear();
+    expect(hitos.campos!.find((x) => x.estatus)!.cierre).toEqual(['Concluido']);
+    expect(hitos.opciones!.ocultar_cerrados).toBe(false);   // lo concluido sigue en la tabla de hitos
+    for (const clave of ['riesgos_desviaciones', 'acuerdos_cliente']) {
+      expect(PLANTILLAS.find((p) => p.clave === clave)!.crear().opciones!.ocultar_cerrados).toBe(true);
+    }
+  });
   it('detecta nombre vacío, sin campos, lista sin opciones y fórmula vacía', () => {
     expect(validarDefinicion({ nombre: ' ', campos: [num('a')] })).toMatch(/nombre/);
     expect(validarDefinicion({ nombre: 'x', campos: [] })).toMatch(/campo/);

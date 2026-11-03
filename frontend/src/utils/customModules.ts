@@ -100,6 +100,15 @@ export function salidaDefault(modos: Partial<Record<ModuloCategoria, CustomModo>
   };
 }
 
+/** Tabla en los tres informes con lo acumulado a la fecha (hitos, riesgos, acuerdos vigentes). */
+export function salidaAcumulada(): CustomSalida {
+  const s = salidaDefault();
+  (['reportes_diarios', 'reportes_semanales', 'reportes_mensuales'] as ModuloCategoria[]).forEach((k) => {
+    s[k] = { modo: 'tabla', periodo: 'acumulado' };
+  });
+  return s;
+}
+
 export function moduloVacio(): CustomModuleInput {
   return {
     nombre: '', descripcion: '', icono: 'cube-outline', area_id: null, activo: true, usar_jerarquia: false,
@@ -209,6 +218,37 @@ export const PLANTILLAS: Plantilla[] = [
       c('atendida', 'Atendida', 'interruptor', { agregacion: 'conteo' }),
       c('foto', 'Foto', 'foto'),
     ], { salida: salidaDefault({ reportes_diarios: 'texto', reportes_semanales: 'tabla' }), opciones: { ...OPCIONES_DEFAULT, incluir_fotos: true } }),
+  },
+  // --- Formato Innova (informes diario / semanal / mensual): tablas "vigentes" que se
+  // imprimen acumuladas en los tres informes; lo cerrado deja de salir donde aplica.
+  {
+    clave: 'hitos', nombre: 'Hitos del programa', descripcion: 'Hito, fecha programada y real, estatus y condición para cumplirlo', icon: 'flag-outline',
+    crear: () => base('Hitos del programa', 'Hitos del programa de obra con su fecha programada y real', 'flag-outline', [
+      c('hito', 'Hito', 'texto', { requerido: true }),
+      c('programado', 'Fecha programada', 'fecha'),
+      c('real', 'Fecha real', 'fecha'),
+      { ...campoEstatus(), id: 'estatus', opciones: ['Programado', 'En proceso', 'Concluido'], cierre: ['Concluido'], valor_defecto: 'Programado' },
+      c('condicion', 'Condición para cumplirlo', 'texto'),
+    ], { salida: salidaAcumulada(), opciones: { ...OPCIONES_DEFAULT, mostrar_fecha: false, mostrar_totales: false } }),
+  },
+  {
+    clave: 'riesgos_desviaciones', nombre: 'Riesgos y desviaciones', descripcion: 'Riesgo, nivel (alto / medio / bajo), acción propuesta y responsable', icon: 'warning-outline',
+    crear: () => base('Riesgos y desviaciones', 'Riesgos y desviaciones del periodo con su acción propuesta', 'warning-outline', [
+      c('riesgo', 'Riesgo o desviación', 'texto', { requerido: true }),
+      c('nivel', 'Nivel', 'seleccion', { opciones: ['Alto', 'Medio', 'Bajo'], requerido: true }),
+      c('accion', 'Acción propuesta', 'texto'),
+      c('responsable', 'Responsable', 'texto'),
+      { ...campoEstatus(), id: 'estatus' },
+    ], { salida: salidaAcumulada(), opciones: { ...OPCIONES_DEFAULT, mostrar_fecha: false, mostrar_totales: false, ocultar_cerrados: true } }),
+  },
+  {
+    clave: 'acuerdos_cliente', nombre: 'Acuerdos con el cliente', descripcion: 'Acuerdo o pendiente, responsable, fecha compromiso y estatus', icon: 'people-outline',
+    crear: () => base('Acuerdos con el cliente', 'Acuerdos y pendientes con el cliente', 'people-outline', [
+      c('acuerdo', 'Acuerdo o pendiente', 'texto', { requerido: true }),
+      c('responsable', 'Responsable', 'texto'),
+      c('fecha_compromiso', 'Fecha compromiso', 'fecha'),
+      { ...campoEstatus(), id: 'estatus' },
+    ], { salida: salidaAcumulada(), opciones: { ...OPCIONES_DEFAULT, mostrar_fecha: false, mostrar_totales: false, ocultar_cerrados: true } }),
   },
   {
     clave: 'indicadores', nombre: 'Indicadores meta vs real', descripcion: 'Meta, real y % de cumplimiento calculado', icon: 'speedometer-outline',

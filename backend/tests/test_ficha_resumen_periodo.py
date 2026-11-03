@@ -190,6 +190,60 @@ def test_sin_resumen_en_la_ventana_o_con_el_modulo_apagado_no_se_imprime():
     _con_db(go)
 
 
+# ------------------------------------------------------------------ hitos / riesgos (Creador de módulos)
+def _campo(id_, etiqueta, tipo, **extra):
+    return {"id": id_, "etiqueta": etiqueta, "tipo": tipo, "requerido": False, "en_informe": True,
+            "agregacion": "ninguna", "visible_si": None, **extra}
+
+
+def _salida_acumulada():
+    return {c: {"modo": "tabla", "periodo": "acumulado"} for c in CATS}
+
+
+def test_hitos_y_riesgos_salen_acumulados_en_los_tres_informes_y_lo_cerrado_se_oculta():
+    """Misma definición que las plantillas Innova del frontend (customModules.ts)."""
+    async def go(db):
+        await db.projects.insert_one({"id": "p1", "name": "X", "modulos": {c: {} for c in CATS}})
+        estatus = _campo("estatus", "Estatus", "seleccion", opciones=["Programado", "En proceso", "Concluido"],
+                         estatus=True, cierre=["Concluido"], valor_defecto="Programado", requerido=True)
+        hitos = await server.create_custom_module("p1", {
+            "nombre": "Hitos del programa", "icono": "flag-outline", "salida": _salida_acumulada(),
+            "opciones": {"mostrar_fecha": False, "mostrar_totales": False, "ocultar_cerrados": False},
+            "campos": [_campo("hito", "Hito", "texto", requerido=True), _campo("programado", "Fecha programada", "fecha"),
+                       _campo("real", "Fecha real", "fecha"), estatus],
+        }, COORD)
+        est_r = _campo("estatus", "Estatus", "seleccion", opciones=["Abierto", "En proceso", "Cerrado"],
+                       estatus=True, cierre=["Cerrado"], valor_defecto="Abierto", requerido=True)
+        riesgos = await server.create_custom_module("p1", {
+            "nombre": "Riesgos y desviaciones", "icono": "warning-outline", "salida": _salida_acumulada(),
+            "opciones": {"mostrar_fecha": False, "mostrar_totales": False, "ocultar_cerrados": True},
+            "campos": [_campo("riesgo", "Riesgo o desviación", "texto", requerido=True),
+                       _campo("nivel", "Nivel", "seleccion", opciones=["Alto", "Medio", "Bajo"]), est_r],
+        }, COORD)
+        hoy = datetime.now(server.MX_TZ).date().isoformat()
+        for v in ({"hito": "Cimentación", "programado": "2026-03-01", "real": "2026-03-04", "estatus": "Concluido"},
+                  {"hito": "Estructura", "programado": "2026-07-01", "estatus": "En proceso"}):
+            await server.create_custom_module_record("p1", hitos["id"], {"fecha": hoy, "valores": v}, COORD)
+        for v in ({"riesgo": "Lluvias", "nivel": "Alto", "estatus": "Abierto"},
+                  {"riesgo": "Retraso de acero", "nivel": "Medio", "estatus": "Cerrado"}):
+            await server.create_custom_module_record("p1", riesgos["id"], {"fecha": hoy, "valores": v}, COORD)
+        from datetime import date as _date, timedelta as _td
+        manana = (_date.fromisoformat(hoy) + _td(days=1)).isoformat()
+        for cat in CATS:
+            # El día que se cierra, el riesgo cerrado aún sale (es el informe donde se cerró)...
+            ini, fin = _ventana(hoy, 0)
+            out = await server._cm_secciones_export("p1", cat, ini, fin)
+            assert "Retraso de acero" in repr(out[f"custom_{riesgos['id']}"]), cat
+            # ...y al día siguiente ya no, pero lo vigente y todos los hitos (también el concluido) siguen.
+            ini, fin = _ventana(manana, 0)
+            out = await server._cm_secciones_export("p1", cat, ini, fin)
+            texto_h = repr(out[f"custom_{hitos['id']}"])
+            assert "Cimentación" in texto_h and "Estructura" in texto_h and "Concluido" in texto_h, cat
+            texto_r = repr(out[f"custom_{riesgos['id']}"])
+            assert "Lluvias" in texto_r and "Retraso de acero" not in texto_r, cat
+    _con_db(go)
+
+
 def test_edificacion_enciende_ficha_y_resumen_en_los_tres_informes():
     m = server.modulos_por_defecto_de_tipo("edificacion")
     assert all(m[c]["ficha_proyecto"] and m[c]["resumen_periodo"] for c in CATS)
