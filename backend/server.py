@@ -27588,7 +27588,7 @@ async def list_resumenes_periodo(
 
 @api.put("/projects/{pid}/resumenes-periodo")
 async def upsert_resumen_periodo(
-    pid: str, body: ResumenPeriodoIn, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB, ROLE_JEFE)),
+    pid: str, body: ResumenPeriodoIn, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB)),
 ):
     """Crea o reemplaza el resumen de (jerarquía, fecha de corte): un solo resumen por informe."""
     project = await ensure_project_access(user, pid)
@@ -27618,7 +27618,7 @@ async def upsert_resumen_periodo(
 
 
 @api.delete("/projects/{pid}/resumenes-periodo/{rid}")
-async def delete_resumen_periodo(pid: str, rid: str, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB, ROLE_JEFE))):
+async def delete_resumen_periodo(pid: str, rid: str, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB))):
     await ensure_project_access(user, pid)
     res = await db.resumenes_periodo.delete_one({"id": rid, "project_id": pid})
     if not res.deleted_count:

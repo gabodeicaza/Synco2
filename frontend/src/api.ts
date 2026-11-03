@@ -1259,6 +1259,31 @@ export interface DatosContratoBloque {
   anticipo?: string;
   // Solo bloque SUPERVISIÓN: nombre que firma la hoja final del informe.
   superintendente?: string;
+  // Solo alimentan la "Ficha del proyecto" de los informes (no la hoja de contrato).
+  servicio?: string;
+  plazo_dias?: string;
+  residente?: string;
+}
+
+export type ResumenJerarquia = 'diario' | 'semanal' | 'mensual';
+export type ResumenSemaforo = 'verde' | 'ambar' | 'rojo';
+export interface ResumenPeriodoInput {
+  jerarquia: ResumenJerarquia;
+  fecha_corte: string;
+  avance_fisico: number | null;
+  programado: number | null;
+  avance_financiero: number | null;
+  estimado: string | null;
+  estatus: ResumenSemaforo | null;
+  mensajes: string[];
+  fuente?: 'manual' | 'externa';
+}
+export interface ResumenPeriodo extends ResumenPeriodoInput {
+  id: string;
+  fuente: 'manual' | 'externa';
+  desviacion: number | null;
+  estatus_efectivo: ResumenSemaforo | null;
+  updated_at?: string | null;
 }
 
 export interface DatosContrato {
@@ -3481,6 +3506,13 @@ export const api = {
   listPresentaciones: (pid: string) => request<Presentacion[]>('GET', `/projects/${pid}/presentaciones`),
   createPresentacion: (pid: string, body: { fecha: string; titulo?: string; plantilla?: string; periodo_financiero?: PeriodoFinanciero }) =>
     request<Presentacion>('POST', `/projects/${pid}/presentaciones`, { project_id: pid, ...body }),
+  // Resumen del periodo (avance, semáforo y mensajes clave de los informes)
+  listResumenesPeriodo: (pid: string, jerarquia?: ResumenJerarquia) =>
+    request<ResumenPeriodo[]>('GET', `/projects/${pid}/resumenes-periodo${jerarquia ? `?jerarquia=${jerarquia}` : ''}`),
+  upsertResumenPeriodo: (pid: string, body: ResumenPeriodoInput) =>
+    request<ResumenPeriodo>('PUT', `/projects/${pid}/resumenes-periodo`, body),
+  deleteResumenPeriodo: (pid: string, rid: string) =>
+    request<{ ok: boolean }>('DELETE', `/projects/${pid}/resumenes-periodo/${rid}`),
   // Plantillas de presentación ("semanal" va integrada; las demás las edita el Coordinador)
   listPresentacionPlantillas: () => request<PresentacionPlantilla[]>('GET', '/presentacion-plantillas'),
   createPresentacionPlantilla: (body: PresentacionPlantillaInput) =>

@@ -31,6 +31,10 @@ const CAMPOS: { key: Campo; label: string; placeholder: string; multiline?: bool
   { key: 'anticipo_label', label: 'Etiqueta del anticipo', placeholder: 'Anticipo (10%) 2025' },
   { key: 'anticipo', label: 'Anticipo', placeholder: '$519,794.75' },
   { key: 'superintendente', label: 'Superintendente de supervisión (firma de la hoja final)', placeholder: 'Ing. Nombre Apellido', solo: 'supervision' },
+  // Solo alimentan la "Ficha del proyecto" de los informes.
+  { key: 'plazo_dias', label: 'Plazo en días (ficha del proyecto)', placeholder: '347', solo: 'obra' },
+  { key: 'servicio', label: 'Servicio (ficha del proyecto)', placeholder: 'Supervisión técnica y control de calidad', solo: 'supervision' },
+  { key: 'residente', label: 'Residente de supervisión (ficha del proyecto)', placeholder: 'Ing. Nombre Apellido', solo: 'supervision' },
 ];
 
 const BLOQUE_LABEL: Record<Bloque, string> = { obra: 'OBRA', supervision: 'SUPERVISIÓN' };

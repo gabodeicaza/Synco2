@@ -199,6 +199,21 @@ export const MODULOS: ModuloDef[] = [
     area: 'Seguridad',
   },
   {
+    key: 'ficha_proyecto',
+    label: 'Ficha del proyecto',
+    subtitle: 'Cliente, servicio, contrato, plazo, residente y monto (calculada de los datos del proyecto)',
+    icon: 'id-card-outline',
+    area: 'Ingeniería',
+  },
+  {
+    key: 'resumen_periodo',
+    label: 'Resumen del periodo',
+    subtitle: 'Avance físico y financiero, semáforo y mensajes clave que abren el informe',
+    icon: 'speedometer-outline',
+    screen: 'resumen-periodo',
+    area: 'Ingeniería',
+  },
+  {
     key: 'estado_tiempo',
     label: t('modulosObra.modulos.estadoTiempo.titulo'),
     subtitle: t('modulosObra.modulos.estadoTiempo.subtitulo'),

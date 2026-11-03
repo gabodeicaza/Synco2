@@ -121,6 +121,7 @@ export default function SpecLayout() {
         <Tabs.Screen name="supervision-ambiental" options={{ href: null }} />
         <Tabs.Screen name="actividades-particulares" options={{ href: null }} />
         <Tabs.Screen name="pendientes-generales" options={{ href: null }} />
+        <Tabs.Screen name="resumen-periodo" options={{ href: null }} />
         <Tabs.Screen name="modulo-personalizado" options={{ href: null }} />
         <Tabs.Screen name="aspectos-sociales" options={{ href: null }} />
         <Tabs.Screen name="electromecanica" options={{ href: null }} />
