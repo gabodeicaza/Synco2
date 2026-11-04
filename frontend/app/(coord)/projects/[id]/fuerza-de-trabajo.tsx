@@ -11,6 +11,7 @@ import { useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, spacing } from '@/src/theme';
 import { WorkforceTracker } from '@/src/components/WorkforceTracker';
+import { FuerzaTrabajoExcelHub } from '@/src/components/FuerzaTrabajoExcelHub';
 import { ScreenHeader } from '@/src/components/ScreenHeader';
 
 export default function FuerzaDeTrabajoRoute() {
@@ -33,6 +34,7 @@ export default function FuerzaDeTrabajoRoute() {
         </View>
       ) : (
         <ScrollView contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + 90 }]}>
+          <FuerzaTrabajoExcelHub projectId={pid} />
           <WorkforceTracker projectId={pid} />
         </ScrollView>
       )}

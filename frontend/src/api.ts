@@ -46,6 +46,8 @@ async function _downloadFile(url: string, filenameFallback: string, errorFallbac
 // `request`/`ApiError` sin generar un import circular). Se re-exportan para
 // que auth-context.tsx y coordinators.tsx no necesiten cambiar su import.
 // Asistencia: una fila por persona del proyecto y un registro por "userId|AAAA-MM-DD".
+export type MaterialFTInput = { mes: string; estacion: string; insumo: string; unidad: string; cantidad: number };
+export type MaterialFT = MaterialFTInput & { id: string; project_id: string };
 export type AsistenciaEstado = 'asistio' | 'justificada' | 'falta';
 export type AsistenciaPersona = {
   id: string; name: string; role: string; puesto?: string | null; area_name?: string | null;
@@ -3129,6 +3131,17 @@ export const api = {
   // Asistencia (Coordinador / Sub-Coordinador): derivada de los reportes.
   downloadAsistenciaXlsx: (pid: string, vista: 'hoy' | 'semana' | 'mes' | 'total', desde: string, hasta: string) =>
     _downloadFile(`${BASE}/projects/${pid}/asistencia/export.xlsx?vista=${vista}&desde=${desde}&hasta=${hasta}`, 'asistencia.xlsx', 'Error al exportar la asistencia'),
+  // Fuerza de Trabajo → Excel mensual (personal + maquinaria de los reportes + materiales del hub).
+  downloadFuerzaTrabajoXlsx: (pid: string, mes: string) =>
+    _downloadFile(`${BASE}/projects/${pid}/fuerza-trabajo/export.xlsx?mes=${mes}`, `fuerza_de_trabajo_${mes}.xlsx`, 'Error al exportar la fuerza de trabajo'),
+  listMaterialesFT: (pid: string, mes: string) =>
+    request<MaterialFT[]>('GET', `/projects/${pid}/fuerza-trabajo/materiales?mes=${mes}`),
+  addMaterialFT: (pid: string, body: MaterialFTInput) =>
+    request<MaterialFT>('POST', `/projects/${pid}/fuerza-trabajo/materiales`, body),
+  updateMaterialFT: (pid: string, id: string, body: MaterialFTInput) =>
+    request<MaterialFT>('PUT', `/projects/${pid}/fuerza-trabajo/materiales/${id}`, body),
+  deleteMaterialFT: (pid: string, id: string) =>
+    request<{ ok: boolean }>('DELETE', `/projects/${pid}/fuerza-trabajo/materiales/${id}`),
   getAsistencia: (pid: string, desde: string, hasta: string) =>
     request<AsistenciaResp>('GET', `/projects/${pid}/asistencia?desde=${desde}&hasta=${hasta}`),
   setAsistencia: (pid: string, uid: string, fecha: string, body: { estado: AsistenciaEstado | 'auto'; nota?: string }) =>

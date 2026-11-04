@@ -9,6 +9,7 @@ import { useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, spacing } from '@/src/theme';
 import { WorkforceTracker } from '@/src/components/WorkforceTracker';
+import { FuerzaTrabajoExcelHub } from '@/src/components/FuerzaTrabajoExcelHub';
 import { FuerzaTrabajoCapturaRapida } from '@/src/components/FuerzaTrabajoCapturaRapida';
 import { ScreenHeader } from '@/src/components/ScreenHeader';
 import { t } from '@/src/i18n';
@@ -38,6 +39,7 @@ export default function FuerzaDeTrabajoScreen() {
             <Ionicons name="add-circle-outline" size={20} color={colors.textInverse} />
             <Text style={styles.capturaBtnTxt}>{t('fuerzaTrabajo.capturaRapida')}</Text>
           </Pressable>
+          <FuerzaTrabajoExcelHub projectId={pid} />
           <WorkforceTracker key={recarga} projectId={pid} />
         </ScrollView>
       )}

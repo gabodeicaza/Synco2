@@ -2416,6 +2416,7 @@ async def startup_event():
     await _crear_indice(db.seguridad_reportes, "id", unique=True)
     await _crear_indice(db.seguridad_reportes, [("project_id", 1), ("created_at", -1)])
     await _crear_indice(db.seguridad_fuerza_trabajo, [("project_id", 1), ("mes", 1)], unique=True)
+    await _crear_indice(db.materiales_ft, [("project_id", 1), ("mes", 1)])
     await _crear_indice(db.seguridad_checklist, "id", unique=True)
     await _crear_indice(db.seguridad_checklist, [("project_id", 1), ("created_at", -1)])
     await _crear_indice(db.riesgos_registros, "id", unique=True)
@@ -15370,6 +15371,213 @@ async def export_asistencia_xlsx(
         buf,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="asistencia_{sufijo}.xlsx"'},
+    )
+
+
+# ============================================================================
+# Fuerza de Trabajo → Excel mensual "A4.1 Avance de Obra por Partidas"
+# ============================================================================
+# Un solo libro con tres hojas: "tabla PERSONAL" y "tabla maquinaria" (filas =
+# puestos/equipos, columnas = días del mes, TOTAL) derivadas de los reportes de
+# campo, y "tabla material" (por estación: insumo, unidad, total) que se captura
+# en el hub de materiales (colección `materiales_ft`).
+
+class MaterialFTIn(BaseModel):
+    mes: str  # AAAA-MM
+    estacion: str
+    insumo: str
+    unidad: str = ""
+    cantidad: float = 0
+
+
+def _ft_parse_mes(mes: str) -> tuple:
+    try:
+        y, m = (int(x) for x in (mes or "").split("-"))
+        return y, m, date(y, m, 1)
+    except Exception:
+        raise HTTPException(400, "mes debe tener el formato AAAA-MM")
+
+
+def _ft_norm(s: str) -> str:
+    return re.sub(r"\s+", " ", (s or "")).strip()
+
+
+@api.get("/projects/{pid}/fuerza-trabajo/materiales")
+async def ft_list_materiales(pid: str, mes: str,
+                             user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB, ROLE_JEFE))):
+    await ensure_project_access(user, pid)
+    _ft_parse_mes(mes)
+    docs = await db.materiales_ft.find({"project_id": pid, "mes": mes}, {"_id": 0}).to_list(length=5000)
+    docs.sort(key=lambda d: (d.get("orden", 0), d.get("created_at") or ""))
+    return docs
+
+
+@api.post("/projects/{pid}/fuerza-trabajo/materiales")
+async def ft_add_material(pid: str, body: MaterialFTIn,
+                          user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB))):
+    await ensure_project_access(user, pid)
+    _ft_parse_mes(body.mes)
+    est, ins = _ft_norm(body.estacion), _ft_norm(body.insumo)
+    if not est or not ins:
+        raise HTTPException(400, "Estación e insumo son requeridos")
+    n = await db.materiales_ft.count_documents({"project_id": pid, "mes": body.mes})
+    doc = {"id": str(uuid.uuid4()), "project_id": pid, "mes": body.mes, "estacion": est, "insumo": ins,
+           "unidad": _ft_norm(body.unidad), "cantidad": body.cantidad, "orden": n,
+           "created_at": datetime.now(timezone.utc).isoformat(), "creado_por": user["id"]}
+    await db.materiales_ft.insert_one(dict(doc))
+    return doc
+
+
+@api.put("/projects/{pid}/fuerza-trabajo/materiales/{mid}")
+async def ft_update_material(pid: str, mid: str, body: MaterialFTIn,
+                             user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB))):
+    await ensure_project_access(user, pid)
+    est, ins = _ft_norm(body.estacion), _ft_norm(body.insumo)
+    if not est or not ins:
+        raise HTTPException(400, "Estación e insumo son requeridos")
+    r = await db.materiales_ft.update_one(
+        {"id": mid, "project_id": pid},
+        {"$set": {"estacion": est, "insumo": ins, "unidad": _ft_norm(body.unidad), "cantidad": body.cantidad}})
+    if not r.matched_count:
+        raise HTTPException(404, "Material no existe")
+    return await db.materiales_ft.find_one({"id": mid}, {"_id": 0})
+
+
+@api.delete("/projects/{pid}/fuerza-trabajo/materiales/{mid}")
+async def ft_delete_material(pid: str, mid: str,
+                             user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB))):
+    await ensure_project_access(user, pid)
+    r = await db.materiales_ft.delete_one({"id": mid, "project_id": pid})
+    if not r.deleted_count:
+        raise HTTPException(404, "Material no existe")
+    return {"ok": True}
+
+
+async def _ft_matriz_mensual(pid: str, y: int, m: int) -> dict:
+    """{"personal": {puesto: {dia: cantidad}}, "maquinaria": {...}} del mes (días CDMX)."""
+    ini = datetime(y, m, 1, tzinfo=MX_TZ)
+    fin = datetime(y + (m == 12), (m % 12) + 1, 1, tzinfo=MX_TZ)
+    out: dict = {"personal": {}, "maquinaria": {}}
+    cur = db.reports.find({"project_id": pid, "created_at": {"$gte": ini, "$lt": fin}},
+                          {"created_at": 1, "personnel": 1, "equipment": 1})
+    async for r in cur:
+        c = r.get("created_at")
+        if not isinstance(c, datetime):
+            continue
+        dia = (c if c.tzinfo else c.replace(tzinfo=timezone.utc)).astimezone(MX_TZ).day
+        for field, cat in (("personnel", "personal"), ("equipment", "maquinaria")):
+            for s in (r.get(field) or []):
+                qty, desc = _parse_qty_desc(s)
+                desc = _ft_norm(re.sub(r"\s*\([^)]*\)\s*$", "", desc))  # quita sufijo "(S2)"
+                if not desc:
+                    continue
+                fila = out[cat].setdefault(desc, {})
+                fila[dia] = fila.get(dia, 0) + qty
+    return out
+
+
+def _ft_xlsx(y: int, m: int, matriz: dict, materiales: list) -> bytes:
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+
+    thin = Side(style="thin")
+    borde = Border(left=thin, right=thin, top=thin, bottom=thin)
+    relleno = PatternFill("solid", fgColor="D9D9D9")
+    ndias = calendar.monthrange(y, m)[1]
+    letras = "LMMJVSD"
+    wb = Workbook()
+    wb.remove(wb.active)
+
+    def hoja_programa(titulo: str, rotulo: str, filas: dict):
+        ws = wb.create_sheet(titulo)
+        ws.sheet_view.showGridLines = False
+        c_tot = 5 + ndias  # E.. días, luego TOTAL
+        ws.cell(3, 4, rotulo)
+        ws.merge_cells(start_row=3, start_column=4, end_row=4, end_column=4)
+        for d in range(1, ndias + 1):
+            ws.cell(3, 4 + d, letras[date(y, m, d).weekday()])
+            ws.cell(4, 4 + d, d)
+        ws.cell(3, c_tot, "TOTAL")
+        ws.merge_cells(start_row=3, start_column=c_tot, end_row=4, end_column=c_tot)
+        for f in (3, 4):
+            for c in range(4, c_tot + 1):
+                x = ws.cell(f, c)
+                x.fill, x.border = relleno, borde
+                x.font = Font(bold=True, size=11 if c in (4, c_tot) else 10)
+                x.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        ultima = get_column_letter(4 + ndias)
+        for i, puesto in enumerate(sorted(filas, key=lambda s: s.lower())):
+            r = 5 + i
+            ws.cell(r, 4, puesto).alignment = Alignment(horizontal="left", vertical="top")
+            for d in range(1, ndias + 1):
+                ws.cell(r, 4 + d, filas[puesto].get(d, 0)).alignment = Alignment(horizontal="center", vertical="top")
+            ws.cell(r, c_tot, f"=SUM(E{r}:{ultima}{r})").font = Font(bold=True)
+            ws.cell(r, c_tot).alignment = Alignment(horizontal="center", vertical="top")
+            for c in range(4, c_tot + 1):
+                ws.cell(r, c).border = borde
+        ws.column_dimensions["D"].width = 50
+        for d in range(1, ndias + 1):
+            ws.column_dimensions[get_column_letter(4 + d)].width = 4.3
+        ws.column_dimensions[get_column_letter(c_tot)].width = 10
+        ws.freeze_panes = "E5"
+
+    hoja_programa("tabla maquinaria", "PROGRAMA DE MAQUINARIA", matriz["maquinaria"])
+    hoja_programa("tabla PERSONAL", "PROGRAMA DE PERSONAL", matriz["personal"])
+
+    wm = wb.create_sheet("tabla material")
+    wm.sheet_view.showGridLines = False
+    por_est: dict = {}
+    for mat in materiales:
+        por_est.setdefault(mat["estacion"], []).append(mat)
+    r = 3
+    for est, items in por_est.items():
+        for col, txt in ((4, "ESTACIÓN"), (6, "Descripción del insumo"), (7, "Unidad"), (8, "Total")):
+            wm.cell(r, col, txt)
+        wm.merge_cells(start_row=r, start_column=4, end_row=r, end_column=5)
+        for c in range(4, 9):
+            x = wm.cell(r, c)
+            x.fill, x.border, x.font = relleno, borde, Font(bold=True)
+            x.alignment = Alignment(horizontal="center", vertical="center")
+        r0 = r + 1
+        for mat in items:
+            r += 1
+            wm.cell(r, 6, mat["insumo"]).alignment = Alignment(wrap_text=True)
+            wm.cell(r, 7, mat.get("unidad") or "").alignment = Alignment(horizontal="center", vertical="center")
+            wm.cell(r, 8, mat.get("cantidad") or 0).alignment = Alignment(horizontal="center", vertical="center")
+            for c in range(4, 9):
+                wm.cell(r, c).border = borde
+        wm.cell(r0, 4, est).alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        if r > r0:
+            wm.merge_cells(start_row=r0, start_column=4, end_row=r, end_column=5)
+        else:
+            wm.merge_cells(start_row=r0, start_column=4, end_row=r0, end_column=5)
+        r += 1
+    wm.column_dimensions["D"].width = 14
+    wm.column_dimensions["E"].width = 29
+    wm.column_dimensions["F"].width = 38
+    wm.column_dimensions["G"].width = 10
+    wm.column_dimensions["H"].width = 10
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+@api.get("/projects/{pid}/fuerza-trabajo/export.xlsx")
+async def ft_export_xlsx(pid: str, mes: str,
+                         user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB, ROLE_JEFE))):
+    """Excel mensual de Fuerza de Trabajo: personal + maquinaria (de los reportes) + materiales (hub)."""
+    await ensure_project_access(user, pid)
+    y, m, _ = _ft_parse_mes(mes)
+    matriz = await _ft_matriz_mensual(pid, y, m)
+    materiales = await db.materiales_ft.find({"project_id": pid, "mes": mes}, {"_id": 0}).to_list(length=5000)
+    materiales.sort(key=lambda d: d.get("orden", 0))
+    data = _ft_xlsx(y, m, matriz, materiales)
+    return StreamingResponse(
+        io.BytesIO(data),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="fuerza_de_trabajo_{mes}.xlsx"'},
     )
 
 
