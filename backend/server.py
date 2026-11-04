@@ -15476,88 +15476,77 @@ async def _ft_matriz_mensual(pid: str, y: int, m: int) -> dict:
     return out
 
 
-def _ft_xlsx(y: int, m: int, matriz: dict, materiales: list) -> bytes:
-    from openpyxl import Workbook
-    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
-    from openpyxl.utils import get_column_letter
+_FT_PLANTILLA = ROOT_DIR / "assets" / "fuerza_trabajo_plantilla.xlsx"
 
-    thin = Side(style="thin")
-    borde = Border(left=thin, right=thin, top=thin, bottom=thin)
-    relleno = PatternFill("solid", fgColor="D9D9D9")
+
+def _ft_xlsx(y: int, m: int, matriz: dict, materiales: list) -> bytes:
+    """Llena la plantilla `assets/fuerza_trabajo_plantilla.xlsx` (copia sin datos del
+    A4.1 de referencia) para que el formato —tema, anchos, bordes, fuentes, zoom—
+    sea idéntico. Las filas se reescriben copiando el estilo de una fila prototipo."""
+    from copy import copy
+    import openpyxl as _opx
+
+    wb = _opx.load_workbook(_FT_PLANTILLA)
     ndias = calendar.monthrange(y, m)[1]
     letras = "LMMJVSD"
-    wb = Workbook()
-    wb.remove(wb.active)
 
-    def hoja_programa(titulo: str, rotulo: str, filas: dict):
-        ws = wb.create_sheet(titulo)
-        ws.sheet_view.showGridLines = False
-        c_tot = 5 + ndias  # E.. días, luego TOTAL
-        ws.cell(3, 4, rotulo)
-        ws.merge_cells(start_row=3, start_column=4, end_row=4, end_column=4)
-        for d in range(1, ndias + 1):
-            ws.cell(3, 4 + d, letras[date(y, m, d).weekday()])
-            ws.cell(4, 4 + d, d)
-        ws.cell(3, c_tot, "TOTAL")
-        ws.merge_cells(start_row=3, start_column=c_tot, end_row=4, end_column=c_tot)
-        for f in (3, 4):
-            for c in range(4, c_tot + 1):
-                x = ws.cell(f, c)
-                x.fill, x.border = relleno, borde
-                x.font = Font(bold=True, size=11 if c in (4, c_tot) else 10)
-                x.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        ultima = get_column_letter(4 + ndias)
+    def hoja_programa(titulo: str, fila_enc: int, fila_proto: int, filas: dict):
+        ws = wb[titulo]
+        ini = fila_enc + 2  # primera fila de datos
+        proto = {c: copy(ws.cell(fila_proto, c)._style) for c in range(1, 38)}
+        # Domingo en blanco (como la plantilla) salvo que haya datos ese día.
+        hay = {d for f in filas.values() for d, v in f.items() if v}
+        for d in range(1, 32):
+            c = 4 + d
+            visible = d <= ndias and (date(y, m, d).weekday() != 6 or d in hay)
+            ws.cell(fila_enc, c).value = letras[date(y, m, d).weekday()] if visible else None
+            ws.cell(fila_enc + 1, c).value = d if visible else None
+        ws.delete_rows(ini, ws.max_row)
+        for r in [k for k in ws.row_dimensions if k >= ini]:
+            del ws.row_dimensions[r]
         for i, puesto in enumerate(sorted(filas, key=lambda s: s.lower())):
-            r = 5 + i
-            ws.cell(r, 4, puesto).alignment = Alignment(horizontal="left", vertical="top")
+            r = ini + i
+            for c, st in proto.items():
+                ws.cell(r, c)._style = copy(st)
+            ws.cell(r, 4).value = puesto
             for d in range(1, ndias + 1):
-                ws.cell(r, 4 + d, filas[puesto].get(d, 0)).alignment = Alignment(horizontal="center", vertical="top")
-            ws.cell(r, c_tot, f"=SUM(E{r}:{ultima}{r})").font = Font(bold=True)
-            ws.cell(r, c_tot).alignment = Alignment(horizontal="center", vertical="top")
-            for c in range(4, c_tot + 1):
-                ws.cell(r, c).border = borde
-        ws.column_dimensions["D"].width = 50
-        for d in range(1, ndias + 1):
-            ws.column_dimensions[get_column_letter(4 + d)].width = 4.3
-        ws.column_dimensions[get_column_letter(c_tot)].width = 10
-        ws.freeze_panes = "E5"
+                if date(y, m, d).weekday() == 6 and d not in hay:
+                    continue
+                ws.cell(r, 4 + d).value = filas[puesto].get(d, 0)
+            ws.cell(r, 37).value = f"=SUM(E{r}:AI{r})"
 
-    hoja_programa("tabla maquinaria", "PROGRAMA DE MAQUINARIA", matriz["maquinaria"])
-    hoja_programa("tabla PERSONAL", "PROGRAMA DE PERSONAL", matriz["personal"])
+    hoja_programa("tabla maquinaria", 3, 6, matriz["maquinaria"])
+    hoja_programa("tabla PERSONAL", 5, 8, matriz["personal"])
 
-    wm = wb.create_sheet("tabla material")
-    wm.sheet_view.showGridLines = False
+    wm = wb["tabla material"]
+    proto_h = {c: copy(wm.cell(3, c)._style) for c in range(4, 9)}
+    proto_1 = {c: copy(wm.cell(6, c)._style) for c in range(4, 9)}
+    proto_n = {c: copy(wm.cell(7, c)._style) for c in range(4, 9)}
+    for rng in [str(x) for x in wm.merged_cells.ranges]:
+        wm.unmerge_cells(rng)
+    wm.delete_rows(3, wm.max_row)
     por_est: dict = {}
     for mat in materiales:
         por_est.setdefault(mat["estacion"], []).append(mat)
     r = 3
     for est, items in por_est.items():
-        for col, txt in ((4, "ESTACIÓN"), (6, "Descripción del insumo"), (7, "Unidad"), (8, "Total")):
-            wm.cell(r, col, txt)
+        for c, st in proto_h.items():
+            wm.cell(r, c)._style = copy(st)
+        wm.cell(r, 4).value, wm.cell(r, 6).value = "ESTACIÓN ", "Descripción del insumo"
+        wm.cell(r, 7).value, wm.cell(r, 8).value = "Unidad", "Total"
         wm.merge_cells(start_row=r, start_column=4, end_row=r, end_column=5)
-        for c in range(4, 9):
-            x = wm.cell(r, c)
-            x.fill, x.border, x.font = relleno, borde, Font(bold=True)
-            x.alignment = Alignment(horizontal="center", vertical="center")
-        r0 = r + 1
-        for mat in items:
+        for i, mat in enumerate(items):
             r += 1
-            wm.cell(r, 6, mat["insumo"]).alignment = Alignment(wrap_text=True)
-            wm.cell(r, 7, mat.get("unidad") or "").alignment = Alignment(horizontal="center", vertical="center")
-            wm.cell(r, 8, mat.get("cantidad") or 0).alignment = Alignment(horizontal="center", vertical="center")
-            for c in range(4, 9):
-                wm.cell(r, c).border = borde
-        wm.cell(r0, 4, est).alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        if r > r0:
-            wm.merge_cells(start_row=r0, start_column=4, end_row=r, end_column=5)
-        else:
-            wm.merge_cells(start_row=r0, start_column=4, end_row=r0, end_column=5)
+            for c, st in (proto_1 if i == 0 else proto_n).items():
+                wm.cell(r, c)._style = copy(st)
+            if i == 0:
+                wm.cell(r, 4).value = est
+            cant = mat.get("cantidad") or 0
+            wm.cell(r, 6).value = mat["insumo"]
+            wm.cell(r, 7).value = mat.get("unidad") or ""
+            wm.cell(r, 8).value = int(cant) if float(cant).is_integer() else cant
+            wm.merge_cells(start_row=r, start_column=4, end_row=r, end_column=5)
         r += 1
-    wm.column_dimensions["D"].width = 14
-    wm.column_dimensions["E"].width = 29
-    wm.column_dimensions["F"].width = 38
-    wm.column_dimensions["G"].width = 10
-    wm.column_dimensions["H"].width = 10
 
     buf = io.BytesIO()
     wb.save(buf)
