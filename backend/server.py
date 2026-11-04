@@ -15382,6 +15382,233 @@ async def export_asistencia_xlsx(
 # campo, y "tabla material" (por estación: insumo, unidad, total) que se captura
 # en el hub de materiales (colección `materiales_ft`).
 
+# Catálogos base del A4.1 de referencia: salen SIEMPRE en el Excel (con 0 si no hubo reporte),
+# junto con todo lo que el proyecto haya reportado o capturado alguna vez.
+_FT_CAT_PERSONAL = [
+    "Auxiliar de Residente",
+    "Arqueologo",
+    "Aux. Superintendente",
+    "Auxiliar de Obra Inducida",
+    "Auxiliar de operación",
+    "auxiliar seguridad",
+    "Ayudante",
+    "ayudante albail",
+    "Ayudante carpintero",
+    "ayudante de grua",
+    "Ayudante de pintor",
+    "Ayudante de plomero",
+    "Ayudante de soldador (herrero)",
+    "ayudante electrico",
+    "ayudante fierrero",
+    "Ayudantes perforador",
+    "Banderero",
+    "Biologo",
+    "Bodeguero",
+    "Cabo",
+    "Cadenero",
+    "Chofer de camión volteo",
+    "Coordinador de Obra Inducida.",
+    "Coordinador de seguridad",
+    "Electromecánico",
+    "Geofisico",
+    "Geologo",
+    "Ingeniero de calidad",
+    "Ingeniero de estimaciones",
+    "Ingeniero Geotecnista",
+    "Ingeniero Topografo",
+    "laboratorista de control de calidad",
+    "Limpieza",
+    "Mecanico",
+    "Montador",
+    "oficial",
+    "Oficial albail",
+    "Oficial carpintero",
+    "Oficial electrico",
+    "Oficial fierrero",
+    "Oficial Pintor",
+    "Oficial Plomero",
+    "Oficial soldador",
+    "Operador de camioneta",
+    "Operador de Compactador",
+    "Operador de excavadora.",
+    "Operador de góndola",
+    "Operador de grúa de canastilla",
+    "Operador de grúa hiab",
+    "Operador de grúa teles.",
+    "Operador de LowBoy",
+    "operador de máquina roscadora",
+    "operador de olla 8m3",
+    "Operador de perforadora",
+    "Operador de piloteadora rotativa",
+    "Operador de rodillo",
+    "Operador de tractocamion",
+    "Operador de vibrocompactador",
+    "Operador retroexcavadora",
+    "Podador",
+    "Residente ambiental",
+    "Residente de obra",
+    "Residente de poste",
+    "Residente piloteadora",
+    "Residente Piloteadora",
+    "Segurista",
+    "Superintendente",
+    "Vigilante",
+    "Cabo albañil",
+    "Operador de grúa Grove.",
+    "Cabo fierrero",
+    "Auxiliar de poste",
+    "Residente de calidad",
+    "Maniobrista",
+    "Ayudantes OCL",
+    "Cabo carpintero",
+    "Operador de bomba estacionaria",
+    "Ayudante de ambiental",
+    "Residente de rezarcimiento",
+]
+_FT_CAT_MAQUINARIA = [
+    "Grúa Pluma Grove RT 875 E",
+    "Andamio",
+    "Bailarina neumática",
+    "Batería OSAKA",
+    "Bomba achique Honda gx340 4”",
+    "Bomba estacionaria",
+    "Bomba gasolina honda 11 hp 4”x4”",
+    "Bomba pluma",
+    "Camión Bomba de concreto",
+    "Camión de volteo",
+    "Camión de Volteo Maxxforce placas 132-DP-1",
+    "Camion gondola",
+    "Camión tipo cisterna.",
+    "Camión tipo grúa con brazo articulado",
+    "Camion torton",
+    "Camioneta con canastilla KL3817A",
+    "Camioneta de Redilas",
+    "camioneta de redilas Ford F-450",
+    "Camioneta ford pick up B05-ALM",
+    "Camioneta Nissan Frontier.NLS-792-C)",
+    "Camioneta Nissan pick up 157-ZTP",
+    "Camioneta Pick Up F350(LH02247)",
+    "Camioneta Pick Up F450(LE59586)",
+    "Camioneta Pickup Ford F350 LG16634)",
+    "Camioneta Pickup Ram. Placa: NJL-039-C.",
+    "Compactador de suelos CAT 815F",
+    "Compactador manual BS68-4",
+    "Compresor msp500 activo",
+    "Compresor AIRMAN PDS185S",
+    "Compresor airman pdsf375dp",
+    "Compresor mac3 msp 5000",
+    "Compresor sullair 185 rm 001",
+    "Compresorr ATLAS COPCO XAS88 INACTIVO",
+    "Contenedor de agua",
+    "Cortadora de asfalto",
+    "Cortadora de piso Husqvarna FS400LV",
+    "Cortadora de tubería",
+    "Cortadora de varillas C54 EVO 3",
+    "Dobladora de varilla Mod P54 EVO",
+    "Equipo de Tomografía de Resistividad Eléctrica",
+    "Equipo de topografia",
+    "Equipo oxicorte",
+    "Esmeril",
+    "Estructura para poste",
+    "Excavadora Develon DX 210 WA Ex-316",
+    "Excavadora EX-318 320GX",
+    "Excavadora EX-321.",
+    "Excavadora RE-315 336",
+    "Generador de energía Lincoln",
+    "Generador/Inversor/Soldadora",
+    "Georadar Impulse Radar",
+    "Grua de Canastilla",
+    "Grúa Hiab CH-215",
+    "Grúa hiab CH-216",
+    "Grúa móvil telescópica LTM1090-4.2 Liebherr",
+    "Grúa telescópica manitex 2892S",
+    "Inversor Truper expert 130/200",
+    "Laptop",
+    "Llave de impacto",
+    "LowBoy placas 62-AF-8E",
+    "Martillo Neumatico",
+    "Mezcladora de Concreto Honoré",
+    "mezcladora de trompo para concreto Jomper 65 TR-16",
+    "Motosierra",
+    "Olla revolvedora de 8 m3.",
+    "Perforadora para sondeos Acker",
+    "Perforadora para sondeos Long Year 34",
+    "Perforadora para sondeos Long Year 38",
+    "Perforadora para sondeos Mobil Drill",
+    "Piloteadora de orugas XCMG XR168E. PP-103",
+    "Piloteadora orugas XCMG XR168E. PP-107",
+    "Piloteadora XCMG XR150D PP-109",
+    "Piloteadora XCMG SERIE XR240E (oruga)",
+    "Piloteadora XCMG XR168E PP-105",
+    "Presiometro APAGEO 60 bares",
+    "Probador de integridad",
+    "Pulidoras o esmeril",
+    "Retroexcavadora 420 xe re-431",
+    "Retroexcavadora 420F2IT RE-428",
+    "Retroexcavadora 420F2IT RE-434",
+    "Retroexcavadora RE-429",
+    "Revolvedora Joper 765 TR 15",
+    "Rodillo vibró compactador Volvo",
+    "Rompedora neumática",
+    "Roscadora Rolet Trifásic 220V",
+    "Roto martillo eléctrico",
+    "roto martillos neumáticos",
+    "Sierra para varilla McLane MT MTBS712Ninactivo",
+    "Sismógrafo mca.DAQLINK 4.",
+    "Tanque de Nitrógeno de 20 Kg",
+    "Termofusionadora",
+    "Tracto camion",
+    "Tubería tremie",
+    "tubería tremie 10\" de diámetro",
+    "Vibrador CIPSA MVMP6.5",
+    "vibrador de concretó KOHLER HP 6.5",
+    "vibrocompactador WACKER NEUSON RD27 120 445",
+    "Vibrócompatador WACKER bb NEUSON RD27 120 VB-444.",
+    "Grúa HIAB Fotón CH-216",
+    "Revolvedora para concreto Cap. 1 saco",
+    "Grua telescópica RT 875 E",
+    "Bomba estacionaria Schwing B-35",
+    "Grúa Marca LIBHERR de 50 TON",
+    "Sismómetro triaxial Sara",
+    "Grúa hiab 2892C",
+    "Máquina roscadora portátil",
+    "Generador eléctrico Nitro NIT-G6500E",
+    "grúa magruber 85-AG-7B",
+    "Dobladora de varilla eléctrica SIMPEDIL 220V-60Hz.",
+    "Cortadora de varilla eléctrica SIMPEDIL 220V-60Hz",
+    "Roscadora",
+    "Martillo hidráulico Indeco hp7500",
+    "Revolvedora de concreto TR 18",
+    "piloteadora XCMG XR168E PP-108",
+    "grúas titán Fassi (80BM4N, 24BM7M)",
+    "Piloteadora de orugas XCMG XR150Dlll PP-101",
+]
+_FT_CAT_MATERIAL = [
+    ["ESTACIÓN 1. UNIVERSIDAD", "tepetate", "M3"],
+    ["ESTACIÓN 2. CANTERA", "malla electrosoldada", "rollo"],
+    ["ESTACIÓN 2. CANTERA", "barrotes", "pza"],
+    ["ESTACIÓN 2. CANTERA", "polin", "pza"],
+    ["ESTACIÓN 2. CANTERA", "triplay", "pza"],
+    ["ESTACIÓN 2. CANTERA", "chaflan", "pza"],
+    ["ESTACIÓN 2. CANTERA", "varilla #12", "ton"],
+    ["ESTACIÓN 2. CANTERA", "varilla #4", "ton"],
+    ["ESTACIÓN 2. CANTERA", "varilla #6", "ton"],
+    ["ESTACIÓN 2. CANTERA", "varilla #8", "ton"],
+    ["ESTACIÓN 2. CANTERA", "tepetate", "m3"],
+    ["ESTACIÓN 3. PERISUR", "tuberia pead 42\"", "pza"],
+    ["ESTACIÓN 6. DEPORTIVO INDEPENDENCIA", "tepetate", "m3"],
+    ["ESTACIÓN 6. DEPORTIVO INDEPENDENCIA", "placa de unicel de 1.22X2.44 m", "pza"],
+    ["ESTACIÓN 6. DEPORTIVO INDEPENDENCIA", "polin", "pza"],
+    ["ESTACIÓN 6. DEPORTIVO INDEPENDENCIA", "barrotes", "pza"],
+    ["ESTACIÓN 6. DEPORTIVO INDEPENDENCIA", "triplay", "hoja"],
+    ["ESTACIÓN 6. DEPORTIVO INDEPENDENCIA", "celotex", "hoja"],
+    ["ESTACIÓN 6. DEPORTIVO INDEPENDENCIA", "alambre recocido", "kg"],
+    ["ESTACIÓN 7. CULTURA MAYA", "varilla #8", "ton"],
+    ["ESTACIÓN 7. CULTURA MAYA", "varilla #4", "ton"],
+    ["ESTACIÓN 8. PEDREGAL DE SAN NICOLAS", "tepetate", "M3"],
+]
+
+
 class MaterialFTIn(BaseModel):
     mes: str  # AAAA-MM
     estacion: str
@@ -15453,11 +15680,36 @@ async def ft_delete_material(pid: str, mid: str,
     return {"ok": True}
 
 
+def _ft_key(s: str) -> str:
+    """Clave de comparación: sin acentos, minúsculas, espacios y punto final normalizados."""
+    import unicodedata
+    t = unicodedata.normalize("NFD", s or "")
+    t = "".join(ch for ch in t if unicodedata.category(ch) != "Mn")
+    return re.sub(r"\s+", " ", t).strip().strip(".").strip().lower()
+
+
+def _ft_limpia_nombre(desc: str) -> str:
+    return _ft_norm(re.sub(r"\s*\([^)]*\)\s*$", "", desc))  # quita sufijo "(S2)"
+
+
 async def _ft_matriz_mensual(pid: str, y: int, m: int) -> dict:
-    """{"personal": {puesto: {dia: cantidad}}, "maquinaria": {...}} del mes (días CDMX)."""
+    """{"personal": {puesto: {dia: cantidad}}, "maquinaria": {...}} del mes (días CDMX).
+    Incluye TODO el catálogo base + todo lo que el proyecto haya reportado alguna vez
+    (los que no tuvieron reporte en el mes salen con 0)."""
     ini = datetime(y, m, 1, tzinfo=MX_TZ)
     fin = datetime(y + (m == 12), (m % 12) + 1, 1, tzinfo=MX_TZ)
-    out: dict = {"personal": {}, "maquinaria": {}}
+    nombres: dict = {"personal": {}, "maquinaria": {}}  # clave -> nombre a mostrar
+    for cat, base in (("personal", _FT_CAT_PERSONAL), ("maquinaria", _FT_CAT_MAQUINARIA)):
+        for n in base:
+            nombres[cat].setdefault(_ft_key(n), n)
+    campos = (("personnel", "personal"), ("equipment", "maquinaria"))
+    async for r in db.reports.find({"project_id": pid}, {"personnel": 1, "equipment": 1}).limit(20000):
+        for field, cat in campos:
+            for s in (r.get(field) or []):
+                desc = _ft_limpia_nombre(_parse_qty_desc(s)[1])
+                if desc:
+                    nombres[cat].setdefault(_ft_key(desc), desc)
+    out: dict = {cat: {n: {} for n in d.values()} for cat, d in nombres.items()}
     cur = db.reports.find({"project_id": pid, "created_at": {"$gte": ini, "$lt": fin}},
                           {"created_at": 1, "personnel": 1, "equipment": 1})
     async for r in cur:
@@ -15465,15 +15717,38 @@ async def _ft_matriz_mensual(pid: str, y: int, m: int) -> dict:
         if not isinstance(c, datetime):
             continue
         dia = (c if c.tzinfo else c.replace(tzinfo=timezone.utc)).astimezone(MX_TZ).day
-        for field, cat in (("personnel", "personal"), ("equipment", "maquinaria")):
+        for field, cat in campos:
             for s in (r.get(field) or []):
                 qty, desc = _parse_qty_desc(s)
-                desc = _ft_norm(re.sub(r"\s*\([^)]*\)\s*$", "", desc))  # quita sufijo "(S2)"
+                desc = _ft_limpia_nombre(desc)
                 if not desc:
                     continue
-                fila = out[cat].setdefault(desc, {})
+                fila = out[cat][nombres[cat].get(_ft_key(desc), desc)]
                 fila[dia] = fila.get(dia, 0) + qty
     return out
+
+
+async def _ft_materiales_completos(pid: str, mes: str) -> list:
+    """Catálogo base + todo lo capturado alguna vez en el hub; la cantidad es la del mes (0 si no hay)."""
+    filas: dict = {}   # (est, insumo, unidad) -> fila; conserva el orden de llegada
+    est_nombre: dict = {}
+
+    def agrega(est: str, ins: str, uni: str, cant: float = 0):
+        ek = _ft_key(est)
+        est = est_nombre.setdefault(ek, est)
+        k = (ek, _ft_key(ins), _ft_key(uni))
+        f = filas.setdefault(k, {"estacion": est, "insumo": ins, "unidad": uni, "cantidad": 0})
+        f["cantidad"] += cant
+
+    for est, ins, uni in _FT_CAT_MATERIAL:
+        agrega(est, ins, uni)
+    todos = await db.materiales_ft.find({"project_id": pid}, {"_id": 0}).to_list(length=20000)
+    todos.sort(key=lambda d: (d.get("created_at") or ""))
+    for d in todos:
+        agrega(d["estacion"], d["insumo"], d.get("unidad") or "", d.get("cantidad") or 0 if d.get("mes") == mes else 0)
+    # Agrupa por estación respetando el orden de aparición de cada una.
+    orden = {ek: i for i, ek in enumerate(est_nombre)}
+    return sorted(filas.values(), key=lambda f: orden[_ft_key(f["estacion"])])
 
 
 # Plantilla A4.1 (sin datos) incrustada: el deploy solo sube server.py.
@@ -15939,8 +16214,7 @@ async def ft_export_xlsx(pid: str, mes: str,
     await ensure_project_access(user, pid)
     y, m, _ = _ft_parse_mes(mes)
     matriz = await _ft_matriz_mensual(pid, y, m)
-    materiales = await db.materiales_ft.find({"project_id": pid, "mes": mes}, {"_id": 0}).to_list(length=5000)
-    materiales.sort(key=lambda d: d.get("orden", 0))
+    materiales = await _ft_materiales_completos(pid, mes)
     data = _ft_xlsx(y, m, matriz, materiales)
     return StreamingResponse(
         io.BytesIO(data),
