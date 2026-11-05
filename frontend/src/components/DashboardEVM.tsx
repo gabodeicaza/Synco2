@@ -252,6 +252,7 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
   // La supervisión se lee de Dirac: no trae costos reales (gasto, CPI, pronóstico de costo).
   const esSup = contrato === 'supervision';
   const [haySupervision, setHaySupervision] = useState(false);
+  const [esDirac, setEsDirac] = useState(false); // proyecto de Dirac: sin captura propia de gastos
 
   const [gastoFormOpen, setGastoFormOpen] = useState(false);
   const [importandoGastos, setImportandoGastos] = useState(false);
@@ -421,6 +422,7 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
     // Cablebús (Dirac): la supervisión se lee de la API (no hay partidas capturadas), así que
     // el selector aparece siempre y arranca en Supervisión.
     esProyectoDirac(projectId).then((dirac) => {
+      setEsDirac(dirac);
       if (dirac) {
         setHaySupervision(true);
         setContrato('supervision');
@@ -599,7 +601,7 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
           </>
         ) : null}
 
-        {!esSup ? (<>
+        {!esSup && !esDirac ? (<>
         <View style={styles.seccionHeaderRow}>
           <Text style={styles.seccionTitulo}>{t('tableroEvm.gastoRealAc')}</Text>
           <Pressable accessibilityRole="button" onPress={openGastoForm} style={styles.addBtn}>
@@ -655,7 +657,7 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
           />
         )}
         </>) : (
-          <Text style={styles.gastoAvisoTxt}>Contrato de supervisión: avance, estimaciones y programa vienen de Dirac (solo lectura). Dirac no incluye costos reales, por eso no se muestran gasto ni indicadores de costo.</Text>
+          <Text style={styles.gastoAvisoTxt}>Avance, estimaciones y programa vienen de Dirac (solo lectura). Dirac no incluye costos reales, por eso no se muestra el control de gastos.</Text>
         )}
 
         <Text style={styles.seccionTitulo}>{t('tableroEvm.curvaS')}</Text>

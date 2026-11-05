@@ -113,6 +113,7 @@ export function HeaderMenu({ basePath, projectId }: HeaderMenuProps) {
                 {/* Catálogo de Conceptos: hub con registrar avance, catálogo y
                     visualizar avance (ver CatalogoConceptosHubScreen.tsx). */}
                 {!esDirac ? <MenuItem icon="albums-outline" label={t('menuCabecera.catalogoConceptos')} onPress={() => goTo('catalogo-conceptos-hub')} /> : null}
+                {esDirac ? <MenuItem icon="analytics-outline" label="Avance y estimaciones (Dirac)" onPress={() => goTo('dirac')} /> : null}
                 <MenuItem icon="reader-outline" label={t('menuCabecera.actividadesGenerales')} onPress={() => goTo('actividades-generales', { nivel: 'GENERAL' })} />
                 <MenuItem icon="print-outline" label="Informes diarios (PDF)" onPress={() => goTo('informe-diario', { vista: 'equipo' })} />
                 <MenuItem icon="list-outline" label="Índice de informes" onPress={() => goTo('indice')} />
@@ -139,6 +140,7 @@ export function HeaderMenu({ basePath, projectId }: HeaderMenuProps) {
                     ofrecen; "Registrar avance" (captura diaria) sí, directo. */}
                 <MenuItem icon="document-text-outline" label={t('menuCabecera.borradores')} onPress={() => { setOpen(false); router.push(`${basePath}/borradores` as any); }} />
                 {!esDirac ? <MenuItem icon="create-outline" label="Registrar avance" onPress={() => goTo('registrar-avance')} /> : null}
+                {esDirac ? <MenuItem icon="analytics-outline" label="Avance y estimaciones (Dirac)" onPress={() => goTo('dirac')} /> : null}
                 <MenuItem icon="people-outline" label={t('menuCabecera.fuerzaTrabajo')} onPress={() => goTo('fuerza-de-trabajo')} />
                 <MenuItem icon="print-outline" label="Informes diarios (PDF)" onPress={() => goTo('informe-diario', { vista: 'equipo' })} />
                 <MenuItem icon="chatbubbles-outline" label={t('menuCabecera.mensajes')} onPress={() => goTo('mensajes')} />

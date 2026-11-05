@@ -8,6 +8,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 
 import { api, AvancesResumen, Concepto, Partida, Project, RegistroAvance } from '@/src/api';
+import { useRedirigirADirac } from '@/src/utils/dirac';
 import { colors, radius, shadow, spacing } from '@/src/theme';
 import { APP_BRAND } from '@/src/utils/roles';
 import { ScreenHeader } from '@/src/components/ScreenHeader';
@@ -29,6 +30,7 @@ const ATAJO_LABELS: Record<AtajoRango, string> = {
 };
 
 export default function VisualizarAvanceScreen({ projectId }: { projectId: string }) {
+  useRedirigirADirac(projectId);
   const [project, setProject] = useState<Project | null>(null);
   const [partidas, setPartidas] = useState<Partida[]>([]);
   const [conceptosById, setConceptosById] = useState<Record<string, Concepto>>({});

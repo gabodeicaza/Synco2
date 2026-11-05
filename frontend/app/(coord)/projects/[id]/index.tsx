@@ -1610,14 +1610,14 @@ export default function ProjectDetailScreen() {
                   subtitle={t('proyectoPantalla.informeDeActividadesSemanalPreview')}
                   onPress={() => router.push({ pathname: '/(coord)/projects/[id]/presentacion' as any, params: { id: pid } })}
                 />
-                {!esDirac ? (
                 <ActionTile
                   icon="bar-chart-outline"
                   title={t('proyectoPantalla.visualizarAvance')}
-                  subtitle={t('proyectoPantalla.reporteDeAvancePorPeriodo')}
-                  onPress={() => router.push({ pathname: '/(coord)/projects/[id]/visualizar-avance' as any, params: { id: pid } })}
+                  subtitle={esDirac ? 'Avance y estimaciones desde Dirac' : t('proyectoPantalla.reporteDeAvancePorPeriodo')}
+                  onPress={() => router.push(esDirac
+                    ? { pathname: '/(coord)/dirac' as any, params: { project_id: pid } }
+                    : { pathname: '/(coord)/projects/[id]/visualizar-avance' as any, params: { id: pid } })}
                 />
-                ) : null}
                 <ActionTile
                   icon="map-outline"
                   title={t('proyectoPantalla.planoDeAvance')}

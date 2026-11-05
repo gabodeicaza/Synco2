@@ -10,6 +10,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 
 import { api, Concepto, Project, LocationNodeTree } from '@/src/api';
+import { useRedirigirADirac } from '@/src/utils/dirac';
 import { colors, radius, shadow, spacing } from '@/src/theme';
 import { APP_BRAND } from '@/src/utils/roles';
 import { ScreenHeader } from '@/src/components/ScreenHeader';
@@ -33,6 +34,7 @@ import { a11y, t } from '@/src/i18n';
 import { fmtFecha, hoyProyecto } from '@/src/utils/fechas';
 
 export default function RegistrarAvanceScreen({ projectId }: { projectId: string }) {
+  useRedirigirADirac(projectId);
   const [project, setProject] = useState<Project | null>(null);
   const conc = concordanciaConcepto(project);
 

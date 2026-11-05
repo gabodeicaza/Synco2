@@ -2,6 +2,7 @@
 // (GET /projects/{pid}/dirac → { aplica }); aquí solo se cachea la respuesta para
 // no repetir la consulta en cada pantalla/menú. Si falla, se asume que NO aplica.
 import { useEffect, useState } from 'react';
+import { router, useSegments } from 'expo-router';
 import { api } from '@/src/api';
 
 const cache = new Map<string, Promise<boolean>>();
@@ -31,4 +32,20 @@ export function useEsDirac(pid?: string | null): boolean {
 /** Olvida la respuesta cacheada (tras conectar o desconectar un proyecto). */
 export function olvidarDirac(pid?: string | null): void {
   if (pid) cache.delete(pid);
+}
+
+/** En un proyecto de Dirac, las pantallas de captura/consulta de avance propias se sustituyen por
+ *  el avance de Dirac (misma ruta del rol, pantalla `dirac`). */
+export function useRedirigirADirac(pid?: string | null): void {
+  const seg = useSegments();
+  const grupo = String(seg[0] || '');
+  useEffect(() => {
+    let vivo = true;
+    esProyectoDirac(pid).then((es) => {
+      if (vivo && es && grupo.startsWith('(')) {
+        router.replace({ pathname: `/${grupo}/dirac` as any, params: { project_id: pid as string, id: pid as string } });
+      }
+    });
+    return () => { vivo = false; };
+  }, [pid, grupo]);
 }
