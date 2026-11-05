@@ -28,6 +28,7 @@ export function HeaderMenu({ basePath, projectId }: HeaderMenuProps) {
   const { logout } = useAuth();
   const [open, setOpen] = useState(false);
   const [borrando, setBorrando] = useState(false);
+  const esSub = basePath === '/(subcoord)';
 
   // Sistema Multi-Proyecto Modular: qué plantillas están encendidas para el
   // proyecto actual (ver src/utils/modulos.ts para el catálogo del lado del
@@ -91,81 +92,60 @@ export function HeaderMenu({ basePath, projectId }: HeaderMenuProps) {
         <Pressable style={styles.backdrop} onPress={() => setOpen(false)}>
           <View style={[styles.menuCard, { top: insets.top + 56, maxHeight: winH - insets.top - insets.bottom - 64 }]}>
             <ScrollView showsVerticalScrollIndicator={false} bounces={false}>
-            {/* Mensajes y Calendario vivian como tabs de la barra inferior
-                (subcoord y spec); se movieron aqui para liberar espacio. */}
-            <MenuItem
-              icon="document-text-outline"
-              label={t('menuCabecera.borradores')}
-              onPress={() => { setOpen(false); router.push(`${basePath}/borradores` as any); }}
-            />
-            <MenuItem icon="print-outline" label="Informes diarios (PDF)" onPress={() => goTo('informe-diario', { vista: 'equipo' })} />
-            <MenuItem icon="chatbubbles-outline" label={t('menuCabecera.mensajes')} onPress={() => goTo('mensajes')} />
-            <MenuItem icon="calendar-outline" label={t('menuCabecera.calendario')} onPress={() => goTo('calendario')} />
-            <MenuItem icon="folder-open-outline" label={t('menuCabecera.archivosConsulta')} onPress={() => goTo('archivos-consulta')} />
-            <MenuItem icon="people-outline" label={t('menuCabecera.fuerzaTrabajo')} onPress={() => goTo('fuerza-de-trabajo')} />
-            {basePath === '/(subcoord)' ? (
-              // Asistencia: derivada de los reportes (hora y ubicación), con
-              // resúmenes semanal y mensual. Solo Sub-Coordinador (y el
-              // Coordinador, desde su pantalla de proyecto).
-              <MenuItem icon="checkbox-outline" label="Asistencia" onPress={() => goTo('asistencia')} />
-            ) : null}
-            {basePath === '/(subcoord)' ? (
-              // Imágenes: todas las fotos de los reportes por nodo y periodo, con descarga en ZIP.
-              <MenuItem icon="images-outline" label="Imágenes" onPress={() => goTo('imagenes')} />
-            ) : null}
+            {esSub ? (
+              <>
+                {/* Sub-Coordinador: secciones por tipo de uso para ubicar rápido
+                    cada cosa (antes era una sola lista plana de ~17 opciones). */}
+                <SectionLabel label="Día a día" first />
+                <MenuItem icon="document-text-outline" label={t('menuCabecera.borradores')} onPress={() => { setOpen(false); router.push(`${basePath}/borradores` as any); }} />
+                <MenuItem icon="chatbubbles-outline" label={t('menuCabecera.mensajes')} onPress={() => goTo('mensajes')} />
+                <MenuItem icon="calendar-outline" label={t('menuCabecera.calendario')} onPress={() => goTo('calendario')} />
+                <MenuItem icon="people-outline" label={t('menuCabecera.fuerzaTrabajo')} onPress={() => goTo('fuerza-de-trabajo')} />
+                {/* Asistencia: derivada de los reportes (hora y ubicación). */}
+                <MenuItem icon="checkbox-outline" label="Asistencia" onPress={() => goTo('asistencia')} />
+                {/* Imágenes: fotos de los reportes por nodo y periodo, con descarga en ZIP. */}
+                <MenuItem icon="images-outline" label="Imágenes" onPress={() => goTo('imagenes')} />
 
-            {/* Catálogo de Conceptos: antes un acordeón con 3 sub-opciones
-                aquí mismo (registrar avance, catálogo, visualizar avance);
-                mismo motivo que Módulos/Actividades Generales — un botón
-                único que lleva a su propio hub (ver
-                CatalogoConceptosHubScreen.tsx). */}
-            <MenuItem icon="albums-outline" label={t('menuCabecera.catalogoConceptos')} onPress={() => goTo('catalogo-conceptos-hub')} />
+                <SectionLabel label="Avance e informes" />
+                {/* Catálogo de Conceptos: hub con registrar avance, catálogo y
+                    visualizar avance (ver CatalogoConceptosHubScreen.tsx). */}
+                <MenuItem icon="albums-outline" label={t('menuCabecera.catalogoConceptos')} onPress={() => goTo('catalogo-conceptos-hub')} />
+                <MenuItem icon="reader-outline" label={t('menuCabecera.actividadesGenerales')} onPress={() => goTo('actividades-generales', { nivel: 'GENERAL' })} />
+                <MenuItem icon="print-outline" label="Informes diarios (PDF)" onPress={() => goTo('informe-diario', { vista: 'equipo' })} />
+                <MenuItem icon="list-outline" label="Índice de informes" onPress={() => goTo('indice')} />
+                <MenuItem icon="easel-outline" label={t('menuCabecera.presentacion')} onPress={() => goTo('presentacion')} />
 
-            {/* Actividades Generales: vista curada de las actividades ya
-                capturadas en reportes — Generales, o por Ubicación (fusiona
-                los antiguos "Por Estación"/"Por Poste"). Antes un acordeón
-                con 2 sub-opciones aquí mismo; la pantalla destino ya tiene
-                sus propios tabs para cambiar entre ambas
-                (ActividadesGeneralesScreen.tsx), así que un solo botón
-                basta — entra directo a "Generales". */}
-            <MenuItem icon="reader-outline" label={t('menuCabecera.actividadesGenerales')} onPress={() => goTo('actividades-generales', { nivel: 'GENERAL' })} />
+                <SectionLabel label="Seguimiento" />
+                <MenuItem icon="stats-chart-outline" label={t('menuCabecera.dashboardEvm')} onPress={() => goTo('dashboard-evm')} />
+                <MenuItem icon="map-outline" label={t('menuCabecera.planoAvance')} onPress={() => goTo('plano-avance')} />
+                {/* Edita acceso_predio/situacion_social por Subtramo (solo Coordinador y Sub-Coordinador). */}
+                <MenuItem icon="shield-checkmark-outline" label={t('menuCabecera.accesoPredio')} onPress={() => goTo('acceso-predio')} />
 
-            {/* Vista ejecutiva de costo/tiempo (Valor Ganado) — no es una
-                captura de campo, por eso vive suelto y no dentro del grupo
-                "Catálogo de Conceptos". Ver src/components/DashboardEVM.tsx. */}
-            <MenuItem icon="stats-chart-outline" label={t('menuCabecera.dashboardEvm')} onPress={() => goTo('dashboard-evm')} />
-
-            {/* Plano de Avance y Presentación — siempre visibles (como
-                Dashboard EVM), no pasan por el toggle de módulos por
-                proyecto (ver PlanoAvanceScreen.tsx / PresentacionScreen.tsx). */}
-            <MenuItem icon="map-outline" label={t('menuCabecera.planoAvance')} onPress={() => goTo('plano-avance')} />
-            <MenuItem icon="easel-outline" label={t('menuCabecera.presentacion')} onPress={() => goTo('presentacion')} />
-
-            {basePath === '/(subcoord)' ? (
-              // Edita acceso_predio/situacion_social por Subtramo — el backend
-              // (PATCH /nodes) solo permite escribir estos campos a Coordinador
-              // y Sub-Coordinador, por eso no se ofrece a Especialista.
-              <MenuItem icon="shield-checkmark-outline" label={t('menuCabecera.accesoPredio')} onPress={() => goTo('acceso-predio')} />
-            ) : null}
-
-            {/* Sistema Multi-Proyecto Modular: con varios módulos encendidos
-                a la vez, listarlos aquí mismo (aunque fuera en una sola
-                sección plana) rompía el layout del dropdown — ver
-                ModulosHubScreen.tsx. Ahora un solo botón lleva a una
-                pantalla propia con la lista completa. Solo aparece si el
-                Coordinador encendió AL MENOS un módulo para este proyecto
-                (ver `modulos` en GET /projects/{pid} y src/utils/modulos.ts)
-                — nunca se asume "encendido" por default. */}
-            {modulosActivos(modulos).length > 0 || hayPersonalizados ? (
-              <MenuItem icon="apps-outline" label={t('menuCabecera.modulos')} onPress={() => goTo('modulos')} />
-            ) : null}
-
-            {basePath === '/(subcoord)' ? (
-              // Orden, títulos y secciones ocultas del índice de los informes
-              // PDF/PPTX (Diario, Semanal y Mensual). El backend lo permite a
-              // Coordinador y Sub-Coordinador.
-              <MenuItem icon="list-outline" label="Índice de informes" onPress={() => goTo('indice')} />
-            ) : null}
+                <SectionLabel label="Más" />
+                <MenuItem icon="folder-open-outline" label={t('menuCabecera.archivosConsulta')} onPress={() => goTo('archivos-consulta')} />
+                {/* Módulos: solo si el Coordinador encendió al menos uno para este proyecto. */}
+                {modulosActivos(modulos).length > 0 || hayPersonalizados ? (
+                  <MenuItem icon="apps-outline" label={t('menuCabecera.modulos')} onPress={() => goTo('modulos')} />
+                ) : null}
+              </>
+            ) : (
+              <>
+                {/* Especialista: solo lo de uso diario en campo. Catálogo de
+                    conceptos, dashboard, plano, presentación, actividades
+                    generales y acceso al predio son de supervisión y no se
+                    ofrecen; "Registrar avance" (captura diaria) sí, directo. */}
+                <MenuItem icon="document-text-outline" label={t('menuCabecera.borradores')} onPress={() => { setOpen(false); router.push(`${basePath}/borradores` as any); }} />
+                <MenuItem icon="create-outline" label="Registrar avance" onPress={() => goTo('registrar-avance')} />
+                <MenuItem icon="people-outline" label={t('menuCabecera.fuerzaTrabajo')} onPress={() => goTo('fuerza-de-trabajo')} />
+                <MenuItem icon="print-outline" label="Informes diarios (PDF)" onPress={() => goTo('informe-diario', { vista: 'equipo' })} />
+                <MenuItem icon="chatbubbles-outline" label={t('menuCabecera.mensajes')} onPress={() => goTo('mensajes')} />
+                <MenuItem icon="calendar-outline" label={t('menuCabecera.calendario')} onPress={() => goTo('calendario')} />
+                <MenuItem icon="folder-open-outline" label={t('menuCabecera.archivosConsulta')} onPress={() => goTo('archivos-consulta')} />
+                {modulosActivos(modulos).length > 0 || hayPersonalizados ? (
+                  <MenuItem icon="apps-outline" label={t('menuCabecera.modulos')} onPress={() => goTo('modulos')} />
+                ) : null}
+              </>
+            )}
 
             <View style={styles.divider} />
             {/* No pasa por goTo(): a diferencia del resto de items, no depende
@@ -188,6 +168,10 @@ export function HeaderMenu({ basePath, projectId }: HeaderMenuProps) {
       <EliminarCuentaModal visible={borrando} onClose={() => setBorrando(false)} />
     </>
   );
+}
+
+function SectionLabel({ label, first }: { label: string; first?: boolean }) {
+  return <Text style={[styles.sectionLabel, first && { marginTop: 2 }]}>{label}</Text>;
 }
 
 function MenuItem({
@@ -247,6 +231,16 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
     color: colors.text,
+  },
+  sectionLabel: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: colors.textMuted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+    paddingHorizontal: spacing.md,
+    marginTop: 8,
+    marginBottom: 2,
   },
   divider: {
     height: 1,
