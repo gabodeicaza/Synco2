@@ -1596,14 +1596,12 @@ export default function ProjectDetailScreen() {
                   subtitle={t('proyectoPantalla.valorGanadoSpiCpiCurva')}
                   onPress={() => router.push({ pathname: '/(coord)/projects/[id]/dashboard' as any, params: { id: pid } })}
                 />
-                {!esDirac ? (
                 <ActionTile
                   icon="create-outline"
                   title={t('proyectoPantalla.registrarAvance')}
                   subtitle={t('proyectoPantalla.capturaDiariaEnCampoCuanto')}
                   onPress={() => router.push({ pathname: '/(coord)/projects/[id]/registrar-avance' as any, params: { id: pid } })}
                 />
-                ) : null}
                 <ActionTile
                   icon="easel-outline"
                   title={t('proyectoPantalla.presentacion')}
@@ -1613,11 +1611,17 @@ export default function ProjectDetailScreen() {
                 <ActionTile
                   icon="bar-chart-outline"
                   title={t('proyectoPantalla.visualizarAvance')}
-                  subtitle={esDirac ? 'Avance y estimaciones desde Dirac' : t('proyectoPantalla.reporteDeAvancePorPeriodo')}
-                  onPress={() => router.push(esDirac
-                    ? { pathname: '/(coord)/dirac' as any, params: { project_id: pid } }
-                    : { pathname: '/(coord)/projects/[id]/visualizar-avance' as any, params: { id: pid } })}
+                  subtitle={t('proyectoPantalla.reporteDeAvancePorPeriodo')}
+                  onPress={() => router.push({ pathname: '/(coord)/projects/[id]/visualizar-avance' as any, params: { id: pid } })}
                 />
+                {esDirac ? (
+                <ActionTile
+                  icon="analytics-outline"
+                  title="Avance y estimaciones (Dirac)"
+                  subtitle="Contrato de supervisión desde Dirac"
+                  onPress={() => router.push({ pathname: '/(coord)/dirac' as any, params: { project_id: pid } })}
+                />
+                ) : null}
                 <ActionTile
                   icon="map-outline"
                   title={t('proyectoPantalla.planoDeAvance')}
@@ -1747,7 +1751,7 @@ export default function ProjectDetailScreen() {
               />
               {/* ===== Catalogo de Conceptos (consulta/administracion — Registrar y
                   Visualizar avance viven en la pestaña Operacion, no aqui) ===== */}
-              {!esDirac ? (<>
+              <>
               <Text style={styles.sectionTitle}>{t('proyectoPantalla.catalogoDeConceptos')}</Text>
               <ActionTile
                 icon="albums-outline"
@@ -1761,7 +1765,7 @@ export default function ProjectDetailScreen() {
                 subtitle={t('proyectoPantalla.tipoDeContratoAvanceEn')}
                 onPress={openCatalogoConfigModal}
               />
-              </>) : null}
+              </>
               <ProgramaObraSection projectId={pid} zona={project as any} />
 
               <Pressable accessibilityRole="button" onPress={onArchive} style={styles.archiveBtn}>
