@@ -8,6 +8,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '@/src/auth-context';
 import { api, Project } from '@/src/api';
 import { colors, radius, spacing, shadow } from '@/src/theme';
+import { DiracSummaryCard } from '@/src/components/DiracPanel';
 import { roleLabel } from '@/src/utils/roles';
 import { Button } from '@/src/components/Button';
 import { MyMeetingsPanel, MyMeetingItem } from '@/src/components/MyMeetingsPanel';
@@ -76,6 +77,7 @@ export default function CoordHome() {
         {/* MyMeetingsPanel trae su propio paddingHorizontal (mismo criterio que
             en Especialista/Sub-coordinador) — se compensa el padding del
             ScrollView de esta pantalla para no duplicarlo. */}
+        <View style={{ marginBottom: spacing.md }}><DiracSummaryCard route="/(coord)/dirac" /></View>
         <View style={{ marginHorizontal: -spacing.lg }}>
           <MyMeetingsPanel items={myMeetings} loading={myMeetingsLoading} />
         </View>

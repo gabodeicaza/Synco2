@@ -3747,6 +3747,11 @@ export const api = {
       'POST', `/projects/${pid}/ai_summary?periodo=${periodo}`,
     ),
 
+  // ---- Dirac APM (contrato, avances, estimaciones) ----------------------
+  diracConceptos: (refresh = false) =>
+    request<any>('GET', `/dirac/conceptos${refresh ? '?refresh=true' : ''}`),
+
+
   // Informe diario por ingeniero (corte 18:30 + resumen IA).
   informeDiarioMio: (pid: string, fecha?: string) =>
     request<InformeDiario | null>('GET', `/projects/${pid}/informe_diario/mio${fecha ? `?fecha=${fecha}` : ''}`),

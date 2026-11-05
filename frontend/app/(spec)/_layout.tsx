@@ -142,6 +142,7 @@ export default function SpecLayout() {
         {/* Borradores del reporte Nuevo — alcanzable desde Inicio y el menú, sin tab visible. */}
         <Tabs.Screen name="borradores" options={{ href: null }} />
         <Tabs.Screen name="profile" options={{ href: null }} />
+        <Tabs.Screen name="dirac" options={{ href: null }} />
       </Tabs>
       <OfflineQueueIndicator />
     </View>

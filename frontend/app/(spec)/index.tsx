@@ -38,6 +38,7 @@ import { GravedadDot, GravedadFiltro, filtrarPorGravedad, type GravedadFiltroVal
 import { ReportPreviewSheet } from '@/src/components/ReportPreviewSheet';
 import { suscribirReporteEditado } from '@/src/utils/reportEdit';
 import { HistoryCalendarModal } from '@/src/components/HistoryCalendarModal';
+import { DiracSummaryCard } from '@/src/components/DiracPanel';
 import { a11y, t } from '@/src/i18n';
 import {
   dayjs, toISODateCDMX, CDMX_TZ,
@@ -372,6 +373,7 @@ export default function SpecFeedScreen() {
 
   const ListHeader = useMemo(() => (
     <>
+      <View style={{ paddingHorizontal: spacing.md, marginTop: spacing.sm }}><DiracSummaryCard route="/(spec)/dirac" /></View>
       <HeroCard user={user} project={project} globalPct={0} />
       <View style={styles.statsRow}>
         <StatCard label={t('inicioEspecialista.total')} value={stats.total} icon="albums-outline" tint={colors.primary} />

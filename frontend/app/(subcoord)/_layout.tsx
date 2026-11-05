@@ -88,6 +88,7 @@ export default function SubCoordLayout() {
         />
         {/* Pantalla legacy: el dashboard real ya se sirve mediante index.tsx (re-export). */}
         <Tabs.Screen name="dashboard" options={{ href: null }} />
+        <Tabs.Screen name="dirac" options={{ href: null }} />
         {/* Mensajes y Calendario se movieron al menu hamburgues (HeaderMenu) _
             siguen alcanzables via router.push, ya no ocupan tab visible. */}
         <Tabs.Screen name="mensajes" options={{ href: null }} />
