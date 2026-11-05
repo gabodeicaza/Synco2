@@ -157,11 +157,14 @@ export default function EstimacionesScreen({ projectId }: { projectId: string })
       </View>
 
       <ScrollView contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + spacing.xl }]}>
-        {porContrato.map(({ contrato, rows }) => (
+        {porContrato.map(({ contrato, rows }) => {
+          const deDirac = rows.some((r) => r.solo_lectura);
+          return (
           <View key={contrato} style={{ marginBottom: spacing.lg }}>
             <View style={styles.sectionHeaderRow}>
               <Text style={styles.sectionTitle}>Concentrado · {CONTRATO_LABEL[contrato]}</Text>
-              {puedeEditar ? (
+              {deDirac ? <Text style={styles.meta}>Fuente: Dirac (solo lectura)</Text> : null}
+              {puedeEditar && !deDirac ? (
                 <Pressable accessibilityRole="button" onPress={() => nuevo(contrato)} style={styles.addBtn}>
                   <Ionicons name="add" size={16} color={colors.primary} />
                   <Text style={styles.addBtnTxt}>Nueva estimación</Text>
@@ -173,11 +176,11 @@ export default function EstimacionesScreen({ projectId }: { projectId: string })
                 <Text style={styles.emptyTxt}>Sin estimaciones de {CONTRATO_LABEL[contrato].toLowerCase()}.</Text>
               </View>
             ) : rows.map((e) => (
-              <Pressable accessibilityRole="button" key={e.id} style={[styles.card, { padding: spacing.md }]} onPress={puedeEditar ? () => editar(e) : undefined}>
+              <Pressable accessibilityRole="button" key={e.id} style={[styles.card, { padding: spacing.md }]} onPress={puedeEditar && !e.solo_lectura ? () => editar(e) : undefined}>
                 <View style={styles.cardHeader}>
                   <Text style={styles.cardTitle}>Estimación {e.numero}</Text>
                   <Text style={styles.estatus}>{e.estatus || '-'}</Text>
-                  {puedeEditar ? (
+                  {puedeEditar && !e.solo_lectura ? (
                     <Pressable accessibilityRole="button" accessibilityLabel="Eliminar" hitSlop={8} onPress={() => onDelete(e)}>
                       <Ionicons name="trash-outline" size={18} color={colors.error} />
                     </Pressable>
@@ -191,7 +194,8 @@ export default function EstimacionesScreen({ projectId }: { projectId: string })
               </Pressable>
             ))}
           </View>
-        ))}
+          );
+        })}
       </ScrollView>
 
       <Modal visible={!!draft} transparent animationType="slide" onRequestClose={() => setDraft(null)}>

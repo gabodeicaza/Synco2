@@ -3462,6 +3462,147 @@ def _dirac_bloques_avance(data: dict, corte: date) -> tuple:
     return bloques, graficas
 
 
+# --- Dirac como FUENTE del contrato de supervisión (avance, estimaciones, curva S) ----------
+# El motor EVM y las estimaciones usan estas funciones cuando el proyecto es el del contrato
+# de Dirac (_dirac_aplica). El valor ganado sale de los registros de avance de Dirac
+# (cantidad confirmada × precio unitario); la curva planeada, del avance programado del
+# contrato. Dirac no trae costos reales: AC/CPI/EAC quedan vacíos para la supervisión.
+async def _dirac_supervision(pid: str, project: Optional[dict] = None) -> Optional[dict]:
+    """Datos de Dirac si ESTE proyecto es el contrato de Dirac; si no, None."""
+    if not DIRAC_API_URL:
+        return None
+    if project is None:
+        project = await db.projects.find_one({"id": pid}) or {}
+    data = await _dirac_fetch()
+    return data if _dirac_aplica(project, pid, data) else None
+
+
+def _dirac_planeado_por_mes(data: dict) -> Dict[str, Decimal]:
+    out: Dict[str, Decimal] = {}
+    for p in data.get("avance_programado_del_contrato") or []:
+        if p.get("fecha"):
+            out[p["fecha"][:7]] = out.get(p["fecha"][:7], Decimal("0")) + _dd(p.get("importe"))
+    return out
+
+
+def _dirac_ganado_registros(data: dict) -> List[tuple]:
+    """[(fecha 'YYYY-MM-DD', importe)] de cada registro de avance de cada concepto."""
+    out: List[tuple] = []
+    for f in data.get("frentes") or []:
+        for k in f.get("conceptos") or []:
+            pu = _dd(k.get("pu"))
+            for r in (k.get("avance_fisico") or {}).get("registros") or []:
+                cant = r.get("cantidad_confirmada")
+                if cant is None or not r.get("fecha_hora"):
+                    continue
+                out.append((str(r["fecha_hora"])[:10], _dd(cant) * pu))
+    return out
+
+
+def _dirac_ganado_por_mes(data: dict) -> Dict[str, Decimal]:
+    out: Dict[str, Decimal] = {}
+    for fecha, imp in _dirac_ganado_registros(data):
+        out[fecha[:7]] = out.get(fecha[:7], Decimal("0")) + imp
+    return out
+
+
+def _dirac_pv_ventana(planeado_mes: Dict[str, Decimal], ini: date, fin: date) -> Decimal:
+    """Valor planeado en [ini, fin]: cada mes se reparte por días (mismo criterio que el motor)."""
+    import calendar
+    total = Decimal("0")
+    for mes, valor in planeado_mes.items():
+        y, m = int(mes[:4]), int(mes[5:7])
+        dias = calendar.monthrange(y, m)[1]
+        a, b = max(ini, date(y, m, 1)), min(fin, date(y, m, dias))
+        if a <= b:
+            total += valor * Decimal((b - a).days + 1) / Decimal(dias)
+    return total
+
+
+def _dirac_analisis(data: dict, start: str, end: str) -> Dict[str, Any]:
+    """Mismo diccionario que `calcular_analisis_evm`, calculado con Dirac."""
+    ini, fin = date.fromisoformat(start), date.fromisoformat(end)
+    pv = _dirac_pv_ventana(_dirac_planeado_por_mes(data), ini, fin)
+    regs = _dirac_ganado_registros(data)
+    ev = sum((imp for f, imp in regs if start <= f <= end), start=Decimal("0"))
+    ev_acum = sum((imp for f, imp in regs if f <= end), start=Decimal("0"))
+    cuatro = Decimal("0.0001")
+    return {
+        "pv": pv, "ev_contractual": ev, "ev_total": ev, "ac": Decimal("0"),
+        "spi": (ev / pv).quantize(cuatro, rounding=ROUND_HALF_UP) if pv != 0 else None,
+        "cpi": None, "variacion_cronograma": ev - pv, "variacion_costo": None,
+        "bac": _dd((data.get("totales") or {}).get("importe")),
+        "ev_acumulado": ev_acum, "ac_acumulado": Decimal("0"),
+        "pronostico": None, "conceptos_sin_programa": 0,
+    }
+
+
+def _dirac_estimaciones_docs(data: dict, pid: str) -> List[dict]:
+    """Estimaciones de Dirac con la forma de los documentos de db.estimaciones (solo lectura)."""
+    docs = []
+    for e in sorted(data.get("estimaciones") or [], key=lambda x: x.get("numero_estimacion") or 0):
+        docs.append({
+            "id": f"dirac-{e.get('id')}", "project_id": pid, "contrato": "supervision",
+            "numero": e.get("numero_estimacion"),
+            "periodo_inicio": e.get("fecha_inicio"), "periodo_fin": e.get("fecha_fin"),
+            "estatus": e.get("estatus"),
+            "obra_ejecutada": dec_to_str(round_money(_dd(e.get("importe")))),
+            "amortizacion": None, "pct_amortizacion_anticipo": None,
+            "total_deducciones": dec_to_str(round_money(_dd(e.get("total_deducciones")))),
+            "iva": dec_to_str(round_money(_dd(e.get("impuesto_iva")))),
+            "total_neto": dec_to_str(round_money(_dd(e.get("alcance_liquido")))),
+            "fecha_pago": e.get("fecha_pago") or ("" if e.get("pagado") else "Por pagar"),
+            "solo_lectura": True, "fuente": "dirac",
+        })
+    return docs
+
+
+def _dirac_actividades(data: dict, hoy: date) -> Dict[str, List[dict]]:
+    """Pendientes / actuales / por venir a partir del estado de ejecución de cada concepto."""
+    out: Dict[str, List[dict]] = {"pendientes": [], "actuales": [], "por_venir": []}
+    for f in data.get("frentes") or []:
+        for k in f.get("conceptos") or []:
+            if k.get("cancelado"):
+                continue
+            ee = k.get("estado_ejecucion") or {}
+            fis = k.get("avance_fisico") or {}
+            item = {
+                "concepto_id": str(k.get("id")), "clave": str(k.get("inciso") or k.get("concepto") or ""),
+                "descripcion": str(k.get("descripcion") or ""),
+                "fecha_inicio": str(k.get("fecha_inicio") or ""), "fecha_fin": str(k.get("fecha_fin") or ""),
+                "meta_cantidad": str(_dd(k.get("cantidad"))), "ejecutado": str(_dd(fis.get("acumulado"))),
+                "unidad": str(k.get("unidad") or ""), "porcentaje_avance": str(_dd(fis.get("porcentaje"))),
+            }
+            if ee.get("estatus") == "terminado":
+                continue
+            if (ee.get("dias_atraso") or 0) > 0:
+                out["pendientes"].append(item)
+            elif ee.get("estatus") == "en_ejecucion":
+                out["actuales"].append(item)
+            else:
+                out["por_venir"].append(item)
+    return out
+
+
+async def _dirac_bloquea_supervision(pid: str, partida_id: Optional[str] = None,
+                                     concepto_id: Optional[str] = None, forzar: bool = False) -> None:
+    """409 si se intenta capturar/editar a mano algo del contrato de supervisión en el
+    proyecto que se alimenta de Dirac (para no tener dos fuentes distintas)."""
+    if not DIRAC_API_URL or not await _dirac_supervision(pid):
+        return
+    msg = "El contrato de supervisión se lee de Dirac: no se captura ni se edita aquí."
+    if forzar:
+        raise HTTPException(409, msg)
+    if concepto_id:
+        c = await db.conceptos.find_one({"id": concepto_id}, {"partida_id": 1})
+        partida_id = (c or {}).get("partida_id")
+    if not partida_id:
+        return
+    partidas = await db.partidas.find({"project_id": pid}).to_list(length=10000)
+    if _mapa_contrato_partidas(partidas).get(partida_id) == "supervision":
+        raise HTTPException(409, msg)
+
+
 
 def _is_valid_expo_token(token: str) -> bool:
     """
@@ -8556,18 +8697,27 @@ def _estimaciones_bloques(registros: List[dict]) -> List[dict]:
 
 @api.get("/projects/{pid}/estimaciones")
 async def list_estimaciones(pid: str, contrato: Optional[str] = None, user: dict = Depends(current_user)):
-    await ensure_project_access(user, pid)
+    project = await ensure_project_access(user, pid)
     q: dict = {"project_id": pid}
     if contrato:
         q["contrato"] = contrato
     items = await db.estimaciones.find(q).sort([("contrato", 1), ("numero", 1)]).to_list(length=500)
-    return [{k: v for k, v in d.items() if k != "_id"} for d in items]
+    out = [{k: v for k, v in d.items() if k != "_id"} for d in items]
+    dirac_sup = await _dirac_supervision(pid, project)
+    if dirac_sup:
+        # La supervisión se lee de Dirac (solo lectura); lo capturado a mano ya no cuenta.
+        out = [d for d in out if d.get("contrato", "obra") != "supervision"]
+        if contrato in (None, "", "supervision"):
+            out += _dirac_estimaciones_docs(dirac_sup, pid)
+    return out
 
 
 @api.post("/projects/{pid}/estimaciones")
 async def create_estimacion(pid: str, body: EstimacionIn, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB))):
     project = await ensure_project_access(user, pid)
     _ensure_modulo_activo(project, "estimaciones")
+    if body.contrato == "supervision":
+        await _dirac_bloquea_supervision(pid, forzar=True)
     if await db.estimaciones.find_one({"project_id": pid, "contrato": body.contrato, "numero": body.numero}, {"id": 1}):
         raise HTTPException(409, f"Ya existe la estimación {body.numero} de {CONTRATO_FIN_LABEL[body.contrato].lower()}")
     now = datetime.now(timezone.utc)
@@ -8586,6 +8736,8 @@ async def update_estimacion(pid: str, eid: str, body: EstimacionPatch, user: dic
     doc = await db.estimaciones.find_one({"id": eid, "project_id": pid})
     if not doc:
         raise HTTPException(404, "Estimación no existe")
+    if doc.get("contrato") == "supervision":
+        await _dirac_bloquea_supervision(pid, forzar=True)
     fields = body.model_dump(exclude_unset=True)
     upd: dict = {}
     if fields.get("numero") is not None and fields["numero"] != doc["numero"]:
@@ -8605,6 +8757,9 @@ async def update_estimacion(pid: str, eid: str, body: EstimacionPatch, user: dic
 @api.delete("/projects/{pid}/estimaciones/{eid}")
 async def delete_estimacion(pid: str, eid: str, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB))):
     await ensure_project_access(user, pid)
+    prev = await db.estimaciones.find_one({"id": eid, "project_id": pid}, {"contrato": 1})
+    if prev and prev.get("contrato") == "supervision":
+        await _dirac_bloquea_supervision(pid, forzar=True)
     res = await db.estimaciones.delete_one({"id": eid, "project_id": pid})
     if not res.deleted_count:
         raise HTTPException(404, "Estimación no existe")
@@ -36853,6 +37008,7 @@ async def list_partidas(pid: str, incluir_inactivas: bool = False, user: dict = 
 @api.post("/partidas", response_model=PartidaOut)
 async def create_partida(body: PartidaIn, user: dict = Depends(require_role(ROLE_SUB, ROLE_COORD))):
     await ensure_project_access(user, body.project_id)
+    await _dirac_bloquea_supervision(body.project_id, partida_id=body.partida_padre_id, forzar=(body.contrato == "supervision"))
     existing = await db.partidas.find_one({"project_id": body.project_id, "clave": body.clave.strip()})
     if existing:
         prof = (await _profundidad_partida(body.project_id, body.partida_padre_id) + 1) if body.partida_padre_id else 0
@@ -36889,6 +37045,7 @@ async def update_partida(partida_id: str, body: PartidaPatch, user: dict = Depen
     partida = await db.partidas.find_one({"id": partida_id})
     if not partida:
         raise HTTPException(404, "Partida no existe")
+    await _dirac_bloquea_supervision(partida["project_id"], partida_id=partida_id)
     upd: dict = {}
     if body.clave is not None:
         upd["clave"] = body.clave.strip()
@@ -36954,6 +37111,7 @@ async def delete_partida(partida_id: str, user: dict = Depends(require_role(ROLE
     partida = await db.partidas.find_one({"id": partida_id})
     if not partida:
         raise HTTPException(404, "Partida no existe")
+    await _dirac_bloquea_supervision(partida["project_id"], partida_id=partida_id)
     subtree_ids = await _partida_subtree_ids_en_proyecto(partida["project_id"], partida_id)
     r_partidas = await db.partidas.update_many({"id": {"$in": subtree_ids}}, {"$set": {"activo": False}})
     r_conceptos = await db.conceptos.update_many({"partida_id": {"$in": subtree_ids}}, {"$set": {"activo": False}})
@@ -36980,6 +37138,7 @@ async def create_concepto(body: ConceptoIn, user: dict = Depends(require_role(RO
     partida = await db.partidas.find_one({"id": body.partida_id})
     if not partida:
         raise HTTPException(404, "Partida no existe")
+    await _dirac_bloquea_supervision(partida["project_id"], partida_id=body.partida_id)
     project = await db.projects.find_one({"id": partida["project_id"]})
     _validar_unidad_para_proyecto(body.unidad, project or {})
     # C-05: la clave de un concepto es única en el proyecto (igual que en el importador).
@@ -37037,6 +37196,7 @@ async def update_concepto(concepto_id: str, body: ConceptoPatch, user: dict = De
     concepto = await db.conceptos.find_one({"id": concepto_id})
     if not concepto:
         raise HTTPException(404, "Concepto no existe")
+    await _dirac_bloquea_supervision(concepto["project_id"], concepto_id=concepto_id)
     upd: dict = {}
     if body.clave is not None:
         upd["clave"] = body.clave.strip()
@@ -37113,6 +37273,7 @@ async def delete_concepto(concepto_id: str, user: dict = Depends(require_role(RO
     concepto = await db.conceptos.find_one({"id": concepto_id})
     if not concepto:
         raise HTTPException(404, "Concepto no existe")
+    await _dirac_bloquea_supervision(concepto["project_id"], concepto_id=concepto_id)
     await db.conceptos.update_one({"id": concepto_id}, {"$set": {"activo": False}})
     return {"ok": True}
 
@@ -39026,6 +39187,7 @@ async def create_avance(body: RegistroAvanceIn, user: dict = Depends(current_use
     if not concepto:
         raise HTTPException(404, "Concepto no existe")
     await ensure_project_access(user, concepto["project_id"])
+    await _dirac_bloquea_supervision(concepto["project_id"], concepto_id=body.concepto_id)
     project = await db.projects.find_one({"id": concepto["project_id"]})
     modo_avance = (project or {}).get("modo_avance", "CANTIDAD")
 
@@ -39193,6 +39355,7 @@ async def update_avance(avance_id: str, body: RegistroAvancePatch, user: dict = 
     if not avance:
         raise HTTPException(404, "Registro de avance no existe")
     await ensure_project_access(user, avance["project_id"])
+    await _dirac_bloquea_supervision(avance["project_id"], concepto_id=avance.get("concepto_id"))
     _validar_permiso_edicion_avance(avance, user)
 
     if avance.get("origen") != "LINEA_BASE":
@@ -39253,6 +39416,7 @@ async def delete_avance(avance_id: str, user: dict = Depends(current_user)):
     if not avance:
         raise HTTPException(404, "Registro de avance no existe")
     await ensure_project_access(user, avance["project_id"])
+    await _dirac_bloquea_supervision(avance["project_id"], concepto_id=avance.get("concepto_id"))
     _validar_permiso_edicion_avance(avance, user)
     if avance.get("origen") != "LINEA_BASE":
         _validar_ventana_edicion_avance(avance, user)
@@ -40311,6 +40475,10 @@ async def calcular_analisis_evm(
         raise ValueError("end no puede ser anterior a start")
     if project is None:
         project = await db.projects.find_one({"id": pid}) or {}
+    if contrato == "supervision":
+        dirac_sup = await _dirac_supervision(pid, project)
+        if dirac_sup:
+            return _dirac_analisis(dirac_sup, start, end)
     modo = project.get("modo_avance", "CANTIDAD")
     conceptos, pertenece = await _conceptos_activos_contrato(pid, contrato)
     conceptos_por_id = {c["id"]: c for c in conceptos}
@@ -40511,6 +40679,10 @@ async def analisis_periodo_presupuesto_total(pid: str, contrato: str = "obra", u
     sumen correctamente por igual — sumar importe_total_editable a secas
     dejaría en $0 cualquier concepto que no haya migrado a Etapa EVM."""
     await ensure_project_access(user, pid)
+    if contrato == "supervision":
+        dirac_sup = await _dirac_supervision(pid)
+        if dirac_sup:
+            return {"project_id": pid, "presupuesto_total": dec_to_str(round_money(_dd((dirac_sup.get("totales") or {}).get("importe"))))}
     conceptos, _ = await _conceptos_activos_contrato(pid, contrato)
     total = sum((_concepto_importe_efectivo(c) for c in conceptos), start=Decimal("0"))
     return {"project_id": pid, "presupuesto_total": dec_to_str(round_money(total))}
@@ -40519,6 +40691,10 @@ async def analisis_periodo_presupuesto_total(pid: str, contrato: str = "obra", u
 async def _curva_s_por_mes(pid: str, contrato: str = "obra") -> Tuple[Dict[str, Decimal], Dict[str, Decimal], Dict[str, Decimal]]:
     """Valor planeado, ganado y real de cada mes ("YYYY-MM") del contrato del proyecto. Lo usan la
     Curva S y el periodo "proyecto completo" (que arranca en el primer mes con datos)."""
+    if contrato == "supervision":
+        dirac_sup = await _dirac_supervision(pid)
+        if dirac_sup:
+            return _dirac_planeado_por_mes(dirac_sup), _dirac_ganado_por_mes(dirac_sup), {}
     conceptos, pertenece = await _conceptos_activos_contrato(pid, contrato)
 
     distribuciones = await _distribuciones_vigentes(pid)
@@ -40803,6 +40979,14 @@ async def analisis_periodo_excepciones(pid: str, contrato: str = "obra", user: d
     revisar), por eso existen los chequeos de atraso y de ventana sin avance. Nunca bloquea
     nada — es solo para revisión."""
     project = await ensure_project_access(user, pid)
+    if contrato == "supervision":
+        dirac_sup = await _dirac_supervision(pid, project)
+        if dirac_sup:
+            return [
+                ExcepcionEvmOut(concepto_id=a["concepto_id"], clave=a["clave"], descripcion=a["descripcion"],
+                                tipo="atrasado", detalle=f"Avance {a['porcentaje_avance'][:5]}% de la meta; venció {a['fecha_fin']}")
+                for a in _dirac_actividades(dirac_sup, hoy_proyecto(project))["pendientes"]
+            ]
     return await calcular_excepciones_evm(pid, project, contrato)
 
 
@@ -40840,6 +41024,11 @@ async def analisis_periodo_actividades(pid: str, contrato: str = "obra", user: d
     project = await db.projects.find_one({"id": pid})
     modo_avance = (project or {}).get("modo_avance", "CANTIDAD")
     hoy = hoy_proyecto(project)
+    if contrato == "supervision":
+        dirac_sup = await _dirac_supervision(pid, project)
+        if dirac_sup:
+            act = _dirac_actividades(dirac_sup, hoy)
+            return ActividadesEvmOut(**{k: [ActividadEvmOut(**i) for i in v] for k, v in act.items()})
     conceptos, _ = await _conceptos_activos_contrato(pid, contrato)
 
     pendientes: List[ActividadEvmOut] = []

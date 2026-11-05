@@ -248,6 +248,8 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
   // Contrato que se está viendo. El selector solo aparece si el proyecto tiene
   // un árbol de partidas de supervisión; los gastos reales (AC) son de la obra.
   const [contrato, setContrato] = useState<ContratoFin>('obra');
+  // La supervisión se lee de Dirac: no trae costos reales (gasto, CPI, pronóstico de costo).
+  const esSup = contrato === 'supervision';
   const [haySupervision, setHaySupervision] = useState(false);
 
   const [gastoFormOpen, setGastoFormOpen] = useState(false);
@@ -516,13 +518,15 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
                 sub={analisis.spi === null ? 'Sin planeado en el periodo' : undefined}
                 color={colorIndice(analisis.spi)}
               />
+              {!esSup ? (
               <KpiCard
                 label={t('tableroEvm.cpiCosto')}
                 valor={analisis.cpi ?? '—'}
                 sub={analisis.cpi === null ? 'Sin gasto real capturado' : undefined}
                 color={colorIndice(analisis.cpi)}
               />
-              {(() => {
+              ) : null}
+              {!esSup ? (() => {
                 const cv = variacionCostoUI(analisis.variacion_costo);
                 return (
                   <KpiCard
@@ -532,12 +536,12 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
                     color={cv.tono === 'positivo' ? colors.success : cv.tono === 'negativo' ? colors.error : colors.textMuted}
                   />
                 );
-              })()}
+              })() : null}
             </View>
 
             <View style={styles.pvEvAcRow}>
               <Text style={styles.pvEvAcTxt}>{t('tableroEvm.pv')} {formatMoney(analisis.pv)}</Text>
-              <Text style={styles.pvEvAcTxt}>{t('tableroEvm.ac')} {formatMoney(analisis.ac)}</Text>
+              {!esSup ? <Text style={styles.pvEvAcTxt}>{t('tableroEvm.ac')} {formatMoney(analisis.ac)}</Text> : null}
             </View>
             {/* A-02: dos cifras de valor ganado, claramente etiquetadas. El excedente
                 no cuenta en la contractual pero sí en la total. */}
@@ -557,13 +561,16 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
             <Text style={styles.seccionTitulo}>{t('evm.pronostico')}</Text>
             <View style={styles.kpiRow}>
               <KpiCard label={t('evm.bac')} valor={formatMoney(analisis.bac ?? '0')} sub={t('evm.bacAyuda')} color={colors.textMuted} />
+              {!esSup ? (
               <KpiCard
                 label={t('evm.eac')}
                 valor={analisis.eac != null ? formatMoney(analisis.eac) : '—'}
                 sub={analisis.eac == null ? t('evm.sinGasto') : t('evm.eacAyuda')}
                 color={colors.textMuted}
               />
+              ) : null}
             </View>
+            {!esSup ? (
             <View style={styles.kpiRow}>
               <KpiCard
                 label={t('evm.etc')}
@@ -578,9 +585,11 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
                 color={analisis.vac == null ? colors.textMuted : Number(analisis.vac) >= 0 ? colors.success : colors.error}
               />
             </View>
+            ) : null}
           </>
         ) : null}
 
+        {!esSup ? (<>
         <View style={styles.seccionHeaderRow}>
           <Text style={styles.seccionTitulo}>{t('tableroEvm.gastoRealAc')}</Text>
           <Pressable accessibilityRole="button" onPress={openGastoForm} style={styles.addBtn}>
@@ -635,6 +644,9 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
             )}
           />
         )}
+        </>) : (
+          <Text style={styles.gastoAvisoTxt}>Contrato de supervisión: avance, estimaciones y programa vienen de Dirac (solo lectura). Dirac no incluye costos reales, por eso no se muestran gasto ni indicadores de costo.</Text>
+        )}
 
         <Text style={styles.seccionTitulo}>{t('tableroEvm.curvaS')}</Text>
         {curva ? <CurvaSChart curva={curva} /> : null}
@@ -644,8 +656,10 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
           </Text>
         ) : null}
 
+        {!esSup ? (<>
         <Text style={styles.seccionTitulo}>{t('excedentes.titulo')}</Text>
         <ExcedentesSection projectId={projectId} onChanged={() => cargar(rango, curva)} />
+        </>) : null}
 
         <Text style={styles.seccionTitulo}>{t('excepciones.titulo', { n: excepciones.length })}</Text>
         {excepciones.length === 0 ? (

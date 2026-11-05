@@ -835,6 +835,9 @@ export interface Estimacion {
   total_neto?: string | null;
   fecha_pago?: string | null; // fecha o texto libre ("Por pagar")
   updated_at: string;
+  // Estimaciones que vienen de Dirac: solo lectura (no se editan en SynCo).
+  solo_lectura?: boolean;
+  fuente?: string;
 }
 // === Electromecánica (Sistema Electromecánico del informe) ================
 export type ElectromecEstatus = 'recibido' | 'en_revision' | 'pendiente' | 'emitido';
