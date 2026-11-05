@@ -3771,7 +3771,11 @@ export const api = {
   /** Corrige el texto del informe (resumen y, por reporte de campo, actividades, fuerza de trabajo, etc.). */
   informeDiarioEditar: (pid: string, iid: string, body: {
     resumen_general?: string;
-    bloques?: { report_id: string; resumen_ia?: string; actividades?: string[]; fuerza_trabajo?: string; equipo?: string; observaciones?: string }[];
+    bloques?: {
+      report_id: string; resumen_ia?: string; actividades?: string[]; fuerza_trabajo?: string; equipo?: string; observaciones?: string;
+      /** Descripción de cada foto (por `idx`); no agrega ni quita fotos. */
+      fotos?: { idx: number; caption: string }[];
+    }[];
   }) => request<InformeDiario>('PATCH', `/projects/${pid}/informe_diario/${iid}`, body),
   informeDiarioConfirmar: (pid: string, iid: string, comentario?: string) =>
     request<InformeDiario>('POST', `/projects/${pid}/informe_diario/${iid}/confirmar`, { comentario: comentario ?? null }),

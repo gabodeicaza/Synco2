@@ -1,6 +1,7 @@
 // Editor del texto de un informe diario (resumen del día y, por reporte de campo: resumen, actividades,
 // fuerza de trabajo, equipo y observaciones). Lo usan el ingeniero (mientras no confirma), el Coordinador de
-// área de su área, el Sub-coordinador y el Coordinador General. Las fotos y el estatus no se editan aquí.
+// área de su área, el Sub-coordinador y el Coordinador General. De las fotos se edita la descripción
+// (no se agregan ni se quitan); el estatus no se edita aquí.
 import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
@@ -8,7 +9,11 @@ import { Ionicons } from '@expo/vector-icons';
 import { api, InformeDiario } from '@/src/api';
 import { colors, radius, spacing } from '@/src/theme';
 
-type Borrador = { resumen_ia: string; actividades: string; fuerza_trabajo: string; equipo: string; observaciones: string };
+type Borrador = {
+  resumen_ia: string; actividades: string; fuerza_trabajo: string; equipo: string; observaciones: string;
+  /** Descripción de cada foto, en el mismo orden que `bloque.fotos`. */
+  fotos: string[];
+};
 
 export function InformeEditor({
   projectId, informeId, propio, onClose, onSaved,
@@ -34,6 +39,7 @@ export function InformeEditor({
         b[x.report_id] = {
           resumen_ia: x.resumen_ia || '', actividades: (x.actividades || []).join('\n'),
           fuerza_trabajo: x.fuerza_trabajo || '', equipo: x.equipo || '', observaciones: x.observaciones || '',
+          fotos: (x.fotos || []).map((f) => f.caption || ''),
         };
       });
       setBloques(b);
@@ -42,8 +48,10 @@ export function InformeEditor({
     return () => { vivo = false; };
   }, [projectId, informeId]);
 
-  const poner = (rid: string, campo: keyof Borrador, v: string) =>
+  const poner = (rid: string, campo: Exclude<keyof Borrador, 'fotos'>, v: string) =>
     setBloques((p) => ({ ...p, [rid]: { ...p[rid], [campo]: v } }));
+  const ponerFoto = (rid: string, pos: number, v: string) =>
+    setBloques((p) => ({ ...p, [rid]: { ...p[rid], fotos: p[rid].fotos.map((c, k) => (k === pos ? v : c)) } }));
 
   const guardar = async () => {
     if (!informe) return;
@@ -58,6 +66,7 @@ export function InformeEditor({
           fuerza_trabajo: bloques[b.report_id]?.fuerza_trabajo ?? '',
           equipo: bloques[b.report_id]?.equipo ?? '',
           observaciones: bloques[b.report_id]?.observaciones ?? '',
+          fotos: (b.fotos || []).map((f, k) => ({ idx: f.idx, caption: bloques[b.report_id]?.fotos?.[k] ?? f.caption ?? '' })),
         })),
       });
       onSaved(r);
@@ -107,6 +116,12 @@ export function InformeEditor({
                     <Campo etiqueta="Fuerza de trabajo" valor={d.fuerza_trabajo} onChange={(v) => poner(b.report_id, 'fuerza_trabajo', v)} alto={60} />
                     <Campo etiqueta="Equipo y maquinaria" valor={d.equipo} onChange={(v) => poner(b.report_id, 'equipo', v)} alto={60} />
                     <Campo etiqueta="Observaciones" valor={d.observaciones} onChange={(v) => poner(b.report_id, 'observaciones', v)} alto={80} />
+                    {(b.fotos || []).map((f, k) => (
+                      <Campo
+                        key={f.idx} etiqueta={`Descripción de la foto ${k + 1}`} valor={d.fotos[k] ?? ''}
+                        onChange={(v) => ponerFoto(b.report_id, k, v)} alto={44}
+                      />
+                    ))}
                   </View>
                 );
               })}

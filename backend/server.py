@@ -20466,6 +20466,11 @@ async def informes_diarios_compilado_pdf(
     return await _informe_compilado_pdf(proj, user, ini, fin, area_id, ingeniero_id, usar_fotos, portada, titulo, "informes")
 
 
+class InformeFotoEdit(BaseModel):
+    idx: int = Field(ge=0)  # posición de la foto en el reporte de campo
+    caption: str = Field(default="", max_length=400)
+
+
 class InformeBloqueEdit(BaseModel):
     report_id: str
     resumen_ia: Optional[str] = None
@@ -20473,6 +20478,9 @@ class InformeBloqueEdit(BaseModel):
     fuerza_trabajo: Optional[str] = None
     equipo: Optional[str] = None
     observaciones: Optional[str] = None
+    # Descripción (pie) de cada foto. Solo se corrige el texto de las fotos que ya tiene el
+    # informe: no se agregan ni se quitan fotos.
+    fotos: Optional[List[InformeFotoEdit]] = None
 
 
 class InformeEditIn(BaseModel):
@@ -20496,7 +20504,7 @@ async def _puede_editar_informe(user: dict, inf: dict) -> bool:
 @api.patch("/projects/{pid}/informe_diario/{iid}")
 async def informe_diario_editar(pid: str, iid: str, body: InformeEditIn, user: dict = Depends(current_user)):
     """Corrige el texto del informe (resumen del día y, por reporte de campo: resumen, actividades,
-    fuerza de trabajo, equipo y observaciones). Si lo edita alguien distinto al ingeniero, su
+    fuerza de trabajo, equipo, observaciones y la descripción de cada foto). Si lo edita alguien distinto al ingeniero, su
     confirmación se retira para que vuelva a revisarlo y confirmarlo."""
     await ensure_project_access(user, pid)
     _assert_write_allowed(user)
@@ -20527,6 +20535,10 @@ async def informe_diario_editar(pid: str, iid: str, body: InformeEditIn, user: d
                     b["equipo"] = _informe_limpia(e.equipo, 600)
                 if e.observaciones is not None:
                     b["observaciones"] = _informe_limpia(e.observaciones, 1000)
+                if e.fotos is not None:
+                    caps = {f.idx: _informe_limpia(f.caption, 200) for f in e.fotos}
+                    b["fotos"] = [{**f, "caption": caps[f.get("idx")]} if f.get("idx") in caps else f
+                                  for f in (b.get("fotos") or [])]
             bloques.append(b)
         sets["bloques"] = bloques
     if not sets:

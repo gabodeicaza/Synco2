@@ -215,6 +215,47 @@ def test_firma_coordinador_de_area_solo_al_imprimir_toda_el_area():
     assert "Elaboró: Ing. Arturo Alcántara" in solo
 
 
+def test_editar_la_descripcion_de_las_fotos_del_informe():
+    pytest.importorskip("mongomock_motor")
+    from fastapi import HTTPException
+    from mongomock_motor import AsyncMongoMockClient
+    db = AsyncMongoMockClient()["t"]
+    viejo, server.db = server.db, db
+    autor = {"id": "u1", "name": "Ing. Arturo", "role": server.ROLE_ESPECIALISTA, "project_ids": ["p1"]}
+    try:
+        async def go():
+            await db.projects.insert_one({"id": "p1", "name": "X"})
+            b = server._informe_bloque_de_reporte(_rep(images=["a", "b", "c"], photo_captions=["uno"]))
+            await db.informes_diarios.insert_one({
+                "id": "i1", "project_id": "p1", "user_id": "u1", "user_name": "Ing. Arturo", "estado": "listo",
+                "fecha": "2026-10-22", "bloques": [{**b, "report_id": "r1"}], "resumen_general": "x"})
+            body = server.InformeEditIn(bloques=[server.InformeBloqueEdit(report_id="r1", fotos=[
+                server.InformeFotoEdit(idx=0, caption="  Colado   de zapata Z-3 "), server.InformeFotoEdit(idx=2, caption="Armado"),
+                server.InformeFotoEdit(idx=9, caption="no existe")])])
+            out = await server.informe_diario_editar("p1", "i1", body, autor)
+            fotos = out["bloques"][0]["fotos"]
+            assert [(f["idx"], f["caption"]) for f in fotos] == [(0, "Colado de zapata Z-3"), (1, ""), (2, "Armado")]
+            # sin `fotos` en el cuerpo no se tocan las descripciones; el resto del bloque tampoco cambia
+            out = await server.informe_diario_editar(
+                "p1", "i1", server.InformeEditIn(bloques=[server.InformeBloqueEdit(report_id="r1", observaciones="nueva")]), autor)
+            assert [f["caption"] for f in out["bloques"][0]["fotos"]] == ["Colado de zapata Z-3", "", "Armado"]
+            assert out["bloques"][0]["observaciones"] == "nueva"
+            return await db.informes_diarios.find_one({"id": "i1"})
+        inf = asyncio.run(go())
+        assert inf["bloques"][0]["fotos"][0]["caption"] == "Colado de zapata Z-3"
+        # la descripción editada es la que se imprime en el PDF
+        import io
+        from pypdf import PdfReader
+        pdf = server._informe_pdf_bytes([inf], {"name": "X"}, {"r1": [_png_b64()] * 3})
+        assert "Colado de zapata Z-3" in "\n".join(p.extract_text() for p in PdfReader(io.BytesIO(pdf)).pages)
+        with pytest.raises(ValueError):
+            server.InformeFotoEdit(idx=-1, caption="x")
+        with pytest.raises(ValueError):
+            server.InformeFotoEdit(idx=0, caption="x" * 401)
+    finally:
+        server.db = viejo
+
+
 def test_cargo_usa_el_puesto_y_cae_al_rol():
     assert server._informe_cargo({"user_puesto": " Supervisor de Obra Civil  y Arquitectura ", "user_role": "especialista"}) == \
         "Supervisor de Obra Civil y Arquitectura"
