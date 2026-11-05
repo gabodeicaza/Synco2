@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, ScrollView, RefreshControl, Pressable, Activity
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect, router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import Svg, { Polyline, Line, Circle, Text as SvgText } from 'react-native-svg';
 import { api } from '@/src/api';
 import { colors, radius, spacing } from '@/src/theme';
 
@@ -67,6 +68,46 @@ export function DiracSummaryCard({ route }: { route: string }) {
   );
 }
 
+type Pt = { t: number; pct: number };
+const ts = (d: string) => new Date(d + 'T00:00:00').getTime();
+
+/** Curva S: programado acumulado vs real (estimaciones acumuladas), eje de tiempo real. */
+function CurvaS({ prog, real, hoy }: { prog: Pt[]; real: Pt[]; hoy: number }) {
+  const [w, setW] = useState(0);
+  const H = 190, L = 34, R = 10, T = 10, B = 22;
+  const all = [...prog, ...real];
+  const t0 = Math.min(...all.map((p) => p.t)), t1 = Math.max(...all.map((p) => p.t));
+  const x = (t: number) => L + ((t - t0) / Math.max(1, t1 - t0)) * Math.max(1, w - L - R);
+  const y = (v: number) => T + (1 - Math.min(100, Math.max(0, v)) / 100) * (H - T - B);
+  const line = (a: Pt[]) => a.map((p) => `${x(p.t)},${y(p.pct)}`).join(' ');
+  const yr = (t: number) => new Date(t).getFullYear();
+  const years: number[] = [];
+  for (let yy = yr(t0); yy <= yr(t1); yy++) years.push(yy);
+  return (
+    <View onLayout={(e) => setW(e.nativeEvent.layout.width)}>
+      {w > 0 && (
+        <Svg width={w} height={H}>
+          {[0, 25, 50, 75, 100].map((g) => (
+            <React.Fragment key={g}>
+              <Line x1={L} x2={w - R} y1={y(g)} y2={y(g)} stroke={colors.border} strokeWidth={1} />
+              <SvgText x={L - 4} y={y(g) + 3} fontSize={9} fill={colors.textMuted} textAnchor="end">{g}%</SvgText>
+            </React.Fragment>
+          ))}
+          {years.map((yy) => {
+            const tx = ts(`${yy}-01-01`);
+            if (tx < t0 || tx > t1) return null;
+            return <SvgText key={yy} x={x(tx)} y={H - 6} fontSize={9} fill={colors.textMuted} textAnchor="middle">{yy}</SvgText>;
+          })}
+          {hoy >= t0 && hoy <= t1 && <Line x1={x(hoy)} x2={x(hoy)} y1={T} y2={H - B} stroke={colors.warning} strokeDasharray="4 3" strokeWidth={1} />}
+          <Polyline points={line(prog)} fill="none" stroke={colors.borderStrong} strokeWidth={2.5} />
+          {real.length > 0 && <Polyline points={line(real)} fill="none" stroke={colors.primary} strokeWidth={2.5} />}
+          {real.map((p, i) => <Circle key={i} cx={x(p.t)} cy={y(p.pct)} r={3} fill={colors.primary} />)}
+        </Svg>
+      )}
+    </View>
+  );
+}
+
 /** Pantalla completa: KPIs, curva programada, estimaciones y frentes. */
 export default function DiracPanel() {
   const insets = useSafeAreaInsets();
@@ -103,9 +144,17 @@ export default function DiracPanel() {
   const progAcum = prog.filter((p: any) => p.fecha <= hoy).reduce((a: number, p: any) => a + (p.importe || 0), 0);
   const avProg = t.importe ? (progAcum / t.importe) * 100 : 0;
   const desv = avFin - avProg;
-  let acc = 0;
-  const curva = prog.map((p: any) => { acc += p.importe || 0; return { fecha: p.fecha, pct: t.importe ? (acc / t.importe) * 100 : 0 }; });
   const ests: any[] = data.estimaciones || [];
+  let acc = 0;
+  const curvaProg: Pt[] = prog.map((p: any) => { acc += p.importe || 0; return { t: ts(p.fecha), pct: t.importe ? (acc / t.importe) * 100 : 0 }; });
+  // Real = estimaciones acumuladas, un punto por cierre de estimación (fecha_fin).
+  let accR = 0;
+  const curvaReal: Pt[] = [];
+  if (curvaProg.length) curvaReal.push({ t: curvaProg[0].t, pct: 0 });
+  ests.slice().sort((a: any, b: any) => a.fecha_fin.localeCompare(b.fecha_fin)).forEach((e: any) => {
+    accR += e.importe || 0;
+    curvaReal.push({ t: ts(e.fecha_fin), pct: t.importe ? (accR / t.importe) * 100 : 0 });
+  });
 
   return (
     <View style={[s.flex, { paddingTop: insets.top }]}>
@@ -133,15 +182,14 @@ export default function DiracPanel() {
         </View>
 
         <View style={s.card}>
-          <Text style={s.cardTitle}>Curva programada (acumulado %)</Text>
-          <View style={s.curva}>
-            {curva.map((p: any) => (
-              <View key={p.fecha} style={s.curvaCol}>
-                <View style={[s.curvaBar, { height: Math.max(2, p.pct * 0.9), backgroundColor: p.fecha <= hoy ? colors.primary : colors.borderStrong }]} />
-              </View>
-            ))}
+          <Text style={s.cardTitle}>Curva S: programado vs real (acumulado %)</Text>
+          <CurvaS prog={curvaProg} real={curvaReal} hoy={Date.now()} />
+          <View style={s.row}>
+            <View style={[s.dot, { backgroundColor: colors.borderStrong }]} /><Text style={s.muted}>Programado</Text>
+            <View style={[s.dot, { backgroundColor: colors.primary }]} /><Text style={s.muted}>Real (estimaciones)</Text>
+            <View style={[s.dot, { backgroundColor: colors.warning }]} /><Text style={s.muted}>Hoy</Text>
           </View>
-          <Text style={s.muted}>Azul: periodos al corte de hoy. Avance real: {pct(avFin)} · Programado a hoy: {pct(avProg)}</Text>
+          <Text style={s.muted}>Real: {pct(avFin)} · Programado a hoy: {pct(avProg)} · Diferencia: {desv >= 0 ? '+' : ''}{desv.toFixed(1)} pts</Text>
         </View>
 
         <Text style={s.section}>Estimaciones ({ests.length})</Text>
@@ -216,9 +264,7 @@ const s = StyleSheet.create({
   barBg: { height: 8, borderRadius: 4, backgroundColor: colors.border, overflow: 'hidden', marginVertical: 4 },
   barFill: { height: 8, borderRadius: 4 },
   badge: { fontSize: 11, fontWeight: '700', borderWidth: 1, borderRadius: radius.full, paddingHorizontal: 8, paddingVertical: 2 },
-  curva: { flexDirection: 'row', alignItems: 'flex-end', height: 96, gap: 2, marginVertical: 8 },
-  curvaCol: { flex: 1, justifyContent: 'flex-end' },
-  curvaBar: { width: '100%', borderRadius: 2 },
+  dot: { width: 10, height: 10, borderRadius: 5 },
   concepto: { borderTopWidth: 1, borderTopColor: colors.border, paddingTop: 8, marginTop: 8, gap: 2 },
   conceptoTitle: { fontSize: 12, fontWeight: '600', color: colors.textBody },
   btn: { margin: spacing.md, backgroundColor: colors.primary, borderRadius: radius.md, padding: 12, alignItems: 'center' },
