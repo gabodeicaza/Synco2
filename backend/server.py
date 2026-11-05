@@ -3315,16 +3315,14 @@ DIRAC_CACHE_TTL = int(os.environ.get("DIRAC_CACHE_TTL", "300"))
 _dirac_cache: dict = {"data": None, "ts": 0.0}
 
 
-@api.get("/dirac/conceptos")
-async def dirac_conceptos(refresh: bool = False, user: dict = Depends(current_user)):
-    """Proxy con caché del software Dirac APM. Visible para todos los roles
-    (solo lectura). El token nunca sale al cliente."""
+async def _dirac_fetch(refresh: bool = False) -> Optional[dict]:
+    """Datos de Dirac con caché. None si no está configurado o no hay dato
+    (nunca lanza: lo usan también los informes, que no deben romperse)."""
     if not DIRAC_API_URL:
-        raise HTTPException(503, "Integración Dirac no configurada (falta DIRAC_API_URL)")
+        return None
     now = datetime.now(timezone.utc).timestamp()
     cached = _dirac_cache["data"]
-    fresh = cached is not None and (now - _dirac_cache["ts"]) < DIRAC_CACHE_TTL
-    if fresh and not refresh:
+    if cached is not None and not refresh and (now - _dirac_cache["ts"]) < DIRAC_CACHE_TTL:
         return cached
     try:
         async with httpx.AsyncClient(timeout=30) as hc:
@@ -3333,12 +3331,135 @@ async def dirac_conceptos(refresh: bool = False, user: dict = Depends(current_us
             data = r.json()
     except Exception as e:
         logging.getLogger(__name__).warning("Dirac API falló: %s", type(e).__name__)
-        if cached is not None:  # sirve el último dato bueno si Dirac no responde
-            return {**cached, "_desactualizado": True}
-        raise HTTPException(502, "No se pudo consultar Dirac")
+        return {**cached, "_desactualizado": True} if cached is not None else None
     _dirac_cache["data"] = data
     _dirac_cache["ts"] = now
     return data
+
+
+@api.get("/dirac/conceptos")
+async def dirac_conceptos(refresh: bool = False, user: dict = Depends(current_user)):
+    """Proxy con caché del software Dirac APM. Visible para todos los roles
+    (solo lectura). El token nunca sale al cliente."""
+    if not DIRAC_API_URL:
+        raise HTTPException(503, "Integración Dirac no configurada (falta DIRAC_API_URL)")
+    data = await _dirac_fetch(refresh)
+    if data is None:
+        raise HTTPException(502, "No se pudo consultar Dirac")
+    return data
+
+
+def _dirac_aplica(proj: Optional[dict], pid: str, data: Optional[dict]) -> bool:
+    """¿Este proyecto es el del contrato de supervisión de Dirac? Coincide por
+    número de contrato (contract_number / contratos_list) o porque su id está
+    en DIRAC_PROJECT_IDS (lista separada por comas en el .env). Así los demás
+    proyectos nunca muestran datos de un contrato ajeno."""
+    if not data or not DIRAC_API_URL:
+        return False
+    ids = {x.strip() for x in os.environ.get("DIRAC_PROJECT_IDS", "").split(",") if x.strip()}
+    if pid in ids:
+        return True
+    cid = str((data.get("contrato") or {}).get("id_contrato") or "").strip().upper()
+    if not cid:
+        return False
+    cands = [(proj or {}).get("contract_number")] + list((proj or {}).get("contratos_list") or [])
+    return any(str(c or "").strip().upper() == cid for c in cands)
+
+
+def _dd(v) -> Decimal:
+    return Decimal(str(v if v is not None else 0))
+
+
+def _dirac_bloques_estimaciones(data: dict) -> List[dict]:
+    """Tabla de estimaciones de SUPERVISIÓN con las columnas del concentrado
+    de obra, alimentada por Dirac (la suma acumulada se calcula aquí)."""
+    ests = sorted(data.get("estimaciones") or [], key=lambda e: e.get("numero_estimacion") or 0)
+    if not ests:
+        return []
+    acum = Decimal("0")
+    rows = []
+    for e in ests:
+        acum += _dd(e.get("importe"))
+        pago = _fmt_iso_dmy(e["fecha_pago"]) if e.get("fecha_pago") else ("-" if e.get("pagado") else "Por pagar")
+        rows.append([
+            str(e.get("numero_estimacion", "")),
+            f"{_fmt_iso_dmy(e.get('fecha_inicio'))} al {_fmt_iso_dmy(e.get('fecha_fin'))}",
+            e.get("estatus") or "-",
+            _money_fmt(_dd(e.get("importe"))), _money_fmt(acum), "-", "-",
+            _money_fmt(_dd(e.get("total_deducciones"))), _money_fmt(_dd(e.get("impuesto_iva"))),
+            _money_fmt(_dd(e.get("alcance_liquido"))), pago,
+        ])
+    suma = lambda k: sum((_dd(e.get(k)) for e in ests), start=Decimal("0"))  # noqa: E731
+    total_row = ["", "TOTAL", "", _money_fmt(suma("importe")), _money_fmt(acum), "-", "-",
+                 _money_fmt(suma("total_deducciones")), _money_fmt(suma("impuesto_iva")),
+                 _money_fmt(suma("alcance_liquido")), ""]
+    return [{
+        "type": "table", "contrato": "supervision", "total_row": total_row,
+        "heading": f"CONCENTRADO ESTIMACIONES ({CONTRATO_FIN_LABEL['supervision']})",
+        "headers": ["N°", "PERIODO", "ESTATUS GENERAL", "OBRA EJECUTADA", "SUMA ACUMULADA", "AMORTIZACIÓN",
+                    "% ACUM. AMORT. ANTICIPO", "TOTAL DEDUCCIONES", "IVA 16%", "TOTAL NETO", "FECHA DE PAGO"],
+        "rows": rows,
+        "col_widths": [0.04, 0.12, 0.075, 0.105, 0.105, 0.105, 0.075, 0.105, 0.095, 0.105, 0.07],
+        "empty_text": "Sin estimaciones.",
+    }]
+
+
+def _dirac_bloques_avance(data: dict, corte: date) -> tuple:
+    """(bloques, [(heading, caption, png)]) del avance de SUPERVISIÓN desde
+    Dirac: resumen programado vs real al corte, tabla por frente y curva S
+    (programado acumulado vs real = estimaciones acumuladas)."""
+    total = _dd((data.get("totales") or {}).get("importe"))
+    if total <= 0:
+        return [], []
+    cien = Decimal("100")
+    prog = sorted(data.get("avance_programado_del_contrato") or [], key=lambda p: p.get("fecha") or "")
+    if len(prog) > 1 and _dd(prog[0].get("importe")) == 0 and (prog[0]["fecha"][:7] == prog[1]["fecha"][:7]):
+        prog = prog[1:]  # el punto de arranque (importe 0) repite el mes de la primera estimación
+    acum, prog_pct, prog_corte = Decimal("0"), [], Decimal("0")
+    for p in prog:
+        acum += _dd(p.get("importe"))
+        prog_pct.append(acum / total * cien)
+        if p["fecha"] <= corte.isoformat():
+            prog_corte = acum
+    ejecutado = _dd((data.get("totales") or {}).get("importe_ejecutado"))
+    real_pct_total = ejecutado / total * cien
+    bloques: List[dict] = [{
+        "type": "summary",
+        "text": f"AVANCE  ·  PROGRAMADO {_pct_fmt(prog_corte / total * cien)}  ·  REAL {_pct_fmt(real_pct_total)}",
+    }]
+    rows = []
+    for f in data.get("frentes") or []:
+        t = f.get("totales") or {}
+        rows.append([
+            str(f.get("frente", "")), str(f.get("descripcion") or ""),
+            _pct_fmt(_dd(t.get("porcentaje_avance_fisico"))), _pct_fmt(_dd(t.get("porcentaje_avance_financiero"))),
+            _money_fmt(_dd(t.get("importe"))), _money_fmt(_dd(t.get("importe_ejecutado"))),
+        ])
+    rows.append(["", "TOTAL", "", _pct_fmt(real_pct_total), _money_fmt(total), _money_fmt(ejecutado)])
+    bloques.append({
+        "type": "table", "heading": f"TABLA DE AVANCE POR FRENTES ({CONTRATO_FIN_LABEL['supervision']})",
+        "headers": ["N°", "FRENTE", "AVANCE FÍSICO (%)", "AVANCE FINANCIERO (%)", "IMPORTE", "EJECUTADO"],
+        "rows": rows, "col_widths": [0.06, 0.40, 0.12, 0.14, 0.14, 0.14], "empty_text": "Sin frentes.",
+    })
+    graficas = []
+    if prog:
+        etiquetas = [f"{p['fecha'][5:7]}/{p['fecha'][2:4]}" for p in prog]
+        ests = sorted(data.get("estimaciones") or [], key=lambda e: e.get("fecha_fin") or "")
+        real_vals: List[Decimal] = []
+        if ests:
+            ultima = ests[-1]["fecha_fin"]
+            for p in prog:
+                real_vals.append(sum((_dd(e.get("importe")) for e in ests if e["fecha_fin"] <= p["fecha"]),
+                                     start=Decimal("0")) / total * cien)
+                if p["fecha"] >= ultima:
+                    break
+        series = [("Programado", "#2563EB", prog_pct)]
+        if real_vals:
+            series.append(("Real (estimaciones)", "#16A34A", real_vals))
+        png = _grafica_lineas_png("Curva S acumulada (% del contrato)", etiquetas, series, lambda v: f"{v:.0f}%", 100.0)
+        graficas.append((f"GRÁFICA DE AVANCE ({CONTRATO_FIN_LABEL['supervision']})",
+                         f"Curva S programado vs real al {_fmt_iso_dmy(corte.isoformat())}", png))
+    return bloques, graficas
 
 
 
@@ -8090,7 +8211,7 @@ def _chart_canvas(img, *tamanos: int):
     return _Draw(img), fuentes
 
 
-def _grafica_lineas_png(titulo: str, etiquetas: List[str], series: List[tuple], formato) -> bytes:
+def _grafica_lineas_png(titulo: str, etiquetas: List[str], series: List[tuple], formato, vmax_fijo: Optional[float] = None) -> bytes:
     """Gráfica de líneas acumuladas dibujada con Pillow (el backend no usa
     matplotlib). `series` = [(nombre, "#RRGGBB", [valores...]), ...]."""
     from PIL import Image as _I
@@ -8100,7 +8221,7 @@ def _grafica_lineas_png(titulo: str, etiquetas: List[str], series: List[tuple], 
     d.text((W / 2, 28), titulo, fill="#0F172A", font=f_tit, anchor="mm")
     x0, x1, y0, y1 = 150, W - 60, 80, H - 150
     vmax = max([float(v) for _, _, vals in series for v in vals] + [0.0])
-    vmax = vmax * 1.08 if vmax > 0 else 1.0
+    vmax = vmax_fijo or (vmax * 1.08 if vmax > 0 else 1.0)
     for i in range(6):
         y = y1 - (y1 - y0) * i / 5
         d.line([(x0, y), (x1, y)], fill="#E2E8F0", width=1)
@@ -29077,7 +29198,20 @@ async def _gather_modulos_export_data(
         gastos_ao = await db.gastos_reales.find({"project_id": pid}).to_list(length=100000)
         blocks_ao: List[dict] = []
         contratos_ao: List[str] = []
+        # Supervisión: si el proyecto es el contrato de Dirac, su avance sale de
+        # Dirac (no del árbol capturado a mano).
+        dirac_data = await _dirac_fetch()
+        dirac_sup = _dirac_aplica(proj, pid, dirac_data)
         for contrato_ao in CONTRATOS_FIN:
+            if contrato_ao == "supervision" and dirac_sup:
+                bl_dirac, gr_dirac = _dirac_bloques_avance(dirac_data, fin_d)
+                if bl_dirac:
+                    contratos_ao.append(contrato_ao)
+                    for heading, caption, png in gr_dirac:
+                        jpg = await asyncio.to_thread(_png_bytes_to_jpeg_dataurl, png)
+                        blocks_ao.append({"type": "imagen", "heading": heading, "imagen": jpg, "caption": caption})
+                    blocks_ao += bl_dirac
+                    continue
             conceptos_c, partidas_c, registros_c = por_contrato[contrato_ao]
             res_ao = _avance_obra_resumen(
                 conceptos_c, partidas_c, registros_c, gastos_ao if contrato_ao == "obra" else [], ini_d, fin_d,
@@ -29098,7 +29232,14 @@ async def _gather_modulos_export_data(
             out["avance_obra"] = {"titulo": titulo_ao, "blocks": blocks_ao}
 
     if activos.get("estimaciones"):
-        bloques_es = _estimaciones_bloques(await db.estimaciones.find({"project_id": pid}).to_list(length=500))
+        regs_es = await db.estimaciones.find({"project_id": pid}).to_list(length=500)
+        dirac_es = await _dirac_fetch()
+        if _dirac_aplica(proj, pid, dirac_es) and (dirac_es.get("estimaciones") or []):
+            # Supervisión viene de Dirac; la de obra sigue siendo la capturada.
+            regs_es = [r for r in regs_es if r.get("contrato", "obra") != "supervision"]
+            bloques_es = _estimaciones_bloques(regs_es) + _dirac_bloques_estimaciones(dirac_es)
+        else:
+            bloques_es = _estimaciones_bloques(regs_es)
         if bloques_es:
             out["estimaciones"] = {"titulo": "CONCENTRADO DE ESTIMACIONES", "blocks": bloques_es}
 
