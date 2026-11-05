@@ -26,6 +26,7 @@ import { useAuth } from '@/src/auth-context';
 import { InformeDiarioBanner } from '@/src/components/InformeDiarioBanner';
 import { api, FeedItem, LocationNode, Project, ProjectEvent } from '@/src/api';
 import { colors, radius, shadow, spacing, areaTone } from '@/src/theme';
+import { DiracSummaryCard } from '@/src/components/DiracPanel';
 import { APP_BRAND, roleLabel } from '@/src/utils/roles';
 import { HeaderMenu } from '@/src/components/HeaderMenu';
 import { DailyGoalsPanel } from '@/src/components/DailyGoalsPanel';
@@ -580,6 +581,7 @@ export default function SubCoordDashboard() {
           />
         }
       >
+        <View style={{ paddingHorizontal: spacing.md, marginTop: spacing.sm }}><DiracSummaryCard route="/(subcoord)/dirac" /></View>
         {/* Hero Card: PROYECTO COORDINADO */}
         <View style={[styles.heroWrap, { marginTop: spacing.sm }]}>
           <View style={styles.heroCard}>

@@ -3307,6 +3307,41 @@ import httpx  # local import is safe — module-level top imports remain authori
 EXPO_PUSH_API_URL = "https://exp.host/--/api/v2/push/send"
 
 
+# === DIRAC APM (Qubi): contrato, avances, estimaciones y frentes ============
+# La URL completa (con el token) vive solo en el .env del servidor:
+#   DIRAC_API_URL=https://diracapm.qubi.com.mx/api-apm/v1/<token>/conceptos
+DIRAC_API_URL = os.environ.get("DIRAC_API_URL", "")
+DIRAC_CACHE_TTL = int(os.environ.get("DIRAC_CACHE_TTL", "300"))
+_dirac_cache: dict = {"data": None, "ts": 0.0}
+
+
+@api.get("/dirac/conceptos")
+async def dirac_conceptos(refresh: bool = False, user: dict = Depends(current_user)):
+    """Proxy con caché del software Dirac APM. Visible para todos los roles
+    (solo lectura). El token nunca sale al cliente."""
+    if not DIRAC_API_URL:
+        raise HTTPException(503, "Integración Dirac no configurada (falta DIRAC_API_URL)")
+    now = datetime.now(timezone.utc).timestamp()
+    cached = _dirac_cache["data"]
+    fresh = cached is not None and (now - _dirac_cache["ts"]) < DIRAC_CACHE_TTL
+    if fresh and not refresh:
+        return cached
+    try:
+        async with httpx.AsyncClient(timeout=30) as hc:
+            r = await hc.get(DIRAC_API_URL)
+            r.raise_for_status()
+            data = r.json()
+    except Exception as e:
+        logging.getLogger(__name__).warning("Dirac API falló: %s", type(e).__name__)
+        if cached is not None:  # sirve el último dato bueno si Dirac no responde
+            return {**cached, "_desactualizado": True}
+        raise HTTPException(502, "No se pudo consultar Dirac")
+    _dirac_cache["data"] = data
+    _dirac_cache["ts"] = now
+    return data
+
+
+
 def _is_valid_expo_token(token: str) -> bool:
     """
     Valida el formato de un Expo push token.
