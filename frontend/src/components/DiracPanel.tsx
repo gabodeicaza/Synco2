@@ -17,6 +17,7 @@ const num = (n: number | null | undefined) =>
 // Solo el proyecto de Dirac (Cablebús) recibe datos: para los demás `datos` queda en null.
 function useDirac(projectId: string) {
   const [data, setData] = useState<any>(null);
+  const [analisis, setAnalisis] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const load = useCallback(async (refresh = false) => {
@@ -25,13 +26,14 @@ function useDirac(projectId: string) {
       setError(null);
       const r = await api.diracProyecto(projectId, refresh);
       setData(r.aplica ? r.datos : null);
+      setAnalisis(r.aplica ? r.analisis || null : null);
     } catch (e: any) {
       setError(e?.message || 'No se pudo consultar Dirac');
     } finally {
       setLoading(false);
     }
   }, [projectId]);
-  return { data, loading, error, load };
+  return { data, analisis, loading, error, load };
 }
 
 function ProgressBar({ value, color = colors.primary }: { value: number; color?: string }) {
@@ -142,7 +144,7 @@ export default function DiracPanel() {
   const params = useLocalSearchParams<{ project_id?: string; id?: string }>();
   const pidRaw = params.project_id || params.id;
   const projectId = (Array.isArray(pidRaw) ? pidRaw[0] : pidRaw) || '';
-  const { data, loading, error, load } = useDirac(projectId);
+  const { data, analisis, loading, error, load } = useDirac(projectId);
   const [refreshing, setRefreshing] = useState(false);
   const [open, setOpen] = useState<Record<number, boolean>>({});
   useFocusEffect(useCallback(() => { load(); }, [load]));
@@ -205,6 +207,52 @@ export default function DiracPanel() {
           <Text style={s.muted}>{c.fecha_inicio} → {c.fecha_final}</Text>
           {data._desactualizado ? <Text style={[s.muted, { color: colors.warning }]}>Dirac no respondió: mostrando el último dato guardado</Text> : null}
         </View>
+
+        {analisis ? (
+          <View style={s.card}>
+            <View style={s.row}>
+              <View style={[s.dot, { width: 14, height: 14, borderRadius: 7, backgroundColor: analisis.semaforo === 'rojo' ? colors.error : analisis.semaforo === 'amarillo' ? colors.warning : colors.success }]} />
+              <Text style={[s.cardTitle, { flex: 1 }]}>Semáforo del contrato: {analisis.semaforo}</Text>
+              {analisis.spi != null ? <Text style={s.muted}>Avance {Math.round(analisis.spi * 100)}% de lo programado</Text> : null}
+            </View>
+            {(analisis.alertas || []).slice(0, 10).map((a: any) => (
+              <Text key={a.clave} style={[s.muted, { color: a.nivel === 'rojo' ? colors.error : colors.warning }]}>
+                {a.nivel === 'rojo' ? '● ' : '○ '}{a.texto}
+              </Text>
+            ))}
+            {(analisis.alertas || []).length > 10 ? <Text style={s.muted}>y {(analisis.alertas || []).length - 10} alertas más</Text> : null}
+            {(analisis.alertas || []).length === 0 ? <Text style={s.muted}>Sin alertas.</Text> : null}
+          </View>
+        ) : null}
+
+        {analisis ? (
+          <View style={s.card}>
+            <Text style={s.cardTitle}>Por cobrar</Text>
+            <Text style={s.big}>{money(analisis.por_cobrar?.importe)}</Text>
+            <Text style={s.muted}>
+              {analisis.por_cobrar?.estimaciones} estimaciones sin pagar · {analisis.por_cobrar?.sin_autorizar} sin autorizar por {money(analisis.por_cobrar?.sin_autorizar_importe)}
+            </Text>
+          </View>
+        ) : null}
+
+        {analisis && (analisis.convenios || []).length > 0 ? (
+          <View style={s.card}>
+            <Text style={s.cardTitle}>Convenios</Text>
+            {(analisis.convenios as any[]).map((cv) => (
+              <View key={cv.convenio} style={{ marginTop: 4 }}>
+                <Text style={s.conceptoTitle}>{cv.convenio === '0' ? 'Original' : `Convenio ${cv.convenio}`}</Text>
+                <Text style={s.muted}>{cv.conceptos} conceptos · {money(cv.importe)}{cv.ajustes_programa ? ` · ${cv.ajustes_programa} ajustes al programa` : ''}</Text>
+                {(cv.motivos || []).map((m: string) => <Text key={m} style={s.muted}>Motivo: {m}</Text>)}
+              </View>
+            ))}
+          </View>
+        ) : null}
+
+        <Pressable style={[s.card, s.row]} onPress={() => router.push({ pathname: '/(coord)/dirac-config' as any, params: { project_id: projectId } })}>
+          <Ionicons name="settings-outline" size={18} color={colors.textMuted} />
+          <Text style={[s.muted, { flex: 1 }]}>Conexión y avisos de Dirac (coordinador)</Text>
+          <Ionicons name="chevron-forward" size={16} color={colors.textMuted} />
+        </Pressable>
 
         <View style={s.kpis}>
           <View style={s.kpi}><Text style={s.kpiLabel}>Importe contrato</Text><Text style={s.kpiVal}>{money(t.importe)}</Text></View>

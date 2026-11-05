@@ -27,3 +27,8 @@ export function useEsDirac(pid?: string | null): boolean {
   }, [pid]);
   return es;
 }
+
+/** Olvida la respuesta cacheada (tras conectar o desconectar un proyecto). */
+export function olvidarDirac(pid?: string | null): void {
+  if (pid) cache.delete(pid);
+}

@@ -1503,6 +1503,14 @@ export default function ProjectDetailScreen() {
               {/* Cablebús: resumen de avance desde Dirac (solo se pinta en ese proyecto). */}
               <View style={{ marginBottom: spacing.md }}>
                 <DiracSummaryCard route="/(coord)/dirac" projectId={pid} />
+                <Pressable
+                  onPress={() => router.push({ pathname: '/(coord)/dirac-config' as any, params: { project_id: pid } })}
+                  style={{ paddingVertical: 6 }}
+                >
+                  <Text style={{ color: colors.textMuted, fontSize: 12 }}>
+                    {esDirac ? 'Conexión y avisos de Dirac' : 'Conectar este proyecto con Dirac'}
+                  </Text>
+                </Pressable>
               </View>
               {/* Trazabilidad: hub con todo lo que existe (categorías, documentos,
                   estatus y archivos). Va hasta arriba de Operación. */}

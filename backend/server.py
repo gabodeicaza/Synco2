@@ -2527,6 +2527,8 @@ async def startup_event():
     asyncio.create_task(_clima_auto_loop())
     # Loop en segundo plano: corte de las 18:30 -> informe diario por ingeniero (IA).
     asyncio.create_task(_informe_diario_loop())
+    # Loop en segundo plano: Dirac (calendario, pendientes y avisos a directivos).
+    asyncio.create_task(_dirac_sync_loop())
 
     log.info("[startup] Dirac ready")
 
@@ -3310,53 +3312,78 @@ EXPO_PUSH_API_URL = "https://exp.host/--/api/v2/push/send"
 # === DIRAC APM (Qubi): contrato, avances, estimaciones y frentes ============
 # La URL completa (con el token) vive solo en el .env del servidor:
 #   DIRAC_API_URL=https://diracapm.qubi.com.mx/api-apm/v1/<token>/conceptos
-DIRAC_API_URL = os.environ.get("DIRAC_API_URL", "")
+DIRAC_API_URL = os.environ.get("DIRAC_API_URL", "")  # respaldo: proyecto original (ver _dirac_aplica)
 DIRAC_CACHE_TTL = int(os.environ.get("DIRAC_CACHE_TTL", "300"))
-_dirac_cache: dict = {"data": None, "ts": 0.0}
+# Dominios a los que el servidor puede conectarse (evita usar la URL configurada como
+# puerta a direcciones internas). Lista separada por comas en DIRAC_HOSTS_PERMITIDOS.
+DIRAC_HOSTS_PERMITIDOS = tuple(
+    h.strip().lower() for h in os.environ.get("DIRAC_HOSTS_PERMITIDOS", "qubi.com.mx").split(",") if h.strip()
+)
+_dirac_cache: Dict[str, dict] = {}  # url -> {"data", "ts"}
 
 
-async def _dirac_fetch(refresh: bool = False) -> Optional[dict]:
-    """Datos de Dirac con caché. None si no está configurado o no hay dato
-    (nunca lanza: lo usan también los informes, que no deben romperse)."""
-    if not DIRAC_API_URL:
+def _dirac_url_valida(url: str) -> str:
+    """Devuelve la URL limpia o lanza ValueError con el motivo (https, dominio permitido, ruta de la API)."""
+    from urllib.parse import urlparse
+    u = (url or "").strip().strip("<>").strip()
+    p = urlparse(u)
+    if p.scheme != "https" or not p.hostname:
+        raise ValueError("La URL debe empezar con https://")
+    host = p.hostname.lower()
+    if not any(host == h or host.endswith("." + h) for h in DIRAC_HOSTS_PERMITIDOS):
+        raise ValueError("El dominio de la URL no está permitido")
+    if "/api-apm/" not in p.path:
+        raise ValueError("La URL no parece de la API de Dirac (falta /api-apm/)")
+    return u
+
+
+async def _dirac_fetch(url: Optional[str] = None, refresh: bool = False) -> Optional[dict]:
+    """Datos de Dirac con caché por URL. None si no hay URL o no hay dato (nunca lanza:
+    lo usan también los informes, que no deben romperse). Si Dirac falla, sirve el último
+    dato bueno marcado `_desactualizado`."""
+    url = url or DIRAC_API_URL
+    if not url:
         return None
     now = datetime.now(timezone.utc).timestamp()
-    cached = _dirac_cache["data"]
-    if cached is not None and not refresh and (now - _dirac_cache["ts"]) < DIRAC_CACHE_TTL:
-        return cached
+    ent = _dirac_cache.get(url)
+    if ent and not refresh and (now - ent["ts"]) < DIRAC_CACHE_TTL:
+        return ent["data"]
     try:
         async with httpx.AsyncClient(timeout=30) as hc:
-            r = await hc.get(DIRAC_API_URL)
+            r = await hc.get(url)
             r.raise_for_status()
             data = r.json()
     except Exception as e:
         logging.getLogger(__name__).warning("Dirac API falló: %s", type(e).__name__)
-        return {**cached, "_desactualizado": True} if cached is not None else None
-    _dirac_cache["data"] = data
-    _dirac_cache["ts"] = now
+        return {**ent["data"], "_desactualizado": True} if ent else None
+    _dirac_cache[url] = {"data": data, "ts": now}
     return data
 
 
-@api.get("/projects/{pid}/dirac")
-async def dirac_proyecto(pid: str, refresh: bool = False, user: dict = Depends(current_user)):
-    """Datos de Dirac SOLO para el proyecto cuyo contrato es el de Dirac (el resto de los
-    proyectos recibe {"aplica": false}). Acceso por proyecto, solo lectura; el token nunca
-    sale al cliente."""
-    project = await ensure_project_access(user, pid)
-    if not DIRAC_API_URL:
-        return {"aplica": False}
-    data = await _dirac_fetch(refresh)
-    if not _dirac_aplica(project, pid, data):
-        return {"aplica": False}
-    return {"aplica": True, "datos": data}
+async def _dirac_url_de_proyecto(pid: str) -> Optional[str]:
+    cfg = await db.dirac_config.find_one({"project_id": pid}, {"url": 1})
+    return (cfg or {}).get("url") or None
+
+
+async def _dirac_datos_proyecto(pid: str, project: Optional[dict] = None, refresh: bool = False) -> Optional[dict]:
+    """Datos de Dirac de ESTE proyecto: los de su propia URL (configurada en la app) o, como
+    respaldo, los de la URL del .env si el proyecto coincide con ese contrato."""
+    url = await _dirac_url_de_proyecto(pid)
+    if url:
+        return await _dirac_fetch(url, refresh)
+    if DIRAC_API_URL:
+        data = await _dirac_fetch(DIRAC_API_URL, refresh)
+        if data and project is None:
+            project = await db.projects.find_one({"id": pid}) or {}
+        return data if (data and _dirac_aplica(project, pid, data)) else None
+    return None
 
 
 def _dirac_aplica(proj: Optional[dict], pid: str, data: Optional[dict]) -> bool:
-    """¿Este proyecto es el del contrato de supervisión de Dirac? Coincide por
-    número de contrato (contract_number / contratos_list) o porque su id está
-    en DIRAC_PROJECT_IDS (lista separada por comas en el .env). Así los demás
-    proyectos nunca muestran datos de un contrato ajeno."""
-    if not data or not DIRAC_API_URL:
+    """Solo para la URL del .env (respaldo): ¿este proyecto es el de ese contrato? Coincide por
+    número de contrato (contract_number / contratos_list) o porque su id está en
+    DIRAC_PROJECT_IDS. Un proyecto con URL propia (dirac_config) no pasa por aquí."""
+    if not data:
         return False
     ids = {x.strip() for x in os.environ.get("DIRAC_PROJECT_IDS", "").split(",") if x.strip()}
     if pid in ids:
@@ -3366,6 +3393,99 @@ def _dirac_aplica(proj: Optional[dict], pid: str, data: Optional[dict]) -> bool:
         return False
     cands = [(proj or {}).get("contract_number")] + list((proj or {}).get("contratos_list") or [])
     return any(str(c or "").strip().upper() == cid for c in cands)
+
+
+@api.get("/projects/{pid}/dirac")
+async def dirac_proyecto(pid: str, refresh: bool = False, user: dict = Depends(current_user)):
+    """Datos de Dirac SOLO para un proyecto conectado a Dirac (el resto recibe
+    {"aplica": false}). Acceso por proyecto, solo lectura; el token nunca sale al cliente."""
+    project = await ensure_project_access(user, pid)
+    data = await _dirac_datos_proyecto(pid, project, refresh)
+    if not data:
+        return {"aplica": False}
+    try:
+        analisis = _dirac_alertas(data, hoy_proyecto(project))
+    except Exception:
+        log.exception("[dirac] alertas")
+        analisis = None
+    return {"aplica": True, "datos": data, "analisis": analisis}
+
+
+class DiracConfigIn(BaseModel):
+    url: Optional[str] = None            # None = no tocar; "" = desconectar
+    avisos_numeros: Optional[List[str]] = None  # WhatsApp de directivos (distintos a los de los reportes)
+    avisos_activo: Optional[bool] = None
+
+
+def _dirac_normaliza_numero(n: str) -> str:
+    d = re.sub(r"\D", "", n or "")
+    if not 10 <= len(d) <= 15:
+        raise ValueError(f"Número no válido: {n!r}. Usa solo dígitos con lada de país (ej. 5215512345678)")
+    return d
+
+
+async def _dirac_config_out(pid: str, project: Optional[dict] = None) -> dict:
+    cfg = await db.dirac_config.find_one({"project_id": pid}) or {}
+    origen = "proyecto" if cfg.get("url") else None
+    data = None
+    if cfg.get("url") or DIRAC_API_URL:
+        data = await _dirac_datos_proyecto(pid, project)
+        if data and not origen:
+            origen = "servidor"
+    return {
+        "conectado": bool(data), "origen": origen if data or origen else None,
+        "id_contrato": ((data or {}).get("contrato") or {}).get("id_contrato"),
+        "url_configurada": bool(cfg.get("url")),   # nunca se devuelve la URL: lleva el token
+        "avisos_numeros": cfg.get("avisos_numeros") or [],
+        "avisos_activo": bool(cfg.get("avisos_activo")),
+        "actualizado_en": (data or {}).get("actualizado_en"),
+    }
+
+
+@api.get("/projects/{pid}/dirac/config")
+async def dirac_config_get(pid: str, user: dict = Depends(require_role(ROLE_COORD, ROLE_JEFE))):
+    project = await ensure_project_access(user, pid)
+    return await _dirac_config_out(pid, project)
+
+
+@api.put("/projects/{pid}/dirac/config")
+async def dirac_config_put(pid: str, body: DiracConfigIn, user: dict = Depends(require_role(ROLE_COORD))):
+    """Conecta el proyecto a Dirac (pega la URL que te dan), define los números de WhatsApp de
+    directivos para avisos y los enciende/apaga. La URL se valida y se prueba antes de guardarse."""
+    project = await ensure_project_access(user, pid)
+    upd: dict = {}
+    if body.url is not None:
+        if body.url.strip() == "":
+            upd["url"] = None
+        else:
+            try:
+                url = _dirac_url_valida(body.url)
+            except ValueError as e:
+                raise HTTPException(400, str(e))
+            try:
+                async with httpx.AsyncClient(timeout=30) as hc:
+                    r = await hc.get(url)
+                    r.raise_for_status()
+                    prueba = r.json()
+            except Exception:
+                raise HTTPException(400, "Dirac no respondió con esa URL. Revisa que esté completa y vigente.")
+            if not isinstance(prueba, dict) or not (prueba.get("contrato") or {}).get("id_contrato"):
+                raise HTTPException(400, "La respuesta de Dirac no trae los datos del contrato.")
+            upd["url"] = url
+            _dirac_cache[url] = {"data": prueba, "ts": datetime.now(timezone.utc).timestamp()}
+    if body.avisos_numeros is not None:
+        try:
+            nums = [_dirac_normaliza_numero(n) for n in body.avisos_numeros if (n or "").strip()]
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        upd["avisos_numeros"] = list(dict.fromkeys(nums))[:10]
+    if body.avisos_activo is not None:
+        upd["avisos_activo"] = bool(body.avisos_activo)
+    if upd:
+        upd["updated_at"] = datetime.now(timezone.utc)
+        upd["updated_by"] = user["id"]
+        await db.dirac_config.update_one({"project_id": pid}, {"$set": upd, "$setOnInsert": {"project_id": pid}}, upsert=True)
+    return await _dirac_config_out(pid, project)
 
 
 def _dd(v) -> Decimal:
@@ -3613,13 +3733,293 @@ def _dirac_bloques_avance(data: dict, corte: date) -> tuple:
 # (cantidad confirmada × precio unitario); la curva planeada, del avance programado del
 # contrato. Dirac no trae costos reales: AC/CPI/EAC quedan vacíos para la supervisión.
 async def _dirac_supervision(pid: str, project: Optional[dict] = None) -> Optional[dict]:
-    """Datos de Dirac si ESTE proyecto es el contrato de Dirac; si no, None."""
-    if not DIRAC_API_URL:
-        return None
-    if project is None:
-        project = await db.projects.find_one({"id": pid}) or {}
-    data = await _dirac_fetch()
-    return data if _dirac_aplica(project, pid, data) else None
+    """Datos de Dirac si ESTE proyecto está conectado a Dirac; si no, None."""
+    return await _dirac_datos_proyecto(pid, project)
+
+
+def _dirac_alertas(data: dict, hoy: date) -> dict:
+    """Semáforo, alertas, importe por cobrar e historial de convenios a partir de los datos de Dirac.
+    Función pura (sin base de datos). Cada alerta lleva una `clave` estable para no duplicar
+    pendientes ni avisos entre una consulta y otra."""
+    alertas: List[dict] = []
+
+    def alerta(nivel: str, tipo: str, clave: str, texto: str) -> None:
+        alertas.append({"nivel": nivel, "tipo": tipo, "clave": clave, "texto": texto})
+
+    def d_iso(v) -> Optional[date]:
+        try:
+            return date.fromisoformat(str(v)[:10]) if v else None
+        except ValueError:
+            return None
+
+    # --- Estimaciones: por cobrar y antigüedad ---
+    por_cobrar = Decimal("0")
+    sin_autorizar = Decimal("0")
+    n_cobrar = n_sin_aut = 0
+    for e in data.get("estimaciones") or []:
+        if e.get("pagado"):
+            continue
+        monto = _dd(e.get("alcance_liquido") if e.get("alcance_liquido") is not None else e.get("importe"))
+        por_cobrar += monto
+        n_cobrar += 1
+        num = e.get("numero_estimacion")
+        est = str(e.get("estatus") or "")
+        fin = d_iso(e.get("fecha_fin"))
+        dias = (hoy - fin).days if fin else 0
+        if "autorizar" in est.lower():
+            sin_autorizar += monto
+            n_sin_aut += 1
+            if dias > 90:
+                alerta("rojo", "estimacion", f"est-{num}-aut", f"Estimación {num} sin autorizar desde hace {dias} días ({_money_fmt(monto)})")
+            elif dias > 30:
+                alerta("amarillo", "estimacion", f"est-{num}-aut", f"Estimación {num} sin autorizar desde hace {dias} días ({_money_fmt(monto)})")
+        else:
+            fp = d_iso(e.get("fecha_est_definitiva"))
+            d2 = (hoy - fp).days if fp else 0
+            if d2 > 60:
+                alerta("amarillo", "estimacion", f"est-{num}-pago", f"Estimación {num} ({est.lower()}) sin pagar hace {d2} días ({_money_fmt(monto)})")
+
+    # --- Conceptos: atraso y arranque ---
+    n_atrasados = n_sin_arrancar = 0
+    for f in data.get("frentes") or []:
+        for k in f.get("conceptos") or []:
+            if k.get("cancelado") or k.get("cerrado"):
+                continue
+            ex = k.get("estado_ejecucion") or {}
+            atraso = int(ex.get("dias_atraso") or 0)
+            ini = d_iso(k.get("fecha_inicio"))
+            nombre = str(k.get("inciso") or k.get("concepto") or "")
+            if atraso > 0:
+                n_atrasados += 1
+                alerta("rojo" if atraso > 30 else "amarillo", "atraso", f"atraso-{nombre}", f"Concepto {nombre} con {atraso} días de atraso")
+            elif ex.get("estatus") == "pendiente" and ini and ini < hoy:
+                n_sin_arrancar += 1
+                alerta("amarillo", "arranque", f"arranque-{nombre}", f"Concepto {nombre} debió iniciar el {ini.isoformat()} y no tiene avance")
+
+    # --- Avance real contra programado (SPI financiero) ---
+    spi = None
+    try:
+        planeado = _dirac_planeado_por_mes(data)
+        pv = _dirac_pv_ventana(planeado, date(2000, 1, 1), hoy)
+        ev = sum((imp for fch, imp in _dirac_ganado_registros(data) if fch <= hoy.isoformat()), Decimal("0"))
+        if pv > 0:
+            spi = float((ev / pv).quantize(Decimal("0.01")))
+            if spi < 0.8:
+                alerta("rojo", "avance", "spi", f"Avance real al {round(spi * 100)}% de lo programado a la fecha")
+            elif spi < 0.95:
+                alerta("amarillo", "avance", "spi", f"Avance real al {round(spi * 100)}% de lo programado a la fecha")
+    except Exception:
+        log.exception("[dirac] no se pudo calcular el SPI")
+
+    # --- Convenios ---
+    por_conv: Dict[str, dict] = {}
+    for f in data.get("frentes") or []:
+        for k in f.get("conceptos") or []:
+            c = str(k.get("num_convenio") or "0")
+            r = por_conv.setdefault(c, {"convenio": c, "conceptos": 0, "importe": Decimal("0"), "ajustes_programa": 0, "motivos": []})
+            r["conceptos"] += 1
+            r["importe"] += _dd(k.get("cantidad")) * _dd(k.get("pu"))
+    todos_prog = list(data.get("avance_programado_del_contrato") or [])
+    for f in data.get("frentes") or []:
+        todos_prog += f.get("avance_programado") or []
+    for p in todos_prog:
+        if p.get("es_ajustado") or (p.get("num_convenio") or 0):
+            c = str(p.get("num_convenio") or "0")
+            r = por_conv.setdefault(c, {"convenio": c, "conceptos": 0, "importe": Decimal("0"), "ajustes_programa": 0, "motivos": []})
+            r["ajustes_programa"] += 1
+            if p.get("motivo") and p["motivo"] not in r["motivos"]:
+                r["motivos"].append(p["motivo"])
+    convenios = [{**r, "importe": float(r["importe"])} for r in sorted(por_conv.values(), key=lambda x: x["convenio"])]
+
+    nivel = "rojo" if any(a["nivel"] == "rojo" for a in alertas) else ("amarillo" if alertas else "verde")
+    orden = {"rojo": 0, "amarillo": 1}
+    alertas.sort(key=lambda a: (orden.get(a["nivel"], 2), a["clave"]))
+    return {
+        "semaforo": nivel, "alertas": alertas, "spi": spi,
+        "por_cobrar": {"importe": float(por_cobrar), "estimaciones": n_cobrar,
+                       "sin_autorizar_importe": float(sin_autorizar), "sin_autorizar": n_sin_aut},
+        "conceptos_atrasados": n_atrasados, "conceptos_sin_arrancar": n_sin_arrancar,
+        "convenios": convenios,
+    }
+
+
+def _dirac_eventos(data: dict, hoy: date) -> List[dict]:
+    """Fechas de Dirac que van al calendario: cierre de frentes, fecha de cada estimación sin pagar,
+    inicio de conceptos por arrancar y fin del contrato. Solo de hoy en adelante."""
+    out: List[dict] = []
+
+    def add(clave: str, titulo: str, fecha, desc: str = "") -> None:
+        try:
+            f = date.fromisoformat(str(fecha)[:10])
+        except (ValueError, TypeError):
+            return
+        if f >= hoy:
+            out.append({"clave": clave, "titulo": titulo, "fecha": f.isoformat(), "descripcion": desc})
+
+    c = data.get("contrato") or {}
+    if c.get("fecha_final"):
+        add("contrato-fin", f"Fin del contrato {c.get('id_contrato') or ''}".strip(), c["fecha_final"], "Fecha final del contrato según Dirac")
+    for f in data.get("frentes") or []:
+        pct = (f.get("totales") or {}).get("porcentaje_avance_financiero")
+        if f.get("fecha_fin") and (pct is None or float(pct) < 100):
+            add(f"frente-{f.get('frente')}", f"Cierre del frente {f.get('frente')}", f["fecha_fin"], str(f.get("descripcion") or ""))
+        for k in f.get("conceptos") or []:
+            if (k.get("estado_ejecucion") or {}).get("estatus") == "pendiente" and k.get("fecha_inicio"):
+                add(f"inicio-{k.get('inciso')}", f"Inicia concepto {k.get('inciso')}", k["fecha_inicio"], "")
+    for e in data.get("estimaciones") or []:
+        if not e.get("pagado") and e.get("fecha_est_definitiva"):
+            add(f"est-{e.get('numero_estimacion')}", f"Estimación {e.get('numero_estimacion')}: fecha definitiva", e["fecha_est_definitiva"],
+                f"Estatus: {e.get('estatus')}")
+    return out
+
+
+async def _dirac_whatsapp_texto(numeros: List[str], texto: str) -> int:
+    """Envía un WhatsApp (Whapi) a cada número. Best-effort: nunca lanza. Devuelve cuántos salieron."""
+    if not WHAPI_TOKEN or not numeros:
+        return 0
+    enviados = 0
+    headers = {"Authorization": f"Bearer {WHAPI_TOKEN}", "Accept": "application/json"}
+    try:
+        async with httpx.AsyncClient(timeout=30) as hc:
+            for n in numeros:
+                try:
+                    r = await hc.post(f"{WHAPI_URL.rstrip('/')}/messages/text", headers=headers, json={"to": n, "body": texto})
+                    if r.status_code < 300:
+                        enviados += 1
+                    else:
+                        log.warning("[dirac] Whapi respondió %s al avisar a ***%s", r.status_code, n[-4:])
+                except Exception as e:
+                    log.warning("[dirac] aviso WhatsApp falló: %s", type(e).__name__)
+    except Exception as e:
+        log.warning("[dirac] aviso WhatsApp falló: %s", type(e).__name__)
+    return enviados
+
+
+def _dirac_avisos_nuevos(analisis: dict, estimaciones: List[dict], estado: Optional[dict]) -> Tuple[List[str], dict]:
+    """Líneas del aviso (alertas rojas nuevas y cambios de estatus de estimaciones) y el nuevo estado.
+    Sin estado previo solo se toma la foto inicial: no se avisa de lo que ya existía."""
+    rojas = [a for a in analisis.get("alertas") or [] if a["nivel"] == "rojo"]
+    nuevo = {
+        "alertas_rojas": sorted(a["clave"] for a in rojas),
+        "est_estatus": {str(e.get("numero_estimacion")): f"{e.get('estatus')}|{'pagada' if e.get('pagado') else 'sin pagar'}" for e in estimaciones},
+    }
+    if not estado:
+        return [], nuevo
+    lineas: List[str] = []
+    previas = set(estado.get("alertas_rojas") or [])
+    for a in rojas:
+        if a["clave"] not in previas:
+            lineas.append("🔴 " + a["texto"])
+    antes = estado.get("est_estatus") or {}
+    for e in estimaciones:
+        k = str(e.get("numero_estimacion"))
+        ahora = nuevo["est_estatus"][k]
+        if k in antes and antes[k] != ahora:
+            lineas.append(f"📄 Estimación {k}: {str(e.get('estatus')).lower()}" + (" y pagada" if e.get("pagado") else ""))
+        elif k not in antes:
+            lineas.append(f"📄 Nueva estimación {k}: {str(e.get('estatus')).lower()}")
+    return lineas, nuevo
+
+
+async def _dirac_sincronizar_proyecto(pid: str) -> dict:
+    """Un ciclo para un proyecto conectado: calendario, pendientes automáticos y avisos a directivos."""
+    project = await db.projects.find_one({"id": pid}) or {}
+    data = await _dirac_datos_proyecto(pid, project, refresh=True)
+    if not data or data.get("_desactualizado"):
+        return {"ok": False}
+    hoy = hoy_proyecto(project)
+    analisis = _dirac_alertas(data, hoy)
+    ahora = datetime.now(timezone.utc)
+
+    # --- Calendario: eventos de día completo, uno por clave ---
+    eventos = _dirac_eventos(data, hoy)
+    claves = {e["clave"] for e in eventos}
+    for e in eventos:
+        start = _evento_dia_completo(e["fecha"], project)
+        base = {"title": e["titulo"], "description": e["descripcion"] or None, "start_at": start, "end_at": None,
+                "all_day": True, "location": None, "updated_at": ahora}
+        res = await db.events.update_one({"project_id": pid, "dirac_clave": e["clave"]}, {"$set": base})
+        if res.matched_count == 0:
+            await db.events.insert_one({
+                "id": str(uuid.uuid4()), "project_id": pid, "dirac_clave": e["clave"], "area_id": None,
+                "attendee_ids": [], "attendee_names": [], "author_id": "dirac", "author_name": "Dirac APM",
+                "author_role": ROLE_COORD, "reminder_sent": True, "created_at": ahora, **base,
+            })
+    await db.events.delete_many({"project_id": pid, "dirac_clave": {"$exists": True, "$nin": list(claves)}, "start_at": {"$gte": inicio_dia_utc(hoy, project)}})
+
+    # --- Pendientes automáticos (alertas rojas), se resuelven solos cuando la alerta desaparece ---
+    try:
+        _ensure_modulo_activo(project, "pendientes_generales")
+        pend_activo = True
+    except HTTPException:
+        pend_activo = False
+    if pend_activo:
+        rojas = {a["clave"]: a for a in analisis["alertas"] if a["nivel"] == "rojo"}
+        existentes = await db.pendientes_generales.find({"project_id": pid, "dirac_clave": {"$exists": True}}).to_list(length=2000)
+        por_clave = {x["dirac_clave"]: x for x in existentes}
+        for clave, a in rojas.items():
+            x = por_clave.get(clave)
+            if x is None:
+                await db.pendientes_generales.insert_one({
+                    "id": str(uuid.uuid4()), "project_id": pid, "contrato": "supervision", "titulo": a["texto"][:300],
+                    "descripcion": "Generado automáticamente desde Dirac.", "orden": 0, "resuelto": False, "dirac_clave": clave,
+                    "created_by": "dirac", "created_by_name": "Dirac APM", "created_at": ahora, "updated_at": ahora})
+            elif x.get("resuelto") and x.get("resuelto_auto"):
+                await db.pendientes_generales.update_one({"id": x["id"]}, {"$set": {"resuelto": False, "resuelto_auto": False, "resuelto_at": None, "titulo": a["texto"][:300], "updated_at": ahora}})
+            elif not x.get("resuelto"):
+                await db.pendientes_generales.update_one({"id": x["id"]}, {"$set": {"titulo": a["texto"][:300], "updated_at": ahora}})
+        for clave, x in por_clave.items():
+            if clave not in rojas and not x.get("resuelto"):
+                await db.pendientes_generales.update_one({"id": x["id"]}, {"$set": {"resuelto": True, "resuelto_auto": True, "resuelto_at": ahora, "updated_at": ahora}})
+
+    # --- Avisos a directivos (números distintos a los de los reportes) ---
+    cfg = await db.dirac_config.find_one({"project_id": pid}) or {}
+    lineas, nuevo_estado = _dirac_avisos_nuevos(analisis, data.get("estimaciones") or [], cfg.get("estado"))
+    enviados = 0
+    if lineas and cfg.get("avisos_activo") and cfg.get("avisos_numeros"):
+        cab = f"*{project.get('name') or 'Proyecto'}* — novedades de Dirac ({hoy.strftime('%d/%m/%Y')})"
+        sem = {"rojo": "🔴 Semáforo: rojo", "amarillo": "🟡 Semáforo: amarillo", "verde": "🟢 Semáforo: verde"}[analisis["semaforo"]]
+        enviados = await _dirac_whatsapp_texto(cfg["avisos_numeros"], "\n".join([cab, sem, ""] + lineas[:15]))
+        if enviados == 0:
+            nuevo_estado = cfg.get("estado") or nuevo_estado  # nada salió: se reintenta en el siguiente ciclo
+    await db.dirac_config.update_one({"project_id": pid}, {"$set": {"estado": nuevo_estado, "ultima_sync": ahora}, "$setOnInsert": {"project_id": pid}}, upsert=True)
+    return {"ok": True, "eventos": len(eventos), "avisos": len(lineas), "enviados": enviados, "semaforo": analisis["semaforo"]}
+
+
+async def _dirac_proyectos_conectados() -> List[str]:
+    pids = [c["project_id"] async for c in db.dirac_config.find({"url": {"$nin": [None, ""]}}, {"project_id": 1})]
+    if DIRAC_API_URL:
+        data = await _dirac_fetch(DIRAC_API_URL)
+        if data:
+            async for p in db.projects.find({}, {"id": 1, "contract_number": 1, "contratos_list": 1}):
+                if p["id"] not in pids and _dirac_aplica(p, p["id"], data):
+                    pids.append(p["id"])
+    return pids
+
+
+async def _dirac_sync_loop() -> None:
+    """Cada 30 min revisa los proyectos conectados a Dirac (calendario, pendientes, avisos)."""
+    await asyncio.sleep(60)
+    while True:
+        try:
+            for pid in await _dirac_proyectos_conectados():
+                try:
+                    await _dirac_sincronizar_proyecto(pid)
+                except Exception:
+                    log.exception("[dirac] sincronización falló (proyecto %s)", pid)
+        except Exception:
+            log.exception("[dirac] ciclo falló")
+        await asyncio.sleep(1800)
+
+
+@api.post("/projects/{pid}/dirac/sincronizar")
+async def dirac_sincronizar(pid: str, user: dict = Depends(require_role(ROLE_COORD))):
+    """Fuerza un ciclo ahora (calendario, pendientes y avisos)."""
+    await ensure_project_access(user, pid)
+    r = await _dirac_sincronizar_proyecto(pid)
+    if not r.get("ok"):
+        raise HTTPException(400, "Este proyecto no está conectado a Dirac o Dirac no responde.")
+    return r
 
 
 def _dirac_planeado_por_mes(data: dict) -> Dict[str, Decimal]:
@@ -3733,7 +4133,7 @@ async def _dirac_bloquea_supervision(pid: str, partida_id: Optional[str] = None,
                                      concepto_id: Optional[str] = None, forzar: bool = False) -> None:
     """409 si se intenta capturar/editar a mano algo del contrato de supervisión en el
     proyecto que se alimenta de Dirac (para no tener dos fuentes distintas)."""
-    if not DIRAC_API_URL or not await _dirac_supervision(pid):
+    if not await _dirac_supervision(pid):
         return
     msg = "El contrato de supervisión se lee de Dirac: no se captura ni se edita aquí."
     if forzar:
@@ -29507,8 +29907,8 @@ async def _gather_modulos_export_data(
         contratos_ao: List[str] = []
         # Supervisión: si el proyecto es el contrato de Dirac, su avance sale de
         # Dirac (no del árbol capturado a mano).
-        dirac_data = await _dirac_fetch()
-        dirac_sup = _dirac_aplica(proj, pid, dirac_data)
+        dirac_data = await _dirac_supervision(pid, proj)
+        dirac_sup = bool(dirac_data)
         for contrato_ao in CONTRATOS_FIN:
             if contrato_ao == "supervision" and dirac_sup:
                 bl_dirac, gr_dirac = _dirac_bloques_avance(dirac_data, fin_d)
@@ -33603,6 +34003,31 @@ def construir_entrada_resumen_ia(
     }
 
 
+async def _dirac_texto_ia(pid: str, project: dict, hoy: date) -> str:
+    """Bloque de texto con el estado del contrato según Dirac para el resumen de IA ('' si no aplica)."""
+    data = await _dirac_supervision(pid, project)
+    if not data:
+        return ""
+    try:
+        a = _dirac_alertas(data, hoy)
+    except Exception:
+        return ""
+    c = data.get("contrato") or {}
+    t = data.get("totales") or {}
+    L = [f"CONTRATO DE SUPERVISIÓN (Dirac APM) {c.get('id_contrato') or ''}:"]
+    if a.get("spi") is not None:
+        L.append(f"- Avance real contra programado a la fecha: {round(a['spi'] * 100)}%")
+    if c.get("importe"):
+        L.append(f"- Importe del contrato: {_money_fmt(_dd(c['importe']))}")
+    pc = a["por_cobrar"]
+    L.append(f"- Estimaciones por cobrar: {pc['estimaciones']} por {_money_fmt(_dd(pc['importe']))} "
+             f"({pc['sin_autorizar']} sin autorizar por {_money_fmt(_dd(pc['sin_autorizar_importe']))})")
+    L.append(f"- Semáforo: {a['semaforo']}")
+    for al in a["alertas"][:8]:
+        L.append(f"- Alerta {al['nivel']}: {al['texto']}")
+    return "\n".join(L)
+
+
 @api.post("/projects/{pid}/ai_summary", response_model=AISummaryResponse)
 async def project_ai_summary(
     pid: str,
@@ -33669,6 +34094,9 @@ async def project_ai_summary(
         periodo_label={"diario": "las últimas 24 horas", "semanal": "la semana en curso", "mensual": "el mes en curso"}[periodo],
         ventana="del día" if periodo == "diario" else "del período",
     )
+    texto_dirac = await _dirac_texto_ia(pid, project, hoy)
+    if texto_dirac:
+        entrada["user_text"] = entrada["user_text"] + "\n\n" + texto_dirac
     if not entrada["hay_datos"]:
         return AISummaryResponse(
             summary=RESUMEN_IA_SIN_DATOS,

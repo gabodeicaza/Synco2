@@ -3753,7 +3753,12 @@ export const api = {
   // ---- Dirac APM (contrato, avances, estimaciones) ----------------------
   // Solo responde con datos si el proyecto es el del contrato de Dirac ({ aplica: false } si no).
   diracProyecto: (pid: string, refresh = false) =>
-    request<{ aplica: boolean; datos?: any }>('GET', `/projects/${pid}/dirac${refresh ? '?refresh=true' : ''}`),
+    request<{ aplica: boolean; datos?: any; analisis?: any }>('GET', `/projects/${pid}/dirac${refresh ? '?refresh=true' : ''}`),
+  diracConfig: (pid: string) => request<any>('GET', `/projects/${pid}/dirac/config`),
+  diracConfigGuardar: (pid: string, body: { url?: string; avisos_numeros?: string[]; avisos_activo?: boolean }) =>
+    request<any>('PUT', `/projects/${pid}/dirac/config`, body),
+  diracSincronizar: (pid: string) =>
+    request<{ ok: boolean; eventos: number; avisos: number; enviados: number; semaforo: string }>('POST', `/projects/${pid}/dirac/sincronizar`),
 
 
   // Informe diario por ingeniero (corte 18:30 + resumen IA).
