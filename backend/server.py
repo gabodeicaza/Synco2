@@ -20032,13 +20032,15 @@ def _informe_portada_datos(proj: dict, informes: list, ini: date, fin: date, are
 
 def _informe_pdf_bytes(informes: list, proj: dict, fotos: Dict[str, list], hoja_firmas: Optional[list] = None,
                        titulo_hoja: str = "", portada: Optional[dict] = None, firma_diaria: bool = True,
-                       firma_sup: Optional[dict] = None, firmas_ingenieros: bool = False) -> bytes:
+                       firma_sup: Optional[dict] = None, firmas_ingenieros: bool = False,
+                       firma_autor: bool = False) -> bytes:
     """PDF (A4 vertical) con un informe por sección en el formato de la plantilla:
     encabezado, resumen, bloque por reporte de campo, fotos y firmas. Si se pasa
     `hoja_firmas` ([{nombre, rol, dias, confirmados, sin_actividad}]) agrega al final la
     hoja de firmas semanal. Si se pasa `portada` (ver `_informe_portada_datos`) abre con la
     portada institucional. `firma_diaria` pone al final de cada informe la firma única del Coordinador
-    de área; en el compilado semanal/de rango va en False y la única firma es la del Superintendente
+    de área, salvo con `firma_autor` (se imprime el informe de UNA sola persona): entonces firma el
+    ingeniero autor y no el Coordinador de área, que solo firma cuando se imprime toda el área; en el compilado semanal/de rango va en False y la única firma es la del Superintendente
     (`firma_sup` = {nombre, cargo}) en la hoja final. `firmas_ingenieros` agrega, hasta abajo, una línea de
     firma por cada ingeniero que aportó informe (impresión del día de varias personas). Bloqueante (reportlab/PIL): llamar con asyncio.to_thread."""
     import base64
@@ -20208,13 +20210,18 @@ def _informe_pdf_bytes(informes: list, proj: dict, fotos: Dict[str, list], hoja_
             conf = conf.astimezone(zona_proyecto(proj)).strftime("%d/%m/%Y %H:%M")
         sello = (f"Revisado y confirmado en SynCo el {conf}" if conf else "Pendiente de confirmar en SynCo")
         if firma_diaria:
-            # Una sola firma, al final: la del Coordinador de área (el ingeniero solo deja su sello de confirmación).
+            # Una sola firma, al final. Informe de una sola persona: firma el ingeniero autor. Informes de
+            # toda un área (o de varias): firma el Coordinador de área (el ingeniero deja su sello de confirmación).
             area_txt = f" · {inf.get('area_name')}" if inf.get("area_name") else ""
-            cargo_coord = f"{esc(inf.get('coord_area_puesto') or 'Coordinador de área')}{esc(area_txt)}"
+            if firma_autor:
+                firmante, cargo_firma = inf.get("user_name"), f"{esc(_informe_cargo(inf))}{esc(area_txt)}"
+            else:
+                firmante = inf.get("coord_area_nombre")
+                cargo_firma = f"{esc(inf.get('coord_area_puesto') or 'Coordinador de área')}{esc(area_txt)}"
             firma = Table([
                 [""],
-                [Paragraph(f"____________________________<br/><b>{esc(inf.get('coord_area_nombre') or ' ')}</b><br/>"
-                           f"{cargo_coord}", s_firma)],
+                [Paragraph(f"____________________________<br/><b>{esc(firmante or ' ')}</b><br/>"
+                           f"{cargo_firma}", s_firma)],
             ], colWidths=[W], rowHeights=[1.4 * cm, None])
             fl.append(KeepTogether([
                 Paragraph(f"Elaboró: {esc(inf.get('user_name'))} — {esc(sello)}", s_cap),
@@ -20331,7 +20338,8 @@ async def informe_diario_pdf(pid: str, iid: str, fotos: bool = Query(True), port
     imgs = await _informe_fotos([inf], INFORME_PDF_MAX_FOTOS if fotos else 0)
     f = date.fromisoformat(inf["fecha"])
     port = await _informe_portada(proj, [inf], f, f, persona=inf.get("user_name") or "") if portada else None
-    pdf = await asyncio.to_thread(_informe_pdf_bytes, [inf], proj, imgs, None, "", port)
+    # Un solo informe: firma su autor, no el Coordinador de área.
+    pdf = await asyncio.to_thread(lambda: _informe_pdf_bytes([inf], proj, imgs, None, "", port, firma_autor=True))
     nombre = f"informe_{_safe_filename_fragment(inf.get('user_name') or 'ingeniero')}_{inf['fecha']}.pdf"
     return _informe_pdf_response(pdf, nombre)
 
@@ -20403,8 +20411,10 @@ async def _informe_compilado_pdf(proj: dict, user: dict, ini: date, fin: date, a
     firma_sup = {"nombre": (sup.get("superintendente") or "").strip(), "cargo": _CIERRE_CARGO.capitalize()}
     # Impresión del día de varias personas: al final firma cada ingeniero que aportó.
     firmas_ing = ini == fin and not ingeniero_id and user["role"] in INFORME_ROLES_VEN_TODOS
-    pdf = await asyncio.to_thread(_informe_pdf_bytes, listos, proj, imgs, hoja, titulo_hoja, port,
-                                  ini == fin, firma_sup, firmas_ing)
+    # Con `persona` (un ingeniero, filtrado o porque solo ve lo suyo) firma el autor; el Coordinador de área
+    # firma cuando se imprime toda el área o varias.
+    pdf = await asyncio.to_thread(lambda: _informe_pdf_bytes(
+        listos, proj, imgs, hoja, titulo_hoja, port, ini == fin, firma_sup, firmas_ing, firma_autor=bool(persona)))
     sufijo = _safe_filename_fragment(area_nombre or persona or proj.get("name") or "proyecto")
     rango = ini.isoformat() if ini == fin else f"{ini.isoformat()}_{fin.isoformat()}"
     return _informe_pdf_response(pdf, f"{prefijo}_{rango}_{sufijo}.pdf")

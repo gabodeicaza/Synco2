@@ -193,6 +193,28 @@ def test_pdf_semanal_con_hoja_de_firmas_y_foto_corrupta():
     assert "HOJA DE FIRMAS SEMANAL" in r.pages[-1].extract_text()
 
 
+def _texto_pdf(informes, **kw):
+    import io
+    from pypdf import PdfReader
+    pdf = server._informe_pdf_bytes(informes, {"name": "X"}, {}, **kw)
+    return "\n".join(p.extract_text() for p in PdfReader(io.BytesIO(pdf)).pages)
+
+
+def test_firma_coordinador_de_area_solo_al_imprimir_toda_el_area():
+    inf = _informe("Ing. Arturo Alcántara")
+    inf.update(coord_area_nombre="Ing. Laura Coordinadora", coord_area_puesto="Coordinadora de Obra Civil",
+               area_name="Obra civil", user_puesto="Residente de Estructuras")
+    # Toda el área (o varias): firma el Coordinador de área.
+    area = _texto_pdf([inf, {**inf, "id": "i2", "user_name": "Ing. Beto Ramos"}])
+    assert area.count("Ing. Laura Coordinadora") == 2 and "FIRMA DE CONFORMIDAD" in area
+    # Una sola persona: firma el ingeniero autor y el Coordinador de área no aparece.
+    solo = _texto_pdf([inf], firma_autor=True)
+    assert "Ing. Laura Coordinadora" not in solo and "Coordinadora de Obra Civil" not in solo
+    assert "FIRMA DE CONFORMIDAD" in solo and "Residente de Estructuras · Obra civil" in solo
+    # Elaboró + sello de confirmación se conservan
+    assert "Elaboró: Ing. Arturo Alcántara" in solo
+
+
 def test_cargo_usa_el_puesto_y_cae_al_rol():
     assert server._informe_cargo({"user_puesto": " Supervisor de Obra Civil  y Arquitectura ", "user_role": "especialista"}) == \
         "Supervisor de Obra Civil y Arquitectura"
