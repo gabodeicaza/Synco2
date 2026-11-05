@@ -3396,6 +3396,29 @@ def _dirac_bloque_contrato(data: dict) -> Optional[dict]:
     return {"etiqueta": "SUPERVISIÓN", "lineas": lineas, "filas": filas}
 
 
+async def _proj_con_dirac(proj: dict) -> dict:
+    """Copia del proyecto con la SUPERVISIÓN de `datos_contrato` tomada de Dirac (si el proyecto
+    es el del contrato de Dirac). La hoja "Datos de contrato" de los informes (PDF/DOCX/PPTX)
+    la lee de ahí sin saber de dónde viene."""
+    pid = (proj or {}).get("id") or ""
+    dd = await _dirac_supervision(pid, proj) if pid else None
+    if not dd or not (dd.get("contrato") or {}):
+        return proj
+    c = dd["contrato"]
+    sup = {
+        "objeto": str(c.get("obra") or ""), "empresa": str(c.get("contratista") or ""),
+        "contrato": str(c.get("id_contrato") or ""),
+        "inicio": _fmt_iso_dmy(c.get("fecha_inicio")) if c.get("fecha_inicio") else "",
+        "fin": _fmt_iso_dmy(c.get("fecha_final")) if c.get("fecha_final") else "",
+        "monto": _money_fmt(_dd(c["importe"])) if c.get("importe") else "",
+    }
+    if c.get("anticipo"):
+        sup["anticipo"] = _money_fmt(_dd(c["anticipo"]))
+    dc = dict(proj.get("datos_contrato") or {})
+    dc["supervision"] = sup
+    return {**proj, "datos_contrato": dc}
+
+
 def _estimaciones_con_dirac(regs: List[dict], dirac_data: Optional[dict]) -> List[dict]:
     """Bloques de estimaciones: obra capturada + supervisión de Dirac (si aplica)."""
     if dirac_data and (dirac_data.get("estimaciones") or []):
@@ -23036,6 +23059,7 @@ async def export_reports_pdf(
         period_type=period_type,
     )
     proj = data["proj"]
+    proj = await _proj_con_dirac(proj)  # supervisión desde Dirac si aplica
     leaf_nodes = data["leaf_nodes"]
     reports_by_node = data["reports_by_node"]
     announcements_by_node = data["announcements_by_node"]
@@ -29655,6 +29679,7 @@ async def export_reports_docx(
         period_type=period_type,
     )
     proj = data["proj"]
+    proj = await _proj_con_dirac(proj)  # supervisión desde Dirac si aplica
     leaf_nodes = data["leaf_nodes"]
     reports_by_node = data["reports_by_node"]
     announcements_by_node = data["announcements_by_node"]
@@ -30437,6 +30462,7 @@ async def export_reports_pptx(
         period_type=period_type,
     )
     proj = data["proj"]
+    proj = await _proj_con_dirac(proj)  # supervisión desde Dirac si aplica
     leaf_nodes = data["leaf_nodes"]
     reports_by_node = data["reports_by_node"]
     path_cache = data["path_cache"]
