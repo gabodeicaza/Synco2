@@ -109,6 +109,10 @@ export function HeaderMenu({ basePath, projectId }: HeaderMenuProps) {
               // Coordinador, desde su pantalla de proyecto).
               <MenuItem icon="checkbox-outline" label="Asistencia" onPress={() => goTo('asistencia')} />
             ) : null}
+            {basePath === '/(subcoord)' ? (
+              // Imágenes: todas las fotos de los reportes por nodo y periodo, con descarga en ZIP.
+              <MenuItem icon="images-outline" label="Imágenes" onPress={() => goTo('imagenes')} />
+            ) : null}
 
             {/* Catálogo de Conceptos: antes un acordeón con 3 sub-opciones
                 aquí mismo (registrar avance, catálogo, visualizar avance);

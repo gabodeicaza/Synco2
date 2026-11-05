@@ -58,6 +58,14 @@ export type AsistenciaRegistro = {
   lat?: number | null; lon?: number | null;
   fuente: 'reporte' | 'registro' | 'manual'; nota?: string | null; editado_por?: string | null;
 };
+// Hub de Imágenes: fotos de los reportes de un periodo, agrupadas por nodo.
+export type ImagenHub = {
+  report_id: string; index: number; titulo: string; node_id?: string | null; node_path_names: string[];
+  area?: string | null; capturado_por?: string | null; fecha: string; caption: string;
+  actividades: string; observaciones: string; incidencias: string;
+  lat?: number | null; lon?: number | null; n_fotos_reporte: number; thumb?: string | null;
+};
+export type ImagenesHubResp = { total: number; skip: number; has_more: boolean; items: ImagenHub[] };
 export type AsistenciaResp = {
   desde: string; hasta: string; hoy: string;
   personas: AsistenciaPersona[]; registros: Record<string, AsistenciaRegistro>;
@@ -3142,6 +3150,12 @@ export const api = {
     request<MaterialFT>('PUT', `/projects/${pid}/fuerza-trabajo/materiales/${id}`, body),
   deleteMaterialFT: (pid: string, id: string) =>
     request<{ ok: boolean }>('DELETE', `/projects/${pid}/fuerza-trabajo/materiales/${id}`),
+  listImagenesHub: (pid: string, desde: string, hasta: string, skip = 0, limit = 60) =>
+    request<ImagenesHubResp>('GET', `/projects/${pid}/imagenes?desde=${desde}&hasta=${hasta}&skip=${skip}&limit=${limit}`),
+  getImagenHub: (pid: string, rid: string, idx: number) =>
+    request<{ image: string }>('GET', `/projects/${pid}/imagenes/${rid}/${idx}`),
+  downloadImagenesZip: (pid: string, desde: string, hasta: string) =>
+    _downloadFile(`${BASE}/projects/${pid}/imagenes/zip?desde=${desde}&hasta=${hasta}`, `imagenes_${desde}_a_${hasta}.zip`, 'Error al descargar las imágenes'),
   getAsistencia: (pid: string, desde: string, hasta: string) =>
     request<AsistenciaResp>('GET', `/projects/${pid}/asistencia?desde=${desde}&hasta=${hasta}`),
   setAsistencia: (pid: string, uid: string, fecha: string, body: { estado: AsistenciaEstado | 'auto'; nota?: string }) =>

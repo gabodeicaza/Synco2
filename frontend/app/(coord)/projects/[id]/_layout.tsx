@@ -40,6 +40,7 @@ export default function ProjectLayout() {
       <Stack.Screen name="tapial" />
       <Stack.Screen name="asistencia" />
       <Stack.Screen name="informes-diarios" />
+      <Stack.Screen name="imagenes" />
       <Stack.Screen name="capacidades" />
       <Stack.Screen name="estado-tiempo" />
       <Stack.Screen name="control-obra" />

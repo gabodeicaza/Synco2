@@ -16581,6 +16581,175 @@ async def reports_feed(
     }
 
 
+# ---------------------------------------------------------------------------
+# HUB DE IMÁGENES (Coordinador / Sub-Coordinador): todas las fotos de los
+# reportes de un periodo, agrupadas por nodo, con detalle y descarga en ZIP.
+# ---------------------------------------------------------------------------
+IMAGENES_MAX_DIAS = 366
+
+
+def _imagenes_rango(desde: str, hasta: str, proyecto: dict) -> tuple:
+    """(inicio, fin) UTC de [desde, hasta] inclusivos en la zona del proyecto."""
+    zona = zona_proyecto(proyecto)
+    try:
+        d0, d1 = date.fromisoformat(desde), date.fromisoformat(hasta)
+    except ValueError:
+        raise HTTPException(400, "Fechas inválidas (usa AAAA-MM-DD)")
+    if d1 < d0:
+        raise HTTPException(400, "'hasta' no puede ser anterior a 'desde'")
+    if (d1 - d0).days + 1 > IMAGENES_MAX_DIAS:
+        raise HTTPException(400, f"Rango máximo: {IMAGENES_MAX_DIAS} días")
+    ini = datetime(d0.year, d0.month, d0.day, tzinfo=zona).astimezone(timezone.utc)
+    fin = (datetime(d1.year, d1.month, d1.day, tzinfo=zona) + timedelta(days=1)).astimezone(timezone.utc)
+    return ini, fin
+
+
+def _imagenes_fecha_local(dt: Optional[datetime], zona) -> str:
+    if not dt:
+        return ""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(zona).strftime("%Y-%m-%d %H:%M")
+
+
+def _imagenes_nombre_seguro(txt: str, largo: int = 60) -> str:
+    import re as _re
+    limpio = _re.sub(r"[^\w\-. ]+", "_", (txt or "").strip(), flags=_re.UNICODE).strip(" ._")
+    return (limpio or "sin_nombre")[:largo]
+
+
+async def _imagenes_reportes(pid: str, ini: datetime, fin: datetime) -> list:
+    """Metadatos (sin las fotos) de los reportes del periodo que tienen fotos,
+    ordenados por nodo y luego por fecha."""
+    proj = {"_id": 0, "id": 1, "title": 1, "created_at": 1, "node_id": 1, "node_path_names": 1,
+            "area_name": 1, "captured_by_name": 1, "actividades": 1, "observaciones": 1,
+            "incidencias": 1, "photo_captions": 1, "measurement_value": 1,
+            "n": {"$size": {"$ifNull": ["$images", []]}}}
+    reps = await db.reports.aggregate([
+        {"$match": {"project_id": pid, "created_at": {"$gte": ini, "$lt": fin}, "images.0": {"$exists": True}}},
+        {"$project": proj},
+    ]).to_list(length=20000)
+    reps.sort(key=lambda r: (" › ".join(r.get("node_path_names") or []).lower(), r.get("created_at") or datetime.min))
+    return reps
+
+
+@api.get("/projects/{pid}/imagenes")
+async def list_imagenes_hub(
+    pid: str, desde: str, hasta: str, skip: int = 0, limit: int = 60,
+    user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB, ROLE_JEFE)),
+):
+    """Fotos de los reportes entre `desde` y `hasta` (inclusivos, zona del proyecto),
+    ordenadas por nodo. Paginado por foto; solo la página pedida lleva miniatura."""
+    proyecto = await ensure_project_access(user, pid)
+    ini, fin = _imagenes_rango(desde, hasta, proyecto)
+    zona = zona_proyecto(proyecto)
+    reps = await _imagenes_reportes(pid, ini, fin)
+    total = sum(int(r.get("n") or 0) for r in reps)
+    safe_skip, safe_limit = max(0, int(skip)), max(1, min(int(limit), 120))
+
+    pagina = []  # (reporte, índice de foto)
+    pos = 0
+    for r in reps:
+        n = int(r.get("n") or 0)
+        for i in range(n):
+            if pos >= safe_skip and len(pagina) < safe_limit:
+                pagina.append((r, i))
+            pos += 1
+        if len(pagina) >= safe_limit:
+            break
+    ids = list({r["id"] for r, _ in pagina})
+    imgs_por_id = {}
+    if ids:
+        async for d in db.reports.find({"id": {"$in": ids}}, {"_id": 0, "id": 1, "images": 1}):
+            imgs_por_id[d["id"]] = d.get("images") or []
+
+    def _armar():
+        out = []
+        for r, i in pagina:
+            imgs = imgs_por_id.get(r["id"]) or []
+            caps = r.get("photo_captions") or []
+            mv = r.get("measurement_value") or {}
+            lat, lon = mv.get("lat"), mv.get("lon")
+            out.append({
+                "report_id": r["id"], "index": i,
+                "titulo": (r.get("title") or "").strip() or (r.get("actividades") or "").strip()[:80] or "Reporte",
+                "node_id": r.get("node_id"),
+                "node_path_names": r.get("node_path_names") or [],
+                "area": r.get("area_name"),
+                "capturado_por": r.get("captured_by_name"),
+                "fecha": _imagenes_fecha_local(r.get("created_at"), zona),
+                "caption": (caps[i] if i < len(caps) else "") or "",
+                "actividades": (r.get("actividades") or "")[:600],
+                "observaciones": (r.get("observaciones") or "")[:600],
+                "incidencias": (r.get("incidencias") or "")[:600],
+                "lat": lat if isinstance(lat, (int, float)) else None,
+                "lon": lon if isinstance(lon, (int, float)) else None,
+                "n_fotos_reporte": int(r.get("n") or 0),
+                "thumb": _thumb_dataurl(imgs[i], 160) if i < len(imgs) else None,
+            })
+        return out
+
+    items = await asyncio.to_thread(_armar)
+    return {"total": total, "skip": safe_skip, "has_more": safe_skip + len(items) < total, "items": items}
+
+
+@api.get("/projects/{pid}/imagenes/zip")
+async def export_imagenes_zip(
+    pid: str, desde: str, hasta: str,
+    user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB, ROLE_JEFE)),
+):
+    """ZIP con todas las fotos del periodo, en una carpeta por nodo y a tamaño completo."""
+    import base64
+    import zipfile
+    proyecto = await ensure_project_access(user, pid)
+    ini, fin = _imagenes_rango(desde, hasta, proyecto)
+    zona = zona_proyecto(proyecto)
+    reps = await _imagenes_reportes(pid, ini, fin)
+    if not reps:
+        raise HTTPException(404, "No hay imágenes en ese periodo")
+    buf = io.BytesIO()
+    usados: set = set()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
+        for r in reps:
+            doc = await db.reports.find_one({"id": r["id"]}, {"_id": 0, "images": 1})
+            path = r.get("node_path_names") or ["Sin nodo"]
+            carpeta = "/".join(_imagenes_nombre_seguro(x, 40) for x in path)
+            stamp = _imagenes_fecha_local(r.get("created_at"), zona).replace(":", "").replace(" ", "_")
+            titulo = _imagenes_nombre_seguro(r.get("title") or r.get("actividades") or "reporte", 40)
+            for i, im in enumerate((doc or {}).get("images") or []):
+                try:
+                    cab = im.split(",", 1)[0].lower() if im.startswith("data:") else ""
+                    ext = "png" if "png" in cab else "webp" if "webp" in cab else "jpg"
+                    raw = base64.b64decode(_strip_b64_prefix(im))
+                except Exception:
+                    continue
+                nombre = f"{carpeta}/{stamp}_{titulo}_{i + 1}.{ext}"
+                k = 2
+                while nombre in usados:
+                    nombre = f"{carpeta}/{stamp}_{titulo}_{i + 1}_{k}.{ext}"
+                    k += 1
+                usados.add(nombre)
+                zf.writestr(nombre, raw)
+    buf.seek(0)
+    fname = f"imagenes_{desde}_a_{hasta}.zip"
+    return StreamingResponse(buf, media_type="application/zip",
+                             headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+
+@api.get("/projects/{pid}/imagenes/{rid}/{idx}")
+async def get_imagen_hub(
+    pid: str, rid: str, idx: int,
+    user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB, ROLE_JEFE)),
+):
+    """La foto completa (data URL) de un reporte, para el visor del hub."""
+    await ensure_project_access(user, pid)
+    r = await db.reports.find_one({"id": rid, "project_id": pid}, {"_id": 0, "images": 1})
+    imgs = (r or {}).get("images") or []
+    if idx < 0 or idx >= len(imgs):
+        raise HTTPException(404, "La imagen no existe")
+    return {"image": imgs[idx]}
+
+
 @api.get("/reports/{rid}")
 async def get_report(rid: str, user: dict = Depends(current_user)):
     r = await db.reports.find_one({"id": rid})

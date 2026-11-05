@@ -1553,6 +1553,12 @@ export default function ProjectDetailScreen() {
                   onPress={() => router.push({ pathname: '/(coord)/projects/[id]/informes-diarios' as any, params: { id: pid } })}
                 />
                 <ActionTile
+                  icon="images-outline"
+                  title="Imágenes"
+                  subtitle="Todas las fotos de los reportes por nodo y periodo; descarga en ZIP"
+                  onPress={() => router.push({ pathname: '/(coord)/projects/[id]/imagenes' as any, params: { id: pid } })}
+                />
+                <ActionTile
                   icon="people-outline"
                   title={t('proyectoPantalla.fuerzaDeTrabajo')}
                   subtitle={t('proyectoPantalla.personalYMaquinariaDerivadosDe')}
