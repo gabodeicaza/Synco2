@@ -808,7 +808,7 @@ export default function NewReportScreen() {
                   ))}
                 </View>
                 <Text style={styles.inputLabelSmall}>{t('nuevoReporte.primeraLectura')}</Text>
-                <TextInput value={primeraLectura} onChangeText={setPrimeraLectura} keyboardType="numeric" placeholder={t('nuevoReporte.ej1245')} style={styles.input} />
+                <TextInput value={primeraLectura} onChangeText={setPrimeraLectura} keyboardType="decimal-pad" placeholder={t('nuevoReporte.ej1245')} style={styles.input} />
                 <View style={styles.historyHint}>
                   <Ionicons name="time-outline" size={12} color={colors.primary} />
                   <Text style={styles.historyHintTxt}>
@@ -816,7 +816,7 @@ export default function NewReportScreen() {
                   </Text>
                 </View>
                 <Text style={styles.inputLabelSmall}>{t('nuevoReporte.ultimaLectura')}</Text>
-                <TextInput value={ultimaLectura} onChangeText={setUltimaLectura} keyboardType="numeric" placeholder={t('nuevoReporte.ej1280')} style={styles.input} />
+                <TextInput value={ultimaLectura} onChangeText={setUltimaLectura} keyboardType="decimal-pad" placeholder={t('nuevoReporte.ej1280')} style={styles.input} />
                 {avanceCalculado !== '' && (
                   <View style={styles.avanceBox}>
                     <Ionicons name="speedometer-outline" size={14} color={colors.primary} />
@@ -1137,7 +1137,7 @@ function DynamicTemplateField({ field, value, onChange }: any) {
       <TextInput
         value={value === undefined || value === null ? '' : String(value)}
         onChangeText={onChange}
-        keyboardType={field.type === 'number' ? 'numeric' : 'default'}
+        keyboardType={field.type === 'number' ? 'decimal-pad' : 'default'}
         placeholder={field.label}
         style={styles.input}
       />

@@ -267,7 +267,7 @@ export default function AspectosSocialesScreen({ projectId }: { projectId: strin
                   {([['dictamen', 'Dictamen'], ['visita', 'Visita'], ['fe', 'Fe notarial'], ['entrega', 'Entrega']] as ['dictamen' | 'visita' | 'fe' | 'entrega', string][]).map(([k, label]) => (
                     <View key={k} style={{ flex: 1 }}>
                       <Text style={{ fontSize: 10, color: colors.textMuted }}>{label}</Text>
-                      <TextInput value={f[k]} editable={puedeEscribir} keyboardType="numeric"
+                      <TextInput value={f[k]} editable={puedeEscribir} keyboardType="decimal-pad"
                         onChangeText={(v) => setEstFilas((c) => c.map((x, j) => (j === i ? { ...x, [k]: v } : x)))} style={styles.input} />
                     </View>
                   ))}

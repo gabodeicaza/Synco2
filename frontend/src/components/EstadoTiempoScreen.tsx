@@ -217,7 +217,7 @@ export default function EstadoTiempoScreen({ projectId }: { projectId: string })
                         }))}
                         placeholder={placeholder}
                         placeholderTextColor={colors.textMuted}
-                        keyboardType="numeric"
+                        keyboardType="decimal-pad"
                         style={styles.campoInput}
                         editable={!busy[n.id]}
                       />

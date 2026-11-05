@@ -133,7 +133,7 @@ export default function PostesCalidadModal({ projectId, visible, onClose, puedeE
                   {PROCESOS.map((p) => (
                     <View key={p.key} style={{ flex: 1 }}>
                       <Text style={styles.mini}>{p.label} %</Text>
-                      <TextInput value={f[p.key]} editable={puedeEscribir} keyboardType="numeric"
+                      <TextInput value={f[p.key]} editable={puedeEscribir} keyboardType="decimal-pad"
                         onChangeText={(v) => setFab((c) => c.map((x, j) => (j === i ? { ...x, [p.key]: v } : x)))} style={styles.input} />
                     </View>
                   ))}

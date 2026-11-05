@@ -467,7 +467,7 @@ export default function TablaResumenScreen({ projectId }: { projectId: string })
                   onChangeText={(v) => setCeldaForm((s) => ({ ...s, valor: v }))}
                   placeholder={t('tablaResumen.ej85')}
                   placeholderTextColor={colors.textMuted}
-                  keyboardType="numeric"
+                  keyboardType="decimal-pad"
                   style={styles.input}
                 />
               </>

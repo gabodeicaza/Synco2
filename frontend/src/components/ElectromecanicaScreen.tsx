@@ -294,7 +294,7 @@ export default function ElectromecanicaScreen({ projectId }: { projectId: string
             <View key={i} style={styles.gridRow}>
               <TextInput value={b.bucle} editable={puedeEscribir} placeholder="Bucle (A, D…)" placeholderTextColor={colors.textMuted}
                 onChangeText={(v) => setPilBucles((c) => c.map((x, j) => (j === i ? { ...x, bucle: v } : x)))} style={[styles.input, { flex: 1 }]} />
-              <TextInput value={b.avance} editable={puedeEscribir} placeholder="% producción" placeholderTextColor={colors.textMuted} keyboardType="numeric"
+              <TextInput value={b.avance} editable={puedeEscribir} placeholder="% producción" placeholderTextColor={colors.textMuted} keyboardType="decimal-pad"
                 onChangeText={(v) => setPilBucles((c) => c.map((x, j) => (j === i ? { ...x, avance: v } : x)))} style={[styles.input, { flex: 1 }]} />
               {puedeEscribir ? (
                 <Pressable accessibilityRole="button" accessibilityLabel="Quitar" onPress={() => setPilBucles((c) => c.filter((_, j) => j !== i))}>

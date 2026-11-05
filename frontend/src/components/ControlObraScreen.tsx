@@ -719,7 +719,7 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
                                 <TextInput
                                   value={d[key]}
                                   onChangeText={(t) => setElementoFieldDrafts((prev) => ({ ...prev, [el.id]: { ...prev[el.id], [key]: t } }))}
-                                  keyboardType="numeric"
+                                  keyboardType="decimal-pad"
                                   style={styles.elementoFieldInput}
                                 />
                               </View>
