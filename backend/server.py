@@ -3337,16 +3337,18 @@ async def _dirac_fetch(refresh: bool = False) -> Optional[dict]:
     return data
 
 
-@api.get("/dirac/conceptos")
-async def dirac_conceptos(refresh: bool = False, user: dict = Depends(current_user)):
-    """Proxy con caché del software Dirac APM. Visible para todos los roles
-    (solo lectura). El token nunca sale al cliente."""
+@api.get("/projects/{pid}/dirac")
+async def dirac_proyecto(pid: str, refresh: bool = False, user: dict = Depends(current_user)):
+    """Datos de Dirac SOLO para el proyecto cuyo contrato es el de Dirac (el resto de los
+    proyectos recibe {"aplica": false}). Acceso por proyecto, solo lectura; el token nunca
+    sale al cliente."""
+    project = await ensure_project_access(user, pid)
     if not DIRAC_API_URL:
-        raise HTTPException(503, "Integración Dirac no configurada (falta DIRAC_API_URL)")
+        return {"aplica": False}
     data = await _dirac_fetch(refresh)
-    if data is None:
-        raise HTTPException(502, "No se pudo consultar Dirac")
-    return data
+    if not _dirac_aplica(project, pid, data):
+        return {"aplica": False}
+    return {"aplica": True, "datos": data}
 
 
 def _dirac_aplica(proj: Optional[dict], pid: str, data: Optional[dict]) -> bool:
@@ -3368,6 +3370,38 @@ def _dirac_aplica(proj: Optional[dict], pid: str, data: Optional[dict]) -> bool:
 
 def _dd(v) -> Decimal:
     return Decimal(str(v if v is not None else 0))
+
+
+def _dirac_bloque_contrato(data: dict) -> Optional[dict]:
+    """Bloque SUPERVISIÓN de la hoja "DATOS DE CONTRATO" con los datos del contrato en Dirac."""
+    c = data.get("contrato") or {}
+    if not c:
+        return None
+    lineas = []
+    if c.get("obra"):
+        lineas.append(("SUPERVISIÓN:", f"\u201c{c['obra']}\u201d."))
+    if c.get("contratista"):
+        lineas.append(("EMPRESA:", str(c["contratista"]).upper()))
+    if c.get("id_contrato"):
+        lineas.append(("CONTRATO:", str(c["id_contrato"])))
+    if c.get("cliente"):
+        lineas.append(("CLIENTE:", str(c["cliente"]).upper()))
+    filas = []
+    if c.get("fecha_inicio") or c.get("fecha_final"):
+        filas.append(("Periodo de ejecución", _fmt_iso_dmy(c.get("fecha_inicio")), _fmt_iso_dmy(c.get("fecha_final")), False))
+    if c.get("importe"):
+        filas.append(("Monto", _money_fmt(_dd(c["importe"])), "", True))
+    if c.get("anticipo"):
+        filas.append(("Anticipo", _money_fmt(_dd(c["anticipo"])), "", True))
+    return {"etiqueta": "SUPERVISIÓN", "lineas": lineas, "filas": filas}
+
+
+def _estimaciones_con_dirac(regs: List[dict], dirac_data: Optional[dict]) -> List[dict]:
+    """Bloques de estimaciones: obra capturada + supervisión de Dirac (si aplica)."""
+    if dirac_data and (dirac_data.get("estimaciones") or []):
+        regs = [r for r in regs if r.get("contrato", "obra") != "supervision"]
+        return _estimaciones_bloques(regs) + _dirac_bloques_estimaciones(dirac_data)
+    return _estimaciones_bloques(regs)
 
 
 def _dirac_bloques_estimaciones(data: dict) -> List[dict]:
@@ -3402,6 +3436,93 @@ def _dirac_bloques_estimaciones(data: dict) -> List[dict]:
         "col_widths": [0.04, 0.12, 0.075, 0.105, 0.105, 0.105, 0.075, 0.105, 0.095, 0.105, 0.07],
         "empty_text": "Sin estimaciones.",
     }]
+
+
+def _grafica_barras_auto_png(titulo: str, categorias: List[str], series: List[tuple], formato,
+                             apilado: bool = False, colores_barra: Optional[List[str]] = None) -> bytes:
+    """Barras con escala automática (a diferencia de `_grafica_barras_png`, que es 0-100%).
+    `series` = [(nombre, "#RRGGBB", [valores])]; agrupadas o apiladas. `colores_barra` pinta
+    cada categoría de un color (solo con una serie)."""
+    from PIL import Image as _I
+    W, H = 1800, 800
+    img = _I.new("RGB", (W, H), "white")
+    d, (f_txt, f_tit) = _chart_canvas(img, 22, 30)
+    d.text((W / 2, 40), titulo, fill="#0F172A", font=f_tit, anchor="mm")
+    x0, x1, y0, y1 = 170, W - 60, 100, H - 170
+    n = max(len(categorias), 1)
+    if apilado:
+        topes = [sum(float(sr[2][i]) for sr in series) for i in range(len(categorias))]
+    else:
+        topes = [float(v) for sr in series for v in sr[2]]
+    vmax = (max(topes + [0.0]) or 1.0) * 1.12
+    for i in range(6):
+        y = y1 - (y1 - y0) * i / 5
+        d.line([(x0, y), (x1, y)], fill="#E2E8F0", width=1)
+        d.text((x0 - 12, y), formato(vmax * i / 5), fill="#475569", font=f_txt, anchor="rm")
+    d.line([(x0, y0), (x0, y1), (x1, y1)], fill="#475569", width=2)
+    ancho_grupo = (x1 - x0) / n
+    ancho_barra = min(ancho_grupo * 0.8 / (1 if apilado else max(len(series), 1)), 150)
+    for gi, cat in enumerate(categorias):
+        gx = x0 + ancho_grupo * (gi + 0.5)
+        d.text((gx, y1 + 22), cat, fill="#0F172A", font=f_txt, anchor="mt")
+        base = 0.0
+        for si, (_nombre, color, valores) in enumerate(series):
+            v = float(valores[gi])
+            color = colores_barra[gi] if (colores_barra and len(series) == 1) else color
+            if apilado:
+                bx0, bx1 = gx - ancho_barra / 2, gx + ancho_barra / 2
+                top, bot = y1 - (y1 - y0) * (base + v) / vmax, y1 - (y1 - y0) * base / vmax
+                base += v
+            else:
+                cx = gx + (si - (len(series) - 1) / 2) * (ancho_barra + 8)
+                bx0, bx1 = cx - ancho_barra / 2, cx + ancho_barra / 2
+                top, bot = y1 - (y1 - y0) * v / vmax, y1
+            if bot - top >= 1:
+                d.rectangle([bx0, top, bx1, bot], fill=color)
+            if not apilado and v:
+                d.text(((bx0 + bx1) / 2, top - 8), formato(v), fill="#0F172A", font=f_txt, anchor="mb")
+        if apilado and base:
+            d.text((gx, y1 - (y1 - y0) * base / vmax - 8), formato(base), fill="#0F172A", font=f_txt, anchor="mb")
+    lx = x0
+    for nombre, color, _v in series:
+        if colores_barra and len(series) == 1:
+            break
+        d.rectangle([lx, H - 60, lx + 28, H - 40], fill=color)
+        d.text((lx + 38, H - 50), nombre, fill="#0F172A", font=f_txt, anchor="lm")
+        lx += 70 + int(d.textlength(nombre, font=f_txt)) + 40
+    out = io.BytesIO()
+    img.save(out, format="PNG")
+    return out.getvalue()
+
+
+def _dirac_graficas_extra(data: dict) -> List[tuple]:
+    """Gráficas adicionales del contrato de Dirac: avance por frente, ejecutado vs por
+    ejecutar por frente y estimaciones por periodo. [(heading, caption, png)]."""
+    etq = CONTRATO_FIN_LABEL["supervision"]
+    out: List[tuple] = []
+    frentes = data.get("frentes") or []
+    if frentes:
+        cats = [str(f.get("frente", "")) for f in frentes]
+        fis = [round(float((f.get("totales") or {}).get("porcentaje_avance_fisico") or 0), 1) for f in frentes]
+        fin = [round(float((f.get("totales") or {}).get("porcentaje_avance_financiero") or 0), 1) for f in frentes]
+        out.append((f"AVANCE POR FRENTE ({etq})", "Avance físico y financiero por frente",
+                    _grafica_barras_png("Avance por frente (%)", cats, [("Físico", "#2563EB", fis), ("Financiero", "#16A34A", fin)])))
+        eje = [float((f.get("totales") or {}).get("importe_ejecutado") or 0) / 1e6 for f in frentes]
+        resto = [max(float((f.get("totales") or {}).get("importe") or 0) / 1e6 - e, 0.0) for f, e in zip(frentes, eje)]
+        out.append((f"IMPORTE POR FRENTE ({etq})", "Importe ejecutado y por ejecutar por frente (millones de pesos)",
+                    _grafica_barras_auto_png("Importe por frente (millones de pesos)", cats,
+                                             [("Ejecutado", "#16A34A", eje), ("Por ejecutar", "#CBD5E1", resto)],
+                                             lambda v: f"{v:,.1f} M", apilado=True)))
+    ests = sorted(data.get("estimaciones") or [], key=lambda e: e.get("numero_estimacion") or 0)
+    if ests:
+        color = {"Pagada": "#16A34A", "Autorizada": "#2563EB"}
+        out.append((f"ESTIMACIONES POR PERIODO ({etq})", "Importe de cada estimación (millones de pesos); verde pagada, azul autorizada, ámbar pendiente",
+                    _grafica_barras_auto_png("Estimaciones por periodo (millones de pesos)",
+                                             [f"E{e.get('numero_estimacion')}" for e in ests],
+                                             [("Importe", "#F59E0B", [float(e.get("importe") or 0) / 1e6 for e in ests])],
+                                             lambda v: f"{v:,.2f} M",
+                                             colores_barra=[color.get(e.get("estatus"), "#F59E0B") for e in ests])))
+    return out
 
 
 def _dirac_bloques_avance(data: dict, corte: date) -> tuple:
@@ -3459,6 +3580,7 @@ def _dirac_bloques_avance(data: dict, corte: date) -> tuple:
         png = _grafica_lineas_png("Curva S acumulada (% del contrato)", etiquetas, series, lambda v: f"{v:.0f}%", 100.0)
         graficas.append((f"GRÁFICA DE AVANCE ({CONTRATO_FIN_LABEL['supervision']})",
                          f"Curva S programado vs real al {_fmt_iso_dmy(corte.isoformat())}", png))
+    graficas += _dirac_graficas_extra(data)
     return bloques, graficas
 
 
@@ -11497,7 +11619,13 @@ async def export_presentacion_pptx(pid: str, pres_id: str, user: dict = Depends(
     if any(s_.get("tipo") == "financiero" for s_ in secciones):
         pendientes_rows = await db.pendientes_generales.find({"project_id": pid, "resuelto": {"$ne": True}}).to_list(length=500)
         contrato_bloques = _contrato_bloques(proj)
-        estimaciones_bloques = _estimaciones_bloques(await db.estimaciones.find({"project_id": pid}).to_list(length=500))
+        _dirac_pres = await _dirac_supervision(pid, proj)
+        if _dirac_pres:
+            _blq_sup = _dirac_bloque_contrato(_dirac_pres)
+            if _blq_sup:
+                contrato_bloques = [b_ for b_ in contrato_bloques if b_.get("etiqueta") != "SUPERVISIÓN"] + [_blq_sup]
+        estimaciones_bloques = _estimaciones_con_dirac(
+            await db.estimaciones.find({"project_id": pid}).to_list(length=500), _dirac_pres)
 
     project_color = proj.get("color_institucional") or proj.get("color_tema") or "#1E40AF"
 
@@ -29388,13 +29516,7 @@ async def _gather_modulos_export_data(
 
     if activos.get("estimaciones"):
         regs_es = await db.estimaciones.find({"project_id": pid}).to_list(length=500)
-        dirac_es = await _dirac_fetch()
-        if _dirac_aplica(proj, pid, dirac_es) and (dirac_es.get("estimaciones") or []):
-            # Supervisión viene de Dirac; la de obra sigue siendo la capturada.
-            regs_es = [r for r in regs_es if r.get("contrato", "obra") != "supervision"]
-            bloques_es = _estimaciones_bloques(regs_es) + _dirac_bloques_estimaciones(dirac_es)
-        else:
-            bloques_es = _estimaciones_bloques(regs_es)
+        bloques_es = _estimaciones_con_dirac(regs_es, await _dirac_supervision(pid, proj))
         if bloques_es:
             out["estimaciones"] = {"titulo": "CONCENTRADO DE ESTIMACIONES", "blocks": bloques_es}
 
@@ -40583,9 +40705,12 @@ async def datos_financieros_presentacion(pid: str, pres: dict, project: Optional
     periodo = pres.get("periodo_financiero") or PERIODO_FINANCIERO_DEFECTO
     if periodo not in PERIODOS_FINANCIEROS:
         periodo = PERIODO_FINANCIERO_DEFECTO
-    start, end = await rango_financiero(pid, periodo, date.fromisoformat(pres["fecha"]))
-    r = await calcular_analisis_evm(pid, start, end, project)
-    return {"periodo": periodo, "start": start, "end": end, "cifras": cifras_analisis(r)}
+    # Proyecto de Dirac: la Presentación se llena con el contrato de supervisión de la API.
+    contrato = "supervision" if await _dirac_supervision(pid, project) else "obra"
+    start, end = await rango_financiero(pid, periodo, date.fromisoformat(pres["fecha"]), contrato)
+    r = await calcular_analisis_evm(pid, start, end, project, contrato)
+    return {"periodo": periodo, "start": start, "end": end, "cifras": cifras_analisis(r),
+            "contrato": contrato, "fuente": "dirac" if contrato == "supervision" else "synco"}
 
 
 class ExcepcionEvmOut(BaseModel):

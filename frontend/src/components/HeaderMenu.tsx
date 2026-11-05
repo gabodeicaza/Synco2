@@ -13,6 +13,7 @@ import { EliminarCuentaModal } from '@/src/components/EliminarCuentaModal';
 import { colors, radius, shadow, spacing } from '@/src/theme';
 import { confirm } from '@/src/utils/confirm';
 import { modulosActivos } from '@/src/utils/modulos';
+import { useEsDirac } from '@/src/utils/dirac';
 import { t } from '@/src/i18n';
 
 type HeaderMenuProps = {
@@ -29,6 +30,8 @@ export function HeaderMenu({ basePath, projectId }: HeaderMenuProps) {
   const [open, setOpen] = useState(false);
   const [borrando, setBorrando] = useState(false);
   const esSub = basePath === '/(subcoord)';
+  // Cablebús (Dirac): el catálogo de conceptos y la captura de avance quedan obsoletos.
+  const esDirac = useEsDirac(projectId);
 
   // Sistema Multi-Proyecto Modular: qué plantillas están encendidas para el
   // proyecto actual (ver src/utils/modulos.ts para el catálogo del lado del
@@ -109,7 +112,7 @@ export function HeaderMenu({ basePath, projectId }: HeaderMenuProps) {
                 <SectionLabel label="Avance e informes" />
                 {/* Catálogo de Conceptos: hub con registrar avance, catálogo y
                     visualizar avance (ver CatalogoConceptosHubScreen.tsx). */}
-                <MenuItem icon="albums-outline" label={t('menuCabecera.catalogoConceptos')} onPress={() => goTo('catalogo-conceptos-hub')} />
+                {!esDirac ? <MenuItem icon="albums-outline" label={t('menuCabecera.catalogoConceptos')} onPress={() => goTo('catalogo-conceptos-hub')} /> : null}
                 <MenuItem icon="reader-outline" label={t('menuCabecera.actividadesGenerales')} onPress={() => goTo('actividades-generales', { nivel: 'GENERAL' })} />
                 <MenuItem icon="print-outline" label="Informes diarios (PDF)" onPress={() => goTo('informe-diario', { vista: 'equipo' })} />
                 <MenuItem icon="list-outline" label="Índice de informes" onPress={() => goTo('indice')} />
@@ -135,7 +138,7 @@ export function HeaderMenu({ basePath, projectId }: HeaderMenuProps) {
                     generales y acceso al predio son de supervisión y no se
                     ofrecen; "Registrar avance" (captura diaria) sí, directo. */}
                 <MenuItem icon="document-text-outline" label={t('menuCabecera.borradores')} onPress={() => { setOpen(false); router.push(`${basePath}/borradores` as any); }} />
-                <MenuItem icon="create-outline" label="Registrar avance" onPress={() => goTo('registrar-avance')} />
+                {!esDirac ? <MenuItem icon="create-outline" label="Registrar avance" onPress={() => goTo('registrar-avance')} /> : null}
                 <MenuItem icon="people-outline" label={t('menuCabecera.fuerzaTrabajo')} onPress={() => goTo('fuerza-de-trabajo')} />
                 <MenuItem icon="print-outline" label="Informes diarios (PDF)" onPress={() => goTo('informe-diario', { vista: 'equipo' })} />
                 <MenuItem icon="chatbubbles-outline" label={t('menuCabecera.mensajes')} onPress={() => goTo('mensajes')} />

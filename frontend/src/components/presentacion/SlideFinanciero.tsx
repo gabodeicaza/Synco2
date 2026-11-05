@@ -19,10 +19,12 @@ function Kpi({ label, value, tone }: { label: string; value: string; tone?: stri
 }
 
 export function SlideFinanciero({
-  analisis, presupuestoTotal, colorTema, periodoTexto,
+  analisis, presupuestoTotal, colorTema, periodoTexto, sinCostos,
 }: {
   analisis: AnalisisPeriodo | null;
   presupuestoTotal: string | null;
+  /** Contrato que viene de Dirac: no trae costos reales (sin AC, CPI, variación de costo ni pronóstico). */
+  sinCostos?: boolean;
   colorTema: string;
   /** "Periodo: Del 1 al 24 de septiembre de 2026". */
   periodoTexto?: string;
@@ -46,20 +48,24 @@ export function SlideFinanciero({
         <Kpi label="Valor Planeado (PV)" value={formatMoney(analisis.pv)} />
         <Kpi label={t('evm.evContractual')} value={formatMoney(analisis.ev_contractual ?? analisis.ev)} />
         <Kpi label={t('evm.evTotal')} value={formatMoney(analisis.ev_total ?? analisis.ev)} />
-        <Kpi label="Costo Real (AC)" value={formatMoney(analisis.ac)} />
+        {!sinCostos ? <Kpi label="Costo Real (AC)" value={formatMoney(analisis.ac)} /> : null}
         <Kpi label="SPI" value={spi != null ? spi.toFixed(2) : '—'} tone={spi != null ? (spi >= 1 ? colors.success : colors.error) : undefined} />
-        <Kpi label="CPI" value={cpi != null ? cpi.toFixed(2) : '—'} tone={cpi != null ? (cpi >= 1 ? colors.success : colors.error) : undefined} />
+        {!sinCostos ? <Kpi label="CPI" value={cpi != null ? cpi.toFixed(2) : '—'} tone={cpi != null ? (cpi >= 1 ? colors.success : colors.error) : undefined} /> : null}
         <Kpi label="Variación cronograma" value={formatMoney(analisis.variacion_cronograma)} />
-        <Kpi label={t('finanzas.variacionCosto')} value={cv.valor} />
-        <Kpi label={t('evm.eac')} value={analisis.eac != null ? formatMoney(analisis.eac) : '—'} />
-        <Kpi label={t('evm.etc')} value={analisis.etc != null ? formatMoney(analisis.etc) : '—'} />
-        <Kpi
-          label={t('evm.vac')}
-          value={analisis.vac != null ? formatMoney(analisis.vac) : '—'}
-          tone={analisis.vac != null ? (Number(analisis.vac) >= 0 ? colors.success : colors.error) : undefined}
-        />
+        {!sinCostos ? <Kpi label={t('finanzas.variacionCosto')} value={cv.valor} /> : null}
+        {!sinCostos ? <Kpi label={t('evm.eac')} value={analisis.eac != null ? formatMoney(analisis.eac) : '—'} /> : null}
+        {!sinCostos ? <Kpi label={t('evm.etc')} value={analisis.etc != null ? formatMoney(analisis.etc) : '—'} /> : null}
+        {!sinCostos ? (
+          <Kpi
+            label={t('evm.vac')}
+            value={analisis.vac != null ? formatMoney(analisis.vac) : '—'}
+            tone={analisis.vac != null ? (Number(analisis.vac) >= 0 ? colors.success : colors.error) : undefined}
+          />
+        ) : null}
       </View>
-      {analisis.variacion_costo == null ? <Text style={styles.nota}>{t('finanzas.sinGastoNota')}</Text> : null}
+      {sinCostos ? (
+        <Text style={styles.nota}>Datos del contrato de supervisión tomados de Dirac. Dirac no incluye costos reales.</Text>
+      ) : analisis.variacion_costo == null ? <Text style={styles.nota}>{t('finanzas.sinGastoNota')}</Text> : null}
     </ScrollView>
   );
 }

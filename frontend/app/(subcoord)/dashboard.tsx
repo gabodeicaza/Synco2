@@ -581,7 +581,7 @@ export default function SubCoordDashboard() {
           />
         }
       >
-        <View style={{ paddingHorizontal: spacing.md, marginTop: spacing.sm }}><DiracSummaryCard route="/(subcoord)/dirac" /></View>
+        <View style={{ paddingHorizontal: spacing.md, marginTop: spacing.sm }}><DiracSummaryCard route="/(subcoord)/dirac" projectId={pid} /></View>
         {/* Hero Card: PROYECTO COORDINADO */}
         <View style={[styles.heroWrap, { marginTop: spacing.sm }]}>
           <View style={styles.heroCard}>

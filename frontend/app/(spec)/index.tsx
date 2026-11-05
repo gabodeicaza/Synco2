@@ -373,7 +373,7 @@ export default function SpecFeedScreen() {
 
   const ListHeader = useMemo(() => (
     <>
-      <View style={{ paddingHorizontal: spacing.md, marginTop: spacing.sm }}><DiracSummaryCard route="/(spec)/dirac" /></View>
+      <View style={{ paddingHorizontal: spacing.md, marginTop: spacing.sm }}><DiracSummaryCard route="/(spec)/dirac" projectId={projectId} /></View>
       <HeroCard user={user} project={project} globalPct={0} />
       <View style={styles.statsRow}>
         <StatCard label={t('inicioEspecialista.total')} value={stats.total} icon="albums-outline" tint={colors.primary} />

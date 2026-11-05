@@ -53,6 +53,8 @@ import { ROLE_COORD } from '@/src/utils/roles';
 import { ResumenProyecto } from '@/src/components/ResumenProyecto';
 import { SelectorGeneroNivel } from '@/src/components/SelectorGeneroNivel';
 import { TipoObraProyectoModal } from '@/src/components/TipoObraProyectoModal';
+import { DiracSummaryCard } from '@/src/components/DiracPanel';
+import { useEsDirac } from '@/src/utils/dirac';
 import {
   claveDeConcepto, generoDe, generosParaGuardar, migrarGenero, normalizarGeneros, ponerGenero, type MapaGeneros,
 } from '@/src/utils/generoNiveles';
@@ -184,6 +186,8 @@ export default function ProjectDetailScreen() {
   const insets = useSafeAreaInsets();
   const { id } = useLocalSearchParams<{ id: string }>();
   const pid = (Array.isArray(id) ? id[0] : id) || '';
+  // Proyecto del contrato de Dirac (Cablebús): avance, estimaciones y programa vienen de la API.
+  const esDirac = useEsDirac(pid);
   const [project, setProject] = useState<Project | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -1496,6 +1500,10 @@ export default function ProjectDetailScreen() {
             <ScrollView
               contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + 32 }]}
             >
+              {/* Cablebús: resumen de avance desde Dirac (solo se pinta en ese proyecto). */}
+              <View style={{ marginBottom: spacing.md }}>
+                <DiracSummaryCard route="/(coord)/dirac" projectId={pid} />
+              </View>
               {/* Trazabilidad: hub con todo lo que existe (categorías, documentos,
                   estatus y archivos). Va hasta arriba de Operación. */}
               <View style={{ marginBottom: spacing.md }}>
@@ -1580,24 +1588,28 @@ export default function ProjectDetailScreen() {
                   subtitle={t('proyectoPantalla.valorGanadoSpiCpiCurva')}
                   onPress={() => router.push({ pathname: '/(coord)/projects/[id]/dashboard' as any, params: { id: pid } })}
                 />
+                {!esDirac ? (
                 <ActionTile
                   icon="create-outline"
                   title={t('proyectoPantalla.registrarAvance')}
                   subtitle={t('proyectoPantalla.capturaDiariaEnCampoCuanto')}
                   onPress={() => router.push({ pathname: '/(coord)/projects/[id]/registrar-avance' as any, params: { id: pid } })}
                 />
+                ) : null}
                 <ActionTile
                   icon="easel-outline"
                   title={t('proyectoPantalla.presentacion')}
                   subtitle={t('proyectoPantalla.informeDeActividadesSemanalPreview')}
                   onPress={() => router.push({ pathname: '/(coord)/projects/[id]/presentacion' as any, params: { id: pid } })}
                 />
+                {!esDirac ? (
                 <ActionTile
                   icon="bar-chart-outline"
                   title={t('proyectoPantalla.visualizarAvance')}
                   subtitle={t('proyectoPantalla.reporteDeAvancePorPeriodo')}
                   onPress={() => router.push({ pathname: '/(coord)/projects/[id]/visualizar-avance' as any, params: { id: pid } })}
                 />
+                ) : null}
                 <ActionTile
                   icon="map-outline"
                   title={t('proyectoPantalla.planoDeAvance')}
@@ -1727,6 +1739,7 @@ export default function ProjectDetailScreen() {
               />
               {/* ===== Catalogo de Conceptos (consulta/administracion — Registrar y
                   Visualizar avance viven en la pestaña Operacion, no aqui) ===== */}
+              {!esDirac ? (<>
               <Text style={styles.sectionTitle}>{t('proyectoPantalla.catalogoDeConceptos')}</Text>
               <ActionTile
                 icon="albums-outline"
@@ -1740,6 +1753,7 @@ export default function ProjectDetailScreen() {
                 subtitle={t('proyectoPantalla.tipoDeContratoAvanceEn')}
                 onPress={openCatalogoConfigModal}
               />
+              </>) : null}
               <ProgramaObraSection projectId={pid} zona={project as any} />
 
               <Pressable accessibilityRole="button" onPress={onArchive} style={styles.archiveBtn}>

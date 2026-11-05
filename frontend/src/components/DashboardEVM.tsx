@@ -11,6 +11,7 @@
 // también usa — react-native-svg funciona igual en Android/iOS/Web sin
 // tocar una sola dependencia nueva.
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { esProyectoDirac } from '@/src/utils/dirac';
 import {
   View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, FlatList, RefreshControl,
   Alert, useWindowDimensions,
@@ -417,9 +418,18 @@ export default function DashboardEVM({ projectId }: { projectId: string }) {
 
   useEffect(() => {
     if (!projectId) return;
-    api.listPartidas(projectId)
-      .then((ps) => setHaySupervision(ps.some((p) => p.contrato === 'supervision')))
-      .catch(() => setHaySupervision(false));
+    // Cablebús (Dirac): la supervisión se lee de la API (no hay partidas capturadas), así que
+    // el selector aparece siempre y arranca en Supervisión.
+    esProyectoDirac(projectId).then((dirac) => {
+      if (dirac) {
+        setHaySupervision(true);
+        setContrato('supervision');
+        return;
+      }
+      api.listPartidas(projectId)
+        .then((ps) => setHaySupervision(ps.some((p) => p.contrato === 'supervision')))
+        .catch(() => setHaySupervision(false));
+    });
   }, [projectId]);
 
   const onRefresh = useCallback(async () => {

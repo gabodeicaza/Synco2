@@ -17,6 +17,7 @@ import { SlidePortada } from '@/src/components/presentacion/SlidePortada';
 import { SlideMapaGeneral } from '@/src/components/presentacion/SlideMapaGeneral';
 import { SlideDivisor } from '@/src/components/presentacion/SlideDivisor';
 import { SlideFinanciero } from '@/src/components/presentacion/SlideFinanciero';
+import { esProyectoDirac } from '@/src/utils/dirac';
 import { SlideSeguimientoEstudios } from '@/src/components/presentacion/SlideSeguimientoEstudios';
 import { SlideCroquisEstacion } from '@/src/components/presentacion/SlideCroquisEstacion';
 import { SlideInformacionParticular } from '@/src/components/presentacion/SlideInformacionParticular';
@@ -46,6 +47,7 @@ export default function PresentacionPreview({ projectId, presentacionId }: { pro
   const [disciplinaRows, setDisciplinaRows] = useState<EstudioDisciplinaAvance[]>([]);
   const [analisis, setAnalisis] = useState<AnalisisPeriodo | null>(null);
   const [presupuestoTotal, setPresupuestoTotal] = useState<string | null>(null);
+  const [deDirac, setDeDirac] = useState(false); // Cablebús: el Financiero se llena con la API de Dirac
   const [generalImages, setGeneralImages] = useState<string[]>([]);
   const [reportsById, setReportsById] = useState<Record<string, Report>>({});
   const [autoOutline, setAutoOutline] = useState<Record<string, ModuloAutoOutline[]>>({});
@@ -87,10 +89,13 @@ export default function PresentacionPreview({ projectId, presentacionId }: { pro
 
       if (secciones.some((s) => s.tipo === 'financiero')) {
         // Mismo servicio y mismo periodo que el tablero EVM (A-05): el servidor resuelve la ventana.
+        const dirac = await esProyectoDirac(projectId);
+        const contrato = dirac ? 'supervision' : 'obra';
         const [an, pt] = await Promise.all([
-          api.analisisPeriodoPorPeriodo(projectId, periodoDePresentacion(pres.periodo_financiero), pres.fecha).catch(() => null),
-          api.analisisPeriodoPresupuestoTotal(projectId).catch(() => null),
+          api.analisisPeriodoPorPeriodo(projectId, periodoDePresentacion(pres.periodo_financiero), pres.fecha, contrato).catch(() => null),
+          api.analisisPeriodoPresupuestoTotal(projectId, contrato).catch(() => null),
         ]);
+        setDeDirac(dirac);
         setAnalisis(an);
         setPresupuestoTotal(pt?.presupuesto_total ?? null);
       }
@@ -196,7 +201,7 @@ export default function PresentacionPreview({ projectId, presentacionId }: { pro
                 ) : item.tipo === 'divisor' ? (
                   <SlideDivisor titulo={item.titulo || ''} colorTema={headerColor} />
                 ) : item.tipo === 'financiero' ? (
-                  <SlideFinanciero analisis={analisis} presupuestoTotal={presupuestoTotal} colorTema={headerColor} periodoTexto={textoRangoPeriodo(analisis?.start, analisis?.end)} />
+                  <SlideFinanciero analisis={analisis} presupuestoTotal={presupuestoTotal} sinCostos={deDirac} colorTema={headerColor} periodoTexto={textoRangoPeriodo(analisis?.start, analisis?.end)} />
                 ) : item.tipo === 'seguimiento_estudios' ? (
                   <SlideSeguimientoEstudios rows={disciplinaRows} nodesById={nodesById} colorTema={headerColor} />
                 ) : item.tipo === 'croquis_estacion' ? (
