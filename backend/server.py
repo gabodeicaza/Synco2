@@ -4991,11 +4991,12 @@ def _junta_consecutivo(codigo: Optional[str]) -> str:
     """Código de minuta "CL4 OBRA 260921-A" → consecutivo del reporte
     "CL4-OBRA-260921A". Si no tiene ese formato se imprime tal cual."""
     c = (codigo or "").strip()
-    m = re.fullmatch(r"(.*?)\s*(\d{6})-([A-Z]+)", c)
+    m = re.fullmatch(r"(.*?)\s*(\d{6})(?:-([A-Z]+))?", c)
     if not m:
         return c
     prefijo = re.sub(r"\s+", "-", m.group(1).strip())
-    return f"{prefijo}-{m.group(2)}{m.group(3)}" if prefijo else f"{m.group(2)}{m.group(3)}"
+    letra = m.group(3) or ""
+    return f"{prefijo}-{m.group(2)}{letra}" if prefijo else f"{m.group(2)}{letra}"
 
 
 def _fecha_corta_es(iso: Optional[str]) -> str:
@@ -26894,7 +26895,7 @@ async def export_reports_pdf(
                 for r in area_reps:
                     # Marca de índice: cada reporte con el título de los ingenieros.
                     photo_items.append(("__MARK__", (f"rep:{r.get('id')}", _indice_titulo_reporte(r))))
-                    imgs = (r.get("images") or [])[:2]  # HARD-CAP 2 fotos
+                    imgs = r.get("images") or []  # todas las fotos, de 2 en 2 por página
                     general_obs = (r.get("observaciones") or r.get("notes") or "").strip()
                     if not general_obs:
                         general_obs = (r.get("incidencias") or "").strip() or "—"
@@ -31538,7 +31539,7 @@ async def export_reports_pptx(
 
             def _draw_mini_table(x: int, y_top: int, w: int, title: str, rows: list, icon_kind: str,
                                   col1_header: str = "RECURSO", clave: str = "personal",
-                                  total_forzado=None) -> None:
+                                  total_forzado=None, n_ref: int = 0) -> None:
                 mini_r = int(Cm(0.4))
                 HEADER_H = Cm(0.75)
                 TOTAL_H = Cm(0.7)
@@ -31566,15 +31567,24 @@ async def export_reports_pptx(
                 # y el máximo) para que nada se amontone; si aun así no caben
                 # todas las filas, el resto va a una slide de continuación.
                 espacio = tbl_avail_h - 2 * mini_r - Cm(0.15) - HEADER_H - TOTAL_H
-                n_prev = max(1, len(rows))
+                # Ambas tablas usan la MISMA cantidad de renglones (la mayor de
+                # las dos) y la misma altura de fila: la de menos datos se
+                # completa con renglones vacíos para quedar alineadas.
+                n_prev = max(1, n_ref or 0, len(rows))
                 ROW_H = int(max(MIN_ROW_H, min(MAX_ROW_H, espacio / n_prev)))
                 max_rows = max(1, int(espacio / ROW_H))
                 shown = rows[:max_rows]
                 _sub_recursos_resto_pptx[clave] = list(rows[max_rows:])
                 overflow = 0
-                for idx, r in enumerate(shown):
+                n_total = min(n_prev, max_rows)
+                for idx in range(n_total):
+                    r = shown[idx] if idx < len(shown) else None
                     if idx % 2 == 1:
                         _wf_rect(slide, x, yy, w, ROW_H, fill_rgb=WF_ZEBRA_TINT_RGB)
+                    if r is None:
+                        _wf_rect(slide, x, yy + ROW_H - Pt(0.75), w, Pt(0.75), fill_rgb=WF_BORDER_RGB)
+                        yy += ROW_H
+                        continue
                     main, _ = _format_workforce_desc(r["desc"])
                     main = main or "—"
                     # Nombres largos: se reduce la letra para que quepan en 1-2 líneas.
@@ -31589,10 +31599,6 @@ async def export_reports_pptx(
                     add_text(slide, x + pad, yy, w - 2 * pad, ROW_H, f"+ {overflow} más…", size=8, italic=True,
                              color=WF_MUTED_RGB, tight=True)
                     yy += ROW_H
-                if not rows:
-                    add_text(slide, x + pad, yy, w - 2 * pad, ROW_H, "", size=9, italic=True,
-                             color=WF_MUTED_RGB, tight=True)
-                    yy += ROW_H
                 _wf_rect(slide, x, yy, w, TOTAL_H, fill_rgb=WF_TOTAL_TINT_RGB)
                 _wf_rect(slide, x, yy, w, Pt(1.6), fill_rgb=BRAND_RGB)
                 add_text(slide, x + pad, yy, int(w * 0.5), TOTAL_H, "TOTAL", size=10, bold=True,
@@ -31601,10 +31607,11 @@ async def export_reports_pptx(
                          color=READABLE_BRAND_RGB, align=PP_ALIGN.RIGHT, tight=True)
 
             _tp, _tm = totales if totales else (None, None)
+            _n_ref = max(len(personal_rows), len(maquinaria_rows))
             _draw_mini_table(right_x, y, tbl_w, "Fuerza de Trabajo", personal_rows, "person", col1_header="PERSONAL",
-                             clave="personal", total_forzado=_tp)
+                             clave="personal", total_forzado=_tp, n_ref=_n_ref)
             _draw_mini_table(right_x + tbl_w + tbl_gutter, y, tbl_w, "Maquinaria y Equipo", maquinaria_rows, "gear",
-                              col1_header="MAQUINARIA Y EQUIPO", clave="maquinaria", total_forzado=_tm)
+                              col1_header="MAQUINARIA Y EQUIPO", clave="maquinaria", total_forzado=_tm, n_ref=_n_ref)
             if _sub_recursos_resto_pptx["personal"] or _sub_recursos_resto_pptx["maquinaria"]:
                 _sub_recursos_resto_pptx["totales"] = (
                     _tp if _tp is not None else sum(r["qty"] for r in personal_rows),
@@ -31777,7 +31784,7 @@ async def export_reports_pptx(
             tbl_avail_h = bottom_y - y3
 
             def _draw_mini_table2(x: int, y_top: int, w: int, title: str, rows: list, icon_kind: str,
-                                  col1_header: str = "RECURSO") -> None:
+                                  col1_header: str = "RECURSO", n_ref: int = 0) -> None:
                 mini_r = int(Cm(0.4))
                 HEADER_H = Cm(0.75)
                 TOTAL_H = Cm(0.7)
@@ -31803,16 +31810,23 @@ async def export_reports_pptx(
                 total_qty = sum(r["qty"] for r in rows)
                 # La altura de fila se reparte en el espacio libre (entre el mínimo
                 # y el máximo) para que nada se amontone; si aun así no caben
-                # todas las filas, se corta con "+N más".
+                # todas las filas, se corta con "+N más". Ambas tablas usan la
+                # MISMA cantidad de renglones (la mayor), completando con vacíos.
                 espacio = tbl_avail_h - 2 * mini_r - Cm(0.15) - HEADER_H - TOTAL_H
-                n_prev = max(1, len(rows))
+                n_prev = max(1, n_ref or 0, len(rows))
                 ROW_H = int(max(MIN_ROW_H, min(MAX_ROW_H, espacio / n_prev)))
                 max_rows = max(1, int(espacio / ROW_H))
                 shown = rows[:max_rows - 1] if len(rows) > max_rows else rows
                 overflow = len(rows) - len(shown)
-                for idx, r in enumerate(shown):
+                n_total = min(n_prev, max_rows) if overflow == 0 else len(shown)
+                for idx in range(n_total):
+                    r = shown[idx] if idx < len(shown) else None
                     if idx % 2 == 1:
                         _wf_rect(slide, x, yy, w, ROW_H, fill_rgb=WF_ZEBRA_TINT_RGB)
+                    if r is None:
+                        _wf_rect(slide, x, yy + ROW_H - Pt(0.75), w, Pt(0.75), fill_rgb=WF_BORDER_RGB)
+                        yy += ROW_H
+                        continue
                     main, _ = _format_workforce_desc(r["desc"])
                     main = main or "—"
                     # Nombres largos: se reduce la letra para que quepan en 1-2 líneas.
@@ -31827,10 +31841,6 @@ async def export_reports_pptx(
                     add_text(slide, x + pad, yy, w - 2 * pad, ROW_H, f"+ {overflow} más…", size=8, italic=True,
                              color=WF_MUTED_RGB, tight=True)
                     yy += ROW_H
-                if not rows:
-                    add_text(slide, x + pad, yy, w - 2 * pad, ROW_H, "", size=9, italic=True,
-                             color=WF_MUTED_RGB, tight=True)
-                    yy += ROW_H
                 _wf_rect(slide, x, yy, w, TOTAL_H, fill_rgb=WF_TOTAL_TINT_RGB)
                 _wf_rect(slide, x, yy, w, Pt(1.6), fill_rgb=BRAND_RGB)
                 add_text(slide, x + pad, yy, int(w * 0.5), TOTAL_H, "TOTAL", size=10, bold=True,
@@ -31838,9 +31848,11 @@ async def export_reports_pptx(
                 add_text(slide, qty_x, yy, qty_w_cell, TOTAL_H, str(total_qty), size=10, bold=True,
                          color=READABLE_BRAND_RGB, align=PP_ALIGN.RIGHT, tight=True)
 
-            _draw_mini_table2(right_x, y3, tbl_w, "Fuerza de Trabajo", personal_rows, "person", col1_header="PERSONAL")
+            _n_ref2 = max(len(personal_rows), len(maquinaria_rows))
+            _draw_mini_table2(right_x, y3, tbl_w, "Fuerza de Trabajo", personal_rows, "person", col1_header="PERSONAL",
+                              n_ref=_n_ref2)
             _draw_mini_table2(right_x + tbl_w + tbl_gutter, y3, tbl_w, "Maquinaria y Equipo", maquinaria_rows, "gear",
-                               col1_header="MAQUINARIA Y EQUIPO")
+                               col1_header="MAQUINARIA Y EQUIPO", n_ref=_n_ref2)
 
         _emitted_recuento_general_title = False
 
@@ -33550,7 +33562,7 @@ async def export_reports_pptx(
                 for _r in area_reps:
                     _indice_mark(f"rep:{_r.get('id')}", _indice_titulo_reporte(_r))
                     _all_imgs = _r.get("images") or []
-                    _imgs = _all_imgs[:2]  # HARD-CAP: máximo 2 fotos
+                    _imgs = _all_imgs  # todas las fotos, una slide por cada pareja
                     _general_obs = (
                         _r.get("observaciones") or _r.get("notes") or ""
                     ).strip() or (_r.get("incidencias") or "").strip() or "—"
@@ -33565,12 +33577,12 @@ async def export_reports_pptx(
                         # Reporte sin fotos → 1 slide con placeholder + obs.
                         _pair_slide([(None, _general_obs), None], _titulo_est_fotos, area_name)
                         continue
-                    _pair: list = []
-                    for _i, _b64 in enumerate(_imgs):
-                        _pair.append((_b64, _cap_at(_i)))
-                    while len(_pair) < 2:
-                        _pair.append(None)
-                    _pair_slide(_pair, _titulo_est_fotos, area_name)
+                    # Una slide por cada pareja de fotos (1-2, 3-4, 5-6…).
+                    for _ini in range(0, len(_imgs), 2):
+                        _pair: list = [(_imgs[_j], _cap_at(_j)) for _j in range(_ini, min(_ini + 2, len(_imgs)))]
+                        while len(_pair) < 2:
+                            _pair.append(None)
+                        _pair_slide(_pair, _titulo_est_fotos, area_name)
 
         _emit_lidar_estacion_slides(current_subtramo_id)
         if any_data:
@@ -34213,6 +34225,8 @@ class MinutaIn(BaseModel):
     # esta minuta: se escriben directamente en su descripción.
     pendiente_id: Optional[str] = None
     acuerdos: List[AcuerdoIn] = Field(default_factory=list)
+    # Clave editable (p. ej. al subir una minuta antigua). Vacía → se genera sola.
+    codigo: Optional[str] = None
 
 
 _MINUTA_CREATORS = {ROLE_COORD, ROLE_JEFE, ROLE_SUB, ROLE_ESPECIALISTA}
@@ -34406,7 +34420,15 @@ async def create_minuta(pid: str, body: MinutaIn, user: dict = Depends(current_u
         return s
 
     prefix = (proj.get("minuta_code_prefix") or "").strip().upper()
-    codigo = f"{prefix} {yymmdd}-{_seq_letter(count_today)}".strip()
+    # La primera del día va sin letra; la segunda lleva "-A", la tercera "-B"…
+    codigo = f"{prefix} {yymmdd}".strip() if count_today == 0 else f"{prefix} {yymmdd}-{_seq_letter(count_today - 1)}".strip()
+    codigo_manual = re.sub(r"\s+", " ", (body.codigo or "").strip())
+    if codigo_manual:
+        if len(codigo_manual) > 60:
+            raise HTTPException(400, "La clave de la minuta admite máximo 60 caracteres")
+        if await db.minutas.find_one({"project_id": pid, "codigo": codigo_manual}, {"_id": 1}):
+            raise HTTPException(400, f"Ya existe una minuta con la clave {codigo_manual}")
+        codigo = codigo_manual
 
     doc = {
         "id": str(uuid.uuid4()),

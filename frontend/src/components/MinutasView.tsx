@@ -1005,6 +1005,8 @@ export function CreateMinutaModal({
   const [titulo, setTitulo] = useState('');
   const [descripcion, setDescripcion] = useState('');
   const [fechaReunion, setFechaReunion] = useState(todayISO());
+  // Clave editable (minutas antiguas). Vacía = se genera automáticamente.
+  const [codigoManual, setCodigoManual] = useState('');
   const { errores, errorGeneral, limpiar, ponerTodos, alCambiar, errorDeGuardado, setErrorGeneral } = useFormErrors<string>();
   const { guardando: saving, ejecutar } = useEnvio();
   // Scroll hasta el primer campo con error: posición (y) de cada campo dentro del ScrollView.
@@ -1110,6 +1112,7 @@ export function CreateMinutaModal({
         area_ids: selAreas,
         involved_ids: involvedIds,
         fecha_reunion: fechaReunion,
+        codigo: codigoManual.trim() || undefined,
         ubicacion_id: ubicacionId,
         pendiente_id: pendienteId || undefined,
         acuerdos: tipo === 'compromiso' ? acuerdos.map((a) => ({
@@ -1237,6 +1240,17 @@ export function CreateMinutaModal({
                   error={errores.reunion}
                 />
               </View>
+
+              <Text style={styles.label}>Clave de la minuta</Text>
+              <TextInput
+                style={styles.input}
+                value={codigoManual}
+                onChangeText={setCodigoManual}
+                placeholder="Se genera sola; edítala si subes una minuta antigua"
+                placeholderTextColor={colors.textMuted}
+                autoCapitalize="characters"
+                maxLength={60}
+              />
 
               {/* Ubicacion (nodo del proyecto) _ obligatorio 2026-07 */}
               <View onLayout={marcarPosicion('ubicacion')}>

@@ -24,6 +24,7 @@ import { Button } from '@/src/components/Button';
 import { confirm } from '@/src/utils/confirm';
 import { fechaTecleadaOk, FECHA_AYUDA } from '@/src/utils/fecha';
 import { useAuth } from '@/src/auth-context';
+import { pickPhotosDataUrls, pickPhotoDataUrl } from '@/src/utils/photoPicker';
 import PostesCalidadModal from '@/src/components/PostesCalidadModal';
 import { ROLE_COORD, ROLE_SUB, ROLE_JEFE } from '@/src/utils/roles';
 
@@ -54,6 +55,27 @@ const emptyDraft = (): Draft => ({
   id: null, node_id: null, grupo: '', descripcion: '', pie: '', fecha: hoyISO(), jerarquia: JERARQUIA_DEFAULT, image: null, preview: null,
 });
 
+// Alta por lote: varias fotos a la vez. El reporte las acomoda de 2 en 2 por diapositiva.
+type LoteFoto = { image: string; descripcion: string; pie: string };
+type Lote = {
+  node_id: string | null; grupo: string; fecha: string; jerarquia: JerarquiaInforme; fotos: LoteFoto[];
+};
+const emptyLote = (): Lote => ({ node_id: null, grupo: '', fecha: hoyISO(), jerarquia: JERARQUIA_DEFAULT, fotos: [] });
+
+/** Valida la regla de parejas. Devuelve el mensaje de error o null si todo está bien. */
+export function validarLote(fotos: Array<{ pie: string }>): string | null {
+  const n = fotos.length;
+  if (n === 0) return 'Elige al menos una foto.';
+  if (n === 1) return null;
+  for (let i = 0; i < 2; i++) {
+    if (!fotos[i].pie.trim()) return `El pie de foto de la foto ${i + 1} es obligatorio (primera diapositiva).`;
+  }
+  if (n % 2 === 1 && fotos[n - 1].pie.trim()) {
+    return `La foto ${n} tiene pie de foto, pero va sola en su diapositiva. Agrega otra foto para completar la pareja (${n + 1} fotos) o borra ese pie de foto.`;
+  }
+  return null;
+}
+
 export default function ControlCalidadScreen({ projectId }: { projectId: string }) {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
@@ -67,6 +89,8 @@ export default function ControlCalidadScreen({ projectId }: { projectId: string 
   const [nodes, setNodes] = useState<LocationNode[]>([]);
 
   const [draft, setDraft] = useState<Draft | null>(null);
+  const [lote, setLote] = useState<Lote | null>(null);
+  const [loteBusy, setLoteBusy] = useState(false);
   const [saving, setSaving] = useState(false);
   const [loadingFoto, setLoadingFoto] = useState(false);
 
@@ -174,6 +198,51 @@ export default function ControlCalidadScreen({ projectId }: { projectId: string 
     }
   }
 
+  async function loteAgregar(source: 'library' | 'camera') {
+    setLoteBusy(true);
+    try {
+      const nuevas = source === 'library'
+        ? await pickPhotosDataUrls({ maxDim: 1800, quality: 0.85 })
+        : ([await pickPhotoDataUrl('camera', { maxDim: 1800, quality: 0.85 })].filter(Boolean) as string[]);
+      if (nuevas.length) {
+        setLote((l) => (l ? { ...l, fotos: [...l.fotos, ...nuevas.map((image) => ({ image, descripcion: '', pie: '' }))] } : l));
+      }
+    } finally {
+      setLoteBusy(false);
+    }
+  }
+
+  function loteCambiar(i: number, k: 'descripcion' | 'pie', v: string) {
+    setLote((l) => (l ? { ...l, fotos: l.fotos.map((f, j) => (j === i ? { ...f, [k]: v } : f)) } : l));
+  }
+
+  async function onSaveLote() {
+    if (!lote) return;
+    const err = validarLote(lote.fotos);
+    if (err) { Alert.alert('Revisa las fotos', err); return; }
+    if (!fechaTecleadaOk(lote.fecha)) { Alert.alert('Fecha inválida', FECHA_AYUDA); return; }
+    let hechas = 0;
+    try {
+      setSaving(true);
+      for (const f of lote.fotos) {
+        await api.createControlCalidad(projectId, {
+          node_id: lote.node_id, grupo: lote.grupo, descripcion: f.descripcion, pie: f.pie,
+          fecha: lote.fecha.trim(), jerarquia: lote.jerarquia, image: f.image,
+        });
+        hechas += 1;
+      }
+      setLote(null);
+      await load();
+    } catch (e: any) {
+      // Las ya guardadas se quitan del lote para no duplicarlas al reintentar.
+      setLote((l) => (l ? { ...l, fotos: l.fotos.slice(hechas) } : l));
+      await load();
+      Alert.alert('No se pudo guardar todo', `${hechas} foto(s) se guardaron. ${e?.message || 'Intentalo nuevamente.'}`);
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function onDelete(it: ControlCalidad) {
     const ok = await confirm('Eliminar registro', `¿Eliminar este registro de control de calidad del ${fmtFecha(it.fecha)}?`, {
       confirmText: 'Eliminar', destructive: true,
@@ -238,9 +307,9 @@ export default function ControlCalidadScreen({ projectId }: { projectId: string 
         <View style={styles.sectionHeaderRow}>
           <Text style={styles.sectionTitle}>Registro fotográfico</Text>
           {puedeEscribir ? (
-            <Pressable accessibilityRole="button" onPress={() => setDraft(emptyDraft())} style={styles.addBtn}>
+            <Pressable accessibilityRole="button" onPress={() => setLote(emptyLote())} style={styles.addBtn}>
               <Ionicons name="add" size={16} color={colors.primary} />
-              <Text style={styles.addBtnTxt}>Nueva foto</Text>
+              <Text style={styles.addBtnTxt}>Nuevas fotos</Text>
             </Pressable>
           ) : null}
         </View>
@@ -290,7 +359,79 @@ export default function ControlCalidadScreen({ projectId }: { projectId: string 
         )}
       </ScrollView>
 
-      <Modal visible={!!draft} transparent animationType="slide" onRequestClose={() => setDraft(null)}>
+      <Modal visible={!!lote} transparent animationType="slide" onRequestClose={() => setLote(null)}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
+          <View style={[styles.modalCard, { maxHeight: '94%' }]}>
+            <ScrollView keyboardShouldPersistTaps="handled">
+              <Text style={styles.modalTitle}>Nuevas fotos de control de calidad</Text>
+              <View style={styles.aviso}>
+                <Ionicons name="information-circle-outline" size={18} color="#92400E" />
+                <Text style={styles.avisoTxt}>
+                  Puedes elegir varias fotos a la vez. En el reporte salen de 2 en 2 por diapositiva, así que:{'\n'}
+                  • El pie de foto de las 2 primeras fotos es obligatorio.{'\n'}
+                  • Los pies de las demás son opcionales.{'\n'}
+                  • Si el total es impar (por ejemplo 5), la última foto va sola; si le escribes un pie de foto, debes agregar otra foto para completar la pareja (6 fotos).
+                </Text>
+              </View>
+              <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm }}>
+                <Button label="Elegir varias de galería" variant="secondary" loading={loteBusy} onPress={() => loteAgregar('library')} style={{ flex: 1 }} />
+                <Button label="Tomar foto" loading={loteBusy} onPress={() => loteAgregar('camera')} style={{ flex: 1 }} />
+              </View>
+
+              {lote?.fotos.map((f, i) => {
+                const n = lote.fotos.length;
+                const obligatorio = n >= 2 && i < 2;
+                const sola = n >= 3 && n % 2 === 1 && i === n - 1;
+                return (
+                  <View key={i} style={[styles.card, { padding: spacing.sm, marginTop: spacing.sm }]}>
+                    <View style={{ flexDirection: 'row', gap: spacing.sm }}>
+                      <Image source={{ uri: f.image }} style={styles.thumb} resizeMode="cover" />
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.fecha}>Foto {i + 1} · diapositiva {Math.floor(i / 2) + 1}</Text>
+                        <TextInput
+                          value={f.descripcion} onChangeText={(t) => loteCambiar(i, 'descripcion', t)}
+                          placeholder="Actividades de control de calidad" placeholderTextColor={colors.textMuted}
+                          style={[styles.input, { marginTop: 4 }]} multiline
+                        />
+                      </View>
+                      <Pressable accessibilityRole="button" accessibilityLabel="Quitar foto" hitSlop={8}
+                        onPress={() => setLote((l) => (l ? { ...l, fotos: l.fotos.filter((_, j) => j !== i) } : l))}>
+                        <Ionicons name="close-circle" size={20} color={colors.error} />
+                      </Pressable>
+                    </View>
+                    <TextInput
+                      value={f.pie} onChangeText={(t) => loteCambiar(i, 'pie', t)}
+                      placeholder={obligatorio ? 'Pie de foto (obligatorio)' : sola ? 'Pie de foto (solo si agregas otra foto)' : 'Pie de foto (opcional)'}
+                      placeholderTextColor={colors.textMuted}
+                      style={[styles.input, { marginTop: spacing.xs }, obligatorio && !f.pie.trim() ? { borderColor: colors.error } : null]}
+                    />
+                  </View>
+                );
+              })}
+
+              <Text style={styles.fieldLabel}>Estación / intertramo (para todas)</Text>
+              <EstacionPicker nodes={nodes} value={lote?.node_id ?? null} onChange={(id) => setLote((l) => (l ? { ...l, node_id: id } : l))} />
+              {lote && !lote.node_id ? (
+                <>
+                  <Text style={styles.fieldLabel}>Grupo (si no es una estación)</Text>
+                  <TextInput value={lote.grupo} onChangeText={(t) => setLote((l) => (l ? { ...l, grupo: t } : l))}
+                    placeholder="Ej. Suministro Gefsa-Puebla" placeholderTextColor={colors.textMuted} style={styles.input} />
+                </>
+              ) : null}
+              <Text style={styles.fieldLabel}>Fecha (AAAA-MM-DD)</Text>
+              <TextInput value={lote?.fecha ?? ''} onChangeText={(t) => setLote((l) => (l ? { ...l, fecha: t } : l))}
+                placeholder="2026-06-26" placeholderTextColor={colors.textMuted} style={styles.input} autoCapitalize="none" />
+              <JerarquiaInformePicker value={lote?.jerarquia} onChange={(j) => setLote((l) => (l ? { ...l, jerarquia: j } : l))} />
+              <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
+                <Button label="Cancelar" variant="secondary" onPress={() => setLote(null)} style={{ flex: 1 }} />
+                <Button label={`Guardar${lote?.fotos.length ? ` (${lote.fotos.length})` : ''}`} loading={saving} onPress={onSaveLote} style={{ flex: 1 }} />
+              </View>
+            </ScrollView>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      <Modal visible={!!draft}transparent animationType="slide" onRequestClose={() => setDraft(null)}>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
           <View style={[styles.modalCard, { maxHeight: '92%' }]}>
             <ScrollView keyboardShouldPersistTaps="handled">
@@ -362,6 +503,8 @@ const styles = StyleSheet.create({
   fecha: { fontSize: 11, fontWeight: '700', color: colors.textMuted },
   desc: { fontSize: 13, fontWeight: '600', color: colors.text },
   pie: { fontSize: 12, color: colors.textMuted },
+  aviso: { flexDirection: 'row', gap: 8, padding: spacing.sm, borderRadius: radius.md, backgroundColor: '#FEF3C7', borderWidth: 1, borderColor: '#F59E0B' },
+  avisoTxt: { flex: 1, fontSize: 12, color: '#92400E', lineHeight: 17 },
   preview: { width: '100%', height: 200, borderRadius: radius.md, backgroundColor: colors.bg },
   modalBackdrop: { flex: 1, backgroundColor: 'rgba(15,23,42,0.45)', justifyContent: 'flex-end' },
   modalCard: { backgroundColor: colors.surface, borderTopLeftRadius: radius.lg, borderTopRightRadius: radius.lg, padding: spacing.lg, width: '100%' },

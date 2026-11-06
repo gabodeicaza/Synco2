@@ -113,6 +113,43 @@ export async function pickPhotoDataUrl(
 }
 
 /**
+ * Abre la galería permitiendo elegir VARIAS fotos a la vez (navegador y app) y las devuelve
+ * como data URLs JPEG, en el orden elegido. Lista vacía si se cancela.
+ */
+export async function pickPhotosDataUrls(
+  opts: PickPhotoOptions & { limit?: number } = {},
+): Promise<string[]> {
+  const { maxDim = 1600, quality = 0.8, alertOnError = true, limit = 0 } = opts;
+  try {
+    if (!(await ensurePermission('library'))) return [];
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: false,
+      allowsMultipleSelection: true,
+      ...(limit > 0 ? { selectionLimit: limit } : {}),
+      quality: 1,
+      base64: false,
+      exif: false,
+    });
+    if (result.canceled || !result.assets?.length) return [];
+    const out: string[] = [];
+    for (const a of result.assets) {
+      if (!a?.uri) continue;
+      out.push(await normalizeToJpegDataUrl(a, maxDim, quality));
+    }
+    return out;
+  } catch (e: any) {
+    if (alertOnError) {
+      Alert.alert(
+        'No se pudieron cargar las fotos',
+        `${e?.message || 'Error desconocido.'}\n\nIntenta de nuevo con menos fotos a la vez.`,
+      );
+    }
+    return [];
+  }
+}
+
+/**
  * Android puede destruir la app mientras la cámara está abierta (poca RAM); la foto tomada
  * queda pendiente y se recupera al volver. Llamar al montar la pantalla.
  */

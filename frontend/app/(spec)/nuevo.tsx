@@ -7,7 +7,7 @@ import {
 import { router, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { pickPhotoDataUrl, recoverPendingPhoto } from '@/src/utils/photoPicker';
+import { pickPhotoDataUrl, pickPhotosDataUrls, recoverPendingPhoto } from '@/src/utils/photoPicker';
 import * as Location from 'expo-location';
 import * as Clipboard from 'expo-clipboard';
 import * as Sharing from 'expo-sharing';
@@ -494,8 +494,21 @@ export default function NewReportScreen() {
       setConfirmWarning('no-photos');
       return;
     }
-    const relevantCaptions = captions.slice(0, Math.min(images.length, 2));
-    if (relevantCaptions.some((c) => !c || !c.trim())) {
+    const n = images.length;
+    const capDe = (i: number) => (captions[i] || '').trim();
+    if (n >= 2) {
+      // Las fotos salen de 2 en 2 por diapositiva: las 2 primeras llevan descripción obligatoria.
+      if (!capDe(0) || !capDe(1)) {
+        return Alert.alert('Faltan descripciones', 'Las descripciones de las 2 primeras fotos son obligatorias (primera diapositiva).');
+      }
+      // Foto impar al final: si tiene descripción debe haber otra foto que complete la pareja.
+      if (n % 2 === 1 && capDe(n - 1)) {
+        return Alert.alert(
+          'Falta una foto',
+          `La foto ${n} tiene descripción pero iría sola en su diapositiva. Agrega otra foto para completar la pareja (${n + 1} fotos) o borra esa descripción.`,
+        );
+      }
+    } else if (!capDe(0)) {
       setConfirmWarning('no-captions');
       return;
     }
@@ -561,7 +574,7 @@ export default function NewReportScreen() {
         personnel: !capturaPersonal ? [] : personal.filter(p => p.desc).map(p => `${p.qty} ${typeof p.desc === 'string' ? p.desc : p.desc.nombre}`),
         equipment: !capturaEquipo ? [] : equipo.filter(e => e.desc).map(e => `${e.qty} ${typeof e.desc === 'string' ? e.desc : e.desc.nombre}`),
         images,
-        photo_captions: captions,
+        photo_captions: images.map((_, i) => captions[i] || ''),
         measurement_value: {},
         measurement_type: selectedLeaf.measurement_type || 'cadenamiento',
         location: loc,
@@ -622,7 +635,13 @@ export default function NewReportScreen() {
   }
 
   async function onPickImage(mode: 'cam' | 'gal') {
-    const dataUrl = await pickPhotoDataUrl(mode === 'cam' ? 'camera' : 'library');
+    if (mode === 'gal') {
+      // Galería: se pueden elegir varias fotos a la vez (navegador y app).
+      const urls = await pickPhotosDataUrls();
+      if (urls.length) setImages((cur) => [...cur, ...urls]);
+      return;
+    }
+    const dataUrl = await pickPhotoDataUrl('camera');
     if (dataUrl) setImages((cur) => [...cur, dataUrl]);
   }
 
@@ -975,8 +994,16 @@ export default function NewReportScreen() {
               <View style={styles.cardIconBox}><Ionicons name="camera" size={18} color={colors.primary} /></View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.cardLabel}>{t('nuevoReporte.fotos', { n: images.length })}</Text>
-                <Text style={styles.cardHelp}>{t('nuevoReporte.maximo2FotosSeExportaran')}</Text>
               </View>
+            </View>
+            <View style={{ flexDirection: 'row', gap: 8, padding: 10, borderRadius: 10, backgroundColor: '#FEF3C7', borderWidth: 1, borderColor: '#F59E0B', marginBottom: 8 }}>
+              <Ionicons name="information-circle-outline" size={18} color="#92400E" />
+              <Text style={{ flex: 1, fontSize: 12, lineHeight: 17, color: '#92400E' }}>
+                Puedes agregar todas las fotos que necesites (en la galería elige varias a la vez). En el reporte salen de 2 en 2, una diapositiva por pareja:{'\n'}
+                • La descripción de las 2 primeras fotos es obligatoria.{'\n'}
+                • La descripción de las demás es opcional.{'\n'}
+                • Si el total es impar (por ejemplo 5), la última foto va sola; si le escribes descripción, debes agregar otra foto para completar la pareja (6 fotos).
+              </Text>
             </View>
             <View style={styles.row}>
               <Pressable accessibilityRole="button" accessibilityLabel={a11y('tomarFoto')} hitSlop={8} onPress={() => onPickImage('cam')} style={styles.photoActionBtn}><Ionicons name="camera" size={24} color={colors.textMuted} /></Pressable>
@@ -990,24 +1017,26 @@ export default function NewReportScreen() {
                     <Pressable accessibilityRole="button" accessibilityLabel={a11y('dibujar')} hitSlop={8} onPress={() => setAnnotatorIdx(idx)} style={styles.photoMark}>
                       <Ionicons name="brush" size={16} color="#fff" />
                     </Pressable>
-                    <Pressable accessibilityRole="button" accessibilityLabel={a11y('quitar')} hitSlop={8} onPress={() => setImages(images.filter((_, i) => i !== idx))} style={styles.photoDel}>
+                    <Pressable accessibilityRole="button" accessibilityLabel={a11y('quitar')} hitSlop={8} onPress={() => { setImages(images.filter((_, i) => i !== idx)); setCaptions((cs) => cs.filter((_, i) => i !== idx)); }} style={styles.photoDel}>
                       <Ionicons name="close-circle" size={22} color={colors.error} />
                     </Pressable>
                   </View>
-                  {idx < 2 && (
-                    <TextInput
-                      value={captions[idx]}
-                      onChangeText={t => {
-                        const newC = [...captions];
-                        newC[idx] = t;
-                        setCaptions(newC);
-                      }}
-                      placeholder={t('nuevoReporte.descripcionTecnicaDetallada')}
-                      multiline
-                      numberOfLines={3}
-                      style={styles.captionInputBig}
-                    />
-                  )}
+                  <Text style={{ fontSize: 11, color: colors.textMuted, marginTop: 4 }}>
+                    Foto {idx + 1} · diapositiva {Math.floor(idx / 2) + 1}
+                    {images.length >= 2 && idx < 2 ? ' · descripción obligatoria' : ''}
+                  </Text>
+                  <TextInput
+                    value={captions[idx] ?? ''}
+                    onChangeText={t => {
+                      const newC = images.map((_, i) => captions[i] ?? '');
+                      newC[idx] = t;
+                      setCaptions(newC);
+                    }}
+                    placeholder={t('nuevoReporte.descripcionTecnicaDetallada')}
+                    multiline
+                    numberOfLines={3}
+                    style={styles.captionInputBig}
+                  />
                 </View>
               ))}
             </ScrollView>
