@@ -34229,6 +34229,11 @@ class MinutaIn(BaseModel):
     codigo: Optional[str] = None
 
 
+_MINUTA_UBICACIONES_FIJAS = {
+    "oficinas-dirac": "Oficinas Dirac",
+    "oficinas-dgeot": "Oficinas DGEOT",
+    "virtual": "Virtual",
+}
 _MINUTA_CREATORS = {ROLE_COORD, ROLE_JEFE, ROLE_SUB, ROLE_ESPECIALISTA}
 
 
@@ -34297,7 +34302,10 @@ async def create_minuta(pid: str, body: MinutaIn, user: dict = Depends(current_u
     ubicacion_raw = (body.ubicacion_id or "").strip()
     if not ubicacion_raw:
         raise HTTPException(400, "Ubicación requerida")
-    ubi_doc = await db.location_nodes.find_one({"project_id": pid, "id": ubicacion_raw})
+    # Ubicaciones fijas (sin nodo en el árbol): oficinas y reunión virtual.
+    ubi_doc = ({"id": ubicacion_raw, "name": _MINUTA_UBICACIONES_FIJAS[ubicacion_raw]}
+               if ubicacion_raw in _MINUTA_UBICACIONES_FIJAS
+               else await db.location_nodes.find_one({"project_id": pid, "id": ubicacion_raw}))
     if not ubi_doc:
         raise HTTPException(400, f"Ubicación inválida: {ubicacion_raw}")
     ubicacion_id = ubi_doc["id"]

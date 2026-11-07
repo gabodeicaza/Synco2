@@ -58,6 +58,13 @@ import { useEnvio } from '@/src/hooks/useEnvio';
 import { useModalUnico } from '@/src/hooks/useModalUnico';
 import { showToast } from '@/src/utils/toast';
 
+// Ubicaciones fijas de minuta (además de los nodos del proyecto). Mismos ids en el backend.
+const UBICACIONES_FIJAS_MINUTA = [
+  { id: 'oficinas-dirac', name: 'Oficinas Dirac', order: -3 },
+  { id: 'oficinas-dgeot', name: 'Oficinas DGEOT', order: -2 },
+  { id: 'virtual', name: 'Virtual', order: -1 },
+] as unknown as LocationNode[];
+
 // ---------- utilidades semaforo -------------------------------------------
 type Urgency = 'red' | 'yellow' | 'green' | 'gray';
 
@@ -224,7 +231,7 @@ export default function MinutasView({
         setMinutas(ms);
         if (!areas.length) setAreas(ars);
         if (!members.length) setMembers(mbs);
-        if (!nodes.length) setNodes(nds);
+        if (!nodes.length) setNodes([...UBICACIONES_FIJAS_MINUTA, ...nds]);
       } catch (e: any) {
         Alert.alert(t('minutasVista.error'), e?.message || 'No se pudo cargar el módulo de minutas');
       } finally {
