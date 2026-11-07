@@ -5773,13 +5773,13 @@ async def export_control_obra_xlsx(pid: str, user: dict = Depends(current_user))
     ws1.append([None, None, "Estatus", "Estatus", "Estatus", "Estatus"])
     intertramos = sorted(
         (n for n in nodes if n.get("tipo_nodo") == "intertramo" and _acceso_predio_efectivo(n)),
-        key=lambda n: (n.get("order", 0), n.get("name", "")),
+        key=lambda n: _nodo_key(n),
     )
     for it in intertramos:
         ws1.append([None, it.get("name") or ""])
         postes = sorted(
             (n for n in nodes if n.get("parent_id") == it["id"]),
-            key=lambda n: (n.get("order", 0), n.get("name", "")),
+            key=lambda n: _nodo_key(n),
         )
         for p in postes:
             row = [None, p.get("name") or ""]
@@ -5799,7 +5799,7 @@ async def export_control_obra_xlsx(pid: str, user: dict = Depends(current_user))
         elementos_by_node.setdefault(e["node_id"], []).append(e)
     estaciones = sorted(
         (n for n in nodes if _node_es_estacion_habilitada(n)),
-        key=lambda n: (n.get("order", 0), n.get("name", "")),
+        key=lambda n: _nodo_key(n),
     )
     for est in estaciones:
         els = elementos_by_node.get(est["id"]) or []
@@ -7046,6 +7046,15 @@ async def create_ambiental_auditoria(pid: str, body: AmbientalAuditoriaIn, user:
 
 
 # === LOCATION NODES (Árbol Recursivo) =======================================
+def _nodo_key(n: dict) -> tuple:
+    """Orden de ubicaciones basado en los NÚMEROS del nombre ("C40" < "S41" < "C52";
+    "Intertramo 2-3" < "Intertramo 10-11"): la letra/prefijo no cuenta. Sin números va
+    al final; desempata `order` y luego el nombre. Mismo criterio que ordenNodos.ts."""
+    nombre = str(n.get("name") or "")
+    nums = tuple(int(x) for x in re.findall(r"\d+", nombre))
+    return ((0, nums) if nums else (1, ()), n.get("order", 0) or 0, nombre)
+
+
 def _acceso_predio_efectivo(node: dict) -> bool:
     """Si nadie decidió explícitamente `acceso_predio_habilitado` para este
     nodo, el default histórico era "solo Subtramo" (depth==1) — antes
@@ -8680,7 +8689,7 @@ def _ordinales_estacion(nodes_by_id: dict) -> dict:
     """{id del frente: N} para el "ESTACIÓN N." de los títulos: orden del árbol
     contando SOLO estaciones (los intertramos no llevan número). Pura."""
     frentes = sorted((n for n in nodes_by_id.values() if n.get("depth") == 1 and not _nodo_es_intertramo(n)),
-                     key=lambda n: (n.get("order", 0), n.get("name", "")))
+                     key=lambda n: _nodo_key(n))
     return {n["id"]: i + 1 for i, n in enumerate(frentes)}
 
 
@@ -20591,7 +20600,7 @@ def _flatten_tree_in_order(nodes_by_id: dict, root_ids: list, *, leaves_only: bo
         # Recorre hijos ordenados
         children = sorted(
             [c for c in nodes_by_id.values() if c.get("parent_id") == nid],
-            key=lambda x: (x.get("order", 0), x.get("name", "")),
+            key=lambda x: _nodo_key(x),
         )
         for c in children:
             visit(c["id"])
@@ -21491,7 +21500,7 @@ async def export_reports_xlsx(pid: str, user: dict = Depends(current_user)):
     nodes_by_id = {n["id"]: n for n in nodes_raw}
     root_ids = [n["id"] for n in nodes_raw if not n.get("parent_id")]
     # Ordena raíces por (order, name)
-    root_ids.sort(key=lambda nid: (nodes_by_id[nid].get("order", 0), nodes_by_id[nid].get("name", "")))
+    root_ids.sort(key=lambda nid: _nodo_key(nodes_by_id[nid]))
     leaf_nodes = _flatten_tree_in_order(nodes_by_id, root_ids)
     leaf_ids = [n["id"] for n in leaf_nodes]
     leaf_index = {nid: i for i, nid in enumerate(leaf_ids)}
@@ -26696,7 +26705,7 @@ async def export_reports_pdf(
             # la tabla "Actividad en Postes" (ver `draw_intertramo_summary_page`).
             postes = sorted(
                 (n for n in nodes_by_id.values() if n.get("parent_id") == subtramo_id),
-                key=lambda n: (n.get("order", 0), n.get("name", "")),
+                key=lambda n: _nodo_key(n),
             ) if es_intertramo else []
             # FIX: antes, si ningún leaf de este subtramo tenía reportes en
             # el período, `totals` venía ausente y la página completa se
@@ -27376,7 +27385,7 @@ async def _gather_export_data(
     nodes_raw = await db.location_nodes.find({"project_id": pid}).to_list(length=10000)
     nodes_by_id = {n["id"]: n for n in nodes_raw}
     root_ids = [n["id"] for n in nodes_raw if not n.get("parent_id")]
-    root_ids.sort(key=lambda nid: (nodes_by_id[nid].get("order", 0), nodes_by_id[nid].get("name", "")))
+    root_ids.sort(key=lambda nid: _nodo_key(nodes_by_id[nid]))
     leaf_nodes = _flatten_tree_in_order(nodes_by_id, root_ids)
 
     # --- Nodos agrupados por su Subtramo dueño (para Acceso al Predio "a
@@ -32036,7 +32045,7 @@ async def export_reports_pptx(
             páginas de resumen (`resource_consolidated_by_subtramo`)."""
             frentes_nodes = sorted(
                 (n for n in nodes_by_id.values() if n.get("depth") == 1),
-                key=lambda n: (n.get("order", 0), n.get("name", "")),
+                key=lambda n: _nodo_key(n),
             )
             if not frentes_nodes:
                 return
@@ -32838,7 +32847,7 @@ async def export_reports_pptx(
             maquinaria_rows = (totals or {}).get("maquinaria") or []
             postes = sorted(
                 (n for n in nodes_by_id.values() if n.get("parent_id") == subtramo_id),
-                key=lambda n: (n.get("order", 0), n.get("name", "")),
+                key=lambda n: _nodo_key(n),
             ) if es_intertramo else []
             # FIX: mismo caso que en el motor PDF (`_emit_subtramo_summary`)
             # — "Acceso al Predio" es estado persistente del nodo, no
@@ -32922,11 +32931,11 @@ async def export_reports_pptx(
         # imprimen igual, con "Sin actividad", en su lugar del orden del árbol
         # (el reporte de referencia muestra siempre todos los frentes).
         _raices_orden = sorted((n for n in nodes_by_id.values() if n.get("depth") == 0),
-                               key=lambda n: (n.get("order", 0), n.get("name", "")))
+                               key=lambda n: _nodo_key(n))
         _rank_raiz = {r["id"]: i for i, r in enumerate(_raices_orden)}
         frentes_orden = [f["id"] for f in sorted(
             (n for n in nodes_by_id.values() if n.get("depth") == 1),
-            key=lambda n: (_rank_raiz.get(n.get("parent_id"), 10 ** 6), n.get("order", 0), n.get("name", "")),
+            key=lambda n: (_rank_raiz.get(n.get("parent_id"), 10 ** 6), *_nodo_key(n)),
         )]
         frentes_con_reportes = {
             _subtramo_id_for(n["id"], nodes_by_id) for n in leaf_nodes if workforce_reports_by_node.get(n["id"])
@@ -35319,12 +35328,12 @@ async def _actividades_generales_core(pid: str, area_id: Optional[str], rango: O
 
     root_ids = sorted(
         [n["id"] for n in nodes if n.get("depth") == 0],
-        key=lambda nid: (nodes_by_id[nid].get("order", 0), nodes_by_id[nid].get("name", "")),
+        key=lambda nid: _nodo_key(nodes_by_id[nid]),
     )
     leaf_order_index = {n["id"]: i for i, n in enumerate(_flatten_tree_in_order(nodes_by_id, root_ids))}
     subtramo_order_index = {
         n["id"]: i for i, n in enumerate(
-            sorted([n for n in nodes if n.get("depth") == 1], key=lambda n: (n.get("order", 0), n.get("name", "")))
+            sorted([n for n in nodes if n.get("depth") == 1], key=lambda n: _nodo_key(n))
         )
     }
 
@@ -35527,7 +35536,7 @@ def _actividades_resumen_por_frente(items: list, nodes_by_id: dict, solo_general
     agregan al frente con el nombre del poste por delante, salvo que el texto
     ya lo traiga. Pura — sin Mongo."""
     def _orden(n):
-        return (n.get("order", 0), n.get("name", ""))
+        return _nodo_key(n)
 
     raices = sorted((n for n in nodes_by_id.values() if n.get("depth") == 0), key=_orden)
     rank_raiz = {r["id"]: i for i, r in enumerate(raices)}
@@ -35615,7 +35624,7 @@ def _actividades_resumen_por_tramo(items: list, nodes_by_id: dict) -> list:
         return cur
 
     def _order(n):
-        return (n.get("order", 0), n.get("name", ""))
+        return _nodo_key(n)
 
     root_order = {
         n["id"]: i for i, n in enumerate(sorted((n for n in nodes_by_id.values() if n.get("depth") == 0), key=_order))

@@ -2,6 +2,7 @@
 // de chips — usado para ligar un plano de Tapial y un registro de Fotos LiDAR
 // a la misma estación, de modo que el export arme la diapositiva TAPIAL +
 // VUELO DRON de esa estación. Opcional: "Sin estación" deja el vínculo vacío.
+import { compararNodos } from '@/src/utils/ordenNodos';
 import React from 'react';
 import { View, Text, StyleSheet, Pressable } from 'react-native';
 import { LocationNode } from '@/src/api';
@@ -10,7 +11,7 @@ import { colors, radius, spacing } from '@/src/theme';
 export function estacionesDe(nodes: LocationNode[]): LocationNode[] {
   return nodes
     .filter((n) => n.depth === 1)
-    .sort((a, b) => (a.order - b.order) || a.name.localeCompare(b.name));
+    .sort(compararNodos);
 }
 
 export function EstacionPicker({

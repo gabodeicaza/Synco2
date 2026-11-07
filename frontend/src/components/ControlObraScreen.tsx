@@ -20,6 +20,7 @@
 // más abierto que el PATCH general de nodo).
 // "Cimentación por Estación" y "Perforadoras" sí son colecciones nuevas
 // (cimentacion_elementos / perforadoras) sin equivalente previo.
+import { compararNodos } from '@/src/utils/ordenNodos';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, TextInput, Alert, Modal,
@@ -214,20 +215,20 @@ export default function ControlObraScreen({ projectId }: { projectId: string }) 
   const intertramos = useMemo(
     () => allNodes
       .filter((n) => n.tipo_nodo === 'intertramo' && n.acceso_predio_efectivo)
-      .sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || a.name.localeCompare(b.name)),
+      .sort(compararNodos),
     [allNodes],
   );
   const estaciones = useMemo(
     () => allNodes
       .filter((n) => (n.tipo_nodo || 'estacion') === 'estacion' && n.acceso_predio_efectivo)
-      .sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || a.name.localeCompare(b.name)),
+      .sort(compararNodos),
     [allNodes],
   );
 
   function postesOf(intertramoId: string): LocationNode[] {
     return allNodes
       .filter((n) => n.parent_id === intertramoId)
-      .sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || a.name.localeCompare(b.name));
+      .sort(compararNodos);
   }
 
   const actividadCols = useMemo(() => flattenEtapas(project?.etapas_poste), [project?.etapas_poste]);

@@ -9,6 +9,7 @@
 // Reusado por la ruta de Coordinador (tab Configuracion) y por el menu
 // hamburguesa de Sub-Coordinador via HeaderMenu (Especialista no tiene
 // acceso: el backend solo permite escribir estos campos a esos dos roles).
+import { compararNodos } from '@/src/utils/ordenNodos';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, ActivityIndicator, Pressable, Alert, TextInput, Modal, Switch,
@@ -72,7 +73,7 @@ function nodesEnOrdenDeArbol(nodes: LocationNode[]): LocationNode[] {
     const key = n.parent_id || '__root__';
     (byParent[key] = byParent[key] || []).push(n);
   });
-  Object.values(byParent).forEach((list) => list.sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || a.name.localeCompare(b.name)));
+  Object.values(byParent).forEach((list) => list.sort(compararNodos));
   const out: LocationNode[] = [];
   function walk(parentKey: string) {
     (byParent[parentKey] || []).forEach((n) => {
@@ -340,7 +341,7 @@ export function AccesoPredioManager({ projectId }: { projectId: string }) {
                     </Text>
                     {allNodes
                       .filter((n) => n.parent_id === s.id)
-                      .sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || a.name.localeCompare(b.name))
+                      .sort(compararNodos)
                       .map((child) => {
                         const ubicDirty = (ubicacionDrafts[child.id] || '') !== (child.ubicacion || '');
                         return (

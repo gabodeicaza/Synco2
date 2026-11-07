@@ -2,6 +2,7 @@
 // conteos por rama, filtro (búsqueda + categoría) y aplanado de las filas
 // visibles. El árbol puede tener cientos de nodos, así que se pinta como lista
 // plana y no como componentes anidados.
+import { compararNodos } from '@/src/utils/ordenNodos';
 import type { TrazArchivo, TrazNodo } from '@/src/api';
 
 export interface TrazIndice {
@@ -30,7 +31,7 @@ export function indexar(nodos: TrazNodo[], archivos: TrazArchivo[]): TrazIndice 
     if (lista) lista.push(n); else hijos.set(p, [n]);
   }
   for (const lista of hijos.values()) {
-    lista.sort((a, b) => ((a.order ?? 0) - (b.order ?? 0)) || a.name.localeCompare(b.name));
+    lista.sort(compararNodos);
   }
   for (const f of archivos) {
     if (!porId.has(f.node_id)) continue; // nodo borrado: el archivo no se muestra
