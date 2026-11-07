@@ -3584,6 +3584,9 @@ export const api = {
   previewPresentacionModuloAuto: (pid: string, presId: string, tipo: PresentacionSeccionTipoAuto) =>
     request<ModuloAutoOutline[]>('GET', `/projects/${pid}/presentaciones/${presId}/modulo-auto/${tipo}`),
   presentacionExportUrl: (pid: string, presId: string) => `${BASE}/projects/${pid}/presentaciones/${presId}/export.pptx`,
+  // Descarga autenticada (el token va en el header; abrir la URL directo daba 401).
+  downloadPresentacionPptx: (pid: string, presId: string) =>
+    _downloadFile(`${BASE}/projects/${pid}/presentaciones/${presId}/export.pptx`, 'presentacion.pptx', 'Error al descargar la presentación'),
 
   // === Módulo piloto: Impacto Ambiental ===
   listAmbientalAuditoria: (pid: string) => request<AmbientalAuditoriaItem[]>('GET', `/projects/${pid}/ambiental-auditoria`),

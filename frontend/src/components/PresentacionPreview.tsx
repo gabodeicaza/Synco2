@@ -26,6 +26,7 @@ import { SlideReportesSemana } from '@/src/components/presentacion/SlideReportes
 import { SlideCierre } from '@/src/components/presentacion/SlideCierre';
 import { SlideModuloAuto } from '@/src/components/presentacion/SlideModuloAuto';
 import { a11y } from '@/src/i18n';
+import { downloadBlob } from '@/src/utils/downloadBlob';
 import { periodoDePresentacion, textoRangoPeriodo } from '@/src/utils/finanzas';
 
 const AUTO_TITULO: Record<PresentacionSeccionTipoAuto, string> = {
@@ -143,16 +144,10 @@ export default function PresentacionPreview({ projectId, presentacionId }: { pro
 
   async function onExport() {
     if (!presentacion) return;
-    const url = api.presentacionExportUrl(projectId, presentacion.id);
     try {
       setExporting(true);
-      if (Platform.OS === 'web') {
-        Linking.openURL(url);
-      } else {
-        const can = await Linking.canOpenURL(url);
-        if (can) await Linking.openURL(url);
-        else Alert.alert('Exportar', 'No se pudo abrir el enlace de exportación.');
-      }
+      const { blob, filename } = await api.downloadPresentacionPptx(projectId, presentacion.id);
+      await downloadBlob(blob, filename, 'application/vnd.openxmlformats-officedocument.presentationml.presentation');
     } catch (e: any) {
       Alert.alert('No se pudo exportar', e?.message || 'Inténtalo nuevamente.');
     } finally {
